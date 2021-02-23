@@ -1,0 +1,3 @@
+[submodule "galos-db"]
+	path = galos-db
+	url = ./galos-db
