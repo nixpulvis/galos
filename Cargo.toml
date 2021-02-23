@@ -1,0 +1,34 @@
+[package]
+name = "galos"
+version = "0.0.0-dev+initial"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2018"
+
+default-run = "main"
+
+[dependencies]
+async-std = "*"
+structopt = "*"
+termion = "*"
+tui = "*"
+
+# Our open source crates.
+eddb          = { path = '../eddb' }
+edsm          = { path = '../edsm' }
+eddn          = { path = '../eddn' }
+elite_dat     = { path = '../elite-dat' }
+elite_journal = { path = '../elite-journal' }
+
+# Subcomponents of Galos.
+galos_db      = { path = 'galos-db' }
+galos-gui     = { path = 'galos-gui' }
+galos-server  = { path = 'galos-server' }
+galos-worker  = { path = 'galos-worker' }
+
+[workspace]
+members = [
+    "galos-db",
+    "galos-gui",
+    "galos-server",
+    "galos-worker",
+]
