@@ -16,18 +16,18 @@ tui = "*"
 eddb          = { path = '../eddb' }
 edsm          = { path = '../edsm' }
 eddn          = { path = '../eddn' }
-elite_dat     = { path = '../elite-dat' }
-elite_journal = { path = '../elite-journal' }
+elite_dat     = { path = '../elite_dat' }
+elite_journal = { path = '../elite_journal' }
 
 # Subcomponents of Galos.
-galos_db      = { path = 'galos-db' }
+galos_db      = { path = 'galos_db' }
 galos-gui     = { path = 'galos-gui' }
 galos-server  = { path = 'galos-server' }
 galos-worker  = { path = 'galos-worker' }
 
 [workspace]
 members = [
-    "galos-db",
+    "galos_db",
     "galos-gui",
     "galos-server",
     "galos-worker",
