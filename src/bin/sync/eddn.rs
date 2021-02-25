@@ -42,7 +42,7 @@ fn process_message(db: &Database, message: Message) {
                 let result = System::create(db, &system).await;
                 match result {
                     Ok(_) => println!("[EDDN] {}", system.name),
-                    Err(err) => println!("[EDDN] {}", err),
+                    Err(err) => println!("[EDDN ERROR] {}", err),
                 }
             }
         },
