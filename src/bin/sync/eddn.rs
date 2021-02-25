@@ -39,18 +39,9 @@ fn process_message(db: &Database, message: Message) {
                 },
                 _ => None,
             } {
-                let result = System::create(
-                    db,
-                    system.system_address as i64,
-                    &system.star_system.to_uppercase(),
-                    system.population as i64,
-                    Some(system.system_government),
-                    Some(system.system_allegiance),
-                    Some(system.system_economy),
-                    Some(system.system_second_economy),
-                ).await;
+                let result = System::create(db, &system).await;
                 match result {
-                    Ok(system) => println!("[EDDN] {}", system.name),
+                    Ok(_) => println!("[EDDN] {}", system.name),
                     Err(err) => println!("[EDDN] {}", err),
                 }
             }
