@@ -21,14 +21,14 @@ elite_journal = { path = '../elite_journal' }
 
 # Subcomponents of Galos.
 galos_db      = { path = 'galos_db' }
-galos-gui     = { path = 'galos-gui' }
-galos-server  = { path = 'galos-server' }
-galos-worker  = { path = 'galos-worker' }
+# galos-gui     = { path = 'galos-gui' }
+# galos-server  = { path = 'galos-server' }
+# galos-worker  = { path = 'galos-worker' }
 
 [workspace]
 members = [
     "galos_db",
-    "galos-gui",
-    "galos-server",
-    "galos-worker",
+    # "galos-gui",
+    # "galos-server",
+    # "galos-worker",
 ]
