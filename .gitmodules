@@ -1,4 +1,4 @@
 [submodule "galos_db"]
 	path = galos_db
-	url = ./galos_db
+	url = https://github.com/ED-NEWP/galos_db
 	ignore = untracked
