@@ -97,7 +97,15 @@ use structopt::StructOpt;
 use galos_db::{Error, Database};
 
 #[derive(StructOpt, Debug)]
-enum Cli {
+struct Cli {
+    #[structopt(short = "d", long = "dbname")]
+    dbname: String,
+    #[structopt(subcommand)]
+    subcommand: Subcommand,
+}
+
+#[derive(StructOpt, Debug)]
+enum Subcommand {
     #[structopt(about = "Search for systems, bodies, stations, factions, etc")]
     Search(search::Cli),
     #[structopt(about = "Plot routes between to and from many systems")]
@@ -110,12 +118,12 @@ pub trait Run {
     fn run(&self, db: &Database);
 }
 
-impl Run for Cli {
+impl Run for Subcommand {
     fn run(&self, db: &Database) {
         match self {
-            Cli::Search(cli) => cli.run(db),
-            Cli::Route(cli)  => cli.run(db),
-            Cli::Sync(cli)   => cli.run(db),
+            Subcommand::Search(cli) => cli.run(db),
+            Subcommand::Route(cli)  => cli.run(db),
+            Subcommand::Sync(cli)   => cli.run(db),
         }
     }
 }
@@ -125,7 +133,7 @@ async fn main() -> Result<(), Error> {
     let cli = Cli::from_args();
     println!("{:?}", cli);
     let db = Database::new().await?;
-    cli.run(&db);
+    cli.subcommand.run(&db);
 
     Ok(())
 }
