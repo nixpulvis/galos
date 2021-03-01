@@ -98,8 +98,8 @@ use galos_db::{Error, Database};
 
 #[derive(StructOpt, Debug)]
 struct Cli {
-    #[structopt(short = "d", long = "dbname")]
-    dbname: String,
+    #[structopt(short = "d", long = "database", help = "override default (.env) database URL")]
+    database_url: Option<String>,
     #[structopt(subcommand)]
     subcommand: Subcommand,
 }
@@ -131,10 +131,13 @@ impl Run for Subcommand {
 #[async_std::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::from_args();
-    println!("{:?}", cli);
-    let db = Database::new().await?;
-    cli.subcommand.run(&db);
+    let db = if let Some(url) = cli.database_url {
+        Database::from_url(&url).await?
+    } else {
+        Database::new().await?
+    };
 
+    cli.subcommand.run(&db);
     Ok(())
 }
 
