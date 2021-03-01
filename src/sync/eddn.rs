@@ -3,7 +3,7 @@ use structopt::StructOpt;
 use elite_journal::Event;
 use eddn::{URL, subscribe, Message};
 use galos_db::{Database, systems::System};
-use crate::SyncDb;
+use crate::Run;
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
@@ -14,8 +14,8 @@ pub struct Cli {
     // TODO: Filters?
 }
 
-impl SyncDb for Cli {
-    fn sync_db(&self, db: &Database) {
+impl Run for Cli {
+    fn run(&self, db: &Database) {
         for result in subscribe(&self.url) {
             if let Ok(envelop) = result {
                 process_message(db, envelop.message);

@@ -4,7 +4,11 @@ version = "0.0.0-dev+initial"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
-default-run = "main"
+# default-run = "galos"
+
+# [[bin]]
+# name = "galos"
+# path = "src/main.rs"
 
 [dependencies]
 async-std = "*"

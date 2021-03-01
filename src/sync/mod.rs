@@ -1,28 +1,24 @@
 use structopt::StructOpt;
 use galos_db::{Error, Database};
+use crate::Run;
 
 mod eddn;
 mod edsm;
 mod eddb;
 
 #[derive(StructOpt, Debug)]
-enum Cli {
+pub enum Cli {
     Eddn(eddn::Cli),
     Edsm(edsm::Cli),
     Eddb(eddb::Cli),
 }
 
-trait SyncDb {
-    // TODO: Return a result.
-    fn sync_db(&self, db: &Database);
-}
-
-impl SyncDb for Cli {
-    fn sync_db(&self, db: &Database) {
+impl Run for Cli {
+    fn run(&self, db: &Database) {
         match self {
-            Cli::Eddn(cli) => cli.sync_db(db),
-            Cli::Edsm(cli) => cli.sync_db(db),
-            Cli::Eddb(cli) => cli.sync_db(db),
+            Cli::Eddn(cli) => cli.run(db),
+            Cli::Edsm(cli) => cli.run(db),
+            Cli::Eddb(cli) => cli.run(db),
         }
     }
 }
@@ -32,7 +28,7 @@ async fn main() -> Result<(), Error> {
     let cli = Cli::from_args();
     println!("{:?}", cli);
     let db = Database::new().await?;
-    cli.sync_db(&db);
+    cli.run(&db);
 
     Ok(())
 }

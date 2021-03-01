@@ -98,3 +98,67 @@
 //! # `galos-gui`
 //! TODO
 
+use structopt::StructOpt;
+use galos_db::{Error, Database};
+
+#[derive(StructOpt, Debug)]
+enum Cli {
+    Search(SearchCli),
+    Info(InfoCli),
+    Route(RouteCli),
+    Sync(sync::Cli),
+}
+
+pub trait Run {
+    fn run(&self, db: &Database);
+}
+
+impl Run for Cli {
+    fn run(&self, db: &Database) {
+        match self {
+            Cli::Search(cli) => cli.run(db),
+            Cli::Info(cli)   => cli.run(db),
+            Cli::Route(cli)  => cli.run(db),
+            Cli::Sync(cli)   => cli.run(db),
+        }
+    }
+}
+
+#[async_std::main]
+async fn main() -> Result<(), Error> {
+    let cli = Cli::from_args();
+    println!("{:?}", cli);
+    let db = Database::new().await?;
+    cli.run(&db);
+
+    Ok(())
+}
+
+#[derive(StructOpt, Debug)]
+pub struct SearchCli {}
+
+impl Run for SearchCli {
+    fn run(&self, db: &Database) {
+        unimplemented!();
+    }
+}
+
+#[derive(StructOpt, Debug)]
+pub struct InfoCli {}
+
+impl Run for InfoCli {
+    fn run(&self, db: &Database) {
+        unimplemented!();
+    }
+}
+
+#[derive(StructOpt, Debug)]
+pub struct RouteCli {}
+
+impl Run for RouteCli {
+    fn run(&self, db: &Database) {
+        unimplemented!();
+    }
+}
+
+mod sync;

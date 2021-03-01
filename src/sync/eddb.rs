@@ -1,6 +1,6 @@
 use structopt::StructOpt;
 use galos_db::Database;
-use crate::SyncDb;
+use crate::Run;
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
@@ -10,8 +10,8 @@ pub struct Cli {
     pub path: String,
 }
 
-impl SyncDb for Cli {
-    fn sync_db(&self, db: &Database) {
+impl Run for Cli {
+    fn run(&self, db: &Database) {
         unimplemented!();
     }
 }
