@@ -46,30 +46,23 @@
 //! ```
 //!
 //!
-//! ##### `galos search <name> [<filter>]`
+//! ##### `galos search [OPTIONS] <query>`
 //!
 //! Search for systems, bodies, and stations in the database. This command shows a
-//! summary view for each object found.
+//! selection of details for each object found.
 //!
-//! Examples:
+//! Examples (TODO):
 //! ```
-//! $ galos search HD* within=10Ly
-//! ```
-//!
-//!
-//! ##### `galos info <name>`
-//! Lookup systems, bodies, and stations in the database. This command shows a
-//! detailed view for the found object.
-//!
-//! Examples:
-//! ```
-//! $ galos info Sol
+//! $ galos search --count HD* sphere=500Ly
+//! $ galos search Meliae cube=40Ly factions={influence<7.5%}
+//! $ galos search --limit 50 --order factions.influence (HD*|HIP*) factions={influence<7.5%}
 //! ```
 //!
 //!
-//! ##### `galos route <system> <path> <system> [<path> <system>]...`
+//! ##### `galos route <system> <op> <system> [<op> <system>]...`
 //! Plot routes between systems, bodies, and stations in the database.
 //!
+//! Where `op` is one of:
 //! - `A -> B` specifies a direct path from A to B
 //! - `A + B` specifies a path to both A and B, where the route could either visit
 //!     A or B first
@@ -82,6 +75,8 @@
 //! $ galos route Wolf 397 -> Sol + Meliae -> Nagalinn + Sol
 //! yields:       Wolf 397 -> Meliae -> Sol -> Nagalinn
 //! ```
+//!
+//! TODO: Incorperate queries for both `+` and `|` nodes in the route.
 //!
 //! ##### `galos sync <provider>`
 //! Syncs the DB with EDDN, EDSM and/or EDDB.
@@ -103,9 +98,11 @@ use galos_db::{Error, Database};
 
 #[derive(StructOpt, Debug)]
 enum Cli {
-    Search(SearchCli),
-    Info(InfoCli),
-    Route(RouteCli),
+    #[structopt(about = "Search for systems, bodies, stations, factions, etc")]
+    Search(search::Cli),
+    #[structopt(about = "Plot routes between to and from many systems")]
+    Route(route::Cli),
+    #[structopt(about = "Update the local database from various sources")]
     Sync(sync::Cli),
 }
 
@@ -117,7 +114,6 @@ impl Run for Cli {
     fn run(&self, db: &Database) {
         match self {
             Cli::Search(cli) => cli.run(db),
-            Cli::Info(cli)   => cli.run(db),
             Cli::Route(cli)  => cli.run(db),
             Cli::Sync(cli)   => cli.run(db),
         }
@@ -134,31 +130,6 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(StructOpt, Debug)]
-pub struct SearchCli {}
-
-impl Run for SearchCli {
-    fn run(&self, db: &Database) {
-        unimplemented!();
-    }
-}
-
-#[derive(StructOpt, Debug)]
-pub struct InfoCli {}
-
-impl Run for InfoCli {
-    fn run(&self, db: &Database) {
-        unimplemented!();
-    }
-}
-
-#[derive(StructOpt, Debug)]
-pub struct RouteCli {}
-
-impl Run for RouteCli {
-    fn run(&self, db: &Database) {
-        unimplemented!();
-    }
-}
-
+mod search;
+mod route;
 mod sync;

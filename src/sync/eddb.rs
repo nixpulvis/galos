@@ -11,7 +11,7 @@ pub struct Cli {
 }
 
 impl Run for Cli {
-    fn run(&self, db: &Database) {
+    fn run(&self, _db: &Database) {
         unimplemented!();
     }
 }

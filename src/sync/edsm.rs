@@ -21,7 +21,7 @@ pub struct FileCli {
 pub struct ApiCli {}
 
 impl Run for Cli {
-    fn run(&self, db: &Database) {
+    fn run(&self, _db: &Database) {
         unimplemented!();
     }
 }

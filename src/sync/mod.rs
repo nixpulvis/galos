@@ -8,8 +8,11 @@ mod eddb;
 
 #[derive(StructOpt, Debug)]
 pub enum Cli {
+    #[structopt(about = "Subscribes to EDDN to continuously sync from incoming events")]
     Eddn(eddn::Cli),
+    #[structopt(about = "Sync from EDSM's nightly dumps")]
     Edsm(edsm::Cli),
+    #[structopt(about = "Sync from EDDB's nightly dumps")]
     Eddb(eddb::Cli),
 }
 

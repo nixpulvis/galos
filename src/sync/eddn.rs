@@ -7,8 +7,8 @@ use crate::Run;
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
-    // Type as a URL?
-    #[structopt(short = "r", long = "remote", default_value = URL)]
+    // Type as a URL? ZMQ doesn't bother :(
+    #[structopt(short = "r", long = "remote", default_value = URL, help = "ZMQ remote address")]
     pub url: String,
 
     // TODO: Filters?
