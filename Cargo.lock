@@ -759,6 +759,7 @@ dependencies = [
  "elite_dat",
  "elite_journal",
  "galos_db",
+ "indicatif",
  "structopt",
  "termion",
  "tui",
