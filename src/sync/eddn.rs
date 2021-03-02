@@ -39,7 +39,7 @@ fn process_message(db: &Database, message: Message) {
                 },
                 _ => None,
             } {
-                let result = System::create(db, &system, entry.timestamp).await;
+                let result = System::from_journal(db, &system, entry.timestamp).await;
                 match result {
                     Ok(_) => println!("[EDDN] {}", system.name),
                     Err(err) => println!("[EDDN ERROR] {}", err),
