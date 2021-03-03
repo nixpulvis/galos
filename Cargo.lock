@@ -558,7 +558,7 @@ checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
 [[package]]
 name = "elite_journal"
 version = "0.0.0-dev+initial"
-source = "git+https://github.com/ED-NEWP/elite_journal#961e8ec03fb80286a25e7840182ef4f1858c2c74"
+source = "git+https://github.com/ED-NEWP/elite_journal#918c0a8bd66b16b75b5b8d61393ebd993b1a5862"
 dependencies = [
  "chrono",
  "geozero",
