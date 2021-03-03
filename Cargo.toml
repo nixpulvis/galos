@@ -17,21 +17,43 @@ indicatif = "*"
 termion = "*"
 tui = "*"
 
-# Our open source crates.
-eddb          = { path = '../eddb' }
-edsm          = { path = '../edsm' }
-eddn          = { path = '../eddn' }
-# elite_dat     = { path = '../elite_dat' }
-elite_journal = { git = 'https://github.com/ED-NEWP/elite_journal' }
-
 # Subcomponents of Galos.
 galos_db      = { path = 'galos_db' }
 # galos-gui     = { path = 'galos-gui' }
 # galos-server  = { path = 'galos-server' }
 # galos-worker  = { path = 'galos-worker' }
 
+
+# Our open source crates.
+# elite_dat = { path = './elite_dat' }
+elite_journal = { git = "https://github.com/ED-NEWP/elite_journal" }
+eddn          = { git = "https://github.com/ED-NEWP/eddn" }
+eddb          = { git = "https://github.com/ED-NEWP/eddb" }
+edsm          = { git = "https://github.com/ED-NEWP/edsm" }
+
+# TODO
+# [patch.'https://github.com/ED-NEWP/elite_dat']
+# elite_dat = { path = './elite_dat' }
+
+[patch.'https://github.com/ED-NEWP/elite_journal']
+elite_journal = { path = './elite_journal' }
+
+[patch.'https://github.com/ED-NEWP/eddn']
+eddn = { path = './eddn' }
+
+[patch.'https://github.com/ED-NEWP/eddb']
+eddb = { path = './eddb' }
+
+[patch.'https://github.com/ED-NEWP/edsm']
+edsm = { path = './edsm' }
+
 [workspace]
 members = [
+    # "elite_dat",
+    "elite_journal",
+    "eddn",
+    "eddb",
+    "edsm",
     "galos_db",
     # "galos-gui",
     # "galos-server",

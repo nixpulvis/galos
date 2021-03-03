@@ -2,3 +2,15 @@
 	path = galos_db
 	url = https://github.com/ED-NEWP/galos_db
 	ignore = untracked
+[submodule "edsm"]
+	path = edsm
+	url = https://github.com/ED-NEWP/edsm
+[submodule "eddb"]
+	path = eddb
+	url = https://github.com/ED-NEWP/eddb
+[submodule "eddn"]
+	path = eddn
+	url = https://github.com/ED-NEWP/eddn
+[submodule "elite_journal"]
+	path = elite_journal
+	url = https://github.com/ED-NEWP/elite_journal

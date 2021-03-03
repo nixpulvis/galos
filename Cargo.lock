@@ -558,7 +558,6 @@ checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
 [[package]]
 name = "elite_journal"
 version = "0.0.0-dev+initial"
-source = "git+https://github.com/ED-NEWP/elite_journal#70c180d0aafd572c4094f90f5153f25b4982f01a"
 dependencies = [
  "chrono",
  "geozero",
@@ -911,9 +910,9 @@ dependencies = [
 
 [[package]]
 name = "hex"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "644f9158b2f133fd50f5fb3242878846d9eb792e445c893805ff0e3824006e35"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hmac"
