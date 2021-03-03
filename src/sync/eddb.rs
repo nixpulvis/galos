@@ -1,7 +1,8 @@
 use async_std::task;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
-use galos_db::{Database, systems::{System, PointZ}};
+use elite_journal::Coordinate;
+use galos_db::{Database, systems::System};
 use crate::Run;
 
 #[derive(StructOpt, Debug)]
@@ -26,7 +27,7 @@ impl Run for Cli {
         for result in bar.wrap_iter(dump.into_iter()) {
             if let Ok(system) = result {
                 if let Some(address) = system.ed_system_address {
-                    let position = PointZ {
+                    let position = Coordinate {
                         x: system.coords.x,
                         y: system.coords.y,
                         z: system.coords.z

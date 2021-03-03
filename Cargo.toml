@@ -21,8 +21,8 @@ tui = "*"
 eddb          = { path = '../eddb' }
 edsm          = { path = '../edsm' }
 eddn          = { path = '../eddn' }
-elite_dat     = { path = '../elite_dat' }
-elite_journal = { path = '../elite_journal' }
+# elite_dat     = { path = '../elite_dat' }
+elite_journal = { git = 'https://github.com/ED-NEWP/elite_journal' }
 
 # Subcomponents of Galos.
 galos_db      = { path = 'galos_db' }

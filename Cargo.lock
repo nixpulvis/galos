@@ -522,6 +522,7 @@ version = "0.0.0-dev+initial"
 dependencies = [
  "chrono",
  "csv",
+ "elite_journal",
  "serde",
  "serde_json",
 ]
@@ -555,14 +556,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
 
 [[package]]
-name = "elite_dat"
-version = "0.0.0-dev+initial"
-
-[[package]]
 name = "elite_journal"
 version = "0.0.0-dev+initial"
+source = "git+https://github.com/ED-NEWP/elite_journal#961e8ec03fb80286a25e7840182ef4f1858c2c74"
 dependencies = [
  "chrono",
+ "geozero",
  "serde",
  "serde_json",
  "sqlx",
@@ -756,7 +755,6 @@ dependencies = [
  "eddb",
  "eddn",
  "edsm",
- "elite_dat",
  "elite_journal",
  "galos_db",
  "indicatif",
@@ -773,7 +771,6 @@ dependencies = [
  "chrono",
  "dotenv",
  "elite_journal",
- "futures",
  "geozero",
  "indicatif",
  "sqlx",
@@ -1091,9 +1088,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.86"
+version = "0.2.87"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7282d924be3275cec7f6756ff4121987bc6481325397dde6ba3e7802b1a8b1c"
+checksum = "265d751d31d6780a3f956bb5b8022feba2d94eeee5a84ba64f4212eedca42213"
 
 [[package]]
 name = "libsqlite3-sys"
@@ -1297,9 +1294,9 @@ checksum = "b8f8bdf33df195859076e54ab11ee78a1b208382d3a26ec40d142ffc1ecc49ef"
 
 [[package]]
 name = "once_cell"
-version = "1.7.0"
+version = "1.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10acf907b94fc1b1a152d08ef97e7759650268cf986bf127f387e602b02c7e5a"
+checksum = "af8b08b04175473088b46763e51ee54da5f9a164bc162f615b91bc179dbf15a3"
 
 [[package]]
 name = "opaque-debug"
@@ -1399,9 +1396,9 @@ dependencies = [
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439697af366c49a6d0a010c56a0d97685bc140ce0d377b13a2ea2aa42d64a827"
+checksum = "0cf491442e4b033ed1c722cb9f0df5fcfcf4de682466c46469c36bc47dc5548a"
 
 [[package]]
 name = "pin-utils"
