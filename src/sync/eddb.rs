@@ -34,7 +34,7 @@ impl Run for Cli {
                     };
                     task::block_on(async {
                         let result = System::create(db, address, &system.name, position,
-                            system.population.unwrap_or(0), system.security, system.government,
+                            system.population, system.security, system.government,
                             system.allegiance, system.primary_economy, None, system.updated_at)
                             .await;
                         match result {
