@@ -796,6 +796,7 @@ name = "galos"
 version = "0.0.1-dev+alpha"
 dependencies = [
  "async-std",
+ "chrono",
  "eddb",
  "eddn",
  "edsm",
