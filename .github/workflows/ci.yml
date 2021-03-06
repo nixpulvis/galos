@@ -16,8 +16,30 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
-    - name: Checkout submodules
-      uses: textbook/git-checkout-submodule-action@master
+
+    - name: Checkout galos_db
+      env:
+        GALOS_DB_SSH_KEY: ${{ secrets.GALOS_DB_SSH_KEY }}
+      run: |
+        mkdir -p $HOME/.ssh
+        echo "$GALOS_DB_SSH_KEY" > $HOME/.ssh/galos_db
+        chmod 600 $HOME/.ssh/galos_db
+        export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/galos_db"
+        git submodule update --init -- galos_db
+
+    - name: Checkout galos_bot
+      env:
+        GALOS_BOT_SSH_KEY: ${{ secrets.GALOS_BOT_SSH_KEY }}
+      run: |
+        mkdir -p $HOME/.ssh
+        echo "$GALOS_BOT_SSH_KEY" > $HOME/.ssh/galos_bot
+        chmod 600 $HOME/.ssh/galos_bot
+        export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/galos_bot"
+        git submodule update --init -- galos_bot
+
+    - name: Checkout all submodules
+      run: git submodule update --init --recursive
+
     - name: Build
       run: cargo build --all --verbose
     - name: Run tests
