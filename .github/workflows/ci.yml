@@ -120,6 +120,7 @@ jobs:
       run: git submodule update --init --recursive
 
     - name: Build
-      run: cargo build --all --verbose
+      run: cargo build --all
+
     - name: Run tests
-      run: cargo test --all --verbose
+      run: cargo test --all
