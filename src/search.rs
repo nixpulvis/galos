@@ -1,6 +1,6 @@
 use structopt::StructOpt;
 use galos_db::Database;
-use crate::Run;
+use galos::Run;
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
