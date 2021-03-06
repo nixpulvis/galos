@@ -18,7 +18,8 @@ termion   = "*"
 tui       = "*"
 
 # Subcomponents of Galos.
-galos_db = { path = 'galos_db' }
+galos_db  = { path = 'galos_db' }
+galos_bot = { path = "galos_bot" }
 # galos-gui     = { path = 'galos-gui' }
 # galos-server  = { path = 'galos-server' }
 # galos-worker  = { path = 'galos-worker' }
@@ -30,7 +31,6 @@ elite_journal = { git = "https://github.com/ED-NEWP/elite_journal" }
 eddn          = { git = "https://github.com/ED-NEWP/eddn" }
 eddb          = { git = "https://github.com/ED-NEWP/eddb" }
 edsm          = { git = "https://github.com/ED-NEWP/edsm" }
-galos_bot     = { git = "https://github.com/ED-NEWP/galos_bot" }
 
 # TODO
 # [patch.'https://github.com/ED-NEWP/elite_dat']
@@ -47,9 +47,6 @@ eddb = { path = './eddb' }
 
 [patch.'https://github.com/ED-NEWP/edsm']
 edsm = { path = './edsm' }
-
-[patch.'https://github.com/ED-NEWP/galos_bot']
-galos_bot = { path = './galos_bot' }
 
 [workspace]
 members = [
