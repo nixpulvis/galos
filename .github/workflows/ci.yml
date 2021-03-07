@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      SQLX_OFFLINE: true
+
+    steps:
+    - name: Install dependencies
+      run: sudo apt-get install libczmq-dev
+
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Checkout galos_db
+      env:
+        GALOS_DB_SSH_KEY: |
+          -----BEGIN OPENSSH PRIVATE KEY-----
+          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
+          -----END OPENSSH PRIVATE KEY-----
+      run: |
+        mkdir -p $HOME/.ssh
+        echo "$GALOS_DB_SSH_KEY" > $HOME/.ssh/galos_db
+        chmod 600 $HOME/.ssh/galos_db
+        export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/galos_db"
+        git submodule update --init -- galos_db
+
+    - name: Checkout galos_bot
+      env:
+        GALOS_BOT_SSH_KEY: |
+          -----BEGIN OPENSSH PRIVATE KEY-----
+          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
+          -----END OPENSSH PRIVATE KEY-----
+      run: |
+        mkdir -p $HOME/.ssh
+        echo "$GALOS_BOT_SSH_KEY" > $HOME/.ssh/galos_bot
+        chmod 600 $HOME/.ssh/galos_bot
+        export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/galos_bot"
+        git submodule update --init -- galos_bot
+
+    - name: Checkout all submodules
+      run: git submodule update --init --recursive
+
+    - name: Build
+      run: cargo build --all
+
+    - name: Run tests
+      run: cargo test --all
