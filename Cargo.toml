@@ -6,9 +6,9 @@ edition = "2018"
 
 # default-run = "galos"
 
-# [[bin]]
-# name = "galos"
-# path = "src/main.rs"
+[[bin]]
+name = "galos-sync"
+path = "src/bin/sync/main.rs"
 
 [dependencies]
 async-std = "*"

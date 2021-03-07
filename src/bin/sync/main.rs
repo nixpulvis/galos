@@ -1,6 +1,6 @@
 use structopt::StructOpt;
 use galos_db::{Error, Database};
-use crate::Run;
+use galos::Run;
 
 mod eddn;
 mod edsm;
