@@ -122,6 +122,15 @@ jobs:
     - name: Checkout all submodules
       run: git submodule update --init --recursive
 
+    - name: Cache build artifacts
+      uses: actions/cache@v2
+      with:
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+
     - name: Build
       run: cargo build --all
 

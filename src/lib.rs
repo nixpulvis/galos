@@ -20,7 +20,7 @@
 //! # `galos`
 //!
 //! To launch the interactive terminal application, simply run `galos`.
-//!
+//!```notrust
 //!     ----------------------------------------------------------------------------
 //!     | Current Location: Ngalinn, Fall Station                                  |
 //!     ----------------------------------------------------------------------------
@@ -41,8 +41,9 @@
 //!     ----------------------------------------------------------------------------
 //!     | Totals: Hyperspace 453Ly,                                                |
 //!     ----------------------------------------------------------------------------
+//!```
 //!
-//! ```
+//! ```notrust
 //! Usage: galos <command> ...
 //! ```
 //!
@@ -53,7 +54,7 @@
 //! selection of details for each object found.
 //!
 //! Examples (TODO):
-//! ```
+//! ```notrust
 //! $ galos search --count HD* sphere=500Ly
 //! $ galos search Meliae cube=40Ly factions={influence<7.5%}
 //! $ galos search --limit 50 --order factions.influence (HD*|HIP*) factions={influence<7.5%}
@@ -70,7 +71,7 @@
 //! - `A | B` specifies a path to either A or B
 //!
 //! Examples:
-//! ```
+//! ```notrust
 //! $ galos route Sol -> Alpha Centauri
 //!
 //! $ galos route Wolf 397 -> Sol + Meliae -> Nagalinn + Sol
@@ -94,10 +95,9 @@
 //! # `galos-gui`
 //! TODO
 
-use galos_db::{Error, Database};
+use galos_db::{Database, Error};
 
 pub trait Run {
     // TODO: Reture Error
     fn run(&self, db: &Database);
 }
-
