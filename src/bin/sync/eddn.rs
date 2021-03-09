@@ -1,6 +1,6 @@
 use async_std::task;
 use structopt::StructOpt;
-use elite_journal::Event;
+use elite_journal::entry::Event;
 use eddn::{URL, subscribe, Message};
 use galos_db::{Database, systems::System};
 use crate::Run;
