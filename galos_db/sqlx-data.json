@@ -1,0 +1,1042 @@
+{
+  "db": "PostgreSQL",
+  "13e7d9da55278048a486e755a4a57791b2d5747a41377c65539a7390a80d1282": {
+    "query": "\n            SELECT *\n            FROM factions\n            WHERE id = $1\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 1,
+          "name": "name",
+          "type_info": "Varchar"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Int4"
+        ]
+      },
+      "nullable": [
+        false,
+        false
+      ]
+    }
+  },
+  "21c84cc9c04461622b20a4dc8b812a44a98ead4703613739ebb1e02a461679ae": {
+    "query": "\n                INSERT INTO system_factions\n                    (system_address,\n                     faction_id,\n                     updated_at,\n                     state,\n                     influence,\n                     happiness,\n                     government,\n                     allegiance)\n                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n                ON CONFLICT (system_address, faction_id)\n                DO UPDATE SET\n                    updated_at = $3,\n                    state = $4,\n                    influence = $5,\n                    happiness = $6,\n                    government = $7,\n                    allegiance = $8\n                WHERE system_factions.updated_at < $3\n                ",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Int4",
+          "Timestamp",
+          {
+            "Custom": {
+              "name": "state",
+              "kind": {
+                "Enum": [
+                  "Blight",
+                  "Boom",
+                  "Bust",
+                  "CivilLiberty",
+                  "CivilUnrest",
+                  "CivilWar",
+                  "ColdWar",
+                  "Colonisation",
+                  "Drought",
+                  "Election",
+                  "Expansion",
+                  "Famine",
+                  "HistoricEvent",
+                  "InfrastructureFailure",
+                  "Investment",
+                  "Lockdown",
+                  "NaturalDisaster",
+                  "Outbreak",
+                  "PirateAttack",
+                  "PublicHoliday",
+                  "Retreat",
+                  "Revolution",
+                  "TechnologicalLeap",
+                  "Terrorism",
+                  "TradeWar",
+                  "War"
+                ]
+              }
+            }
+          },
+          "Float4",
+          {
+            "Custom": {
+              "name": "happiness",
+              "kind": {
+                "Enum": [
+                  "Elated",
+                  "Happy",
+                  "Discontented",
+                  "Unhappy",
+                  "Despondent"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "government",
+              "kind": {
+                "Enum": [
+                  "Anarchy",
+                  "Carrier",
+                  "Communism",
+                  "Confederacy",
+                  "Cooperative",
+                  "Corporate",
+                  "Democracy",
+                  "Dictatorship",
+                  "Engineer",
+                  "Feudal",
+                  "Patronage",
+                  "Prison",
+                  "PrisonColony",
+                  "Theocracy"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "allegiance",
+              "kind": {
+                "Enum": [
+                  "Alliance",
+                  "Empire",
+                  "Federation",
+                  "Guardian",
+                  "Independent",
+                  "PilotsFederation",
+                  "PlayerPilots",
+                  "Thargoid"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "nullable": []
+    }
+  },
+  "2eb6b8457a35b9ebf20c442b96f121427791ceb4b51ce5eccf9d047e7421a67c": {
+    "query": "\n            SELECT *\n            FROM articles\n            WHERE id = $1\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 1,
+          "name": "title",
+          "type_info": "Text"
+        },
+        {
+          "ordinal": 2,
+          "name": "date",
+          "type_info": "Date"
+        },
+        {
+          "ordinal": 3,
+          "name": "body",
+          "type_info": "Text"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Int4"
+        ]
+      },
+      "nullable": [
+        false,
+        true,
+        false,
+        false
+      ]
+    }
+  },
+  "334df9691fb53de236324dec9c2d8c2a55ac8b1fe6142e1fe4236d4a9e4cc10f": {
+    "query": "\n            SELECT *\n            FROM factions\n            WHERE lower(name) = $1\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 1,
+          "name": "name",
+          "type_info": "Varchar"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Text"
+        ]
+      },
+      "nullable": [
+        false,
+        false
+      ]
+    }
+  },
+  "35eb4467f2f1ae1993e7cca66b388b075a33a0e3d0ceb6d3b2df75c99a0ffaf3": {
+    "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: wkb::Decode<Coordinate>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\"\n            FROM systems\n            WHERE name = $1\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "address",
+          "type_info": "Int8"
+        },
+        {
+          "ordinal": 1,
+          "name": "name",
+          "type_info": "Varchar"
+        },
+        {
+          "ordinal": 2,
+          "name": "position!: wkb::Decode<Coordinate>",
+          "type_info": {
+            "Custom": {
+              "name": "geometry",
+              "kind": "Simple"
+            }
+          }
+        },
+        {
+          "ordinal": 3,
+          "name": "population",
+          "type_info": "Int8"
+        },
+        {
+          "ordinal": 4,
+          "name": "security: Security",
+          "type_info": {
+            "Custom": {
+              "name": "security",
+              "kind": {
+                "Enum": [
+                  "Low",
+                  "Medium",
+                  "High"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 5,
+          "name": "government: Government",
+          "type_info": {
+            "Custom": {
+              "name": "government",
+              "kind": {
+                "Enum": [
+                  "Anarchy",
+                  "Carrier",
+                  "Communism",
+                  "Confederacy",
+                  "Cooperative",
+                  "Corporate",
+                  "Democracy",
+                  "Dictatorship",
+                  "Engineer",
+                  "Feudal",
+                  "Patronage",
+                  "Prison",
+                  "PrisonColony",
+                  "Theocracy"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 6,
+          "name": "allegiance: Allegiance",
+          "type_info": {
+            "Custom": {
+              "name": "allegiance",
+              "kind": {
+                "Enum": [
+                  "Alliance",
+                  "Empire",
+                  "Federation",
+                  "Guardian",
+                  "Independent",
+                  "PilotsFederation",
+                  "PlayerPilots",
+                  "Thargoid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 7,
+          "name": "primary_economy: Economy",
+          "type_info": {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 8,
+          "name": "secondary_economy: Economy",
+          "type_info": {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Text"
+        ]
+      },
+      "nullable": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    }
+  },
+  "41382b1d85995420b3124e844d7934686360f97b380af6082bc080d833904387": {
+    "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: wkb::Decode<Coordinate>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\"\n            FROM systems\n            WHERE address = $1\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "address",
+          "type_info": "Int8"
+        },
+        {
+          "ordinal": 1,
+          "name": "name",
+          "type_info": "Varchar"
+        },
+        {
+          "ordinal": 2,
+          "name": "position!: wkb::Decode<Coordinate>",
+          "type_info": {
+            "Custom": {
+              "name": "geometry",
+              "kind": "Simple"
+            }
+          }
+        },
+        {
+          "ordinal": 3,
+          "name": "population",
+          "type_info": "Int8"
+        },
+        {
+          "ordinal": 4,
+          "name": "security: Security",
+          "type_info": {
+            "Custom": {
+              "name": "security",
+              "kind": {
+                "Enum": [
+                  "Low",
+                  "Medium",
+                  "High"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 5,
+          "name": "government: Government",
+          "type_info": {
+            "Custom": {
+              "name": "government",
+              "kind": {
+                "Enum": [
+                  "Anarchy",
+                  "Carrier",
+                  "Communism",
+                  "Confederacy",
+                  "Cooperative",
+                  "Corporate",
+                  "Democracy",
+                  "Dictatorship",
+                  "Engineer",
+                  "Feudal",
+                  "Patronage",
+                  "Prison",
+                  "PrisonColony",
+                  "Theocracy"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 6,
+          "name": "allegiance: Allegiance",
+          "type_info": {
+            "Custom": {
+              "name": "allegiance",
+              "kind": {
+                "Enum": [
+                  "Alliance",
+                  "Empire",
+                  "Federation",
+                  "Guardian",
+                  "Independent",
+                  "PilotsFederation",
+                  "PlayerPilots",
+                  "Thargoid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 7,
+          "name": "primary_economy: Economy",
+          "type_info": {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 8,
+          "name": "secondary_economy: Economy",
+          "type_info": {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Int8"
+        ]
+      },
+      "nullable": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    }
+  },
+  "4f0e76dd8486e45d54df3456e2b4b4c7a15b49e662191a73c53632051c73486a": {
+    "query": "\n            SELECT *\n            FROM articles\n            WHERE date BETWEEN $1 AND $2\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 1,
+          "name": "title",
+          "type_info": "Text"
+        },
+        {
+          "ordinal": 2,
+          "name": "date",
+          "type_info": "Date"
+        },
+        {
+          "ordinal": 3,
+          "name": "body",
+          "type_info": "Text"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Date",
+          "Date"
+        ]
+      },
+      "nullable": [
+        false,
+        true,
+        false,
+        false
+      ]
+    }
+  },
+  "6d4822c76661120bc346b0d7194115eb755e63a6772b57bf7cc38f3aa17bebed": {
+    "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at)\n            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                population = $4,\n                security = $5,\n                government = $6,\n                allegiance = $7,\n                primary_economy = $8,\n                secondary_economy = $9\n            WHERE systems.updated_at < $10\n            ",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Text",
+          {
+            "Custom": {
+              "name": "geometry",
+              "kind": "Simple"
+            }
+          },
+          "Int8",
+          {
+            "Custom": {
+              "name": "security",
+              "kind": {
+                "Enum": [
+                  "Low",
+                  "Medium",
+                  "High"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "government",
+              "kind": {
+                "Enum": [
+                  "Anarchy",
+                  "Carrier",
+                  "Communism",
+                  "Confederacy",
+                  "Cooperative",
+                  "Corporate",
+                  "Democracy",
+                  "Dictatorship",
+                  "Engineer",
+                  "Feudal",
+                  "Patronage",
+                  "Prison",
+                  "PrisonColony",
+                  "Theocracy"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "allegiance",
+              "kind": {
+                "Enum": [
+                  "Alliance",
+                  "Empire",
+                  "Federation",
+                  "Guardian",
+                  "Independent",
+                  "PilotsFederation",
+                  "PlayerPilots",
+                  "Thargoid"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          },
+          "Timestamp"
+        ]
+      },
+      "nullable": []
+    }
+  },
+  "87c86a8b8b99934521f4338411ac06acbaaf5e62ae113c18317b97ebb03e61ac": {
+    "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at)\n            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                population = $4,\n                security = $5,\n                government = $6,\n                allegiance = $7,\n                primary_economy = $8,\n                secondary_economy = $9\n            ",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Text",
+          {
+            "Custom": {
+              "name": "geometry",
+              "kind": "Simple"
+            }
+          },
+          "Int8",
+          {
+            "Custom": {
+              "name": "security",
+              "kind": {
+                "Enum": [
+                  "Low",
+                  "Medium",
+                  "High"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "government",
+              "kind": {
+                "Enum": [
+                  "Anarchy",
+                  "Carrier",
+                  "Communism",
+                  "Confederacy",
+                  "Cooperative",
+                  "Corporate",
+                  "Democracy",
+                  "Dictatorship",
+                  "Engineer",
+                  "Feudal",
+                  "Patronage",
+                  "Prison",
+                  "PrisonColony",
+                  "Theocracy"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "allegiance",
+              "kind": {
+                "Enum": [
+                  "Alliance",
+                  "Empire",
+                  "Federation",
+                  "Guardian",
+                  "Independent",
+                  "PilotsFederation",
+                  "PlayerPilots",
+                  "Thargoid"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "economy",
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              }
+            }
+          },
+          "Timestamp"
+        ]
+      },
+      "nullable": []
+    }
+  },
+  "a02c92cd2509c8e8f18d8f8feb273d16d9d1edb435bf0a0d13997e2a4501abcd": {
+    "query": "\n            DELETE FROM articles\n            WHERE id = $1\n            ",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Left": [
+          "Int4"
+        ]
+      },
+      "nullable": []
+    }
+  },
+  "ba12be810dec9a6e8bec4d65fd17dd6b24a23189741145132f6388775fa3b869": {
+    "query": "\n            INSERT INTO factions (name)\n            VALUES ($1)\n            ON CONFLICT (lower(name))\n            DO UPDATE\n                SET name = factions.name\n            RETURNING *\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 1,
+          "name": "name",
+          "type_info": "Varchar"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Varchar"
+        ]
+      },
+      "nullable": [
+        false,
+        false
+      ]
+    }
+  },
+  "ba8b442f85af1ccf3c60a7e68fce6ace96bbeecb8fd0008b356f77c94245a60b": {
+    "query": "\n            INSERT INTO conflicts (\n                system_address,\n                type,\n                status,\n                faction_1_id,\n                faction_1_stake,\n                faction_1_won_days,\n                faction_2_id,\n                faction_2_stake,\n                faction_2_won_days,\n                updated_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ON CONFLICT (system_address, faction_1_id, faction_2_id)\n            DO UPDATE SET\n                type = $2,\n                status = $3,\n                faction_1_stake = $5,\n                faction_1_won_days = $6,\n                faction_2_stake = $8,\n                faction_2_won_days = $9,\n                updated_at = $10\n            RETURNING\n                system_address,\n                type AS \"ty: FactionConflictType\",\n                status AS \"status: Status\",\n                faction_1_id,\n                faction_1_stake,\n                faction_1_won_days,\n                faction_2_id,\n                faction_2_stake,\n                faction_2_won_days,\n                updated_at\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "system_address",
+          "type_info": "Int8"
+        },
+        {
+          "ordinal": 1,
+          "name": "ty: FactionConflictType",
+          "type_info": {
+            "Custom": {
+              "name": "conflict",
+              "kind": {
+                "Enum": [
+                  "War",
+                  "CivilWar",
+                  "Election"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 2,
+          "name": "status: Status",
+          "type_info": {
+            "Custom": {
+              "name": "status",
+              "kind": {
+                "Enum": [
+                  "Active",
+                  "Pending",
+                  "Recovering"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 3,
+          "name": "faction_1_id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 4,
+          "name": "faction_1_stake",
+          "type_info": "Varchar"
+        },
+        {
+          "ordinal": 5,
+          "name": "faction_1_won_days",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 6,
+          "name": "faction_2_id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 7,
+          "name": "faction_2_stake",
+          "type_info": "Varchar"
+        },
+        {
+          "ordinal": 8,
+          "name": "faction_2_won_days",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 9,
+          "name": "updated_at",
+          "type_info": "Timestamp"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Int8",
+          {
+            "Custom": {
+              "name": "conflict",
+              "kind": {
+                "Enum": [
+                  "War",
+                  "CivilWar",
+                  "Election"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "status",
+              "kind": {
+                "Enum": [
+                  "Active",
+                  "Pending",
+                  "Recovering"
+                ]
+              }
+            }
+          },
+          "Int4",
+          "Varchar",
+          "Int4",
+          "Int4",
+          "Varchar",
+          "Int4",
+          "Timestamp"
+        ]
+      },
+      "nullable": [
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false
+      ]
+    }
+  },
+  "e8c132eb9239d3c0ebcf3ec3e4e17ba36c00b46daa8c97c202e5099ec6173224": {
+    "query": "\n            INSERT INTO articles (title, date, body)\n            VALUES ($1, $2, $3)\n            RETURNING *\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 1,
+          "name": "title",
+          "type_info": "Text"
+        },
+        {
+          "ordinal": 2,
+          "name": "date",
+          "type_info": "Date"
+        },
+        {
+          "ordinal": 3,
+          "name": "body",
+          "type_info": "Text"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Text",
+          "Date",
+          "Text"
+        ]
+      },
+      "nullable": [
+        false,
+        true,
+        false,
+        false
+      ]
+    }
+  },
+  "fe0ee08a0b3b6fe14c01161834d96f6e46f8f824984bbcbcae16c212cd35f575": {
+    "query": "\n            SELECT *\n            FROM articles\n            LIMIT $1 OFFSET $2\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 1,
+          "name": "title",
+          "type_info": "Text"
+        },
+        {
+          "ordinal": 2,
+          "name": "date",
+          "type_info": "Date"
+        },
+        {
+          "ordinal": 3,
+          "name": "body",
+          "type_info": "Text"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Int8"
+        ]
+      },
+      "nullable": [
+        false,
+        true,
+        false,
+        false
+      ]
+    }
+  }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "galos_db"
+version = "0.0.0-dev+initial"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2018"
+
+[dependencies]
+# futures = "*"
+async-std = { version = "*", features = [ "attributes" ] }
+dotenv = "*"
+chrono = "*"
+indicatif = "*"
+
+[dependencies.sqlx]
+version = "*"
+features = ["runtime-async-std-native-tls", "postgres", "chrono", "offline"]
+
+[dependencies.geozero]
+git = "https://github.com/georust/geozero"
+branch = "master"
+features = ["with-wkb"]
+
+[dependencies.elite_journal]
+git = "https://github.com/ED-NEWP/elite_journal"
+features = ["with-postgis-sqlx"]
