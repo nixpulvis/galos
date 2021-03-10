@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use elite_journal::prelude::*;
+use elite_journal::{prelude::*, faction::State as JournalState};
 use crate::{Error, Database};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +54,79 @@ impl Faction {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct SystemFaction {
+    system_address: u64,
+    faction_id: u32,
+    state: Option<JournalState>,
+    influence: f32,
+    happiness: Option<Happiness>,
+    updated_at: DateTime<Utc>,
+}
+
+impl SystemFaction {
+    pub async fn from_journal(
+        db: &Database,
+        system_address: u64,
+        faction_id: u32,
+        faction_info: &FactionInfo,
+        timestamp: DateTime<Utc>)
+        -> Result<Option<Self>, Error>
+    {
+        let row = sqlx::query!(
+            r#"
+            INSERT INTO system_factions
+                (system_address,
+                 faction_id,
+                 state,
+                 influence,
+                 happiness,
+                 government,
+                 allegiance,
+                 updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (system_address, faction_id)
+            DO UPDATE SET
+                state = $3,
+                influence = $4,
+                happiness = $5,
+                government = $6,
+                allegiance = $7,
+                updated_at = $8
+            WHERE system_factions.updated_at < $8
+            RETURNING
+                system_address,
+                faction_id,
+                state AS "state: JournalState",
+                influence,
+                happiness "happiness: Happiness",
+                updated_at
+            "#,
+                system_address as i64,
+                faction_id as i32,
+                faction_info.state as _,
+                faction_info.influence,
+                faction_info.happiness as _,
+                faction_info.government as _,
+                faction_info.allegiance as _,
+                timestamp.naive_utc())
+            .fetch_optional(&db.pool)
+            .await?;
+
+        Ok(row.map(|r| {
+            SystemFaction {
+                system_address: r.system_address as u64,
+                faction_id: r.faction_id as u32,
+                state: r.state,
+                influence: r.influence,
+                happiness: r.happiness,
+                updated_at: DateTime::<Utc>::from_utc(r.updated_at, Utc),
+            }
+        }))
+    }
+}
+
+
+#[derive(Debug, PartialEq)]
 pub struct Conflict {
     system_address: u64,
     ty: FactionConflictType,
@@ -70,8 +143,8 @@ pub struct Conflict {
 impl Conflict {
     pub async fn from_journal(
         db: &Database,
-        conflict: &FactionConflict,
         system_address: u64,
+        conflict: &FactionConflict,
         timestamp: DateTime<Utc>)
         -> Result<Self, Error>
     {
