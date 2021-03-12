@@ -1,6 +1,6 @@
 [package]
 name    = "galos"
-version = "0.0.0-dev+initial"
+version = "0.0.1-dev+alpha"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
