@@ -95,7 +95,7 @@
 //! # `galos-gui`
 //! TODO
 
-use galos_db::{Database, Error};
+use galos_db::Database;
 
 pub trait Run {
     // TODO: Reture Error

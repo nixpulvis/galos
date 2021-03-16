@@ -4,11 +4,11 @@ version = "0.0.1-dev+alpha"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
-# default-run = "galos"
+default-run = "galos"
 
 [[bin]]
 name = "galos-sync"
-path = "src/bin/sync/main.rs"
+path = "src/bin/galos-sync/main.rs"
 
 [dependencies]
 async-std = "*"
