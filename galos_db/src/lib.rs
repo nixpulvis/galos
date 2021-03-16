@@ -1,18 +1,3 @@
-//! # Database Setup
-//!
-//! ```sh
-//! cargo install sqlx-cli
-//! sqlx database create
-//! sqlx migrate run
-//! ```
-//!
-//! # Database Backup and Restore
-//!
-//! ```sh
-//! pg_dump -Fc $database > $database.dump
-//! sqlx database create
-//! pg_restore -d $database < $database.dump
-//! ```
 #![feature(crate_visibility_modifier)]
 use std::env;
 use sqlx::postgres::{PgPool, PgPoolOptions};
