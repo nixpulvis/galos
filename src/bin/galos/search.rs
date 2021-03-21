@@ -30,15 +30,15 @@ impl Run for Cli {
 
         task::block_on(async {
             if let Some(radius) = self.radius {
-                let systems = System::fetch_in_range_by_name(db, radius, &self.query).await.unwrap();
+                let systems = System::fetch_in_range_like_name(db, radius, &self.query).await.unwrap();
                 if self.count {
                     dbg!(systems.len());
                 } else {
                     dbg!(systems);
                 }
             } else {
-                let system = System::fetch_by_name(db, &self.query).await.unwrap();
-                dbg!(system);
+                let systems = System::fetch_like_name(db, &self.query).await.unwrap();
+                dbg!(systems);
             }
         });
     }
