@@ -1,5 +1,6 @@
+use async_std::task;
 use structopt::StructOpt;
-use galos_db::Database;
+use galos_db::{Database, systems::System};
 use galos::Run;
 
 #[derive(StructOpt, Debug)]
@@ -21,8 +22,12 @@ pub struct Cli {
 }
 
 impl Run for Cli {
-    fn run(&self, _db: &Database) {
+    fn run(&self, db: &Database) {
         dbg!(self);
-        unimplemented!();
+
+        task::block_on(async {
+            let system = System::fetch_by_name(db, &self.query).await.unwrap();
+            dbg!(system);
+        });
     }
 }
