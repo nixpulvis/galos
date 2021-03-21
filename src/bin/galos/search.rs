@@ -8,11 +8,14 @@ pub struct Cli {
     #[structopt(name = "QUERY")]
     query: String,
 
-    #[structopt(short = "d", long = "cube")]
-    diameter: Option<f32>,
+    #[structopt(short = "d", long = "diameter")]
+    diameter: Option<f64>,
 
-    #[structopt(short = "r", long = "sphere")]
-    radius: Option<f32>,
+    #[structopt(short = "r", long = "radius")]
+    radius: Option<f64>,
+
+    #[structopt(short = "c", long = "count")]
+    count: bool,
 
     // #[structopt(short = "f", long = "filter", parse(from_filter_string))]
     // filters: Vec<String>,
@@ -26,8 +29,17 @@ impl Run for Cli {
         dbg!(self);
 
         task::block_on(async {
-            let system = System::fetch_by_name(db, &self.query).await.unwrap();
-            dbg!(system);
+            if let Some(radius) = self.radius {
+                let systems = System::fetch_in_range_by_name(db, radius, &self.query).await.unwrap();
+                if self.count {
+                    dbg!(systems.len());
+                } else {
+                    dbg!(systems);
+                }
+            } else {
+                let system = System::fetch_by_name(db, &self.query).await.unwrap();
+                dbg!(system);
+            }
         });
     }
 }
