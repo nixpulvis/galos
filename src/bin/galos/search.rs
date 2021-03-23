@@ -27,15 +27,15 @@ pub struct Cli {
 impl Run for Cli {
     fn run(&self, db: &Database) {
         task::block_on(async {
-            if let Some(radius) = self.radius {
-                let systems = System::fetch_in_range_like_name(db, radius, &self.query).await.unwrap();
-                if self.count {
-                    println!("{} systems within {}Ly of {}", systems.len(), radius, &self.query);
-                } else {
-                    for system in systems { print_system(&system) }
-                }
+            let systems = if let Some(radius) = self.radius {
+                System::fetch_in_range_like_name(db, radius, &self.query).await.unwrap()
             } else {
-                let systems = System::fetch_like_name(db, &self.query).await.unwrap();
+                System::fetch_like_name(db, &self.query).await.unwrap()
+            };
+
+            if self.count {
+                println!("{} systems found.", systems.len());
+            } else {
                 for system in systems { print_system(&system) }
             }
         });
