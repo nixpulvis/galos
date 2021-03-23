@@ -1,0 +1,15 @@
+runs:
+  using: "composite"
+  steps:
+    - name: Update apt
+      shell: bash
+      run: sudo apt-get update -y
+
+    - name: Install dependencies
+      shell: bash
+      run: sudo apt-get install libczmq-dev -y
+
+    - name: Checkout all submodules
+      shell: bash
+      run: git submodule update --init --recursive
+
