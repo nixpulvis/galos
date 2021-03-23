@@ -21,7 +21,7 @@ impl Run for Cli {
             .progress_chars("##-"));
         for entry in bar.wrap_iter(entries.into_iter()) {
             task::block_on(async {
-                if let Some(system) = match entry.event {
+                let option = match entry.event {
                     Event::Location(e) => {
                         Some(e.system)
                     },
@@ -29,7 +29,9 @@ impl Run for Cli {
                         Some(e.system)
                     },
                     _ => None,
-                } {
+                };
+
+                if let Some(system) = option {
                     let result = System::from_journal(db, &system, entry.timestamp).await;
                     match result {
                         Ok(_) => bar.set_message(&format!("[{}] {}", entry.timestamp, system.name)),
