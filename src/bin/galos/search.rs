@@ -26,20 +26,43 @@ pub struct Cli {
 
 impl Run for Cli {
     fn run(&self, db: &Database) {
-        dbg!(self);
-
         task::block_on(async {
             if let Some(radius) = self.radius {
                 let systems = System::fetch_in_range_like_name(db, radius, &self.query).await.unwrap();
                 if self.count {
-                    dbg!(systems.len());
+                    println!("{} systems within {}Ly of {}", systems.len(), radius, &self.query);
                 } else {
-                    dbg!(systems);
+                    for system in systems { print_system(&system) }
                 }
             } else {
                 let systems = System::fetch_like_name(db, &self.query).await.unwrap();
-                dbg!(systems);
+                for system in systems { print_system(&system) }
             }
         });
+    }
+}
+
+fn print_system(system: &System) {
+    println!("{}: ({}, {}, {})",
+        system.name,
+        system.position.x, system.position.y, system.position.z);
+    if system.population > 0 {
+        println!("\tpopulation: {}", system.population);
+    }
+    if let Some(security) = system.security {
+        println!("\tsecurity: {:?}", security);
+    }
+    if let Some(government) = system.government {
+        println!("\tgovernment: {:?}", government);
+    }
+    if let Some(allegiance) = system.allegiance {
+        println!("\tallegiance: {:?}", allegiance);
+    }
+    if let Some(primary_economy) = system.primary_economy {
+        print!("\teconomy: {:?}", primary_economy);
+        if let Some(secondary_economy) = system.secondary_economy {
+            print!("/{:?}", secondary_economy);
+        }
+        println!("");
     }
 }

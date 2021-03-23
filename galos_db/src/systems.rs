@@ -250,6 +250,7 @@ impl System {
             FROM systems s1
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name = $1
+            ORDER BY ST_3DDistance(s1.position, s2.position)
             "#, name.to_uppercase(), range)
             .fetch_all(&db.pool)
             .await?;
@@ -285,6 +286,7 @@ impl System {
             FROM systems s1
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name ILIKE $1
+            ORDER BY ST_3DDistance(s1.position, s2.position)
             "#, name, range)
             .fetch_all(&db.pool)
             .await?;
