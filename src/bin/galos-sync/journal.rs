@@ -49,5 +49,6 @@ impl Run for Cli {
                 }
             });
         }
+        bar.finish();
     }
 }

@@ -33,7 +33,6 @@ impl Run for Cli {
 #[async_std::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::from_args();
-    println!("{:?}", cli);
     let db = Database::new().await?;
     cli.run(&db);
 
