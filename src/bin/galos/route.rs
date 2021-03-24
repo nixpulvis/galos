@@ -2,6 +2,7 @@ use async_std::task;
 use itertools::Itertools;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
+use prettytable::{format, Table};
 use galos_db::{Database, systems::System};
 use galos::Run;
 
@@ -16,21 +17,7 @@ pub struct Cli {
 impl Run for Cli {
     fn run(&self, db: &Database) {
         let spinner = ProgressBar::new_spinner();
-        spinner.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&[
-                    ">>>>>>",
-                    "->>>>>",
-                    ">->>>>",
-                    ">>->>>",
-                    ">>>->>",
-                    ">>>>->",
-                    ">>>>>-",
-                    "-----",
-                ])
-                .template("{spinner:.yellow} {msg}"),
-        );
-        spinner.enable_steady_tick(250);
+        spinner.enable_steady_tick(100);
         spinner.set_message("Finding systems...");
         let (start, end) = task::block_on(async {
             let start = System::fetch_by_name(db, &self.start).await.unwrap();
@@ -40,16 +27,48 @@ impl Run for Cli {
         spinner.finish_with_message("Input systems found, finding route...");
 
         spinner.reset();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&[
+                    ">>>>>>>>>>>>>>>>",
+                    "->>>>>>>>>>>>>>>",
+                    ">->>>>>>>>>>>>>>",
+                    ">>->>>>>>>>>>>>>",
+                    ">>>->>>>>>>>>>>>",
+                    ">>>>->>>>>>>>>>>",
+                    ">>>>>->>>>>>>>>>",
+                    ">>>>>>->>>>>>>>>",
+                    ">>>>>>>->>>>>>>>",
+                    ">>>>>>>>->>>>>>>",
+                    ">>>>>>>>>->>>>>>",
+                    ">>>>>>>>>>->>>>>",
+                    ">>>>>>>>>>>->>>>",
+                    ">>>>>>>>>>>>->>>",
+                    ">>>>>>>>>>>>>->>",
+                    ">>>>>>>>>>>>>>->",
+                    ">>>>>>>>>>>>>>>-",
+                    "----------------",
+                ])
+                .template("{spinner:.yellow} {msg}"),
+        );
+        spinner.enable_steady_tick(250);
+
+        let mut table = Table::new();
+        table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
+        table.set_titles(row!["Origin", "Destination", "Distance"]);
         let (route, cost) = start.route_to(db, &end, self.range).unwrap().unwrap();
         spinner.finish_and_clear();
-        let mut last = &route[0];
+        let mut gross = 0.0;
         for (a, b) in route[..].into_iter().tuple_windows() {
-            println!("{}", a.name);
-            println!("-> {} Ly", a.distance(&b));
-            last = b;
+            let d = a.distance(&b);
+            table.add_row(row![a.name, b.name, format!("{:.2} Ly", d)]);
+            gross += d;
         }
-        println!("{}", last.name);
-        println!("total jumps ({})", cost);
+        table.printstd();
+        println!("jumps: {:.2}, path: {:.2} Ly, distance: {:.2} Ly",
+            cost,
+            gross,
+            route[0].distance(&route.last().expect("valid route")));
     }
 }
 

@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate prettytable;
+
 use structopt::StructOpt;
 use galos_db::{Error, Database};
 use galos::Run;
