@@ -17,14 +17,11 @@ jobs:
       SQLX_OFFLINE: true
 
     steps:
-    - name: Install dependencies
-      run: sudo apt-get install libczmq-dev
-
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Checkout all submodules
-      run: git submodule update --init --recursive
+    - name: 'Setup operating system'
+      uses: ./.github/workflows
 
     - name: Cache build artifacts
       uses: actions/cache@v2
