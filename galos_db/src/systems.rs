@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use geozero::wkb;
 use elite_journal::{prelude::*, system::System as JournalSystem};
 use crate::{Error, Database};
-use crate::factions::{Faction, Conflict};
+use crate::factions::{Faction, SystemFaction, Conflict};
 
 #[derive(Debug, PartialEq)]
 pub struct System {
@@ -122,44 +122,14 @@ impl System {
             .await?;
 
         for faction in &system.factions {
-            let id = Faction::create(db, &faction.name).await?.id;
-
-            sqlx::query!(
-                "
-                INSERT INTO system_factions
-                    (system_address,
-                     faction_id,
-                     updated_at,
-                     state,
-                     influence,
-                     happiness,
-                     government,
-                     allegiance)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (system_address, faction_id)
-                DO UPDATE SET
-                    updated_at = $3,
-                    state = $4,
-                    influence = $5,
-                    happiness = $6,
-                    government = $7,
-                    allegiance = $8
-                WHERE system_factions.updated_at < $3
-                ",
-                    system.address as i64,
-                    id,
-                    timestamp.naive_utc(),
-                    faction.state as _,
-                    faction.influence,
-                    faction.happiness as _,
-                    faction.government as _,
-                    faction.allegiance as _)
-                .execute(&db.pool)
-                .await?;
+            let faction_id = Faction::create(db, &faction.name).await?.id;
+            SystemFaction::from_journal(db,
+                system.address, faction_id as u32, &faction, timestamp).await?;
         }
 
         for conflict in &system.conflicts {
-            Conflict::from_journal(db, &conflict, system.address, timestamp).await?;
+            Conflict::from_journal(db,
+                system.address, &conflict, timestamp).await?;
         }
 
         Ok(())

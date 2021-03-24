@@ -26,110 +26,6 @@
       ]
     }
   },
-  "21c84cc9c04461622b20a4dc8b812a44a98ead4703613739ebb1e02a461679ae": {
-    "query": "\n                INSERT INTO system_factions\n                    (system_address,\n                     faction_id,\n                     updated_at,\n                     state,\n                     influence,\n                     happiness,\n                     government,\n                     allegiance)\n                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n                ON CONFLICT (system_address, faction_id)\n                DO UPDATE SET\n                    updated_at = $3,\n                    state = $4,\n                    influence = $5,\n                    happiness = $6,\n                    government = $7,\n                    allegiance = $8\n                WHERE system_factions.updated_at < $3\n                ",
-    "describe": {
-      "columns": [],
-      "parameters": {
-        "Left": [
-          "Int8",
-          "Int4",
-          "Timestamp",
-          {
-            "Custom": {
-              "name": "state",
-              "kind": {
-                "Enum": [
-                  "Blight",
-                  "Boom",
-                  "Bust",
-                  "CivilLiberty",
-                  "CivilUnrest",
-                  "CivilWar",
-                  "ColdWar",
-                  "Colonisation",
-                  "Drought",
-                  "Election",
-                  "Expansion",
-                  "Famine",
-                  "HistoricEvent",
-                  "InfrastructureFailure",
-                  "Investment",
-                  "Lockdown",
-                  "NaturalDisaster",
-                  "Outbreak",
-                  "PirateAttack",
-                  "PublicHoliday",
-                  "Retreat",
-                  "Revolution",
-                  "TechnologicalLeap",
-                  "Terrorism",
-                  "TradeWar",
-                  "War"
-                ]
-              }
-            }
-          },
-          "Float4",
-          {
-            "Custom": {
-              "name": "happiness",
-              "kind": {
-                "Enum": [
-                  "Elated",
-                  "Happy",
-                  "Discontented",
-                  "Unhappy",
-                  "Despondent"
-                ]
-              }
-            }
-          },
-          {
-            "Custom": {
-              "name": "government",
-              "kind": {
-                "Enum": [
-                  "Anarchy",
-                  "Carrier",
-                  "Communism",
-                  "Confederacy",
-                  "Cooperative",
-                  "Corporate",
-                  "Democracy",
-                  "Dictatorship",
-                  "Engineer",
-                  "Feudal",
-                  "Patronage",
-                  "Prison",
-                  "PrisonColony",
-                  "Theocracy"
-                ]
-              }
-            }
-          },
-          {
-            "Custom": {
-              "name": "allegiance",
-              "kind": {
-                "Enum": [
-                  "Alliance",
-                  "Empire",
-                  "Federation",
-                  "Guardian",
-                  "Independent",
-                  "PilotsFederation",
-                  "PlayerPilots",
-                  "Thargoid"
-                ]
-              }
-            }
-          }
-        ]
-      },
-      "nullable": []
-    }
-  },
   "2eb6b8457a35b9ebf20c442b96f121427791ceb4b51ce5eccf9d047e7421a67c": {
     "query": "\n            SELECT *\n            FROM articles\n            WHERE id = $1\n            ",
     "describe": {
@@ -522,6 +418,208 @@
       ]
     }
   },
+  "4bfbbaa4335b32023520efb8f6589f7461af30fc5c1ced0883b75aa0d7968d9c": {
+    "query": "\n            DELETE FROM system_faction_states\n            WHERE system_address = $1 AND faction_id = $2\n            ",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Int4"
+        ]
+      },
+      "nullable": []
+    }
+  },
+  "4c2cd24e2d973db4371e811528886684e1952a6cc992be3c39d572eb5373c622": {
+    "query": "\n            INSERT INTO system_factions\n                (system_address,\n                 faction_id,\n                 state,\n                 influence,\n                 happiness,\n                 government,\n                 allegiance,\n                 updated_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n            ON CONFLICT (system_address, faction_id)\n            DO UPDATE SET\n                state = $3,\n                influence = $4,\n                happiness = $5,\n                government = $6,\n                allegiance = $7,\n                updated_at = $8\n            WHERE system_factions.updated_at < $8\n            RETURNING\n                system_address,\n                faction_id,\n                state AS \"state: JournalState\",\n                influence,\n                happiness \"happiness: Happiness\",\n                updated_at\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "system_address",
+          "type_info": "Int8"
+        },
+        {
+          "ordinal": 1,
+          "name": "faction_id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 2,
+          "name": "state: JournalState",
+          "type_info": {
+            "Custom": {
+              "name": "state",
+              "kind": {
+                "Enum": [
+                  "Blight",
+                  "Boom",
+                  "Bust",
+                  "CivilLiberty",
+                  "CivilUnrest",
+                  "CivilWar",
+                  "ColdWar",
+                  "Colonisation",
+                  "Drought",
+                  "Election",
+                  "Expansion",
+                  "Famine",
+                  "HistoricEvent",
+                  "InfrastructureFailure",
+                  "Investment",
+                  "Lockdown",
+                  "NaturalDisaster",
+                  "Outbreak",
+                  "PirateAttack",
+                  "PublicHoliday",
+                  "Retreat",
+                  "Revolution",
+                  "TechnologicalLeap",
+                  "Terrorism",
+                  "TradeWar",
+                  "War"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 3,
+          "name": "influence",
+          "type_info": "Float4"
+        },
+        {
+          "ordinal": 4,
+          "name": "happiness: Happiness",
+          "type_info": {
+            "Custom": {
+              "name": "happiness",
+              "kind": {
+                "Enum": [
+                  "Elated",
+                  "Happy",
+                  "Discontented",
+                  "Unhappy",
+                  "Despondent"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 5,
+          "name": "updated_at",
+          "type_info": "Timestamp"
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Int4",
+          {
+            "Custom": {
+              "name": "state",
+              "kind": {
+                "Enum": [
+                  "Blight",
+                  "Boom",
+                  "Bust",
+                  "CivilLiberty",
+                  "CivilUnrest",
+                  "CivilWar",
+                  "ColdWar",
+                  "Colonisation",
+                  "Drought",
+                  "Election",
+                  "Expansion",
+                  "Famine",
+                  "HistoricEvent",
+                  "InfrastructureFailure",
+                  "Investment",
+                  "Lockdown",
+                  "NaturalDisaster",
+                  "Outbreak",
+                  "PirateAttack",
+                  "PublicHoliday",
+                  "Retreat",
+                  "Revolution",
+                  "TechnologicalLeap",
+                  "Terrorism",
+                  "TradeWar",
+                  "War"
+                ]
+              }
+            }
+          },
+          "Float4",
+          {
+            "Custom": {
+              "name": "happiness",
+              "kind": {
+                "Enum": [
+                  "Elated",
+                  "Happy",
+                  "Discontented",
+                  "Unhappy",
+                  "Despondent"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "government",
+              "kind": {
+                "Enum": [
+                  "Anarchy",
+                  "Carrier",
+                  "Communism",
+                  "Confederacy",
+                  "Cooperative",
+                  "Corporate",
+                  "Democracy",
+                  "Dictatorship",
+                  "Engineer",
+                  "Feudal",
+                  "Patronage",
+                  "Prison",
+                  "PrisonColony",
+                  "Theocracy"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "allegiance",
+              "kind": {
+                "Enum": [
+                  "Alliance",
+                  "Empire",
+                  "Federation",
+                  "Guardian",
+                  "Independent",
+                  "PilotsFederation",
+                  "PlayerPilots",
+                  "Thargoid"
+                ]
+              }
+            }
+          },
+          "Timestamp"
+        ]
+      },
+      "nullable": [
+        false,
+        false,
+        true,
+        false,
+        true,
+        false
+      ]
+    }
+  },
   "4f0e76dd8486e45d54df3456e2b4b4c7a15b49e662191a73c53632051c73486a": {
     "query": "\n            SELECT *\n            FROM articles\n            WHERE date BETWEEN $1 AND $2\n            ",
     "describe": {
@@ -676,6 +774,137 @@
         ]
       },
       "nullable": []
+    }
+  },
+  "8560b3bc0c295e1e399cf5e1f08f5b231f6ef0b38032c8c4fd5e3bd7d25b44a4": {
+    "query": "\n            INSERT INTO system_faction_states\n                (system_address,\n                 faction_id,\n                 state,\n                 status)\n            VALUES ($1, $2, $3, $4)\n            RETURNING\n                system_address,\n                faction_id,\n                state AS \"state: JournalState\",\n                status AS \"status: Status\"\n            ",
+    "describe": {
+      "columns": [
+        {
+          "ordinal": 0,
+          "name": "system_address",
+          "type_info": "Int8"
+        },
+        {
+          "ordinal": 1,
+          "name": "faction_id",
+          "type_info": "Int4"
+        },
+        {
+          "ordinal": 2,
+          "name": "state: JournalState",
+          "type_info": {
+            "Custom": {
+              "name": "state",
+              "kind": {
+                "Enum": [
+                  "Blight",
+                  "Boom",
+                  "Bust",
+                  "CivilLiberty",
+                  "CivilUnrest",
+                  "CivilWar",
+                  "ColdWar",
+                  "Colonisation",
+                  "Drought",
+                  "Election",
+                  "Expansion",
+                  "Famine",
+                  "HistoricEvent",
+                  "InfrastructureFailure",
+                  "Investment",
+                  "Lockdown",
+                  "NaturalDisaster",
+                  "Outbreak",
+                  "PirateAttack",
+                  "PublicHoliday",
+                  "Retreat",
+                  "Revolution",
+                  "TechnologicalLeap",
+                  "Terrorism",
+                  "TradeWar",
+                  "War"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ordinal": 3,
+          "name": "status: Status",
+          "type_info": {
+            "Custom": {
+              "name": "status",
+              "kind": {
+                "Enum": [
+                  "Active",
+                  "Pending",
+                  "Recovering"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Int4",
+          {
+            "Custom": {
+              "name": "state",
+              "kind": {
+                "Enum": [
+                  "Blight",
+                  "Boom",
+                  "Bust",
+                  "CivilLiberty",
+                  "CivilUnrest",
+                  "CivilWar",
+                  "ColdWar",
+                  "Colonisation",
+                  "Drought",
+                  "Election",
+                  "Expansion",
+                  "Famine",
+                  "HistoricEvent",
+                  "InfrastructureFailure",
+                  "Investment",
+                  "Lockdown",
+                  "NaturalDisaster",
+                  "Outbreak",
+                  "PirateAttack",
+                  "PublicHoliday",
+                  "Retreat",
+                  "Revolution",
+                  "TechnologicalLeap",
+                  "Terrorism",
+                  "TradeWar",
+                  "War"
+                ]
+              }
+            }
+          },
+          {
+            "Custom": {
+              "name": "status",
+              "kind": {
+                "Enum": [
+                  "Active",
+                  "Pending",
+                  "Recovering"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "nullable": [
+        false,
+        false,
+        false,
+        false
+      ]
     }
   },
   "87c86a8b8b99934521f4338411ac06acbaaf5e62ae113c18317b97ebb03e61ac": {

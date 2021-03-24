@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use elite_journal::prelude::*;
+use elite_journal::{prelude::*, faction::State as JournalState};
 use crate::{Error, Database};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +54,158 @@ impl Faction {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct SystemFaction {
+    system_address: u64,
+    faction_id: u32,
+    state: Option<JournalState>,
+    influence: f32,
+    happiness: Option<Happiness>,
+    updated_at: DateTime<Utc>,
+}
+
+impl SystemFaction {
+    pub async fn from_journal(
+        db: &Database,
+        system_address: u64,
+        faction_id: u32,
+        faction_info: &FactionInfo,
+        timestamp: DateTime<Utc>)
+        -> Result<Option<Self>, Error>
+    {
+        let row = sqlx::query!(
+            r#"
+            INSERT INTO system_factions
+                (system_address,
+                 faction_id,
+                 state,
+                 influence,
+                 happiness,
+                 government,
+                 allegiance,
+                 updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (system_address, faction_id)
+            DO UPDATE SET
+                state = $3,
+                influence = $4,
+                happiness = $5,
+                government = $6,
+                allegiance = $7,
+                updated_at = $8
+            WHERE system_factions.updated_at < $8
+            RETURNING
+                system_address,
+                faction_id,
+                state AS "state: JournalState",
+                influence,
+                happiness "happiness: Happiness",
+                updated_at
+            "#,
+                system_address as i64,
+                faction_id as i32,
+                faction_info.state as _,
+                faction_info.influence,
+                faction_info.happiness as _,
+                faction_info.government as _,
+                faction_info.allegiance as _,
+                timestamp.naive_utc())
+            .fetch_optional(&db.pool)
+            .await?;
+
+        if let Some(r) = row {
+            State::clear(db, system_address, faction_id).await?;
+
+            for state_trend in &faction_info.pending_states {
+                State::from_journal(db,
+                    system_address, faction_id, state_trend.state, Status::Pending).await?;
+            }
+
+            for state_trend in &faction_info.active_states {
+                State::from_journal(db,
+                    system_address, faction_id, state_trend.state, Status::Active).await?;
+            }
+
+            for state_trend in &faction_info.recovering_states {
+                State::from_journal(db,
+                    system_address, faction_id, state_trend.state, Status::Recovering).await?;
+            }
+
+            Ok(Some(SystemFaction {
+                system_address: r.system_address as u64,
+                faction_id: r.faction_id as u32,
+                state: r.state,
+                influence: r.influence,
+                happiness: r.happiness,
+                updated_at: DateTime::<Utc>::from_utc(r.updated_at, Utc),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct State {
+    system_address: u64,
+    faction_id: u32,
+    state: JournalState,
+    status: Status,
+}
+
+impl State {
+    pub async fn from_journal(
+        db: &Database,
+        system_address: u64,
+        faction_id: u32,
+        state: JournalState,
+        status: Status)
+        -> Result<Self, Error>
+    {
+        let row = sqlx::query!(
+            r#"
+            INSERT INTO system_faction_states
+                (system_address,
+                 faction_id,
+                 state,
+                 status)
+            VALUES ($1, $2, $3, $4)
+            RETURNING
+                system_address,
+                faction_id,
+                state AS "state: JournalState",
+                status AS "status: Status"
+            "#,
+            system_address as i64,
+            faction_id as i32,
+            state as _,
+            status as _)
+            .fetch_one(&db.pool)
+            .await?;
+
+        Ok(State {
+            system_address: row.system_address as u64,
+            faction_id: row.faction_id as u32,
+            state: row.state,
+            status: row.status,
+        })
+    }
+
+    pub async fn clear(db: &Database, system_address: u64, faction_id: u32) -> Result<(), Error> {
+        sqlx::query!(
+            r#"
+            DELETE FROM system_faction_states
+            WHERE system_address = $1 AND faction_id = $2
+            "#,
+            system_address as i64,
+            faction_id as i32)
+            .execute(&db.pool)
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct Conflict {
     system_address: u64,
     ty: FactionConflictType,
@@ -70,8 +222,8 @@ pub struct Conflict {
 impl Conflict {
     pub async fn from_journal(
         db: &Database,
-        conflict: &FactionConflict,
         system_address: u64,
+        conflict: &FactionConflict,
         timestamp: DateTime<Utc>)
         -> Result<Self, Error>
     {
