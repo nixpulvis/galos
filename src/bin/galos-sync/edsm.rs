@@ -2,7 +2,7 @@ use async_std::task;
 use structopt::StructOpt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use chrono::offset::Utc;
-use elite_journal::Coordinate;
+use elite_journal::system::Coordinate;
 use galos_db::{Database, systems::System};
 use crate::Run;
 
