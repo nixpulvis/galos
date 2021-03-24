@@ -805,7 +805,10 @@ dependencies = [
  "galos_db",
  "indicatif",
  "itertools",
+<<<<<<< HEAD
  "prettytable-rs",
+=======
+>>>>>>> 025cd67 (Prettier printing)
  "structopt",
  "termion",
  "tui",
