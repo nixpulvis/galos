@@ -1,28 +1,13 @@
 use async_std::task;
-<<<<<<< HEAD
-<<<<<<< HEAD
 use itertools::Itertools;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{format, Table};
-use galos_db::{Database, systems::{ModuleClass, System}};
-=======
-use structopt::StructOpt;
-use galos_db::{Database, systems::{System, Node}};
->>>>>>> 9c6bb70 (Some slow search)
-=======
-use itertools::Itertools;
-use structopt::StructOpt;
-use indicatif::{ProgressBar, ProgressStyle};
-use galos_db::{Database, systems::System};
->>>>>>> 025cd67 (Prettier printing)
-use galos::Run;
+use galos_db::{Database, systems::ModuleClass, System}};
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
     // #[structopt(parse(lalrpop(Route)))]
-<<<<<<< HEAD
-<<<<<<< HEAD
     start: String,
     end: String,
 
@@ -37,42 +22,12 @@ pub struct Cli {
     size: u8,
     #[structopt(default_value = "E", short = "c", long)]
     class: ModuleClass,
-=======
-    range: f64,
-    start: String,
-    end: String,
->>>>>>> 9c6bb70 (Some slow search)
-=======
-    start: String,
-    end: String,
-    range: f64,
->>>>>>> 025cd67 (Prettier printing)
 }
 
 impl Run for Cli {
     fn run(&self, db: &Database) {
-<<<<<<< HEAD
-<<<<<<< HEAD
         let spinner = ProgressBar::new_spinner();
         spinner.enable_steady_tick(100);
-=======
-        let spinner = ProgressBar::new_spinner();
-        spinner.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&[
-                    ">>>>>>",
-                    "->>>>>",
-                    ">->>>>",
-                    ">>->>>",
-                    ">>>->>",
-                    ">>>>->",
-                    ">>>>>-",
-                    "-----",
-                ])
-                .template("{spinner:.yellow} {msg}"),
-        );
-        spinner.enable_steady_tick(250);
->>>>>>> 025cd67 (Prettier printing)
         spinner.set_message("Finding systems...");
         let (start, end) = task::block_on(async {
             let start = System::fetch_by_name(db, &self.start).await.unwrap();
@@ -80,7 +35,6 @@ impl Run for Cli {
             (start, end)
         });
         spinner.finish_with_message("Input systems found, finding route...");
-<<<<<<< HEAD
 
         spinner.reset();
         spinner.set_style(
@@ -125,39 +79,6 @@ impl Run for Cli {
             cost,
             gross,
             route[0].distance(&route.last().expect("valid route")));
-=======
-        let (start, end) = task::block_on(async {
-            let start: Node = System::fetch_by_name(db, &self.start).await.unwrap().into();
-            let end: Node   = System::fetch_by_name(db, &self.end).await.unwrap().into();
-            (start, end)
-        });
-=======
->>>>>>> 025cd67 (Prettier printing)
-
-        spinner.reset();
-        let (route, cost) = start.route_to(db, &end, self.range).unwrap().unwrap();
-<<<<<<< HEAD
-        println!("total cost {}", cost);
-        let mut a = &start;
-        for b in &route {
-            if a != b {
-                let d = a.distance(&b);
-                println!("{} -{}> {}", a.address, d, b.address);
-                a = b;
-            }
-        }
->>>>>>> 9c6bb70 (Some slow search)
-=======
-        spinner.finish_and_clear();
-        let mut last = &route[0];
-        for (a, b) in route[..].into_iter().tuple_windows() {
-            println!("{}", a.name);
-            println!("-> {} Ly", a.distance(&b));
-            last = b;
-        }
-        println!("{}", last.name);
-        println!("total jumps ({})", cost);
->>>>>>> 025cd67 (Prettier printing)
     }
 }
 

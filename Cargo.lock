@@ -806,9 +806,13 @@ dependencies = [
  "indicatif",
  "itertools",
 <<<<<<< HEAD
+<<<<<<< HEAD
  "prettytable-rs",
 =======
 >>>>>>> 025cd67 (Prettier printing)
+=======
+ "prettytable-rs",
+>>>>>>> c488fcc (Pretty tables)
  "structopt",
  "termion",
  "tui",
