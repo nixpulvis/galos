@@ -1,5 +1,6 @@
 use async_std::task;
 use structopt::StructOpt;
+use indicatif::{ProgressBar, ProgressStyle};
 use galos_db::{Database, systems::System};
 use galos::Run;
 
@@ -26,12 +27,30 @@ pub struct Cli {
 
 impl Run for Cli {
     fn run(&self, db: &Database) {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&[
+                    ">>><<<",
+                    ">>--<<",
+                    ">----<",
+                    "------",
+                    ">----<",
+                    ">>--<<",
+                    ">>><<<",
+                ])
+                .template("{spinner:.yellow} {msg}"),
+        );
+        spinner.enable_steady_tick(125);
+
         task::block_on(async {
             let systems = if let Some(radius) = self.radius {
                 System::fetch_in_range_like_name(db, radius, &self.query).await.unwrap()
             } else {
                 System::fetch_like_name(db, &self.query).await.unwrap()
             };
+
+            spinner.finish_and_clear();
 
             if self.count {
                 println!("{} systems found.", systems.len());

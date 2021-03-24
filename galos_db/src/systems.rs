@@ -215,6 +215,7 @@ impl System {
                 secondary_economy as "secondary_economy: Economy"
             FROM systems
             WHERE name ILIKE $1
+            ORDER BY name
             "#, name)
             .fetch_all(&db.pool)
             .await?;
