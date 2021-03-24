@@ -769,6 +769,7 @@ dependencies = [
  "galos_bot",
  "galos_db",
  "indicatif",
+ "itertools",
  "structopt",
  "termion",
  "tui",

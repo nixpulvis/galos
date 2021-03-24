@@ -13,6 +13,7 @@ path = "src/bin/galos-sync/main.rs"
 [dependencies]
 async-std = "*"
 structopt = "*"
+itertools = "*"
 indicatif = "*"
 termion   = "*"
 tui       = "*"

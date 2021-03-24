@@ -346,8 +346,6 @@ impl System {
                 .await.unwrap()
         });
 
-        println!("neighbors of {} ({})", self.name, rows.len());
-
         rows.into_iter().map(|row| {
             System {
                 address: row.address,
