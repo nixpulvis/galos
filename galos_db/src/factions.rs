@@ -51,16 +51,32 @@ impl Faction {
 
         Ok(Faction { id: row.id, name: row.name })
     }
+
+    pub async fn fetch_like_name(db: &Database, name: &str) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT *
+            FROM factions
+            WHERE name ILIKE $1
+            ORDER BY name
+            "#, name)
+            .fetch_all(&db.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(|row| {
+            Faction { id: row.id, name: row.name }
+        }).collect())
+    }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct SystemFaction {
-    system_address: u64,
-    faction_id: u32,
-    state: Option<JournalState>,
-    influence: f32,
-    happiness: Option<Happiness>,
-    updated_at: DateTime<Utc>,
+    pub system_address: u64,
+    pub faction_id: u32,
+    pub state: Option<JournalState>,
+    pub influence: f32,
+    pub happiness: Option<Happiness>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl SystemFaction {
@@ -140,6 +156,104 @@ impl SystemFaction {
             }))
         } else {
             Ok(None)
+        }
+    }
+
+    pub async fn fetch(db: &Database, address: u64, id: u32) -> Result<Self, Error> {
+        let row = sqlx::query!(
+            r#"
+            SELECT
+                system_address,
+                faction_id,
+                name,
+                state AS "state: JournalState",
+                influence,
+                happiness AS "happiness: Happiness",
+                government AS "government: Government",
+                allegiance AS "allegiance: Allegiance",
+                updated_at
+            FROM system_factions
+            JOIN factions ON faction_id = id
+            WHERE system_address = $1 AND faction_id = $2
+            ORDER BY influence DESC
+            "#, address as i64, id as i32)
+            .fetch_one(&db.pool)
+            .await?;
+
+        Ok(SystemFaction {
+            system_address: row.system_address as u64,
+            faction_id: row.faction_id as u32,
+            state: row.state,
+            influence: row.influence,
+            happiness: row.happiness,
+            updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+        })
+    }
+
+    pub async fn fetch_all(db: &Database, address: Option<u64>) -> Result<Vec<(String, Self)>, Error> {
+        if let Some(address) = address {
+            let rows = sqlx::query!(
+            r#"
+            SELECT
+                system_address,
+                faction_id,
+                name,
+                state AS "state: JournalState",
+                influence,
+                happiness AS "happiness: Happiness",
+                government AS "government: Government",
+                allegiance AS "allegiance: Allegiance",
+                updated_at
+            FROM system_factions
+            JOIN factions ON faction_id = id
+            WHERE system_address = $1
+            ORDER BY influence DESC
+            "#, address as i64)
+            .fetch_all(&db.pool)
+            .await?;
+
+            Ok(rows.into_iter().map(|row| {
+                (row.name,
+                 SystemFaction {
+                    system_address: row.system_address as u64,
+                    faction_id: row.faction_id as u32,
+                    state: row.state,
+                    influence: row.influence,
+                    happiness: row.happiness,
+                    updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+                })
+            }).collect())
+        } else {
+            let rows = sqlx::query!(
+            r#"
+            SELECT
+                system_address,
+                faction_id,
+                name,
+                state AS "state: JournalState",
+                influence,
+                happiness AS "happiness: Happiness",
+                government AS "government: Government",
+                allegiance AS "allegiance: Allegiance",
+                updated_at
+            FROM system_factions
+            JOIN factions on faction_id = id
+            ORDER BY influence DESC
+            "#)
+            .fetch_all(&db.pool)
+            .await?;
+
+            Ok(rows.into_iter().map(|row| {
+                (row.name,
+                 SystemFaction {
+                    system_address: row.system_address as u64,
+                    faction_id: row.faction_id as u32,
+                    state: row.state,
+                    influence: row.influence,
+                    happiness: row.happiness,
+                    updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+                })
+            }).collect())
         }
     }
 }
