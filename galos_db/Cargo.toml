@@ -10,7 +10,10 @@ async-std = { version = "*", features = [ "attributes" ] }
 dotenv = "*"
 chrono = "*"
 pathfinding = "*"
+<<<<<<< HEAD
 ordered-float = "*"
+=======
+>>>>>>> 9c6bb70 (Some slow search)
 
 [dependencies.sqlx]
 version = "*"
