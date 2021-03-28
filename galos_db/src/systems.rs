@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use async_std::task;
 use chrono::{DateTime, Utc};
 use geozero::wkb;
@@ -388,14 +389,47 @@ impl System {
     }
 }
 
-// https://www.reddit.com/r/EliteDangerous/comments/30nx4u/the_hyperspace_fuel_equation_documented/
-fn fuel_cost(distance: f64, mass: f64, optimal_mass: f64) -> f64 {
+#[derive(Debug, Clone, Copy)]
+pub enum Class {
+    A,
+    B,
+    C,
+    D,
+    E,
+}
+
+impl FromStr for Class {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "A" => Ok(Self::A),
+            "B" => Ok(Self::B),
+            "C" => Ok(Self::C),
+            "D" => Ok(Self::D),
+            "E" => Ok(Self::E),
+            _ => Err("invalid class".to_string()),
+        }
+    }
+}
+
+// https://www.reddit.com/r/EliteDangerous/comments/30nx4u/the_hyperspace_fuel_equation_documented
+pub fn fuel_cost(distance: f64, mass: f64, optimal_mass: f64, size: u8, class: Class) -> f64 {
+    // TODO Expose
     // A: 12
     // B: 10
     // C: 8
     // D: 10
     // E: 11
-    let l = 12.;
+    let l = match class {
+        Class::A => 12.,
+        Class::B => 10.,
+        Class::C => 8.,
+        Class::D => 10.,
+        Class::E => 11.,
+    };
+
+    // TODO: Expose
     // 2: 2.00
     // 3: 2.15
     // 4: 2.30
@@ -403,7 +437,16 @@ fn fuel_cost(distance: f64, mass: f64, optimal_mass: f64) -> f64 {
     // 6: 2.60
     // 7: 2.75
     // 8: 2.90
-    let p = 2.45;
+    let p = match size {
+        2 => 2.,
+        3 => 2.15,
+        4 => 2.3,
+        5 => 2.45,
+        6 => 2.6,
+        7 => 2.75,
+        8 => 2.9,
+        _ => panic!("bad size"),
+    };
 
     l * 0.001 * (distance * mass / optimal_mass).powf(p)
 }
