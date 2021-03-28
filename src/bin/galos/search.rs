@@ -82,11 +82,11 @@ impl Run for Cli {
                                 if faction_query == "%" {
                                     let sfs = SystemFaction::fetch_all(db, Some(system.address as u64)).await.unwrap();
                                     for (name, sf) in sfs {
-                                        println!("{}", name.to_lowercase());
-                                        println!("\tinfluence: {}%", sf.influence * 100.);
-                                        println!("\tstate: {:?}", sf.state);
-                                        println!("\thappiness: {:?}", sf.happiness);
-                                        println!("\tupdated_at: {}", sf.updated_at);
+                                        println!("\t{}", name.to_lowercase());
+                                        println!("\t\tinfluence: {}%", sf.influence * 100.);
+                                        println!("\t\tstate: {:?}", sf.state);
+                                        println!("\t\thappiness: {:?}", sf.happiness);
+                                        println!("\t\tupdated_at: {}", sf.updated_at);
                                     }
                                 }
                             }
