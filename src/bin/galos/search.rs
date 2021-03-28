@@ -107,7 +107,8 @@ impl Run for Cli {
                 }
 
                 (None, None) => {
-                    unimplemented!()
+                    // XXX: Why is -r being printed after the next shell prompt?!
+                    Cli::clap().print_help();
                 }
             }
 
@@ -117,9 +118,10 @@ impl Run for Cli {
 }
 
 fn print_system(system: &System) {
-    println!("{}: ({}, {}, {})",
+    println!("{}: ({}, {}, {})\t\t[{}]",
         system.name,
-        system.position.x, system.position.y, system.position.z);
+        system.position.x, system.position.y, system.position.z,
+        system.updated_at);
     if system.population > 0 {
         println!("\tpopulation: {}", system.population);
     }
@@ -139,5 +141,4 @@ fn print_system(system: &System) {
         }
         println!("");
     }
-    println!("\tupdated_at: {}", system.updated_at);
 }
