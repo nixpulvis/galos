@@ -11,8 +11,9 @@ pub struct Cli {
     // #[structopt(parse(lalrpop(Route)))]
     start: String,
     end: String,
-    range: f64,
 
+    #[structopt(default_value = "7.5", short = "r", long)]
+    range: f64,
     #[structopt(default_value = "25", short = "m", long)]
     total_mass: f64,
     #[structopt(default_value = "48", short = "o", long)]
@@ -80,8 +81,8 @@ impl Run for Cli {
         println!("jumps: {:.2}, path: {:.2} Ly, fuel: {:.2} T, distance: {:.2} Ly",
             cost,
             gross.0,
-            gross.1,
-            route[0].distance(&route.last().expect("valid route")));
+            route[0].distance(&route.last().expect("valid route")),
+            gross.1);
     }
 }
 
