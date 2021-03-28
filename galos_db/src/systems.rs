@@ -1,10 +1,12 @@
+use async_std::task;
 use chrono::{DateTime, Utc};
 use geozero::wkb;
+use pathfinding::prelude::*;
 use elite_journal::{prelude::*, system::System as JournalSystem};
 use crate::{Error, Database};
 use crate::factions::{Faction, SystemFaction, Conflict};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct System {
     pub address: i64,
     // TODO: We need to support multiple names
@@ -317,5 +319,86 @@ impl System {
                 updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
             }
         }).collect())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Node {
+    pub address: i64,
+    pub position: Coordinate,
+}
+
+impl Node {
+    pub fn neighbors(&self, db: &Database, goal: &Node, range: f64) -> Vec<Node> {
+        let rows = task::block_on(async {
+            sqlx::query!(
+                r#"
+                SELECT
+                    address,
+                    position AS "position!: wkb::Decode<Coordinate>",
+                    ST_3DDistance(position, $2) AS "distance!: f64"
+                FROM systems
+                WHERE ST_3DDWithin(position, $1, $3);
+                "#, wkb::Encode(self.position) as _, wkb::Encode(goal.position) as _, range)
+                .fetch_all(&db.pool)
+                .await.unwrap()
+        });
+
+       println!("neighbors of {} ({})", self.address, rows.len());
+
+        rows.into_iter().map(|row| {
+            Node {
+                address: row.address,
+                position: row.position.geometry.expect("not null or invalid"),
+            }
+        }).collect()
+    }
+
+    pub fn distance(&self, other: &Node) -> f64 {
+        let p1 = self.position;
+        let p2 = other.position;
+
+        ((p2.x - p1.x).powi(2) +
+            (p2.y - p1.y).powi(2) +
+            (p2.z - p1.z).powi(2)).sqrt()
+    }
+
+    pub fn route_to(&self, db: &Database, end: &Node, range: f64) -> Result<Option<(Vec<Self>, u64)>, Error> {
+        let successors = |s: &Node| {
+            s.neighbors(db, end, range).into_iter().map(|s| (s, 1))
+        };
+
+        let heuristic = |s: &Node| {
+            (s.distance(end) / range).ceil() as u64
+        };
+
+        let success = |s: &Node| s == end;
+
+        Ok(astar(self, successors, heuristic, success))
+        // Ok(idastar(self, successors, heuristic, success))
+        // Ok(fringe(self, successors, heuristic, success))
+    }
+}
+
+impl From<System> for Node {
+    fn from(system: System) -> Self {
+        Node {
+            address: system.address,
+            position: system.position,
+        }
+    }
+}
+
+impl Eq for Node {}
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.address == other.address
+    }
+}
+
+use std::hash::{Hash, Hasher};
+impl Hash for Node {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.address.hash(state);
     }
 }

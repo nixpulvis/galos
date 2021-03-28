@@ -9,7 +9,7 @@ edition = "2018"
 async-std = { version = "*", features = [ "attributes" ] }
 dotenv = "*"
 chrono = "*"
-indicatif = "*"
+pathfinding = "*"
 
 [dependencies.sqlx]
 version = "*"
