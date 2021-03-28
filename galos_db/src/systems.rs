@@ -366,8 +366,8 @@ impl System {
         let p2 = other.position;
 
         ((p2.x - p1.x).powi(2) +
-            (p2.y - p1.y).powi(2) +
-            (p2.z - p1.z).powi(2)).sqrt()
+         (p2.y - p1.y).powi(2) +
+         (p2.z - p1.z).powi(2)).sqrt()
     }
 
     pub fn route_to(&self, db: &Database, end: &System, range: f64)
