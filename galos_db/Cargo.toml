@@ -10,6 +10,7 @@ async-std = { version = "*", features = [ "attributes" ] }
 dotenv = "*"
 chrono = "*"
 pathfinding = "*"
+ordered-float = "*"
 
 [dependencies.sqlx]
 version = "*"

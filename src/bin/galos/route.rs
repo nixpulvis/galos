@@ -1,6 +1,6 @@
 use async_std::task;
 use structopt::StructOpt;
-use galos_db::{Database, systems::{System, Node}};
+use galos_db::{Database, systems::System};
 use galos::Run;
 
 #[derive(StructOpt, Debug)]
@@ -14,18 +14,19 @@ pub struct Cli {
 impl Run for Cli {
     fn run(&self, db: &Database) {
         let (start, end) = task::block_on(async {
-            let start: Node = System::fetch_by_name(db, &self.start).await.unwrap().into();
-            let end: Node   = System::fetch_by_name(db, &self.end).await.unwrap().into();
+            let start = System::fetch_by_name(db, &self.start).await.unwrap();
+            let end   = System::fetch_by_name(db, &self.end).await.unwrap();
             (start, end)
         });
 
         let (route, cost) = start.route_to(db, &end, self.range).unwrap().unwrap();
-        println!("total cost {}", cost);
+        println!("-----");
+        println!("total jumps ({})", cost);
         let mut a = &start;
         for b in &route {
             if a != b {
                 let d = a.distance(&b);
-                println!("{} -{}> {}", a.address, d, b.address);
+                println!("{} -- {}Ly -> {}", a.name, d, b.name);
                 a = b;
             }
         }

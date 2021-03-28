@@ -787,6 +787,7 @@ dependencies = [
  "dotenv",
  "elite_journal",
  "geozero",
+ "ordered-float",
  "pathfinding",
  "sqlx",
 ]
@@ -1347,6 +1348,15 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "ordered-float"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "766f840da25490628d8e63e529cd21c014f6600c6b8517add12a6fa6167a6218"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

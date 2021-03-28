@@ -2,6 +2,7 @@ use async_std::task;
 use chrono::{DateTime, Utc};
 use geozero::wkb;
 use pathfinding::prelude::*;
+use ordered_float::OrderedFloat;
 use elite_journal::{prelude::*, system::System as JournalSystem};
 use crate::{Error, Database};
 use crate::factions::{Faction, SystemFaction, Conflict};
@@ -320,41 +321,50 @@ impl System {
             }
         }).collect())
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct Node {
-    pub address: i64,
-    pub position: Coordinate,
-}
-
-impl Node {
-    pub fn neighbors(&self, db: &Database, goal: &Node, range: f64) -> Vec<Node> {
+    // TODO: add migration for:
+    // CREATE INDEX systems_position_idx ON systems USING GIST (position gist_geometry_ops_nd);
+    pub fn neighbors(&self, db: &Database, range: f64) -> Vec<System> {
         let rows = task::block_on(async {
             sqlx::query!(
                 r#"
                 SELECT
                     address,
+                    name,
                     position AS "position!: wkb::Decode<Coordinate>",
-                    ST_3DDistance(position, $2) AS "distance!: f64"
+                    population,
+                    security as "security: Security",
+                    government as "government: Government",
+                    allegiance as "allegiance: Allegiance",
+                    primary_economy as "primary_economy: Economy",
+                    secondary_economy as "secondary_economy: Economy",
+                    updated_at
                 FROM systems
-                WHERE ST_3DDWithin(position, $1, $3);
-                "#, wkb::Encode(self.position) as _, wkb::Encode(goal.position) as _, range)
+                WHERE ST_3DDWithin(position, $1, $2);
+                "#, wkb::Encode(self.position) as _, range)
                 .fetch_all(&db.pool)
                 .await.unwrap()
         });
 
-       println!("neighbors of {} ({})", self.address, rows.len());
+        println!("neighbors of {} ({})", self.name, rows.len());
 
         rows.into_iter().map(|row| {
-            Node {
+            System {
                 address: row.address,
+                name: row.name,
                 position: row.position.geometry.expect("not null or invalid"),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
             }
         }).collect()
     }
 
-    pub fn distance(&self, other: &Node) -> f64 {
+    pub fn distance(&self, other: &System) -> f64 {
         let p1 = self.position;
         let p2 = other.position;
 
@@ -363,41 +373,54 @@ impl Node {
             (p2.z - p1.z).powi(2)).sqrt()
     }
 
-    pub fn route_to(&self, db: &Database, end: &Node, range: f64) -> Result<Option<(Vec<Self>, u64)>, Error> {
-        let successors = |s: &Node| {
-            s.neighbors(db, end, range).into_iter().map(|s| (s, 1))
+    pub fn route_to(&self, db: &Database, end: &System, range: f64)
+        -> Result<Option<(Vec<Self>, OrderedFloat<f64>)>, Error>
+    {
+        let successors = |s: &System| {
+            s.neighbors(db, range).into_iter().map(|s| (s, OrderedFloat(1.)))
         };
 
-        let heuristic = |s: &Node| {
-            (s.distance(end) / range).ceil() as u64
+        // Making the heuristic much larger than the successor's jump cost makes things run
+        // faster, but is not optimal...
+        let heuristic = |s: &System| {
+            OrderedFloat((s.distance(end) / range).ceil())
         };
 
-        let success = |s: &Node| s == end;
+        let success = |s: &System| s == end;
 
         Ok(astar(self, successors, heuristic, success))
-        // Ok(idastar(self, successors, heuristic, success))
-        // Ok(fringe(self, successors, heuristic, success))
     }
 }
 
-impl From<System> for Node {
-    fn from(system: System) -> Self {
-        Node {
-            address: system.address,
-            position: system.position,
-        }
-    }
+// https://www.reddit.com/r/EliteDangerous/comments/30nx4u/the_hyperspace_fuel_equation_documented/
+fn fuel_cost(distance: f64, mass: f64, optimal_mass: f64) -> f64 {
+    // A: 12
+    // B: 10
+    // C: 8
+    // D: 10
+    // E: 11
+    let l = 12.;
+    // 2: 2.00
+    // 3: 2.15
+    // 4: 2.30
+    // 5: 2.45
+    // 6: 2.60
+    // 7: 2.75
+    // 8: 2.90
+    let p = 2.45;
+
+    l * 0.001 * (distance * mass / optimal_mass).powf(p)
 }
 
-impl Eq for Node {}
-impl PartialEq for Node {
+impl Eq for System {}
+impl PartialEq for System {
     fn eq(&self, other: &Self) -> bool {
         self.address == other.address
     }
 }
 
 use std::hash::{Hash, Hasher};
-impl Hash for Node {
+impl Hash for System {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.address.hash(state);
     }
