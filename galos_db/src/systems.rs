@@ -322,8 +322,6 @@ impl System {
         }).collect())
     }
 
-    // TODO: add migration for:
-    // CREATE INDEX systems_position_idx ON systems USING GIST (position gist_geometry_ops_nd);
     pub fn neighbors(&self, db: &Database, range: f64) -> Vec<System> {
         let rows = task::block_on(async {
             sqlx::query!(
