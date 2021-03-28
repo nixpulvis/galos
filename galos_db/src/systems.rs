@@ -21,6 +21,8 @@ pub struct System {
     // & = foreign key = belongs_to
     // pub controlling_faction: &Faction,
     // pub factions: Vec<Faction>
+
+    pub updated_at: DateTime<Utc>,
 }
 
 impl System {
@@ -147,7 +149,8 @@ impl System {
                 government as "government: Government",
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
-                secondary_economy as "secondary_economy: Economy"
+                secondary_economy as "secondary_economy: Economy",
+                updated_at
             FROM systems
             WHERE address = $1
             "#, address)
@@ -164,6 +167,7 @@ impl System {
             allegiance: row.allegiance,
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
+            updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
         })
     }
 
@@ -180,7 +184,8 @@ impl System {
                 government as "government: Government",
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
-                secondary_economy as "secondary_economy: Economy"
+                secondary_economy as "secondary_economy: Economy",
+                updated_at
             FROM systems
             WHERE name = $1
             "#, name.to_uppercase())
@@ -197,6 +202,120 @@ impl System {
             allegiance: row.allegiance,
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
+            updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
         })
+    }
+
+    pub async fn fetch_like_name(db: &Database, name: &str) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                address,
+                name,
+                position AS "position!: wkb::Decode<Coordinate>",
+                population,
+                security as "security: Security",
+                government as "government: Government",
+                allegiance as "allegiance: Allegiance",
+                primary_economy as "primary_economy: Economy",
+                secondary_economy as "secondary_economy: Economy",
+                updated_at
+            FROM systems
+            WHERE name ILIKE $1
+            ORDER BY name
+            "#, name)
+            .fetch_all(&db.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(|row| {
+            System {
+                address: row.address,
+                name: row.name,
+                position: row.position.geometry.expect("not null or invalid"),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            }
+        }).collect())
+    }
+
+    pub async fn fetch_in_range_by_name(db: &Database, range: f64, name: &str) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                s1.address,
+                s1.name,
+                s1.position AS "position!: wkb::Decode<Coordinate>",
+                s1.population,
+                s1.security as "security: Security",
+                s1.government as "government: Government",
+                s1.allegiance as "allegiance: Allegiance",
+                s1.primary_economy as "primary_economy: Economy",
+                s1.secondary_economy as "secondary_economy: Economy",
+                s1.updated_at
+            FROM systems s1
+            FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
+            WHERE s2.name = $1
+            ORDER BY ST_3DDistance(s1.position, s2.position)
+            "#, name.to_uppercase(), range)
+            .fetch_all(&db.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(|row| {
+            System {
+                address: row.address,
+                name: row.name,
+                position: row.position.geometry.expect("not null or invalid"),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            }
+        }).collect())
+    }
+
+    pub async fn fetch_in_range_like_name(db: &Database, range: f64, name: &str) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                s1.address,
+                s1.name,
+                s1.position AS "position!: wkb::Decode<Coordinate>",
+                s1.population,
+                s1.security as "security: Security",
+                s1.government as "government: Government",
+                s1.allegiance as "allegiance: Allegiance",
+                s1.primary_economy as "primary_economy: Economy",
+                s1.secondary_economy as "secondary_economy: Economy",
+                s1.updated_at
+            FROM systems s1
+            FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
+            WHERE s2.name ILIKE $1
+            ORDER BY ST_3DDistance(s1.position, s2.position)
+            "#, name, range)
+            .fetch_all(&db.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(|row| {
+            System {
+                address: row.address,
+                name: row.name,
+                position: row.position.geometry.expect("not null or invalid"),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            }
+        }).collect())
     }
 }
