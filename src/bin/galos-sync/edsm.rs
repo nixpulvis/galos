@@ -95,10 +95,58 @@ impl Run for FileCli {
 
 // TODO: -s single system, -S systems query?
 #[derive(StructOpt, Debug)]
-pub struct ApiCli {}
+pub struct ApiCli {
+    #[structopt(name = "SYSTEM")]
+    pub system: String,
+}
 
 impl Run for ApiCli {
-    fn run(&self, _db: &Database) {
-        unimplemented!();
+    fn run(&self, db: &Database) {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&[
+                    ">>>>>>",
+                    "->>>>>",
+                    ">->>>>",
+                    ">>->>>",
+                    ">>>->>",
+                    ">>>>->",
+                    ">>>>>-",
+                    "------",
+                ])
+                .template("{spinner:.yellow} {msg}"),
+        );
+        spinner.enable_steady_tick(125);
+        let system = edsm::api::system(&self.system).unwrap();
+        let coords = if let Some(c) = &system.coords {
+            c
+        } else {
+            panic!("[EDSM ERROR] {} no coords", &system.name);
+        };
+
+        let address = if let Some(i) = system.id64 {
+           i
+        } else {
+            panic!("[EDSM ERROR] {} address", &system.name);
+        };
+
+        let position = Coordinate {
+            x: coords.x,
+            y: coords.y,
+            z: coords.z
+        };
+
+        task::block_on(async {
+            System::create(db, address, &system.name, position,
+                system.information.population,
+                system.information.security,
+                system.information.government,
+                system.information.allegiance,
+                system.information.economy,
+                system.information.second_economy,
+                Utc::now())
+                .await.unwrap();
+        });
     }
 }
