@@ -1,6 +1,6 @@
 use async_std::task;
 use structopt::StructOpt;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use chrono::offset::Utc;
 use elite_journal::system::Coordinate;
 use galos_db::{Database, systems::System};
@@ -31,7 +31,24 @@ pub struct FileCli {
 
 impl Run for FileCli {
     fn run(&self, db: &Database) {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&[
+                    ">>>>>>",
+                    "->>>>>",
+                    ">->>>>",
+                    ">>->>>",
+                    ">>>->>",
+                    ">>>>->",
+                    ">>>>>-",
+                    "------",
+                ])
+                .template("{spinner:.yellow} {msg}"),
+        );
+        spinner.enable_steady_tick(125);
         let systems = edsm::json(&self.path);
+        spinner.finish_and_clear();
         let bar = ProgressBar::new(systems.len() as u64);
         bar.set_style(ProgressStyle::default_bar()
             .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
@@ -60,18 +77,16 @@ impl Run for FileCli {
             task::block_on(async {
                 let result = System::create(db, address, &system.name, position,
                     system.information.population,
-                    None, None, None, None, None,
-                    // TODO: Need up use elite_journal types in edsm.
-                    // system.information.security,
-                    // system.information.government,
-                    // system.information.allegiance,
-                    // system.information.economy,
-                    // system.information.second_economy,
+                    system.information.security,
+                    system.information.government,
+                    system.information.allegiance,
+                    system.information.economy,
+                    system.information.second_economy,
                     Utc::now())
                     .await;
                 match result {
-                    Ok(_) => bar.set_message(&format!("[EDDB] {}", system.name)),
-                    Err(err) => bar.set_message(&format!("[EDDB ERROR] {}", err)),
+                    Ok(_) => bar.set_message(&format!("[EDSM] {}", system.name)),
+                    Err(err) => bar.set_message(&format!("[EDSM ERROR] {}", err)),
                 }
             });
         }
