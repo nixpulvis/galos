@@ -414,7 +414,7 @@ impl FromStr for Class {
 }
 
 // https://www.reddit.com/r/EliteDangerous/comments/30nx4u/the_hyperspace_fuel_equation_documented
-pub fn fuel_cost(distance: f64, mass: f64, optimal_mass: f64, size: u8, class: Class) -> f64 {
+pub fn _fuel_cost(distance: f64, mass: f64, optimal_mass: f64, size: u8, class: Class) -> f64 {
     let l = match class {
         Class::A => 12.,
         Class::B => 10.,

@@ -3,7 +3,7 @@ use itertools::Itertools;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{format, Table};
-use galos_db::{Database, systems::{fuel_cost, Class, System}};
+use galos_db::{Database, systems::{Class, System}};
 use galos::Run;
 
 #[derive(StructOpt, Debug)]
@@ -70,19 +70,17 @@ impl Run for Cli {
                 self.size, self.class)]);
         let (route, cost) = start.route_to(db, &end, self.range).unwrap().unwrap();
         spinner.finish_and_clear();
-        let mut gross = (0., 0.);
+        let mut gross = 0.;
         for (a, b) in route[..].into_iter().tuple_windows() {
             let d = a.distance(&b);
-            let fuel = fuel_cost(d, self.total_mass, self.optimized_mass, self.size, self.class);
-            table.add_row(row![a.name, b.name, format!("{:.2} Ly", d), format!("{} T", fuel)]);
-            gross = (gross.0 + d, gross.1 + fuel);
+            table.add_row(row![a.name, b.name, format!("{:.2} Ly", d)]);
+            gross += d;
         }
         table.printstd();
-        println!("jumps: {:.2}, path: {:.2} Ly, fuel: {:.2} T, distance: {:.2} Ly",
+        println!("jumps: {:.2}, path: {:.2} Ly, distance: {:.2} Ly",
             cost,
-            gross.0,
-            route[0].distance(&route.last().expect("valid route")),
-            gross.1);
+            gross,
+            route[0].distance(&route.last().expect("valid route")));
     }
 }
 
