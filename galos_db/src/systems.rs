@@ -390,7 +390,7 @@ impl System {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Class {
+pub enum ModuleClass {
     A,
     B,
     C,
@@ -398,7 +398,7 @@ pub enum Class {
     E,
 }
 
-impl FromStr for Class {
+impl FromStr for ModuleClass {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -414,13 +414,13 @@ impl FromStr for Class {
 }
 
 // https://www.reddit.com/r/EliteDangerous/comments/30nx4u/the_hyperspace_fuel_equation_documented
-pub fn _fuel_cost(distance: f64, mass: f64, optimal_mass: f64, size: u8, class: Class) -> f64 {
+pub fn _fuel_cost(distance: f64, mass: f64, optimal_mass: f64, size: u8, class: ModuleClass) -> f64 {
     let l = match class {
-        Class::A => 12.,
-        Class::B => 10.,
-        Class::C => 8.,
-        Class::D => 10.,
-        Class::E => 11.,
+        ModuleClass::A => 12.,
+        ModuleClass::B => 10.,
+        ModuleClass::C => 8.,
+        ModuleClass::D => 10.,
+        ModuleClass::E => 11.,
     };
 
     let p = match size {

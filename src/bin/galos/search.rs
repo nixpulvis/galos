@@ -108,7 +108,7 @@ impl Run for Cli {
 
                 (None, None) => {
                     // XXX: Why is -r being printed after the next shell prompt?!
-                    Cli::clap().print_help();
+                    Cli::clap().print_help().expect("issue printing help")
                 }
             }
 

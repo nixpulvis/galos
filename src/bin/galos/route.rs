@@ -3,7 +3,7 @@ use itertools::Itertools;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{format, Table};
-use galos_db::{Database, systems::{Class, System}};
+use galos_db::{Database, systems::{ModuleClass, System}};
 use galos::Run;
 
 #[derive(StructOpt, Debug)]
@@ -18,10 +18,11 @@ pub struct Cli {
     total_mass: f64,
     #[structopt(default_value = "48", short = "o", long)]
     optimized_mass: f64,
+
     #[structopt(default_value = "2", short = "s", long)]
     size: u8,
     #[structopt(default_value = "E", short = "c", long)]
-    class: Class,
+    class: ModuleClass,
 }
 
 impl Run for Cli {
@@ -65,9 +66,7 @@ impl Run for Cli {
 
         let mut table = Table::new();
         table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
-        table.set_titles(row!["Origin", "Destination", "Distance",
-            format!("Fuel ({}T/{}T {}{:?})", self.total_mass, self.optimized_mass,
-                self.size, self.class)]);
+        table.set_titles(row!["Origin", "Destination", "Distance"]);
         let (route, cost) = start.route_to(db, &end, self.range).unwrap().unwrap();
         spinner.finish_and_clear();
         let mut gross = 0.;
