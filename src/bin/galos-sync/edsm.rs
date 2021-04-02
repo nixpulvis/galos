@@ -90,6 +90,7 @@ impl Run for FileCli {
                 }
             });
         }
+        bar.finish();
     }
 }
 
@@ -118,35 +119,41 @@ impl Run for ApiCli {
                 .template("{spinner:.yellow} {msg}"),
         );
         spinner.enable_steady_tick(125);
-        let system = edsm::api::system(&self.system).unwrap();
-        let coords = if let Some(c) = &system.coords {
-            c
-        } else {
-            panic!("[EDSM ERROR] {} no coords", &system.name);
-        };
+        let systems = edsm::api::systems(&self.system).unwrap();
+        for system in systems {
+            let coords = if let Some(c) = &system.coords {
+                c
+            } else {
+                println!("[EDSM ERROR] {} no coords", &system.name);
+                continue
+            };
 
-        let address = if let Some(i) = system.id64 {
-           i
-        } else {
-            panic!("[EDSM ERROR] {} address", &system.name);
-        };
+            let address = if let Some(i) = system.id64 {
+               i
+            } else {
+                println!("[EDSM ERROR] {} address", &system.name);
+                continue
+            };
 
-        let position = Coordinate {
-            x: coords.x,
-            y: coords.y,
-            z: coords.z
-        };
+            let position = Coordinate {
+                x: coords.x,
+                y: coords.y,
+                z: coords.z
+            };
 
-        task::block_on(async {
-            System::create(db, address, &system.name, position,
-                system.information.population,
-                system.information.security,
-                system.information.government,
-                system.information.allegiance,
-                system.information.economy,
-                system.information.second_economy,
-                Utc::now())
-                .await.unwrap();
-        });
+            task::block_on(async {
+                let s = System::create(db, address, &system.name, position,
+                    system.information.population,
+                    system.information.security,
+                    system.information.government,
+                    system.information.allegiance,
+                    system.information.economy,
+                    system.information.second_economy,
+                    Utc::now())
+                    .await.unwrap();
+
+                spinner.finish_with_message(&format!("imported {}", s.name));
+            });
+        }
     }
 }
