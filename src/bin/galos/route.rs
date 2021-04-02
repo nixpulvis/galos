@@ -3,7 +3,8 @@ use itertools::Itertools;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{format, Table};
-use galos_db::{Database, systems::ModuleClass, System}};
+use galos::Run;
+use galos_db::{Database, systems::{ModuleClass, System}};
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {

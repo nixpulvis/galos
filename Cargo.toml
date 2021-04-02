@@ -15,7 +15,6 @@ async-std = "*"
 structopt = "*"
 chrono = "*"
 itertools = "*"
-chrono = "*"
 indicatif = "*"
 prettytable-rs = "*"
 

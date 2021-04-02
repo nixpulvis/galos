@@ -1,15 +1,9 @@
-<<<<<<< HEAD
 use std::str::FromStr;
-=======
->>>>>>> 9c6bb70 (Some slow search)
 use async_std::task;
 use chrono::{DateTime, Utc};
 use geozero::wkb;
 use pathfinding::prelude::*;
-<<<<<<< HEAD
 use ordered_float::OrderedFloat;
-=======
->>>>>>> 9c6bb70 (Some slow search)
 use elite_journal::{prelude::*, system::System as JournalSystem};
 use crate::{Error, Database};
 use crate::factions::{Faction, SystemFaction, Conflict};
@@ -575,7 +569,6 @@ impl PartialEq for Node {
     }
 }
 
-use std::hash::{Hash, Hasher};
 impl Hash for Node {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.address.hash(state);
