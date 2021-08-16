@@ -22,7 +22,6 @@ tui = "*"
 
 # Subcomponents of Galos.
 galos_db  = { path = 'galos_db' }
-galos_bot = { path = "galos_bot" }
 # galos-gui     = { path = 'galos-gui' }
 # galos-server  = { path = 'galos-server' }
 # galos-worker  = { path = 'galos-worker' }
@@ -59,7 +58,6 @@ members = [
     "eddb",
     "edsm",
     "galos_db",
-    "galos_bot",
     # "galos-gui",
     # "galos-server",
     # "galos-worker",

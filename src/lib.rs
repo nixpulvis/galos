@@ -7,7 +7,6 @@
 //! - [`edsm`][edsm] - A [EDSM](https://edsm.net) API adapter and data file parser
 //! - [`galos_db`][galos_db] - PostgreSQL database and ORM
 //! - [`galos`](#galos) - Shared code and the user CLI, `galos`
-//! - [`galos_bot`][galos_bot] - A library to communicate with Discord Bots
 //! - [`galos-server`](#galos-server) - Web-server for the API and website
 //! - [`galos-worker`](#galos-worker) - Background jobs to complement the server
 //! - [`galos-gui`](#galos-gui) - Graphical application, primarily for mapping

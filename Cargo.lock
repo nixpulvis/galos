@@ -800,7 +800,6 @@ dependencies = [
  "eddn",
  "edsm",
  "elite_journal",
- "galos_bot",
  "galos_db",
  "indicatif",
  "itertools",
@@ -809,10 +808,6 @@ dependencies = [
  "termion",
  "tui",
 ]
-
-[[package]]
-name = "galos_bot"
-version = "0.0.0-dev+initial"
 
 [[package]]
 name = "galos_db"
