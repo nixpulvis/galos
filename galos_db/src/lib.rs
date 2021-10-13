@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #![feature(crate_visibility_modifier)]
 use std::env;
 use sqlx::postgres::{PgPool, PgPoolOptions};

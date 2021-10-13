@@ -94,8 +94,10 @@
 //! # `galos-gui`
 //! TODO
 
+#[cfg(unix)]
 use galos_db::Database;
 
+#[cfg(unix)]
 pub trait Run {
     // TODO: Reture Error
     fn run(&self, db: &Database);

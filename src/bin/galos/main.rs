@@ -1,10 +1,14 @@
+#[cfg(unix)]
 #[macro_use]
 extern crate prettytable;
 
 use structopt::StructOpt;
+#[cfg(unix)]
 use galos_db::{Error, Database};
+#[cfg(unix)]
 use galos::Run;
 
+#[cfg(unix)]
 #[derive(StructOpt, Debug)]
 struct Cli {
     #[structopt(short = "d", long = "database", help = "override default (.env) database URL")]
@@ -13,6 +17,7 @@ struct Cli {
     subcommand: Subcommand,
 }
 
+#[cfg(unix)]
 #[derive(StructOpt, Debug)]
 enum Subcommand {
     #[structopt(about = "Search for systems, bodies, stations, factions, etc")]
@@ -21,6 +26,7 @@ enum Subcommand {
     Route(route::Cli),
 }
 
+#[cfg(unix)]
 impl Run for Subcommand {
     fn run(&self, db: &Database) {
         match self {
@@ -30,6 +36,7 @@ impl Run for Subcommand {
     }
 }
 
+#[cfg(unix)]
 #[async_std::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::from_args();
@@ -43,5 +50,10 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(unix)]
 mod search;
+#[cfg(unix)]
 mod route;
+
+#[cfg(not(unix))]
+fn main() {}

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use std::fs;
 use async_std::task;
 use structopt::StructOpt;
@@ -43,8 +44,8 @@ impl Run for Cli {
                 if let Some(system) = option {
                     let result = System::from_journal(db, &system, entry.timestamp).await;
                     match result {
-                        Ok(_) => bar.set_message(&format!("[{}] {}", entry.timestamp, system.name)),
-                        Err(err) => bar.set_message(&format!("[ERROR {}] {}", entry.timestamp, err)),
+                        Ok(_) => bar.set_message(format!("[{}] {}", entry.timestamp, system.name)),
+                        Err(err) => bar.set_message(format!("[ERROR {}] {}", entry.timestamp, err)),
                     }
                 }
             });

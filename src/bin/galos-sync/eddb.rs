@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use async_std::task;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -38,8 +39,8 @@ impl Run for Cli {
                             system.allegiance, system.primary_economy, None, system.updated_at)
                             .await;
                         match result {
-                            Ok(_) => bar.set_message(&format!("[EDDB] {}", system.name)),
-                            Err(err) => bar.set_message(&format!("[EDDB ERROR] {}", err)),
+                            Ok(_) => bar.set_message(format!("[EDDB] {}", system.name)),
+                            Err(err) => bar.set_message(format!("[EDDB ERROR] {}", err)),
                         }
                     });
                 }

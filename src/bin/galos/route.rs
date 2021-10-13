@@ -1,9 +1,13 @@
+#[cfg(unix)]
 use async_std::task;
 use itertools::Itertools;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(unix)]
 use prettytable::{format, Table};
+#[cfg(unix)]
 use galos_db::{Database, systems::{ModuleClass, System}};
+#[cfg(unix)]
 use galos::Run;
 
 #[derive(StructOpt, Debug)]

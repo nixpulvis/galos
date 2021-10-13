@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use structopt::StructOpt;
 use galos_db::Database;
 use crate::Run;

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use async_std::task;
 use structopt::StructOpt;
 use elite_journal::entry::Event;

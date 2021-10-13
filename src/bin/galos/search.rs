@@ -1,7 +1,10 @@
+#[cfg(unix)]
 use async_std::task;
 use structopt::StructOpt;
 use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(unix)]
 use galos_db::{Database, systems::System, factions::{Faction, SystemFaction}};
+#[cfg(unix)]
 use galos::Run;
 
 #[derive(StructOpt, Debug)]

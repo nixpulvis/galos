@@ -12,11 +12,11 @@ chrono = "*"
 pathfinding = "*"
 ordered-float = "*"
 
-[dependencies.sqlx]
+[target.'cfg(unix)'.dependencies.sqlx]
 version = "*"
 features = ["runtime-async-std-native-tls", "postgres", "chrono", "offline"]
 
-[dependencies.geozero]
+[target.'cfg(unix)'.dependencies.geozero]
 git = "https://github.com/georust/geozero"
 branch = "master"
 features = ["with-wkb"]
