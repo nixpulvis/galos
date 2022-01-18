@@ -21,9 +21,9 @@ itertools = "*"
 indicatif = "*"
 
 # Subcomponents of Galos.
-galos_db     = { path = 'galos_db' }
-galos-gui    = { path = 'galos-gui' }
-# galos_server = { path = 'galos-server' }
+galos_db  = { path = 'galos_db' }
+# galos-gui     = { path = 'galos-gui' }
+# galos-server  = { path = 'galos-server' }
 # galos-worker  = { path = 'galos-worker' }
 
 
