@@ -1,6 +1,6 @@
 [package]
 name    = "galos"
-version = "0.0.1-dev+alpha"
+version = "0.0.2"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
@@ -29,10 +29,10 @@ galos_db  = { path = 'galos_db' }
 
 # Our open source crates.
 # elite_dat = { path = './elite_dat' }
-elite_journal = { git = "https://github.com/ED-NEWP/elite_journal" }
-eddn          = { git = "https://github.com/ED-NEWP/eddn" }
-eddb          = { git = "https://github.com/ED-NEWP/eddb" }
-edsm          = { git = "https://github.com/ED-NEWP/edsm" }
+elite_journal = { path = "./elite_journal" }
+eddn          = { path = "./eddn" }
+eddb          = { path = "./eddb" }
+edsm          = { path = "./edsm" }
 
 [target.'cfg(unix)'.dependencies]
 prettytable-rs = "*"
@@ -41,20 +41,18 @@ tui = "*"
 
 
 # TODO
-# [patch.'https://github.com/ED-NEWP/elite_dat']
+# [patch.'https://github.com/nixpulvis/elite_dat']
 # elite_dat = { path = './elite_dat' }
 
-[patch.'https://github.com/ED-NEWP/elite_journal']
+[patch.crates-io]
 elite_journal = { path = './elite_journal' }
+# eddn = { path = './eddn' }
 
-[patch.'https://github.com/ED-NEWP/eddn']
-eddn = { path = './eddn' }
+# [patch.'https://github.com/nixpulvis/eddb']
+# eddb = { path = './eddb' }
 
-[patch.'https://github.com/ED-NEWP/eddb']
-eddb = { path = './eddb' }
-
-[patch.'https://github.com/ED-NEWP/edsm']
-edsm = { path = './edsm' }
+# [patch.'https://github.com/nixpulvis/edsm']
+# edsm = { path = './edsm' }
 
 [workspace]
 members = [

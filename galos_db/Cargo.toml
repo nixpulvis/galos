@@ -1,6 +1,6 @@
 [package]
 name = "galos_db"
-version = "0.0.1-dev+alpha"
+version = "0.0.2"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
@@ -17,10 +17,9 @@ version = "*"
 features = ["runtime-async-std-native-tls", "postgres", "chrono", "offline"]
 
 [target.'cfg(unix)'.dependencies.geozero]
-git = "https://github.com/georust/geozero"
-branch = "master"
+version = "^0.8"
 features = ["with-wkb"]
 
 [dependencies.elite_journal]
-git = "https://github.com/ED-NEWP/elite_journal"
+path = "../elite_journal"
 features = ["with-postgis-sqlx"]

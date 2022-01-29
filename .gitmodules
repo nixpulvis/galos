@@ -1,16 +1,16 @@
 [submodule "edsm"]
 	path = edsm
-	url = https://github.com/ED-NEWP/edsm
+	url = https://github.com/nixpulvis/edsm
 	ignore = untracked
 [submodule "eddb"]
 	path = eddb
-	url = https://github.com/ED-NEWP/eddb
+	url = https://github.com/nixpulvis/eddb
 	ignore = untracked
 [submodule "eddn"]
 	path = eddn
-	url = https://github.com/ED-NEWP/eddn
+	url = https://github.com/nixpulvis/eddn
 	ignore = untracked
 [submodule "elite_journal"]
 	path = elite_journal
-	url = https://github.com/ED-NEWP/elite_journal
+	url = https://github.com/nixpulvis/elite_journal
 	ignore = untracked
