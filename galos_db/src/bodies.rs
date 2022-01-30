@@ -40,13 +40,19 @@ impl Body {
         system_address: i64)
         -> Result<Body, Error>
     {
+        let parent = if let Some(map) = body.parents.get(0) {
+            map.values().next()
+        } else {
+            None
+        };
+
         let row = sqlx::query!(
             "
-            INSERT INTO bodies (name, id, system_address, updated_at)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO bodies (name, id, parent_id, system_address, updated_at)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING *
             ",
-            body.name, body.id, system_address, timestamp.naive_utc())
+            body.name, body.id, parent, system_address, timestamp.naive_utc())
             .fetch_one(&db.pool)
             .await?;
 

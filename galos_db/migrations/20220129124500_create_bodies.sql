@@ -3,11 +3,8 @@ CREATE TABLE bodies (
     system_address  bigint     REFERENCES systems  NOT NULL,
     id              smallint   NOT NULL,
     name            varchar    NOT NULL,
-
-
-    /* TODO: prospective */
-    /* distance_from_arrival: f64, */
-
-
-    updated_at  timestamp   NOT NULL
+    parent_id       smallint,
+    updated_at      timestamp  NOT NULL,
+    UNIQUE (system_address, id),
+    UNIQUE (system_address, name)
 );
