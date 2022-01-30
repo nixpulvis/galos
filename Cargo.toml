@@ -6,14 +6,6 @@ edition = "2018"
 
 default-run = "galos"
 
-[[bin]]
-name = "galos"
-path = "src/bin/galos/main.rs"
-
-[[target.'cfg(unix)'.bin]]
-name = "galos-sync"
-path = "src/bin/galos-sync/main.rs"
-
 [dependencies]
 async-std = "*"
 structopt = "*"
