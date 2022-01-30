@@ -42,7 +42,7 @@ impl Run for Cli {
                 };
 
                 if let Some(system) = option {
-                    let result = System::from_journal(db, &system, entry.timestamp).await;
+                    let result = System::from_journal(db, entry.timestamp, &system).await;
                     match result {
                         Ok(_) => bar.set_message(format!("[{}] {}", entry.timestamp, system.name)),
                         Err(err) => bar.set_message(format!("[ERROR {}] {}", entry.timestamp, err)),
