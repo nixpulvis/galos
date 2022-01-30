@@ -7,8 +7,6 @@ use ordered_float::OrderedFloat;
 use elite_journal::{
     prelude::*,
     system::System as JournalSystem,
-    body::Body as JournalBody,
-    station::Station as JournalStation
 };
 use crate::{Error, Database};
 use crate::factions::{Faction, SystemFaction, Conflict};

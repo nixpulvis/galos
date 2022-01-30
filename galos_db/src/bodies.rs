@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
-use elite_journal::{prelude::*, body::Body as JournalBody};
-use crate::systems::System;
+use elite_journal::body::Body as JournalBody;
 use crate::{Error, Database};
 
 #[derive(Debug, PartialEq, Eq)]

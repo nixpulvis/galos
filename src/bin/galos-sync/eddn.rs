@@ -37,32 +37,32 @@ fn process_message(db: &Database, message: Message) {
                 Event::Scan(e) => {
                     let system = JournalSystem::new(e.system_address, e.star_pos, &e.star_system);
                     match System::from_journal(db, entry.timestamp, &system).await {
-                        Ok(_) => eprintln!("[EDDN] <Scan/system> {}", system.name),
-                        Err(err) => eprintln!("[EDDN] <Scan/system> {}", err),
+                        Ok(_) => eprintln!("<Scan> sys {}", system.name),
+                        Err(err) => eprintln!("<Scan> sys {}", err),
                     }
 
                     match Body::from_journal(db, entry.timestamp, &e.body, e.system_address).await {
-                        Ok(_) => eprintln!("[EDDN] <Scan/body> {}", e.body.name),
-                        Err(err) => eprintln!("[EDDN] <Scan/body> {}", err),
+                        Ok(_) => eprintln!("<Scan> bod {}", e.body.name),
+                        Err(err) => eprintln!("<Scan> bod {}", err),
                     }
                 },
                 Event::Location(e) => {
                     match System::from_journal(db, entry.timestamp, &e.system).await {
-                        Ok(_) => eprintln!("[EDDN] <Location/system> {}", e.system.name),
-                        Err(err) => eprintln!("[EDDN] <Location/system> {}", err),
+                        Ok(_) => eprintln!("<Location> sys {}", e.system.name),
+                        Err(err) => eprintln!("<Location> sys {}", err),
                     }
 
                     if let Some(body) = e.body {
                         match Body::from_journal(db, entry.timestamp, &body, e.system.address).await {
-                            Ok(_) => eprintln!("[EDDN] <Location/body> {}", body.name),
-                            Err(err) => eprintln!("[EDDN] <Location/body> {}", err),
+                            Ok(_) => eprintln!("<Location> bod {}", body.name),
+                            Err(err) => eprintln!("<Location> bod {}", err),
                         }
                     }
                 },
                 Event::FsdJump(e) => {
                     match System::from_journal(db, entry.timestamp, &e.system).await {
-                        Ok(_) => eprintln!("[EDDN] <FsdJump> {}", e.system.name),
-                        Err(err) => eprintln!("[EDDN] <FsdJump> {}", err),
+                        Ok(_) => eprintln!("<FsdJump> sys {}", e.system.name),
+                        Err(err) => eprintln!("<FsdJump> sys {}", err),
                     }
                 },
                 _ => {}
