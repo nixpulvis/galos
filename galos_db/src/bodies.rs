@@ -49,6 +49,11 @@ impl Body {
             "
             INSERT INTO bodies (name, id, parent_id, system_address, updated_at)
             VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (system_address, id)
+            DO UPDATE SET
+                name = $1,
+                parent_id = $3,
+                updated_at = $5
             RETURNING *
             ",
             body.name, body.id, parent, system_address, timestamp.naive_utc())
