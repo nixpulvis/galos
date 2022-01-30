@@ -13,20 +13,20 @@ use galos::Run;
 #[derive(StructOpt, Debug)]
 pub struct Cli {
     // #[structopt(parse(lalrpop(Route)))]
-    start: String,
-    end: String,
+    pub start: String,
+    pub end: String,
 
     #[structopt(default_value = "7.5", short = "r", long)]
-    range: f64,
+    pub range: f64,
     #[structopt(default_value = "25", short = "m", long)]
-    total_mass: f64,
+    pub total_mass: f64,
     #[structopt(default_value = "48", short = "o", long)]
-    optimized_mass: f64,
+    pub optimized_mass: f64,
 
     #[structopt(default_value = "2", short = "s", long)]
-    size: u8,
+    pub size: u8,
     #[structopt(default_value = "E", short = "c", long)]
-    class: ModuleClass,
+    pub class: ModuleClass,
 }
 
 impl Run for Cli {

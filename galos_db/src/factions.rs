@@ -71,7 +71,7 @@ impl Faction {
 
 #[derive(Debug, PartialEq)]
 pub struct SystemFaction {
-    pub system_address: u64,
+    pub system_address: i64,
     pub faction_id: u32,
     pub state: Option<JournalState>,
     pub influence: f32,
@@ -82,7 +82,7 @@ pub struct SystemFaction {
 impl SystemFaction {
     pub async fn from_journal(
         db: &Database,
-        system_address: u64,
+        system_address: i64,
         faction_id: u32,
         faction_info: &FactionInfo,
         timestamp: DateTime<Utc>)
@@ -147,7 +147,7 @@ impl SystemFaction {
             }
 
             Ok(Some(SystemFaction {
-                system_address: r.system_address as u64,
+                system_address: r.system_address as i64,
                 faction_id: r.faction_id as u32,
                 state: r.state,
                 influence: r.influence,
@@ -159,7 +159,7 @@ impl SystemFaction {
         }
     }
 
-    pub async fn fetch(db: &Database, address: u64, id: u32) -> Result<Self, Error> {
+    pub async fn fetch(db: &Database, address: i64, id: u32) -> Result<Self, Error> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -181,7 +181,7 @@ impl SystemFaction {
             .await?;
 
         Ok(SystemFaction {
-            system_address: row.system_address as u64,
+            system_address: row.system_address as i64,
             faction_id: row.faction_id as u32,
             state: row.state,
             influence: row.influence,
@@ -190,7 +190,7 @@ impl SystemFaction {
         })
     }
 
-    pub async fn fetch_all(db: &Database, address: Option<u64>) -> Result<Vec<(String, Self)>, Error> {
+    pub async fn fetch_all(db: &Database, address: Option<i64>) -> Result<Vec<(String, Self)>, Error> {
         if let Some(address) = address {
             let rows = sqlx::query!(
             r#"
@@ -215,7 +215,7 @@ impl SystemFaction {
             Ok(rows.into_iter().map(|row| {
                 (row.name,
                  SystemFaction {
-                    system_address: row.system_address as u64,
+                    system_address: row.system_address as i64,
                     faction_id: row.faction_id as u32,
                     state: row.state,
                     influence: row.influence,
@@ -246,7 +246,7 @@ impl SystemFaction {
             Ok(rows.into_iter().map(|row| {
                 (row.name,
                  SystemFaction {
-                    system_address: row.system_address as u64,
+                    system_address: row.system_address as i64,
                     faction_id: row.faction_id as u32,
                     state: row.state,
                     influence: row.influence,
@@ -260,7 +260,7 @@ impl SystemFaction {
 
 #[derive(Debug, PartialEq)]
 pub struct State {
-    system_address: u64,
+    system_address: i64,
     faction_id: u32,
     state: JournalState,
     status: Status,
@@ -269,7 +269,7 @@ pub struct State {
 impl State {
     pub async fn from_journal(
         db: &Database,
-        system_address: u64,
+        system_address: i64,
         faction_id: u32,
         state: JournalState,
         status: Status)
@@ -297,14 +297,14 @@ impl State {
             .await?;
 
         Ok(State {
-            system_address: row.system_address as u64,
+            system_address: row.system_address as i64,
             faction_id: row.faction_id as u32,
             state: row.state,
             status: row.status,
         })
     }
 
-    pub async fn clear(db: &Database, system_address: u64, faction_id: u32) -> Result<(), Error> {
+    pub async fn clear(db: &Database, system_address: i64, faction_id: u32) -> Result<(), Error> {
         sqlx::query!(
             r#"
             DELETE FROM system_faction_states
@@ -321,7 +321,7 @@ impl State {
 
 #[derive(Debug, PartialEq)]
 pub struct Conflict {
-    system_address: u64,
+    system_address: i64,
     ty: FactionConflictType,
     status: Status,
     faction_1_id: u32,
@@ -336,7 +336,7 @@ pub struct Conflict {
 impl Conflict {
     pub async fn from_journal(
         db: &Database,
-        system_address: u64,
+        system_address: i64,
         conflict: &FactionConflict,
         timestamp: DateTime<Utc>)
         -> Result<Self, Error>
@@ -393,7 +393,7 @@ impl Conflict {
             .await?;
 
         Ok(Conflict {
-            system_address: row.system_address as u64,
+            system_address: row.system_address as i64,
             ty: row.ty,
             status: row.status,
             faction_1_id: row.faction_1_id as u32,

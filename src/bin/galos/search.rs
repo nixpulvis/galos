@@ -22,22 +22,22 @@ pub struct Cli {
 
 
     #[structopt(short = "s", long = "systems", name = "SYSTEM(s)")]
-    system_like: Option<String>,
+    pub system_like: Option<String>,
 
     #[structopt(short = "f", long = "factions", name = "FACTION(s)")]
-    faction_like: Option<String>,
+    pub faction_like: Option<String>,
 
     #[structopt(short = "d", long = "diameter")]
-    diameter: Option<f64>,
+    pub diameter: Option<f64>,
 
     #[structopt(short = "r", long = "radius")]
-    radius: Option<f64>,
+    pub radius: Option<f64>,
 
     #[structopt(short = "c", long = "count")]
-    count: bool,
+    pub count: bool,
 
     // #[structopt(short = "f", long = "filter", parse(from_filter_string))]
-    // filters: Vec<String>,
+    // pub filters: Vec<String>,
 
     // TODO: What is the best way to handle filters for systems, factions, etc.
     // We don't want full SQL obviously.
@@ -83,7 +83,7 @@ impl Run for Cli {
 
                             if let Some(faction_query) = faction_like {
                                 if faction_query == "%" {
-                                    let sfs = SystemFaction::fetch_all(db, Some(system.address as u64)).await.unwrap();
+                                    let sfs = SystemFaction::fetch_all(db, Some(system.address)).await.unwrap();
                                     for (name, sf) in sfs {
                                         println!("\t{}", name.to_lowercase());
                                         println!("\t\tinfluence: {}%", sf.influence * 100.);
