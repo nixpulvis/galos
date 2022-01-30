@@ -4,7 +4,12 @@ use chrono::{DateTime, Utc};
 use geozero::wkb;
 use pathfinding::prelude::*;
 use ordered_float::OrderedFloat;
-use elite_journal::{prelude::*, system::System as JournalSystem};
+use elite_journal::{
+    prelude::*,
+    system::System as JournalSystem,
+    body::Body as JournalBody,
+    station::Station as JournalStation
+};
 use crate::{Error, Database};
 use crate::factions::{Faction, SystemFaction, Conflict};
 
@@ -31,7 +36,7 @@ pub struct System {
 
 impl System {
     pub async fn create(db: &Database,
-        address: u64,
+        address: i64,
         name: &str,
         position: Coordinate,
         population: Option<u64>,
@@ -83,7 +88,10 @@ impl System {
         Ok(())
     }
 
-    pub async fn from_journal(db: &Database, system: &JournalSystem, timestamp: DateTime<Utc>)
+    pub async fn from_journal(
+        db: &Database,
+        timestamp: DateTime<Utc>,
+        system: &JournalSystem)
         -> Result<(), Error>
     {
         let position = Coordinate {
