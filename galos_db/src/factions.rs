@@ -147,7 +147,7 @@ impl SystemFaction {
             }
 
             Ok(Some(SystemFaction {
-                system_address: r.system_address as i64,
+                system_address: r.system_address,
                 faction_id: r.faction_id as u32,
                 state: r.state,
                 influence: r.influence,
@@ -181,7 +181,7 @@ impl SystemFaction {
             .await?;
 
         Ok(SystemFaction {
-            system_address: row.system_address as i64,
+            system_address: row.system_address,
             faction_id: row.faction_id as u32,
             state: row.state,
             influence: row.influence,
@@ -215,7 +215,7 @@ impl SystemFaction {
             Ok(rows.into_iter().map(|row| {
                 (row.name,
                  SystemFaction {
-                    system_address: row.system_address as i64,
+                    system_address: row.system_address,
                     faction_id: row.faction_id as u32,
                     state: row.state,
                     influence: row.influence,
@@ -246,7 +246,7 @@ impl SystemFaction {
             Ok(rows.into_iter().map(|row| {
                 (row.name,
                  SystemFaction {
-                    system_address: row.system_address as i64,
+                    system_address: row.system_address,
                     faction_id: row.faction_id as u32,
                     state: row.state,
                     influence: row.influence,
@@ -297,7 +297,7 @@ impl State {
             .await?;
 
         Ok(State {
-            system_address: row.system_address as i64,
+            system_address: row.system_address,
             faction_id: row.faction_id as u32,
             state: row.state,
             status: row.status,
@@ -393,7 +393,7 @@ impl Conflict {
             .await?;
 
         Ok(Conflict {
-            system_address: row.system_address as i64,
+            system_address: row.system_address,
             ty: row.ty,
             status: row.status,
             faction_1_id: row.faction_1_id as u32,

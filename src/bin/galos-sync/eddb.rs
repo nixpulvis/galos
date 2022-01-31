@@ -34,7 +34,7 @@ impl Run for Cli {
                         z: system.coords.z
                     };
                     task::block_on(async {
-                        let result = System::create(db, address, &system.name, position,
+                        let result = System::create(db, address as i64, &system.name, position,
                             system.population, system.security, system.government,
                             system.allegiance, system.primary_economy, None, system.updated_at)
                             .await;
