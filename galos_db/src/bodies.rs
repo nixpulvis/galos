@@ -4,7 +4,6 @@ use crate::{Error, Database};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Body {
-    pub address: i64,
     pub system_address: i64,
     pub id: i16,
     pub name: String,
@@ -24,7 +23,6 @@ impl Body {
             .await?;
 
         Ok(Body {
-            address: row.address,
             system_address: row.system_address,
             id: row.id,
             name: row.name,
@@ -125,7 +123,6 @@ impl Body {
             .await?;
 
         Ok(Body {
-            address: row.address,
             system_address: row.system_address,
             id: row.id,
             name: row.name,
@@ -133,18 +130,17 @@ impl Body {
         })
     }
 
-    pub async fn fetch(db: &Database, address: i64) -> Result<Self, Error> {
+    pub async fn fetch(db: &Database, system_address: i64, id: i16) -> Result<Self, Error> {
         let row = sqlx::query!(
             "
             SELECT *
             FROM bodies
-            WHERE address = $1
-            ", address)
+            WHERE system_address = $1 AND id = $2
+            ", system_address, id)
             .fetch_one(&db.pool)
             .await?;
 
         Ok(Body {
-            address: row.address,
             system_address: row.system_address,
             id: row.id,
             name: row.name,
@@ -152,19 +148,17 @@ impl Body {
         })
     }
 
-    pub async fn fetch_by_name_and_system_address(db: &Database, name: &str, system_address: i64) -> Result<Self, Error> {
+    pub async fn fetch_like_name_and_system_address(db: &Database, system_address: i64, name: &str) -> Result<Self, Error> {
         let row = sqlx::query!(
             "
             SELECT *
             FROM bodies
-            WHERE lower(name) = $1
-            AND   system_address = $2
-            ", name.to_lowercase(), system_address)
+            WHERE system_address = $1 AND lower(name) ILIKE $2
+            ", system_address, name.to_lowercase())
             .fetch_one(&db.pool)
             .await?;
 
         Ok(Body {
-            address: row.address,
             system_address: row.system_address,
             id: row.id,
             name: row.name,
@@ -185,7 +179,6 @@ impl Body {
 
         Ok(rows.into_iter().map(|row| {
             Body {
-                address: row.address,
                 system_address: row.system_address,
                 id: row.id,
                 name: row.name,

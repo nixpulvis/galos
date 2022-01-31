@@ -5,7 +5,6 @@
 /* ); */
 
 CREATE TABLE bodies (
-    address         bigserial  PRIMARY KEY,
     system_address  bigint     REFERENCES systems  NOT NULL,
     name            varchar    NOT NULL,
     id              smallint   NOT NULL,
@@ -39,6 +38,6 @@ CREATE TABLE bodies (
     was_mapped      boolean  NOT NULL,
     was_discovered  boolean  NOT NULL,
 
-    UNIQUE (system_address, id),
+    PRIMARY KEY(system_address, id),
     UNIQUE (system_address, name)
 );
