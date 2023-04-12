@@ -12,12 +12,12 @@ chrono = "*"
 pathfinding = "*"
 ordered-float = "*"
 
-[target.'cfg(unix)'.dependencies.sqlx]
-version = "*"
+[dependencies.sqlx]
+version = "^0.6"
 features = ["runtime-async-std-native-tls", "postgres", "chrono", "offline"]
 
-[target.'cfg(unix)'.dependencies.geozero]
-version = "^0.8"
+[dependencies.geozero]
+version = "^0.9"
 features = ["with-wkb"]
 
 [dependencies.elite_journal]

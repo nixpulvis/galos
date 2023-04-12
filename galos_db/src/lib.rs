@@ -1,5 +1,4 @@
 #![cfg(unix)]
-#![feature(crate_visibility_modifier)]
 use std::env;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -7,7 +6,7 @@ pub mod error;
 pub use self::error::{Result, Error};
 
 pub struct Database {
-    crate pool: PgPool,
+    pub(crate) pool: PgPool,
 }
 
 impl Database {
