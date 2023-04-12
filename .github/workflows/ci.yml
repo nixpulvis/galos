@@ -16,6 +16,8 @@ jobs:
     name: Rust project
     runs-on: ubuntu-latest
     steps:
+      - name: install deps
+        run: sudo apt-get install -y libzmq5
       - uses: actions/checkout@v2
         with:
             submodules: true
