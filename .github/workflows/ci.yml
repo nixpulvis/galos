@@ -12,24 +12,15 @@ env:
 
 
 jobs:
-  build:
+  build_and_test:
+    name: Rust project
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-
-    - name: 'Setup operating system'
-      uses: ./.github/workflows
-
-    - name: Cache build artifacts
-      uses: actions/cache@v2
-      with:
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-
-    - name: Run tests
-      run: cargo test --all
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features
