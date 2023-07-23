@@ -28,6 +28,7 @@ impl Run for Cli {
         let bar = ProgressBar::new(entries.len() as u64);
         bar.set_style(ProgressStyle::default_bar()
             .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
+            .unwrap()
             .progress_chars("##-"));
         for entry in bar.wrap_iter(entries.into_iter()) {
             task::block_on(async {

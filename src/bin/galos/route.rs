@@ -1,3 +1,4 @@
+use std::time::Duration;
 #[cfg(unix)]
 use async_std::task;
 use itertools::Itertools;
@@ -32,7 +33,7 @@ pub struct Cli {
 impl Run for Cli {
     fn run(&self, db: &Database) {
         let spinner = ProgressBar::new_spinner();
-        spinner.enable_steady_tick(100);
+        spinner.enable_steady_tick(Duration::from_millis(100));
         spinner.set_message("Finding systems...");
         let (start, end) = task::block_on(async {
             let start = System::fetch_by_name(db, &self.start).await.unwrap();
@@ -64,9 +65,10 @@ impl Run for Cli {
                     ">>>>>>>>>>>>>>>-",
                     "----------------",
                 ])
-                .template("{spinner:.yellow} {msg}"),
+                .template("{spinner:.yellow} {msg}")
+                .unwrap(),
         );
-        spinner.enable_steady_tick(250);
+        spinner.enable_steady_tick(Duration::from_millis(250));
 
         let mut table = Table::new();
         table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);

@@ -1,3 +1,4 @@
+use std::time::Duration;
 #[cfg(unix)]
 use async_std::task;
 use structopt::StructOpt;
@@ -57,9 +58,10 @@ impl Run for Cli {
                     ">>--<<",
                     ">>><<<",
                 ])
-                .template("{spinner:.yellow} {msg}"),
+                .template("{spinner:.yellow} {msg}")
+                .unwrap(),
         );
-        spinner.enable_steady_tick(125);
+        spinner.enable_steady_tick(Duration::from_millis(125));
 
         task::block_on(async {
 

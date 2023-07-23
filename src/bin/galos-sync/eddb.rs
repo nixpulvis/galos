@@ -24,6 +24,7 @@ impl Run for Cli {
         let bar = ProgressBar::new(dump.len());
         bar.set_style(ProgressStyle::default_bar()
             .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
+            .unwrap()
             .progress_chars("##-"));
         for result in bar.wrap_iter(dump.into_iter()) {
             if let Ok(system) = result {
