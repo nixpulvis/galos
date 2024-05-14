@@ -2,16 +2,20 @@
 #[macro_use]
 extern crate prettytable;
 
-use structopt::StructOpt;
-#[cfg(unix)]
-use galos_db::{Error, Database};
 #[cfg(unix)]
 use galos::Run;
+#[cfg(unix)]
+use galos_db::{Database, Error};
+use structopt::StructOpt;
 
 #[cfg(unix)]
 #[derive(StructOpt, Debug)]
 struct Cli {
-    #[structopt(short = "d", long = "database", help = "override default (.env) database URL")]
+    #[structopt(
+        short = "d",
+        long = "database",
+        help = "override default (.env) database URL"
+    )]
     database_url: Option<String>,
     #[structopt(subcommand)]
     subcommand: Subcommand,
@@ -31,7 +35,7 @@ impl Run for Subcommand {
     fn run(&self, db: &Database) {
         match self {
             Subcommand::Search(cli) => cli.run(db),
-            Subcommand::Route(cli)  => cli.run(db),
+            Subcommand::Route(cli) => cli.run(db),
         }
     }
 }
@@ -51,9 +55,9 @@ async fn main() -> Result<(), Error> {
 }
 
 #[cfg(unix)]
-mod search;
-#[cfg(unix)]
 mod route;
+#[cfg(unix)]
+mod search;
 
 #[cfg(not(unix))]
 fn main() {}

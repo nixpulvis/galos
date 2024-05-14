@@ -1,6 +1,6 @@
+use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::body::Body as JournalBody;
-use crate::{Error, Database};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Body {
@@ -18,15 +18,18 @@ impl Body {
             VALUES ($1, $2, $3)
             RETURNING *
             ",
-            name, system_address, Utc::now().naive_utc())
-            .fetch_one(&db.pool)
-            .await?;
+            name,
+            system_address,
+            Utc::now().naive_utc()
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(Body {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            updated_at: DateTime::from_utc(row.updated_at, Utc)
+            updated_at: row.updated_at.and_utc(),
         })
     }
 
@@ -34,9 +37,8 @@ impl Body {
         db: &Database,
         timestamp: DateTime<Utc>,
         body: &JournalBody,
-        system_address: i64)
-        -> Result<Body, Error>
-    {
+        system_address: i64,
+    ) -> Result<Body, Error> {
         let parent = if let Some(map) = body.parents.get(0) {
             map.values().next()
         } else {
@@ -112,21 +114,43 @@ impl Body {
                 was_discovered = $28
             RETURNING *
             ",
-            body.name, body.id, parent, system_address, timestamp.naive_utc(), body.planet_class,
-            body.tidal_lock, body.landable, body.terraform_state, body.atmosphere,
-            body.atmosphere_type, body.volcanism, body.mass, body.radius, body.surface_gravity,
-            body.surface_temperature, body.surface_pressure, body.semi_major_axis,
-            body.eccentricity, body.orbital_inclination, body.periapsis, body.orbital_period,
-            body.rotation_period, body.axial_tilt, body.ascending_node, body.mean_anomaly,
-            body.was_mapped, body.was_discovered)
-            .fetch_one(&db.pool)
-            .await?;
+            body.name,
+            body.id,
+            parent,
+            system_address,
+            timestamp.naive_utc(),
+            body.planet_class,
+            body.tidal_lock,
+            body.landable,
+            body.terraform_state,
+            body.atmosphere,
+            body.atmosphere_type,
+            body.volcanism,
+            body.mass,
+            body.radius,
+            body.surface_gravity,
+            body.surface_temperature,
+            body.surface_pressure,
+            body.semi_major_axis,
+            body.eccentricity,
+            body.orbital_inclination,
+            body.periapsis,
+            body.orbital_period,
+            body.rotation_period,
+            body.axial_tilt,
+            body.ascending_node,
+            body.mean_anomaly,
+            body.was_mapped,
+            body.was_discovered
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(Body {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            updated_at: DateTime::from_utc(row.updated_at, Utc)
+            updated_at: row.updated_at.and_utc(),
         })
     }
 
@@ -136,33 +160,43 @@ impl Body {
             SELECT *
             FROM bodies
             WHERE system_address = $1 AND id = $2
-            ", system_address, id)
-            .fetch_one(&db.pool)
-            .await?;
+            ",
+            system_address,
+            id
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(Body {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            updated_at: DateTime::from_utc(row.updated_at, Utc)
+            updated_at: row.updated_at.and_utc(),
         })
     }
 
-    pub async fn fetch_like_name_and_system_address(db: &Database, system_address: i64, name: &str) -> Result<Self, Error> {
+    pub async fn fetch_like_name_and_system_address(
+        db: &Database,
+        system_address: i64,
+        name: &str,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             "
             SELECT *
             FROM bodies
             WHERE system_address = $1 AND lower(name) ILIKE $2
-            ", system_address, name.to_lowercase())
-            .fetch_one(&db.pool)
-            .await?;
+            ",
+            system_address,
+            name.to_lowercase()
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(Body {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            updated_at: DateTime::from_utc(row.updated_at, Utc)
+            updated_at: row.updated_at.and_utc(),
         })
     }
 
@@ -173,17 +207,20 @@ impl Body {
             FROM bodies
             WHERE name ILIKE $1
             ORDER BY name
-            "#, name)
-            .fetch_all(&db.pool)
-            .await?;
+            "#,
+            name
+        )
+        .fetch_all(&db.pool)
+        .await?;
 
-        Ok(rows.into_iter().map(|row| {
-            Body {
+        Ok(rows
+            .into_iter()
+            .map(|row| Body {
                 system_address: row.system_address,
                 id: row.id,
                 name: row.name,
-                updated_at: DateTime::from_utc(row.updated_at, Utc)
-            }
-        }).collect())
+                updated_at: row.updated_at.and_utc(),
+            })
+            .collect())
     }
 }

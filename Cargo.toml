@@ -15,6 +15,7 @@ indicatif = "*"
 # Subcomponents of Galos.
 galos_db  = { path = 'galos_db' }
 # galos-gui     = { path = 'galos-gui' }
+starmap = { path = 'starmap' }
 # galos-server  = { path = 'galos-server' }
 # galos-worker  = { path = 'galos-worker' }
 
@@ -55,6 +56,7 @@ members = [
     "edsm",
     "galos_db",
     # "galos-gui",
+    "starmap",
     # "galos-server",
     # "galos-worker",
 ]

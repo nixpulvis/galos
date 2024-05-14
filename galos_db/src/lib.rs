@@ -1,9 +1,9 @@
 #![cfg(unix)]
-use std::env;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::env;
 
 pub mod error;
-pub use self::error::{Result, Error};
+pub use self::error::{Error, Result};
 
 pub struct Database {
     pub(crate) pool: PgPool,
@@ -16,15 +16,14 @@ impl Database {
 
         let pool = PgPoolOptions::new()
             .max_connections(5)
-            .connect(&url).await?;
+            .connect(&url)
+            .await?;
 
         Ok(Database { pool })
     }
 
     pub async fn from_url(url: &str) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect(url).await?;
+        let pool = PgPoolOptions::new().max_connections(5).connect(url).await?;
 
         Ok(Database { pool })
     }
@@ -37,10 +36,7 @@ pub struct Page {
 
 impl Page {
     pub fn by(limit: i64) -> Self {
-        Page {
-            limit,
-            offset: 0,
-        }
+        Page { limit, offset: 0 }
     }
 
     pub fn turn(&self, n: i64) -> Self {
@@ -52,6 +48,6 @@ impl Page {
 }
 
 pub mod articles;
-pub mod systems;
 pub mod bodies;
 pub mod factions;
+pub mod systems;

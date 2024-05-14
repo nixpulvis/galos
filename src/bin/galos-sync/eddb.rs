@@ -1,10 +1,10 @@
 #![cfg(unix)]
-use async_std::task;
-use structopt::StructOpt;
-use indicatif::{ProgressBar, ProgressStyle};
-use elite_journal::system::Coordinate;
-use galos_db::{Database, systems::System};
 use crate::Run;
+use async_std::task;
+use elite_journal::system::Coordinate;
+use galos_db::{systems::System, Database};
+use indicatif::{ProgressBar, ProgressStyle};
+use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
@@ -32,13 +32,23 @@ impl Run for Cli {
                     let position = Coordinate {
                         x: system.coords.x,
                         y: system.coords.y,
-                        z: system.coords.z
+                        z: system.coords.z,
                     };
                     task::block_on(async {
-                        let result = System::create(db, address as i64, &system.name, position,
-                            system.population, system.security, system.government,
-                            system.allegiance, system.primary_economy, None, system.updated_at)
-                            .await;
+                        let result = System::create(
+                            db,
+                            address as i64,
+                            &system.name,
+                            position,
+                            system.population,
+                            system.security,
+                            system.government,
+                            system.allegiance,
+                            system.primary_economy,
+                            None,
+                            system.updated_at,
+                        )
+                        .await;
                         match result {
                             Ok(_) => bar.set_message(format!("[EDDB] {}", system.name)),
                             Err(err) => bar.set_message(format!("[EDDB ERROR] {}", err)),

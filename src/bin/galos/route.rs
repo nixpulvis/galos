@@ -1,16 +1,20 @@
-use std::time::Duration;
 #[cfg(unix)]
 use async_std::task;
-use itertools::Itertools;
-use structopt::StructOpt;
-use indicatif::{ProgressBar, ProgressStyle};
-#[cfg(unix)]
-use prettytable::{format, Table};
-#[cfg(unix)]
-use galos_db::{Database, systems::{ModuleClass, System}};
 #[cfg(unix)]
 use galos::Run;
+#[cfg(unix)]
+use galos_db::{
+    systems::{ModuleClass, System},
+    Database,
+};
+use indicatif::{ProgressBar, ProgressStyle};
+use itertools::Itertools;
+#[cfg(unix)]
+use prettytable::{format, Table};
+use std::time::Duration;
+use structopt::StructOpt;
 
+#[allow(dead_code)]
 #[derive(StructOpt, Debug)]
 pub struct Cli {
     // #[structopt(parse(lalrpop(Route)))]
@@ -37,7 +41,7 @@ impl Run for Cli {
         spinner.set_message("Finding systems...");
         let (start, end) = task::block_on(async {
             let start = System::fetch_by_name(db, &self.start).await.unwrap();
-            let end   = System::fetch_by_name(db, &self.end).await.unwrap();
+            let end = System::fetch_by_name(db, &self.end).await.unwrap();
             (start, end)
         });
         spinner.finish_with_message("Input systems found, finding route...");
@@ -82,10 +86,12 @@ impl Run for Cli {
             gross += d;
         }
         table.printstd();
-        println!("jumps: {:.2}, path: {:.2} Ly, distance: {:.2} Ly",
+        println!(
+            "jumps: {:.2}, path: {:.2} Ly, distance: {:.2} Ly",
             cost,
             gross,
-            route[0].distance(&route.last().expect("valid route")));
+            route[0].distance(&route.last().expect("valid route"))
+        );
     }
 }
 

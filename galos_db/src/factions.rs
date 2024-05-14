@@ -1,6 +1,6 @@
+use crate::{Database, Error};
 use chrono::{DateTime, Utc};
-use elite_journal::{prelude::*, faction::State as JournalState};
-use crate::{Error, Database};
+use elite_journal::{faction::State as JournalState, prelude::*};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Faction {
@@ -19,11 +19,15 @@ impl Faction {
                 SET name = factions.name
             RETURNING *
             ",
-            name)
-            .fetch_one(&db.pool)
-            .await?;
+            name
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
-        Ok(Faction { id: row.id, name: row.name })
+        Ok(Faction {
+            id: row.id,
+            name: row.name,
+        })
     }
 
     pub async fn fetch(db: &Database, id: i32) -> Result<Self, Error> {
@@ -32,11 +36,16 @@ impl Faction {
             SELECT *
             FROM factions
             WHERE id = $1
-            ", id)
-            .fetch_one(&db.pool)
-            .await?;
+            ",
+            id
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
-        Ok(Faction { id: row.id, name: row.name })
+        Ok(Faction {
+            id: row.id,
+            name: row.name,
+        })
     }
 
     pub async fn fetch_by_name(db: &Database, name: &str) -> Result<Self, Error> {
@@ -45,11 +54,16 @@ impl Faction {
             SELECT *
             FROM factions
             WHERE lower(name) = $1
-            ", name.to_lowercase())
-            .fetch_one(&db.pool)
-            .await?;
+            ",
+            name.to_lowercase()
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
-        Ok(Faction { id: row.id, name: row.name })
+        Ok(Faction {
+            id: row.id,
+            name: row.name,
+        })
     }
 
     pub async fn fetch_like_name(db: &Database, name: &str) -> Result<Vec<Self>, Error> {
@@ -59,13 +73,19 @@ impl Faction {
             FROM factions
             WHERE name ILIKE $1
             ORDER BY name
-            "#, name)
-            .fetch_all(&db.pool)
-            .await?;
+            "#,
+            name
+        )
+        .fetch_all(&db.pool)
+        .await?;
 
-        Ok(rows.into_iter().map(|row| {
-            Faction { id: row.id, name: row.name }
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| Faction {
+                id: row.id,
+                name: row.name,
+            })
+            .collect())
     }
 }
 
@@ -85,9 +105,8 @@ impl SystemFaction {
         system_address: i64,
         faction_id: u32,
         faction_info: &FactionInfo,
-        timestamp: DateTime<Utc>)
-        -> Result<Option<Self>, Error>
-    {
+        timestamp: DateTime<Utc>,
+    ) -> Result<Option<Self>, Error> {
         let row = sqlx::query!(
             r#"
             INSERT INTO system_factions
@@ -117,33 +136,52 @@ impl SystemFaction {
                 happiness "happiness: Happiness",
                 updated_at
             "#,
-                system_address as i64,
-                faction_id as i32,
-                faction_info.state as _,
-                faction_info.influence,
-                faction_info.happiness as _,
-                faction_info.government as _,
-                faction_info.allegiance as _,
-                timestamp.naive_utc())
-            .fetch_optional(&db.pool)
-            .await?;
+            system_address as i64,
+            faction_id as i32,
+            faction_info.state as _,
+            faction_info.influence,
+            faction_info.happiness as _,
+            faction_info.government as _,
+            faction_info.allegiance as _,
+            timestamp.naive_utc()
+        )
+        .fetch_optional(&db.pool)
+        .await?;
 
         if let Some(r) = row {
             State::clear(db, system_address, faction_id).await?;
 
             for state_trend in &faction_info.pending_states {
-                State::from_journal(db,
-                    system_address, faction_id, state_trend.state, Status::Pending).await?;
+                State::from_journal(
+                    db,
+                    system_address,
+                    faction_id,
+                    state_trend.state,
+                    Status::Pending,
+                )
+                .await?;
             }
 
             for state_trend in &faction_info.active_states {
-                State::from_journal(db,
-                    system_address, faction_id, state_trend.state, Status::Active).await?;
+                State::from_journal(
+                    db,
+                    system_address,
+                    faction_id,
+                    state_trend.state,
+                    Status::Active,
+                )
+                .await?;
             }
 
             for state_trend in &faction_info.recovering_states {
-                State::from_journal(db,
-                    system_address, faction_id, state_trend.state, Status::Recovering).await?;
+                State::from_journal(
+                    db,
+                    system_address,
+                    faction_id,
+                    state_trend.state,
+                    Status::Recovering,
+                )
+                .await?;
             }
 
             Ok(Some(SystemFaction {
@@ -152,7 +190,7 @@ impl SystemFaction {
                 state: r.state,
                 influence: r.influence,
                 happiness: r.happiness,
-                updated_at: DateTime::<Utc>::from_utc(r.updated_at, Utc),
+                updated_at: r.updated_at.and_utc(),
             }))
         } else {
             Ok(None)
@@ -176,9 +214,12 @@ impl SystemFaction {
             JOIN factions ON faction_id = id
             WHERE system_address = $1 AND faction_id = $2
             ORDER BY influence DESC
-            "#, address as i64, id as i32)
-            .fetch_one(&db.pool)
-            .await?;
+            "#,
+            address as i64,
+            id as i32
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(SystemFaction {
             system_address: row.system_address,
@@ -186,14 +227,17 @@ impl SystemFaction {
             state: row.state,
             influence: row.influence,
             happiness: row.happiness,
-            updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            updated_at: row.updated_at.and_utc(),
         })
     }
 
-    pub async fn fetch_all(db: &Database, address: Option<i64>) -> Result<Vec<(String, Self)>, Error> {
+    pub async fn fetch_all(
+        db: &Database,
+        address: Option<i64>,
+    ) -> Result<Vec<(String, Self)>, Error> {
         if let Some(address) = address {
             let rows = sqlx::query!(
-            r#"
+                r#"
             SELECT
                 system_address,
                 faction_id,
@@ -208,24 +252,31 @@ impl SystemFaction {
             JOIN factions ON faction_id = id
             WHERE system_address = $1
             ORDER BY influence DESC
-            "#, address as i64)
+            "#,
+                address as i64
+            )
             .fetch_all(&db.pool)
             .await?;
 
-            Ok(rows.into_iter().map(|row| {
-                (row.name,
-                 SystemFaction {
-                    system_address: row.system_address,
-                    faction_id: row.faction_id as u32,
-                    state: row.state,
-                    influence: row.influence,
-                    happiness: row.happiness,
-                    updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.name,
+                        SystemFaction {
+                            system_address: row.system_address,
+                            faction_id: row.faction_id as u32,
+                            state: row.state,
+                            influence: row.influence,
+                            happiness: row.happiness,
+                            updated_at: row.updated_at.and_utc(),
+                        },
+                    )
                 })
-            }).collect())
+                .collect())
         } else {
             let rows = sqlx::query!(
-            r#"
+                r#"
             SELECT
                 system_address,
                 faction_id,
@@ -239,21 +290,27 @@ impl SystemFaction {
             FROM system_factions
             JOIN factions on faction_id = id
             ORDER BY influence DESC
-            "#)
+            "#
+            )
             .fetch_all(&db.pool)
             .await?;
 
-            Ok(rows.into_iter().map(|row| {
-                (row.name,
-                 SystemFaction {
-                    system_address: row.system_address,
-                    faction_id: row.faction_id as u32,
-                    state: row.state,
-                    influence: row.influence,
-                    happiness: row.happiness,
-                    updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.name,
+                        SystemFaction {
+                            system_address: row.system_address,
+                            faction_id: row.faction_id as u32,
+                            state: row.state,
+                            influence: row.influence,
+                            happiness: row.happiness,
+                            updated_at: row.updated_at.and_utc(),
+                        },
+                    )
                 })
-            }).collect())
+                .collect())
         }
     }
 }
@@ -272,9 +329,8 @@ impl State {
         system_address: i64,
         faction_id: u32,
         state: JournalState,
-        status: Status)
-        -> Result<Self, Error>
-    {
+        status: Status,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             r#"
             INSERT INTO system_faction_states
@@ -292,9 +348,10 @@ impl State {
             system_address as i64,
             faction_id as i32,
             state as _,
-            status as _)
-            .fetch_one(&db.pool)
-            .await?;
+            status as _
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(State {
             system_address: row.system_address,
@@ -311,9 +368,10 @@ impl State {
             WHERE system_address = $1 AND faction_id = $2
             "#,
             system_address as i64,
-            faction_id as i32)
-            .execute(&db.pool)
-            .await?;
+            faction_id as i32
+        )
+        .execute(&db.pool)
+        .await?;
 
         Ok(())
     }
@@ -338,9 +396,8 @@ impl Conflict {
         db: &Database,
         system_address: i64,
         conflict: &FactionConflict,
-        timestamp: DateTime<Utc>)
-        -> Result<Self, Error>
-    {
+        timestamp: DateTime<Utc>,
+    ) -> Result<Self, Error> {
         let faction_1 = Faction::fetch_by_name(db, &conflict.faction_1.name).await?;
         let faction_2 = Faction::fetch_by_name(db, &conflict.faction_2.name).await?;
 
@@ -388,9 +445,10 @@ impl Conflict {
             faction_2.id,
             conflict.faction_2.stake,
             conflict.faction_2.won_days as i32,
-            timestamp.naive_utc())
-            .fetch_one(&db.pool)
-            .await?;
+            timestamp.naive_utc()
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(Conflict {
             system_address: row.system_address,
@@ -402,7 +460,7 @@ impl Conflict {
             faction_2_id: row.faction_2_id as u32,
             faction_2_stake: row.faction_2_stake,
             faction_2_won_days: row.faction_2_won_days as u8,
-            updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            updated_at: row.updated_at.and_utc(),
         })
     }
 }

@@ -1,16 +1,20 @@
-use std::time::Duration;
 #[cfg(unix)]
 use async_std::task;
-use structopt::StructOpt;
-use indicatif::{ProgressBar, ProgressStyle};
-#[cfg(unix)]
-use galos_db::{Database, systems::System, factions::{Faction, SystemFaction}};
 #[cfg(unix)]
 use galos::Run;
+#[cfg(unix)]
+use galos_db::{
+    factions::{Faction, SystemFaction},
+    systems::System,
+    Database,
+};
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
+use structopt::StructOpt;
 
+#[allow(dead_code)]
 #[derive(StructOpt, Debug)]
 pub struct Cli {
-
     /// Systems:
     ///     *Sol
     ///     *LHS%
@@ -20,7 +24,6 @@ pub struct Cli {
     /// Systems + Factions:
     ///     *Sol@    Stars named Sol and their factions
     ///     *@newp   Stars with newp factions (not null)
-
 
     #[structopt(short = "s", long = "systems", name = "SYSTEM(s)")]
     pub system_like: Option<String>,
@@ -36,7 +39,6 @@ pub struct Cli {
 
     #[structopt(short = "c", long = "count")]
     pub count: bool,
-
     // #[structopt(short = "f", long = "filter", parse(from_filter_string))]
     // pub filters: Vec<String>,
 
@@ -50,13 +52,7 @@ impl Run for Cli {
         spinner.set_style(
             ProgressStyle::default_spinner()
                 .tick_strings(&[
-                    ">>><<<",
-                    ">>--<<",
-                    ">----<",
-                    "------",
-                    ">----<",
-                    ">>--<<",
-                    ">>><<<",
+                    ">>><<<", ">>--<<", ">----<", "------", ">----<", ">>--<<", ">>><<<",
                 ])
                 .template("{spinner:.yellow} {msg}")
                 .unwrap(),
@@ -64,13 +60,12 @@ impl Run for Cli {
         spinner.enable_steady_tick(Duration::from_millis(125));
 
         task::block_on(async {
-
             match (self.system_like.as_ref(), self.faction_like.as_ref()) {
-
-
                 (Some(query), faction_like) => {
                     let systems = if let Some(radius) = self.radius {
-                        System::fetch_in_range_like_name(db, radius, &query).await.unwrap()
+                        System::fetch_in_range_like_name(db, radius, &query)
+                            .await
+                            .unwrap()
                     } else {
                         System::fetch_like_name(db, &query).await.unwrap()
                     };
@@ -85,7 +80,9 @@ impl Run for Cli {
 
                             if let Some(faction_query) = faction_like {
                                 if faction_query == "%" {
-                                    let sfs = SystemFaction::fetch_all(db, Some(system.address)).await.unwrap();
+                                    let sfs = SystemFaction::fetch_all(db, Some(system.address))
+                                        .await
+                                        .unwrap();
                                     for (name, sf) in sfs {
                                         println!("\t{}", name.to_lowercase());
                                         println!("\t\tinfluence: {}%", sf.influence * 100.);
@@ -107,7 +104,9 @@ impl Run for Cli {
                     if self.count {
                         println!("{} factions found.", factions.len());
                     } else {
-                        for faction in factions { println!("{:?}", faction) }
+                        for faction in factions {
+                            println!("{:?}", faction)
+                        }
                     }
                 }
 
@@ -116,17 +115,15 @@ impl Run for Cli {
                     Cli::clap().print_help().expect("issue printing help")
                 }
             }
-
-
         });
     }
 }
 
 fn print_system(system: &System) {
-    println!("{}: ({}, {}, {})\t\t[{}]",
-        system.name,
-        system.position.x, system.position.y, system.position.z,
-        system.updated_at);
+    println!(
+        "{}: ({}, {}, {})\t\t[{}]",
+        system.name, system.position.x, system.position.y, system.position.z, system.updated_at
+    );
     if system.population > 0 {
         println!("\tpopulation: {}", system.population);
     }

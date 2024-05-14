@@ -1,5 +1,5 @@
-use galos_db::{Error, Database};
 use galos_db::systems::System;
+use galos_db::{Database, Error};
 
 #[async_std::main]
 async fn main() -> Result<(), Error> {

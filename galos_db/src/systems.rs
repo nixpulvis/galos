@@ -1,15 +1,12 @@
-use std::str::FromStr;
+use crate::factions::{Conflict, Faction, SystemFaction};
+use crate::{Database, Error};
 use async_std::task;
 use chrono::{DateTime, Utc};
+use elite_journal::{prelude::*, system::System as JournalSystem};
 use geozero::wkb;
-use pathfinding::prelude::*;
 use ordered_float::OrderedFloat;
-use elite_journal::{
-    prelude::*,
-    system::System as JournalSystem,
-};
-use crate::{Error, Database};
-use crate::factions::{Faction, SystemFaction, Conflict};
+use pathfinding::prelude::*;
+use std::str::FromStr;
 
 #[derive(Debug, Clone)]
 pub struct System {
@@ -28,12 +25,12 @@ pub struct System {
     // & = foreign key = belongs_to
     // pub controlling_faction: &Faction,
     // pub factions: Vec<Faction>
-
     pub updated_at: DateTime<Utc>,
 }
 
 impl System {
-    pub async fn create(db: &Database,
+    pub async fn create(
+        db: &Database,
         address: i64,
         name: &str,
         position: Coordinate,
@@ -43,9 +40,8 @@ impl System {
         allegiance: Option<Allegiance>,
         primary_economy: Option<Economy>,
         secondary_economy: Option<Economy>,
-        updated_at: DateTime<Utc>)
-        -> Result<(), Error>
-    {
+        updated_at: DateTime<Utc>,
+    ) -> Result<(), Error> {
         sqlx::query!(
             r#"
             INSERT INTO systems
@@ -79,9 +75,10 @@ impl System {
             allegiance as _,
             primary_economy as _,
             secondary_economy as _,
-            updated_at.naive_utc())
-            .execute(&db.pool)
-            .await?;
+            updated_at.naive_utc()
+        )
+        .execute(&db.pool)
+        .await?;
 
         Ok(())
     }
@@ -89,9 +86,8 @@ impl System {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
-        system: &JournalSystem)
-        -> Result<(), Error>
-    {
+        system: &JournalSystem,
+    ) -> Result<(), Error> {
         let position = Coordinate {
             x: system.pos.x,
             y: system.pos.y,
@@ -120,28 +116,29 @@ impl System {
                 allegiance = $7,
                 primary_economy = $8,
                 secondary_economy = $9
-            "#, system.address as i64,
-                system.name,
-                wkb::Encode(position) as _,
-                system.population.map(|n| n as i64),
-                system.security as _,
-                system.government as _,
-                system.allegiance as _,
-                system.economy as _,
-                system.second_economy as _,
-                timestamp.naive_utc())
-            .execute(&db.pool)
-            .await?;
+            "#,
+            system.address as i64,
+            system.name,
+            wkb::Encode(position) as _,
+            system.population.map(|n| n as i64),
+            system.security as _,
+            system.government as _,
+            system.allegiance as _,
+            system.economy as _,
+            system.second_economy as _,
+            timestamp.naive_utc()
+        )
+        .execute(&db.pool)
+        .await?;
 
         for faction in &system.factions {
             let faction_id = Faction::create(db, &faction.name).await?.id;
-            SystemFaction::from_journal(db,
-                system.address, faction_id as u32, &faction, timestamp).await?;
+            SystemFaction::from_journal(db, system.address, faction_id as u32, &faction, timestamp)
+                .await?;
         }
 
         for conflict in &system.conflicts {
-            Conflict::from_journal(db,
-                system.address, &conflict, timestamp).await?;
+            Conflict::from_journal(db, system.address, &conflict, timestamp).await?;
         }
 
         Ok(())
@@ -163,9 +160,11 @@ impl System {
                 updated_at
             FROM systems
             WHERE address = $1
-            "#, address)
-            .fetch_one(&db.pool)
-            .await?;
+            "#,
+            address
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(System {
             address: row.address,
@@ -177,7 +176,7 @@ impl System {
             allegiance: row.allegiance,
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
-            updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            updated_at: row.updated_at.and_utc(),
         })
     }
 
@@ -198,9 +197,11 @@ impl System {
                 updated_at
             FROM systems
             WHERE name = $1
-            "#, name.to_uppercase())
-            .fetch_one(&db.pool)
-            .await?;
+            "#,
+            name.to_uppercase()
+        )
+        .fetch_one(&db.pool)
+        .await?;
 
         Ok(System {
             address: row.address,
@@ -212,7 +213,7 @@ impl System {
             allegiance: row.allegiance,
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
-            updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
+            updated_at: row.updated_at.and_utc(),
         })
     }
 
@@ -233,12 +234,15 @@ impl System {
             FROM systems
             WHERE name ILIKE $1
             ORDER BY name
-            "#, name)
-            .fetch_all(&db.pool)
-            .await?;
+            "#,
+            name
+        )
+        .fetch_all(&db.pool)
+        .await?;
 
-        Ok(rows.into_iter().map(|row| {
-            System {
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
                 address: row.address,
                 name: row.name,
                 position: row.position.geometry.expect("not null or invalid"),
@@ -248,12 +252,16 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
-                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
-            }
-        }).collect())
+                updated_at: row.updated_at.and_utc(),
+            })
+            .collect())
     }
 
-    pub async fn fetch_in_range_by_name(db: &Database, range: f64, name: &str) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_in_range_by_name(
+        db: &Database,
+        range: f64,
+        name: &str,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -271,12 +279,16 @@ impl System {
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name = $1
             ORDER BY ST_3DDistance(s1.position, s2.position)
-            "#, name.to_uppercase(), range)
-            .fetch_all(&db.pool)
-            .await?;
+            "#,
+            name.to_uppercase(),
+            range
+        )
+        .fetch_all(&db.pool)
+        .await?;
 
-        Ok(rows.into_iter().map(|row| {
-            System {
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
                 address: row.address,
                 name: row.name,
                 position: row.position.geometry.expect("not null or invalid"),
@@ -286,12 +298,16 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
-                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
-            }
-        }).collect())
+                updated_at: row.updated_at.and_utc(),
+            })
+            .collect())
     }
 
-    pub async fn fetch_in_range_like_name(db: &Database, range: f64, name: &str) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_in_range_like_name(
+        db: &Database,
+        range: f64,
+        name: &str,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -309,12 +325,16 @@ impl System {
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name ILIKE $1
             ORDER BY ST_3DDistance(s1.position, s2.position)
-            "#, name, range)
-            .fetch_all(&db.pool)
-            .await?;
+            "#,
+            name,
+            range
+        )
+        .fetch_all(&db.pool)
+        .await?;
 
-        Ok(rows.into_iter().map(|row| {
-            System {
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
                 address: row.address,
                 name: row.name,
                 position: row.position.geometry.expect("not null or invalid"),
@@ -324,9 +344,9 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
-                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
-            }
-        }).collect())
+                updated_at: row.updated_at.and_utc(),
+            })
+            .collect())
     }
 
     pub fn neighbors(&self, db: &Database, range: f64) -> Vec<System> {
@@ -346,13 +366,17 @@ impl System {
                     updated_at
                 FROM systems
                 WHERE ST_3DDWithin(position, $1, $2);
-                "#, wkb::Encode(self.position) as _, range)
-                .fetch_all(&db.pool)
-                .await.unwrap()
+                "#,
+                wkb::Encode(self.position) as _,
+                range
+            )
+            .fetch_all(&db.pool)
+            .await
+            .unwrap()
         });
 
-        rows.into_iter().map(|row| {
-            System {
+        rows.into_iter()
+            .map(|row| System {
                 address: row.address,
                 name: row.name,
                 position: row.position.geometry.expect("not null or invalid"),
@@ -362,32 +386,33 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
-                updated_at: DateTime::<Utc>::from_utc(row.updated_at, Utc),
-            }
-        }).collect()
+                updated_at: row.updated_at.and_utc(),
+            })
+            .collect()
     }
 
     pub fn distance(&self, other: &System) -> f64 {
         let p1 = self.position;
         let p2 = other.position;
 
-        ((p2.x - p1.x).powi(2) +
-         (p2.y - p1.y).powi(2) +
-         (p2.z - p1.z).powi(2)).sqrt()
+        ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2) + (p2.z - p1.z).powi(2)).sqrt()
     }
 
-    pub fn route_to(&self, db: &Database, end: &System, range: f64)
-        -> Result<Option<(Vec<Self>, OrderedFloat<f64>)>, Error>
-    {
+    pub fn route_to(
+        &self,
+        db: &Database,
+        end: &System,
+        range: f64,
+    ) -> Result<Option<(Vec<Self>, OrderedFloat<f64>)>, Error> {
         let successors = |s: &System| {
-            s.neighbors(db, range).into_iter().map(|s| (s, OrderedFloat(1.)))
+            s.neighbors(db, range)
+                .into_iter()
+                .map(|s| (s, OrderedFloat(1.)))
         };
 
         // Making the heuristic much larger than the successor's jump cost makes things run
         // faster, but is not optimal...
-        let heuristic = |s: &System| {
-            OrderedFloat((s.distance(end) / range).ceil())
-        };
+        let heuristic = |s: &System| OrderedFloat((s.distance(end) / range).ceil());
 
         let success = |s: &System| s == end;
 
@@ -420,7 +445,13 @@ impl FromStr for ModuleClass {
 }
 
 // https://www.reddit.com/r/EliteDangerous/comments/30nx4u/the_hyperspace_fuel_equation_documented
-pub fn _fuel_cost(distance: f64, mass: f64, optimal_mass: f64, size: u8, class: ModuleClass) -> f64 {
+pub fn _fuel_cost(
+    distance: f64,
+    mass: f64,
+    optimal_mass: f64,
+    size: u8,
+    class: ModuleClass,
+) -> f64 {
     let l = match class {
         ModuleClass::A => 12.,
         ModuleClass::B => 10.,

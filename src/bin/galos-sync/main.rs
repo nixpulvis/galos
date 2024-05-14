@@ -1,13 +1,13 @@
-use structopt::StructOpt;
-#[cfg(unix)]
-use galos_db::{Error, Database};
 #[cfg(unix)]
 use galos::Run;
+#[cfg(unix)]
+use galos_db::{Database, Error};
+use structopt::StructOpt;
 
-mod journal;
+mod eddb;
 mod eddn;
 mod edsm;
-mod eddb;
+mod journal;
 
 #[cfg(unix)]
 #[derive(StructOpt, Debug)]

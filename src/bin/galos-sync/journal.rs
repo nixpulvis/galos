@@ -1,11 +1,11 @@
 #![cfg(unix)]
-use std::fs;
-use async_std::task;
-use structopt::StructOpt;
-use indicatif::{ProgressBar, ProgressStyle};
-use elite_journal::entry::{self, Event};
-use galos_db::{Database, systems::System};
 use crate::Run;
+use async_std::task;
+use elite_journal::entry::{self, Event};
+use galos_db::{systems::System, Database};
+use indicatif::{ProgressBar, ProgressStyle};
+use std::fs;
+use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
@@ -33,12 +33,8 @@ impl Run for Cli {
         for entry in bar.wrap_iter(entries.into_iter()) {
             task::block_on(async {
                 let option = match entry.event {
-                    Event::Location(e) => {
-                        Some(e.system)
-                    },
-                    Event::FsdJump(e) => {
-                        Some(e.system)
-                    },
+                    Event::Location(e) => Some(e.system),
+                    Event::FsdJump(e) => Some(e.system),
                     _ => None,
                 };
 

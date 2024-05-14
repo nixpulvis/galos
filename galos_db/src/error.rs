@@ -1,4 +1,4 @@
-use std::{env, fmt, error};
+use std::{env, error, fmt};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -12,10 +12,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             // TODO: Pretty print, see above todo.
-            Error::Env(e) =>
-                write!(f, "{}", e),
-            Error::Sqlx(e) =>
-                write!(f, "{}", e),
+            Error::Env(e) => write!(f, "{}", e),
+            Error::Sqlx(e) => write!(f, "{}", e),
         }
     }
 }

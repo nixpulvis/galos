@@ -1,7 +1,7 @@
 #![cfg(unix)]
-use structopt::StructOpt;
-use galos_db::Database;
 use crate::Run;
+use galos_db::Database;
+use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 pub enum Cli {
@@ -26,4 +26,3 @@ impl Run for Cli {
         unimplemented!();
     }
 }
-
