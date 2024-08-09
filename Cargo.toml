@@ -11,6 +11,7 @@ async-std = "*"
 structopt = "*"
 itertools = "*"
 indicatif = "*"
+chrono = "*"
 
 # Subcomponents of Galos.
 galos_db  = { path = 'galos_db' }
