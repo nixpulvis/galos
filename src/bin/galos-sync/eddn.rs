@@ -4,8 +4,7 @@ use async_std::task;
 use eddn::{subscribe, Message, URL};
 use elite_journal::entry::Event;
 use elite_journal::system::System as JournalSystem;
-use galos_db::bodies::Body;
-use galos_db::{systems::System, Database};
+use galos_db::{systems::System, bodies::Body, stations::Station, Database};
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -50,11 +49,20 @@ fn process_message(db: &Database, message: Message) {
                         Err(err) => eprintln!("[EDDN] <LOC:sys> {}", err),
                     }
 
-                    if let Some(body) = e.body {
+                    if let Some(ref body) = e.body {
                         match Body::from_journal(db, entry.timestamp, &body, e.system.address).await
                         {
                             Ok(_) => println!("[EDDN] <LOC:bod> {}", body.name),
                             Err(err) => eprintln!("[EDDN] <LOC:bod> {}", err),
+                        }
+                    }
+
+                    dbg!(&e.station);
+                    if let Some(ref station) = e.station {
+                        match Station::from_journal(db, entry.timestamp, &station, e.system.address, e.body.map(|b| b.id)).await
+                        {
+                            Ok(_) => println!("[EDDN] <LOC:sta> {}", station.name),
+                            Err(err) => eprintln!("[EDDN] <LOC:sta> {}", err),
                         }
                     }
                 }

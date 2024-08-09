@@ -51,3 +51,4 @@ pub mod articles;
 pub mod bodies;
 pub mod factions;
 pub mod systems;
+pub mod stations;
