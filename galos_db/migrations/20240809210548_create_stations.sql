@@ -58,7 +58,6 @@ CREATE TYPE EconomyShare AS (
 
 CREATE TABLE stations (
     system_address  bigint      REFERENCES systems  NOT NULL,
-    body_id         smallint,
     name            varchar     NOT NULL,
     ty              StationType NOT NULL,
     market_id       bigint,
@@ -71,7 +70,5 @@ CREATE TABLE stations (
 
 
     FOREIGN KEY (system_address) REFERENCES systems (address),
-    FOREIGN KEY (system_address, body_id) REFERENCES bodies (system_address, id),
-    PRIMARY KEY(system_address, name),
-    UNIQUE (system_address, name)
+    PRIMARY KEY(system_address, name)
 );
