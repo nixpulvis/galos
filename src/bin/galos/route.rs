@@ -77,7 +77,7 @@ impl Run for Cli {
         let mut table = Table::new();
         table.set_format(*format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
         table.set_titles(row!["Origin", "Destination", "Distance"]);
-        let (route, cost) = start.route_to(db, &end, self.range).unwrap().unwrap();
+        let (route, cost) = start.route_to(db, &end, self.range).unwrap();
         spinner.finish_and_clear();
         let mut gross = 0.;
         for (a, b) in route[..].into_iter().tuple_windows() {

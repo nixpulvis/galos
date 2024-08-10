@@ -408,7 +408,7 @@ impl System {
         db: &Database,
         end: &System,
         range: f64,
-    ) -> Result<Option<(Vec<Self>, OrderedFloat<f64>)>, Error> {
+    ) -> Option<(Vec<Self>, OrderedFloat<f64>)> {
         let successors = |s: &System| {
             s.neighbors(db, range)
                 .into_iter()
@@ -421,7 +421,7 @@ impl System {
 
         let success = |s: &System| s == end;
 
-        Ok(astar(self, successors, heuristic, success))
+        astar(self, successors, heuristic, success)
     }
 }
 
