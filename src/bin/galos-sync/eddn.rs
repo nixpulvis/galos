@@ -67,7 +67,6 @@ fn process_message(db: &Database, message: Message) {
                     }
                 }
                 Event::Docked(e) => {
-                    dbg!(&e);
                     let system = JournalSystem::new(e.system_address, &e.system_name);
                     match System::from_journal(db, entry.timestamp, &system).await {
                         Ok(_) => println!("[EDDN] <DOC:sys> {}", system.name),
