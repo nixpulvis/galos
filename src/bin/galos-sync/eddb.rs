@@ -39,7 +39,7 @@ impl Run for Cli {
                             db,
                             address as i64,
                             &system.name,
-                            position,
+                            Some(position),
                             system.population,
                             system.security,
                             system.government,

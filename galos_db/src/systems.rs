@@ -13,7 +13,7 @@ pub struct System {
     pub address: i64,
     // TODO: We need to support multiple names
     pub name: String,
-    pub position: Coordinate,
+    pub position: Option<Coordinate>,
     pub population: u64,
     pub security: Option<Security>,
     pub government: Option<Government>,
@@ -33,7 +33,7 @@ impl System {
         db: &Database,
         address: i64,
         name: &str,
-        position: Coordinate,
+        position: Option<Coordinate>,
         population: Option<u64>,
         security: Option<Security>,
         government: Option<Government>,
@@ -68,7 +68,7 @@ impl System {
             "#,
             address as i64,
             name,
-            wkb::Encode(position) as _,
+            position.map(|p| wkb::Encode(p)) as _,
             population.map(|n| n as i64),
             security as _,
             government as _,
@@ -88,11 +88,13 @@ impl System {
         timestamp: DateTime<Utc>,
         system: &JournalSystem,
     ) -> Result<(), Error> {
-        let position = Coordinate {
-            x: system.pos.x,
-            y: system.pos.y,
-            z: system.pos.z,
-        };
+        let position = system.pos.map(|p| {
+            Coordinate {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+            }
+        });
         // TODO: Conflicts on pos need to do something else.
         sqlx::query!(
             r#"
@@ -119,7 +121,7 @@ impl System {
             "#,
             system.address as i64,
             system.name,
-            wkb::Encode(position) as _,
+            position.map(|p| wkb::Encode(p)) as _,
             system.population.map(|n| n as i64),
             system.security as _,
             system.government as _,
@@ -150,7 +152,7 @@ impl System {
             SELECT
                 address,
                 name,
-                position AS "position!: wkb::Decode<Coordinate>",
+                position AS "position!: Option<wkb::Decode<Coordinate>>",
                 population,
                 security as "security: Security",
                 government as "government: Government",
@@ -169,7 +171,7 @@ impl System {
         Ok(System {
             address: row.address,
             name: row.name,
-            position: row.position.geometry.expect("not null or invalid"),
+            position: row.position.map(|p| p.geometry.expect("not null or invalid")),
             population: row.population.map(|n| n as u64).unwrap_or(0),
             security: row.security,
             government: row.government,
@@ -187,7 +189,7 @@ impl System {
             SELECT
                 address,
                 name,
-                position AS "position!: wkb::Decode<Coordinate>",
+                position AS "position!: Option<wkb::Decode<Coordinate>>",
                 population,
                 security as "security: Security",
                 government as "government: Government",
@@ -206,7 +208,7 @@ impl System {
         Ok(System {
             address: row.address,
             name: row.name,
-            position: row.position.geometry.expect("not null or invalid"),
+            position: row.position.map(|p| p.geometry.expect("not null or invalid")),
             population: row.population.map(|n| n as u64).unwrap_or(0),
             security: row.security,
             government: row.government,
@@ -223,7 +225,7 @@ impl System {
             SELECT
                 address,
                 name,
-                position AS "position!: wkb::Decode<Coordinate>",
+                position AS "position!: Option<wkb::Decode<Coordinate>>",
                 population,
                 security as "security: Security",
                 government as "government: Government",
@@ -245,7 +247,7 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.geometry.expect("not null or invalid"),
+                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -267,7 +269,7 @@ impl System {
             SELECT
                 s1.address,
                 s1.name,
-                s1.position AS "position!: wkb::Decode<Coordinate>",
+                s1.position AS "position!: Option<wkb::Decode<Coordinate>>",
                 s1.population,
                 s1.security as "security: Security",
                 s1.government as "government: Government",
@@ -291,7 +293,7 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.geometry.expect("not null or invalid"),
+                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -313,7 +315,7 @@ impl System {
             SELECT
                 s1.address,
                 s1.name,
-                s1.position AS "position!: wkb::Decode<Coordinate>",
+                s1.position AS "position!: Option<wkb::Decode<Coordinate>>",
                 s1.population,
                 s1.security as "security: Security",
                 s1.government as "government: Government",
@@ -337,7 +339,7 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.geometry.expect("not null or invalid"),
+                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -356,7 +358,7 @@ impl System {
                 SELECT
                     address,
                     name,
-                    position AS "position!: wkb::Decode<Coordinate>",
+                    position AS "position!: Option<wkb::Decode<Coordinate>>",
                     population,
                     security as "security: Security",
                     government as "government: Government",
@@ -367,7 +369,7 @@ impl System {
                 FROM systems
                 WHERE ST_3DDWithin(position, $1, $2);
                 "#,
-                wkb::Encode(self.position) as _,
+                self.position.map(|p| wkb::Encode(p)) as _,
                 range
             )
             .fetch_all(&db.pool)
@@ -379,7 +381,7 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.geometry.expect("not null or invalid"),
+                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -392,10 +394,13 @@ impl System {
     }
 
     pub fn distance(&self, other: &System) -> f64 {
-        let p1 = self.position;
-        let p2 = other.position;
-
-        ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2) + (p2.z - p1.z).powi(2)).sqrt()
+        if let (Some(p1), Some(p2)) = (self.position, other.position) {
+            ((p2.x - p1.x).powi(2) +
+             (p2.y - p1.y).powi(2) +
+             (p2.z - p1.z).powi(2)).sqrt()
+        } else {
+            0.
+        }
     }
 
     pub fn route_to(
