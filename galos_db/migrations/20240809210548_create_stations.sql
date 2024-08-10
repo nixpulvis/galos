@@ -41,7 +41,19 @@ CREATE TYPE Service AS ENUM (
     'StationOperations',
     'TechBroker',
     'Tuning',
-    'VoucherRedemption'
+    'VoucherRedemption',
+    'Livery',
+    'SocialSpace',
+    'Bartender',
+    'VistaGenomics',
+    'PioneerSupplies',
+    'ApexInterstellar',
+    'FrontlineSolutions'
+);
+
+CREATE TYPE EconomyShare AS (
+    name        Economy,
+    proportion  double precision
 );
 
 CREATE TABLE stations (
@@ -54,7 +66,7 @@ CREATE TABLE stations (
     government      Government,
     allegiance      Allegiance,
     services        Service[],
-    economies       varchar[],
+    economies       EconomyShare[],
     updated_at      timestamp  NOT NULL,
 
 

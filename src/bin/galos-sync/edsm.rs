@@ -49,7 +49,7 @@ impl Cli {
                 let r = System::create(db,
                     system.id.unwrap() as i64,
                     &system.name,
-                    system.coords.unwrap(),
+                    Some(system.coords.unwrap()),
                     system.information.population,
                     system.information.security,
                     system.information.government,

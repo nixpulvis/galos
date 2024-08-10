@@ -120,10 +120,11 @@ impl Run for Cli {
 }
 
 fn print_system(system: &System) {
-    println!(
-        "{}: ({}, {}, {})\t\t[{}]",
-        system.name, system.position.x, system.position.y, system.position.z, system.updated_at
-    );
+    print!("{}: ", system.name);
+    if let Some(position) = system.position {
+        print!("({}, {}, {})", position.x, position.y, position.z);
+    }
+    println!("\t\t[{}]", system.updated_at);
     if system.population > 0 {
         println!("\tpopulation: {}", system.population);
     }

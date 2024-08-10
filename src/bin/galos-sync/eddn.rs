@@ -32,7 +32,8 @@ fn process_message(db: &Database, message: Message) {
         match message {
             Message::Journal(entry) => match entry.event {
                 Event::Scan(e) => {
-                    let system = JournalSystem::new(e.system_address, e.star_pos, &e.star_system);
+                    let mut system = JournalSystem::new(e.system_address, &e.star_system);
+                    system.pos = Some(e.star_pos);
                     match System::from_journal(db, entry.timestamp, &system).await {
                         Ok(_) => println!("[EDDN] <SCN:sys> {}", system.name),
                         Err(err) => eprintln!("[EDDN] <SCN:sys> {}", err),
@@ -57,14 +58,28 @@ fn process_message(db: &Database, message: Message) {
                         }
                     }
 
-                    dbg!(&e.station);
                     if let Some(ref station) = e.station {
-                        match Station::from_journal(db, entry.timestamp, &station, e.system.address, e.body.map(|b| b.id)).await
+                        match Station::from_journal(db, entry.timestamp, &station, e.system.address).await
                         {
                             Ok(_) => println!("[EDDN] <LOC:sta> {}", station.name),
                             Err(err) => eprintln!("[EDDN] <LOC:sta> {}", err),
                         }
                     }
+                }
+                Event::Docked(e) => {
+                    dbg!(&e);
+                    let system = JournalSystem::new(e.system_address, &e.system_name);
+                    match System::from_journal(db, entry.timestamp, &system).await {
+                        Ok(_) => println!("[EDDN] <DOC:sys> {}", system.name),
+                        Err(err) => eprintln!("[EDDN] <DOC:sys> {}", err),
+                    }
+
+                    match Station::from_journal(db, entry.timestamp, &e.station, e.system_address).await
+                    {
+                        Ok(_) => println!("[EDDN] <DOC:sta> {}", e.station.name),
+                        Err(err) => eprintln!("[EDDN] <DOC:sta> {}", err),
+                    }
+
                 }
                 Event::FsdJump(e) => {
                     match System::from_journal(db, entry.timestamp, &e.system).await {

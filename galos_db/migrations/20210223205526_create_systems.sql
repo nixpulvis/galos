@@ -57,7 +57,7 @@ CREATE TYPE Economy AS ENUM (
 CREATE TABLE systems (
     address           bigint           PRIMARY KEY,
     name              varchar          NOT NULL,
-    position          geometry(POINTZ) NOT NULL UNIQUE,
+    position          geometry(POINTZ) UNIQUE,
     population        bigint,
     security          Security,
     government        Government,
