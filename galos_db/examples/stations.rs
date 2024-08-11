@@ -1,6 +1,6 @@
 use elite_journal::faction::Faction;
 use elite_journal::station::{Service, Station as JournalStation, StationType};
-use elite_journal::system::{Coordinate, System as JournalSystem};
+use elite_journal::system::System as JournalSystem;
 use elite_journal::{Allegiance, Government};
 use galos_db::stations::Station;
 use galos_db::systems::System;
@@ -12,7 +12,7 @@ async fn main() -> Result<(), Error> {
     let db = Database::new().await?;
     let system_address = 0;
     let system = JournalSystem::new(system_address, "The Sun");
-    System::from_journal(&db, Utc::now(), &system).await;
+    System::from_journal(&db, Utc::now(), &system).await.unwrap();
     let station = JournalStation {
         dist_from_star_ls: None,
         name: "Maxland".into(),
