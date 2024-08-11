@@ -1,0 +1,36 @@
+<h1>Systems</h1>
+
+<form action="/systems">
+    <input type="text" name="query" value="{{ query }}">
+    <input type="submit" />
+</form>
+
+<table>
+    <tr>
+        <th>Address</th>
+        <th>Name</th>
+        <th>Position</th>
+        <th>Population</th>
+        <th>Security</th>
+        <th>Government</th>
+        <th>Allegiance</th>
+        <th>Economy</th>
+        <th>Updated</th>
+    </tr>
+    {% for system in systems %}
+    <tr>
+        <td>{{ system.address }}</td>
+        <td>{{ system.name }}</td>
+        <td>{{ self::table_data(system.position) }}</td>
+        <td>{{ system.population }}</td>
+        <td>{{ self::table_data(system.security) }}</td>
+        <td>{{ self::table_data(system.government) }}</td>
+        <td>{{ self::table_data(system.allegiance) }}</td>
+        <td>
+            {{ self::table_data(system.primary_economy) }},
+            {{ self::table_data(system.secondary_economy) }}
+        </td>
+        <td>{{ system.updated_at }}</td>
+    </tr>
+    {% endfor %}
+</table>
