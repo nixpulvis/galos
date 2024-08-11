@@ -11,6 +11,7 @@ use serde::Deserialize;
 use galos_db::Database;
 use galos_db::systems::System;
 use galos_db::stations::Station;
+use galos_db::bodies::Body;
 
 #[tokio::main]
 async fn main() {
@@ -22,7 +23,8 @@ async fn main() {
         .route("/", get(root))
         .route("/systems", get(systems))
         .route("/systems/:address", get(system))
-        .route("/systems/:address/stations/:name", get(station));
+        .route("/systems/:address/stations/:name", get(station))
+        .route("/systems/:address/bodies/:id", get(body));
 
     // run our app with hyper, listening globally on port 3000
     let addr = "0.0.0.0:3000";
@@ -47,6 +49,7 @@ struct SystemsTemplate {
 struct SystemTemplate {
     system: System,
     stations: Vec<Station>,
+    bodies: Vec<Body>,
 }
 
 #[derive(Template)]
@@ -54,6 +57,13 @@ struct SystemTemplate {
 struct StationTemplate {
     system: System,
     station: Station,
+}
+
+#[derive(Template)]
+#[template(path = "body.html")]
+struct BodyTemplate {
+    system: System,
+    body: Body,
 }
 
 struct HtmlTemplate<T>(T);
@@ -107,7 +117,8 @@ async fn system(extract::Path(address): extract::Path<i64>) -> impl IntoResponse
     if let Ok(db) = Database::new().await {
         if let Ok(system) = System::fetch(&db, address).await {
             let stations = Station::fetch_all(&db, address).await.unwrap_or_default();
-            HtmlTemplate(SystemTemplate { system, stations }).into_response()
+            let bodies = Body::fetch_all(&db, address).await.unwrap_or_default();
+            HtmlTemplate(SystemTemplate { system, stations, bodies }).into_response()
         } else {
             (
                 StatusCode::NOT_FOUND,
@@ -131,6 +142,25 @@ async fn station(extract::Path((address, name)): extract::Path<(i64, String)>) -
             (
                 StatusCode::NOT_FOUND,
                 format!("No station with that address found."),
+            ).into_response()
+        }
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load DB."),
+        ).into_response()
+    }
+}
+
+async fn body(extract::Path((address, id)): extract::Path<(i64, i16)>) -> impl IntoResponse {
+    if let Ok(db) = Database::new().await {
+        if let Ok(body) = Body::fetch(&db, address, id).await {
+            let system = System::fetch(&db, address).await.unwrap();
+            HtmlTemplate(BodyTemplate { system, body }).into_response()
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                format!("No body with that address found."),
             ).into_response()
         }
     } else {

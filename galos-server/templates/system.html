@@ -38,6 +38,32 @@
     </tr>
 </table>
 
+<h3>Bodies</h3>
+<table>
+    <tr>
+        <th>Name</th>
+        <th>ID</th>
+        <th>Parent ID</th>
+        <th>Class</th>
+        <th>Landable?</th>
+        <th>Mass</th>
+        <th>Radius</th>
+        <th>Updated</th>
+    </tr>
+    {% for body in bodies %}
+    <tr>
+        <td><a href="/systems/{{ system.address }}/bodies/{{ body.id }}">{{ body.name }}</a></td>
+        <td>{{ body.id}}</td>
+        <td>{{ self::table_data(body.parent_id) }}</td>
+        <td>{{ body.planet_class }}</td>
+        <td>{{ body.landable }}</td>
+        <td>{{ body.mass }}</td>
+        <td>{{ body.radius }}</td>
+        <td>{{ body.updated_at }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
 <h3>Stations</h3>
 <table>
     <tr>

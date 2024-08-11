@@ -1,0 +1,106 @@
+<h1>{{body.name}}</h1>
+
+<table>
+    <tr>
+        <th>System</th>
+        <td><a href="/systems/{{ system.address }}">{{ system.name }}</a></td>
+    </tr>
+    <tr>
+        <th>Planet Class</th>
+        <td>{{ body.planet_class }}</td>
+    </tr>
+    <tr>
+        <th>Tidal Lock</th>
+        <td>{{ body.tidal_lock }}</td>
+    </tr>
+    <tr>
+        <th>Landable</th>
+        <td>{{ body.landable }}</td>
+    </tr>
+    <tr>
+        <th>Terraform State</th>
+        <td>{{ self::table_data(body.terraform_state) }}</td>
+    </tr>
+    <tr>
+        <th>Atmosphere</th>
+        <td>{{ self::table_data(body.atmosphere) }}</td>
+    </tr>
+    <tr>
+        <th>Atmosphere Type</th>
+        <td>{{ body.atmosphere_type }}</td>
+    </tr>
+    <tr>
+        <th>Volcanism</th>
+        <td>{{ self::table_data(body.volcanism) }}</td>
+    </tr>
+    <tr>
+        <th>Mass</th>
+        <td>{{ body.mass }}</td>
+    </tr>
+    <tr>
+        <th>Radius</th>
+        <td>{{ body.radius }}</td>
+    </tr>
+    <tr>
+        <th>Surface Gravity</th>
+        <td>{{ body.surface_gravity }}</td>
+    </tr>
+    <tr>
+        <th>Surface Temperature</th>
+        <td>{{ body.surface_temperature }}</td>
+    </tr>
+    <tr>
+        <th>Surface Pressure</th>
+        <td>{{ body.surface_pressure }}</td>
+    </tr>
+    <tr>
+        <th>Semi Major Axis</th>
+        <td>{{ body.semi_major_axis }}</td>
+    </tr>
+    <tr>
+        <th>Eccentricity</th>
+        <td>{{ body.eccentricity }}</td>
+    </tr>
+    <tr>
+        <th>Orbital Inclination</th>
+        <td>{{ body.orbital_inclination }}</td>
+    </tr>
+    <tr>
+        <th>Periapsis</th>
+        <td>{{ body.periapsis }}</td>
+    </tr>
+    <tr>
+        <th>Orbital Period</th>
+        <td>{{ body.orbital_period }}</td>
+    </tr>
+    <tr>
+        <th>Rotation Period</th>
+        <td>{{ body.rotation_period }}</td>
+    </tr>
+    <tr>
+        <th>Axial Tilt</th>
+        <td>{{ body.axial_tilt }}</td>
+    </tr>
+    <tr>
+        <th>Ascending Node</th>
+        <td>{{ body.ascending_node }}</td>
+    </tr>
+    <tr>
+        <th>Mean Anomaly</th>
+        <td>{{ body.mean_anomaly }}</td>
+    </tr>
+
+    <tr>
+        <th>Was Mapped?</th>
+        <td>{{ body.was_mapped }}</td>
+    </tr>
+    <tr>
+        <th>Was Discovered?</th>
+        <td>{{ body.was_discovered }}</td>
+    </tr>
+
+    <tr>
+        <th>Updated</th>
+        <td>{{ body.updated_at }}</td>
+    </tr>
+</table>
