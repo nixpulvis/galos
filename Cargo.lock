@@ -1123,6 +1123,8 @@ dependencies = [
  "askama",
  "axum",
  "galos_db",
+ "itertools",
+ "ordered-float",
  "serde",
  "tokio",
  "tracing",

@@ -1,4 +1,6 @@
 use std::fmt::Display;
+use ordered_float::OrderedFloat;
+use itertools::Itertools;
 use askama::Template;
 use axum::{
     extract,
@@ -20,11 +22,12 @@ async fn main() {
 
     // build our application with a route
     let app = Router::new()
-        .route("/", get(root))
+        .route("/", get(index))
         .route("/systems", get(systems))
         .route("/systems/:address", get(system))
         .route("/systems/:address/stations/:name", get(station))
-        .route("/systems/:address/bodies/:id", get(body));
+        .route("/systems/:address/bodies/:id", get(body))
+        .route("/route", get(route));
 
     // run our app with hyper, listening globally on port 3000
     let addr = "0.0.0.0:3000";
@@ -36,6 +39,10 @@ async fn main() {
 fn table_data<T: Display>(option: &Option<T>) -> String {
     option.as_ref().map(|o| o.to_string()).unwrap_or("---".into())
 }
+
+#[derive(Template)]
+#[template(path = "index.html")]
+struct IndexTemplate;
 
 #[derive(Template)]
 #[template(path = "systems.html")]
@@ -66,6 +73,14 @@ struct BodyTemplate {
     body: Body,
 }
 
+#[derive(Template)]
+#[template(path = "route.html")]
+struct RouteTemplate {
+    to: System,
+    from: System,
+    route: (Vec<System>, OrderedFloat<f64>),
+}
+
 struct HtmlTemplate<T>(T);
 
 impl<T> IntoResponse for HtmlTemplate<T>
@@ -83,14 +98,22 @@ where T: Template,
 }
 
 // basic handler that responds with a static string
-async fn root() -> &'static str {
-    "Hello, World!"
+async fn index() -> impl IntoResponse {
+    let template = IndexTemplate;
+    HtmlTemplate(template).into_response()
 }
 
 #[derive(Deserialize)]
 struct SystemsParams {
     query: Option<String>,
     // TODO: Advanced search not SQL
+}
+
+#[derive(Deserialize)]
+struct RouteParams {
+    to: Option<String>,
+    from: Option<String>,
+    range: Option<f64>,
 }
 
 async fn systems(extract::Query(params): extract::Query<SystemsParams>) -> impl IntoResponse {
@@ -161,6 +184,47 @@ async fn body(extract::Path((address, id)): extract::Path<(i64, i16)>) -> impl I
             (
                 StatusCode::NOT_FOUND,
                 format!("No body with that address found."),
+            ).into_response()
+        }
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load DB."),
+        ).into_response()
+    }
+}
+
+async fn route(extract::Query(params): extract::Query<RouteParams>) -> impl IntoResponse {
+    if let Ok(db) = Database::new().await {
+
+        if let (Some(to), Some(from), Some(range)) = (params.to, params.from, params.range) {
+            if let Ok(to) = System::fetch_by_name(&db, &to).await {
+                if let Ok(from) = System::fetch_by_name(&db, &from).await {
+                    if let Some(route) = from.route_to(&db, &to, range) {
+                        let template = RouteTemplate { to, from, route };
+                        HtmlTemplate(template).into_response()
+                    } else {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to find route (try increasing the range)."),
+                        ).into_response()
+                    }
+                } else {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to fetch from system."),
+                    ).into_response()
+                }
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to fetch to system."),
+                ).into_response()
+            }
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Missing route params."),
             ).into_response()
         }
     } else {

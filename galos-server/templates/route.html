@@ -1,0 +1,22 @@
+<h3>{{ from.name }} -> {{ to.name }}</h3>
+
+<table>
+    <tr>
+        <th>Origin</th>
+        <th></th>
+        <th>Destination</th>
+        <th></th>
+        <th>Distance</th>
+    </tr>
+    {% for (a, b) in route.0.iter().tuple_windows() %}
+    <tr>
+        <td><a href="/systems/{{a.address}}">{{ a.name }}</a></td>
+        <td>{{ self::table_data(a.position) }}</td>
+        <td><a href="/systems/{{b.address}}">{{ b.name }}</a></td>
+        <td>{{ self::table_data(b.position) }}</td>
+        <td>{{ a.distance(b) }} Ly</td>
+    </tr>
+    {% endfor %}
+</table>
+
+

@@ -8,6 +8,8 @@ askama = "*"
 axum = "*"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
+ordered-float = "*"
+itertools = "*"
 tokio = { version = "*", features = ["full"] }
 serde = { version = "*", features = ["derive"] }
 galos_db = { path = "../galos_db" }
