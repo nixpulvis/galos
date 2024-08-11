@@ -4,7 +4,7 @@ use async_std::task;
 use eddn::{subscribe, Message, URL};
 use elite_journal::entry::Event;
 use elite_journal::system::System as JournalSystem;
-use galos_db::{systems::System, bodies::Body, stations::Station, Database};
+use galos_db::{bodies::Body, stations::Station, systems::System, Database};
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -59,7 +59,8 @@ fn process_message(db: &Database, message: Message) {
                     }
 
                     if let Some(ref station) = e.station {
-                        match Station::from_journal(db, entry.timestamp, &station, e.system.address).await
+                        match Station::from_journal(db, entry.timestamp, &station, e.system.address)
+                            .await
                         {
                             Ok(_) => println!("[EDDN] <LOC:sta> {}", station.name),
                             Err(err) => eprintln!("[EDDN] <LOC:sta> {}", err),
@@ -73,12 +74,12 @@ fn process_message(db: &Database, message: Message) {
                         Err(err) => eprintln!("[EDDN] <DOC:sys> {}", err),
                     }
 
-                    match Station::from_journal(db, entry.timestamp, &e.station, e.system_address).await
+                    match Station::from_journal(db, entry.timestamp, &e.station, e.system_address)
+                        .await
                     {
                         Ok(_) => println!("[EDDN] <DOC:sta> {}", e.station.name),
                         Err(err) => eprintln!("[EDDN] <DOC:sta> {}", err),
                     }
-
                 }
                 Event::FsdJump(e) => {
                     match System::from_journal(db, entry.timestamp, &e.system).await {

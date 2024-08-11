@@ -50,5 +50,5 @@ impl Page {
 pub mod articles;
 pub mod bodies;
 pub mod factions;
-pub mod systems;
 pub mod stations;
+pub mod systems;

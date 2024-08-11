@@ -1,12 +1,12 @@
 #![cfg(unix)]
-use std::collections::HashMap;
-use structopt::StructOpt;
-use indicatif::{ProgressBar, ProgressStyle};
+use crate::Run;
 use async_std::task;
 use chrono::offset::Utc;
-use galos_db::Database;
 use galos_db::systems::System;
-use crate::Run;
+use galos_db::Database;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashMap;
+use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 pub enum Cli {
@@ -33,7 +33,7 @@ pub struct ApiCli {
 }
 
 impl Cli {
-    fn create_vec(db:&Database, systems: Vec<edsm::system::System>) {
+    fn create_vec(db: &Database, systems: Vec<edsm::system::System>) {
         let mut imported = 0;
         let mut errors = HashMap::new();
         let bar = ProgressBar::new(systems.len() as u64);
@@ -46,7 +46,8 @@ impl Cli {
                 continue;
             }
             let result = task::block_on(async {
-                let r = System::create(db,
+                let r = System::create(
+                    db,
                     system.id.unwrap() as i64,
                     &system.name,
                     Some(system.coords.unwrap()),
@@ -57,25 +58,32 @@ impl Cli {
                     system.information.economy,
                     system.information.second_economy,
                     Utc::now(),
-                ).await;
+                )
+                .await;
                 r
             });
             match result {
                 Ok(_) => {
                     bar.set_message(format!("[EDSM] {}", system.name));
                     imported += 1;
-                },
+                }
                 Err(err) => {
                     bar.set_message(format!("[EDSM ERROR] {}", err));
-                    errors.entry(err.to_string())
+                    errors
+                        .entry(err.to_string())
                         .and_modify(|ns: &mut Vec<String>| ns.push(system.name.clone()))
                         .or_insert(vec![system.name]);
-                },
+                }
             }
         }
         println!("Imported {} systems.", imported);
         for (err, system_names) in errors {
-            println!("Failed to import {} systems:\n{}: {}", system_names.len(), err, system_names.join(", "));
+            println!(
+                "Failed to import {} systems:\n{}: {}",
+                system_names.len(),
+                err,
+                system_names.join(", ")
+            );
         }
     }
 }
@@ -86,7 +94,7 @@ impl Run for Cli {
             Cli::File(fc) => {
                 let systems = edsm::json(&fc.path);
                 Cli::create_vec(db, systems);
-            },
+            }
             Cli::Api(ac) => {
                 let systems = if let Some(n) = ac.sphere {
                     edsm::api::systems_sphere(&ac.name, Some(n as f64), None).unwrap()
@@ -96,8 +104,7 @@ impl Run for Cli {
                     edsm::api::systems(&ac.name).unwrap()
                 };
                 Cli::create_vec(db, systems);
-            },
+            }
         }
     }
 }
-

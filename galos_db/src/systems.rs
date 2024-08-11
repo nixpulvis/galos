@@ -88,12 +88,10 @@ impl System {
         timestamp: DateTime<Utc>,
         system: &JournalSystem,
     ) -> Result<(), Error> {
-        let position = system.pos.map(|p| {
-            Coordinate {
-                x: p.x,
-                y: p.y,
-                z: p.z,
-            }
+        let position = system.pos.map(|p| Coordinate {
+            x: p.x,
+            y: p.y,
+            z: p.z,
         });
         // TODO: Conflicts on pos need to do something else.
         sqlx::query!(
@@ -171,7 +169,9 @@ impl System {
         Ok(System {
             address: row.address,
             name: row.name,
-            position: row.position.map(|p| p.geometry.expect("not null or invalid")),
+            position: row
+                .position
+                .map(|p| p.geometry.expect("not null or invalid")),
             population: row.population.map(|n| n as u64).unwrap_or(0),
             security: row.security,
             government: row.government,
@@ -208,7 +208,9 @@ impl System {
         Ok(System {
             address: row.address,
             name: row.name,
-            position: row.position.map(|p| p.geometry.expect("not null or invalid")),
+            position: row
+                .position
+                .map(|p| p.geometry.expect("not null or invalid")),
             population: row.population.map(|n| n as u64).unwrap_or(0),
             security: row.security,
             government: row.government,
@@ -247,7 +249,9 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -293,7 +297,9 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -339,7 +345,9 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -381,7 +389,9 @@ impl System {
             .map(|row| System {
                 address: row.address,
                 name: row.name,
-                position: row.position.map(|p| p.geometry.expect("not null or invalid")),
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
                 population: row.population.map(|n| n as u64).unwrap_or(0),
                 security: row.security,
                 government: row.government,
@@ -395,9 +405,7 @@ impl System {
 
     pub fn distance(&self, other: &System) -> f64 {
         if let (Some(p1), Some(p2)) = (self.position, other.position) {
-            ((p2.x - p1.x).powi(2) +
-             (p2.y - p1.y).powi(2) +
-             (p2.z - p1.z).powi(2)).sqrt()
+            ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2) + (p2.z - p1.z).powi(2)).sqrt()
         } else {
             0.
         }

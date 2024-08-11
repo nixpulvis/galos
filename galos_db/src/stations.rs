@@ -1,8 +1,8 @@
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::station::Station as JournalStation;
-use elite_journal::station::{StationType, Service, EconomyShare};
-use elite_journal::{Government, Allegiance};
+use elite_journal::station::{EconomyShare, Service, StationType};
+use elite_journal::{Allegiance, Government};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Station {
@@ -10,8 +10,8 @@ pub struct Station {
     pub name: String,
     pub ty: Option<StationType>,
     pub market_id: Option<i64>,
-    pub faction: Option<String>,  // TODO: Faction type?
-    pub government: Option<Government>,  // TODO: Government type?
+    pub faction: Option<String>,        // TODO: Faction type?
+    pub government: Option<Government>, // TODO: Government type?
     pub allegiance: Option<Allegiance>,
     pub services: Option<Vec<Service>>,
     pub economies: Option<Vec<EconomyShare>>,
