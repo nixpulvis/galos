@@ -3,7 +3,7 @@
 //! - [`elite_journal`][elite_journal] - Elite: Dangerous journal file parser
 //! - [`elite_dat`][elite_dat] - Elite: Dangerous visited star `.dat` parser
 //! - [`eddn`][eddn] - A [EDDN](https://eddn.edcd.io) subscriber
-//! - [`eddb`][eddb] - A [EDDB](https://eddb.io) data file parser
+//! - [`eddb`][eddb] - A [EDDB](https://eddb.io) data file parser (discontinued)
 //! - [`edsm`][edsm] - A [EDSM](https://edsm.net) API adapter and data file parser
 //! - [`galos_db`][galos_db] - PostgreSQL database and ORM
 //! - [`galos`](#galos) - Shared code and the user CLI, `galos`
