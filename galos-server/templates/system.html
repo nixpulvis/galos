@@ -1,0 +1,65 @@
+<h1>{{ system.name}}</h1>
+
+<table>
+    <tr>
+        <th>Address</th>
+        <td>{{ system.address }}</td>
+    </tr>
+    <tr>
+        <th>Position</th>
+        <td>{{ self::table_data(system.position) }}</td>
+    </tr>
+    <tr>
+        <th>Population</th>
+        <td>{{ system.population }}</td>
+    </tr>
+    <tr>
+        <th>Security</th>
+        <td>{{ self::table_data(system.security) }}</td>
+    </tr>
+    <tr>
+        <th>Government</th>
+        <td>{{ self::table_data(system.government) }}</td>
+    </tr>
+    <tr>
+        <th>Allegiance</th>
+        <td>{{ self::table_data(system.allegiance) }}</td>
+    </tr>
+    <tr>
+        <th>Economy</th>
+        <td>
+            {{ self::table_data(system.primary_economy) }},
+            {{ self::table_data(system.secondary_economy) }}
+        </td>
+    </tr>
+    <tr>
+        <th>Updated</th>
+        <td>{{ system.updated_at }}</td>
+    </tr>
+</table>
+
+<h3>Stations</h3>
+<table>
+    <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Market ID</th>
+        <th>Faction</th>
+        <th>Government</th>
+        <th>Allegiance</th>
+        <th>Services</th>
+        <th>Economies</th>
+        <th>Updated</th>
+    </tr>
+    {% for station in stations %}
+    <tr>
+        <td><a href="/systems/{{station.system_address}}/stations/{{station.name}}">{{ station.name }}</a></td>
+        <td>{{ self::table_data(station.ty) }}</td>
+        <td>{{ self::table_data(station.market_id) }}</td>
+        <td>{{ self::table_data(station.faction) }}</td>
+        <td>{{ self::table_data(station.government) }}</td>
+        <td>{{ self::table_data(station.allegiance) }}</td>
+        <td>{{ station.updated_at }}</td>
+    </tr>
+    {% endfor %}
+</table>

@@ -1,0 +1,61 @@
+<h1>{{station.name}}</h1>
+
+<table>
+    <tr>
+        <th>System</th>
+        <td>
+            <a href="/systems/{{system.address}}">{{system.name}}</a>
+        </td>
+    </tr>
+    <tr>
+        <th>Type</th>
+        <td>{{ self::table_data(station.ty) }}</td>
+    </tr>
+    <tr>
+        <th>Distance from Primary Star</th>
+        <td>{{ self::table_data(station.dist_from_star_ls) }} Ly</td>
+    </tr>
+    <tr>
+        <th>Market ID</th>
+        <td>{{ self::table_data(station.market_id) }}</td>
+    </tr>
+    <tr>
+        <th>Faction</th>
+        <td>{{ self::table_data(station.faction) }}</td>
+    </tr>
+    <tr>
+        <th>Government</th>
+        <td>{{ self::table_data(station.government) }}</td>
+    </tr>
+    <tr>
+        <th>Allegiance</th>
+        <td>{{ self::table_data(station.allegiance) }}</td>
+    </tr>
+    <tr>
+        <th>Services</th>
+        <td>
+            {% if let Some(services) = station.services %}
+            <ul>
+            {% for service in services %}
+                <li>{{ format!("{:?}", service)}}</li>
+            {% endfor %}
+            </ul>
+            {% endif %}
+        </td>
+    <tr>
+        <th>Economies</th>
+        <td>
+            {% if let Some(economies) = station.economies %}
+            <ul>
+            {% for economy in economies %}
+                <li>{{ format!("{:?}", economy)}}</li>
+            {% endfor %}
+            </ul>
+            {% endif %}
+        </td>
+    </tr>
+    <tr>
+        <th>Updated</th>
+        <td>{{ station.updated_at }}</td>
+    </tr>
+</table>

@@ -2,14 +2,15 @@ use std::fmt::Display;
 use askama::Template;
 use axum::{
     extract,
-    routing::{get, post},
+    routing::get,
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    Json, Router,
+    Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use galos_db::Database;
 use galos_db::systems::System;
+use galos_db::stations::Station;
 
 #[tokio::main]
 async fn main() {
@@ -19,7 +20,9 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         .route("/", get(root))
-        .route("/systems", get(systems));
+        .route("/systems", get(systems))
+        .route("/systems/:address", get(system))
+        .route("/systems/:address/stations/:name", get(station));
 
     // run our app with hyper, listening globally on port 3000
     let addr = "0.0.0.0:3000";
@@ -37,6 +40,20 @@ fn table_data<T: Display>(option: &Option<T>) -> String {
 struct SystemsTemplate {
     query: String,
     systems: Vec<System>,
+}
+
+#[derive(Template)]
+#[template(path = "system.html")]
+struct SystemTemplate {
+    system: System,
+    stations: Vec<Station>,
+}
+
+#[derive(Template)]
+#[template(path = "station.html")]
+struct StationTemplate {
+    system: System,
+    station: Station,
 }
 
 struct HtmlTemplate<T>(T);
@@ -62,19 +79,58 @@ async fn root() -> &'static str {
 
 #[derive(Deserialize)]
 struct SystemsParams {
-    query: String,
+    query: Option<String>,
     // TODO: Advanced search not SQL
 }
 
 async fn systems(extract::Query(params): extract::Query<SystemsParams>) -> impl IntoResponse {
+    let query = params.query.unwrap_or_default();
     if let Ok(db) = Database::new().await {
-        if let Ok(systems) = System::fetch_like_name(&db, &params.query).await {
-            let template = SystemsTemplate { query: params.query, systems };
+        if let Ok(systems) = System::fetch_like_name(&db, &query).await {
+            let template = SystemsTemplate { query, systems };
             HtmlTemplate(template).into_response()
         } else {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch systems."),
+            ).into_response()
+        }
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load DB."),
+        ).into_response()
+    }
+}
+
+async fn system(extract::Path(address): extract::Path<i64>) -> impl IntoResponse {
+    if let Ok(db) = Database::new().await {
+        if let Ok(system) = System::fetch(&db, address).await {
+            let stations = Station::fetch_all(&db, address).await.unwrap_or_default();
+            HtmlTemplate(SystemTemplate { system, stations }).into_response()
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                format!("No system with that address found."),
+            ).into_response()
+        }
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to load DB."),
+        ).into_response()
+    }
+}
+
+async fn station(extract::Path((address, name)): extract::Path<(i64, String)>) -> impl IntoResponse {
+    if let Ok(db) = Database::new().await {
+        if let Ok(station) = Station::fetch(&db, address, &name).await {
+            let system = System::fetch(&db, station.system_address).await.unwrap();
+            HtmlTemplate(StationTemplate { system, station }).into_response()
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                format!("No station with that address found."),
             ).into_response()
         }
     } else {

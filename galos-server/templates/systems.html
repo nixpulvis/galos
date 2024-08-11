@@ -7,7 +7,6 @@
 
 <table>
     <tr>
-        <th>Address</th>
         <th>Name</th>
         <th>Position</th>
         <th>Population</th>
@@ -19,8 +18,7 @@
     </tr>
     {% for system in systems %}
     <tr>
-        <td>{{ system.address }}</td>
-        <td>{{ system.name }}</td>
+        <td><a href="/systems/{{system.address}}">{{ system.name }}</a></td>
         <td>{{ self::table_data(system.position) }}</td>
         <td>{{ system.population }}</td>
         <td>{{ self::table_data(system.security) }}</td>
