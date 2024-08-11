@@ -4,11 +4,12 @@ use elite_journal::station::Station as JournalStation;
 use elite_journal::station::{EconomyShare, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct Station {
     pub system_address: i64,
     pub name: String,
     pub ty: Option<StationType>,
+    pub dist_from_star_ls: Option<f64>,
     pub market_id: Option<i64>,
     pub faction: Option<String>,        // TODO: Faction type?
     pub government: Option<Government>, // TODO: Government type?
@@ -17,6 +18,8 @@ pub struct Station {
     pub economies: Option<Vec<EconomyShare>>,
     pub updated_at: DateTime<Utc>,
 }
+
+impl Eq for Station {}
 
 impl Station {
     pub async fn from_journal(
@@ -31,6 +34,7 @@ impl Station {
                 system_address,
                 name,
                 ty,
+                dist_from_star_ls,
                 market_id,
                 faction,
                 government,
@@ -38,21 +42,23 @@ impl Station {
                 services,
                 economies,
                 updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (system_address, name)
             DO UPDATE SET
                 ty = $3,
-                market_id = $4,
-                faction = $5,
-                government = $6,
-                allegiance = $7,
-                services = $8,
-                economies = $9,
-                updated_at = $10
+                dist_from_star_ls = $4,
+                market_id = $5,
+                faction = $6,
+                government = $7,
+                allegiance = $8,
+                services = $9,
+                economies = $10,
+                updated_at = $11
             RETURNING
                 system_address,
                 name,
                 ty as "ty: StationType",
+                dist_from_star_ls,
                 market_id,
                 faction,
                 government as "government: Government",
@@ -64,6 +70,7 @@ impl Station {
             system_address,
             station.name,
             station.ty.clone() as Option<StationType>,
+            station.dist_from_star_ls,
             station.market_id,
             station.faction.as_ref().map(|f| f.name.clone()),
             station.government as Option<Government>,
@@ -79,6 +86,7 @@ impl Station {
             system_address: row.system_address,
             name: row.name,
             ty: Some(row.ty),
+            dist_from_star_ls: row.dist_from_star_ls,
             market_id: row.market_id,
             faction: row.faction,
             government: row.government,

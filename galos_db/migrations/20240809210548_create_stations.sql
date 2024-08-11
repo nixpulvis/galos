@@ -57,16 +57,17 @@ CREATE TYPE EconomyShare AS (
 );
 
 CREATE TABLE stations (
-    system_address  bigint      REFERENCES systems  NOT NULL,
-    name            varchar     NOT NULL,
-    ty              StationType NOT NULL,
-    market_id       bigint,
-    faction         varchar,
-    government      Government,
-    allegiance      Allegiance,
-    services        Service[],
-    economies       EconomyShare[],
-    updated_at      timestamp  NOT NULL,
+    system_address     bigint      REFERENCES systems  NOT NULL,
+    name               varchar     NOT NULL,
+    ty                 StationType NOT NULL,
+    dist_from_star_ls  double precision,
+    market_id          bigint,
+    faction            varchar,
+    government         Government,
+    allegiance         Allegiance,
+    services           Service[],
+    economies          EconomyShare[],
+    updated_at         timestamp  NOT NULL,
 
 
     FOREIGN KEY (system_address) REFERENCES systems (address),
