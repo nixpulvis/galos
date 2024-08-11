@@ -4,6 +4,7 @@ use async_std::task;
 use eddn::{subscribe, Message, URL};
 use elite_journal::entry::Event;
 use elite_journal::system::System as JournalSystem;
+use elite_journal::entry::route::NavRoute;
 use galos_db::{bodies::Body, stations::Station, systems::System, Database};
 use structopt::StructOpt;
 
@@ -85,6 +86,16 @@ fn process_message(db: &Database, message: Message) {
                     match System::from_journal(db, entry.timestamp, &e.system).await {
                         Ok(_) => println!("[EDDN] <FSD:sys> {}", e.system.name),
                         Err(err) => eprintln!("[EDDN] <FSD:sys> {}", err),
+                    }
+                }
+                Event::NavRoute(NavRoute::Route(destinations)) => {
+                    for destination in destinations {
+                        let mut system = JournalSystem::new(destination.system_address as i64, &destination.star_system);
+                        system.pos = Some(destination.star_pos);
+                        match System::from_journal(db, entry.timestamp, &system).await {
+                            Ok(_) => println!("[EDDN] <ROU:sys> {}", system.name),
+                            Err(err) => eprintln!("[EDDN] <ROU:sys> {}", err),
+                        }
                     }
                 }
                 _ => {}
