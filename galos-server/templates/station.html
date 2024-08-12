@@ -32,6 +32,10 @@
         <td>{{ self::table_data(station.allegiance) }}</td>
     </tr>
     <tr>
+        <th>Landing Pads</th>
+        <td>{{ self::table_data(station.landing_pads) }}</td>
+    </tr>
+    <tr>
         <th>Services</th>
         <td>
             {% if let Some(services) = station.services %}
