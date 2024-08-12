@@ -47,6 +47,7 @@ impl Run for Cli {
                             system.primary_economy,
                             None,
                             system.updated_at,
+                            "EDDB dump",
                         )
                         .await;
                         match result {

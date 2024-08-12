@@ -68,6 +68,7 @@ CREATE TABLE stations (
     services           Service[],
     economies          EconomyShare[],
     updated_at         timestamp  NOT NULL,
+    updated_by         varchar    NOT NULL,
 
 
     FOREIGN KEY (system_address) REFERENCES systems (address),

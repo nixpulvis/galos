@@ -17,6 +17,7 @@ pub struct Station {
     pub services: Option<Vec<Service>>,
     pub economies: Option<Vec<EconomyShare>>,
     pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
 }
 
 impl Eq for Station {}
@@ -25,6 +26,7 @@ impl Station {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
+        user: &str,
         station: &JournalStation,
         system_address: i64,
     ) -> Result<Station, Error> {
@@ -41,8 +43,9 @@ impl Station {
                 allegiance,
                 services,
                 economies,
-                updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                updated_at,
+                updated_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (system_address, name)
             DO UPDATE SET
                 ty = $3,
@@ -53,7 +56,8 @@ impl Station {
                 allegiance = $8,
                 services = $9,
                 economies = $10,
-                updated_at = $11
+                updated_at = $11,
+                updated_by = $12
             RETURNING
                 system_address,
                 name,
@@ -65,7 +69,8 @@ impl Station {
                 allegiance as "allegiance: Allegiance",
                 services as "services: Vec<Service>",
                 economies as "economies: Vec<EconomyShare>",
-                updated_at
+                updated_at,
+                updated_by
             "#,
             system_address,
             station.name,
@@ -78,6 +83,7 @@ impl Station {
             station.services.clone() as Option<Vec<Service>>,
             station.economies.clone() as Option<Vec<EconomyShare>>,
             timestamp.naive_utc(),
+            user,
         )
         .fetch_one(&db.pool)
         .await?;
@@ -94,6 +100,7 @@ impl Station {
             services: row.services,
             economies: row.economies,
             updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
         })
     }
 
@@ -111,7 +118,8 @@ impl Station {
                 allegiance as "allegiance: Allegiance",
                 services as "services: Vec<Service>",
                 economies as "economies: Vec<EconomyShare>",
-                updated_at
+                updated_at,
+                updated_by
             FROM stations
             WHERE system_address = $1 AND name = $2
             "#,
@@ -133,6 +141,7 @@ impl Station {
             services: row.services,
             economies: row.economies,
             updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
         })
     }
 
@@ -150,7 +159,8 @@ impl Station {
                 allegiance as "allegiance: Allegiance",
                 services as "services: Vec<Service>",
                 economies as "economies: Vec<EconomyShare>",
-                updated_at
+                updated_at,
+                updated_by
             FROM stations
             WHERE system_address = $1
             "#,
@@ -173,6 +183,7 @@ impl Station {
                 services: row.services,
                 economies: row.economies,
                 updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
             })
             .collect())
     }

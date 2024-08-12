@@ -10,6 +10,7 @@ CREATE TABLE bodies (
     id              smallint   NOT NULL,
     parent_id       smallint,
     updated_at      timestamp  NOT NULL,
+    updated_by      varchar    NOT NULL,
 
     planet_class     varchar  NOT NULL,
     tidal_lock       boolean  NOT NULL,

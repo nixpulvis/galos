@@ -9,6 +9,7 @@ pub struct Body {
     pub parent_id: Option<i16>,
     pub name: String,
     pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
 
     pub planet_class: String,
     pub tidal_lock: bool,
@@ -43,6 +44,7 @@ impl Body {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
+        user: &str,
         body: &JournalBody,
         system_address: i64,
     ) -> Result<Body, Error> {
@@ -60,6 +62,7 @@ impl Body {
                 parent_id,
                 system_address,
                 updated_at,
+                updated_by,
 
                 planet_class,
                 tidal_lock,
@@ -87,38 +90,39 @@ impl Body {
                 was_mapped,
                 was_discovered)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+                $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
             ON CONFLICT (system_address, id)
             DO UPDATE SET
                 name = $1,
                 parent_id = $3,
                 updated_at = $5,
+                updated_by = $6,
 
-                planet_class = $6,
-                tidal_lock = $7,
-                landable = $8,
-                terraform_state = $9,
-                atmosphere = $10,
-                atmosphere_type = $11,
-                volcanism = $12,
+                planet_class = $7,
+                tidal_lock = $8,
+                landable = $9,
+                terraform_state = $10,
+                atmosphere = $11,
+                atmosphere_type = $12,
+                volcanism = $13,
 
-                mass = $13,
-                radius = $14,
-                surface_gravity = $15,
-                surface_temperature = $16,
-                surface_pressure = $17,
-                semi_major_axis = $18,
-                eccentricity = $19,
-                orbital_inclination = $20,
-                periapsis = $21,
-                orbital_period = $22,
-                rotation_period = $23,
-                axial_tilt = $24,
-                ascending_node = $25,
-                mean_anomaly = $26,
+                mass = $14,
+                radius = $15,
+                surface_gravity = $16,
+                surface_temperature = $17,
+                surface_pressure = $18,
+                semi_major_axis = $19,
+                eccentricity = $20,
+                orbital_inclination = $21,
+                periapsis = $22,
+                orbital_period = $23,
+                rotation_period = $24,
+                axial_tilt = $25,
+                ascending_node = $26,
+                mean_anomaly = $27,
 
-                was_mapped = $27,
-                was_discovered = $28
+                was_mapped = $28,
+                was_discovered = $29
             RETURNING *
             ",
             body.name,
@@ -126,6 +130,7 @@ impl Body {
             parent,
             system_address,
             timestamp.naive_utc(),
+            user,
             body.planet_class,
             body.tidal_lock,
             body.landable,
@@ -182,6 +187,7 @@ impl Body {
             was_mapped: row.was_mapped,
             was_discovered: row.was_discovered,
             updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
         })
     }
 
@@ -227,6 +233,7 @@ impl Body {
             was_mapped: row.was_mapped,
             was_discovered: row.was_discovered,
             updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
         })
     }
 
@@ -273,6 +280,7 @@ impl Body {
                 was_mapped: row.was_mapped,
                 was_discovered: row.was_discovered,
                 updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
             })
             .collect())
     }
@@ -323,6 +331,7 @@ impl Body {
             was_mapped: row.was_mapped,
             was_discovered: row.was_discovered,
             updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
         })
     }
 
@@ -370,6 +379,7 @@ impl Body {
                 was_mapped: row.was_mapped,
                 was_discovered: row.was_discovered,
                 updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
             })
             .collect())
     }

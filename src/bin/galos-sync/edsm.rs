@@ -33,7 +33,7 @@ pub struct ApiCli {
 }
 
 impl Cli {
-    fn create_vec(db: &Database, systems: Vec<edsm::system::System>) {
+    fn create_vec(db: &Database, updated_by: &str, systems: Vec<edsm::system::System>) {
         let mut imported = 0;
         let mut errors = HashMap::new();
         let bar = ProgressBar::new(systems.len() as u64);
@@ -58,6 +58,7 @@ impl Cli {
                     system.information.economy,
                     system.information.second_economy,
                     Utc::now(),
+                    updated_by,
                 )
                 .await;
                 r
@@ -93,7 +94,8 @@ impl Run for Cli {
         match self {
             Cli::File(fc) => {
                 let systems = edsm::json(&fc.path);
-                Cli::create_vec(db, systems);
+                let updated_by = format!("EDSM file: {}", fc.path);
+                Cli::create_vec(db, &updated_by, systems);
             }
             Cli::Api(ac) => {
                 let systems = if let Some(n) = ac.sphere {
@@ -103,7 +105,7 @@ impl Run for Cli {
                 } else {
                     edsm::api::systems(&ac.name).unwrap()
                 };
-                Cli::create_vec(db, systems);
+                Cli::create_vec(db, "EDSM API", systems);
             }
         }
     }

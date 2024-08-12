@@ -64,7 +64,8 @@ CREATE TABLE systems (
     allegiance        Allegiance,
     primary_economy   Economy,
     secondary_economy Economy,
-    updated_at        timestamp        NOT NULL
+    updated_at        timestamp        NOT NULL,
+    updated_by        varchar          NOT NULL
 );
 
 CREATE INDEX ON systems ((upper(name)));

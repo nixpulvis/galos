@@ -26,6 +26,7 @@ pub struct System {
     // pub controlling_faction: &Faction,
     // pub factions: Vec<Faction>
     pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
 }
 
 impl System {
@@ -41,6 +42,7 @@ impl System {
         primary_economy: Option<Economy>,
         secondary_economy: Option<Economy>,
         updated_at: DateTime<Utc>,
+        updated_by: &str,
     ) -> Result<(), Error> {
         sqlx::query!(
             r#"
@@ -54,8 +56,9 @@ impl System {
                  allegiance,
                  primary_economy,
                  secondary_economy,
-                 updated_at)
-            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10)
+                 updated_at,
+                 updated_by)
+            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (address)
             DO UPDATE SET
                 population = $4,
@@ -63,7 +66,9 @@ impl System {
                 government = $6,
                 allegiance = $7,
                 primary_economy = $8,
-                secondary_economy = $9
+                secondary_economy = $9,
+                updated_at = $10,
+                updated_by = $11
             WHERE systems.updated_at < $10
             "#,
             address as i64,
@@ -75,7 +80,8 @@ impl System {
             allegiance as _,
             primary_economy as _,
             secondary_economy as _,
-            updated_at.naive_utc()
+            updated_at.naive_utc(),
+            updated_by
         )
         .execute(&db.pool)
         .await?;
@@ -86,6 +92,7 @@ impl System {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
+        user: &str,
         system: &JournalSystem,
     ) -> Result<(), Error> {
         let position = system.pos.map(|p| Coordinate {
@@ -106,8 +113,9 @@ impl System {
                  allegiance,
                  primary_economy,
                  secondary_economy,
-                 updated_at)
-            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10)
+                 updated_at,
+                 updated_by)
+            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (address)
             DO UPDATE SET
                 population = $4,
@@ -115,7 +123,9 @@ impl System {
                 government = $6,
                 allegiance = $7,
                 primary_economy = $8,
-                secondary_economy = $9
+                secondary_economy = $9,
+                updated_at = $10,
+                updated_by = $11
             "#,
             system.address as i64,
             system.name,
@@ -126,7 +136,8 @@ impl System {
             system.allegiance as _,
             system.economy as _,
             system.second_economy as _,
-            timestamp.naive_utc()
+            timestamp.naive_utc(),
+            user
         )
         .execute(&db.pool)
         .await?;
@@ -157,7 +168,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
-                updated_at
+                updated_at,
+                updated_by
             FROM systems
             WHERE address = $1
             "#,
@@ -179,6 +191,7 @@ impl System {
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
             updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
         })
     }
 
@@ -196,7 +209,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
-                updated_at
+                updated_at,
+                updated_by
             FROM systems
             WHERE name = $1
             "#,
@@ -218,6 +232,7 @@ impl System {
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
             updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
         })
     }
 
@@ -234,7 +249,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
-                updated_at
+                updated_at,
+                updated_by
             FROM systems
             WHERE name ILIKE $1
             ORDER BY name
@@ -259,6 +275,7 @@ impl System {
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
                 updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
             })
             .collect())
     }
@@ -280,7 +297,8 @@ impl System {
                 s1.allegiance as "allegiance: Allegiance",
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
-                s1.updated_at
+                s1.updated_at,
+                s1.updated_by
             FROM systems s1
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name = $1
@@ -307,6 +325,7 @@ impl System {
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
                 updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
             })
             .collect())
     }
@@ -328,7 +347,8 @@ impl System {
                 s1.allegiance as "allegiance: Allegiance",
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
-                s1.updated_at
+                s1.updated_at,
+                s1.updated_by
             FROM systems s1
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name ILIKE $1
@@ -355,6 +375,7 @@ impl System {
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
                 updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
             })
             .collect())
     }
@@ -373,7 +394,8 @@ impl System {
                     allegiance as "allegiance: Allegiance",
                     primary_economy as "primary_economy: Economy",
                     secondary_economy as "secondary_economy: Economy",
-                    updated_at
+                    updated_at,
+                    updated_by
                 FROM systems
                 WHERE ST_3DDWithin(position, $1, $2);
                 "#,
@@ -399,6 +421,7 @@ impl System {
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
                 updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
             })
             .collect()
     }
