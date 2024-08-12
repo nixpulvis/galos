@@ -56,12 +56,19 @@ CREATE TYPE EconomyShare AS (
     proportion  double precision
 );
 
+CREATE TYPE LandingPads AS (
+    large   smallint,
+    medium  smallint,
+    small   smallint
+);
+
 CREATE TABLE stations (
     system_address     bigint      REFERENCES systems  NOT NULL,
     name               varchar     NOT NULL,
     ty                 StationType NOT NULL,
     dist_from_star_ls  double precision,
     market_id          bigint,
+    landing_pads       LandingPads,
     faction            varchar,
     government         Government,
     allegiance         Allegiance,

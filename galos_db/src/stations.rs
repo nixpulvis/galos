@@ -1,7 +1,7 @@
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::station::Station as JournalStation;
-use elite_journal::station::{EconomyShare, Service, StationType};
+use elite_journal::station::{LandingPads, EconomyShare, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
 #[derive(Debug, PartialEq)]
@@ -11,6 +11,7 @@ pub struct Station {
     pub ty: Option<StationType>,
     pub dist_from_star_ls: Option<f64>,
     pub market_id: Option<i64>,
+    pub landing_pads: Option<LandingPads>,
     pub faction: Option<String>,        // TODO: Faction type?
     pub government: Option<Government>, // TODO: Government type?
     pub allegiance: Option<Allegiance>,
@@ -38,6 +39,7 @@ impl Station {
                 ty,
                 dist_from_star_ls,
                 market_id,
+                landing_pads,
                 faction,
                 government,
                 allegiance,
@@ -45,25 +47,27 @@ impl Station {
                 economies,
                 updated_at,
                 updated_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (system_address, name)
             DO UPDATE SET
                 ty = $3,
                 dist_from_star_ls = $4,
                 market_id = $5,
-                faction = $6,
-                government = $7,
-                allegiance = $8,
-                services = $9,
-                economies = $10,
-                updated_at = $11,
-                updated_by = $12
+                landing_pads = $6,
+                faction = $7,
+                government = $8,
+                allegiance = $9,
+                services = $10,
+                economies = $11,
+                updated_at = $12,
+                updated_by = $13
             RETURNING
                 system_address,
                 name,
                 ty as "ty: StationType",
                 dist_from_star_ls,
                 market_id,
+                landing_pads as "landing_pads: LandingPads",
                 faction,
                 government as "government: Government",
                 allegiance as "allegiance: Allegiance",
@@ -77,6 +81,7 @@ impl Station {
             station.ty.clone() as Option<StationType>,
             station.dist_from_star_ls,
             station.market_id,
+            station.landing_pads as Option<LandingPads>,
             station.faction.as_ref().map(|f| f.name.clone()),
             station.government as Option<Government>,
             station.allegiance as Option<Allegiance>,
@@ -94,6 +99,7 @@ impl Station {
             ty: Some(row.ty),
             dist_from_star_ls: row.dist_from_star_ls,
             market_id: row.market_id,
+            landing_pads: row.landing_pads,
             faction: row.faction,
             government: row.government,
             allegiance: row.allegiance,
@@ -113,6 +119,7 @@ impl Station {
                 ty as "ty: StationType",
                 dist_from_star_ls,
                 market_id,
+                landing_pads as "landing_pads: LandingPads",
                 faction,
                 government as "government: Government",
                 allegiance as "allegiance: Allegiance",
@@ -135,6 +142,7 @@ impl Station {
             ty: Some(row.ty),
             dist_from_star_ls: row.dist_from_star_ls,
             market_id: row.market_id,
+            landing_pads: row.landing_pads,
             faction: row.faction,
             government: row.government,
             allegiance: row.allegiance,
@@ -154,6 +162,7 @@ impl Station {
                 ty as "ty: StationType",
                 dist_from_star_ls,
                 market_id,
+                landing_pads as "landing_pads: LandingPads",
                 faction,
                 government as "government: Government",
                 allegiance as "allegiance: Allegiance",
@@ -177,6 +186,7 @@ impl Station {
                 ty: Some(row.ty),
                 dist_from_star_ls: row.dist_from_star_ls,
                 market_id: row.market_id,
+                landing_pads: row.landing_pads,
                 faction: row.faction,
                 government: row.government,
                 allegiance: row.allegiance,
