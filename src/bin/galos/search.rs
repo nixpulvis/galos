@@ -4,8 +4,9 @@ use async_std::task;
 use galos::Run;
 #[cfg(unix)]
 use galos_db::{
-    factions::{Faction, SystemFaction},
+    factions::Faction,
     systems::System,
+    bodies::Body,
     Database,
 };
 use indicatif::{ProgressBar, ProgressStyle};
@@ -61,7 +62,7 @@ impl Run for Cli {
 
         task::block_on(async {
             match (self.system_like.as_ref(), self.faction_like.as_ref()) {
-                (Some(query), faction_like) => {
+                (Some(query), None) => {
                     let systems = if let Some(radius) = self.radius {
                         System::fetch_in_range_like_name(db, radius, &query)
                             .await
@@ -78,26 +79,19 @@ impl Run for Cli {
                         for system in systems {
                             print_system(&system);
 
-                            if let Some(faction_query) = faction_like {
-                                if faction_query == "%" {
-                                    let sfs = SystemFaction::fetch_all(db, Some(system.address))
-                                        .await
-                                        .unwrap();
-                                    for (name, sf) in sfs {
-                                        println!("\t{}", name.to_lowercase());
-                                        println!("\t\tinfluence: {}%", sf.influence * 100.);
-                                        println!("\t\tstate: {:?}", sf.state);
-                                        println!("\t\thappiness: {:?}", sf.happiness);
-                                        println!("\t\tupdated_at: {}", sf.updated_at);
-                                    }
+                            let bodies = Body::fetch_all(db, system.address).await.unwrap();
+                            if !bodies.is_empty() {
+                                println!("\tbodies:");
+                                for body in bodies {
+                                    println!("\t\t- {}", body.name);
                                 }
                             }
                         }
                     }
                 }
 
-                (None, Some(ref query)) => {
-                    let factions = Faction::fetch_like_name(db, query).await.unwrap();
+                (None, Some(query)) => {
+                    let factions = Faction::fetch_like_name(db, &query).await.unwrap();
 
                     spinner.finish_and_clear();
 
@@ -110,7 +104,7 @@ impl Run for Cli {
                     }
                 }
 
-                (None, None) => {
+                (Some(_), Some(_)) | (None, None) => {
                     // XXX: Why is -r being printed after the next shell prompt?!
                     Cli::clap().print_help().expect("issue printing help")
                 }
@@ -124,7 +118,7 @@ fn print_system(system: &System) {
     if let Some(position) = system.position {
         print!("({}, {}, {})", position.x, position.y, position.z);
     }
-    println!("\t\t[{}]", system.updated_at);
+    println!("");
     if system.population > 0 {
         println!("\tpopulation: {}", system.population);
     }
