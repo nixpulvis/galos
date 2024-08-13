@@ -1,4 +1,4 @@
-[![CI](https://github.com/ED-NEWP/galos/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ED-NEWP/galos/actions/workflows/ci.yml)
+[![CI](https://github.com/nixpulvis/galos/actions/workflows/ci.yml/badge.svg)](https://github.com/nixpulvis/galos/actions/workflows/ci.yml)
 
 Somewhere between reality and the flight sim E:D.
 
