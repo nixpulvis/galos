@@ -55,7 +55,7 @@ members = [
     "eddb",
     "edsm",
     "galos_db",
-    "galos-server",
+    "galos-server", "starmap",
     # "galos-gui",
     # "galos-server",
     # "galos-worker",

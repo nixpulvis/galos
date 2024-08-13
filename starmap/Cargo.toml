@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 bevy = { version = "*", features = ["shader_format_glsl"] }
-rand = "*"
-rand_chacha = "*"
 async-std = "*"
 galos_db = { path = "../galos_db" }
+elite_journal = { path = "../elite_journal" }
