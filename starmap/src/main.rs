@@ -1,6 +1,7 @@
 //! Shows how to iterate over combinations of query results.
 
 use bevy::prelude::*;
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use galos_db::Database;
 use galos_db::systems::System;
 use elite_journal::Allegiance;
@@ -247,6 +248,7 @@ fn pan_orbit_camera(
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(EguiPlugin)
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(AmbientLight {
             color: Color::default(),
@@ -254,9 +256,16 @@ fn main() {
         })
         .add_systems(Startup, generate_bodies)
         .add_systems(Startup, spawn_camera)
+        .add_systems(Update, ui_example_system)
         .add_systems(Update, pan_orbit_camera
             .run_if(any_with_component::<PanOrbitState>))
         .run();
+}
+
+fn ui_example_system(mut contexts: EguiContexts) {
+    egui::Window::new("Hello").show(contexts.ctx_mut(), |ui| {
+        ui.label("world");
+    });
 }
 
 fn generate_bodies(
