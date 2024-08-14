@@ -1,48 +1,6 @@
 //! A body within a star system
 use chrono::{DateTime, Utc};
 
-/// ### Schema
-///
-/// ```
-///                                Table "public.bodies"
-///       Column        |            Type             | Collation | Nullable | Default
-/// ---------------------+-----------------------------+-----------+----------+---------
-///  system_address      | bigint                      |           | not null |
-///  name                | character varying           |           | not null |
-///  id                  | smallint                    |           | not null |
-///  parent_id           | smallint                    |           |          |
-///  updated_at          | timestamp without time zone |           | not null |
-///  updated_by          | character varying           |           | not null |
-///  planet_class        | character varying           |           | not null |
-///  tidal_lock          | boolean                     |           | not null |
-///  landable            | boolean                     |           | not null |
-///  terraform_state     | character varying           |           |          |
-///  atmosphere          | character varying           |           |          |
-///  atmosphere_type     | character varying           |           | not null |
-///  volcanism           | character varying           |           |          |
-///  mass                | real                        |           | not null |
-///  radius              | real                        |           | not null |
-///  surface_gravity     | real                        |           | not null |
-///  surface_temperature | real                        |           | not null |
-///  surface_pressure    | real                        |           | not null |
-///  semi_major_axis     | real                        |           | not null |
-///  eccentricity        | real                        |           | not null |
-///  orbital_inclination | real                        |           | not null |
-///  periapsis           | real                        |           | not null |
-///  orbital_period      | real                        |           | not null |
-///  rotation_period     | real                        |           | not null |
-///  axial_tilt          | real                        |           | not null |
-///  ascending_node      | real                        |           | not null |
-///  mean_anomaly        | real                        |           | not null |
-///  was_mapped          | boolean                     |           | not null |
-///  was_discovered      | boolean                     |           | not null |
-/// Indexes:
-///     "bodies_pkey" PRIMARY KEY, btree (system_address, id)
-///     "bodies_system_address_name_key" UNIQUE CONSTRAINT, btree (system_address, name)
-/// Foreign-key constraints:
-///    "bodies_system_address_fkey" FOREIGN KEY (system_address) REFERENCES systems(address)
-/// ```
-
 #[derive(Debug, PartialEq)]
 pub struct Body {
     pub system_address: i64,

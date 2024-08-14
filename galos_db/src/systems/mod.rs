@@ -2,37 +2,6 @@
 use chrono::{DateTime, Utc};
 use elite_journal::prelude::*;
 
-/// ### Schema
-///
-/// ```
-///                              Table "public.systems"
-///      Column       |            Type             | Collation | Nullable | Default
-/// -------------------+-----------------------------+-----------+----------+---------
-/// address           | bigint                      |           | not null |
-/// name              | character varying           |           | not null |
-/// position          | geometry(PointZ)            |           |          |
-/// population        | bigint                      |           |          |
-/// security          | security                    |           |          |
-/// government        | government                  |           |          |
-/// allegiance        | allegiance                  |           |          |
-/// primary_economy   | economy                     |           |          |
-/// secondary_economy | economy                     |           |          |
-/// updated_at        | timestamp without time zone |           | not null |
-/// updated_by        | character varying           |           | not null |
-/// Indexes:
-///     "systems_pkey" PRIMARY KEY, btree (address)
-///     "systems_position_idx" gist ("position" gist_geometry_ops_nd)
-///     "systems_position_key" UNIQUE CONSTRAINT, btree ("position")
-///     "systems_upper_idx" btree (upper(name::text))
-/// Referenced by:
-///     TABLE "bodies" CONSTRAINT "bodies_system_address_fkey" FOREIGN KEY (system_address) REFERENCES systems(address)
-///     TABLE "conflicts" CONSTRAINT "conflicts_system_address_fkey" FOREIGN KEY (system_address) REFERENCES systems(address)
-///     TABLE "stations" CONSTRAINT "stations_system_address_fkey" FOREIGN KEY (system_address) REFERENCES systems(address)
-///     TABLE "stations" CONSTRAINT "stations_system_address_fkey1" FOREIGN KEY (system_address) REFERENCES systems(address)
-///     TABLE "system_faction_influences" CONSTRAINT "system_faction_influences_system_address_fkey" FOREIGN KEY (system_address) REFERENCES systems(address)
-///     TABLE "system_faction_states" CONSTRAINT "system_faction_states_system_address_fkey" FOREIGN KEY (system_address) REFERENCES systems(address)
-///     TABLE "system_factions" CONSTRAINT "system_factions_system_address_fkey" FOREIGN KEY (system_address) REFERENCES systems(address)
-/// ```
 #[derive(Debug, Clone)]
 pub struct System {
     pub address: i64,
