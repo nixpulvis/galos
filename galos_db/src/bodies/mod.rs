@@ -1,7 +1,7 @@
 //! A body within a star system
 use chrono::{DateTime, Utc};
 
-/// ### Shema
+/// ### Schema
 ///
 /// ```
 ///                                Table "public.bodies"
