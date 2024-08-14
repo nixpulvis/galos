@@ -56,7 +56,7 @@ pub struct System {
 
 mod create;
 mod fetch;
-mod nav;
+pub mod nav;
 
 impl Eq for System {}
 impl PartialEq for System {

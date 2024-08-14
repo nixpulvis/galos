@@ -4,7 +4,7 @@ use async_std::task;
 use galos::Run;
 #[cfg(unix)]
 use galos_db::{
-    systems::{ModuleClass, System},
+    systems::{nav::ModuleClass, System},
     Database,
 };
 use indicatif::{ProgressBar, ProgressStyle};
