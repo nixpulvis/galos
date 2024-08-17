@@ -2,10 +2,11 @@
 use crate::Run;
 use async_std::task;
 use eddn::{subscribe, Message, URL};
-use elite_journal::entry::Event;
+use elite_journal::entry::{Entry, Event};
 use elite_journal::system::System as JournalSystem;
+use elite_journal::entry::market::Market as JournalMarket;
 use elite_journal::entry::route::NavRoute;
-use galos_db::{bodies::Body, stations::Station, systems::System, Database};
+use galos_db::{bodies::Body, stations::Station, systems::System, markets::Market, Database};
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -100,6 +101,12 @@ fn process_message(db: &Database, message: Message, user: String) {
                 }
                 _ => {}
             },
+            Message::Commodity(ref e @ Entry { event: ref m @ JournalMarket { .. }, ..}) => {
+                match Market::from_journal(db, e.timestamp, &m).await {
+                    Ok(_) => println!("[EDDN] <MKT:mkt> {}", m.station_name),
+                    Err(err) => eprintln!("[EDDN] <MKT:mkt> {}", err),
+                }
+            }
             _ => {}
         }
     })
