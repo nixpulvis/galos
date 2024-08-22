@@ -76,7 +76,6 @@ impl System {
             y: p.y,
             z: p.z,
         });
-        // TODO: Conflicts on pos need to do something else.
         sqlx::query!(
             r#"
             INSERT INTO systems
@@ -94,12 +93,13 @@ impl System {
             VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (address)
             DO UPDATE SET
-                population = $4,
-                security = $5,
-                government = $6,
-                allegiance = $7,
-                primary_economy = $8,
-                secondary_economy = $9,
+                position = COALESCE($3, systems.position),
+                population = COALESCE($4, systems.population),
+                security = COALESCE($5, systems.security),
+                government = COALESCE($6, systems.government),
+                allegiance = COALESCE($7, systems.allegiance),
+                primary_economy = COALESCE($8, systems.primary_economy),
+                secondary_economy = COALESCE($9, systems.secondary_economy),
                 updated_at = $10,
                 updated_by = $11
             "#,
