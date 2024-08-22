@@ -7,6 +7,17 @@ use galos_db::systems::System;
 use elite_journal::Allegiance;
 use async_std::task;
 
+#[derive(Resource, Default)]
+struct SystemsSearch {
+    name: String,
+}
+
+#[derive(Component)]
+struct SystemMarker;
+
+#[derive(Resource)]
+struct FocusSystem(System);
+
 // Bundle to spawn our custom camera easily
 #[derive(Bundle, Default)]
 pub struct PanOrbitCameraBundle {
@@ -85,14 +96,18 @@ impl Default for PanOrbitSettings {
 
 fn spawn_camera(mut commands: Commands) {
     let mut camera = PanOrbitCameraBundle::default();
-    // Position our camera using our component,
-    // not Transform (it would get overwritten)
-    camera.state.center = Vec3::new(1.0, 2.0, 3.0);
+    camera.state.center = Vec3::new(0.0, 0.0, 0.0);
     camera.state.radius = 50.0;
     camera.state.pitch = 15.0f32.to_radians();
     camera.state.yaw = 30.0f32.to_radians();
     commands.spawn(camera);
 }
+
+fn move_camera(mut query: Query<&mut PanOrbitState>, position: Vec3) {
+    let mut state = query.single_mut();
+    state.center = position;
+}
+
 
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 
@@ -108,6 +123,7 @@ fn pan_orbit_camera(
         &mut Transform,
     )>,
 ) {
+    let (settings, state, transform) = &q_camera.single();
     // First, accumulate the total amount of
     // mouse motion and scroll, from all pending events:
     let mut total_motion: Vec2 = evr_motion.read()
@@ -234,14 +250,14 @@ fn pan_orbit_camera(
         // (if we changed anything, or if the pan-orbit
         // controller was just added and thus we are running
         // for the first time and need to initialize)
-        if any || state.is_added() {
+        // if any || state.is_added() {
             // YXZ Euler Rotation performs yaw/pitch/roll.
             transform.rotation =
                 Quat::from_euler(EulerRot::YXZ, state.yaw, state.pitch, 0.0);
             // To position the camera, get the backward direction vector
             // and place the camera at the desired radius from the center.
             transform.translation = state.center + transform.back() * state.radius;
-        }
+        // }
     }
 }
 
@@ -254,21 +270,41 @@ fn main() {
             color: Color::default(),
             brightness: 1000.0,
         })
+        .init_resource::<SystemsSearch>()
         .add_systems(Startup, generate_bodies)
         .add_systems(Startup, spawn_camera)
-        .add_systems(Update, ui_example_system)
+        .add_systems(Update, systems_search_ui)
         .add_systems(Update, pan_orbit_camera
             .run_if(any_with_component::<PanOrbitState>))
         .run();
 }
 
-fn ui_example_system(mut contexts: EguiContexts) {
-    egui::Window::new("Hello").show(contexts.ctx_mut(), |ui| {
-        ui.label("world");
+fn systems_search_ui(
+    systems_query: Query<Entity, With<SystemMarker>>,
+    camera_query: Query<&mut PanOrbitState>,
+    mut search: ResMut<SystemsSearch>,
+    mut contexts: EguiContexts,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    egui::Window::new("Systems Search").show(contexts.ctx_mut(), |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Name: ");
+            let response = ui.text_edit_singleline(&mut search.name);
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                for entity in systems_query.iter() {
+                    commands.entity(entity).despawn_recursive();
+                }
+                generate_bodies(camera_query, search.into(), commands, meshes, materials);
+            }
+        });
     });
 }
 
 fn generate_bodies(
+    camera_query: Query<&mut PanOrbitState>,
+    search: Res<SystemsSearch>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -277,7 +313,20 @@ fn generate_bodies(
 
     let systems = task::block_on(async {
         let db = Database::new().await.unwrap();
-        System::fetch_in_range_by_name(&db, 100., "Sol").await.unwrap()
+        match System::fetch_in_range_like_name(&db, 100., &search.name).await {
+            Ok(systems) if !systems.is_empty() => {
+                let origins = System::fetch_like_name(&db, &search.name).await.unwrap();
+                let origin = origins.first().unwrap();
+                let position = Vec3::new(
+                    origin.position.unwrap().x as f32,
+                    origin.position.unwrap().y as f32,
+                    origin.position.unwrap().z as f32,
+                );
+                move_camera(camera_query, position);
+                systems
+            },
+            _ => vec![],
+        }
     });
 
     for system in systems {
@@ -289,7 +338,7 @@ fn generate_bodies(
             system.position.unwrap().z as f32,
         );
 
-        commands.spawn(PbrBundle {
+        commands.spawn((PbrBundle {
             transform: Transform {
                 translation: position,
                 scale: Vec3::splat(radius),
@@ -298,7 +347,7 @@ fn generate_bodies(
             mesh: mesh.clone(),
             material: materials.add(system_color(&system)),
             ..default()
-        });
+        }, SystemMarker));
     }
 }
 
