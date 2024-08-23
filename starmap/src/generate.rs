@@ -13,8 +13,11 @@ pub fn bodies(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut mesh: Local<Option<Handle<Mesh>>>,
 ) {
-    let mesh = meshes.add(Sphere::new(2.0).mesh().ico(10).unwrap());
+    if mesh.is_none() {
+        *mesh = Some(meshes.add(Sphere::new(2.0).mesh().ico(10).unwrap()));
+    }
 
     let systems = task::block_on(async {
         let db = Database::new().await.unwrap();
@@ -52,7 +55,7 @@ pub fn bodies(
                 scale: Vec3::splat(radius),
                 ..default()
             },
-            mesh: mesh.clone(),
+            mesh: mesh.as_ref().unwrap().clone(),
             material: materials.add(system_color(&system)),
             ..default()
         },
