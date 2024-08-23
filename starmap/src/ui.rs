@@ -4,6 +4,7 @@ use crate::{SystemsSearch, SystemMarker};
 use crate::camera::PanOrbitState;
 use crate::generate;
 
+/// A basic GUI for searching for and generating the appropriate star systems.
 pub fn systems_search(
     systems_query: Query<Entity, With<SystemMarker>>,
     camera_query: Query<&mut PanOrbitState>,
@@ -12,7 +13,7 @@ pub fn systems_search(
     mut commands: Commands,
     meshes: ResMut<Assets<Mesh>>,
     materials: ResMut<Assets<StandardMaterial>>,
-    mut mesh: Local<Option<Handle<Mesh>>>,
+    mesh: Local<Option<Handle<Mesh>>>,
 ) {
     egui::Window::new("Systems Search").show(contexts.ctx_mut(), |ui| {
         ui.horizontal(|ui| {
@@ -27,7 +28,7 @@ pub fn systems_search(
             for entity in systems_query.iter() {
                 commands.entity(entity).despawn_recursive();
             }
-            generate::bodies(camera_query, search.into(), commands, meshes, materials, mesh);
+            generate::star_systems(camera_query, search.into(), commands, meshes, materials, mesh);
         }
     });
 }

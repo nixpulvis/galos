@@ -39,8 +39,8 @@ fn main() {
         })
         .init_resource::<SystemsSearch>()
         .add_systems(Startup, (
-            camera::spawn_camera.before(generate::bodies),
-            generate::bodies,
+            camera::spawn_camera.before(generate::star_systems),
+            generate::star_systems,
         ))
         .add_systems(Update, ui::systems_search)
         .add_systems(Update, camera::pan_orbit_camera
