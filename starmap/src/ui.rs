@@ -10,8 +10,8 @@ pub fn systems_search(
     mut search: ResMut<SystemsSearch>,
     mut contexts: EguiContexts,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<StandardMaterial>>,
 ) {
     egui::Window::new("Systems Search").show(contexts.ctx_mut(), |ui| {
         ui.horizontal(|ui| {

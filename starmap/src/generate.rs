@@ -59,17 +59,17 @@ pub fn bodies(
         SystemMarker,
         PickableBundle::default(),
 
-        On::<Pointer<Click>>::target_commands_mut(|_click, target_commands| {
+        On::<Pointer<Click>>::target_commands_mut(|_click, _target_commands| {
             dbg!(_click);
             // TODO: toggle system info.
         }),
 
-        On::<Pointer<Over>>::target_commands_mut(|_hover, target_commands| {
+        On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
             dbg!(_hover);
             // TODO: Spawn system label.
         }),
 
-        On::<Pointer<Out>>::target_commands_mut(|_hover, target_commands| {
+        On::<Pointer<Out>>::target_commands_mut(|_hover, _target_commands| {
             dbg!(_hover);
             // TODO: Despawn system label.
         }),

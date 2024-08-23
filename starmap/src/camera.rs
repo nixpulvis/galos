@@ -102,7 +102,7 @@ pub fn pan_orbit_camera(
         &mut Transform,
     )>,
 ) {
-    let (settings, state, transform) = &q_camera.single();
+    let (_settings, _state, _transform) = &q_camera.single();
     // First, accumulate the total amount of
     // mouse motion and scroll, from all pending events:
     let mut total_motion: Vec2 = evr_motion.read()
@@ -229,6 +229,8 @@ pub fn pan_orbit_camera(
         // (if we changed anything, or if the pan-orbit
         // controller was just added and thus we are running
         // for the first time and need to initialize)
+        // TODO: Only do this on any or some kind of systems state changed event.
+        if any {}
         // if any || state.is_added() {
             // YXZ Euler Rotation performs yaw/pitch/roll.
             transform.rotation =

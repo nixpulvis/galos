@@ -3,10 +3,6 @@
 use bevy::prelude::*;
 use bevy_mod_picking::DefaultPickingPlugins;
 use bevy_egui::EguiPlugin;
-use galos_db::Database;
-use galos_db::systems::System;
-use elite_journal::Allegiance;
-use async_std::task;
 use camera::PanOrbitState;
 
 mod camera;
@@ -21,9 +17,6 @@ struct SystemsSearch {
 
 #[derive(Component)]
 struct SystemMarker;
-
-#[derive(Resource)]
-struct FocusSystem(System);
 
 fn main() {
     App::new()
