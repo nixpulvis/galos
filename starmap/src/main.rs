@@ -9,10 +9,19 @@ mod camera;
 mod ui;
 mod generate;
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct SystemsSearch {
     name: String,
     radius: String,
+}
+
+impl Default for SystemsSearch {
+    fn default() -> Self {
+        SystemsSearch {
+            name: "SOL".into(),
+            radius: "100".into(),
+        }
+    }
 }
 
 #[derive(Component)]
@@ -29,8 +38,10 @@ fn main() {
             brightness: 1000.0,
         })
         .init_resource::<SystemsSearch>()
-        .add_systems(Startup, camera::spawn_camera.before(
-                generate::bodies))
+        .add_systems(Startup, (
+            camera::spawn_camera.before(generate::bodies),
+            generate::bodies,
+        ))
         .add_systems(Update, ui::systems_search)
         .add_systems(Update, camera::pan_orbit_camera
             .run_if(any_with_component::<PanOrbitState>))

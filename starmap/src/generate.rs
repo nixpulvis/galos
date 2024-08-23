@@ -14,7 +14,7 @@ pub fn bodies(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap());
+    let mesh = meshes.add(Sphere::new(2.0).mesh().ico(10).unwrap());
 
     let systems = task::block_on(async {
         let db = Database::new().await.unwrap();
