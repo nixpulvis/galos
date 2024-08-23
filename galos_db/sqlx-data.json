@@ -1366,124 +1366,6 @@
     },
     "query": "\n            INSERT INTO system_factions\n                (system_address,\n                 faction_id,\n                 state,\n                 influence,\n                 happiness,\n                 government,\n                 allegiance,\n                 updated_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n            ON CONFLICT (system_address, faction_id)\n            DO UPDATE SET\n                state = $3,\n                influence = $4,\n                happiness = $5,\n                government = $6,\n                allegiance = $7,\n                updated_at = $8\n            WHERE system_factions.updated_at < $8\n            RETURNING\n                system_address,\n                faction_id,\n                state AS \"state: JournalState\",\n                influence,\n                happiness \"happiness: Happiness\",\n                updated_at\n            "
   },
-  "4df63fd0271a6435a6014b77877544118439b7944be0e815027914cf58005089": {
-    "describe": {
-      "columns": [],
-      "nullable": [],
-      "parameters": {
-        "Left": [
-          "Int8",
-          "Text",
-          {
-            "Custom": {
-              "kind": "Simple",
-              "name": "geometry"
-            }
-          },
-          "Int8",
-          {
-            "Custom": {
-              "kind": {
-                "Enum": [
-                  "Low",
-                  "Medium",
-                  "High"
-                ]
-              },
-              "name": "security"
-            }
-          },
-          {
-            "Custom": {
-              "kind": {
-                "Enum": [
-                  "Anarchy",
-                  "Carrier",
-                  "Communism",
-                  "Confederacy",
-                  "Cooperative",
-                  "Corporate",
-                  "Democracy",
-                  "Dictatorship",
-                  "Engineer",
-                  "Feudal",
-                  "Patronage",
-                  "Prison",
-                  "PrisonColony",
-                  "Theocracy"
-                ]
-              },
-              "name": "government"
-            }
-          },
-          {
-            "Custom": {
-              "kind": {
-                "Enum": [
-                  "Alliance",
-                  "Empire",
-                  "Federation",
-                  "Guardian",
-                  "Independent",
-                  "PilotsFederation",
-                  "PlayerPilots",
-                  "Thargoid"
-                ]
-              },
-              "name": "allegiance"
-            }
-          },
-          {
-            "Custom": {
-              "kind": {
-                "Enum": [
-                  "Agriculture",
-                  "Carrier",
-                  "Colony",
-                  "Extraction",
-                  "HighTech",
-                  "Industrial",
-                  "Military",
-                  "Prison",
-                  "Refinery",
-                  "Service",
-                  "Terraforming",
-                  "Tourism",
-                  "Undefined"
-                ]
-              },
-              "name": "economy"
-            }
-          },
-          {
-            "Custom": {
-              "kind": {
-                "Enum": [
-                  "Agriculture",
-                  "Carrier",
-                  "Colony",
-                  "Extraction",
-                  "HighTech",
-                  "Industrial",
-                  "Military",
-                  "Prison",
-                  "Refinery",
-                  "Service",
-                  "Terraforming",
-                  "Tourism",
-                  "Undefined"
-                ]
-              },
-              "name": "economy"
-            }
-          },
-          "Timestamp",
-          "Varchar"
-        ]
-      }
-    },
-    "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at,\n                 updated_by)\n            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                population = $4,\n                security = $5,\n                government = $6,\n                allegiance = $7,\n                primary_economy = $8,\n                secondary_economy = $9,\n                updated_at = $10,\n                updated_by = $11\n            "
-  },
   "4f0e76dd8486e45d54df3456e2b4b4c7a15b49e662191a73c53632051c73486a": {
     "describe": {
       "columns": [
@@ -2722,6 +2604,148 @@
     },
     "query": "\n            DELETE FROM articles\n            WHERE id = $1\n            "
   },
+  "adeeb3b9659ebec7ffada059a1972f8bda84897d09f45f3764036d7571fe1708": {
+    "describe": {
+      "columns": [
+        {
+          "name": "id",
+          "ordinal": 0,
+          "type_info": "Int8"
+        },
+        {
+          "name": "system_address",
+          "ordinal": 1,
+          "type_info": "Int8"
+        },
+        {
+          "name": "station_name",
+          "ordinal": 2,
+          "type_info": "Varchar"
+        },
+        {
+          "name": "updated_at",
+          "ordinal": 3,
+          "type_info": "Timestamp"
+        },
+        {
+          "name": "commodities: Vec<Commodity>",
+          "ordinal": 4,
+          "type_info": {
+            "Custom": {
+              "kind": {
+                "Array": {
+                  "Custom": {
+                    "kind": {
+                      "Composite": [
+                        [
+                          "name",
+                          "Text"
+                        ],
+                        [
+                          "mean_price",
+                          "Int4"
+                        ],
+                        [
+                          "buy_price",
+                          "Int4"
+                        ],
+                        [
+                          "sell_price",
+                          "Int4"
+                        ],
+                        [
+                          "demand",
+                          "Int4"
+                        ],
+                        [
+                          "demand_bracket",
+                          "Int4"
+                        ],
+                        [
+                          "stock",
+                          "Int4"
+                        ],
+                        [
+                          "stock_bracket",
+                          "Int4"
+                        ]
+                      ]
+                    },
+                    "name": "commodity"
+                  }
+                }
+              },
+              "name": "_commodity"
+            }
+          }
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        false,
+        false,
+        true
+      ],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Int8",
+          "Varchar",
+          "Timestamp",
+          {
+            "Custom": {
+              "kind": {
+                "Array": {
+                  "Custom": {
+                    "kind": {
+                      "Composite": [
+                        [
+                          "name",
+                          "Text"
+                        ],
+                        [
+                          "mean_price",
+                          "Int4"
+                        ],
+                        [
+                          "buy_price",
+                          "Int4"
+                        ],
+                        [
+                          "sell_price",
+                          "Int4"
+                        ],
+                        [
+                          "demand",
+                          "Int4"
+                        ],
+                        [
+                          "demand_bracket",
+                          "Int4"
+                        ],
+                        [
+                          "stock",
+                          "Int4"
+                        ],
+                        [
+                          "stock_bracket",
+                          "Int4"
+                        ]
+                      ]
+                    },
+                    "name": "commodity"
+                  }
+                }
+              },
+              "name": "_commodity"
+            }
+          }
+        ]
+      }
+    },
+    "query": "\n            INSERT INTO markets (\n                id,\n                system_address,\n                station_name,\n                updated_at,\n                commodities)\n            VALUES ($1, $2, $3, $4, $5)\n            ON CONFLICT (id)\n            DO UPDATE SET\n                updated_at = $4,\n                commodities = $5\n            RETURNING\n                id,\n                system_address,\n                station_name,\n                updated_at,\n                commodities as \"commodities: Vec<Commodity>\"\n            "
+  },
   "b256195bb2da63c8c6466a7b6510cde26017b56fb5248882383e90e831042503": {
     "describe": {
       "columns": [
@@ -3681,6 +3705,124 @@
       }
     },
     "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                updated_at,\n                updated_by\n            FROM systems\n            WHERE name ILIKE $1\n            ORDER BY name\n            "
+  },
+  "d3edf18376b3f50ab97239ec71384ba3b67c220136d26c745bfab234ca4b7aad": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Left": [
+          "Int8",
+          "Text",
+          {
+            "Custom": {
+              "kind": "Simple",
+              "name": "geometry"
+            }
+          },
+          "Int8",
+          {
+            "Custom": {
+              "kind": {
+                "Enum": [
+                  "Low",
+                  "Medium",
+                  "High"
+                ]
+              },
+              "name": "security"
+            }
+          },
+          {
+            "Custom": {
+              "kind": {
+                "Enum": [
+                  "Anarchy",
+                  "Carrier",
+                  "Communism",
+                  "Confederacy",
+                  "Cooperative",
+                  "Corporate",
+                  "Democracy",
+                  "Dictatorship",
+                  "Engineer",
+                  "Feudal",
+                  "Patronage",
+                  "Prison",
+                  "PrisonColony",
+                  "Theocracy"
+                ]
+              },
+              "name": "government"
+            }
+          },
+          {
+            "Custom": {
+              "kind": {
+                "Enum": [
+                  "Alliance",
+                  "Empire",
+                  "Federation",
+                  "Guardian",
+                  "Independent",
+                  "PilotsFederation",
+                  "PlayerPilots",
+                  "Thargoid"
+                ]
+              },
+              "name": "allegiance"
+            }
+          },
+          {
+            "Custom": {
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              },
+              "name": "economy"
+            }
+          },
+          {
+            "Custom": {
+              "kind": {
+                "Enum": [
+                  "Agriculture",
+                  "Carrier",
+                  "Colony",
+                  "Extraction",
+                  "HighTech",
+                  "Industrial",
+                  "Military",
+                  "Prison",
+                  "Refinery",
+                  "Service",
+                  "Terraforming",
+                  "Tourism",
+                  "Undefined"
+                ]
+              },
+              "name": "economy"
+            }
+          },
+          "Timestamp",
+          "Varchar"
+        ]
+      }
+    },
+    "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at,\n                 updated_by)\n            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                position = COALESCE($3, systems.position),\n                population = COALESCE($4, systems.population),\n                security = COALESCE($5, systems.security),\n                government = COALESCE($6, systems.government),\n                allegiance = COALESCE($7, systems.allegiance),\n                primary_economy = COALESCE($8, systems.primary_economy),\n                secondary_economy = COALESCE($9, systems.secondary_economy),\n                updated_at = $10,\n                updated_by = $11\n            "
   },
   "df7bf7ba6c83d958ec6ca0e01d1c30e9b5dc885dee7bb335c6f5e5b2fe307f9e": {
     "describe": {
