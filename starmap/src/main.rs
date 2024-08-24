@@ -1,6 +1,7 @@
 //! Shows how to iterate over combinations of query results.
 
 use bevy::prelude::*;
+use bevy_infinite_grid::InfiniteGridPlugin;
 use bevy_mod_picking::DefaultPickingPlugins;
 use bevy_egui::EguiPlugin;
 use camera::PanOrbitState;
@@ -39,6 +40,7 @@ struct RouteMarker;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(InfiniteGridPlugin)
         .add_plugins(DefaultPickingPlugins)
         .add_plugins(EguiPlugin)
         .insert_resource(ClearColor(Color::BLACK))

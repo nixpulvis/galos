@@ -1,6 +1,7 @@
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
+use bevy_infinite_grid::InfiniteGridBundle;
 use crate::MoveCamera;
 
 // Bundle to spawn our custom camera easily
@@ -84,6 +85,7 @@ pub fn spawn_camera(mut commands: Commands) {
     camera.state.pitch = 15.0f32.to_radians();
     camera.state.yaw = 30.0f32.to_radians();
     commands.spawn(camera);
+    commands.spawn(InfiniteGridBundle::default());
 }
 
 pub fn move_camera(
