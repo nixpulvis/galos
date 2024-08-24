@@ -1,6 +1,7 @@
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
+use crate::MoveCamera;
 
 // Bundle to spawn our custom camera easily
 #[derive(Bundle, Default)]
@@ -87,9 +88,14 @@ pub fn spawn_camera(mut commands: Commands) {
     commands.spawn(camera);
 }
 
-pub fn move_camera(mut query: Query<&mut PanOrbitState>, position: Vec3) {
-    let mut state = query.single_mut();
-    state.center = position;
+pub fn move_camera(
+    mut query: Query<&mut PanOrbitState>,
+    mut camera_events: EventReader<MoveCamera>,
+) {
+    for event in camera_events.read() {
+        let mut state = query.single_mut();
+        state.center = event.position;
+    }
 }
 
 pub fn pan_orbit_camera(

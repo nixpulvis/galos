@@ -9,19 +9,15 @@ mod camera;
 mod ui;
 mod generate;
 
-#[derive(Resource)]
-struct SystemsSearch {
+#[derive(Event, Debug)]
+struct SystemsSearched {
     name: String,
     radius: String,
 }
 
-impl Default for SystemsSearch {
-    fn default() -> Self {
-        SystemsSearch {
-            name: "SOL".into(),
-            radius: "100".into(),
-        }
-    }
+#[derive(Event, Debug)]
+struct MoveCamera {
+    position: Vec3,
 }
 
 #[derive(Component)]
@@ -37,11 +33,14 @@ fn main() {
             color: Color::default(),
             brightness: 1000.0,
         })
-        .init_resource::<SystemsSearch>()
-        .add_systems(Startup, (
-            camera::spawn_camera.before(generate::star_systems),
-            generate::star_systems,
-        ))
+
+        .add_event::<SystemsSearched>()
+        .add_event::<MoveCamera>()
+
+        .add_systems(Startup, camera::spawn_camera)
+        .add_systems(Update, generate::star_systems)
+        .add_systems(Update, camera::move_camera)
+
         .add_systems(Update, ui::systems_search)
         .add_systems(Update, camera::pan_orbit_camera
             .run_if(any_with_component::<PanOrbitState>))
