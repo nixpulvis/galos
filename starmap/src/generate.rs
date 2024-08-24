@@ -50,24 +50,22 @@ pub fn star_systems(
         // the route lines and populate space around each system along the
         // route.
         if let Searched::Route { range, .. } = event {
-            for pair in systems.windows(2) {
-                let a = system_to_vec(&pair[0]);
-                let b = system_to_vec(&pair[1]);
-                commands.spawn((MaterialMeshBundle {
-                    mesh: meshes.add(LineStrip {
-                        points: vec![a, b],
-                    }),
-                    transform: Transform::from_xyz(0.0, 0.0, 0.0),
-                    material: materials.add(StandardMaterial {
-                        base_color: Color::srgba(1., 1., 1., 0.1),
-                        alpha_mode: AlphaMode::Blend,
-                        ..default()
-                    }),
+            commands.spawn((MaterialMeshBundle {
+                mesh: meshes.add(LineStrip {
+                    points: systems.iter().map(system_to_vec).collect()
+                }),
+                transform: Transform::from_xyz(0., 0., 0.),
+                material: materials.add(StandardMaterial {
+                    base_color: Color::srgba(1., 1., 1., 0.1),
+                    alpha_mode: AlphaMode::Blend,
                     ..default()
-                },
-                RouteMarker));
+                }),
+                ..default()
+            },
+            RouteMarker));
 
-                let (_, s) = query_systems(&pair[0].name, range);
+            for system in systems {
+                let (_, s) = query_systems(&system.name, range);
                 spawn_entities(&s, &mut commands, &mut meshes, &mut materials, &mut mesh);
             }
         }
