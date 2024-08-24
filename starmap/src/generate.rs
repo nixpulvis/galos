@@ -4,14 +4,14 @@ use galos_db::Database;
 use galos_db::systems::System;
 use elite_journal::Allegiance;
 use async_std::task;
-use crate::{SystemsSearched, MoveCamera, SystemMarker};
+use crate::{Searched, MoveCamera, SystemMarker};
 
 /// Queries the DB, then creates an entity for each star system in the search.
 ///
 /// This function also moves the camera's position to be looking at the
 /// searched system.
 pub fn star_systems(
-    mut search_events: EventReader<SystemsSearched>,
+    mut search_events: EventReader<Searched>,
     mut camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -33,7 +33,10 @@ pub fn star_systems(
         }
 
         // Load DB objects.
-        let (origin, systems) = query_systems(&event.name, &event.radius);
+        let (origin, systems) = match event {
+            Searched::System { name, radius } => query_systems(&name, &radius),
+            Searched::Faction { name } => query_faction_systems(&name),
+        };
 
         // Move the camera to the origin of queried systems.
         if let Some(o) = origin {
@@ -104,6 +107,16 @@ fn query_systems(name: &str, radius: &str) -> (Option<System>, Vec<System>) {
         match System::fetch_in_range_like_name(&db, radius, &name).await {
         // match System::fetch_sample(&db, 100., &name).await {
             Ok(systems) => (origins.first().map(ToOwned::to_owned), systems),
+            _ => (None, vec![]),
+        }
+    })
+}
+
+fn query_faction_systems(faction: &str) -> (Option<System>, Vec<System>) {
+    task::block_on(async {
+        let db = Database::new().await.unwrap();
+        match System::fetch_faction(&db, faction).await {
+            Ok(systems) => (systems.first().map(ToOwned::to_owned), systems),
             _ => (None, vec![]),
         }
     })

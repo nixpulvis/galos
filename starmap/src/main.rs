@@ -10,9 +10,14 @@ mod ui;
 mod generate;
 
 #[derive(Event, Debug)]
-struct SystemsSearched {
-    name: String,
-    radius: String,
+enum Searched {
+    System {
+        name: String,
+        radius: String,
+    },
+    Faction {
+        name: String,
+    },
 }
 
 #[derive(Event, Debug)]
@@ -34,7 +39,7 @@ fn main() {
             brightness: 1000.0,
         })
 
-        .add_event::<SystemsSearched>()
+        .add_event::<Searched>()
         .add_event::<MoveCamera>()
 
         .add_systems(Startup, camera::spawn_camera)
@@ -42,6 +47,7 @@ fn main() {
         .add_systems(Update, camera::move_camera)
 
         .add_systems(Update, ui::systems_search)
+        .add_systems(Update, ui::faction_search)
         .add_systems(Update, camera::pan_orbit_camera
             .run_if(any_with_component::<PanOrbitState>))
         .run();

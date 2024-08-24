@@ -228,4 +228,55 @@ impl System {
             })
             .collect())
     }
+
+    pub async fn fetch_faction(
+        db: &Database,
+        faction: &str,
+    ) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                systems.address,
+                systems.name,
+                systems.position AS "position!: Option<wkb::Decode<Coordinate>>",
+                systems.population,
+                systems.security as "security: Security",
+                systems.government as "government: Government",
+                systems.allegiance as "allegiance: Allegiance",
+                systems.primary_economy as "primary_economy: Economy",
+                systems.secondary_economy as "secondary_economy: Economy",
+                systems.updated_at,
+                systems.updated_by
+            FROM systems
+            JOIN system_factions ON system_factions.system_address = systems.address
+            JOIN factions ON factions.id = system_factions.faction_id
+            WHERE factions.name ILIKE $1
+            "#,
+            faction,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        dbg!(faction);
+        dbg!(&rows);
+
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
+                address: row.address,
+                name: row.name,
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
+            })
+            .collect())
+    }
 }
