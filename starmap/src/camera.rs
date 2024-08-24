@@ -16,7 +16,6 @@ pub struct PanOrbitCameraBundle {
 pub struct PanOrbitState {
     pub center: Vec3,
     pub radius: f32,
-    pub upside_down: bool,
     pub pitch: f32,
     pub yaw: f32,
 }
@@ -56,7 +55,6 @@ impl Default for PanOrbitState {
         PanOrbitState {
             center: Vec3::ZERO,
             radius: 1.0,
-            upside_down: false,
             pitch: 0.0,
             yaw: 0.0,
         }
@@ -171,17 +169,6 @@ pub fn pan_orbit_camera(
                 * settings.scroll_pixel_sensitivity * settings.zoom_sensitivity;
         }
 
-        // Upon starting a new orbit maneuver (key is just pressed),
-        // check if we are starting it upside-down
-        if settings.orbit_key.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-            state.upside_down = state.pitch < -FRAC_PI_2 || state.pitch > FRAC_PI_2;
-        }
-
-        // If we are upside down, reverse the X orbiting
-        if state.upside_down {
-            total_orbit.x = -total_orbit.x;
-        }
-
         // Now we can actually do the things!
 
         let mut any = false;
@@ -207,16 +194,17 @@ pub fn pan_orbit_camera(
             state.pitch += total_orbit.y;
             // wrap around, to stay between +- 180 degrees
             if state.yaw > PI {
-                state.yaw -= TAU; // 2 * PI
+                state.yaw -= TAU;
             }
             if state.yaw < -PI {
-                state.yaw += TAU; // 2 * PI
+                state.yaw += TAU;
             }
-            if state.pitch > PI {
-                state.pitch -= TAU; // 2 * PI
+            // lock view within a single rotation
+            if state.pitch > FRAC_PI_2 {
+                state.pitch = FRAC_PI_2;
             }
-            if state.pitch < -PI {
-                state.pitch += TAU; // 2 * PI
+            if state.pitch < -FRAC_PI_2 {
+                state.pitch = -FRAC_PI_2;
             }
         }
 
