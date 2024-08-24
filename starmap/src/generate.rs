@@ -1,16 +1,20 @@
 use bevy::prelude::*;
+use bevy::render::mesh::{PrimitiveTopology};
+use bevy::render::render_asset::RenderAssetUsages;
 use bevy_mod_picking::prelude::*;
 use galos_db::Database;
 use galos_db::systems::System;
-use elite_journal::Allegiance;
+use elite_journal::prelude::*;
 use async_std::task;
-use crate::{Searched, MoveCamera, SystemMarker};
+use crate::{Searched, MoveCamera, SystemMarker, RouteMarker};
 
 /// Queries the DB, then creates an entity for each star system in the search.
 ///
 /// This function also moves the camera's position to be looking at the
 /// searched system.
 pub fn star_systems(
+    systems_query: Query<Entity, With<SystemMarker>>,
+    route_query: Query<Entity, With<RouteMarker>>,
     mut search_events: EventReader<Searched>,
     mut camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
@@ -19,86 +23,85 @@ pub fn star_systems(
     mut mesh: Local<Option<Handle<Mesh>>>,
 ) {
     for event in search_events.read() {
-        // TODO: Scale systems based on the distance from the camera.
-        // This may follow some kind of log curve, or generally effect closer
-        // systems less. The goal is to have systems never become smaller than a
-        // pixel in size. I'm not sure if we can implement blending modes or
-        // something to handle partially overlapping systems.
-        const SYSTEM_SCALE:  f32 = 1.;
-        const SYSTEM_RADIUS: f32 = SYSTEM_SCALE/10.;
-
-        // Make sure our sphere mesh is loaded. This is the "shape" of the star.
-        if mesh.is_none() {
-            *mesh = Some(meshes.add(Sphere::new(SYSTEM_RADIUS).mesh().ico(3).unwrap()));
-        }
-
         // Load DB objects.
         let (origin, systems) = match event {
             Searched::System { name, radius } => query_systems(&name, &radius),
             Searched::Faction { name } => query_faction_systems(&name),
+            Searched::Route { start, end, range } => query_route(&start, &end, &range),
         };
 
         // Move the camera to the origin of queried systems.
-        if let Some(o) = origin {
-            let position = Vec3::new(
-                o.position.unwrap().x as f32,
-                o.position.unwrap().y as f32,
-                o.position.unwrap().z as f32,
-            );
-            camera_events.send(MoveCamera { position });
+        if let Some(o) = &origin {
+            camera_events.send(MoveCamera {
+                position: system_to_vec(o)
+            });
         }
 
-        // Generate all the star system entities.
-        for system in systems {
-            commands.spawn((PbrBundle {
-                transform: Transform {
-                    translation: Vec3::new(
-                        system.position.unwrap().x as f32,
-                        system.position.unwrap().y as f32,
-                        system.position.unwrap().z as f32,
-                    ),
-                    // scale: Vec3::splat(0.25),
-                    scale: Vec3::splat(SYSTEM_SCALE),
+        for entity in systems_query.iter() {
+            commands.entity(entity).despawn_recursive();
+        }
+        for entity in route_query.iter() {
+            commands.entity(entity).despawn_recursive();
+        }
+
+        spawn_entities(&systems, &mut commands, &mut meshes, &mut materials, &mut mesh);
+
+        // After generating the star systems, if we're a route search, draw
+        // the route lines and populate space around each system along the
+        // route.
+        if let Searched::Route { range, .. } = event {
+            for pair in systems.windows(2) {
+                let a = system_to_vec(&pair[0]);
+                let b = system_to_vec(&pair[1]);
+                commands.spawn((MaterialMeshBundle {
+                    mesh: meshes.add(LineStrip {
+                        points: vec![a, b],
+                    }),
+                    transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                    material: materials.add(StandardMaterial {
+                        base_color: Color::srgba(1., 1., 1., 0.1),
+                        alpha_mode: AlphaMode::Blend,
+                        ..default()
+                    }),
                     ..default()
                 },
-                // TODO: Use entries API to avoid unwrap.
-                mesh: mesh.as_ref().unwrap().clone(),
-                // TODO: Configure the material to be flatter when looking at allegiance,
-                // or more realistic when looking at star class. Remember to check
-                // partially overlapping systems.
-                material: materials.add(allegiance_color(&system)),
-                ..default()
-            },
-            SystemMarker,
-            PickableBundle::default(),
+                RouteMarker));
 
-            On::<Pointer<Click>>::target_commands_mut(|click, _target_commands| {
-                dbg!(click);
-                // TODO: toggle system info.
-                // TODO: double click to center camera... use events instead
-                // of the code below which doesn't work.
-                // if let Some(position) = click.event.hit.position {
-                //     camera::move_camera(camera_query, position);
-                // }
-            }),
-
-            On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
-                dbg!(_hover);
-                // TODO: Spawn system label.
-            }),
-
-            On::<Pointer<Out>>::target_commands_mut(|_hover, _target_commands| {
-                dbg!(_hover);
-                // TODO: Despawn system label.
-            }),
-
-            ));
+                let (_, s) = query_systems(&pair[0].name, range);
+                spawn_entities(&s, &mut commands, &mut meshes, &mut materials, &mut mesh);
+            }
         }
     }
 }
 
-// TODO: This absolutely needs to be async and to avoid blocking the rendering
-// pipeline.
+/// A list of points that will have a line drawn between each consecutive points
+#[derive(Debug, Clone)]
+struct LineStrip {
+    points: Vec<Vec3>,
+}
+
+impl From<LineStrip> for Mesh {
+    fn from(line: LineStrip) -> Self {
+        Mesh::new(
+            // This tells wgpu that the positions are a list of points
+            // where a line will be drawn between each consecutive point
+            PrimitiveTopology::LineStrip,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+        // Add the point positions as an attribute
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points)
+    }
+}
+
+fn system_to_vec(system: &System) -> Vec3 {
+    Vec3::new(
+        system.position.unwrap().x as f32,
+        system.position.unwrap().y as f32,
+        system.position.unwrap().z as f32,
+    )
+}
+
+// TODO: I'd like to avoid blocking, but I don't know how yet.
 fn query_systems(name: &str, radius: &str) -> (Option<System>, Vec<System>) {
     task::block_on(async {
         let db = Database::new().await.unwrap();
@@ -120,6 +123,89 @@ fn query_faction_systems(faction: &str) -> (Option<System>, Vec<System>) {
             _ => (None, vec![]),
         }
     })
+}
+
+fn query_route(start: &str, end: &str, range: &str) -> (Option<System>, Vec<System>) {
+    task::block_on(async {
+        let db = Database::new().await.unwrap();
+        if let (Ok(a), Ok(b), Ok(r)) = (
+            System::fetch_by_name(&db, start).await,
+            System::fetch_by_name(&db, end).await,
+            range.parse::<f64>())
+        {
+            if let Some(route) = a.route_to(&db, &b, r) {
+                return (Some(a), route.0)
+            }
+        }
+
+        (None, vec![])
+    })
+}
+
+/// Generate all the star system entities.
+fn spawn_entities(
+    systems: &[System],
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    mesh: &mut Local<Option<Handle<Mesh>>>,
+    ) {
+    // TODO: Scale systems based on the distance from the camera.
+    // This may follow some kind of log curve, or generally effect closer
+    // systems less. The goal is to have systems never become smaller than a
+    // pixel in size. I'm not sure if we can implement blending modes or
+    // something to handle partially overlapping systems.
+    const SYSTEM_SCALE:  f32 = 1.;
+    const SYSTEM_RADIUS: f32 = SYSTEM_SCALE/10.;
+
+    // Make sure our sphere mesh is loaded. This is the "shape" of the star.
+    if mesh.is_none() {
+        **mesh = Some(meshes.add(Sphere::new(SYSTEM_RADIUS).mesh().ico(3).unwrap()));
+    }
+
+    for system in systems {
+        commands.spawn((PbrBundle {
+            transform: Transform {
+                translation: Vec3::new(
+                    system.position.unwrap().x as f32,
+                    system.position.unwrap().y as f32,
+                    system.position.unwrap().z as f32,
+                ),
+                // scale: Vec3::splat(0.25),
+                scale: Vec3::splat(SYSTEM_SCALE),
+                ..default()
+            },
+            // TODO: Use entries API to avoid unwrap.
+            mesh: mesh.as_ref().unwrap().clone(),
+            // TODO: Configure the material to be flatter when looking at allegiance,
+            // or more realistic when looking at star class. Remember to check
+            // partially overlapping systems.
+            material: materials.add(allegiance_color(&system)),
+            ..default()
+        },
+        SystemMarker,
+        PickableBundle::default(),
+
+        On::<Pointer<Click>>::target_commands_mut(|click, _target_commands| {
+            dbg!(click);
+            // TODO: toggle system info.
+            // TODO: double click to center camera... use events instead
+            // of the code below which doesn't work.
+            // if let Some(position) = click.event.hit.position {
+            //     camera::move_camera(camera_query, position);
+            // }
+        }),
+
+        On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
+            dbg!(_hover);
+            // TODO: Spawn system label.
+        }),
+
+        On::<Pointer<Out>>::target_commands_mut(|_hover, _target_commands| {
+            dbg!(_hover);
+            // TODO: Despawn system label.
+        })));
+    }
 }
 
 /// Maps system allegiance to a color for the sphere on the map.

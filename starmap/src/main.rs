@@ -18,6 +18,11 @@ enum Searched {
     Faction {
         name: String,
     },
+    Route {
+        start: String,
+        end: String,
+        range: String,
+    },
 }
 
 #[derive(Event, Debug)]
@@ -27,6 +32,9 @@ struct MoveCamera {
 
 #[derive(Component)]
 struct SystemMarker;
+
+#[derive(Component)]
+struct RouteMarker;
 
 fn main() {
     App::new()
@@ -48,6 +56,7 @@ fn main() {
 
         .add_systems(Update, ui::systems_search)
         .add_systems(Update, ui::faction_search)
+        .add_systems(Update, ui::route_search)
         .add_systems(Update, camera::pan_orbit_camera
             .run_if(any_with_component::<PanOrbitState>))
         .run();
