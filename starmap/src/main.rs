@@ -1,10 +1,10 @@
 //! Shows how to iterate over combinations of query results.
 
 use bevy::prelude::*;
+use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use bevy_infinite_grid::InfiniteGridPlugin;
 use bevy_mod_picking::DefaultPickingPlugins;
 use bevy_egui::EguiPlugin;
-use camera::PanOrbitState;
 
 mod camera;
 mod ui;
@@ -40,6 +40,7 @@ struct RouteMarker;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(PanOrbitCameraPlugin)
         .add_plugins(InfiniteGridPlugin)
         .add_plugins(DefaultPickingPlugins)
         .add_plugins(EguiPlugin)
@@ -59,7 +60,5 @@ fn main() {
         .add_systems(Update, ui::systems_search)
         .add_systems(Update, ui::faction_search)
         .add_systems(Update, ui::route_search)
-        .add_systems(Update, camera::pan_orbit_camera
-            .run_if(any_with_component::<PanOrbitState>))
         .run();
 }
