@@ -67,7 +67,7 @@ fn fetch_around_camera(
 // TODO: How best to switch between camera orianted system loading and custom
 // filters like faction and route searches, etc.
 pub fn spawn(
-    _systems_query: Query<Entity, With<SystemMarker>>,
+    systems_query: Query<Entity, With<SystemMarker>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -78,6 +78,9 @@ pub fn spawn(
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(systems) = status {
+            for entity in systems_query.iter() {
+                commands.entity(entity).despawn_recursive();
+            }
             spawn_entities(
                 &systems,
                 &mut commands,
@@ -237,7 +240,7 @@ fn spawn_entities(
     // pixel in size. I'm not sure if we can implement blending modes or
     // something to handle partially overlapping systems.
     const SYSTEM_SCALE:  f32 = 1.;
-    const SYSTEM_RADIUS: f32 = SYSTEM_SCALE/10.;
+    const SYSTEM_RADIUS: f32 = SYSTEM_SCALE/2.5;
 
     // Make sure our sphere mesh is loaded. This is the "shape" of the star.
     if mesh.is_none() {
