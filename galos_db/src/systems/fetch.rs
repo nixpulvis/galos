@@ -249,7 +249,7 @@ impl System {
                 updated_at,
                 updated_by
             FROM systems
-            WHERE ST_3DDistance(ST_MakePoint($2, $3, $4), position) < $1
+            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
             "#,
             range,
             center[0],
