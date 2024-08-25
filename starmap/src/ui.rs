@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::Searched;
-use crate::systems::{AlwaysFetch, AlwaysDespawn};
+use crate::systems::{SpyglassRadius, AlwaysFetch, AlwaysDespawn};
 use crate::SystemMarker;
 
 // TODO: Form validation.
@@ -10,13 +10,20 @@ pub fn settings(
     systems_query: Query<Entity, With<SystemMarker>>,
     mut commands: Commands,
     mut contexts: EguiContexts,
+    mut radius: ResMut<SpyglassRadius>,
     mut always_despawn: ResMut<AlwaysDespawn>,
     mut always_fetch: ResMut<AlwaysFetch>,
 ) {
+    // TODO: We really need to figure out how to trigger a re-fetch after
+    // these settings change in a clean way.
+    // I suspect I'll make a new SettingsChanged event or something, but
+    // bevy Observers may also help, I just need to learn about them.
     egui::Window::new("Settings")
         .fixed_size([150.,0.])
         .show(contexts.ctx_mut(), |ui|
     {
+        ui.add(egui::Slider::new(&mut radius.0, 0.0..=250.0).text("Radius"));
+
         ui.checkbox(&mut always_fetch.0, "Always Fetch Systems");
 
         let last_value = always_despawn.0;
@@ -67,14 +74,6 @@ pub fn search(
                 });
             }
         });
-
-
-        // TODO: This should be a slider I think. That way we can provide
-        // a reasonable range.
-        // ui.horizontal(|ui| {
-        //     ui.label("Radius (Ly): ");
-        //     ui.text_edit_singleline(&mut *search_radius);
-        // });
     });
 }
 

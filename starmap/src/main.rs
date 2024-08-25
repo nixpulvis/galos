@@ -66,6 +66,7 @@ fn main() {
             brightness: 1000.0,
         })
         .insert_resource(DatabaseResource(db))
+        .insert_resource(systems::SpyglassRadius(50.))
         .insert_resource(systems::AlwaysFetch(true))
         .insert_resource(systems::AlwaysDespawn(true))
         .insert_resource(systems::LoadedRegions {

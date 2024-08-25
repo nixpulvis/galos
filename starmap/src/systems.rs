@@ -42,9 +42,15 @@ pub fn fetch(
     mut tasks: ResMut<FetchTasks>,
     db: Res<DatabaseResource>,
     mut always_fetch: ResMut<AlwaysFetch>,
+    mut radius: ResMut<SpyglassRadius>,
 ) {
     if always_fetch.0 {
-        fetch_around_camera(&camera_query, &mut loaded_regions, &mut tasks, &db);
+        fetch_around_camera(
+            &camera_query,
+            &mut loaded_regions,
+            &mut tasks,
+            &mut radius,
+            &db);
     }
 
     for event in search_events.read() {
@@ -71,10 +77,14 @@ pub fn fetch(
     }
 }
 
+#[derive(Resource)]
+pub struct SpyglassRadius(pub f64);
+
 fn fetch_around_camera(
     camera_query: &Query<&mut PanOrbitCamera>,
     loaded_regions: &mut ResMut<LoadedRegions>,
     tasks: &mut ResMut<FetchTasks>,
+    radius: &mut ResMut<SpyglassRadius>,
     db: &Res<DatabaseResource>,
 ) {
     let camera = camera_query.single();
@@ -84,8 +94,8 @@ fn fetch_around_camera(
     {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
+        let radius = radius.0;
         let task = task_pool.spawn(async move {
-            let radius = 50.;
             let cent = [
                 center.x as f64,
                 center.y as f64,
