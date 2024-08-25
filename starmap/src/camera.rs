@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_infinite_grid::InfiniteGridBundle;
-use crate::{MoveCamera, PostFetch};
+use crate::MoveCamera;
 
 pub fn spawn_camera(mut commands: Commands) {
     commands.spawn((
@@ -29,17 +29,6 @@ pub fn move_camera(
     mut camera_events: EventReader<MoveCamera>,
 ) {
     for event in camera_events.read() {
-        let mut camera = query.single_mut();
-        camera.pan_smoothness = 0.85;
-        camera.target_focus = event.position;
-    }
-}
-
-pub fn post_faction_fetch(
-    mut query: Query<&mut PanOrbitCamera>,
-    mut pff_events: EventReader<PostFetch>,
-) {
-    for event in pff_events.read() {
         let mut camera = query.single_mut();
         camera.pan_smoothness = 0.85;
         camera.target_focus = event.position;

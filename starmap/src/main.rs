@@ -34,11 +34,6 @@ struct MoveCamera {
     position: Vec3,
 }
 
-#[derive(Event)]
-pub struct PostFetch {
-    position: Vec3
-}
-
 #[derive(Component)]
 struct SystemMarker;
 
@@ -81,11 +76,9 @@ fn main() {
 
         .add_event::<MoveCamera>()
         .add_event::<Searched>()
-        .add_event::<PostFetch>()
 
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Update, camera::move_camera)
-        .add_systems(Update, camera::post_faction_fetch)
 
         .add_systems(Update, systems::fetch)
         .add_systems(Update, systems::spawn)

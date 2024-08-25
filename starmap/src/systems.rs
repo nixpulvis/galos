@@ -11,7 +11,7 @@ use elite_journal::prelude::*;
 use crate::{
     DatabaseResource,
     Searched,
-    PostFetch,
+    MoveCamera,
     SystemMarker,
     RouteMarker
 };
@@ -153,7 +153,7 @@ fn fetch_route(
 pub fn spawn(
     systems_query: Query<Entity, With<SystemMarker>>,
     route_query: Query<Entity, With<RouteMarker>>,
-    mut pf_events: EventWriter<PostFetch>,
+    mut pf_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -187,7 +187,7 @@ pub fn spawn(
             if *key == FACTION_HACK || *key == ROUTE_HACK {
                 if let Some(system) = systems.first() {
                     let position = system_to_vec(&system);
-                    pf_events.send(PostFetch { position });
+                    pf_events.send(MoveCamera { position });
                 }
             }
 
