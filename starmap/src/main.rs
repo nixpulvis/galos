@@ -8,8 +8,8 @@ use bevy_egui::EguiPlugin;
 
 mod grid;
 mod camera;
+mod systems;
 mod ui;
-mod generate;
 
 #[derive(Event, Debug)]
 enum Searched {
@@ -62,8 +62,12 @@ fn main() {
 
         .add_systems(Startup, grid::spawn)
         .add_systems(Startup, camera::spawn_camera)
-        .add_systems(Update, generate::star_systems)
+        .add_systems(Update, camera::pan_orbit_camera
+            .run_if(any_with_component::<PanOrbitState>))
         .add_systems(Update, camera::move_camera)
+
+        .add_systems(Update, systems::fetch)
+        .add_systems(Update, systems::spawn)
 
         .add_systems(Update, ui::systems_search)
         .add_systems(Update, ui::faction_search)
