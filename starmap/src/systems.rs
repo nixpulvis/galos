@@ -48,7 +48,6 @@ pub fn fetch(
     }
 
     for event in search_events.read() {
-        dbg!("HIT");
         match event {
             Searched::System { .. } => { *always_fetch = AlwaysFetch(true); }
             Searched::Faction { name } => {
