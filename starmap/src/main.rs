@@ -6,6 +6,7 @@ use bevy_infinite_grid::InfiniteGridPlugin;
 use bevy_mod_picking::DefaultPickingPlugins;
 use bevy_egui::EguiPlugin;
 
+mod grid;
 mod camera;
 mod ui;
 mod generate;
@@ -53,6 +54,7 @@ fn main() {
         .add_event::<Searched>()
         .add_event::<MoveCamera>()
 
+        .add_systems(Startup, grid::spawn)
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Update, generate::star_systems)
         .add_systems(Update, camera::move_camera)

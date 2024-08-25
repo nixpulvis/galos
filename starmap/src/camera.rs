@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
-use bevy_infinite_grid::InfiniteGridBundle;
 use crate::MoveCamera;
 
 pub fn spawn_camera(mut commands: Commands) {
@@ -18,7 +17,6 @@ pub fn spawn_camera(mut commands: Commands) {
             ..default()
         },
     ));
-    commands.spawn(InfiniteGridBundle::default());
 }
 
 pub fn move_camera(
