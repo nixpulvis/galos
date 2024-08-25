@@ -34,12 +34,12 @@ pub fn fetch(
     mut tasks: ResMut<FetchTasks>,
     db: Res<DatabaseResource>,
 ) {
-    let task_pool = AsyncComputeTaskPool::get();
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
     if !loaded_regions.centers.contains(&center) &&
        !tasks.regions.contains_key(&center)
     {
+        let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
             let radius = 50.;
