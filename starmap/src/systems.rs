@@ -117,7 +117,7 @@ fn fetch_faction(
     }
 }
 
-const ROUTE_HACK: IVec3 = IVec3::splat(989);
+const ROUTE_HACK: IVec3 = IVec3::splat(988);
 
 fn fetch_route(
     start: String,
