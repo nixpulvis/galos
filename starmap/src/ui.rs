@@ -5,23 +5,40 @@ use crate::Searched;
 // TODO: Form validation.
 
 /// A basic GUI for searching for and generating the appropriate star systems.
-pub fn systems_search(
+pub fn search(
     mut events: EventWriter<Searched>,
     mut contexts: EguiContexts,
-    mut search_name: Local<String>,
+    mut system_name: Local<String>,
+    mut faction_name: Local<String>,
 ) {
     egui::Window::new("System Search")
         .default_size([150.,0.])
         .show(contexts.ctx_mut(), |ui|
     {
         ui.horizontal(|ui| {
-            ui.label("Name: ");
-            let response = ui.text_edit_singleline(&mut *search_name);
+            ui.label("System: ");
+            let response = ui.text_edit_singleline(&mut *system_name);
             if response.lost_focus() &&
                ui.input(|i| i.key_pressed(egui::Key::Enter))
             {
+                *faction_name = "".into();
                 events.send(Searched::System {
-                    name: search_name.clone(),
+                    name: system_name.clone(),
+                });
+            }
+        });
+
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("Faction: ");
+            let response = ui.text_edit_singleline(&mut *faction_name);
+            if response.lost_focus() &&
+               ui.input(|i| i.key_pressed(egui::Key::Enter))
+            {
+                *system_name = "".into();
+                events.send(Searched::Faction {
+                    name: faction_name.clone(),
                 });
             }
         });
@@ -33,24 +50,6 @@ pub fn systems_search(
         //     ui.label("Radius (Ly): ");
         //     ui.text_edit_singleline(&mut *search_radius);
         // });
-    });
-}
-
-pub fn faction_search(
-    mut events: EventWriter<Searched>,
-    mut contexts: EguiContexts,
-    mut faction_name: Local<String>,
-) {
-    egui::Window::new("Faction System Search").show(contexts.ctx_mut(), |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Name: ");
-            ui.text_edit_singleline(&mut *faction_name);
-        });
-        if ui.button("Search").clicked() {
-            events.send(Searched::Faction {
-                name: faction_name.clone(),
-            });
-        }
     });
 }
 

@@ -10,7 +10,14 @@ use galos_db::Database;
 use galos_db::systems::System;
 use elite_journal::prelude::*;
 use async_std::task;
-use crate::{DatabaseResource, Searched, MoveCamera, SystemMarker, RouteMarker};
+use crate::{
+    DatabaseResource,
+    Searched,
+    MoveCamera,
+    PostFactionFetch,
+    SystemMarker,
+    RouteMarker
+};
 
 #[derive(Resource)]
 pub struct FetchTasks {
@@ -28,13 +35,33 @@ pub struct LoadedRegions {
     pub centers: HashSet<IVec3>
 }
 
+#[derive(Resource)]
+pub struct AlwaysFetch(pub bool);
+
 pub fn fetch(
     camera_query: Query<&mut PanOrbitCamera>,
+    mut search_events: EventReader<Searched>,
     mut loaded_regions: ResMut<LoadedRegions>,
     mut tasks: ResMut<FetchTasks>,
     db: Res<DatabaseResource>,
+    mut always_fetch: ResMut<AlwaysFetch>,
 ) {
-    fetch_around_camera(&camera_query, &mut loaded_regions, &mut tasks, &db);
+    if always_fetch.0 {
+        fetch_around_camera(&camera_query, &mut loaded_regions, &mut tasks, &db);
+    }
+
+    for event in search_events.read() {
+        dbg!("HIT");
+        match event {
+            Searched::System { .. } => { *always_fetch = AlwaysFetch(true); }
+            Searched::Faction { name } => {
+                *always_fetch = AlwaysFetch(false);
+                fetch_faction(name.into(), &mut loaded_regions, &mut tasks, &db);
+            },
+            // Searched::Route { start, end, range } =>
+            _ => {}
+        };
+    }
 }
 
 fn fetch_around_camera(
@@ -64,29 +91,66 @@ fn fetch_around_camera(
     }
 }
 
+const HACK: IVec3 = IVec3::splat(989);
+
+fn fetch_faction(
+    faction: String,
+    loaded_regions: &mut ResMut<LoadedRegions>,
+    tasks: &mut ResMut<FetchTasks>,
+    db: &Res<DatabaseResource>,
+) {
+    if !tasks.regions.contains_key(&HACK) {
+        let task_pool = AsyncComputeTaskPool::get();
+        let db = db.0.clone();
+        let task = task_pool.spawn(async move {
+            System::fetch_faction(&db, &faction).await.unwrap_or_default()
+        });
+        loaded_regions.centers.insert(HACK);
+        tasks.regions.insert(HACK, task);
+    }
+}
+
 // TODO: How best to switch between camera orianted system loading and custom
 // filters like faction and route searches, etc.
 pub fn spawn(
     systems_query: Query<Entity, With<SystemMarker>>,
+    mut pff_events: EventWriter<PostFactionFetch>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut mesh: Local<Option<Handle<Mesh>>>,
     mut tasks: ResMut<FetchTasks>,
 ) {
-    tasks.regions.retain(|_, task| {
+    tasks.regions.retain(|key, task| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(systems) = status {
             for entity in systems_query.iter() {
                 commands.entity(entity).despawn_recursive();
             }
+
+            // TODO: Pass the key along. I'd like to have key.marker() or
+            // similar so I can mark entities with some info about where they
+            // were fetched from.
+            //
+            // Key::SpaceRegion(position/region id)
+            // Key::Faction(faction_name)
+            // Key::Route((start_pos, end_pos, range)
             spawn_entities(
                 &systems,
                 &mut commands,
                 &mut meshes,
                 &mut materials,
                 &mut mesh);
+
+            // I'd like to use an enum as the key instead of the hacky IVec3.
+            // This would be a match on some Faction variant.
+            if *key == HACK {
+                if let Some(system) = systems.first() {
+                    let position = system_to_vec(&system);
+                    pff_events.send(PostFactionFetch { position });
+                }
+            }
         }
         retain
     });

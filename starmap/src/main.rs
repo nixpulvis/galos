@@ -34,6 +34,11 @@ struct MoveCamera {
     position: Vec3,
 }
 
+#[derive(Event)]
+pub struct PostFactionFetch {
+    position: Vec3
+}
+
 #[derive(Component)]
 struct SystemMarker;
 
@@ -66,6 +71,7 @@ fn main() {
             brightness: 1000.0,
         })
         .insert_resource(DatabaseResource(db))
+        .insert_resource(systems::AlwaysFetch(true))
         .insert_resource(systems::LoadedRegions {
             centers: HashSet::new(),
         })
@@ -73,17 +79,18 @@ fn main() {
             regions: HashMap::new(),
         })
 
-        .add_event::<Searched>()
         .add_event::<MoveCamera>()
+        .add_event::<Searched>()
+        .add_event::<PostFactionFetch>()
 
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Update, camera::move_camera)
+        .add_systems(Update, camera::post_faction_fetch)
 
         .add_systems(Update, systems::fetch)
         .add_systems(Update, systems::spawn)
 
-        .add_systems(Update, ui::systems_search)
-        // .add_systems(Update, ui::faction_search)
+        .add_systems(Update, ui::search)
         // .add_systems(Update, ui::route_search)
 
         .add_systems(Update, search::process)
