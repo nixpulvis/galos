@@ -39,8 +39,8 @@ pub fn fetch(
 
 fn fetch_around_camera(
     camera_query: &Query<&mut PanOrbitCamera>,
-    mut loaded_regions: &mut ResMut<LoadedRegions>,
-    mut tasks: &mut ResMut<FetchTasks>,
+    loaded_regions: &mut ResMut<LoadedRegions>,
+    tasks: &mut ResMut<FetchTasks>,
     db: &Res<DatabaseResource>,
 ) {
     let camera = camera_query.single();
