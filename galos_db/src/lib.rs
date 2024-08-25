@@ -5,6 +5,7 @@ use std::env;
 pub mod error;
 pub use self::error::{Error, Result};
 
+#[derive(Clone)]
 pub struct Database {
     pub(crate) pool: PgPool,
 }
