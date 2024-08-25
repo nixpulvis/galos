@@ -67,6 +67,7 @@ fn main() {
         })
         .insert_resource(DatabaseResource(db))
         .insert_resource(systems::AlwaysFetch(true))
+        .insert_resource(systems::AlwaysDespawn(true))
         .insert_resource(systems::LoadedRegions {
             centers: HashSet::new(),
         })
@@ -83,7 +84,8 @@ fn main() {
         .add_systems(Update, systems::fetch)
         .add_systems(Update, systems::spawn)
 
-        .add_systems(Update, ui::search)
+        .add_systems(Update, ui::settings)
+        .add_systems(Update, ui::search.after(ui::settings))
         .add_systems(Update, ui::route.after(ui::search))
 
         .add_systems(Update, search::process)

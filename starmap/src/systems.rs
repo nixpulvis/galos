@@ -147,6 +147,8 @@ fn fetch_route(
     }
 }
 
+#[derive(Resource)]
+pub struct AlwaysDespawn(pub bool);
 
 // TODO: How best to switch between camera orianted system loading and custom
 // filters like faction and route searches, etc.
@@ -159,13 +161,16 @@ pub fn spawn(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut mesh: Local<Option<Handle<Mesh>>>,
     mut tasks: ResMut<FetchTasks>,
+    always_despawn: Res<AlwaysDespawn>,
 ) {
     tasks.regions.retain(|key, task| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(systems) = status {
-            for entity in systems_query.iter() {
-                commands.entity(entity).despawn_recursive();
+            if always_despawn.0 {
+                for entity in systems_query.iter() {
+                    commands.entity(entity).despawn_recursive();
+                }
             }
 
             // TODO: Pass the key along. I'd like to have key.marker() or

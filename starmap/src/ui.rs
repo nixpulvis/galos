@@ -1,8 +1,30 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::Searched;
+use crate::systems::AlwaysDespawn;
+use crate::SystemMarker;
 
 // TODO: Form validation.
+
+pub fn settings(
+    systems_query: Query<Entity, With<SystemMarker>>,
+    mut commands: Commands,
+    mut contexts: EguiContexts,
+    mut always_despawn: ResMut<AlwaysDespawn>,
+) {
+    egui::Window::new("Settings")
+        .fixed_size([150.,0.])
+        .show(contexts.ctx_mut(), |ui|
+    {
+        let last_value = always_despawn.0;
+        ui.checkbox(&mut always_despawn.0, "Always Despawn Systems");
+        if always_despawn.0 && always_despawn.0 != last_value {
+            for entity in systems_query.iter() {
+                commands.entity(entity).despawn_recursive();
+            }
+        }
+    });
+}
 
 /// A basic GUI for searching for and generating the appropriate star systems.
 pub fn search(
@@ -12,7 +34,7 @@ pub fn search(
     mut faction_name: Local<String>,
 ) {
     egui::Window::new("System Search")
-        .default_size([150.,0.])
+        .fixed_size([150.,0.])
         .show(contexts.ctx_mut(), |ui|
     {
         ui.horizontal(|ui| {
@@ -61,7 +83,7 @@ pub fn route(
     mut range: Local<String>,
 ) {
     egui::Window::new("Route")
-        .default_size([150.,0.])
+        .fixed_size([150.,0.])
         .show(contexts.ctx_mut(), |ui|
     {
         ui.horizontal(|ui| {
