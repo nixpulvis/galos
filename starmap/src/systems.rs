@@ -4,13 +4,13 @@ use bevy::render::mesh::{PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::tasks::futures_lite::future;
+use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_mod_picking::prelude::*;
 use galos_db::Database;
 use galos_db::systems::System;
 use elite_journal::prelude::*;
 use async_std::task;
 use crate::{DatabaseResource, Searched, MoveCamera, SystemMarker, RouteMarker};
-use crate::camera::PanOrbitState;
 
 #[derive(Resource)]
 pub struct FetchTasks {
@@ -29,14 +29,14 @@ pub struct LoadedRegions {
 }
 
 pub fn fetch(
-    camera_query: Query<&mut PanOrbitState>,
+    camera_query: Query<&mut PanOrbitCamera>,
     mut loaded_regions: ResMut<LoadedRegions>,
     mut tasks: ResMut<FetchTasks>,
     db: Res<DatabaseResource>,
 ) {
     let task_pool = AsyncComputeTaskPool::get();
     let camera = camera_query.single();
-    let center = camera.center.as_ivec3();
+    let center = camera.focus.as_ivec3();
     if !loaded_regions.centers.contains(&center) &&
        !tasks.regions.contains_key(&center)
     {

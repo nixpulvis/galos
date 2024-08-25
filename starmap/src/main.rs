@@ -7,6 +7,7 @@ use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use bevy_infinite_grid::InfiniteGridPlugin;
 use bevy_mod_picking::DefaultPickingPlugins;
 use bevy_egui::EguiPlugin;
+use galos_db::Database;
 
 mod grid;
 mod camera;
