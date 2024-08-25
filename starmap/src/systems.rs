@@ -34,6 +34,15 @@ pub fn fetch(
     mut tasks: ResMut<FetchTasks>,
     db: Res<DatabaseResource>,
 ) {
+    fetch_around_camera(&camera_query, &mut loaded_regions, &mut tasks, &db);
+}
+
+fn fetch_around_camera(
+    camera_query: &Query<&mut PanOrbitCamera>,
+    mut loaded_regions: &mut ResMut<LoadedRegions>,
+    mut tasks: &mut ResMut<FetchTasks>,
+    db: &Res<DatabaseResource>,
+) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
     if !loaded_regions.centers.contains(&center) &&
@@ -99,7 +108,7 @@ pub fn generate(
     for event in search_events.read() {
         // Load DB objects.
         let (origin, systems) = match event {
-            Searched::System { name, radius } => query_systems(&name, &radius),
+            Searched::System { name, .. } => query_systems(&name, "25"),
             Searched::Faction { name } => query_faction_systems(&name),
             Searched::Route { start, end, range } => query_route(&start, &end, &range),
         };

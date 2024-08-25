@@ -13,12 +13,12 @@ mod grid;
 mod camera;
 mod systems;
 mod ui;
+mod search;
 
 #[derive(Event, Debug)]
 enum Searched {
     System {
         name: String,
-        radius: String,
     },
     Faction {
         name: String,
@@ -85,7 +85,9 @@ fn main() {
         .add_systems(Update, systems::spawn)
 
         .add_systems(Update, ui::systems_search)
-        .add_systems(Update, ui::faction_search)
-        .add_systems(Update, ui::route_search)
+        // .add_systems(Update, ui::faction_search)
+        // .add_systems(Update, ui::route_search)
+
+        .add_systems(Update, search::process)
         .run();
 }

@@ -9,23 +9,30 @@ pub fn systems_search(
     mut events: EventWriter<Searched>,
     mut contexts: EguiContexts,
     mut search_name: Local<String>,
-    mut search_radius: Local<String>,
 ) {
-    egui::Window::new("System Search").show(contexts.ctx_mut(), |ui| {
+    egui::Window::new("System Search")
+        .default_size([150.,0.])
+        .show(contexts.ctx_mut(), |ui|
+    {
         ui.horizontal(|ui| {
             ui.label("Name: ");
-            ui.text_edit_singleline(&mut *search_name);
+            let response = ui.text_edit_singleline(&mut *search_name);
+            if response.lost_focus() &&
+               ui.input(|i| i.key_pressed(egui::Key::Enter))
+            {
+                events.send(Searched::System {
+                    name: search_name.clone(),
+                });
+            }
         });
-        ui.horizontal(|ui| {
-            ui.label("Radius (Ly): ");
-            ui.text_edit_singleline(&mut *search_radius);
-        });
-        if ui.button("Search").clicked() {
-            events.send(Searched::System {
-                name: search_name.clone(),
-                radius: search_radius.clone(),
-            });
-        }
+
+
+        // TODO: This should be a slider I think. That way we can provide
+        // a reasonable range.
+        // ui.horizontal(|ui| {
+        //     ui.label("Radius (Ly): ");
+        //     ui.text_edit_singleline(&mut *search_radius);
+        // });
     });
 }
 
