@@ -35,7 +35,7 @@ struct MoveCamera {
 }
 
 #[derive(Event)]
-pub struct PostFactionFetch {
+pub struct PostFetch {
     position: Vec3
 }
 
@@ -81,7 +81,7 @@ fn main() {
 
         .add_event::<MoveCamera>()
         .add_event::<Searched>()
-        .add_event::<PostFactionFetch>()
+        .add_event::<PostFetch>()
 
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Update, camera::move_camera)
@@ -91,7 +91,7 @@ fn main() {
         .add_systems(Update, systems::spawn)
 
         .add_systems(Update, ui::search)
-        // .add_systems(Update, ui::route_search)
+        .add_systems(Update, ui::route)
 
         .add_systems(Update, search::process)
         .run();

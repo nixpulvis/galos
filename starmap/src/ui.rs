@@ -53,7 +53,7 @@ pub fn search(
     });
 }
 
-pub fn route_search(
+pub fn route(
     mut events: EventWriter<Searched>,
     mut contexts: EguiContexts,
     mut start: Local<String>,

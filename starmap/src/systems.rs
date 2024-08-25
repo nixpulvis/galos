@@ -6,15 +6,12 @@ use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::tasks::futures_lite::future;
 use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_mod_picking::prelude::*;
-use galos_db::Database;
 use galos_db::systems::System;
 use elite_journal::prelude::*;
-use async_std::task;
 use crate::{
     DatabaseResource,
     Searched,
-    MoveCamera,
-    PostFactionFetch,
+    PostFetch,
     SystemMarker,
     RouteMarker
 };
@@ -56,10 +53,21 @@ pub fn fetch(
             Searched::System { .. } => { *always_fetch = AlwaysFetch(true); }
             Searched::Faction { name } => {
                 *always_fetch = AlwaysFetch(false);
-                fetch_faction(name.into(), &mut loaded_regions, &mut tasks, &db);
+                fetch_faction(
+                    name.into(),
+                    &mut loaded_regions,
+                    &mut tasks,
+                    &db);
             },
-            // Searched::Route { start, end, range } =>
-            _ => {}
+            Searched::Route { start, end, range } => {
+                fetch_route(
+                    start.into(),
+                    end.into(),
+                    range.into(),
+                    &mut loaded_regions,
+                    &mut tasks,
+                    &db);
+            }
         };
     }
 }
@@ -91,7 +99,7 @@ fn fetch_around_camera(
     }
 }
 
-const HACK: IVec3 = IVec3::splat(989);
+const FACTION_HACK: IVec3 = IVec3::splat(989);
 
 fn fetch_faction(
     faction: String,
@@ -99,22 +107,54 @@ fn fetch_faction(
     tasks: &mut ResMut<FetchTasks>,
     db: &Res<DatabaseResource>,
 ) {
-    if !tasks.regions.contains_key(&HACK) {
+    if !tasks.regions.contains_key(&FACTION_HACK) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
             System::fetch_faction(&db, &faction).await.unwrap_or_default()
         });
-        loaded_regions.centers.insert(HACK);
-        tasks.regions.insert(HACK, task);
+        loaded_regions.centers.insert(FACTION_HACK);
+        tasks.regions.insert(FACTION_HACK, task);
     }
 }
+
+const ROUTE_HACK: IVec3 = IVec3::splat(989);
+
+fn fetch_route(
+    start: String,
+    end: String,
+    range: String,
+    loaded_regions: &mut ResMut<LoadedRegions>,
+    tasks: &mut ResMut<FetchTasks>,
+    db: &Res<DatabaseResource>,
+) {
+    if !tasks.regions.contains_key(&ROUTE_HACK) {
+        let task_pool = AsyncComputeTaskPool::get();
+        let db = db.0.clone();
+        let task = task_pool.spawn(async move {
+            if let (Ok(a), Ok(b), Ok(r)) = (
+                System::fetch_by_name(&db, &start).await,
+                System::fetch_by_name(&db, &end).await,
+                range.parse::<f64>())
+            {
+                if let Some(route) = a.route_to(&db, &b, r) {
+                    return route.0
+                }
+            }
+            vec![]
+        });
+        loaded_regions.centers.insert(ROUTE_HACK);
+        tasks.regions.insert(ROUTE_HACK, task);
+    }
+}
+
 
 // TODO: How best to switch between camera orianted system loading and custom
 // filters like faction and route searches, etc.
 pub fn spawn(
     systems_query: Query<Entity, With<SystemMarker>>,
-    mut pff_events: EventWriter<PostFactionFetch>,
+    route_query: Query<Entity, With<RouteMarker>>,
+    mut pf_events: EventWriter<PostFetch>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -145,81 +185,37 @@ pub fn spawn(
 
             // I'd like to use an enum as the key instead of the hacky IVec3.
             // This would be a match on some Faction variant.
-            if *key == HACK {
+            if *key == FACTION_HACK || *key == ROUTE_HACK {
                 if let Some(system) = systems.first() {
                     let position = system_to_vec(&system);
-                    pff_events.send(PostFactionFetch { position });
+                    pf_events.send(PostFetch { position });
                 }
+            }
+
+            if *key == ROUTE_HACK {
+                for entity in route_query.iter() {
+                    commands.entity(entity).despawn_recursive();
+                }
+
+                commands.spawn((MaterialMeshBundle {
+                    mesh: meshes.add(LineStrip {
+                        points: systems.iter().map(system_to_vec).collect()
+                    }),
+                    transform: Transform::from_xyz(0., 0., 0.),
+                    material: materials.add(StandardMaterial {
+                        base_color: Color::srgba(1., 1., 1., 0.1),
+                        alpha_mode: AlphaMode::Blend,
+                        ..default()
+                    }),
+                    ..default()
+                },
+                RouteMarker));
             }
         }
         retain
     });
 
     // TODO: despawn stuff...
-}
-
-/// Queries the DB, then creates an entity for each star system in the search.
-///
-/// This function also moves the camera's position to be looking at the
-/// searched system.
-pub fn generate(
-    systems_query: Query<Entity, With<SystemMarker>>,
-    route_query: Query<Entity, With<RouteMarker>>,
-    mut search_events: EventReader<Searched>,
-    mut camera_events: EventWriter<MoveCamera>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut mesh: Local<Option<Handle<Mesh>>>,
-) {
-    for event in search_events.read() {
-        // Load DB objects.
-        let (origin, systems) = match event {
-            Searched::System { name, .. } => query_systems(&name, "25"),
-            Searched::Faction { name } => query_faction_systems(&name),
-            Searched::Route { start, end, range } => query_route(&start, &end, &range),
-        };
-
-        // Move the camera to the origin of queried systems.
-        if let Some(o) = &origin {
-            camera_events.send(MoveCamera {
-                position: system_to_vec(o)
-            });
-        }
-
-        for entity in systems_query.iter() {
-            commands.entity(entity).despawn_recursive();
-        }
-        for entity in route_query.iter() {
-            commands.entity(entity).despawn_recursive();
-        }
-
-        spawn_entities(&systems, &mut commands, &mut meshes, &mut materials, &mut mesh);
-
-        // After generating the star systems, if we're a route search, draw
-        // the route lines and populate space around each system along the
-        // route.
-        if let Searched::Route { range, .. } = event {
-            commands.spawn((MaterialMeshBundle {
-                mesh: meshes.add(LineStrip {
-                    points: systems.iter().map(system_to_vec).collect()
-                }),
-                transform: Transform::from_xyz(0., 0., 0.),
-                material: materials.add(StandardMaterial {
-                    base_color: Color::srgba(1., 1., 1., 0.1),
-                    alpha_mode: AlphaMode::Blend,
-                    ..default()
-                }),
-                ..default()
-            },
-            RouteMarker));
-
-            for system in systems {
-                let (_, s) = query_systems(&system.name, range);
-                spawn_entities(&s, &mut commands, &mut meshes, &mut materials, &mut mesh);
-            }
-        }
-    }
 }
 
 /// A list of points that will have a line drawn between each consecutive points
@@ -247,47 +243,6 @@ fn system_to_vec(system: &System) -> Vec3 {
         system.position.unwrap().y as f32,
         system.position.unwrap().z as f32,
     )
-}
-
-// TODO: I'd like to avoid blocking, but I don't know how yet.
-fn query_systems(name: &str, radius: &str) -> (Option<System>, Vec<System>) {
-    task::block_on(async {
-        let db = Database::new().await.unwrap();
-        let radius = radius.parse().unwrap_or(100.);
-        let origins = System::fetch_like_name(&db, &name).await.unwrap();
-        match System::fetch_in_range_like_name(&db, radius, &name).await {
-        // match System::fetch_sample(&db, 100., &name).await {
-            Ok(systems) => (origins.first().map(ToOwned::to_owned), systems),
-            _ => (None, vec![]),
-        }
-    })
-}
-
-fn query_faction_systems(faction: &str) -> (Option<System>, Vec<System>) {
-    task::block_on(async {
-        let db = Database::new().await.unwrap();
-        match System::fetch_faction(&db, faction).await {
-            Ok(systems) => (systems.first().map(ToOwned::to_owned), systems),
-            _ => (None, vec![]),
-        }
-    })
-}
-
-fn query_route(start: &str, end: &str, range: &str) -> (Option<System>, Vec<System>) {
-    task::block_on(async {
-        let db = Database::new().await.unwrap();
-        if let (Ok(a), Ok(b), Ok(r)) = (
-            System::fetch_by_name(&db, start).await,
-            System::fetch_by_name(&db, end).await,
-            range.parse::<f64>())
-        {
-            if let Some(route) = a.route_to(&db, &b, r) {
-                return (Some(a), route.0)
-            }
-        }
-
-        (None, vec![])
-    })
 }
 
 /// Generate all the star system entities.
