@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::Searched;
-use crate::systems::AlwaysDespawn;
+use crate::systems::{AlwaysFetch, AlwaysDespawn};
 use crate::SystemMarker;
 
 // TODO: Form validation.
@@ -11,11 +11,14 @@ pub fn settings(
     mut commands: Commands,
     mut contexts: EguiContexts,
     mut always_despawn: ResMut<AlwaysDespawn>,
+    mut always_fetch: ResMut<AlwaysFetch>,
 ) {
     egui::Window::new("Settings")
         .fixed_size([150.,0.])
         .show(contexts.ctx_mut(), |ui|
     {
+        ui.checkbox(&mut always_fetch.0, "Always Fetch Systems");
+
         let last_value = always_despawn.0;
         ui.checkbox(&mut always_despawn.0, "Always Despawn Systems");
         if always_despawn.0 && always_despawn.0 != last_value {
