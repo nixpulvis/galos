@@ -84,7 +84,7 @@ fn main() {
         .add_systems(Update, systems::spawn)
 
         .add_systems(Update, ui::search)
-        .add_systems(Update, ui::route)
+        .add_systems(Update, ui::route.after(ui::search))
 
         .add_systems(Update, search::process)
         .run();

@@ -60,7 +60,10 @@ pub fn route(
     mut end: Local<String>,
     mut range: Local<String>,
 ) {
-    egui::Window::new("Route").show(contexts.ctx_mut(), |ui| {
+    egui::Window::new("Route")
+        .default_size([150.,0.])
+        .show(contexts.ctx_mut(), |ui|
+    {
         ui.horizontal(|ui| {
             ui.label("Start: ");
             ui.text_edit_singleline(&mut *start);
