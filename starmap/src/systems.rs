@@ -16,6 +16,7 @@ use crate::{
     RouteMarker
 };
 
+/// Tasks for systems in the DB which will be spawned
 #[derive(Resource)]
 pub struct FetchTasks {
     // TODO: This IVec3 doesn't take zoom or rotation into account.
@@ -27,14 +28,24 @@ pub struct FetchTasks {
     pub regions: HashMap<IVec3, Task<Vec<System>>>
 }
 
+/// A representation of the spawned systems
+//
+// TODO: Take the radius of the spyglass into account, right now as a
+// result of the IVec3 we avoid redundent loads within 1Ly of the loaded.
+// system, and that's it. If the radius loaded (spyglass radius) is 50Ly
+// we could easily go for 25Ly or so I'd think. We could do that by dividing
+// the positions before passing them to centers, but I'm sure we can do
+// better than that.
 #[derive(Resource)]
 pub struct LoadedRegions {
     pub centers: HashSet<IVec3>
 }
 
+/// A global setting which toggles the spyglass around the camera
 #[derive(Resource)]
 pub struct AlwaysFetch(pub bool);
 
+/// Spawns tasks to load star systems from the DB
 pub fn fetch(
     camera_query: Query<&mut PanOrbitCamera>,
     mut search_events: EventReader<Searched>,
@@ -77,6 +88,9 @@ pub fn fetch(
     }
 }
 
+/// The radius searched around the camera
+///
+/// This does nothing while `AlwaysFetch` is false.
 #[derive(Resource)]
 pub struct SpyglassRadius(pub f64);
 
@@ -157,6 +171,11 @@ fn fetch_route(
     }
 }
 
+/// Toggles star system despawning
+//
+// TODO: We still need to come up with a strategy for despawning in general.
+// always despawning everything isn't going to be the only option. We'll have
+// frustum culling etc.
 #[derive(Resource)]
 pub struct AlwaysDespawn(pub bool);
 
@@ -232,33 +251,6 @@ pub fn spawn(
     // TODO: despawn stuff...
 }
 
-/// A list of points that will have a line drawn between each consecutive points
-#[derive(Debug, Clone)]
-struct LineStrip {
-    points: Vec<Vec3>,
-}
-
-impl From<LineStrip> for Mesh {
-    fn from(line: LineStrip) -> Self {
-        Mesh::new(
-            // This tells wgpu that the positions are a list of points
-            // where a line will be drawn between each consecutive point
-            PrimitiveTopology::LineStrip,
-            RenderAssetUsages::RENDER_WORLD,
-        )
-        // Add the point positions as an attribute
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points)
-    }
-}
-
-fn system_to_vec(system: &System) -> Vec3 {
-    Vec3::new(
-        system.position.unwrap().x as f32,
-        system.position.unwrap().y as f32,
-        system.position.unwrap().z as f32,
-    )
-}
-
 /// Generate all the star system entities.
 fn spawn_entities(
     systems: &[System],
@@ -325,6 +317,14 @@ fn spawn_entities(
     }
 }
 
+fn system_to_vec(system: &System) -> Vec3 {
+    Vec3::new(
+        system.position.unwrap().x as f32,
+        system.position.unwrap().y as f32,
+        system.position.unwrap().z as f32,
+    )
+}
+
 /// Maps system allegiance to a color for the sphere on the map.
 fn allegiance_color(system: &System) -> Color {
     match system.allegiance {
@@ -337,5 +337,24 @@ fn allegiance_color(system: &System) -> Color {
         Some(Allegiance::Thargoid)         => Color::srgb(1., 0., 1.),  // Blue
         Some(_)                            => Color::srgb(1., 1., 1.),   // White
         None                               => Color::srgb(0., 0., 0.),   // Black
+    }
+}
+
+/// A list of points that will have a line drawn between each consecutive points
+#[derive(Debug, Clone)]
+struct LineStrip {
+    points: Vec<Vec3>,
+}
+
+impl From<LineStrip> for Mesh {
+    fn from(line: LineStrip) -> Self {
+        Mesh::new(
+            // This tells wgpu that the positions are a list of points
+            // where a line will be drawn between each consecutive point
+            PrimitiveTopology::LineStrip,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+        // Add the point positions as an attribute
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points)
     }
 }

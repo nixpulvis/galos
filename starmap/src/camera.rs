@@ -3,6 +3,7 @@ use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_infinite_grid::InfiniteGridBundle;
 use crate::MoveCamera;
 
+/// Place a camera in space
 pub fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3dBundle {
@@ -24,6 +25,7 @@ pub fn spawn_camera(mut commands: Commands) {
     commands.spawn(InfiniteGridBundle::default());
 }
 
+/// Smoothly moves the camera on `MoveCamera` event
 pub fn move_camera(
     mut query: Query<&mut PanOrbitCamera>,
     mut camera_events: EventReader<MoveCamera>,

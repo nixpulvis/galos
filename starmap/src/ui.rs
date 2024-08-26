@@ -6,6 +6,7 @@ use crate::SystemMarker;
 
 // TODO: Form validation.
 
+/// Global settings for the map
 pub fn settings(
     systems_query: Query<Entity, With<SystemMarker>>,
     mut commands: Commands,
@@ -36,7 +37,7 @@ pub fn settings(
     });
 }
 
-/// A basic GUI for searching for and generating the appropriate star systems.
+/// Star system search UI by name or faction
 pub fn search(
     mut events: EventWriter<Searched>,
     mut contexts: EguiContexts,
@@ -77,6 +78,7 @@ pub fn search(
     });
 }
 
+/// Route finding UI for finding out how to get from A to B
 pub fn route(
     mut events: EventWriter<Searched>,
     mut contexts: EguiContexts,

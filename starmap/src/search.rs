@@ -3,7 +3,11 @@ use bevy::tasks::futures_lite::future;
 use crate::{Searched, MoveCamera};
 use galos_db::{Database, systems::System};
 
-pub fn process(
+/// Move the camera to the searched system
+///
+/// A system for moving the camera to the searched system and letting
+/// the `fetch` system's `fetch_around_camera` logic handle the rest.
+pub fn system(
     mut search_events: EventReader<Searched>,
     mut camera_events: EventWriter<MoveCamera>,
 ) {
@@ -20,8 +24,6 @@ pub fn process(
                     }
                 });
             },
-            // Searched::Faction { name } =>
-            // Searched::Route { start, end, range } =>
             _ => {}
         };
     }

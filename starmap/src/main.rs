@@ -1,4 +1,4 @@
-//! Shows how to iterate over combinations of query results.
+//! A 3D Galaxy Map
 
 use std::collections::{HashSet, HashMap};
 use bevy::prelude::*;
@@ -89,6 +89,6 @@ fn main() {
         .add_systems(Update, ui::search.after(ui::settings))
         .add_systems(Update, ui::route.after(ui::search))
 
-        .add_systems(Update, search::process)
+        .add_systems(Update, search::system)
         .run();
 }
