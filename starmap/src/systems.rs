@@ -197,7 +197,7 @@ pub struct AlwaysDespawn(pub bool);
 pub fn spawn(
     systems_query: Query<Entity, With<SystemMarker>>,
     route_query: Query<Entity, With<RouteMarker>>,
-    mut pf_events: EventWriter<MoveCamera>,
+    mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -239,7 +239,7 @@ pub fn spawn(
             if *region == FACTION_HACK || *region == ROUTE_HACK {
                 if let Some(system) = systems.first() {
                     let position = system_to_vec(&system);
-                    pf_events.send(MoveCamera { position });
+                    move_camera_events.send(MoveCamera { position });
                 }
             }
 
