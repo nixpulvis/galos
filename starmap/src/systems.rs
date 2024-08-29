@@ -227,7 +227,7 @@ pub fn spawn(
             // Key::SpaceRegion(position/region id)
             // Key::Faction(faction_name)
             // Key::Route((start_pos, end_pos, range)
-            spawn_entities(
+            spawn_systems(
                 &systems,
                 &mut commands,
                 &mut meshes,
@@ -244,23 +244,12 @@ pub fn spawn(
             }
 
             if *region == ROUTE_HACK {
-                for entity in route_query.iter() {
-                    commands.entity(entity).despawn_recursive();
-                }
-
-                commands.spawn((MaterialMeshBundle {
-                    mesh: meshes.add(LineStrip {
-                        points: systems.iter().map(system_to_vec).collect()
-                    }),
-                    transform: Transform::from_xyz(0., 0., 0.),
-                    material: materials.add(StandardMaterial {
-                        base_color: Color::srgba(1., 1., 1., 0.1),
-                        alpha_mode: AlphaMode::Blend,
-                        ..default()
-                    }),
-                    ..default()
-                },
-                RouteMarker));
+                spawn_route(
+                    &systems,
+                    &route_query,
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials)
             }
         }
         retain
@@ -269,8 +258,35 @@ pub fn spawn(
     // TODO: despawn stuff...
 }
 
+// TODO: Save another Local<Option<Handle<Mesh>>>?
+fn spawn_route(
+    systems: &[System],
+    route_query: &Query<Entity, With<RouteMarker>>,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+) {
+    for entity in route_query.iter() {
+        commands.entity(entity).despawn_recursive();
+    }
+
+    commands.spawn((MaterialMeshBundle {
+        mesh: meshes.add(LineStrip {
+            points: systems.iter().map(system_to_vec).collect()
+        }),
+        transform: Transform::from_xyz(0., 0., 0.),
+        material: materials.add(StandardMaterial {
+            base_color: Color::srgba(1., 1., 1., 0.1),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        ..default()
+    },
+    RouteMarker));
+}
+
 /// Generate all the star system entities.
-fn spawn_entities(
+fn spawn_systems(
     systems: &[System],
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
