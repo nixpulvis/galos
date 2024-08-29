@@ -61,7 +61,7 @@ pub fn search(
     mut faction_name: Local<String>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
-        egui::Window::new("System Search")
+        egui::Window::new("Search")
             .fixed_size([150.,0.])
             .show(ctx, |ui|
         {
@@ -121,7 +121,7 @@ pub fn route(
                 ui.label("Range: ");
                 ui.text_edit_singleline(&mut *range);
             });
-            if ui.button("Search").clicked() {
+            if ui.button("Plot Route...").clicked() {
                 events.send(Searched::Route {
                     start: start.clone(),
                     end: end.clone(),
