@@ -9,7 +9,7 @@ use bevy_mod_picking::prelude::*;
 use galos_db::systems::System;
 use elite_journal::prelude::*;
 use crate::{
-    DatabaseResource,
+    Db,
     ui::Searched,
     MoveCamera,
     SystemMarker,
@@ -51,7 +51,7 @@ pub fn fetch(
     mut search_events: EventReader<Searched>,
     mut loaded_regions: ResMut<LoadedRegions>,
     mut tasks: ResMut<FetchTasks>,
-    db: Res<DatabaseResource>,
+    db: Res<Db>,
     mut always_fetch: ResMut<AlwaysFetch>,
     mut radius: ResMut<SpyglassRadius>,
 ) {
@@ -99,7 +99,7 @@ fn fetch_around_camera(
     loaded_regions: &mut ResMut<LoadedRegions>,
     tasks: &mut ResMut<FetchTasks>,
     radius: &mut ResMut<SpyglassRadius>,
-    db: &Res<DatabaseResource>,
+    db: &Res<Db>,
 ) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
@@ -128,7 +128,7 @@ fn fetch_faction(
     faction: String,
     loaded_regions: &mut ResMut<LoadedRegions>,
     tasks: &mut ResMut<FetchTasks>,
-    db: &Res<DatabaseResource>,
+    db: &Res<Db>,
 ) {
     if !tasks.regions.contains_key(&FACTION_HACK) {
         let task_pool = AsyncComputeTaskPool::get();
@@ -149,7 +149,7 @@ fn fetch_route(
     range: String,
     loaded_regions: &mut ResMut<LoadedRegions>,
     tasks: &mut ResMut<FetchTasks>,
-    db: &Res<DatabaseResource>,
+    db: &Res<Db>,
 ) {
     if !tasks.regions.contains_key(&ROUTE_HACK) {
         let task_pool = AsyncComputeTaskPool::get();

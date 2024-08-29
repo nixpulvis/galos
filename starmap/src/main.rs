@@ -26,7 +26,7 @@ struct SystemMarker;
 struct RouteMarker;
 
 #[derive(Resource)]
-struct DatabaseResource(Database);
+struct Db(Database);
 
 fn main() {
     let db = future::block_on(async {
@@ -50,7 +50,7 @@ fn main() {
             color: Color::default(),
             brightness: 1000.0,
         })
-        .insert_resource(DatabaseResource(db))
+        .insert_resource(Db(db))
         .insert_resource(systems::SpyglassRadius(50.))
         .insert_resource(systems::AlwaysFetch(true))
         .insert_resource(systems::AlwaysDespawn(true))
