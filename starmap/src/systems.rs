@@ -10,7 +10,7 @@ use galos_db::systems::System;
 use elite_journal::prelude::*;
 use crate::{
     DatabaseResource,
-    Searched,
+    ui::Searched,
     MoveCamera,
     SystemMarker,
     RouteMarker

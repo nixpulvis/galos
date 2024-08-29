@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use crate::{Searched, MoveCamera};
+use crate::{ui::Searched, MoveCamera};
 use galos_db::{Database, systems::System};
 
 /// Move the camera to the searched system

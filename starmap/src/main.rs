@@ -15,21 +15,6 @@ mod ui;
 mod search;
 
 #[derive(Event, Debug)]
-enum Searched {
-    System {
-        name: String,
-    },
-    Faction {
-        name: String,
-    },
-    Route {
-        start: String,
-        end: String,
-        range: String,
-    },
-}
-
-#[derive(Event, Debug)]
 struct MoveCamera {
     position: Vec3,
 }
@@ -77,7 +62,7 @@ fn main() {
         })
 
         .add_event::<MoveCamera>()
-        .add_event::<Searched>()
+        .add_event::<ui::Searched>()
 
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Update, camera::move_camera)
