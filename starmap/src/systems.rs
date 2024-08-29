@@ -37,9 +37,11 @@ pub struct FetchTasks {
 // the positions before passing them to centers, but I'm sure we can do
 // better than that.
 #[derive(Resource)]
-pub struct LoadedRegions {
-    pub centers: HashSet<IVec3>
-}
+pub struct LoadedRegions(pub HashSet<IVec3>);
+
+// TODO: loaded regions should be cubes with `REGION_SIZE` side length,
+// they are currently spheres with `REGION_SIZE` radius.
+const REGION_SIZE: i32 = 5;
 
 /// A global setting which toggles the spyglass around the camera
 #[derive(Resource)]
@@ -103,8 +105,9 @@ fn fetch_around_camera(
 ) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
-    if !loaded_regions.centers.contains(&center) &&
-       !tasks.regions.contains_key(&center)
+    let region = center / REGION_SIZE;
+    if !loaded_regions.0.contains(&region) &&
+       !tasks.regions.contains_key(&region)
     {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
@@ -117,8 +120,8 @@ fn fetch_around_camera(
             ];
             System::fetch_in_range_of_point(&db, radius, cent).await.unwrap_or_default()
         });
-        loaded_regions.centers.insert(center);
-        tasks.regions.insert(center, task);
+        loaded_regions.0.insert(region);
+        tasks.regions.insert(region, task);
     }
 }
 
@@ -136,7 +139,7 @@ fn fetch_faction(
         let task = task_pool.spawn(async move {
             System::fetch_faction(&db, &faction).await.unwrap_or_default()
         });
-        loaded_regions.centers.insert(FACTION_HACK);
+        loaded_regions.0.insert(FACTION_HACK);
         tasks.regions.insert(FACTION_HACK, task);
     }
 }
@@ -166,7 +169,7 @@ fn fetch_route(
             }
             vec![]
         });
-        loaded_regions.centers.insert(ROUTE_HACK);
+        loaded_regions.0.insert(ROUTE_HACK);
         tasks.regions.insert(ROUTE_HACK, task);
     }
 }

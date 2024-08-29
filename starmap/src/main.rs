@@ -54,9 +54,7 @@ fn main() {
         .insert_resource(systems::SpyglassRadius(50.))
         .insert_resource(systems::AlwaysFetch(true))
         .insert_resource(systems::AlwaysDespawn(true))
-        .insert_resource(systems::LoadedRegions {
-            centers: HashSet::new(),
-        })
+        .insert_resource(systems::LoadedRegions(HashSet::new()))
         .insert_resource(systems::FetchTasks {
             regions: HashMap::new(),
         })
