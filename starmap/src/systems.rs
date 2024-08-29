@@ -179,6 +179,9 @@ fn fetch_route(
 #[derive(Resource)]
 pub struct AlwaysDespawn(pub bool);
 
+/// Polls the tasks in `FetchTasks` and spawns entities for each of the
+/// resulting star systems
+//
 // TODO: How best to switch between camera orianted system loading and custom
 // filters like faction and route searches, etc.
 pub fn spawn(
