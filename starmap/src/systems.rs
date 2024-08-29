@@ -111,7 +111,8 @@ fn fetch_around_camera(
     // are currently spheres with `region_size` radius.
     // Regions need to be smaller than the spyglass radius. Once we load cubes,
     // we'll need to change things to hide the entities outside of the sphere.
-    let region = center / (radius.0 as i32 / REGION_FACTOR);
+    let scale = radius.0 as i32 / REGION_FACTOR;
+    let region = if scale == 0 { IVec3::ONE } else { center / scale };
     if !loaded_regions.0.contains(&region) &&
        !tasks.regions.contains_key(&region)
     {
