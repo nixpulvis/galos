@@ -234,8 +234,9 @@ pub fn spawn(
                 &mut materials,
                 &mut mesh);
 
-            // I'd like to use an enum as the region instead of the hacky IVec3.
-            // This would be a match on some Faction variant.
+            // TODO: I'd like to use an enum as the region instead of the hacky
+            // IVec3.  This would be a match on some Faction variant.
+            // TODO: Find center of all systems and zoom to fit.
             if *region == FACTION_HACK || *region == ROUTE_HACK {
                 if let Some(system) = systems.first() {
                     let position = system_to_vec(&system);
