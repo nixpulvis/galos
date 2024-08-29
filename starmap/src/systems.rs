@@ -280,7 +280,6 @@ fn spawn_entities(
                     system.position.unwrap().y as f32,
                     system.position.unwrap().z as f32,
                 ),
-                // scale: Vec3::splat(0.25),
                 scale: Vec3::splat(SYSTEM_SCALE),
                 ..default()
             },
