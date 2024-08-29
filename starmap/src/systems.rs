@@ -19,9 +19,9 @@ use crate::{
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource)]
 pub struct FetchTasks {
-    // TODO: This IVec3 doesn't take zoom or rotation into account.
-    // To generate all the stars in view we should. To start we'll
-    // just load near the center of the camera.
+    // TODO: This IVec3 doesn't take zoom or rotation into account.  To generate
+    // all the stars in view we should. To start we'll just load near the center
+    // of the camera.
     //
     // Also, using something else as the key could allow for
     // "search:faction:"New Pilots Initiative" => Task as well.
@@ -30,18 +30,14 @@ pub struct FetchTasks {
 
 /// A representation of the spawned systems
 //
-// TODO: Take the radius of the spyglass into account, right now as a
-// result of the IVec3 we avoid redundent loads within 1Ly of the loaded.
-// system, and that's it. If the radius loaded (spyglass radius) is 50Ly
-// we could easily go for 25Ly or so I'd think. We could do that by dividing
-// the positions before passing them to centers, but I'm sure we can do
-// better than that.
+// TODO: Take the radius of the spyglass into account, right now as a result of
+// the IVec3 we avoid redundent loads within 1Ly of the loaded system, and
+// that's it.
 #[derive(Resource)]
 pub struct LoadedRegions(pub HashSet<IVec3>);
 
-// TODO: loaded regions should be cubes with `REGION_SIZE` side length,
-// they are currently spheres with `REGION_SIZE` radius.
-const REGION_SIZE: i32 = 5;
+// A region is as large as the current spyglass radius / this factor.
+const REGION_FACTOR: i32 = 10;
 
 /// A global setting which toggles the spyglass around the camera
 #[derive(Resource)]
@@ -68,7 +64,13 @@ pub fn fetch(
 
     for event in search_events.read() {
         match event {
-            Searched::System { .. } => { *always_fetch = AlwaysFetch(true); }
+            // TODO: Ensure at least the searched star is loaded. I don't do it
+            // again here because it was already fetched (syncronously) in
+            // `search`. That needs to be refactored anyway. So for now, if
+            // you search for a system with AlwaysFetch(false) it may take you
+            // to a part of empty space. Setting AlwaysFetch(true) will
+            // populate it.
+            Searched::System { .. } => {},
             Searched::Faction { name } => {
                 *always_fetch = AlwaysFetch(false);
                 fetch_faction(
@@ -105,7 +107,11 @@ fn fetch_around_camera(
 ) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
-    let region = center / REGION_SIZE;
+    // TODO: loaded regions should be cubes with `region_size` side length, they
+    // are currently spheres with `region_size` radius.
+    // Regions need to be smaller than the spyglass radius. Once we load cubes,
+    // we'll need to change things to hide the entities outside of the sphere.
+    let region = center / (radius.0 as i32 / REGION_FACTOR);
     if !loaded_regions.0.contains(&region) &&
        !tasks.regions.contains_key(&region)
     {
@@ -196,19 +202,24 @@ pub fn spawn(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut mesh: Local<Option<Handle<Mesh>>>,
     mut tasks: ResMut<FetchTasks>,
+    mut loaded_regions: ResMut<LoadedRegions>,
     always_despawn: Res<AlwaysDespawn>,
 ) {
-    tasks.regions.retain(|key, task| {
+    tasks.regions.retain(|region, task| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(systems) = status {
             if always_despawn.0 {
+                // TODO: send despawn event, same as in the always_despawn
+                // ui checkbox.
+                loaded_regions.0.clear();
+                loaded_regions.0.insert(region.clone());
                 for entity in systems_query.iter() {
                     commands.entity(entity).despawn_recursive();
                 }
             }
 
-            // TODO: Pass the key along. I'd like to have key.marker() or
+            // TODO: Pass the region along. I'd like to have region.marker() or
             // similar so I can mark entities with some info about where they
             // were fetched from.
             //
@@ -222,16 +233,16 @@ pub fn spawn(
                 &mut materials,
                 &mut mesh);
 
-            // I'd like to use an enum as the key instead of the hacky IVec3.
+            // I'd like to use an enum as the region instead of the hacky IVec3.
             // This would be a match on some Faction variant.
-            if *key == FACTION_HACK || *key == ROUTE_HACK {
+            if *region == FACTION_HACK || *region == ROUTE_HACK {
                 if let Some(system) = systems.first() {
                     let position = system_to_vec(&system);
                     pf_events.send(MoveCamera { position });
                 }
             }
 
-            if *key == ROUTE_HACK {
+            if *region == ROUTE_HACK {
                 for entity in route_query.iter() {
                     commands.entity(entity).despawn_recursive();
                 }
