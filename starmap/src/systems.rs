@@ -117,7 +117,7 @@ fn fetch_around_camera(
     // we'll need to change things to hide the entities outside of the sphere.
     let scale = radius.0 as i32 / REGION_FACTOR;
     let region = if scale == 0 {
-        FetchIndex::Region(IVec3::ONE, radius.0 as i32)
+        FetchIndex::Region(IVec3::ZERO, radius.0 as i32)
     } else {
         FetchIndex::Region(center / scale, radius.0 as i32)
     };
