@@ -1,18 +1,18 @@
 //! # Architecture
 //!
-//! - [`elite_journal`][elite_journal] - Elite: Dangerous journal file parser
-//! - [`elite_dat`][elite_dat] - Elite: Dangerous visited star `.dat` parser
-//! - [`eddn`][eddn] - A [EDDN](https://eddn.edcd.io) subscriber
-//! - [`eddb`][eddb] - A [EDDB](https://eddb.io) data file parser (discontinued)
-//! - [`edsm`][edsm] - A [EDSM](https://edsm.net) API adapter and data file parser
-//! - [`galos_db`][galos_db] - PostgreSQL database and ORM
+//! - [`elite_journal`] - Elite: Dangerous journal file parser
+//! - [`elite_dat`] - Elite: Dangerous visited star `.dat` parser
+//! - [`eddn`] - A [EDDN](https://eddn.edcd.io) subscriber
+//! - [`eddb`] - A [EDDB](https://eddb.io) data file parser (discontinued)
+//! - [`edsm`] - A [EDSM](https://edsm.net) API adapter and data file parser
+//! - [`galos_db`] - PostgreSQL database and ORM
 //! - [`galos`](#galos) - Shared code and the user CLI, `galos`
 //! - [`galos-server`](#galos-server) - Web-server for the API and website
 //! - [`galos-worker`](#galos-worker) - Background jobs to complement the server
 //! - [`galos-gui`](#galos-gui) - Graphical application, primarily for mapping
 //!
 //! In order to run the server, worker, locally configured CLI and GUI, the PostgreSQL database
-//! must be running and up to date. The [`galos_db`][galos_db] crate provides tools to manage this.
+//! must be running and up to date. The [`galos_db`] crate provides tools to manage this.
 //! Both [`galos-server`](#galos-server) and [`galos-worker`](#galos-worker) can be run
 //! independently by storing job requests and responses in the database.
 //!
