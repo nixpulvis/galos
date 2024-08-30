@@ -16,28 +16,34 @@ use crate::{
     RouteMarker
 };
 
-/// Tasks for systems in the DB which will be spawned
-#[derive(Resource)]
-pub struct FetchTasks {
-    // TODO: This IVec3 doesn't take zoom or rotation into account.  To generate
-    // all the stars in view we should. To start we'll just load near the center
-    // of the camera.
-    //
-    // Also, using something else as the key could allow for
-    // "search:faction:"New Pilots Initiative" => Task as well.
-    pub regions: HashMap<IVec3, Task<Vec<System>>>
-}
-
-/// A representation of the spawned systems
+/// Represents a single fetch request
 //
-// TODO: Take the radius of the spyglass into account, right now as a result of
-// the IVec3 we avoid redundent loads within 1Ly of the loaded system, and
-// that's it.
-#[derive(Resource)]
-pub struct LoadedRegions(pub HashSet<IVec3>);
+// TODO: Put region math inside custom Hash impl?
+// TODO: once we have a hash impl let's save f64 instead of String for route
+// range.
+// TODO: fetched regions should be cubes with `region_size` side length, they
+// are currently spheres with `region_size` radius.
+#[derive(Hash, Eq, PartialEq, Clone)]
+pub enum FetchIndex {
+    // System<String>
+    Region(IVec3, i32),
+    // View<Frustum>,
+    Faction(String),
+    Route(String, String, String),
+}
 
 // A region is as large as the current spyglass radius / this factor.
 const REGION_FACTOR: i32 = 10;
+
+/// Tasks for systems in the DB which will be spawned
+#[derive(Resource)]
+pub struct FetchTasks {
+    pub fetched: HashMap<FetchIndex, Task<Vec<System>>>
+}
+
+/// A representation of the spawned systems
+#[derive(Resource)]
+pub struct Fetched(pub HashSet<FetchIndex>);
 
 /// A global setting which toggles the spyglass around the camera
 #[derive(Resource)]
@@ -47,7 +53,7 @@ pub struct AlwaysFetch(pub bool);
 pub fn fetch(
     camera_query: Query<&mut PanOrbitCamera>,
     mut search_events: EventReader<Searched>,
-    mut loaded_regions: ResMut<LoadedRegions>,
+    mut fetched: ResMut<Fetched>,
     mut tasks: ResMut<FetchTasks>,
     db: Res<Db>,
     mut always_fetch: ResMut<AlwaysFetch>,
@@ -56,7 +62,7 @@ pub fn fetch(
     if always_fetch.0 {
         fetch_around_camera(
             &camera_query,
-            &mut loaded_regions,
+            &mut fetched,
             &mut tasks,
             &mut radius,
             &db);
@@ -64,7 +70,7 @@ pub fn fetch(
 
     for event in search_events.read() {
         match event {
-            // TODO: Ensure at least the searched star is loaded. I don't do it
+            // TODO: Ensure at least the searched star is fetched. I don't do it
             // again here because it was already fetched (syncronously) in
             // `search`. That needs to be refactored anyway. So for now, if
             // you search for a system with AlwaysFetch(false) it may take you
@@ -75,7 +81,7 @@ pub fn fetch(
                 *always_fetch = AlwaysFetch(false);
                 fetch_faction(
                     name.into(),
-                    &mut loaded_regions,
+                    &mut fetched,
                     &mut tasks,
                     &db);
             },
@@ -84,7 +90,7 @@ pub fn fetch(
                     start.into(),
                     end.into(),
                     range.into(),
-                    &mut loaded_regions,
+                    &mut fetched,
                     &mut tasks,
                     &db);
             }
@@ -100,21 +106,23 @@ pub struct SpyglassRadius(pub f64);
 
 fn fetch_around_camera(
     camera_query: &Query<&mut PanOrbitCamera>,
-    loaded_regions: &mut ResMut<LoadedRegions>,
+    fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
     radius: &mut ResMut<SpyglassRadius>,
     db: &Res<Db>,
 ) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
-    // TODO: loaded regions should be cubes with `region_size` side length, they
-    // are currently spheres with `region_size` radius.
     // Regions need to be smaller than the spyglass radius. Once we load cubes,
     // we'll need to change things to hide the entities outside of the sphere.
     let scale = radius.0 as i32 / REGION_FACTOR;
-    let region = if scale == 0 { IVec3::ONE } else { center / scale };
-    if !loaded_regions.0.contains(&region) &&
-       !tasks.regions.contains_key(&region)
+    let region = if scale == 0 {
+        FetchIndex::Region(IVec3::ONE, radius.0 as i32)
+    } else {
+        FetchIndex::Region(center / scale, radius.0 as i32)
+    };
+    if !fetched.0.contains(&region) &&
+       !tasks.fetched.contains_key(&region)
     {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
@@ -127,41 +135,39 @@ fn fetch_around_camera(
             ];
             System::fetch_in_range_of_point(&db, radius, cent).await.unwrap_or_default()
         });
-        loaded_regions.0.insert(region);
-        tasks.regions.insert(region, task);
+        fetched.0.insert(region.clone());
+        tasks.fetched.insert(region, task);
     }
 }
 
-const FACTION_HACK: IVec3 = IVec3::splat(989);
-
 fn fetch_faction(
-    faction: String,
-    loaded_regions: &mut ResMut<LoadedRegions>,
+    name: String,
+    fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
     db: &Res<Db>,
 ) {
-    if !tasks.regions.contains_key(&FACTION_HACK) {
+    let index = FetchIndex::Faction(name.clone());
+    if !tasks.fetched.contains_key(&index) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
-            System::fetch_faction(&db, &faction).await.unwrap_or_default()
+            System::fetch_faction(&db, &name).await.unwrap_or_default()
         });
-        loaded_regions.0.insert(FACTION_HACK);
-        tasks.regions.insert(FACTION_HACK, task);
+        fetched.0.insert(index.clone());
+        tasks.fetched.insert(index, task);
     }
 }
-
-const ROUTE_HACK: IVec3 = IVec3::splat(988);
 
 fn fetch_route(
     start: String,
     end: String,
     range: String,
-    loaded_regions: &mut ResMut<LoadedRegions>,
+    fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
     db: &Res<Db>,
 ) {
-    if !tasks.regions.contains_key(&ROUTE_HACK) {
+    let index = FetchIndex::Route(start.clone(), end.clone(), range.clone());
+    if !tasks.fetched.contains_key(&index) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
@@ -176,8 +182,8 @@ fn fetch_route(
             }
             vec![]
         });
-        loaded_regions.0.insert(ROUTE_HACK);
-        tasks.regions.insert(ROUTE_HACK, task);
+        fetched.0.insert(index.clone());
+        tasks.fetched.insert(index, task);
     }
 }
 
@@ -191,9 +197,6 @@ pub struct AlwaysDespawn(pub bool);
 
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
 /// resulting star systems
-//
-// TODO: How best to switch between camera orianted system loading and custom
-// filters like faction and route searches, etc.
 pub fn spawn(
     systems_query: Query<Entity, With<SystemMarker>>,
     route_query: Query<Entity, With<RouteMarker>>,
@@ -203,30 +206,26 @@ pub fn spawn(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut mesh: Local<Option<Handle<Mesh>>>,
     mut tasks: ResMut<FetchTasks>,
-    mut loaded_regions: ResMut<LoadedRegions>,
+    mut fetched: ResMut<Fetched>,
     always_despawn: Res<AlwaysDespawn>,
 ) {
-    tasks.regions.retain(|region, task| {
+    tasks.fetched.retain(|index, task| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(systems) = status {
             if always_despawn.0 {
                 // TODO: send despawn event, same as in the always_despawn
                 // ui checkbox.
-                loaded_regions.0.clear();
-                loaded_regions.0.insert(region.clone());
+                fetched.0.clear();
+                fetched.0.insert(index.clone());
                 for entity in systems_query.iter() {
                     commands.entity(entity).despawn_recursive();
                 }
             }
 
-            // TODO: Pass the region along. I'd like to have region.marker() or
+            // TODO: Pass FetchIndex along. I'd like to have index.marker() or
             // similar so I can mark entities with some info about where they
             // were fetched from.
-            //
-            // Key::SpaceRegion(position/region id)
-            // Key::Faction(faction_name)
-            // Key::Route((start_pos, end_pos, range)
             spawn_systems(
                 &systems,
                 &mut commands,
@@ -234,23 +233,27 @@ pub fn spawn(
                 &mut materials,
                 &mut mesh);
 
-            // TODO: I'd like to use an enum as the region instead of the hacky
-            // IVec3.  This would be a match on some Faction variant.
-            // TODO: Find center of all systems and zoom to fit.
-            if *region == FACTION_HACK || *region == ROUTE_HACK {
-                if let Some(system) = systems.first() {
-                    let position = system_to_vec(&system);
-                    move_camera_events.send(MoveCamera { position });
+            match index {
+                FetchIndex::Faction(..) |
+                FetchIndex::Route(..) => {
+                    if let Some(system) = systems.first() {
+                        let position = system_to_vec(&system);
+                        move_camera_events.send(MoveCamera { position });
+                    }
                 }
+                _ => {}
             }
 
-            if *region == ROUTE_HACK {
-                spawn_route(
-                    &systems,
-                    &route_query,
-                    &mut commands,
-                    &mut meshes,
-                    &mut materials)
+            match index {
+                FetchIndex::Route(..) => {
+                    spawn_route(
+                        &systems,
+                        &route_query,
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials);
+                },
+                _ => {}
             }
         }
         retain

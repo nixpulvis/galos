@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use crate::systems::{LoadedRegions, SpyglassRadius, AlwaysFetch, AlwaysDespawn};
+use crate::systems::{Fetched, SpyglassRadius, AlwaysFetch, AlwaysDespawn};
 use crate::SystemMarker;
 
 #[derive(Event, Debug)]
@@ -28,7 +28,7 @@ pub fn settings(
     mut radius: ResMut<SpyglassRadius>,
     mut always_despawn: ResMut<AlwaysDespawn>,
     mut always_fetch: ResMut<AlwaysFetch>,
-    mut loaded_regions: ResMut<LoadedRegions>,
+    mut fetched: ResMut<Fetched>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
         // TODO: We really need to figure out how to trigger a re-fetch after
@@ -47,7 +47,7 @@ pub fn settings(
             ui.checkbox(&mut always_despawn.0, "Always Despawn Systems");
             if always_despawn.0 && always_despawn.0 != last_value {
                 // TODO: send despawn event, same as system's spawn.
-                loaded_regions.0.clear();
+                fetched.0.clear();
                 for entity in systems_query.iter() {
                     commands.entity(entity).despawn_recursive();
                 }
