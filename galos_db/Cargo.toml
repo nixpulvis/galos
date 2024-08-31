@@ -1,6 +1,6 @@
 [package]
 name = "galos_db"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
@@ -11,6 +11,7 @@ dotenv = "*"
 chrono = "*"
 pathfinding = "*"
 ordered-float = "*"
+elite_journal = { version = "0.1", features = ["with-postgis-sqlx"] }
 
 [dependencies.sqlx]
 version = "^0.6"
@@ -19,7 +20,3 @@ features = ["runtime-async-std-native-tls", "postgres", "chrono", "offline"]
 [dependencies.geozero]
 version = "^0.9"
 features = ["with-wkb"]
-
-[dependencies.elite_journal]
-path = "../elite_journal"
-features = ["with-postgis-sqlx"]

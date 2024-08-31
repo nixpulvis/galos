@@ -1739,7 +1739,7 @@ dependencies = [
  "bitflags 2.6.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools",
  "lazy_static",
  "lazycell",
  "proc-macro2",
@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "eddn"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "elite_journal",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "elite_journal"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "geozero",
@@ -2907,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "galos"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-std",
  "chrono",
@@ -2917,7 +2917,7 @@ dependencies = [
  "elite_journal",
  "galos_db",
  "indicatif",
- "itertools 0.13.0",
+ "itertools",
  "prettytable-rs",
  "structopt",
  "termion",
@@ -2926,12 +2926,12 @@ dependencies = [
 
 [[package]]
 name = "galos-server"
-version = "0.1.0"
+version = "0.0.3"
 dependencies = [
  "askama",
  "axum",
  "galos_db",
- "itertools 0.13.0",
+ "itertools",
  "ordered-float",
  "serde",
  "tokio",
@@ -2941,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "galos_db"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-std",
  "chrono",
@@ -3693,15 +3693,6 @@ name = "itertools"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
 dependencies = [
  "either",
 ]
@@ -5671,7 +5662,7 @@ dependencies = [
 
 [[package]]
 name = "starmap"
-version = "0.1.0"
+version = "0.0.3"
 dependencies = [
  "async-std",
  "bevy",

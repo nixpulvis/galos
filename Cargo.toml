@@ -1,6 +1,6 @@
 [package]
 name    = "galos"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
@@ -27,6 +27,10 @@ elite_journal = { path = "./elite_journal" }
 eddn          = { path = "./eddn" }
 eddb          = { path = "./eddb" }
 edsm          = { path = "./edsm" }
+
+[patch.crates-io]
+elite_journal = { path = "./elite_journal" }
+eddn          = { path = "./eddn" }
 
 [workspace]
 members = [

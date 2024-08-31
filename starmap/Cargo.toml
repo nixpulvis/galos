@@ -1,6 +1,6 @@
 [package]
 name = "starmap"
-version = "0.1.0"
+version = "0.0.3"
 edition = "2021"
 
 [dependencies]
@@ -11,4 +11,4 @@ bevy_egui = "*"
 bevy_mod_picking = "*"
 async-std = "*"
 galos_db = { path = "../galos_db" }
-elite_journal = { path = "../elite_journal" }
+elite_journal = "0.1"
