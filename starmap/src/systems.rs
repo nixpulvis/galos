@@ -373,6 +373,10 @@ impl Material for StarMaterial {
     fn fragment_shader() -> ShaderRef {
         "shaders/star.wgsl".into()
     }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Add
+    }
 }
 
 /// Maps system allegiance to a color for the sphere on the map.

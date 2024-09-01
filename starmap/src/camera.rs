@@ -1,4 +1,8 @@
 use bevy::prelude::*;
+use bevy::core_pipeline::{
+    bloom::{BloomCompositeMode, BloomSettings},
+    tonemapping::Tonemapping,
+};
 use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_infinite_grid::InfiniteGridBundle;
 use crate::MoveCamera;
@@ -8,6 +12,7 @@ pub fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
+            tonemapping: Tonemapping::TonyMcMapface,
             ..default()
         },
         PanOrbitCamera {
@@ -21,6 +26,7 @@ pub fn spawn_camera(mut commands: Commands) {
             zoom_sensitivity: 10.0,
             ..default()
         },
+        BloomSettings::NATURAL,
     ));
     commands.spawn(InfiniteGridBundle::default());
 }

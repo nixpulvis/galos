@@ -4,7 +4,7 @@ version = "0.0.3"
 edition = "2021"
 
 [dependencies]
-bevy = { version = "*", features = ["shader_format_glsl"] }
+bevy = { version = "*", features = ["file_watcher", "shader_format_glsl"] }
 bevy_panorbit_camera = { version = "*", features = ["bevy_egui"] }
 bevy_infinite_grid = "*"
 bevy_egui = "*"
