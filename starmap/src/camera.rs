@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
-use bevy_infinite_grid::InfiniteGridBundle;
+use bevy_infinite_grid::{InfiniteGridBundle, InfiniteGridSettings};
 use crate::MoveCamera;
 
 /// Place a camera in space
@@ -22,7 +22,15 @@ pub fn spawn_camera(mut commands: Commands) {
             ..default()
         },
     ));
-    commands.spawn(InfiniteGridBundle::default());
+    commands.spawn(InfiniteGridBundle {
+        settings: InfiniteGridSettings {
+            fadeout_distance: 1000.,
+            dot_fadeout_strength: 0.25,
+            scale: 1.,
+            ..default()
+        },
+        ..default()
+    });
 }
 
 /// Smoothly moves the camera on `MoveCamera` event

@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::systems::{Fetched, SpyglassRadius, AlwaysFetch, AlwaysDespawn};
+use bevy_infinite_grid::InfiniteGrid;
 use crate::SystemMarker;
 
 #[derive(Event, Debug)]
@@ -29,6 +30,8 @@ pub fn settings(
     mut always_despawn: ResMut<AlwaysDespawn>,
     mut always_fetch: ResMut<AlwaysFetch>,
     mut fetched: ResMut<Fetched>,
+    mut grid_checkbox_value: Local<bool>,
+    mut grid_query: Query<&mut Visibility, With<InfiniteGrid>>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
         // TODO: We really need to figure out how to trigger a re-fetch after
@@ -51,6 +54,14 @@ pub fn settings(
                 for entity in systems_query.iter() {
                     commands.entity(entity).despawn_recursive();
                 }
+            }
+
+            ui.checkbox(&mut grid_checkbox_value, "Show Grid");
+            let mut grid_visibility = grid_query.single_mut();
+            if *grid_checkbox_value {
+                *grid_visibility = Visibility::Visible;
+            } else {
+                *grid_visibility = Visibility::Hidden;
             }
         });
     }
