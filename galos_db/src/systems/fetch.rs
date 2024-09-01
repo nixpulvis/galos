@@ -229,6 +229,56 @@ impl System {
             .collect())
     }
 
+    pub async fn fetch_in_range_of_point(
+        db: &Database,
+        range: f64,
+        center: [f64; 3],
+    ) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                address,
+                name,
+                position AS "position!: Option<wkb::Decode<Coordinate>>",
+                population,
+                security as "security: Security",
+                government as "government: Government",
+                allegiance as "allegiance: Allegiance",
+                primary_economy as "primary_economy: Economy",
+                secondary_economy as "secondary_economy: Economy",
+                updated_at,
+                updated_by
+            FROM systems
+            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+            "#,
+            range,
+            center[0],
+            center[1],
+            center[2],
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
+                address: row.address,
+                name: row.name,
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
+            })
+            .collect())
+    }
+
     pub async fn fetch_faction(
         db: &Database,
         faction: &str,

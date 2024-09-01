@@ -1,7 +1,9 @@
+# Galos
+![Galos Starmap Demo](starmap/demo.gif)
+-----
 [![CI](https://github.com/nixpulvis/galos/actions/workflows/ci.yml/badge.svg)](https://github.com/nixpulvis/galos/actions/workflows/ci.yml)
 
-Somewhere between reality and the flight sim E:D.
-
+Somewhere between reality and the space/flight sim E:D.
 
 ### Database Setup
 

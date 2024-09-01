@@ -1,31 +1,18 @@
-//! Shows how to iterate over combinations of query results.
+//! A 3D Galaxy Map
 
+use std::collections::{HashSet, HashMap};
 use bevy::prelude::*;
+use bevy::tasks::futures_lite::future;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use bevy_infinite_grid::InfiniteGridPlugin;
 use bevy_mod_picking::DefaultPickingPlugins;
 use bevy_egui::EguiPlugin;
+use galos_db::Database;
 
-mod grid;
 mod camera;
+mod systems;
 mod ui;
-mod generate;
-
-#[derive(Event, Debug)]
-enum Searched {
-    System {
-        name: String,
-        radius: String,
-    },
-    Faction {
-        name: String,
-    },
-    Route {
-        start: String,
-        end: String,
-        range: String,
-    },
-}
+mod search;
 
 #[derive(Event, Debug)]
 struct MoveCamera {
@@ -38,7 +25,14 @@ struct SystemMarker;
 #[derive(Component)]
 struct RouteMarker;
 
+#[derive(Resource)]
+struct Db(Database);
+
 fn main() {
+    let db = future::block_on(async {
+        Database::new().await.unwrap()
+    });
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -56,17 +50,28 @@ fn main() {
             color: Color::default(),
             brightness: 1000.0,
         })
+        .insert_resource(Db(db))
+        .insert_resource(systems::SpyglassRadius(50.))
+        .insert_resource(systems::AlwaysFetch(true))
+        .insert_resource(systems::AlwaysDespawn(true))
+        .insert_resource(systems::Fetched(HashSet::new()))
+        .insert_resource(systems::FetchTasks {
+            fetched: HashMap::new(),
+        })
 
-        .add_event::<Searched>()
         .add_event::<MoveCamera>()
+        .add_event::<ui::Searched>()
 
-        .add_systems(Startup, grid::spawn)
         .add_systems(Startup, camera::spawn_camera)
-        .add_systems(Update, generate::star_systems)
         .add_systems(Update, camera::move_camera)
 
-        .add_systems(Update, ui::systems_search)
-        .add_systems(Update, ui::faction_search)
-        .add_systems(Update, ui::route_search)
+        .add_systems(Update, systems::fetch)
+        .add_systems(Update, systems::spawn)
+
+        .add_systems(Update, ui::settings)
+        .add_systems(Update, ui::search.after(ui::settings))
+        .add_systems(Update, ui::route.after(ui::search))
+
+        .add_systems(Update, search::system)
         .run();
 }

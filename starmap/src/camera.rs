@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
+use bevy_infinite_grid::InfiniteGridBundle;
 use crate::MoveCamera;
 
+/// Place a camera in space
 pub fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3dBundle {
@@ -13,12 +15,17 @@ pub fn spawn_camera(mut commands: Commands) {
             yaw: Some(30.0f32.to_radians()),
             radius: Some(25.0),
 
+            // Achenar, home of the Empire!
+            focus: Vec3::new(67.5, -119.46875, 24.84375),
+
             zoom_sensitivity: 10.0,
             ..default()
         },
     ));
+    commands.spawn(InfiniteGridBundle::default());
 }
 
+/// Smoothly moves the camera on `MoveCamera` event
 pub fn move_camera(
     mut query: Query<&mut PanOrbitCamera>,
     mut camera_events: EventReader<MoveCamera>,
