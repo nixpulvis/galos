@@ -2,6 +2,7 @@ use std::collections::{HashSet, HashMap};
 use bevy::prelude::*;
 use bevy::render::mesh::{PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::tasks::futures_lite::future;
 use bevy_panorbit_camera::PanOrbitCamera;
@@ -203,7 +204,8 @@ pub fn spawn(
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut standard_materials: ResMut<Assets<StandardMaterial>>,
+    mut star_materials: ResMut<Assets<StarMaterial>>,
     mut mesh: Local<Option<Handle<Mesh>>>,
     mut tasks: ResMut<FetchTasks>,
     mut fetched: ResMut<Fetched>,
@@ -230,7 +232,7 @@ pub fn spawn(
                 &systems,
                 &mut commands,
                 &mut meshes,
-                &mut materials,
+                &mut star_materials,
                 &mut mesh);
 
             match index {
@@ -251,7 +253,7 @@ pub fn spawn(
                         &route_query,
                         &mut commands,
                         &mut meshes,
-                        &mut materials);
+                        &mut standard_materials);
                 },
                 _ => {}
             }
@@ -268,7 +270,7 @@ fn spawn_route(
     route_query: &Query<Entity, With<RouteMarker>>,
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
+    standard_materials: &mut ResMut<Assets<StandardMaterial>>,
 ) {
     for entity in route_query.iter() {
         commands.entity(entity).despawn_recursive();
@@ -279,7 +281,7 @@ fn spawn_route(
             points: systems.iter().map(system_to_vec).collect()
         }),
         transform: Transform::from_xyz(0., 0., 0.),
-        material: materials.add(StandardMaterial {
+        material: standard_materials.add(StandardMaterial {
             base_color: Color::srgba(1., 1., 1., 0.1),
             alpha_mode: AlphaMode::Blend,
             ..default()
@@ -294,7 +296,7 @@ fn spawn_systems(
     systems: &[System],
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
+    star_materials: &mut ResMut<Assets<StarMaterial>>,
     mesh: &mut Local<Option<Handle<Mesh>>>,
     ) {
     // TODO: Scale systems based on the distance from the camera.
@@ -310,8 +312,10 @@ fn spawn_systems(
         **mesh = Some(meshes.add(Sphere::new(SYSTEM_RADIUS).mesh().ico(3).unwrap()));
     }
 
+    let material = star_materials.add(StarMaterial {});
+
     for system in systems {
-        commands.spawn((PbrBundle {
+        commands.spawn((MaterialMeshBundle {
             transform: Transform {
                 translation: Vec3::new(
                     system.position.unwrap().x as f32,
@@ -326,7 +330,7 @@ fn spawn_systems(
             // TODO: Configure the material to be flatter when looking at allegiance,
             // or more realistic when looking at star class. Remember to check
             // partially overlapping systems.
-            material: materials.add(allegiance_color(&system)),
+            material: material.clone(),
             ..default()
         },
         SystemMarker,
@@ -360,6 +364,15 @@ fn system_to_vec(system: &System) -> Vec3 {
         system.position.unwrap().y as f32,
         system.position.unwrap().z as f32,
     )
+}
+
+#[derive(AsBindGroup, Debug, Clone, Asset, TypePath)]
+pub struct StarMaterial {}
+
+impl Material for StarMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/star.wgsl".into()
+    }
 }
 
 /// Maps system allegiance to a color for the sphere on the map.

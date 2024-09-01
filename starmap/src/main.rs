@@ -41,6 +41,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(MaterialPlugin::<systems::StarMaterial>::default())
         .add_plugins(PanOrbitCameraPlugin)
         .add_plugins(InfiniteGridPlugin)
         .add_plugins(DefaultPickingPlugins)
