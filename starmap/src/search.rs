@@ -36,7 +36,7 @@ pub fn system(
                     if let Ok(origin) = System::fetch_by_name(&db.0, &name).await {
                         if let Some(p) = origin.position {
                             let position = Vec3::new(p.x as f32, p.y as f32, p.z as f32);
-                            camera_events.send(MoveCamera { position });
+                            camera_events.send(MoveCamera { position: Some(position) });
                         }
                     }
                 });

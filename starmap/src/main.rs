@@ -4,7 +4,7 @@ use std::collections::{HashSet, HashMap};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
-use bevy_mod_picking::DefaultPickingPlugins;
+use bevy_mod_picking::prelude::*;
 use bevy_egui::EguiPlugin;
 use galos_db::Database;
 
@@ -15,7 +15,13 @@ mod search;
 
 #[derive(Event, Debug)]
 struct MoveCamera {
-    position: Vec3,
+    position: Option<Vec3>,
+}
+
+impl From<ListenerInput<Pointer<Click>>> for MoveCamera {
+    fn from(click: ListenerInput<Pointer<Click>>) -> Self {
+        MoveCamera { position: click.hit.position }
+    }
 }
 
 #[derive(Component)]
