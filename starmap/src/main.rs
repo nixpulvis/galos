@@ -60,7 +60,7 @@ fn main() {
         })
 
         .add_event::<MoveCamera>()
-        .add_event::<ui::Searched>()
+        .add_event::<search::Searched>()
 
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Update, camera::move_camera)

@@ -1,22 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::systems::{Fetched, SpyglassRadius, AlwaysFetch, AlwaysDespawn};
+use crate::search::Searched;
 use crate::SystemMarker;
-
-#[derive(Event, Debug)]
-pub enum Searched {
-    System {
-        name: String,
-    },
-    Faction {
-        name: String,
-    },
-    Route {
-        start: String,
-        end: String,
-        range: String,
-    },
-}
 
 // TODO: Form validation.
 
