@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use crate::Run;
 use async_std::task;
 use eddn::{subscribe, Message, URL};
