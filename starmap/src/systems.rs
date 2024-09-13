@@ -287,14 +287,6 @@ fn spawn_route(
     RouteMarker));
 }
 
-// TODO: Scale systems based on the distance from the camera.
-// This may follow some kind of log curve, or generally effect closer
-// systems less. The goal is to have systems never become smaller than a
-// pixel in size. I'm not sure if we can implement blending modes or
-// something to handle partially overlapping systems.
-const SYSTEM_SCALE:  f32 = 1.;
-const SYSTEM_RADIUS: f32 = SYSTEM_SCALE/2.5;
-
 /// Generate all the star system entities.
 fn spawn_systems(
     systems: &[System],
@@ -302,7 +294,7 @@ fn spawn_systems(
     mesh_asset: &mut ResMut<Assets<Mesh>>,
     material_assets: &mut ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = init_mesh(mesh_asset);
+    let mesh = init_meshes(mesh_asset);
     let materials = init_materials(material_assets);
 
     for system in systems {
@@ -313,7 +305,7 @@ fn spawn_systems(
                     system.position.unwrap().y as f32,
                     system.position.unwrap().z as f32,
                 ),
-                scale: Vec3::splat(SYSTEM_SCALE),
+                scale: Vec3::splat(1.),
                 ..default()
             },
             // TODO: Use entries API to avoid unwrap.
@@ -327,8 +319,8 @@ fn spawn_systems(
         SystemMarker,
         PickableBundle::default(),
 
-        On::<Pointer<Click>>::target_commands_mut(|click, _target_commands| {
-            dbg!(click);
+        On::<Pointer<Click>>::target_commands_mut(|_click, _target_commands| {
+            // dbg!(_click);
             // TODO: toggle system info.
             // TODO: double click to center camera... use events instead
             // of the code below which doesn't work.
@@ -338,41 +330,54 @@ fn spawn_systems(
         }),
 
         On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
-            dbg!(_hover);
+            // dbg!(_hover);
             // TODO: Spawn system label.
         }),
 
         On::<Pointer<Out>>::target_commands_mut(|_hover, _target_commands| {
-            dbg!(_hover);
+            // dbg!(_hover);
             // TODO: Despawn system label.
         })));
     }
 }
 
-fn init_mesh(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
-    assets.add(Sphere::new(SYSTEM_RADIUS).mesh().ico(3).unwrap())
+pub fn scale_with_camera(
+    mut set: ParamSet<(
+        Query<&mut Transform, With<SystemMarker>>,
+        Query<&Transform, With<PanOrbitCamera>>,
+    )>
+) {
+    let camera_translation = set.p1().single().translation;
+    for mut system in set.p0().iter_mut() {
+        // a scale 1.0 at dist > 1513 disappears.
+        let dist = camera_translation.distance(system.translation);
+        // wolfram alpha: cubic fit {1,0.1},{50,0.2},{1513, 1.0},{2000,2.0}
+        let scale =
+            0.000000000880785 * dist.powf(3.) -
+            0.00000236564 * dist.powf(2.) + 0.00215922 * dist +
+            0.01;
+        let clamped = scale.min(5.);
+        system.scale = Vec3::splat(clamped);
+    }
+}
+
+fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
+    assets.add(Sphere::new(1.).mesh().ico(3).unwrap())
 }
 
 fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardMaterial>> {
-    let mut materials = Vec::new();
-    materials.push(assets.add(Color::srgb(0., 1., 0.)));   // Green
-    materials.push(assets.add(Color::srgb(0., 1., 1.)));   // Cyan
-    materials.push(assets.add(Color::srgb(1., 0., 0.)));   // Red
-    materials.push(assets.add(Color::srgb(1., 0.5, 0.)));  // Orange
-    materials.push(assets.add(Color::srgb(1., 1., 0.)));   // Yellow
-    materials.push(assets.add(Color::srgb(0., 0., 1.)));   // Blue
-    materials.push(assets.add(Color::srgb(1., 0., 1.)));   // Magenta
-    materials.push(assets.add(Color::srgb(1., 1., 1.)));   // White
-    materials.push(assets.add(Color::srgb(0., 0., 0.)));   // Black
-    materials
-}
+    let colors = vec![
+        Color::srgba(0., 1., 0.,  0.75),  // Green
+        Color::srgba(0., 1., 1.,  0.75),  // Cyan
+        Color::srgba(1., 0., 0.,  0.75),  // Red
+        Color::srgba(1., 0.5, 0., 0.75),  // Orange
+        Color::srgba(1., 1., 0.,  0.75),  // Yellow
+        Color::srgba(0., 0., 1.,  0.75),  // Blue
+        Color::srgba(1., 0., 1.,  0.75),  // Magenta
+        Color::srgba(0., 0., 0.,  0.50),  // Grey
+    ];
 
-fn system_to_vec(system: &System) -> Vec3 {
-    Vec3::new(
-        system.position.unwrap().x as f32,
-        system.position.unwrap().y as f32,
-        system.position.unwrap().z as f32,
-    )
+    colors.into_iter().map(|color| assets.add(color)).collect()
 }
 
 /// Maps system allegiance to a color for the sphere on the map.
@@ -385,9 +390,16 @@ fn allegiance_color_idx(system: &System) -> usize {
         Some(Allegiance::Independent)      => 4,  // Yellow
         Some(Allegiance::Guardian)         => 5,  // Blue
         Some(Allegiance::Thargoid)         => 6,  // Magenta
-        Some(_)                            => 7,  // White
-        None                               => 8,  // Black
+        _                                  => 7,  // Grey
     }
+}
+
+fn system_to_vec(system: &System) -> Vec3 {
+    Vec3::new(
+        system.position.unwrap().x as f32,
+        system.position.unwrap().y as f32,
+        system.position.unwrap().z as f32,
+    )
 }
 
 /// A list of points that will have a line drawn between each consecutive points

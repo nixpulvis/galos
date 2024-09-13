@@ -4,7 +4,6 @@ use std::collections::{HashSet, HashMap};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
-use bevy_infinite_grid::InfiniteGridPlugin;
 use bevy_mod_picking::DefaultPickingPlugins;
 use bevy_egui::EguiPlugin;
 use galos_db::Database;
@@ -42,7 +41,6 @@ fn main() {
             ..default()
         }))
         .add_plugins(PanOrbitCameraPlugin)
-        .add_plugins(InfiniteGridPlugin)
         .add_plugins(DefaultPickingPlugins)
         .add_plugins(EguiPlugin)
         .insert_resource(ClearColor(Color::BLACK))
@@ -66,7 +64,8 @@ fn main() {
         .add_systems(Update, camera::move_camera)
 
         .add_systems(Update, systems::fetch)
-        .add_systems(Update, systems::spawn)
+        .add_systems(Update, systems::spawn.after(camera::move_camera))
+        .add_systems(Update, systems::scale_with_camera.after(systems::spawn))
 
         .add_systems(Update, ui::settings)
         .add_systems(Update, ui::search.after(ui::settings))

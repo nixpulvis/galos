@@ -25,7 +25,7 @@ pub fn settings(
             .fixed_size([150.,0.])
             .show(ctx, |ui|
         {
-            ui.add(egui::Slider::new(&mut radius.0, 0.0..=250.0).text("Radius"));
+            ui.add(egui::Slider::new(&mut radius.0, 0.0..=25000.0).text("Radius"));
 
             ui.checkbox(&mut always_fetch.0, "Always Fetch Systems");
 

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
+use bevy::core_pipeline::bloom::BloomSettings;
 use bevy_panorbit_camera::PanOrbitCamera;
-use bevy_infinite_grid::InfiniteGridBundle;
 use crate::MoveCamera;
 
 /// Place a camera in space
@@ -8,6 +8,10 @@ pub fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
+            camera: Camera {
+                hdr: true,
+                ..default()
+            },
             ..default()
         },
         PanOrbitCamera {
@@ -21,8 +25,8 @@ pub fn spawn_camera(mut commands: Commands) {
             zoom_sensitivity: 10.0,
             ..default()
         },
+        BloomSettings::NATURAL,
     ));
-    commands.spawn(InfiniteGridBundle::default());
 }
 
 /// Smoothly moves the camera on `MoveCamera` event
