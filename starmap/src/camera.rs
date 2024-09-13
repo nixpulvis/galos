@@ -22,7 +22,7 @@ pub fn spawn_camera(mut commands: Commands) {
             // Achenar, home of the Empire!
             focus: Vec3::new(67.5, -119.46875, 24.84375),
 
-            zoom_sensitivity: 10.0,
+            zoom_sensitivity: 1.0,
             ..default()
         },
         BloomSettings::NATURAL,
