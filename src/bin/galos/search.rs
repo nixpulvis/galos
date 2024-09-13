@@ -2,7 +2,6 @@
 use async_std::task;
 #[cfg(unix)]
 use galos::Run;
-#[cfg(unix)]
 use galos_db::{
     factions::Faction,
     systems::System,

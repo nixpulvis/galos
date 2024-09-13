@@ -4,7 +4,6 @@ extern crate prettytable;
 
 #[cfg(unix)]
 use galos::Run;
-#[cfg(unix)]
 use galos_db::{Database, Error};
 use structopt::StructOpt;
 
@@ -58,6 +57,3 @@ async fn main() -> Result<(), Error> {
 mod route;
 #[cfg(unix)]
 mod search;
-
-#[cfg(not(unix))]
-fn main() {}

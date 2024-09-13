@@ -1,6 +1,5 @@
 #[cfg(unix)]
 use galos::Run;
-#[cfg(unix)]
 use galos_db::{Database, Error};
 use structopt::StructOpt;
 
