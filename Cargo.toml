@@ -12,6 +12,8 @@ structopt = "*"
 itertools = "*"
 indicatif = "*"
 chrono = "*"
+
+[target.'cfg(unix)'.dependencies]
 prettytable-rs = "*"
 termion = "*"
 tui = "*"

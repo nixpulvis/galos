@@ -3,12 +3,15 @@ name = "galos-gui"
 version = "0.1.0"
 edition = "2021"
 
+[target.'cfg(unix)'.dependencies.galos_db]
+path = "../galos_db"
+
 [dependencies]
-galos_db = { path = "../galos_db" }
 eframe = "0.14.0" # Gives us egui, epi and web+native backends
 egui_web = "*"
 async-std = "*"
 itertools = "*"
+
 serde = { version = "1", features = ["derive"], optional = true }
 
 [features]

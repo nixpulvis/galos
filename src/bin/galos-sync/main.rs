@@ -1,4 +1,6 @@
+#[cfg(unix)]
 use galos::Run;
+#[cfg(unix)]
 use galos_db::{Database, Error};
 use structopt::StructOpt;
 
@@ -7,6 +9,7 @@ mod eddn;
 mod edsm;
 mod journal;
 
+#[cfg(unix)]
 #[derive(StructOpt, Debug)]
 pub enum Cli {
     #[structopt(about = "Import local journal files")]
@@ -19,6 +22,7 @@ pub enum Cli {
     Eddb(eddb::Cli),
 }
 
+#[cfg(unix)]
 impl Run for Cli {
     fn run(&self, db: &Database) {
         match self {
@@ -30,6 +34,7 @@ impl Run for Cli {
     }
 }
 
+#[cfg(unix)]
 #[async_std::main]
 async fn main() -> Result<(), Error> {
     let cli = Cli::from_args();
@@ -38,3 +43,6 @@ async fn main() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[cfg(not(unix))]
+fn main() {}

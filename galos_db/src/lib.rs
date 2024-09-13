@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::env;
 
