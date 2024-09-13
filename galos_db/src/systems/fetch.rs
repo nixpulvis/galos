@@ -307,9 +307,6 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        dbg!(faction);
-        dbg!(&rows);
-
         Ok(rows
             .into_iter()
             .map(|row| System {
