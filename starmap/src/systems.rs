@@ -1,5 +1,6 @@
 use std::collections::{HashSet, HashMap};
 use bevy::prelude::*;
+use bevy::pbr::NotShadowCaster;
 use bevy::render::mesh::{PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
@@ -317,6 +318,7 @@ fn spawn_systems(
             ..default()
         },
         SystemMarker,
+        NotShadowCaster,
         PickableBundle::default(),
 
         // TODO: toggle system info as well.
@@ -354,14 +356,14 @@ fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
 
 fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardMaterial>> {
     let colors = vec![
-        Color::srgba(0., 1., 0.,  0.75),  // Green
-        Color::srgba(0., 1., 1.,  0.75),  // Cyan
-        Color::srgba(1., 0., 0.,  0.75),  // Red
-        Color::srgba(1., 0.5, 0., 0.75),  // Orange
-        Color::srgba(1., 1., 0.,  0.75),  // Yellow
-        Color::srgba(0., 0., 1.,  0.75),  // Blue
-        Color::srgba(1., 0., 1.,  0.75),  // Magenta
-        Color::srgba(0., 0., 0.,  0.50),  // Grey
+        Color::srgb(0., 1., 0.),  // Green
+        Color::srgb(0., 1., 1.),  // Cyan
+        Color::srgb(1., 0., 0.),  // Red
+        Color::srgb(1., 0.5, 0.),  // Orange
+        Color::srgb(1., 1., 0.),  // Yellow
+        Color::srgb(0., 0., 1.),  // Blue
+        Color::srgb(1., 0., 1.),  // Magenta
+        Color::srgb(0., 0., 0.),  // Grey
     ];
 
     colors.into_iter().map(|color| {
