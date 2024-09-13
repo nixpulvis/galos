@@ -14,9 +14,9 @@ ordered-float = "*"
 elite_journal = { version = "0.1", features = ["with-postgis-sqlx"] }
 
 [dependencies.sqlx]
-version = "^0.6"
-features = ["runtime-async-std-native-tls", "postgres", "chrono", "offline"]
+version = "^0.7"
+features = ["runtime-async-std-native-tls", "postgres", "chrono"]
 
 [dependencies.geozero]
-version = "^0.9"
+version = "^0.13"
 features = ["with-wkb"]
