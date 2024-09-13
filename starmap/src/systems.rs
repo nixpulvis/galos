@@ -236,7 +236,7 @@ pub fn spawn(
                 FetchIndex::Route(..) => {
                     if let Some(system) = systems.first() {
                         let position = system_to_vec(&system);
-                        move_camera_events.send(MoveCamera { position });
+                        move_camera_events.send(MoveCamera { position: Some(position) });
                     }
                 }
                 _ => {}
@@ -319,15 +319,8 @@ fn spawn_systems(
         SystemMarker,
         PickableBundle::default(),
 
-        On::<Pointer<Click>>::target_commands_mut(|_click, _target_commands| {
-            // dbg!(_click);
-            // TODO: toggle system info.
-            // TODO: double click to center camera... use events instead
-            // of the code below which doesn't work.
-            // if let Some(position) = click.event.hit.position {
-            //     camera::move_camera(camera_query, position);
-            // }
-        }),
+        // TODO: toggle system info as well.
+        On::<Pointer<Click>>::send_event::<MoveCamera>(),
 
         On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
             // dbg!(_hover);
