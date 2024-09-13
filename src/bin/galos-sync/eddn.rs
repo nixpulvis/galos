@@ -1,13 +1,21 @@
 #![cfg(unix)]
 use crate::Run;
 use async_std::task;
+use structopt::StructOpt;
 use eddn::{subscribe, Message, URL};
 use elite_journal::entry::{Entry, Event};
+use elite_journal::entry::incremental::exploration::ScanTarget;
 use elite_journal::system::System as JournalSystem;
 use elite_journal::entry::market::Market as JournalMarket;
 use elite_journal::entry::route::NavRoute;
-use galos_db::{bodies::Body, stations::Station, systems::System, markets::Market, Database};
-use structopt::StructOpt;
+use galos_db::{
+    Database,
+    systems::System,
+    stars::Star,
+    bodies::Body,
+    stations::Station,
+    markets::Market,
+};
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
@@ -33,17 +41,31 @@ fn process_message(db: &Database, message: Message, user: String) {
     task::block_on(async {
         match message {
             Message::Journal(entry) => match entry.event {
-                Event::Scan(e) => {
-                    let mut system = JournalSystem::new(e.system_address, &e.star_system);
-                    system.pos = Some(e.star_pos);
+                Event::Scan(scan) => {
+                    let mut system = JournalSystem::new(scan.system_address, &scan.star_system);
+                    system.pos = Some(scan.star_pos);
                     match System::from_journal(db, entry.timestamp, &user, &system).await {
                         Ok(_) => println!("[EDDN] <SCN:sys> {}", system.name),
                         Err(err) => eprintln!("[EDDN] <SCN:sys> {}", err),
                     }
 
-                    match Body::from_journal(db, entry.timestamp, &user, &e.body, e.system_address).await {
-                        Ok(_) => println!("[EDDN] <SCN:bod> {}", e.body.name),
-                        Err(err) => eprintln!("[EDDN] <SCN:bod> {}", err),
+                    match scan.target {
+                        ScanTarget::Star(star) => {
+                            match Star::from_journal(db, entry.timestamp, &user, &star,
+                                scan.system_address).await
+                            {
+                                Ok(_) => println!("[EDDN] <SCN:star> {}", star.name),
+                                Err(err) => eprintln!("[EDDN] <SCN:star> {}", err),
+                            }
+                        },
+                        ScanTarget::Body(body) => {
+                            match Body::from_journal(db, entry.timestamp, &user, &body,
+                                scan.system_address).await
+                            {
+                                Ok(_) => println!("[EDDN] <SCN:bod> {}", body.name),
+                                Err(err) => eprintln!("[EDDN] <SCN:bod> {}", err),
+                            }
+                        }
                     }
                 }
                 Event::Location(e) => {
