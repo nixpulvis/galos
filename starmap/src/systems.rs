@@ -204,7 +204,6 @@ pub fn spawn(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut mesh: Local<Option<Handle<Mesh>>>,
     mut tasks: ResMut<FetchTasks>,
     mut fetched: ResMut<Fetched>,
     always_despawn: Res<AlwaysDespawn>,
@@ -230,8 +229,7 @@ pub fn spawn(
                 &systems,
                 &mut commands,
                 &mut meshes,
-                &mut materials,
-                &mut mesh);
+                &mut materials);
 
             match index {
                 FetchIndex::Faction(..) |
@@ -289,26 +287,23 @@ fn spawn_route(
     RouteMarker));
 }
 
+// TODO: Scale systems based on the distance from the camera.
+// This may follow some kind of log curve, or generally effect closer
+// systems less. The goal is to have systems never become smaller than a
+// pixel in size. I'm not sure if we can implement blending modes or
+// something to handle partially overlapping systems.
+const SYSTEM_SCALE:  f32 = 1.;
+const SYSTEM_RADIUS: f32 = SYSTEM_SCALE/2.5;
+
 /// Generate all the star system entities.
 fn spawn_systems(
     systems: &[System],
     commands: &mut Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
-    mesh: &mut Local<Option<Handle<Mesh>>>,
-    ) {
-    // TODO: Scale systems based on the distance from the camera.
-    // This may follow some kind of log curve, or generally effect closer
-    // systems less. The goal is to have systems never become smaller than a
-    // pixel in size. I'm not sure if we can implement blending modes or
-    // something to handle partially overlapping systems.
-    const SYSTEM_SCALE:  f32 = 1.;
-    const SYSTEM_RADIUS: f32 = SYSTEM_SCALE/2.5;
-
-    // Make sure our sphere mesh is loaded. This is the "shape" of the star.
-    if mesh.is_none() {
-        **mesh = Some(meshes.add(Sphere::new(SYSTEM_RADIUS).mesh().ico(3).unwrap()));
-    }
+    mesh_asset: &mut ResMut<Assets<Mesh>>,
+    material_assets: &mut ResMut<Assets<StandardMaterial>>,
+) {
+    let mesh = init_mesh(mesh_asset);
+    let materials = init_materials(material_assets);
 
     for system in systems {
         commands.spawn((PbrBundle {
@@ -322,11 +317,11 @@ fn spawn_systems(
                 ..default()
             },
             // TODO: Use entries API to avoid unwrap.
-            mesh: mesh.as_ref().unwrap().clone(),
+            mesh: mesh.clone(),
             // TODO: Configure the material to be flatter when looking at allegiance,
             // or more realistic when looking at star class. Remember to check
             // partially overlapping systems.
-            material: materials.add(allegiance_color(&system)),
+            material: materials[allegiance_color_idx(&system)].clone(),
             ..default()
         },
         SystemMarker,
@@ -354,6 +349,24 @@ fn spawn_systems(
     }
 }
 
+fn init_mesh(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
+    assets.add(Sphere::new(SYSTEM_RADIUS).mesh().ico(3).unwrap())
+}
+
+fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardMaterial>> {
+    let mut materials = Vec::new();
+    materials.push(assets.add(Color::srgb(0., 1., 0.)));   // Green
+    materials.push(assets.add(Color::srgb(0., 1., 1.)));   // Cyan
+    materials.push(assets.add(Color::srgb(1., 0., 0.)));   // Red
+    materials.push(assets.add(Color::srgb(1., 0.5, 0.)));  // Orange
+    materials.push(assets.add(Color::srgb(1., 1., 0.)));   // Yellow
+    materials.push(assets.add(Color::srgb(0., 0., 1.)));   // Blue
+    materials.push(assets.add(Color::srgb(1., 0., 1.)));   // Magenta
+    materials.push(assets.add(Color::srgb(1., 1., 1.)));   // White
+    materials.push(assets.add(Color::srgb(0., 0., 0.)));   // Black
+    materials
+}
+
 fn system_to_vec(system: &System) -> Vec3 {
     Vec3::new(
         system.position.unwrap().x as f32,
@@ -363,17 +376,17 @@ fn system_to_vec(system: &System) -> Vec3 {
 }
 
 /// Maps system allegiance to a color for the sphere on the map.
-fn allegiance_color(system: &System) -> Color {
+fn allegiance_color_idx(system: &System) -> usize {
     match system.allegiance {
-        Some(Allegiance::Alliance)         => Color::srgb(0., 1., 0.),   // Green
-        Some(Allegiance::Empire)           => Color::srgb(0., 1., 1.),   // Cyan
-        Some(Allegiance::Federation)       => Color::srgb(1., 0., 0.),   // Red
-        Some(Allegiance::PilotsFederation) => Color::srgb(1., 0.5, 0.),  // Orange
-        Some(Allegiance::Independent)      => Color::srgb(1., 1., 0.),   // Yellow
-        Some(Allegiance::Guardian)         => Color::srgb(0., 0., 1.),   // Blue
-        Some(Allegiance::Thargoid)         => Color::srgb(1., 0., 1.),  // Blue
-        Some(_)                            => Color::srgb(1., 1., 1.),   // White
-        None                               => Color::srgb(0., 0., 0.),   // Black
+        Some(Allegiance::Alliance)         => 0,  // Green
+        Some(Allegiance::Empire)           => 1,  // Cyan
+        Some(Allegiance::Federation)       => 2,  // Red
+        Some(Allegiance::PilotsFederation) => 3,  // Orange
+        Some(Allegiance::Independent)      => 4,  // Yellow
+        Some(Allegiance::Guardian)         => 5,  // Blue
+        Some(Allegiance::Thargoid)         => 6,  // Magenta
+        Some(_)                            => 7,  // White
+        None                               => 8,  // Black
     }
 }
 
