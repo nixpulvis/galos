@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use crate::{Db, MoveCamera};
+use crate::{Db, camera::MoveCamera};
 use galos_db::systems::System;
 
 /// A collection of search events for responding to the user's UI

@@ -12,7 +12,7 @@ use elite_journal::prelude::*;
 use crate::{
     Db,
     search::Searched,
-    MoveCamera,
+    camera::MoveCamera,
     SystemMarker,
     RouteMarker
 };

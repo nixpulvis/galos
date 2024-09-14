@@ -13,17 +13,6 @@ mod systems;
 mod ui;
 mod search;
 
-#[derive(Event, Debug)]
-struct MoveCamera {
-    position: Option<Vec3>,
-}
-
-impl From<ListenerInput<Pointer<Click>>> for MoveCamera {
-    fn from(click: ListenerInput<Pointer<Click>>) -> Self {
-        MoveCamera { position: click.hit.position }
-    }
-}
-
 #[derive(Component)]
 struct SystemMarker;
 
@@ -63,7 +52,7 @@ fn main() {
             fetched: HashMap::new(),
         })
 
-        .add_event::<MoveCamera>()
+        .add_event::<camera::MoveCamera>()
         .add_event::<search::Searched>()
 
         .add_systems(Startup, camera::spawn_camera)

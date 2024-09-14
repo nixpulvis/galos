@@ -1,7 +1,19 @@
 use bevy::prelude::*;
 use bevy::core_pipeline::bloom::BloomSettings;
 use bevy_panorbit_camera::PanOrbitCamera;
-use crate::MoveCamera;
+use bevy_mod_picking::prelude::*;
+
+/// Sends the camera to be focused on `position`
+#[derive(Event, Debug)]
+pub struct MoveCamera {
+    pub position: Option<Vec3>,
+}
+
+impl From<ListenerInput<Pointer<Click>>> for MoveCamera {
+    fn from(click: ListenerInput<Pointer<Click>>) -> Self {
+        MoveCamera { position: click.hit.position }
+    }
+}
 
 /// Place a camera in space
 pub fn spawn_camera(mut commands: Commands) {
