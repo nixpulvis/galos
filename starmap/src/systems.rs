@@ -345,7 +345,7 @@ pub fn scale_with_camera(
     let camera_translation = set.p1().single().translation;
     for mut system in set.p0().iter_mut() {
         let dist = camera_translation.distance(system.translation);
-        let scale = 5e-4 * dist + 8.5e-2;
+        let scale = 4e-4 * dist + 8.5e-2;
         system.scale = Vec3::splat(scale);
     }
 }
@@ -356,20 +356,20 @@ fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
 
 fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardMaterial>> {
     let colors = vec![
-        Color::srgb(0., 1., 0.),  // Green
-        Color::srgb(0., 1., 1.),  // Cyan
-        Color::srgb(1., 0., 0.),  // Red
-        Color::srgb(1., 0.5, 0.),  // Orange
-        Color::srgb(1., 1., 0.),  // Yellow
-        Color::srgb(0., 0., 1.),  // Blue
-        Color::srgb(1., 0., 1.),  // Magenta
-        Color::srgb(0., 0., 0.),  // Grey
+        Color::srgb(0., 1., 0.),     // Green
+        Color::srgb(0., 1., 1.),     // Cyan
+        Color::srgb(1., 0., 0.),     // Red
+        Color::srgb(1., 0.5, 0.),    // Orange
+        Color::srgb(1., 1., 0.),     // Yellow
+        Color::srgb(0., 0., 1.),     // Blue
+        Color::srgb(1., 0., 1.),     // Magenta
+        Color::srgb(0.1, 0.1, 0.1),  // Grey
     ];
 
     colors.into_iter().map(|color| {
         assets.add(StandardMaterial {
             base_color: color,
-            emissive: LinearRgba::from(color) * 100.,
+            emissive: LinearRgba::from(color) * 50.,
             ..default()
         })
     }).collect()
