@@ -7,14 +7,12 @@ use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::tasks::futures_lite::future;
 use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_mod_picking::prelude::*;
-use galos_db::systems::System;
+use galos_db::systems::System as DbSystem;
 use elite_journal::prelude::*;
 use crate::{
     Db,
     search::Searched,
     camera::MoveCamera,
-    SystemMarker,
-    RouteMarker
 };
 
 /// Represents a single fetch request
@@ -39,7 +37,7 @@ const REGION_FACTOR: i32 = 10;
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource)]
 pub struct FetchTasks {
-    pub fetched: HashMap<FetchIndex, Task<Vec<System>>>
+    pub fetched: HashMap<FetchIndex, Task<Vec<DbSystem>>>
 }
 
 /// A representation of the spawned systems
@@ -134,7 +132,7 @@ fn fetch_around_camera(
                 center.y as f64,
                 center.z as f64,
             ];
-            System::fetch_in_range_of_point(&db, radius, cent).await.unwrap_or_default()
+            DbSystem::fetch_in_range_of_point(&db, radius, cent).await.unwrap_or_default()
         });
         fetched.0.insert(region.clone());
         tasks.fetched.insert(region, task);
@@ -152,7 +150,7 @@ fn fetch_faction(
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
-            System::fetch_faction(&db, &name).await.unwrap_or_default()
+            DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
         });
         fetched.0.insert(index.clone());
         tasks.fetched.insert(index, task);
@@ -173,8 +171,8 @@ fn fetch_route(
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
             if let (Ok(a), Ok(b), Ok(r)) = (
-                System::fetch_by_name(&db, &start).await,
-                System::fetch_by_name(&db, &end).await,
+                DbSystem::fetch_by_name(&db, &start).await,
+                DbSystem::fetch_by_name(&db, &end).await,
                 range.parse::<f64>())
             {
                 if let Some(route) = a.route_to(&db, &b, r) {
@@ -199,8 +197,8 @@ pub struct AlwaysDespawn(pub bool);
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
 /// resulting star systems
 pub fn spawn(
-    systems_query: Query<Entity, With<SystemMarker>>,
-    route_query: Query<Entity, With<RouteMarker>>,
+    systems_query: Query<Entity, With<System>>,
+    route_query: Query<Entity, With<Route>>,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -218,9 +216,6 @@ pub fn spawn(
                 // ui checkbox.
                 fetched.0.clear();
                 fetched.0.insert(index.clone());
-                for entity in systems_query.iter() {
-                    commands.entity(entity).despawn_recursive();
-                }
             }
 
             // TODO: Pass FetchIndex along. I'd like to have index.marker() or
@@ -228,6 +223,8 @@ pub fn spawn(
             // were fetched from.
             spawn_systems(
                 &systems,
+                &systems_query,
+                &always_despawn,
                 &mut commands,
                 &mut meshes,
                 &mut materials);
@@ -261,10 +258,13 @@ pub fn spawn(
     // TODO: despawn stuff...
 }
 
+#[derive(Component)]
+pub struct Route;
+
 // TODO: Save another Local<Option<Handle<Mesh>>>?
 fn spawn_route(
-    systems: &[System],
-    route_query: &Query<Entity, With<RouteMarker>>,
+    systems: &[DbSystem],
+    route_query: &Query<Entity, With<Route>>,
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
@@ -285,16 +285,32 @@ fn spawn_route(
         }),
         ..default()
     },
-    RouteMarker));
+    Route));
+}
+
+#[derive(Component)]
+pub struct System {
+    address: i64,
+    name: String,
+    population: u64,
+    allegiance: Option<Allegiance>,
 }
 
 /// Generate all the star system entities.
 fn spawn_systems(
-    systems: &[System],
+    systems: &[DbSystem],
+    systems_query: &Query<Entity, With<System>>,
+    always_despawn: &Res<AlwaysDespawn>,
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
     material_assets: &mut ResMut<Assets<StandardMaterial>>,
 ) {
+    if always_despawn.0 {
+        for entity in systems_query.iter() {
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+
     let mesh = init_meshes(mesh_asset);
     let materials = init_materials(material_assets);
 
@@ -317,7 +333,12 @@ fn spawn_systems(
             material: materials[allegiance_color_idx(&system)].clone(),
             ..default()
         },
-        SystemMarker,
+        System {
+            address: system.address,
+            name: system.name.clone(),
+            population: system.population,
+            allegiance: system.allegiance,
+        },
         NotShadowCaster,
         PickableBundle::default(),
 
@@ -336,17 +357,34 @@ fn spawn_systems(
     }
 }
 
+#[derive(Resource)]
+pub struct ScalePopulation(pub bool);
+
 pub fn scale_with_camera(
+    mut scale_population: ResMut<ScalePopulation>,
     mut set: ParamSet<(
-        Query<&mut Transform, With<SystemMarker>>,
+        Query<(&mut Transform, &System)>,
         Query<&Transform, With<PanOrbitCamera>>,
     )>
 ) {
-    let camera_translation = set.p1().single().translation;
-    for mut system in set.p0().iter_mut() {
-        let dist = camera_translation.distance(system.translation);
-        let scale = 4e-4 * dist + 8.5e-2;
-        system.scale = Vec3::splat(scale);
+    if !set.p0().is_empty() {
+        let camera_translation = set.p1().single().translation;
+        let pop_avg = if scale_population.0 {
+            set.p0().iter().map(|(_, s)| s.population).sum::<u64>() /
+            set.p0().iter().len() as u64
+        } else {
+            0
+        };
+
+        for (mut system_transform, system) in set.p0().iter_mut() {
+            let dist = camera_translation.distance(system_transform.translation);
+            let mut scale = 4e-4 * dist + 8.5e-2;
+            if scale_population.0 {
+                let pop_factor = system.population as f32 / pop_avg as f32;
+                scale *= 0.5 * pop_factor.ln();
+            }
+            system_transform.scale = Vec3::splat(scale);
+        }
     }
 }
 
@@ -376,7 +414,7 @@ fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardM
 }
 
 /// Maps system allegiance to a color for the sphere on the map.
-fn allegiance_color_idx(system: &System) -> usize {
+fn allegiance_color_idx(system: &DbSystem) -> usize {
     match system.allegiance {
         Some(Allegiance::Alliance)         => 0,  // Green
         Some(Allegiance::Empire)           => 1,  // Cyan
@@ -389,7 +427,7 @@ fn allegiance_color_idx(system: &System) -> usize {
     }
 }
 
-fn system_to_vec(system: &System) -> Vec3 {
+fn system_to_vec(system: &DbSystem) -> Vec3 {
     Vec3::new(
         system.position.unwrap().x as f32,
         system.position.unwrap().y as f32,

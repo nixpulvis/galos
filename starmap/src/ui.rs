@@ -1,17 +1,17 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use crate::systems::{Fetched, SpyglassRadius, AlwaysFetch, AlwaysDespawn};
+use crate::systems::{System, Fetched, ScalePopulation, SpyglassRadius, AlwaysFetch, AlwaysDespawn};
 use crate::search::Searched;
-use crate::SystemMarker;
 
 // TODO: Form validation.
 
 /// Global settings for the map
 pub fn settings(
-    systems_query: Query<Entity, With<SystemMarker>>,
+    systems_query: Query<Entity, With<System>>,
     mut commands: Commands,
     mut contexts: EguiContexts,
     mut radius: ResMut<SpyglassRadius>,
+    mut scale_population: ResMut<ScalePopulation>,
     mut always_despawn: ResMut<AlwaysDespawn>,
     mut always_fetch: ResMut<AlwaysFetch>,
     mut fetched: ResMut<Fetched>,
@@ -26,6 +26,8 @@ pub fn settings(
             .show(ctx, |ui|
         {
             ui.add(egui::Slider::new(&mut radius.0, 0.0..=25000.0).text("Radius"));
+
+            ui.checkbox(&mut scale_population.0, "Scale w/ Population");
 
             ui.checkbox(&mut always_fetch.0, "Always Fetch Systems");
 

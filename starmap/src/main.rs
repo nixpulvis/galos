@@ -13,12 +13,6 @@ mod systems;
 mod ui;
 mod search;
 
-#[derive(Component)]
-struct SystemMarker;
-
-#[derive(Component)]
-struct RouteMarker;
-
 #[derive(Resource)]
 struct Db(Database);
 
@@ -44,6 +38,7 @@ fn main() {
             brightness: 1000.0,
         })
         .insert_resource(Db(db))
+        .insert_resource(systems::ScalePopulation(false))
         .insert_resource(systems::SpyglassRadius(50.))
         .insert_resource(systems::AlwaysFetch(true))
         .insert_resource(systems::AlwaysDespawn(true))
