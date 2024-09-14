@@ -342,15 +342,9 @@ pub fn scale_with_camera(
 ) {
     let camera_translation = set.p1().single().translation;
     for mut system in set.p0().iter_mut() {
-        // a scale 1.0 at dist > 1513 disappears.
         let dist = camera_translation.distance(system.translation);
-        // wolfram alpha: cubic fit {1,0.1},{50,0.2},{1513, 1.0},{2000,2.0}
-        let scale =
-            0.000000000880785 * dist.powf(3.) -
-            0.00000236564 * dist.powf(2.) + 0.00215922 * dist +
-            0.01;
-        let clamped = scale.min(5.);
-        system.scale = Vec3::splat(clamped);
+        let scale = 5e-4 * dist + 8.5e-2;
+        system.scale = Vec3::splat(scale);
     }
 }
 
@@ -370,7 +364,13 @@ fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardM
         Color::srgba(0., 0., 0.,  0.50),  // Grey
     ];
 
-    colors.into_iter().map(|color| assets.add(color)).collect()
+    colors.into_iter().map(|color| {
+        assets.add(StandardMaterial {
+            base_color: color,
+            emissive: LinearRgba::from(color) * 100.,
+            ..default()
+        })
+    }).collect()
 }
 
 /// Maps system allegiance to a color for the sphere on the map.
