@@ -27,8 +27,8 @@ pub fn spawn_camera(mut commands: Commands) {
             ..default()
         },
         PanOrbitCamera {
-            pitch: Some(15.0f32.to_radians()),
-            yaw: Some(30.0f32.to_radians()),
+            pitch: Some(0.),
+            yaw: Some(0.),
             radius: Some(25.0),
 
             // Achenar, home of the Empire!
@@ -52,5 +52,50 @@ pub fn move_camera(
             camera.pan_smoothness = 0.85;
             camera.target_focus = position;
         }
+    }
+}
+
+pub fn keyboard(
+    mut query: Query<&mut PanOrbitCamera>,
+    keys: Res<ButtonInput<KeyCode>>,
+) {
+    let mut camera = query.single_mut();
+    const ZOOM_FACTOR: f32 = 50.;
+
+    if keys.pressed(KeyCode::KeyW) {
+        if let Some(radius) = camera.radius {
+            camera.target_focus -= Vec3::new(0., 0., radius / ZOOM_FACTOR);
+        }
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        if let Some(radius) = camera.radius {
+            camera.target_focus += Vec3::new(0., 0., radius / ZOOM_FACTOR);
+        }
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        if let Some(radius) = camera.radius {
+            camera.target_focus -= Vec3::new(radius / ZOOM_FACTOR, 0., 0.);
+        }
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        if let Some(radius) = camera.radius {
+            camera.target_focus += Vec3::new(radius / ZOOM_FACTOR, 0., 0.);
+        }
+    }
+    if keys.pressed(KeyCode::KeyQ) {
+        if let Some(radius) = camera.radius {
+            camera.target_focus -= Vec3::new(0., radius / ZOOM_FACTOR, 0.);
+        }
+    }
+    if keys.pressed(KeyCode::KeyE) {
+        if let Some(radius) = camera.radius {
+            camera.target_focus += Vec3::new(0., radius / ZOOM_FACTOR, 0.);
+        }
+    }
+    if keys.pressed(KeyCode::KeyR) {
+        camera.target_radius *= 0.9;
+    }
+    if keys.pressed(KeyCode::KeyF) {
+        camera.target_radius *= 1.1;
     }
 }

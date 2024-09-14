@@ -52,6 +52,7 @@ fn main() {
 
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Update, camera::move_camera)
+        .add_systems(Update, camera::keyboard)
 
         .add_systems(Update, systems::fetch)
         .add_systems(Update, systems::spawn.after(camera::move_camera))
