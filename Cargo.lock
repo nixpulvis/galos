@@ -2888,6 +2888,8 @@ dependencies = [
  "geozero",
  "ordered-float",
  "pathfinding",
+ "serde",
+ "serde_json",
  "sqlx",
 ]
 

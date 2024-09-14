@@ -5,7 +5,8 @@ authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 
 [dependencies]
-# futures = "*"
+serde = "*"
+serde_json = "*"
 async-std = { version = "*", features = [ "attributes" ] }
 dotenv = "*"
 chrono = "*"
@@ -20,3 +21,4 @@ features = ["runtime-async-std-native-tls", "postgres", "chrono"]
 [dependencies.geozero]
 version = "^0.13"
 features = ["with-wkb"]
+

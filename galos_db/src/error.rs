@@ -6,6 +6,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     Env(dotenv::Error),
     Sqlx(sqlx::Error),
+    Json(serde_json::Error),
 }
 
 impl fmt::Display for Error {
@@ -14,6 +15,7 @@ impl fmt::Display for Error {
             // TODO: Pretty print, see above todo.
             Error::Env(e) => write!(f, "{}", e),
             Error::Sqlx(e) => write!(f, "{}", e),
+            Error::Json(e) => write!(f, "{}", e),
         }
     }
 }
@@ -23,6 +25,7 @@ impl error::Error for Error {
         match *self {
             Error::Env(ref e) => Some(e),
             Error::Sqlx(ref e) => Some(e),
+            Error::Json(ref e) => Some(e),
         }
     }
 }
@@ -42,5 +45,11 @@ impl From<env::VarError> for Error {
 impl From<sqlx::Error> for Error {
     fn from(err: sqlx::Error) -> Error {
         Error::Sqlx(err)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Error {
+        Error::Json(err)
     }
 }

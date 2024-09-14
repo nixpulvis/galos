@@ -1,5 +1,7 @@
-use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::env;
+use serde::Deserialize;
+use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::postgres::PgListener;
 
 pub mod error;
 pub use self::error::{Error, Result};
@@ -27,6 +29,33 @@ impl Database {
 
         Ok(Database { pool })
     }
+
+    pub async fn listen<T: for<'a> Deserialize<'a>>(
+        &self,
+        stream: &str,
+        func: impl Fn(Result<T>))
+        -> Result<()>
+    {
+        let mut listener = PgListener::connect_with(&self.pool).await?;
+        listener.listen(stream).await?;
+
+        loop {
+            while let Some(notification) = listener.try_recv().await? {
+                let payload = notification.payload().to_owned();
+                let result = serde_json::from_str::<T>(&payload).map_err(|e| e.into());
+                func(result);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Update<T> {
+    table: String,
+    action: String,
+    row: T,
 }
 
 pub struct Page {

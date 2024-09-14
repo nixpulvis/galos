@@ -1,14 +1,32 @@
 //! Systems represent star systems in the Milky Way galaxy
+use serde::Deserialize;
 use chrono::{DateTime, Utc};
 use elite_journal::prelude::*;
 
-#[derive(Debug, Clone)]
+// {
+//     address: 8863905784394,
+//     name: "EOL PROU KW-L C8-32",
+//     position: {
+//         type: "Point",
+//         coordinates: [-9581.6875,-932.21875,19788.59375]
+//     },
+//     population: null,
+//     security: null,
+//     government: null,
+//     allegiance: null,
+//     primary_economy: null,
+//     secondary_economy: null,
+//     updated_at: "2024-09-14T18:21:49",
+//     updated_by: "ff7005fa8ac4baf8712fcd7e5a4bc57f5bb92170"
+// }
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct System {
     pub address: i64,
     // TODO: We need to support multiple names
     pub name: String,
     pub position: Option<Coordinate>,
-    pub population: u64,
+    pub population: Option<i64>,
     pub security: Option<Security>,
     pub government: Option<Government>,
     pub allegiance: Option<Allegiance>,
@@ -19,7 +37,7 @@ pub struct System {
     // & = foreign key = belongs_to
     // pub controlling_faction: &Faction,
     // pub factions: Vec<Faction>
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: String,
     pub updated_by: String,
 }
 

@@ -42,13 +42,13 @@ impl System {
                 position: row
                     .position
                     .map(|p| p.geometry.expect("not null or invalid")),
-                population: row.population.map(|n| n as u64).unwrap_or(0),
+                population: row.population,
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
-                updated_at: row.updated_at.and_utc(),
+                updated_at: row.updated_at.to_string(),
                 updated_by: row.updated_by,
             })
             .collect()
