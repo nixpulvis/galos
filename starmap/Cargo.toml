@@ -10,4 +10,4 @@ bevy_egui = "*"
 bevy_mod_picking = "*"
 async-std = "*"
 galos_db = { path = "../galos_db" }
-elite_journal = "0.1"
+elite_journal = { path = "../elite_journal" }

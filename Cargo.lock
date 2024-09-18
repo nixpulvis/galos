@@ -2417,7 +2417,7 @@ version = "0.0.2"
 dependencies = [
  "chrono",
  "csv",
- "elite_journal",
+ "elite_journal 0.1.0",
  "serde",
  "serde_json",
 ]
@@ -2427,7 +2427,7 @@ name = "eddn"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "elite_journal",
+ "elite_journal 0.1.0",
  "miniz_oxide 0.4.4",
  "serde",
  "serde_json",
@@ -2436,10 +2436,10 @@ dependencies = [
 
 [[package]]
 name = "edsm"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "chrono",
- "elite_journal",
+ "elite_journal 0.2.0",
  "reqwest",
  "serde",
  "serde_json",
@@ -2469,9 +2469,21 @@ dependencies = [
 [[package]]
 name = "elite_journal"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38dbf9c88773e3d0e031ec138e15bd1b5cc3f89e13f8ade1adaef3b515ab3c40"
 dependencies = [
  "chrono",
- "geozero",
+ "geozero 0.9.9",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "elite_journal"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "geozero 0.13.0",
  "serde",
  "serde_json",
  "sqlx",
@@ -2862,7 +2874,7 @@ dependencies = [
  "eddb",
  "eddn",
  "edsm",
- "elite_journal",
+ "elite_journal 0.2.0",
  "galos_db",
  "indicatif",
  "itertools",
@@ -2894,8 +2906,8 @@ dependencies = [
  "async-std",
  "chrono",
  "dotenv",
- "elite_journal",
- "geozero",
+ "elite_journal 0.2.0",
+ "geozero 0.13.0",
  "ordered-float",
  "pathfinding",
  "sqlx",
@@ -2936,6 +2948,20 @@ dependencies = [
 
 [[package]]
 name = "geozero"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "153e8363d3cf965f18f87578e11577450df8ff123d4c2de5e9fb8128b61fe296"
+dependencies = [
+ "geo-types",
+ "geojson",
+ "log",
+ "serde_json",
+ "thiserror",
+ "wkt 0.10.3",
+]
+
+[[package]]
+name = "geozero"
 version = "0.13.0"
 source = "git+https://github.com/nixpulvis/geozero#6259e886e9545d6f06ef6d8ee687cada9c4090c9"
 dependencies = [
@@ -2946,7 +2972,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror",
- "wkt",
+ "wkt 0.11.0",
 ]
 
 [[package]]
@@ -5789,7 +5815,7 @@ dependencies = [
  "bevy_egui",
  "bevy_mod_picking",
  "bevy_panorbit_camera",
- "elite_journal",
+ "elite_journal 0.2.0",
  "galos_db",
 ]
 
@@ -7262,6 +7288,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68a9bda4691f099d435ad181000724da8e5899daa10713c2d432552b9ccd3a6f"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "wkt"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3c2252781f8927974e8ba6a67c965a759a2b88ea2b1825f6862426bbb1c8f41"
+dependencies = [
+ "geo-types",
+ "log",
+ "num-traits",
+ "thiserror",
 ]
 
 [[package]]
