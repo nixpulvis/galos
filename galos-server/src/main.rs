@@ -1,19 +1,19 @@
-use std::fmt::Display;
-use ordered_float::OrderedFloat;
-use itertools::Itertools;
 use askama::Template;
 use axum::{
     extract,
-    routing::get,
     http::StatusCode,
     response::{Html, IntoResponse, Response},
+    routing::get,
     Router,
 };
-use serde::Deserialize;
-use galos_db::Database;
-use galos_db::systems::System;
-use galos_db::stations::Station;
 use galos_db::bodies::Body;
+use galos_db::stations::Station;
+use galos_db::systems::System;
+use galos_db::Database;
+use itertools::Itertools;
+use ordered_float::OrderedFloat;
+use serde::Deserialize;
+use std::fmt::Display;
 
 #[tokio::main]
 async fn main() {
@@ -37,7 +37,10 @@ async fn main() {
 }
 
 fn table_data<T: Display>(option: &Option<T>) -> String {
-    option.as_ref().map(|o| o.to_string()).unwrap_or("---".into())
+    option
+        .as_ref()
+        .map(|o| o.to_string())
+        .unwrap_or("---".into())
 }
 
 #[derive(Template)]
@@ -84,7 +87,8 @@ struct RouteTemplate {
 struct HtmlTemplate<T>(T);
 
 impl<T> IntoResponse for HtmlTemplate<T>
-where T: Template,
+where
+    T: Template,
 {
     fn into_response(self) -> Response {
         match self.0.render() {
@@ -92,7 +96,8 @@ where T: Template,
             Err(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to render template. Error: {err}"),
-            ).into_response()
+            )
+                .into_response(),
         }
     }
 }
@@ -126,13 +131,15 @@ async fn systems(extract::Query(params): extract::Query<SystemsParams>) -> impl 
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch systems."),
-            ).into_response()
+            )
+                .into_response()
         }
     } else {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to load DB."),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
@@ -141,22 +148,31 @@ async fn system(extract::Path(address): extract::Path<i64>) -> impl IntoResponse
         if let Ok(system) = System::fetch(&db, address).await {
             let stations = Station::fetch_all(&db, address).await.unwrap_or_default();
             let bodies = Body::fetch_all(&db, address).await.unwrap_or_default();
-            HtmlTemplate(SystemTemplate { system, stations, bodies }).into_response()
+            HtmlTemplate(SystemTemplate {
+                system,
+                stations,
+                bodies,
+            })
+            .into_response()
         } else {
             (
                 StatusCode::NOT_FOUND,
                 format!("No system with that address found."),
-            ).into_response()
+            )
+                .into_response()
         }
     } else {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to load DB."),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
-async fn station(extract::Path((address, name)): extract::Path<(i64, String)>) -> impl IntoResponse {
+async fn station(
+    extract::Path((address, name)): extract::Path<(i64, String)>,
+) -> impl IntoResponse {
     if let Ok(db) = Database::new().await {
         if let Ok(station) = Station::fetch(&db, address, &name).await {
             let system = System::fetch(&db, station.system_address).await.unwrap();
@@ -165,13 +181,15 @@ async fn station(extract::Path((address, name)): extract::Path<(i64, String)>) -
             (
                 StatusCode::NOT_FOUND,
                 format!("No station with that address found."),
-            ).into_response()
+            )
+                .into_response()
         }
     } else {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to load DB."),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
@@ -184,19 +202,20 @@ async fn body(extract::Path((address, id)): extract::Path<(i64, i16)>) -> impl I
             (
                 StatusCode::NOT_FOUND,
                 format!("No body with that address found."),
-            ).into_response()
+            )
+                .into_response()
         }
     } else {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to load DB."),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
 async fn route(extract::Query(params): extract::Query<RouteParams>) -> impl IntoResponse {
     if let Ok(db) = Database::new().await {
-
         if let (Some(to), Some(from), Some(range)) = (params.to, params.from, params.range) {
             if let Ok(to) = System::fetch_by_name(&db, &to).await {
                 if let Ok(from) = System::fetch_by_name(&db, &from).await {
@@ -207,31 +226,36 @@ async fn route(extract::Query(params): extract::Query<RouteParams>) -> impl Into
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!("Failed to find route (try increasing the range)."),
-                        ).into_response()
+                        )
+                            .into_response()
                     }
                 } else {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("Failed to fetch from system."),
-                    ).into_response()
+                    )
+                        .into_response()
                 }
             } else {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Failed to fetch to system."),
-                ).into_response()
+                )
+                    .into_response()
             }
         } else {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Missing route params."),
-            ).into_response()
+            )
+                .into_response()
         }
     } else {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to load DB."),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 

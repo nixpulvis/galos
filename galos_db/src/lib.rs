@@ -48,9 +48,9 @@ impl Page {
 }
 
 pub mod articles;
-pub mod systems;
-pub mod stars;
 pub mod bodies;
 pub mod factions;
 pub mod markets;
+pub mod stars;
 pub mod stations;
+pub mod systems;

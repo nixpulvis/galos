@@ -1,5 +1,5 @@
-use crate::{Database, Error};
 use super::Body;
+use crate::{Database, Error};
 
 impl Body {
     pub async fn fetch(db: &Database, system_address: i64, id: i16) -> Result<Self, Error> {

@@ -1,7 +1,7 @@
-use crate::{Database, Error};
-use elite_journal::station::{LandingPads, EconomyShare, Service, StationType};
-use elite_journal::{Allegiance, Government};
 use super::Station;
+use crate::{Database, Error};
+use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
+use elite_journal::{Allegiance, Government};
 
 impl Station {
     pub async fn fetch(db: &Database, system_address: i64, name: &str) -> Result<Self, Error> {

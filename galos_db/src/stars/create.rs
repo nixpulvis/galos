@@ -1,7 +1,7 @@
+use super::Star;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::system::Star as JournalStar;
-use super::Star;
 
 impl Star {
     pub async fn from_journal(

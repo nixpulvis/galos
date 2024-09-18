@@ -1,7 +1,7 @@
+use super::System;
 use crate::{Database, Error};
 use elite_journal::prelude::*;
 use geozero::wkb;
-use super::System;
 
 impl System {
     pub async fn fetch(db: &Database, address: i64) -> Result<Self, Error> {
@@ -279,10 +279,7 @@ impl System {
             .collect())
     }
 
-    pub async fn fetch_faction(
-        db: &Database,
-        faction: &str,
-    ) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_faction(db: &Database, faction: &str) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT

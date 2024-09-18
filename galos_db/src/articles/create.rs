@@ -1,6 +1,6 @@
+use super::Article;
 use crate::{Database, Error};
 use sqlx::types::chrono::NaiveDate;
-use super::Article;
 
 impl Article {
     pub async fn create(

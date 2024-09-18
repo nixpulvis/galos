@@ -1,7 +1,7 @@
+use super::{Conflict, Faction, State, SystemFaction};
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::{faction::State as JournalState, prelude::*};
-use super::{Faction, SystemFaction, State, Conflict};
 
 impl Faction {
     pub async fn create(db: &Database, name: &str) -> Result<Self, Error> {

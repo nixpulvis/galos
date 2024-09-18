@@ -1,6 +1,6 @@
 //! A station which can be docked at within a system
 use chrono::{DateTime, Utc};
-use elite_journal::station::{LandingPads, EconomyShare, Service, StationType};
+use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
 #[derive(Debug, PartialEq)]

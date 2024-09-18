@@ -1,7 +1,7 @@
+use super::Body;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::body::Body as JournalBody;
-use super::Body;
 
 impl Body {
     pub async fn from_journal(

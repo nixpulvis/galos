@@ -1,19 +1,15 @@
-use std::collections::{HashSet, HashMap};
-use bevy::prelude::*;
+use crate::{camera::MoveCamera, search::Searched, Db};
 use bevy::pbr::NotShadowCaster;
-use bevy::render::mesh::{PrimitiveTopology};
+use bevy::prelude::*;
+use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssetUsages;
-use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::tasks::futures_lite::future;
-use bevy_panorbit_camera::PanOrbitCamera;
+use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy_mod_picking::prelude::*;
-use galos_db::systems::System as DbSystem;
+use bevy_panorbit_camera::PanOrbitCamera;
 use elite_journal::prelude::*;
-use crate::{
-    Db,
-    search::Searched,
-    camera::MoveCamera,
-};
+use galos_db::systems::System as DbSystem;
+use std::collections::{HashMap, HashSet};
 
 /// Represents a single fetch request
 //
@@ -37,7 +33,7 @@ const REGION_FACTOR: i32 = 10;
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource)]
 pub struct FetchTasks {
-    pub fetched: HashMap<FetchIndex, Task<Vec<DbSystem>>>
+    pub fetched: HashMap<FetchIndex, Task<Vec<DbSystem>>>,
 }
 
 /// A representation of the spawned systems
@@ -59,12 +55,7 @@ pub fn fetch(
     mut radius: ResMut<SpyglassRadius>,
 ) {
     if always_fetch.0 {
-        fetch_around_camera(
-            &camera_query,
-            &mut fetched,
-            &mut tasks,
-            &mut radius,
-            &db);
+        fetch_around_camera(&camera_query, &mut fetched, &mut tasks, &mut radius, &db);
     }
 
     for event in search_events.read() {
@@ -75,15 +66,11 @@ pub fn fetch(
             // you search for a system with AlwaysFetch(false) it may take you
             // to a part of empty space. Setting AlwaysFetch(true) will
             // populate it.
-            Searched::System { .. } => {},
+            Searched::System { .. } => {}
             Searched::Faction { name } => {
                 *always_fetch = AlwaysFetch(false);
-                fetch_faction(
-                    name.into(),
-                    &mut fetched,
-                    &mut tasks,
-                    &db);
-            },
+                fetch_faction(name.into(), &mut fetched, &mut tasks, &db);
+            }
             Searched::Route { start, end, range } => {
                 fetch_route(
                     start.into(),
@@ -91,7 +78,8 @@ pub fn fetch(
                     range.into(),
                     &mut fetched,
                     &mut tasks,
-                    &db);
+                    &db,
+                );
             }
         };
     }
@@ -120,19 +108,15 @@ fn fetch_around_camera(
     } else {
         FetchIndex::Region(center / scale, radius.0 as i32)
     };
-    if !fetched.0.contains(&region) &&
-       !tasks.fetched.contains_key(&region)
-    {
+    if !fetched.0.contains(&region) && !tasks.fetched.contains_key(&region) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let radius = radius.0;
         let task = task_pool.spawn(async move {
-            let cent = [
-                center.x as f64,
-                center.y as f64,
-                center.z as f64,
-            ];
-            DbSystem::fetch_in_range_of_point(&db, radius, cent).await.unwrap_or_default()
+            let cent = [center.x as f64, center.y as f64, center.z as f64];
+            DbSystem::fetch_in_range_of_point(&db, radius, cent)
+                .await
+                .unwrap_or_default()
         });
         fetched.0.insert(region.clone());
         tasks.fetched.insert(region, task);
@@ -150,7 +134,9 @@ fn fetch_faction(
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
-            DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
+            DbSystem::fetch_faction(&db, &name)
+                .await
+                .unwrap_or_default()
         });
         fetched.0.insert(index.clone());
         tasks.fetched.insert(index, task);
@@ -173,10 +159,10 @@ fn fetch_route(
             if let (Ok(a), Ok(b), Ok(r)) = (
                 DbSystem::fetch_by_name(&db, &start).await,
                 DbSystem::fetch_by_name(&db, &end).await,
-                range.parse::<f64>())
-            {
+                range.parse::<f64>(),
+            ) {
                 if let Some(route) = a.route_to(&db, &b, r) {
-                    return route.0
+                    return route.0;
                 }
             }
             vec![]
@@ -227,14 +213,16 @@ pub fn spawn(
                 &always_despawn,
                 &mut commands,
                 &mut meshes,
-                &mut materials);
+                &mut materials,
+            );
 
             match index {
-                FetchIndex::Faction(..) |
-                FetchIndex::Route(..) => {
+                FetchIndex::Faction(..) | FetchIndex::Route(..) => {
                     if let Some(system) = systems.first() {
                         let position = system_to_vec(&system);
-                        move_camera_events.send(MoveCamera { position: Some(position) });
+                        move_camera_events.send(MoveCamera {
+                            position: Some(position),
+                        });
                     }
                 }
                 _ => {}
@@ -247,8 +235,9 @@ pub fn spawn(
                         &route_query,
                         &mut commands,
                         &mut meshes,
-                        &mut materials);
-                },
+                        &mut materials,
+                    );
+                }
                 _ => {}
             }
         }
@@ -273,19 +262,21 @@ fn spawn_route(
         commands.entity(entity).despawn_recursive();
     }
 
-    commands.spawn((MaterialMeshBundle {
-        mesh: meshes.add(LineStrip {
-            points: systems.iter().map(system_to_vec).collect()
-        }),
-        transform: Transform::from_xyz(0., 0., 0.),
-        material: materials.add(StandardMaterial {
-            base_color: Color::srgba(1., 1., 1., 0.1),
-            alpha_mode: AlphaMode::Blend,
+    commands.spawn((
+        MaterialMeshBundle {
+            mesh: meshes.add(LineStrip {
+                points: systems.iter().map(system_to_vec).collect(),
+            }),
+            transform: Transform::from_xyz(0., 0., 0.),
+            material: materials.add(StandardMaterial {
+                base_color: Color::srgba(1., 1., 1., 0.1),
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    },
-    Route));
+        },
+        Route,
+    ));
 }
 
 #[derive(Component)]
@@ -315,45 +306,44 @@ fn spawn_systems(
     let materials = init_materials(material_assets);
 
     for system in systems {
-        commands.spawn((PbrBundle {
-            transform: Transform {
-                translation: Vec3::new(
-                    system.position.unwrap().x as f32,
-                    system.position.unwrap().y as f32,
-                    system.position.unwrap().z as f32,
-                ),
-                scale: Vec3::splat(1.),
+        commands.spawn((
+            PbrBundle {
+                transform: Transform {
+                    translation: Vec3::new(
+                        system.position.unwrap().x as f32,
+                        system.position.unwrap().y as f32,
+                        system.position.unwrap().z as f32,
+                    ),
+                    scale: Vec3::splat(1.),
+                    ..default()
+                },
+                // TODO: Use entries API to avoid unwrap.
+                mesh: mesh.clone(),
+                // TODO: Configure the material to be flatter when looking at allegiance,
+                // or more realistic when looking at star class. Remember to check
+                // partially overlapping systems.
+                material: materials[allegiance_color_idx(&system)].clone(),
                 ..default()
             },
-            // TODO: Use entries API to avoid unwrap.
-            mesh: mesh.clone(),
-            // TODO: Configure the material to be flatter when looking at allegiance,
-            // or more realistic when looking at star class. Remember to check
-            // partially overlapping systems.
-            material: materials[allegiance_color_idx(&system)].clone(),
-            ..default()
-        },
-        System {
-            address: system.address,
-            name: system.name.clone(),
-            population: system.population,
-            allegiance: system.allegiance,
-        },
-        NotShadowCaster,
-        PickableBundle::default(),
-
-        // TODO: toggle system info as well.
-        On::<Pointer<Click>>::send_event::<MoveCamera>(),
-
-        On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
-            // dbg!(_hover);
-            // TODO: Spawn system label.
-        }),
-
-        On::<Pointer<Out>>::target_commands_mut(|_hover, _target_commands| {
-            // dbg!(_hover);
-            // TODO: Despawn system label.
-        })));
+            System {
+                address: system.address,
+                name: system.name.clone(),
+                population: system.population,
+                allegiance: system.allegiance,
+            },
+            NotShadowCaster,
+            PickableBundle::default(),
+            // TODO: toggle system info as well.
+            On::<Pointer<Click>>::send_event::<MoveCamera>(),
+            On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
+                // dbg!(_hover);
+                // TODO: Spawn system label.
+            }),
+            On::<Pointer<Out>>::target_commands_mut(|_hover, _target_commands| {
+                // dbg!(_hover);
+                // TODO: Despawn system label.
+            }),
+        ));
     }
 }
 
@@ -365,13 +355,12 @@ pub fn scale_with_camera(
     mut set: ParamSet<(
         Query<(&mut Transform, &System)>,
         Query<&Transform, With<PanOrbitCamera>>,
-    )>
+    )>,
 ) {
     if !set.p0().is_empty() {
         let camera_translation = set.p1().single().translation;
         let pop_avg = if scale_population.0 {
-            set.p0().iter().map(|(_, s)| s.population).sum::<u64>() /
-            set.p0().iter().len() as u64
+            set.p0().iter().map(|(_, s)| s.population).sum::<u64>() / set.p0().iter().len() as u64
         } else {
             0
         };
@@ -394,36 +383,39 @@ fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
 
 fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardMaterial>> {
     let colors = vec![
-        Color::srgb(0., 1., 0.),     // Green
-        Color::srgb(0., 1., 1.),     // Cyan
-        Color::srgb(1., 0., 0.),     // Red
-        Color::srgb(1., 0.5, 0.),    // Orange
-        Color::srgb(1., 1., 0.),     // Yellow
-        Color::srgb(0., 0., 1.),     // Blue
-        Color::srgb(1., 0., 1.),     // Magenta
-        Color::srgb(0.1, 0.1, 0.1),  // Grey
+        Color::srgb(0., 1., 0.),    // Green
+        Color::srgb(0., 1., 1.),    // Cyan
+        Color::srgb(1., 0., 0.),    // Red
+        Color::srgb(1., 0.5, 0.),   // Orange
+        Color::srgb(1., 1., 0.),    // Yellow
+        Color::srgb(0., 0., 1.),    // Blue
+        Color::srgb(1., 0., 1.),    // Magenta
+        Color::srgb(0.1, 0.1, 0.1), // Grey
     ];
 
-    colors.into_iter().map(|color| {
-        assets.add(StandardMaterial {
-            base_color: color,
-            emissive: LinearRgba::from(color) * 50.,
-            ..default()
+    colors
+        .into_iter()
+        .map(|color| {
+            assets.add(StandardMaterial {
+                base_color: color,
+                emissive: LinearRgba::from(color) * 50.,
+                ..default()
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Maps system allegiance to a color for the sphere on the map.
 fn allegiance_color_idx(system: &DbSystem) -> usize {
     match system.allegiance {
-        Some(Allegiance::Alliance)         => 0,  // Green
-        Some(Allegiance::Empire)           => 1,  // Cyan
-        Some(Allegiance::Federation)       => 2,  // Red
-        Some(Allegiance::PilotsFederation) => 3,  // Orange
-        Some(Allegiance::Independent)      => 4,  // Yellow
-        Some(Allegiance::Guardian)         => 5,  // Blue
-        Some(Allegiance::Thargoid)         => 6,  // Magenta
-        _                                  => 7,  // Grey
+        Some(Allegiance::Alliance) => 0,         // Green
+        Some(Allegiance::Empire) => 1,           // Cyan
+        Some(Allegiance::Federation) => 2,       // Red
+        Some(Allegiance::PilotsFederation) => 3, // Orange
+        Some(Allegiance::Independent) => 4,      // Yellow
+        Some(Allegiance::Guardian) => 5,         // Blue
+        Some(Allegiance::Thargoid) => 6,         // Magenta
+        _ => 7,                                  // Grey
     }
 }
 

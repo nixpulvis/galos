@@ -1,7 +1,7 @@
-use bevy::prelude::*;
 use bevy::core_pipeline::bloom::BloomSettings;
-use bevy_panorbit_camera::PanOrbitCamera;
+use bevy::prelude::*;
 use bevy_mod_picking::prelude::*;
+use bevy_panorbit_camera::PanOrbitCamera;
 
 /// Sends the camera to be focused on `position`
 #[derive(Event, Debug)]
@@ -11,7 +11,9 @@ pub struct MoveCamera {
 
 impl From<ListenerInput<Pointer<Click>>> for MoveCamera {
     fn from(click: ListenerInput<Pointer<Click>>) -> Self {
-        MoveCamera { position: click.hit.position }
+        MoveCamera {
+            position: click.hit.position,
+        }
     }
 }
 
@@ -55,10 +57,7 @@ pub fn move_camera(
     }
 }
 
-pub fn keyboard(
-    mut query: Query<&mut PanOrbitCamera>,
-    keys: Res<ButtonInput<KeyCode>>,
-) {
+pub fn keyboard(mut query: Query<&mut PanOrbitCamera>, keys: Res<ButtonInput<KeyCode>>) {
     let mut camera = query.single_mut();
     const ZOOM_FACTOR: f32 = 50.;
 

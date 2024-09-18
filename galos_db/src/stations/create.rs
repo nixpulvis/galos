@@ -1,9 +1,9 @@
+use super::Station;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::station::Station as JournalStation;
-use elite_journal::station::{LandingPads, EconomyShare, Service, StationType};
+use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
-use super::Station;
 
 impl Station {
     pub async fn from_journal(

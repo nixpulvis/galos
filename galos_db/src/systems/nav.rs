@@ -1,3 +1,4 @@
+use super::System;
 use crate::Database;
 use async_std::task;
 use elite_journal::prelude::*;
@@ -5,7 +6,6 @@ use geozero::wkb;
 use ordered_float::OrderedFloat;
 use pathfinding::prelude::*;
 use std::str::FromStr;
-use super::System;
 
 impl System {
     pub fn neighbors(&self, db: &Database, range: f64) -> Vec<System> {

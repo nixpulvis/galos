@@ -2,12 +2,7 @@
 use async_std::task;
 #[cfg(unix)]
 use galos::Run;
-use galos_db::{
-    factions::Faction,
-    systems::System,
-    bodies::Body,
-    Database,
-};
+use galos_db::{bodies::Body, factions::Faction, systems::System, Database};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 use structopt::StructOpt;

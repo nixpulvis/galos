@@ -1,8 +1,8 @@
+use super::Market;
+use crate::systems::System;
+use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Market as JournalMarket;
-use crate::{Database, Error};
-use crate::systems::System;
-use super::Market;
 
 impl Market {
     pub async fn from_journal(

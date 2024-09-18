@@ -1,9 +1,9 @@
+use super::System;
 use crate::factions::{Conflict, Faction, SystemFaction};
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::{prelude::*, system::System as JournalSystem};
 use geozero::wkb;
-use super::System;
 
 impl System {
     pub async fn create(

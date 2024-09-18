@@ -1,6 +1,6 @@
+use super::{Faction, SystemFaction};
 use crate::{Database, Error};
 use elite_journal::{faction::State as JournalState, prelude::*};
-use super::{Faction, SystemFaction};
 
 impl Faction {
     pub async fn fetch(db: &Database, id: i32) -> Result<Self, Error> {
@@ -61,7 +61,6 @@ impl Faction {
             .collect())
     }
 }
-
 
 impl SystemFaction {
     pub async fn fetch(db: &Database, address: i64, id: u32) -> Result<Self, Error> {
