@@ -23,11 +23,14 @@ pub(crate) fn respawn(
 
         if d > 25.1 {
             if let Some(children) = children {
-                for &label_entity in children.iter() {
-                    if let Ok(child) = billboards.get(label_entity) {
+                for &billboard_entity in children.iter() {
+                    if let Ok(billboard_entity) =
+                        billboards.get(billboard_entity)
+                    {
                         commands
                             .entity(system_entity)
-                            .remove_children(&[child]);
+                            .remove_children(&[billboard_entity]);
+                        commands.entity(billboard_entity).despawn();
                     }
                 }
             }
