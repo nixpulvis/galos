@@ -71,11 +71,8 @@ impl System {
         user: &str,
         system: &JournalSystem,
     ) -> Result<(), Error> {
-        let position = system.pos.map(|p| Coordinate {
-            x: p.x,
-            y: p.y,
-            z: p.z,
-        });
+        let position =
+            system.pos.map(|p| Coordinate { x: p.x, y: p.y, z: p.z });
         sqlx::query!(
             r#"
             INSERT INTO systems
@@ -120,12 +117,19 @@ impl System {
 
         for faction in &system.factions {
             let faction_id = Faction::create(db, &faction.name).await?.id;
-            SystemFaction::from_journal(db, system.address, faction_id as u32, &faction, timestamp)
-                .await?;
+            SystemFaction::from_journal(
+                db,
+                system.address,
+                faction_id as u32,
+                &faction,
+                timestamp,
+            )
+            .await?;
         }
 
         for conflict in &system.conflicts {
-            Conflict::from_journal(db, system.address, &conflict, timestamp).await?;
+            Conflict::from_journal(db, system.address, &conflict, timestamp)
+                .await?;
         }
 
         Ok(())

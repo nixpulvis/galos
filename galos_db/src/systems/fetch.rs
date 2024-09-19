@@ -45,7 +45,10 @@ impl System {
     }
 
     // NOTE: Assumes systems are unique by name, which is currently untrue.
-    pub async fn fetch_by_name(db: &Database, name: &str) -> Result<Self, Error> {
+    pub async fn fetch_by_name(
+        db: &Database,
+        name: &str,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -85,7 +88,10 @@ impl System {
         })
     }
 
-    pub async fn fetch_like_name(db: &Database, name: &str) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_like_name(
+        db: &Database,
+        name: &str,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -279,7 +285,10 @@ impl System {
             .collect())
     }
 
-    pub async fn fetch_faction(db: &Database, faction: &str) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_faction(
+        db: &Database,
+        faction: &str,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT

@@ -51,8 +51,11 @@ impl Run for Cli {
                         )
                         .await;
                         match result {
-                            Ok(_) => bar.set_message(format!("[EDDB] {}", system.name)),
-                            Err(err) => bar.set_message(format!("[EDDB ERROR] {}", err)),
+                            Ok(_) => bar
+                                .set_message(format!("[EDDB] {}", system.name)),
+                            Err(err) => {
+                                bar.set_message(format!("[EDDB ERROR] {}", err))
+                            }
                         }
                     });
                 }

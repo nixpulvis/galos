@@ -1,7 +1,7 @@
 //! A 3D Galaxy Map
 
-use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
+use bevy::{prelude::*, window::WindowMode};
 use bevy_egui::EguiPlugin;
 use bevy_mod_picking::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
@@ -23,6 +23,8 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Galos - Starmap".into(),
+                mode: WindowMode::BorderlessFullscreen,
+                // resizable: false,
                 ..default()
             }),
             ..default()
@@ -41,9 +43,7 @@ fn main() {
         .insert_resource(systems::AlwaysFetch(true))
         .insert_resource(systems::AlwaysDespawn(true))
         .insert_resource(systems::Fetched(HashSet::new()))
-        .insert_resource(systems::FetchTasks {
-            fetched: HashMap::new(),
-        })
+        .insert_resource(systems::FetchTasks { fetched: HashMap::new() })
         .add_event::<camera::MoveCamera>()
         .add_event::<search::Searched>()
         .add_systems(Startup, camera::spawn_camera)

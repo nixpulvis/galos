@@ -15,13 +15,13 @@ impl Faction {
         .fetch_one(&db.pool)
         .await?;
 
-        Ok(Faction {
-            id: row.id,
-            name: row.name,
-        })
+        Ok(Faction { id: row.id, name: row.name })
     }
 
-    pub async fn fetch_by_name(db: &Database, name: &str) -> Result<Self, Error> {
+    pub async fn fetch_by_name(
+        db: &Database,
+        name: &str,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             "
             SELECT *
@@ -33,13 +33,13 @@ impl Faction {
         .fetch_one(&db.pool)
         .await?;
 
-        Ok(Faction {
-            id: row.id,
-            name: row.name,
-        })
+        Ok(Faction { id: row.id, name: row.name })
     }
 
-    pub async fn fetch_like_name(db: &Database, name: &str) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_like_name(
+        db: &Database,
+        name: &str,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT *
@@ -54,16 +54,17 @@ impl Faction {
 
         Ok(rows
             .into_iter()
-            .map(|row| Faction {
-                id: row.id,
-                name: row.name,
-            })
+            .map(|row| Faction { id: row.id, name: row.name })
             .collect())
     }
 }
 
 impl SystemFaction {
-    pub async fn fetch(db: &Database, address: i64, id: u32) -> Result<Self, Error> {
+    pub async fn fetch(
+        db: &Database,
+        address: i64,
+        id: u32,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             r#"
             SELECT

@@ -33,7 +33,11 @@ pub struct ApiCli {
 }
 
 impl Cli {
-    fn create_vec(db: &Database, updated_by: &str, systems: Vec<edsm::system::System>) {
+    fn create_vec(
+        db: &Database,
+        updated_by: &str,
+        systems: Vec<edsm::system::System>,
+    ) {
         let mut imported = 0;
         let mut errors = HashMap::new();
         let bar = ProgressBar::new(systems.len() as u64);
@@ -72,7 +76,9 @@ impl Cli {
                     bar.set_message(format!("[EDSM ERROR] {}", err));
                     errors
                         .entry(err.to_string())
-                        .and_modify(|ns: &mut Vec<String>| ns.push(system.name.clone()))
+                        .and_modify(|ns: &mut Vec<String>| {
+                            ns.push(system.name.clone())
+                        })
                         .or_insert(vec![system.name]);
                 }
             }
@@ -99,7 +105,8 @@ impl Run for Cli {
             }
             Cli::Api(ac) => {
                 let systems = if let Some(n) = ac.sphere {
-                    edsm::api::systems_sphere(&ac.name, Some(n as f64), None).unwrap()
+                    edsm::api::systems_sphere(&ac.name, Some(n as f64), None)
+                        .unwrap()
                 } else if let Some(n) = ac.cube {
                     edsm::api::systems_cube(&ac.name, Some(n as f64)).unwrap()
                 } else {

@@ -47,7 +47,8 @@ impl Run for Cli {
         spinner.set_style(
             ProgressStyle::default_spinner()
                 .tick_strings(&[
-                    ">>><<<", ">>--<<", ">----<", "------", ">----<", ">>--<<", ">>><<<",
+                    ">>><<<", ">>--<<", ">----<", "------", ">----<", ">>--<<",
+                    ">>><<<",
                 ])
                 .template("{spinner:.yellow} {msg}")
                 .unwrap(),
@@ -73,7 +74,9 @@ impl Run for Cli {
                         for system in systems {
                             print_system(&system);
 
-                            let bodies = Body::fetch_all(db, system.address).await.unwrap();
+                            let bodies = Body::fetch_all(db, system.address)
+                                .await
+                                .unwrap();
                             if !bodies.is_empty() {
                                 println!("\tbodies:");
                                 for body in bodies {
@@ -85,7 +88,8 @@ impl Run for Cli {
                 }
 
                 (None, Some(query)) => {
-                    let factions = Faction::fetch_like_name(db, &query).await.unwrap();
+                    let factions =
+                        Faction::fetch_like_name(db, &query).await.unwrap();
 
                     spinner.finish_and_clear();
 

@@ -19,10 +19,7 @@ impl Faction {
         .fetch_one(&db.pool)
         .await?;
 
-        Ok(Faction {
-            id: row.id,
-            name: row.name,
-        })
+        Ok(Faction { id: row.id, name: row.name })
     }
 }
 
@@ -163,7 +160,11 @@ impl State {
         })
     }
 
-    pub async fn clear(db: &Database, system_address: i64, faction_id: u32) -> Result<(), Error> {
+    pub async fn clear(
+        db: &Database,
+        system_address: i64,
+        faction_id: u32,
+    ) -> Result<(), Error> {
         sqlx::query!(
             r#"
             DELETE FROM system_faction_states
@@ -186,8 +187,10 @@ impl Conflict {
         conflict: &FactionConflict,
         timestamp: DateTime<Utc>,
     ) -> Result<Self, Error> {
-        let faction_1 = Faction::fetch_by_name(db, &conflict.faction_1.name).await?;
-        let faction_2 = Faction::fetch_by_name(db, &conflict.faction_2.name).await?;
+        let faction_1 =
+            Faction::fetch_by_name(db, &conflict.faction_1.name).await?;
+        let faction_2 =
+            Faction::fetch_by_name(db, &conflict.faction_2.name).await?;
 
         let row = sqlx::query!(
             r#"

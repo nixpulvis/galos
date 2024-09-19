@@ -56,7 +56,10 @@ impl System {
 
     pub fn distance(&self, other: &System) -> f64 {
         if let (Some(p1), Some(p2)) = (self.position, other.position) {
-            ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2) + (p2.z - p1.z).powi(2)).sqrt()
+            ((p2.x - p1.x).powi(2)
+                + (p2.y - p1.y).powi(2)
+                + (p2.z - p1.z).powi(2))
+            .sqrt()
         } else {
             0.
         }
@@ -69,14 +72,13 @@ impl System {
         range: f64,
     ) -> Option<(Vec<Self>, OrderedFloat<f64>)> {
         let successors = |s: &System| {
-            s.neighbors(db, range)
-                .into_iter()
-                .map(|s| (s, OrderedFloat(1.)))
+            s.neighbors(db, range).into_iter().map(|s| (s, OrderedFloat(1.)))
         };
 
         // Making the heuristic much larger than the successor's jump cost makes things run
         // faster, but is not optimal...
-        let heuristic = |s: &System| OrderedFloat((s.distance(end) / range).ceil());
+        let heuristic =
+            |s: &System| OrderedFloat((s.distance(end) / range).ceil());
 
         let success = |s: &System| s == end;
 

@@ -55,7 +55,13 @@ pub fn fetch(
     mut radius: ResMut<SpyglassRadius>,
 ) {
     if always_fetch.0 {
-        fetch_around_camera(&camera_query, &mut fetched, &mut tasks, &mut radius, &db);
+        fetch_around_camera(
+            &camera_query,
+            &mut fetched,
+            &mut tasks,
+            &mut radius,
+            &db,
+        );
     }
 
     for event in search_events.read() {
@@ -134,9 +140,7 @@ fn fetch_faction(
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
-            DbSystem::fetch_faction(&db, &name)
-                .await
-                .unwrap_or_default()
+            DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
         });
         fetched.0.insert(index.clone());
         tasks.fetched.insert(index, task);
@@ -220,9 +224,8 @@ pub fn spawn(
                 FetchIndex::Faction(..) | FetchIndex::Route(..) => {
                     if let Some(system) = systems.first() {
                         let position = system_to_vec(&system);
-                        move_camera_events.send(MoveCamera {
-                            position: Some(position),
-                        });
+                        move_camera_events
+                            .send(MoveCamera { position: Some(position) });
                     }
                 }
                 _ => {}
@@ -335,14 +338,18 @@ fn spawn_systems(
             PickableBundle::default(),
             // TODO: toggle system info as well.
             On::<Pointer<Click>>::send_event::<MoveCamera>(),
-            On::<Pointer<Over>>::target_commands_mut(|_hover, _target_commands| {
-                // dbg!(_hover);
-                // TODO: Spawn system label.
-            }),
-            On::<Pointer<Out>>::target_commands_mut(|_hover, _target_commands| {
-                // dbg!(_hover);
-                // TODO: Despawn system label.
-            }),
+            On::<Pointer<Over>>::target_commands_mut(
+                |_hover, _target_commands| {
+                    // dbg!(_hover);
+                    // TODO: Spawn system label.
+                },
+            ),
+            On::<Pointer<Out>>::target_commands_mut(
+                |_hover, _target_commands| {
+                    // dbg!(_hover);
+                    // TODO: Despawn system label.
+                },
+            ),
         ));
     }
 }
@@ -351,7 +358,7 @@ fn spawn_systems(
 pub struct ScalePopulation(pub bool);
 
 pub fn scale_with_camera(
-    mut scale_population: ResMut<ScalePopulation>,
+    scale_population: Res<ScalePopulation>,
     mut set: ParamSet<(
         Query<(&mut Transform, &System)>,
         Query<&Transform, With<PanOrbitCamera>>,
@@ -360,17 +367,20 @@ pub fn scale_with_camera(
     if !set.p0().is_empty() {
         let camera_translation = set.p1().single().translation;
         let pop_avg = if scale_population.0 {
-            set.p0().iter().map(|(_, s)| s.population).sum::<u64>() / set.p0().iter().len() as u64
+            // TODO: This is *very* slow and should be precomputed when the set of systems changes.
+            set.p0().iter().map(|(_, s)| s.population).sum::<u64>()
+                / set.p0().iter().len() as u64
         } else {
             0
         };
 
         for (mut system_transform, system) in set.p0().iter_mut() {
-            let dist = camera_translation.distance(system_transform.translation);
+            let dist =
+                camera_translation.distance(system_transform.translation);
             let mut scale = 4e-4 * dist + 8.5e-2;
             if scale_population.0 {
                 let pop_factor = system.population as f32 / pop_avg as f32;
-                scale *= 0.5 * pop_factor.ln();
+                scale *= 0.2 * pop_factor.ln();
             }
             system_transform.scale = Vec3::splat(scale);
         }
@@ -381,16 +391,18 @@ fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
     assets.add(Sphere::new(1.).mesh().ico(3).unwrap())
 }
 
-fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardMaterial>> {
+fn init_materials(
+    assets: &mut Assets<StandardMaterial>,
+) -> Vec<Handle<StandardMaterial>> {
     let colors = vec![
-        Color::srgb(0., 1., 0.),    // Green
-        Color::srgb(0., 1., 1.),    // Cyan
-        Color::srgb(1., 0., 0.),    // Red
-        Color::srgb(1., 0.5, 0.),   // Orange
-        Color::srgb(1., 1., 0.),    // Yellow
-        Color::srgb(0., 0., 1.),    // Blue
-        Color::srgb(1., 0., 1.),    // Magenta
-        Color::srgb(0.1, 0.1, 0.1), // Grey
+        Color::srgba(0., 1., 0., 0.4),    // Green
+        Color::srgba(0., 1., 1., 0.4),    // Cyan
+        Color::srgba(1., 0., 0., 0.4),    // Red
+        Color::srgba(1., 0.5, 0., 0.4),   // Orange
+        Color::srgba(1., 1., 0., 0.4),    // Yellow
+        Color::srgba(0., 0., 1., 0.4),    // Blue
+        Color::srgba(1., 0., 1., 0.4),    // Magenta
+        Color::srgba(0.1, 0.1, 0.1, 0.1), // Grey
     ];
 
     colors
@@ -398,7 +410,8 @@ fn init_materials(assets: &mut Assets<StandardMaterial>) -> Vec<Handle<StandardM
         .map(|color| {
             assets.add(StandardMaterial {
                 base_color: color,
-                emissive: LinearRgba::from(color) * 50.,
+                alpha_mode: AlphaMode::Blend,
+                emissive: LinearRgba::from(color.with_alpha(1.0)) * 10.,
                 ..default()
             })
         })

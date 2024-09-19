@@ -13,7 +13,9 @@ mod journal;
 pub enum Cli {
     #[structopt(about = "Import local journal files")]
     Journal(journal::Cli),
-    #[structopt(about = "Subscribes to EDDN to continuously sync from incoming events")]
+    #[structopt(
+        about = "Subscribes to EDDN to continuously sync from incoming events"
+    )]
     Eddn(eddn::Cli),
     #[structopt(about = "Sync from EDSM's nightly dumps")]
     Edsm(edsm::Cli),

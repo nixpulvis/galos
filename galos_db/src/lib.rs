@@ -14,10 +14,8 @@ impl Database {
         dotenv::dotenv()?;
         let url = env::var("DATABASE_URL")?;
 
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect(&url)
-            .await?;
+        let pool =
+            PgPoolOptions::new().max_connections(5).connect(&url).await?;
 
         Ok(Database { pool })
     }
@@ -40,10 +38,7 @@ impl Page {
     }
 
     pub fn turn(&self, n: i64) -> Self {
-        Page {
-            limit: self.limit,
-            offset: self.offset + n,
-        }
+        Page { limit: self.limit, offset: self.offset + n }
     }
 }
 

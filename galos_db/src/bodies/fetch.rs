@@ -2,7 +2,11 @@ use super::Body;
 use crate::{Database, Error};
 
 impl Body {
-    pub async fn fetch(db: &Database, system_address: i64, id: i16) -> Result<Self, Error> {
+    pub async fn fetch(
+        db: &Database,
+        system_address: i64,
+        id: i16,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             "
             SELECT *
@@ -48,7 +52,10 @@ impl Body {
         })
     }
 
-    pub async fn fetch_all(db: &Database, system_address: i64) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_all(
+        db: &Database,
+        system_address: i64,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT *
@@ -146,7 +153,10 @@ impl Body {
         })
     }
 
-    pub async fn fetch_like_name(db: &Database, name: &str) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_like_name(
+        db: &Database,
+        name: &str,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT *

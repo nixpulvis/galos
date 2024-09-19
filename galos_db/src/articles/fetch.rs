@@ -23,7 +23,10 @@ impl Article {
         })
     }
 
-    pub async fn fetch_all(db: &Database, page: Page) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_all(
+        db: &Database,
+        page: Page,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             "
             SELECT *

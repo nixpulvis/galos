@@ -4,7 +4,11 @@ use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
 impl Station {
-    pub async fn fetch(db: &Database, system_address: i64, name: &str) -> Result<Self, Error> {
+    pub async fn fetch(
+        db: &Database,
+        system_address: i64,
+        name: &str,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -47,7 +51,10 @@ impl Station {
         })
     }
 
-    pub async fn fetch_all(db: &Database, system_address: i64) -> Result<Vec<Self>, Error> {
+    pub async fn fetch_all(
+        db: &Database,
+        system_address: i64,
+    ) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
             r#"
             SELECT

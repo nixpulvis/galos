@@ -8,7 +8,8 @@ use elite_journal::entry::route::NavRoute;
 use elite_journal::entry::{Entry, Event};
 use elite_journal::system::System as JournalSystem;
 use galos_db::{
-    bodies::Body, markets::Market, stars::Star, stations::Station, systems::System, Database,
+    bodies::Body, markets::Market, stars::Star, stations::Station,
+    systems::System, Database,
 };
 use structopt::StructOpt;
 
@@ -24,7 +25,11 @@ impl Run for Cli {
     fn run(&self, db: &Database) {
         for result in subscribe(&self.url) {
             if let Ok(envelop) = result {
-                process_message(db, envelop.message, envelop.header.uploader_id);
+                process_message(
+                    db,
+                    envelop.message,
+                    envelop.header.uploader_id,
+                );
             } else if let Err(err) = result {
                 println!("{}", err);
             }
@@ -37,9 +42,19 @@ fn process_message(db: &Database, message: Message, user: String) {
         match message {
             Message::Journal(entry) => match entry.event {
                 Event::Scan(scan) => {
-                    let mut system = JournalSystem::new(scan.system_address, &scan.star_system);
+                    let mut system = JournalSystem::new(
+                        scan.system_address,
+                        &scan.star_system,
+                    );
                     system.pos = Some(scan.star_pos);
-                    match System::from_journal(db, entry.timestamp, &user, &system).await {
+                    match System::from_journal(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &system,
+                    )
+                    .await
+                    {
                         Ok(_) => println!("[EDDN] <SCN:sys> {}", system.name),
                         Err(err) => eprintln!("[EDDN] <SCN:sys> {}", err),
                     }
@@ -55,8 +70,12 @@ fn process_message(db: &Database, message: Message, user: String) {
                             )
                             .await
                             {
-                                Ok(_) => println!("[EDDN] <SCN:star> {}", star.name),
-                                Err(err) => eprintln!("[EDDN] <SCN:star> {}", err),
+                                Ok(_) => {
+                                    println!("[EDDN] <SCN:star> {}", star.name)
+                                }
+                                Err(err) => {
+                                    eprintln!("[EDDN] <SCN:star> {}", err)
+                                }
                             }
                         }
                         ScanTarget::Body(body) => {
@@ -69,14 +88,25 @@ fn process_message(db: &Database, message: Message, user: String) {
                             )
                             .await
                             {
-                                Ok(_) => println!("[EDDN] <SCN:bod> {}", body.name),
-                                Err(err) => eprintln!("[EDDN] <SCN:bod> {}", err),
+                                Ok(_) => {
+                                    println!("[EDDN] <SCN:bod> {}", body.name)
+                                }
+                                Err(err) => {
+                                    eprintln!("[EDDN] <SCN:bod> {}", err)
+                                }
                             }
                         }
                     }
                 }
                 Event::Location(e) => {
-                    match System::from_journal(db, entry.timestamp, &user, &e.system).await {
+                    match System::from_journal(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &e.system,
+                    )
+                    .await
+                    {
                         Ok(_) => println!("[EDDN] <LOC:sys> {}", e.system.name),
                         Err(err) => eprintln!("[EDDN] <LOC:sys> {}", err),
                     }
@@ -106,14 +136,24 @@ fn process_message(db: &Database, message: Message, user: String) {
                         )
                         .await
                         {
-                            Ok(_) => println!("[EDDN] <LOC:sta> {}", station.name),
+                            Ok(_) => {
+                                println!("[EDDN] <LOC:sta> {}", station.name)
+                            }
                             Err(err) => eprintln!("[EDDN] <LOC:sta> {}", err),
                         }
                     }
                 }
                 Event::Docked(e) => {
-                    let system = JournalSystem::new(e.system_address, &e.system_name);
-                    match System::from_journal(db, entry.timestamp, &user, &system).await {
+                    let system =
+                        JournalSystem::new(e.system_address, &e.system_name);
+                    match System::from_journal(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &system,
+                    )
+                    .await
+                    {
                         Ok(_) => println!("[EDDN] <DOC:sys> {}", system.name),
                         Err(err) => eprintln!("[EDDN] <DOC:sys> {}", err),
                     }
@@ -127,12 +167,21 @@ fn process_message(db: &Database, message: Message, user: String) {
                     )
                     .await
                     {
-                        Ok(_) => println!("[EDDN] <DOC:sta> {}", e.station.name),
+                        Ok(_) => {
+                            println!("[EDDN] <DOC:sta> {}", e.station.name)
+                        }
                         Err(err) => eprintln!("[EDDN] <DOC:sta> {}", err),
                     }
                 }
                 Event::FsdJump(e) => {
-                    match System::from_journal(db, entry.timestamp, &user, &e.system).await {
+                    match System::from_journal(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &e.system,
+                    )
+                    .await
+                    {
                         Ok(_) => println!("[EDDN] <FSD:sys> {}", e.system.name),
                         Err(err) => eprintln!("[EDDN] <FSD:sys> {}", err),
                     }
@@ -144,8 +193,17 @@ fn process_message(db: &Database, message: Message, user: String) {
                             &destination.star_system,
                         );
                         system.pos = Some(destination.star_pos);
-                        match System::from_journal(db, entry.timestamp, &user, &system).await {
-                            Ok(_) => println!("[EDDN] <ROU:sys> {}", system.name),
+                        match System::from_journal(
+                            db,
+                            entry.timestamp,
+                            &user,
+                            &system,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                println!("[EDDN] <ROU:sys> {}", system.name)
+                            }
                             Err(err) => eprintln!("[EDDN] <ROU:sys> {}", err),
                         }
                     }
@@ -153,10 +211,7 @@ fn process_message(db: &Database, message: Message, user: String) {
                 _ => {}
             },
             Message::Commodity(
-                ref e @ Entry {
-                    event: ref m @ JournalMarket { .. },
-                    ..
-                },
+                ref e @ Entry { event: ref m @ JournalMarket { .. }, .. },
             ) => match Market::from_journal(db, e.timestamp, &m).await {
                 Ok(_) => println!("[EDDN] <MKT:mkt> {}", m.station_name),
                 Err(err) => eprintln!("[EDDN] <MKT:mkt> {}", err),

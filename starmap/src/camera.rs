@@ -11,9 +11,7 @@ pub struct MoveCamera {
 
 impl From<ListenerInput<Pointer<Click>>> for MoveCamera {
     fn from(click: ListenerInput<Pointer<Click>>) -> Self {
-        MoveCamera {
-            position: click.hit.position,
-        }
+        MoveCamera { position: click.hit.position }
     }
 }
 
@@ -22,10 +20,7 @@ pub fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
-            camera: Camera {
-                hdr: true,
-                ..default()
-            },
+            camera: Camera { hdr: true, ..default() },
             ..default()
         },
         PanOrbitCamera {
@@ -57,7 +52,10 @@ pub fn move_camera(
     }
 }
 
-pub fn keyboard(mut query: Query<&mut PanOrbitCamera>, keys: Res<ButtonInput<KeyCode>>) {
+pub fn keyboard(
+    mut query: Query<&mut PanOrbitCamera>,
+    keys: Res<ButtonInput<KeyCode>>,
+) {
     let mut camera = query.single_mut();
     const ZOOM_FACTOR: f32 = 50.;
 

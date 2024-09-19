@@ -11,7 +11,7 @@ pub struct Station {
     pub dist_from_star_ls: Option<f64>,
     pub market_id: Option<i64>,
     pub landing_pads: Option<LandingPads>,
-    pub faction: Option<String>,        // TODO: Faction type?
+    pub faction: Option<String>, // TODO: Faction type?
     pub government: Option<Government>, // TODO: Government type?
     pub allegiance: Option<Allegiance>,
     pub services: Option<Vec<Service>>,
