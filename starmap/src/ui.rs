@@ -1,5 +1,5 @@
 use crate::search::Searched;
-use crate::systems::{ColorBy, ScalePopulation, Spyglass, View};
+use crate::systems::{ColorBy, ScalePopulation, ShowNames, Spyglass, View};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
@@ -12,6 +12,7 @@ pub fn settings(
     mut view: ResMut<View>,
     mut color_by: ResMut<ColorBy>,
     mut population_scale: ResMut<ScalePopulation>,
+    mut show_names: ResMut<ShowNames>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
         // TODO: We really need to figure out how to trigger a re-fetch after
@@ -54,6 +55,8 @@ pub fn settings(
                 }
                 View::Stars => {}
             }
+
+            ui.checkbox(&mut show_names.0, "Show System Names");
         });
     }
 }
