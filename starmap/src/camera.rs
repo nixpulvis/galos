@@ -46,7 +46,7 @@ pub fn move_camera(
     for event in camera_events.read() {
         if let Some(position) = event.position {
             let mut camera = query.single_mut();
-            camera.pan_smoothness = 0.85;
+            camera.pan_smoothness = 0.6;
             camera.target_focus = position;
         }
     }
