@@ -13,24 +13,26 @@ itertools = "*"
 indicatif = "*"
 chrono = "*"
 
+eddb = { path = "./eddb" }
+eddn = { path = "./eddn" }
+edsm     = { path = "./edsm" }
+galos_db = { path = "./galos_db" }
+elite_journal = { path = "./elite_journal" }
+
 [target.'cfg(unix)'.dependencies]
 prettytable-rs = "*"
 termion = "*"
 tui = "*"
 
-# Subcomponents of Galos.
-galos_db      = { path = 'galos_db' }
-
-# Our open source crates.
-# elite_dat = { path = './elite_dat' }
-elite_journal = { path = "./elite_journal" }
-eddn          = { path = "./eddn" }
-eddb          = { path = "./eddb" }
-edsm          = { path = "./edsm" }
-
 [patch.crates-io]
-elite_journal = { path = "./elite_journal" }
+# elite_dat     = { path = './elite_dat' }
+eddb          = { path = "./eddb" }
 eddn          = { path = "./eddn" }
+edsm          = { path = "./edsm" }
+elite_journal = { path = "./elite_journal" }
+
+# TODO
+geozero = { git = "https://github.com/nixpulvis/geozero" }
 
 [workspace]
 members = [
