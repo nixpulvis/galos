@@ -15,10 +15,6 @@ pub fn settings(
     mut show_names: ResMut<ShowNames>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
-        // TODO: We really need to figure out how to trigger a re-fetch after
-        // these settings change in a clean way.
-        // I suspect I'll make a new SettingsChanged event or something, but
-        // bevy Observers may also help, I just need to learn about them.
         egui::Window::new("Settings").fixed_size([150., 0.]).show(ctx, |ui| {
             ui.checkbox(&mut spyglass.fetch, "Always Fetch Systems");
             ui.add(

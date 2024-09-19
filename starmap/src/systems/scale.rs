@@ -6,7 +6,8 @@ use bevy_panorbit_camera::PanOrbitCamera;
 pub enum View {
     // #[default]
     Systems,
-    Stars, // TODO: bodies?
+    Stars,
+    // TODO(#44): Bodies
 }
 
 #[derive(Resource, Debug)]
@@ -22,7 +23,8 @@ pub fn scale_systems(
     if !set.p0().is_empty() {
         let camera_translation = set.p1().single().translation;
         let pop_avg = if scale_population.0 {
-            // TODO: This is *very* slow and should be precomputed when the set of systems changes.
+            // TODO(#45): This is *very* slow and should be precomputed when
+            // the set of systems changes.
             set.p0().iter().map(|(_, s)| s.population).sum::<u64>()
                 / set.p0().iter().len() as u64
         } else {
@@ -31,7 +33,7 @@ pub fn scale_systems(
 
         // The goal is to avoid fading out any stars, but scale them as the
         // camera moves further away from them.
-        // TODO: We should still change rgba color/emmisivity as needed.
+        // TODO(#46): We should still change rgba color/emmisivity as needed.
         for (mut system_transform, system) in set.p0().iter_mut() {
             let dist =
                 camera_translation.distance(system_transform.translation);
@@ -47,7 +49,7 @@ pub fn scale_systems(
 
 pub fn scale_stars(mut query: Query<(&mut Transform, &System)>) {
     if !query.is_empty() {
-        // TODO: Change rgba color/emmisivity. The goal is to fade out to
+        // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
         // transparent when they are too far away.
         for (mut system_transform, _system) in query.iter_mut() {
             system_transform.scale = Vec3::splat(1e-2);

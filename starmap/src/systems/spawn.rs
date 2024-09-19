@@ -81,7 +81,7 @@ pub fn spawn(
         retain
     });
 
-    // TODO: despawn stuff...
+    // TODO(#43): despawn stuff...
 }
 
 /// Generate all the star system entities.
@@ -110,7 +110,7 @@ pub(crate) fn spawn_systems(
             ColorBy::Security => security_color_idx(&new_system),
         };
         if let Some(_enitity) = existing_systems.remove(&new_system.address) {
-            // TODO: update
+            // TODO(#42): update
         } else {
             commands
                 .spawn((
@@ -192,7 +192,7 @@ pub fn update(
         }
     }
 
-    // TODO: update ColorBy
+    // TODOi(#42): update ColorBy
 }
 
 fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {

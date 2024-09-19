@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 // TODO: Put region math inside custom Hash impl?
 // TODO: once we have a hash impl let's save f64 instead of String for route
 // range.
-// TODO: fetched regions should be cubes with `region_size` side length, they
+// TODO(#43): fetched regions should be cubes with `region_size` side length, they
 // are currently spheres with `region_size` radius.
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub enum FetchIndex {
