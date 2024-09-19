@@ -1,7 +1,7 @@
 use crate::search::Searched;
 use crate::systems::{
     AlwaysDespawn, AlwaysFetch, Fetched, ScalePopulation, SpyglassRadius,
-    System,
+    System, View,
 };
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
@@ -14,6 +14,7 @@ pub fn settings(
     mut commands: Commands,
     mut contexts: EguiContexts,
     mut radius: ResMut<SpyglassRadius>,
+    mut view: ResMut<View>,
     mut population_scale: ResMut<ScalePopulation>,
     mut always_despawn: ResMut<AlwaysDespawn>,
     mut always_fetch: ResMut<AlwaysFetch>,
@@ -43,7 +44,17 @@ pub fn settings(
                 }
             }
 
-            ui.checkbox(&mut population_scale.0, "Scale w/ Population");
+            ui.radio_value(&mut *view, View::Systems, "Systems View");
+            ui.radio_value(&mut *view, View::Stars, "Stars View");
+
+            ui.separator();
+
+            match *view {
+                View::Systems => {
+                    ui.checkbox(&mut population_scale.0, "Scale w/ Population");
+                }
+                View::Stars => {}
+            }
         });
     }
 }

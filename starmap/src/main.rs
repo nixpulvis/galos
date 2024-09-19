@@ -38,6 +38,7 @@ fn main() {
             brightness: 1000.0,
         })
         .insert_resource(Db(db))
+        .insert_resource(systems::View::Systems)
         .insert_resource(systems::ScalePopulation(false))
         .insert_resource(systems::SpyglassRadius(50.))
         .insert_resource(systems::AlwaysFetch(true))
@@ -51,7 +52,18 @@ fn main() {
         .add_systems(Update, camera::keyboard)
         .add_systems(Update, systems::fetch)
         .add_systems(Update, systems::spawn.after(camera::move_camera))
-        .add_systems(Update, systems::scale_with_camera.after(systems::spawn))
+        .add_systems(
+            Update,
+            systems::scale_systems
+                .after(systems::spawn)
+                .run_if(resource_equals(systems::View::Systems)),
+        )
+        .add_systems(
+            Update,
+            systems::scale_stars
+                .after(systems::spawn)
+                .run_if(resource_equals(systems::View::Stars)),
+        )
         .add_systems(Update, ui::settings)
         .add_systems(Update, ui::search.after(ui::settings))
         .add_systems(Update, ui::route.after(ui::search))

@@ -354,10 +354,17 @@ fn spawn_systems(
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Debug, PartialEq)]
+pub enum View {
+    // #[default]
+    Systems,
+    Stars, // TODO: bodies?
+}
+
+#[derive(Resource, Debug)]
 pub struct ScalePopulation(pub bool);
 
-pub fn scale_with_camera(
+pub fn scale_systems(
     scale_population: Res<ScalePopulation>,
     mut set: ParamSet<(
         Query<(&mut Transform, &System)>,
@@ -374,6 +381,9 @@ pub fn scale_with_camera(
             0
         };
 
+        // The goal is to avoid fading out any stars, but scale them as the
+        // camera moves further away from them.
+        // TODO: We should still change rgba color/emmisivity as needed.
         for (mut system_transform, system) in set.p0().iter_mut() {
             let dist =
                 camera_translation.distance(system_transform.translation);
@@ -383,6 +393,16 @@ pub fn scale_with_camera(
                 scale *= 0.2 * pop_factor.ln();
             }
             system_transform.scale = Vec3::splat(scale);
+        }
+    }
+}
+
+pub fn scale_stars(mut query: Query<(&mut Transform, &System)>) {
+    if !query.is_empty() {
+        // TODO: Change rgba color/emmisivity. The goal is to fade out to
+        // transparent when they are too far away.
+        for (mut system_transform, system) in query.iter_mut() {
+            system_transform.scale = Vec3::splat(1e-2);
         }
     }
 }
