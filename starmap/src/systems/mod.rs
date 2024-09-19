@@ -19,6 +19,8 @@ pub use self::scale::*;
 mod spawn;
 pub use self::spawn::*;
 
+pub(crate) mod labels;
+
 mod route;
 pub use self::route::*;
 

@@ -104,7 +104,6 @@ pub(crate) fn spawn_systems(
 
     let mesh = init_meshes(mesh_asset);
     let materials = init_materials(material_assets);
-    let font = asset_server.load("neuropolitical.otf");
 
     for new_system in new_systems {
         let color_idx = match color_by.deref() {
@@ -115,92 +114,49 @@ pub(crate) fn spawn_systems(
         if let Some(_enitity) = existing_systems.remove(&new_system.address) {
             // TODO(#42): update
         } else {
-            commands
-                .spawn((
-                    PbrBundle {
-                        transform: Transform {
-                            translation: Vec3::new(
-                                new_system.position.unwrap().x as f32,
-                                new_system.position.unwrap().y as f32,
-                                new_system.position.unwrap().z as f32,
-                            ),
-                            scale: Vec3::splat(1.),
-                            ..default()
-                        },
-                        mesh: mesh.clone(),
-                        material: materials[color_idx].clone(),
+            commands.spawn((
+                PbrBundle {
+                    transform: Transform {
+                        translation: Vec3::new(
+                            new_system.position.unwrap().x as f32,
+                            new_system.position.unwrap().y as f32,
+                            new_system.position.unwrap().z as f32,
+                        ),
+                        scale: Vec3::splat(1.),
                         ..default()
                     },
-                    System {
-                        address: new_system.address,
-                        name: new_system.name.clone(),
-                        population: new_system.population,
-                        allegiance: new_system.allegiance,
+                    mesh: mesh.clone(),
+                    material: materials[color_idx].clone(),
+                    ..default()
+                },
+                System {
+                    address: new_system.address,
+                    name: new_system.name.clone(),
+                    population: new_system.population,
+                    allegiance: new_system.allegiance,
+                },
+                NotShadowCaster,
+                PickableBundle::default(),
+                // TODO: toggle system info as well.
+                On::<Pointer<Click>>::send_event::<MoveCamera>(),
+                On::<Pointer<Over>>::target_commands_mut(
+                    |_hover, _target_commands| {
+                        // dbg!(_hover);
+                        // TODO: Spawn system label.
                     },
-                    NotShadowCaster,
-                    PickableBundle::default(),
-                    // TODO: toggle system info as well.
-                    On::<Pointer<Click>>::send_event::<MoveCamera>(),
-                    On::<Pointer<Over>>::target_commands_mut(
-                        |_hover, _target_commands| {
-                            // dbg!(_hover);
-                            // TODO: Spawn system label.
-                        },
-                    ),
-                    On::<Pointer<Out>>::target_commands_mut(
-                        |_hover, _target_commands| {
-                            // dbg!(_hover);
-                            // TODO: Despawn system label.
-                        },
-                    ),
-                ))
-                .with_children(|parent| {
-                    let mut billboard = parent.spawn((
-                        BillboardTextBundle {
-                            transform: Transform::from_scale(Vec3::splat(0.01))
-                                .with_translation(Vec3::new(5., 0., 0.)),
-                            text: Text::from_section(
-                                new_system.name.clone(),
-                                TextStyle {
-                                    font_size: 64.0,
-                                    font: font.clone(),
-                                    color: Color::WHITE,
-                                },
-                            )
-                            .with_justify(JustifyText::Left),
-                            ..default()
-                        },
-                        BillboardLockAxis::default(),
-                    ));
-
-                    if !show_names.0 {
-                        billboard.insert(Visibility::Hidden);
-                    }
-                });
+                ),
+                On::<Pointer<Out>>::target_commands_mut(
+                    |_hover, _target_commands| {
+                        // dbg!(_hover);
+                        // TODO: Despawn system label.
+                    },
+                ),
+            ));
         }
     }
 }
 
-/// Checks for updated resources and updates the systems.
-pub fn update(
-    systems_query: Query<(&System, &Children)>,
-    show_names: Res<ShowNames>,
-    mut commands: Commands,
-) {
-    if show_names.is_changed() {
-        for (_, children) in systems_query.iter() {
-            for &child in children.iter() {
-                if show_names.0 {
-                    commands.entity(child).insert(Visibility::Visible);
-                } else {
-                    commands.entity(child).insert(Visibility::Hidden);
-                }
-            }
-        }
-    }
-
-    // TODOi(#42): update ColorBy
-}
+// TODO(#42): update ColorBy
 
 #[derive(Event)]
 pub struct Despawn;
