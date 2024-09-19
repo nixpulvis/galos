@@ -27,36 +27,44 @@ pub fn settings(
                     .text("Radius"),
             );
             // ui.checkbox(&mut spyglass.filter, "Hide Systems Outside Spyglass");
-
-            ui.radio_value(&mut *view, View::Systems, "Systems View");
-            ui.radio_value(&mut *view, View::Stars, "Stars View");
-
+            ui.separator();
+            ui.checkbox(&mut show_names.0, "Show System Names");
             ui.separator();
 
-            match *view {
-                View::Systems => {
-                    ui.label("Color By:");
-                    ui.radio_value(
-                        &mut *color_by,
-                        ColorBy::Allegiance,
-                        "Allegiance",
-                    );
-                    ui.radio_value(
-                        &mut *color_by,
-                        ColorBy::Government,
-                        "Government",
-                    );
-                    ui.radio_value(
-                        &mut *color_by,
-                        ColorBy::Security,
-                        "Security",
-                    );
-                    ui.checkbox(&mut population_scale.0, "Scale w/ Population");
-                }
-                View::Stars => {}
-            }
+            ui.group(|ui| {
+                ui.radio_value(&mut *view, View::Systems, "Systems View");
+                ui.radio_value(&mut *view, View::Stars, "Stars View");
+                // ui.separator();
 
-            ui.checkbox(&mut show_names.0, "Show System Names");
+                match *view {
+                    View::Systems => {
+                        ui.label("Color By:");
+                        ui.radio_value(
+                            &mut *color_by,
+                            ColorBy::Allegiance,
+                            "Allegiance",
+                        );
+                        ui.radio_value(
+                            &mut *color_by,
+                            ColorBy::Government,
+                            "Government",
+                        );
+                        ui.radio_value(
+                            &mut *color_by,
+                            ColorBy::Security,
+                            "Security",
+                        );
+                        ui.separator();
+                        ui.checkbox(
+                            &mut population_scale.0,
+                            "Scale w/ Population",
+                        );
+                    }
+                    View::Stars => {}
+                }
+
+                ui.allocate_space(ui.available_size());
+            });
         });
     }
 }
