@@ -39,6 +39,7 @@ fn main() {
         })
         .insert_resource(Db(db))
         .insert_resource(systems::View::Systems)
+        .insert_resource(systems::ColorBy::Allegiance)
         .insert_resource(systems::ScalePopulation(false))
         .insert_resource(systems::SpyglassRadius(50.))
         .insert_resource(systems::AlwaysFetch(true))

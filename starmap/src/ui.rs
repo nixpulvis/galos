@@ -1,7 +1,7 @@
 use crate::search::Searched;
 use crate::systems::{
-    AlwaysDespawn, AlwaysFetch, Fetched, ScalePopulation, SpyglassRadius,
-    System, View,
+    AlwaysDespawn, AlwaysFetch, ColorBy, Fetched, ScalePopulation,
+    SpyglassRadius, System, View,
 };
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
@@ -13,8 +13,9 @@ pub fn settings(
     systems_query: Query<Entity, With<System>>,
     mut commands: Commands,
     mut contexts: EguiContexts,
-    mut radius: ResMut<SpyglassRadius>,
     mut view: ResMut<View>,
+    mut color_by: ResMut<ColorBy>,
+    mut radius: ResMut<SpyglassRadius>,
     mut population_scale: ResMut<ScalePopulation>,
     mut always_despawn: ResMut<AlwaysDespawn>,
     mut always_fetch: ResMut<AlwaysFetch>,
@@ -51,6 +52,22 @@ pub fn settings(
 
             match *view {
                 View::Systems => {
+                    ui.label("Color By:");
+                    ui.radio_value(
+                        &mut *color_by,
+                        ColorBy::Allegiance,
+                        "Allegiance",
+                    );
+                    ui.radio_value(
+                        &mut *color_by,
+                        ColorBy::Government,
+                        "Government",
+                    );
+                    ui.radio_value(
+                        &mut *color_by,
+                        ColorBy::Security,
+                        "Security",
+                    );
                     ui.checkbox(&mut population_scale.0, "Scale w/ Population");
                 }
                 View::Stars => {}

@@ -10,6 +10,7 @@ use bevy_panorbit_camera::PanOrbitCamera;
 use elite_journal::prelude::*;
 use galos_db::systems::System as DbSystem;
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 
 /// Represents a single fetch request
 //
@@ -189,13 +190,14 @@ pub struct AlwaysDespawn(pub bool);
 pub fn spawn(
     systems_query: Query<Entity, With<System>>,
     route_query: Query<Entity, With<Route>>,
+    always_despawn: Res<AlwaysDespawn>,
+    color_by: Res<ColorBy>,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut tasks: ResMut<FetchTasks>,
     mut fetched: ResMut<Fetched>,
-    always_despawn: Res<AlwaysDespawn>,
 ) {
     tasks.fetched.retain(|index, task| {
         let status = block_on(future::poll_once(task));
@@ -214,6 +216,7 @@ pub fn spawn(
             spawn_systems(
                 &systems,
                 &systems_query,
+                &color_by,
                 &always_despawn,
                 &mut commands,
                 &mut meshes,
@@ -294,6 +297,7 @@ pub struct System {
 fn spawn_systems(
     systems: &[DbSystem],
     systems_query: &Query<Entity, With<System>>,
+    color_by: &Res<ColorBy>,
     always_despawn: &Res<AlwaysDespawn>,
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
@@ -309,6 +313,11 @@ fn spawn_systems(
     let materials = init_materials(material_assets);
 
     for system in systems {
+        let color_idx = match color_by.deref() {
+            ColorBy::Allegiance => allegiance_color_idx(&system),
+            ColorBy::Government => government_color_idx(&system),
+            ColorBy::Security => security_color_idx(&system),
+        };
         commands.spawn((
             PbrBundle {
                 transform: Transform {
@@ -320,12 +329,8 @@ fn spawn_systems(
                     scale: Vec3::splat(1.),
                     ..default()
                 },
-                // TODO: Use entries API to avoid unwrap.
                 mesh: mesh.clone(),
-                // TODO: Configure the material to be flatter when looking at allegiance,
-                // or more realistic when looking at star class. Remember to check
-                // partially overlapping systems.
-                material: materials[allegiance_color_idx(&system)].clone(),
+                material: materials[color_idx].clone(),
                 ..default()
             },
             System {
@@ -407,6 +412,13 @@ pub fn scale_stars(mut query: Query<(&mut Transform, &System)>) {
     }
 }
 
+#[derive(Resource, Copy, Clone, Debug, PartialEq)]
+pub enum ColorBy {
+    Allegiance,
+    Government,
+    Security,
+}
+
 fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
     assets.add(Sphere::new(1.).mesh().ico(3).unwrap())
 }
@@ -438,17 +450,47 @@ fn init_materials(
         .collect()
 }
 
-/// Maps system allegiance to a color for the sphere on the map.
 fn allegiance_color_idx(system: &DbSystem) -> usize {
     match system.allegiance {
         Some(Allegiance::Alliance) => 0,         // Green
         Some(Allegiance::Empire) => 1,           // Cyan
         Some(Allegiance::Federation) => 2,       // Red
         Some(Allegiance::PilotsFederation) => 3, // Orange
+        Some(Allegiance::PlayerPilots) => 4,     // Yellow
         Some(Allegiance::Independent) => 4,      // Yellow
         Some(Allegiance::Guardian) => 5,         // Blue
         Some(Allegiance::Thargoid) => 6,         // Magenta
-        _ => 7,                                  // Grey
+        Some(Allegiance::None) | None => 7,      // Grey
+    }
+}
+
+fn government_color_idx(system: &DbSystem) -> usize {
+    match system.government {
+        Some(Government::Anarchy) => 4,      // Yellow
+        Some(Government::Carrier) => 0,      // Green
+        Some(Government::Communism) => 2,    // Red
+        Some(Government::Confederacy) => 2,  // Red
+        Some(Government::Cooperative) => 3,  // Orange
+        Some(Government::Corporate) => 1,    // Cyan
+        Some(Government::Democracy) => 5,    // Blue
+        Some(Government::Dictatorship) => 2, // Red
+        Some(Government::Engineer) => 6,     // Magenta
+        Some(Government::Feudal) => 2,       // Red
+        Some(Government::Patronage) => 2,    // Red
+        Some(Government::Prison) => 2,       // Red
+        Some(Government::PrisonColony) => 2, // Red
+        Some(Government::Theocracy) => 5,    // Blue
+        Some(Government::None) | None => 7,  // Grey
+    }
+}
+
+fn security_color_idx(system: &DbSystem) -> usize {
+    match system.security {
+        Some(Security::High) => 1,        // Cyan
+        Some(Security::Medium) => 5,      // Blue
+        Some(Security::Low) => 4,         // Yellow
+        Some(Security::Anarchy) => 2,     // Red
+        Some(Security::None) | None => 7, // Grey
     }
 }
 
