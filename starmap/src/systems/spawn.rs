@@ -202,6 +202,21 @@ pub fn update(
     // TODOi(#42): update ColorBy
 }
 
+#[derive(Event)]
+pub struct Despawn;
+
+pub fn despawn(
+    mut commands: Commands,
+    systems: Query<(Entity, &System)>,
+    mut events: EventReader<Despawn>,
+) {
+    for _ in events.read() {
+        for (entity, _) in systems.iter() {
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
 fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
     assets.add(Sphere::new(1.).mesh().ico(3).unwrap())
 }

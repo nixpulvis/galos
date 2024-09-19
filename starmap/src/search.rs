@@ -1,3 +1,4 @@
+use crate::systems::Despawn;
 use crate::{camera::MoveCamera, systems::System, Db};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
@@ -19,8 +20,7 @@ pub enum Searched {
 pub fn system(
     mut search_events: EventReader<Searched>,
     mut camera_events: EventWriter<MoveCamera>,
-    mut systems: Query<(Entity, &System)>,
-    mut commands: Commands,
+    mut despawner: EventWriter<Despawn>,
     db: Res<Db>,
 ) {
     for event in search_events.read() {
@@ -40,9 +40,7 @@ pub fn system(
                 });
             }
             Searched::Faction { .. } => {
-                for (entity, _) in systems.iter() {
-                    commands.entity(entity).despawn_recursive();
-                }
+                despawner.send(Despawn);
             }
             _ => {}
         };

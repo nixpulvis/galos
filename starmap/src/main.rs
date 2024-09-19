@@ -62,9 +62,11 @@ fn main() {
     app.add_systems(Update, camera::move_camera);
     app.add_systems(Update, camera::keyboard);
 
+    app.add_event::<systems::Despawn>();
     app.add_systems(Update, systems::fetch);
     app.add_systems(Update, systems::spawn.after(camera::move_camera));
     app.add_systems(Update, systems::update.after(systems::spawn));
+    app.add_systems(Update, systems::despawn);
     app.add_systems(
         Update,
         systems::scale_systems

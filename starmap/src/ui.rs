@@ -1,5 +1,7 @@
 use crate::search::Searched;
-use crate::systems::{ColorBy, ScalePopulation, ShowNames, Spyglass, View};
+use crate::systems::{
+    ColorBy, Despawn, ScalePopulation, ShowNames, Spyglass, View,
+};
 use bevy::prelude::*;
 use bevy_egui::egui::{Response, Ui};
 use bevy_egui::{egui, EguiContexts};
@@ -15,6 +17,7 @@ pub fn panel(
     mut population_scale: ResMut<ScalePopulation>,
     mut show_names: ResMut<ShowNames>,
     mut searched: EventWriter<Searched>,
+    mut despawner: EventWriter<Despawn>,
     mut system_name: Local<Option<String>>,
     mut faction_name: Local<Option<String>>,
     mut route_start: Local<String>,
@@ -34,6 +37,7 @@ pub fn panel(
                     &mut color_by,
                     &mut population_scale,
                     &mut show_names,
+                    &mut despawner,
                 );
             });
             ui.collapsing("Route", |ui| {
@@ -80,6 +84,7 @@ fn settings(
     color_by: &mut ResMut<ColorBy>,
     population_scale: &mut ResMut<ScalePopulation>,
     show_names: &mut ResMut<ShowNames>,
+    despawner: &mut EventWriter<Despawn>,
 ) {
     // TODO: IDK why this is necessary, the groups should fill the correct
     // size, no?
@@ -92,8 +97,14 @@ fn settings(
                 .drag_value_speed(0.1)
                 .text("Radius"),
         );
+        ui.add_space(2.);
         ui.checkbox(&mut spyglass.fetch, "Load Systems from DB");
+        ui.add_space(2.);
         // ui.checkbox(&mut spyglass.filter, "Hide Systems Outside Spyglass");
+        // ui.add_space(2.);
+        if ui.button("Despawn Systems").clicked() {
+            despawner.send(Despawn);
+        }
     });
 
     ui.add_space(5.);
