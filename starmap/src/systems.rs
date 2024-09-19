@@ -486,9 +486,9 @@ fn government_color_idx(system: &DbSystem) -> usize {
 
 fn security_color_idx(system: &DbSystem) -> usize {
     match system.security {
-        Some(Security::High) => 1,        // Cyan
-        Some(Security::Medium) => 5,      // Blue
-        Some(Security::Low) => 4,         // Yellow
+        Some(Security::High) => 5,        // Blue
+        Some(Security::Medium) => 1,      // Cyan
+        Some(Security::Low) => 0,         // Green
         Some(Security::Anarchy) => 2,     // Red
         Some(Security::None) | None => 7, // Grey
     }
