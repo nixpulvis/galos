@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 inspector = ["bevy-inspector-egui"]
+tracy = ["bevy/trace_tracy"]
 
 [dependencies]
 bevy = { version = "*", features = ["shader_format_glsl"] }
