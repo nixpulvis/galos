@@ -3,6 +3,9 @@ name = "starmap"
 version = "0.0.3"
 edition = "2021"
 
+[features]
+inspector = ["bevy-inspector-egui"]
+
 [dependencies]
 bevy = { version = "*", features = ["shader_format_glsl"] }
 bevy_panorbit_camera = { version = "*", features = ["bevy_egui"] }
@@ -11,3 +14,4 @@ bevy_mod_picking = "*"
 async-std = "*"
 galos_db = { path = "../galos_db" }
 elite_journal = { path = "../elite_journal" }
+bevy-inspector-egui = { version = "*", optional = true }
