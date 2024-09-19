@@ -3,6 +3,7 @@
 use bevy::tasks::futures_lite::future;
 use bevy::{prelude::*, window::WindowMode};
 use bevy_egui::EguiPlugin;
+use bevy_mod_billboard::prelude::*;
 use bevy_mod_picking::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use galos_db::Database;
@@ -30,6 +31,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(PanOrbitCameraPlugin)
+        .add_plugins(BillboardPlugin)
         .add_plugins(DefaultPickingPlugins)
         .add_plugins(EguiPlugin)
         .insert_resource(ClearColor(Color::BLACK))

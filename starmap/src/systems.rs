@@ -5,6 +5,7 @@ use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
+use bevy_mod_billboard::{BillboardLockAxis, BillboardTextBundle};
 use bevy_mod_picking::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 use elite_journal::prelude::*;
@@ -190,8 +191,9 @@ pub struct AlwaysDespawn(pub bool);
 pub fn spawn(
     systems_query: Query<Entity, With<System>>,
     route_query: Query<Entity, With<Route>>,
-    always_despawn: Res<AlwaysDespawn>,
     color_by: Res<ColorBy>,
+    always_despawn: Res<AlwaysDespawn>,
+    asset_server: Res<AssetServer>,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -218,6 +220,7 @@ pub fn spawn(
                 &systems_query,
                 &color_by,
                 &always_despawn,
+                &asset_server,
                 &mut commands,
                 &mut meshes,
                 &mut materials,
@@ -299,6 +302,7 @@ fn spawn_systems(
     systems_query: &Query<Entity, With<System>>,
     color_by: &Res<ColorBy>,
     always_despawn: &Res<AlwaysDespawn>,
+    asset_server: &Res<AssetServer>,
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
     material_assets: &mut ResMut<Assets<StandardMaterial>>,
@@ -311,6 +315,7 @@ fn spawn_systems(
 
     let mesh = init_meshes(mesh_asset);
     let materials = init_materials(material_assets);
+    let fira_sans_regular_handle = asset_server.load("neuropolitical.otf");
 
     for system in systems {
         let color_idx = match color_by.deref() {
@@ -318,44 +323,64 @@ fn spawn_systems(
             ColorBy::Government => government_color_idx(&system),
             ColorBy::Security => security_color_idx(&system),
         };
-        commands.spawn((
-            PbrBundle {
-                transform: Transform {
-                    translation: Vec3::new(
-                        system.position.unwrap().x as f32,
-                        system.position.unwrap().y as f32,
-                        system.position.unwrap().z as f32,
-                    ),
-                    scale: Vec3::splat(1.),
+        commands
+            .spawn((
+                PbrBundle {
+                    transform: Transform {
+                        translation: Vec3::new(
+                            system.position.unwrap().x as f32,
+                            system.position.unwrap().y as f32,
+                            system.position.unwrap().z as f32,
+                        ),
+                        scale: Vec3::splat(1.),
+                        ..default()
+                    },
+                    mesh: mesh.clone(),
+                    material: materials[color_idx].clone(),
                     ..default()
                 },
-                mesh: mesh.clone(),
-                material: materials[color_idx].clone(),
-                ..default()
-            },
-            System {
-                address: system.address,
-                name: system.name.clone(),
-                population: system.population,
-                allegiance: system.allegiance,
-            },
-            NotShadowCaster,
-            PickableBundle::default(),
-            // TODO: toggle system info as well.
-            On::<Pointer<Click>>::send_event::<MoveCamera>(),
-            On::<Pointer<Over>>::target_commands_mut(
-                |_hover, _target_commands| {
-                    // dbg!(_hover);
-                    // TODO: Spawn system label.
+                System {
+                    address: system.address,
+                    name: system.name.clone(),
+                    population: system.population,
+                    allegiance: system.allegiance,
                 },
-            ),
-            On::<Pointer<Out>>::target_commands_mut(
-                |_hover, _target_commands| {
-                    // dbg!(_hover);
-                    // TODO: Despawn system label.
-                },
-            ),
-        ));
+                NotShadowCaster,
+                PickableBundle::default(),
+                // TODO: toggle system info as well.
+                On::<Pointer<Click>>::send_event::<MoveCamera>(),
+                On::<Pointer<Over>>::target_commands_mut(
+                    |_hover, _target_commands| {
+                        // dbg!(_hover);
+                        // TODO: Spawn system label.
+                    },
+                ),
+                On::<Pointer<Out>>::target_commands_mut(
+                    |_hover, _target_commands| {
+                        // dbg!(_hover);
+                        // TODO: Despawn system label.
+                    },
+                ),
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    BillboardTextBundle {
+                        transform: Transform::from_scale(Vec3::splat(0.01))
+                            .with_translation(Vec3::new(5., 0., 0.)),
+                        text: Text::from_section(
+                            system.name.clone(),
+                            TextStyle {
+                                font_size: 64.0,
+                                font: fira_sans_regular_handle.clone(),
+                                color: Color::WHITE,
+                            },
+                        )
+                        .with_justify(JustifyText::Left),
+                        ..default()
+                    },
+                    BillboardLockAxis::default(),
+                ));
+            });
     }
 }
 

@@ -7,6 +7,7 @@ edition = "2021"
 bevy = { version = "*", features = ["shader_format_glsl"] }
 bevy_panorbit_camera = { version = "*", features = ["bevy_egui"] }
 bevy_egui = "*"
+bevy_mod_billboard = "*"
 bevy_mod_picking = "*"
 async-std = "*"
 galos_db = { path = "../galos_db" }
