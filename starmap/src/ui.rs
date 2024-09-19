@@ -131,10 +131,10 @@ fn settings(
 /// Route finding UI for finding out how to get from A to B
 pub fn route(
     ui: &mut Ui,
-    mut events: &mut EventWriter<Searched>,
-    mut start: &mut Local<String>,
-    mut end: &mut Local<String>,
-    mut range: &mut Local<String>,
+    events: &mut EventWriter<Searched>,
+    start: &mut Local<String>,
+    end: &mut Local<String>,
+    range: &mut Local<String>,
 ) {
     ui.label("Start: ");
     ui.add_sized(
