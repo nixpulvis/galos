@@ -6,6 +6,7 @@ use bevy::pbr::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
+use bevy_mod_billboard::{BillboardLockAxis, BillboardTextBundle};
 use bevy_mod_picking::prelude::*;
 use elite_journal::{system::Security, Allegiance, Government};
 use galos_db::systems::System as DbSystem;
@@ -19,12 +20,18 @@ pub enum ColorBy {
     Security,
 }
 
+/// Determains whether or not to show system name labels
+#[derive(Resource)]
+pub struct ShowNames(pub bool);
+
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
 /// resulting star systems
 pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<Entity, With<Route>>,
     color_by: Res<ColorBy>,
+    show_names: Res<ShowNames>,
+    asset_server: Res<AssetServer>,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -42,6 +49,8 @@ pub fn spawn(
                 &new_systems,
                 &systems_query,
                 &color_by,
+                &show_names,
+                &asset_server,
                 &mut commands,
                 &mut meshes,
                 &mut materials,
@@ -82,6 +91,8 @@ pub(crate) fn spawn_systems(
     new_systems: &[DbSystem],
     systems_query: &Query<(Entity, &System)>,
     color_by: &Res<ColorBy>,
+    show_names: &Res<ShowNames>,
+    asset_server: &Res<AssetServer>,
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
     material_assets: &mut ResMut<Assets<StandardMaterial>>,
@@ -93,6 +104,7 @@ pub(crate) fn spawn_systems(
 
     let mesh = init_meshes(mesh_asset);
     let materials = init_materials(material_assets);
+    let font = asset_server.load("neuropolitical.otf");
 
     for new_system in new_systems {
         let color_idx = match color_by.deref() {
@@ -103,7 +115,7 @@ pub(crate) fn spawn_systems(
         if let Some(_enitity) = existing_systems.remove(&new_system.address) {
             // TODO: update
         } else {
-            commands.spawn((
+            let mut entity = commands.spawn((
                 PbrBundle {
                     transform: Transform {
                         translation: Vec3::new(
@@ -141,8 +153,51 @@ pub(crate) fn spawn_systems(
                     },
                 ),
             ));
+
+            if show_names.0 {
+                entity.with_children(|parent| {
+                    parent.spawn((
+                        BillboardTextBundle {
+                            transform: Transform::from_scale(Vec3::splat(0.01))
+                                .with_translation(Vec3::new(5., 0., 0.)),
+                            text: Text::from_section(
+                                new_system.name.clone(),
+                                TextStyle {
+                                    font_size: 64.0,
+                                    font: font.clone(),
+                                    color: Color::WHITE,
+                                },
+                            )
+                            .with_justify(JustifyText::Left),
+                            ..default()
+                        },
+                        BillboardLockAxis::default(),
+                    ));
+                });
+            }
         }
     }
+}
+
+/// Checks for updated resources and updates the systems.
+pub fn update(
+    systems_query: Query<(&System, &Children)>,
+    show_names: Res<ShowNames>,
+    mut commands: Commands,
+) {
+    if show_names.is_changed() {
+        for (_, children) in systems_query.iter() {
+            for &child in children.iter() {
+                if show_names.0 {
+                    commands.entity(child).insert(Visibility::Visible);
+                } else {
+                    commands.entity(child).insert(Visibility::Hidden);
+                }
+            }
+        }
+    }
+
+    // TODO: update ColorBy
 }
 
 fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {

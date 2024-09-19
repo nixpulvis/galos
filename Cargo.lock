@@ -1165,6 +1165,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_mod_billboard"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7fcf796f109d285725c5cbb4c38f6f93b809c7dbea14bc19c5b94ce01ad59de"
+dependencies = [
+ "bevy",
+ "bitflags 2.6.0",
+ "smallvec",
+]
+
+[[package]]
 name = "bevy_mod_picking"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5934,6 +5945,7 @@ dependencies = [
  "bevy",
  "bevy-inspector-egui",
  "bevy_egui",
+ "bevy_mod_billboard",
  "bevy_mod_picking",
  "bevy_panorbit_camera",
  "elite_journal 0.2.0",

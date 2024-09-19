@@ -8,11 +8,12 @@ inspector = ["bevy-inspector-egui"]
 tracy = ["bevy/trace_tracy"]
 
 [dependencies]
-bevy = { version = "*", features = ["shader_format_glsl"] }
-bevy_panorbit_camera = { version = "*", features = ["bevy_egui"] }
-bevy_egui = "*"
-bevy_mod_picking = "*"
 async-std = "*"
-galos_db = { path = "../galos_db" }
-elite_journal = { path = "../elite_journal" }
+bevy = { version = "*", features = ["shader_format_glsl"] }
 bevy-inspector-egui = { version = "*", optional = true }
+bevy_egui = "*"
+bevy_mod_billboard = "*"
+bevy_mod_picking = "*"
+bevy_panorbit_camera = { version = "*", features = ["bevy_egui"] }
+elite_journal = { path = "../elite_journal" }
+galos_db = { path = "../galos_db" }
