@@ -1,65 +1,49 @@
 use crate::search::Searched;
 use crate::systems::{ColorBy, ScalePopulation, ShowNames, Spyglass, View};
 use bevy::prelude::*;
+use bevy_egui::egui::{Response, Ui};
 use bevy_egui::{egui, EguiContexts};
 
 // TODO: Form validation.
 
-/// Global settings for the map
-pub fn settings(
+/// Map settings and controls
+pub fn panel(
     mut contexts: EguiContexts,
     mut spyglass: ResMut<Spyglass>,
     mut view: ResMut<View>,
     mut color_by: ResMut<ColorBy>,
     mut population_scale: ResMut<ScalePopulation>,
     mut show_names: ResMut<ShowNames>,
+    mut searched: EventWriter<Searched>,
+    mut system_name: Local<Option<String>>,
+    mut faction_name: Local<Option<String>>,
+    mut route_start: Local<String>,
+    mut route_end: Local<String>,
+    mut route_range: Local<String>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
-        egui::Window::new("Settings").fixed_size([150., 0.]).show(ctx, |ui| {
-            ui.checkbox(&mut spyglass.fetch, "Always Fetch Systems");
-            ui.add(
-                egui::Slider::new(&mut spyglass.radius, 10.0..=25000.0)
-                    .logarithmic(true)
-                    .text("Radius"),
-            );
-            // ui.checkbox(&mut spyglass.filter, "Hide Systems Outside Spyglass");
-            ui.separator();
-            ui.checkbox(&mut show_names.0, "Show System Names");
-            ui.separator();
-
-            ui.group(|ui| {
-                ui.radio_value(&mut *view, View::Systems, "Systems View");
-                ui.radio_value(&mut *view, View::Stars, "Stars View");
-                // ui.separator();
-
-                match *view {
-                    View::Systems => {
-                        ui.label("Color By:");
-                        ui.radio_value(
-                            &mut *color_by,
-                            ColorBy::Allegiance,
-                            "Allegiance",
-                        );
-                        ui.radio_value(
-                            &mut *color_by,
-                            ColorBy::Government,
-                            "Government",
-                        );
-                        ui.radio_value(
-                            &mut *color_by,
-                            ColorBy::Security,
-                            "Security",
-                        );
-                        ui.separator();
-                        ui.checkbox(
-                            &mut population_scale.0,
-                            "Scale w/ Population",
-                        );
-                    }
-                    View::Stars => {}
-                }
-
-                ui.allocate_space(ui.available_size());
+        egui::Window::new("Galos").resizable(false).show(ctx, |ui| {
+            ui.collapsing("Search", |ui| {
+                search(ui, &mut searched, &mut system_name, &mut faction_name);
+            });
+            ui.collapsing("Settings", |ui| {
+                settings(
+                    ui,
+                    &mut spyglass,
+                    &mut view,
+                    &mut color_by,
+                    &mut population_scale,
+                    &mut show_names,
+                );
+            });
+            ui.collapsing("Route", |ui| {
+                route(
+                    ui,
+                    &mut searched,
+                    &mut route_start,
+                    &mut route_end,
+                    &mut route_range,
+                );
             });
         });
     }
@@ -67,70 +51,144 @@ pub fn settings(
 
 /// Star system search UI by name or faction
 pub fn search(
-    mut events: EventWriter<Searched>,
-    mut contexts: EguiContexts,
-    mut system_name: Local<String>,
-    mut faction_name: Local<String>,
+    ui: &mut Ui,
+    events: &mut EventWriter<Searched>,
+    system_name: &mut Local<Option<String>>,
+    faction_name: &mut Local<Option<String>>,
 ) {
-    if let Some(ctx) = contexts.try_ctx_mut() {
-        egui::Window::new("Search").fixed_size([150., 0.]).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("System: ");
-                let response = ui.text_edit_singleline(&mut *system_name);
-                if response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    *faction_name = "".into();
-                    events.send(Searched::System { name: system_name.clone() });
-                }
-            });
-
-            ui.separator();
-
-            ui.horizontal(|ui| {
-                ui.label("Faction: ");
-                let response = ui.text_edit_singleline(&mut *faction_name);
-                if response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    *system_name = "".into();
-                    events
-                        .send(Searched::Faction { name: faction_name.clone() });
-                }
-            });
-        });
+    let response = singleline(ui, &mut **system_name, "System Search");
+    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        **faction_name = None;
+        if let Some(ref search) = **system_name {
+            events.send(Searched::System { name: search.clone() });
+        }
     }
+
+    let response = singleline(ui, &mut **faction_name, "Faction Search");
+    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        **system_name = None;
+        if let Some(ref search) = **faction_name {
+            events.send(Searched::Faction { name: search.clone() });
+        }
+    }
+}
+
+fn settings(
+    ui: &mut Ui,
+    spyglass: &mut ResMut<Spyglass>,
+    view: &mut ResMut<View>,
+    color_by: &mut ResMut<ColorBy>,
+    population_scale: &mut ResMut<ScalePopulation>,
+    show_names: &mut ResMut<ShowNames>,
+) {
+    // TODO: IDK why this is necessary, the groups should fill the correct
+    // size, no?
+    ui.set_width(125.);
+
+    ui.group(|ui| {
+        ui.add(
+            egui::Slider::new(&mut spyglass.radius, 10.0..=25000.0)
+                .logarithmic(true)
+                .drag_value_speed(0.1)
+                .text("Radius"),
+        );
+        ui.checkbox(&mut spyglass.fetch, "Load Systems from DB");
+        // ui.checkbox(&mut spyglass.filter, "Hide Systems Outside Spyglass");
+    });
+
+    ui.add_space(5.);
+
+    ui.group(|ui| {
+        ui.label("View:");
+        ui.radio_value(&mut **view, View::Systems, "Systems");
+        ui.radio_value(&mut **view, View::Stars, "Stars");
+        ui.separator();
+
+        match **view {
+            View::Systems => {
+                ui.label("Color By:");
+                ui.radio_value(
+                    &mut **color_by,
+                    ColorBy::Allegiance,
+                    "Allegiance",
+                );
+                ui.radio_value(
+                    &mut **color_by,
+                    ColorBy::Government,
+                    "Government",
+                );
+                ui.radio_value(&mut **color_by, ColorBy::Security, "Security");
+                ui.separator();
+                ui.checkbox(&mut population_scale.0, "Scale w/ Population");
+            }
+            View::Stars => {}
+        }
+
+        ui.checkbox(&mut show_names.0, "Show System Names");
+    });
 }
 
 /// Route finding UI for finding out how to get from A to B
 pub fn route(
-    mut events: EventWriter<Searched>,
-    mut contexts: EguiContexts,
-    mut start: Local<String>,
-    mut end: Local<String>,
-    mut range: Local<String>,
+    ui: &mut Ui,
+    mut events: &mut EventWriter<Searched>,
+    mut start: &mut Local<String>,
+    mut end: &mut Local<String>,
+    mut range: &mut Local<String>,
 ) {
-    if let Some(ctx) = contexts.try_ctx_mut() {
-        egui::Window::new("Route").fixed_size([150., 0.]).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Start: ");
-                ui.text_edit_singleline(&mut *start);
-            });
-            ui.horizontal(|ui| {
-                ui.label("End: ");
-                ui.text_edit_singleline(&mut *end);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Range: ");
-                ui.text_edit_singleline(&mut *range);
-            });
-            if ui.button("Plot Route...").clicked() {
-                events.send(Searched::Route {
-                    start: start.clone(),
-                    end: end.clone(),
-                    range: range.parse().unwrap_or("10".into()),
-                });
-            }
+    ui.label("Start: ");
+    ui.add_sized(
+        egui::vec2(125., 0.),
+        egui::TextEdit::singleline(&mut **start),
+    );
+    ui.add_space(2.);
+    ui.label("End: ");
+    ui.add_sized(egui::vec2(125., 0.), egui::TextEdit::singleline(&mut **end));
+    ui.add_space(2.);
+    ui.label("Range (Ly): ");
+    ui.add_sized(egui::vec2(50., 0.), egui::TextEdit::singleline(&mut **range));
+    ui.add_space(5.);
+    if ui.button("Plot Route...").clicked() {
+        events.send(Searched::Route {
+            start: start.clone(),
+            end: end.clone(),
+            range: range.parse().unwrap_or("10".into()),
         });
     }
+}
+
+fn singleline(
+    ui: &mut Ui,
+    value: &mut Option<String>,
+    placeholer: &str,
+) -> Response {
+    if value.is_none() {
+        ui.style_mut().visuals.override_text_color = Some(egui::Color32::GRAY);
+    }
+
+    let mut text = match value {
+        Some(ref input) => input.clone(),
+        None => placeholer.into(),
+    };
+
+    let response = ui
+        .add_sized(egui::vec2(125., 0.), egui::TextEdit::singleline(&mut text));
+
+    if response.gained_focus() {
+        *value = Some("".into());
+    }
+
+    if text != placeholer {
+        *value = Some(text);
+    }
+
+    if response.lost_focus() {
+        if let Some(ref search) = *value {
+            if search == "" {
+                *value = None;
+            }
+        }
+    }
+
+    response
 }

@@ -81,9 +81,7 @@ fn main() {
     app.add_event::<search::Searched>();
     app.add_systems(Update, search::system);
 
-    app.add_systems(Update, ui::settings);
-    app.add_systems(Update, ui::search.after(ui::settings));
-    app.add_systems(Update, ui::route.after(ui::search));
+    app.add_systems(Update, ui::panel);
 
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());
