@@ -30,6 +30,7 @@ pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<Entity, With<Route>>,
     color_by: Res<ColorBy>,
+    show_names: Res<ShowNames>,
     asset_server: Res<AssetServer>,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
@@ -48,6 +49,7 @@ pub fn spawn(
                 &new_systems,
                 &systems_query,
                 &color_by,
+                &show_names,
                 &asset_server,
                 &mut commands,
                 &mut meshes,
@@ -89,6 +91,7 @@ pub(crate) fn spawn_systems(
     new_systems: &[DbSystem],
     systems_query: &Query<(Entity, &System)>,
     color_by: &Res<ColorBy>,
+    show_names: &Res<ShowNames>,
     asset_server: &Res<AssetServer>,
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
@@ -152,7 +155,7 @@ pub(crate) fn spawn_systems(
                     ),
                 ))
                 .with_children(|parent| {
-                    parent.spawn((
+                    let mut billboard = parent.spawn((
                         BillboardTextBundle {
                             transform: Transform::from_scale(Vec3::splat(0.01))
                                 .with_translation(Vec3::new(5., 0., 0.)),
@@ -169,6 +172,10 @@ pub(crate) fn spawn_systems(
                         },
                         BillboardLockAxis::default(),
                     ));
+
+                    if !show_names.0 {
+                        billboard.insert(Visibility::Hidden);
+                    }
                 });
         }
     }
