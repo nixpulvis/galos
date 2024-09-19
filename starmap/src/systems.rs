@@ -191,6 +191,7 @@ pub struct AlwaysDespawn(pub bool);
 pub fn spawn(
     systems_query: Query<Entity, With<System>>,
     route_query: Query<Entity, With<Route>>,
+    show_names: Res<ShowNames>,
     color_by: Res<ColorBy>,
     always_despawn: Res<AlwaysDespawn>,
     asset_server: Res<AssetServer>,
@@ -218,6 +219,7 @@ pub fn spawn(
             spawn_systems(
                 &systems,
                 &systems_query,
+                &show_names,
                 &color_by,
                 &always_despawn,
                 &asset_server,
@@ -296,10 +298,14 @@ pub struct System {
     allegiance: Option<Allegiance>,
 }
 
+#[derive(Resource)]
+pub struct ShowNames(pub bool);
+
 /// Generate all the star system entities.
 fn spawn_systems(
     systems: &[DbSystem],
     systems_query: &Query<Entity, With<System>>,
+    show_names: &Res<ShowNames>,
     color_by: &Res<ColorBy>,
     always_despawn: &Res<AlwaysDespawn>,
     asset_server: &Res<AssetServer>,
@@ -323,46 +329,47 @@ fn spawn_systems(
             ColorBy::Government => government_color_idx(&system),
             ColorBy::Security => security_color_idx(&system),
         };
-        commands
-            .spawn((
-                PbrBundle {
-                    transform: Transform {
-                        translation: Vec3::new(
-                            system.position.unwrap().x as f32,
-                            system.position.unwrap().y as f32,
-                            system.position.unwrap().z as f32,
-                        ),
-                        scale: Vec3::splat(1.),
-                        ..default()
-                    },
-                    mesh: mesh.clone(),
-                    material: materials[color_idx].clone(),
+        let mut entity = commands.spawn((
+            PbrBundle {
+                transform: Transform {
+                    translation: Vec3::new(
+                        system.position.unwrap().x as f32,
+                        system.position.unwrap().y as f32,
+                        system.position.unwrap().z as f32,
+                    ),
+                    scale: Vec3::splat(1.),
                     ..default()
                 },
-                System {
-                    address: system.address,
-                    name: system.name.clone(),
-                    population: system.population,
-                    allegiance: system.allegiance,
+                mesh: mesh.clone(),
+                material: materials[color_idx].clone(),
+                ..default()
+            },
+            System {
+                address: system.address,
+                name: system.name.clone(),
+                population: system.population,
+                allegiance: system.allegiance,
+            },
+            NotShadowCaster,
+            PickableBundle::default(),
+            // TODO: toggle system info as well.
+            On::<Pointer<Click>>::send_event::<MoveCamera>(),
+            On::<Pointer<Over>>::target_commands_mut(
+                |_hover, _target_commands| {
+                    // dbg!(_hover);
+                    // TODO: Spawn system label.
                 },
-                NotShadowCaster,
-                PickableBundle::default(),
-                // TODO: toggle system info as well.
-                On::<Pointer<Click>>::send_event::<MoveCamera>(),
-                On::<Pointer<Over>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Spawn system label.
-                    },
-                ),
-                On::<Pointer<Out>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Despawn system label.
-                    },
-                ),
-            ))
-            .with_children(|parent| {
+            ),
+            On::<Pointer<Out>>::target_commands_mut(
+                |_hover, _target_commands| {
+                    // dbg!(_hover);
+                    // TODO: Despawn system label.
+                },
+            ),
+        ));
+
+        if show_names.0 {
+            entity.with_children(|parent| {
                 parent.spawn((
                     BillboardTextBundle {
                         transform: Transform::from_scale(Vec3::splat(0.01))
@@ -381,6 +388,26 @@ fn spawn_systems(
                     BillboardLockAxis::default(),
                 ));
             });
+        }
+    }
+}
+
+/// Checks for updated resources and updates the systems.
+pub fn update(
+    systems_query: Query<(&System, &Children)>,
+    show_names: Res<ShowNames>,
+    mut commands: Commands,
+) {
+    if show_names.is_changed() {
+        for (_, children) in systems_query.iter() {
+            for &child in children.iter() {
+                if show_names.0 {
+                    commands.entity(child).insert(Visibility::Visible);
+                } else {
+                    commands.entity(child).insert(Visibility::Hidden);
+                }
+            }
+        }
     }
 }
 
@@ -431,7 +458,7 @@ pub fn scale_stars(mut query: Query<(&mut Transform, &System)>) {
     if !query.is_empty() {
         // TODO: Change rgba color/emmisivity. The goal is to fade out to
         // transparent when they are too far away.
-        for (mut system_transform, system) in query.iter_mut() {
+        for (mut system_transform, _) in query.iter_mut() {
             system_transform.scale = Vec3::splat(1e-2);
         }
     }

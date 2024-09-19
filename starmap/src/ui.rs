@@ -1,6 +1,6 @@
 use crate::search::Searched;
 use crate::systems::{
-    AlwaysDespawn, AlwaysFetch, ColorBy, Fetched, ScalePopulation,
+    AlwaysDespawn, AlwaysFetch, ColorBy, Fetched, ScalePopulation, ShowNames,
     SpyglassRadius, System, View,
 };
 use bevy::prelude::*;
@@ -14,6 +14,7 @@ pub fn settings(
     mut commands: Commands,
     mut contexts: EguiContexts,
     mut view: ResMut<View>,
+    mut show_names: ResMut<ShowNames>,
     mut color_by: ResMut<ColorBy>,
     mut radius: ResMut<SpyglassRadius>,
     mut population_scale: ResMut<ScalePopulation>,
@@ -47,6 +48,8 @@ pub fn settings(
 
             ui.radio_value(&mut *view, View::Systems, "Systems View");
             ui.radio_value(&mut *view, View::Stars, "Stars View");
+
+            ui.checkbox(&mut show_names.0, "Show System Names");
 
             ui.separator();
 

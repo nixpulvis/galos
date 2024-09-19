@@ -41,6 +41,7 @@ fn main() {
         })
         .insert_resource(Db(db))
         .insert_resource(systems::View::Systems)
+        .insert_resource(systems::ShowNames(true))
         .insert_resource(systems::ColorBy::Allegiance)
         .insert_resource(systems::ScalePopulation(false))
         .insert_resource(systems::SpyglassRadius(50.))
@@ -55,6 +56,7 @@ fn main() {
         .add_systems(Update, camera::keyboard)
         .add_systems(Update, systems::fetch)
         .add_systems(Update, systems::spawn.after(camera::move_camera))
+        .add_systems(Update, systems::update.after(systems::spawn))
         .add_systems(
             Update,
             systems::scale_systems
