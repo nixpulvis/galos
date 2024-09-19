@@ -21,7 +21,7 @@ pub(crate) fn respawn(
     for (system_entity, system, system_transform, children) in systems.iter() {
         let d = camera_translation.distance(system_transform.translation);
 
-        if d > 15. {
+        if d > 25.1 {
             if let Some(children) = children {
                 for &label_entity in children.iter() {
                     if let Ok(child) = billboards.get(label_entity) {
@@ -38,7 +38,7 @@ pub(crate) fn respawn(
                 let billboard = {
                     let mut billboard_entity = commands.spawn((
                         BillboardTextBundle {
-                            transform: Transform::from_scale(Vec3::splat(0.01))
+                            transform: Transform::from_scale(Vec3::splat(0.02))
                                 .with_translation(Vec3::new(5., 0., 0.)),
                             text: Text::from_section(
                                 system.name.clone(),
