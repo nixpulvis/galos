@@ -115,47 +115,46 @@ pub(crate) fn spawn_systems(
         if let Some(_enitity) = existing_systems.remove(&new_system.address) {
             // TODO: update
         } else {
-            let mut entity = commands.spawn((
-                PbrBundle {
-                    transform: Transform {
-                        translation: Vec3::new(
-                            new_system.position.unwrap().x as f32,
-                            new_system.position.unwrap().y as f32,
-                            new_system.position.unwrap().z as f32,
-                        ),
-                        scale: Vec3::splat(1.),
+            commands
+                .spawn((
+                    PbrBundle {
+                        transform: Transform {
+                            translation: Vec3::new(
+                                new_system.position.unwrap().x as f32,
+                                new_system.position.unwrap().y as f32,
+                                new_system.position.unwrap().z as f32,
+                            ),
+                            scale: Vec3::splat(1.),
+                            ..default()
+                        },
+                        mesh: mesh.clone(),
+                        material: materials[color_idx].clone(),
                         ..default()
                     },
-                    mesh: mesh.clone(),
-                    material: materials[color_idx].clone(),
-                    ..default()
-                },
-                System {
-                    address: new_system.address,
-                    name: new_system.name.clone(),
-                    population: new_system.population,
-                    allegiance: new_system.allegiance,
-                },
-                NotShadowCaster,
-                PickableBundle::default(),
-                // TODO: toggle system info as well.
-                On::<Pointer<Click>>::send_event::<MoveCamera>(),
-                On::<Pointer<Over>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Spawn system label.
+                    System {
+                        address: new_system.address,
+                        name: new_system.name.clone(),
+                        population: new_system.population,
+                        allegiance: new_system.allegiance,
                     },
-                ),
-                On::<Pointer<Out>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Despawn system label.
-                    },
-                ),
-            ));
-
-            if show_names.0 {
-                entity.with_children(|parent| {
+                    NotShadowCaster,
+                    PickableBundle::default(),
+                    // TODO: toggle system info as well.
+                    On::<Pointer<Click>>::send_event::<MoveCamera>(),
+                    On::<Pointer<Over>>::target_commands_mut(
+                        |_hover, _target_commands| {
+                            // dbg!(_hover);
+                            // TODO: Spawn system label.
+                        },
+                    ),
+                    On::<Pointer<Out>>::target_commands_mut(
+                        |_hover, _target_commands| {
+                            // dbg!(_hover);
+                            // TODO: Despawn system label.
+                        },
+                    ),
+                ))
+                .with_children(|parent| {
                     parent.spawn((
                         BillboardTextBundle {
                             transform: Transform::from_scale(Vec3::splat(0.01))
@@ -174,7 +173,6 @@ pub(crate) fn spawn_systems(
                         BillboardLockAxis::default(),
                     ));
                 });
-            }
         }
     }
 }
