@@ -43,9 +43,13 @@ fn main() {
     app.insert_resource(systems::View::Systems);
     app.insert_resource(systems::ColorBy::Allegiance);
     app.insert_resource(systems::ScalePopulation(false));
-    app.insert_resource(systems::SpyglassRadius(50.));
-    app.insert_resource(systems::AlwaysFetch(true));
-    app.insert_resource(systems::AlwaysDespawn(true));
+
+    app.insert_resource(systems::Spyglass {
+        radius: 50.,
+        fetch: true,
+        // filter: true,
+    });
+
     app.insert_resource(systems::Fetched(HashSet::new()));
     app.insert_resource(systems::FetchTasks { fetched: HashMap::new() });
     app.add_event::<camera::MoveCamera>();

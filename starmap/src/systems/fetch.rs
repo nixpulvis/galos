@@ -35,9 +35,13 @@ pub struct FetchTasks {
 #[derive(Resource)]
 pub struct Fetched(pub HashSet<FetchIndex>);
 
-/// A global setting which toggles the spyglass around the camera
+/// A global setting which controls the spyglass around the camera
 #[derive(Resource)]
-pub struct AlwaysFetch(pub bool);
+pub struct Spyglass {
+    pub fetch: bool,
+    pub radius: f64,
+    // pub filter: bool,
+}
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
@@ -45,16 +49,15 @@ pub fn fetch(
     mut search_events: EventReader<Searched>,
     mut fetched: ResMut<Fetched>,
     mut tasks: ResMut<FetchTasks>,
+    mut spyglass: ResMut<Spyglass>,
     db: Res<Db>,
-    mut always_fetch: ResMut<AlwaysFetch>,
-    mut radius: ResMut<SpyglassRadius>,
 ) {
-    if always_fetch.0 {
+    if spyglass.fetch {
         fetch_around_camera(
             &camera_query,
             &mut fetched,
             &mut tasks,
-            &mut radius,
+            &mut spyglass,
             &db,
         );
     }
@@ -69,7 +72,7 @@ pub fn fetch(
             // populate it.
             Searched::System { .. } => {}
             Searched::Faction { name } => {
-                *always_fetch = AlwaysFetch(false);
+                spyglass.fetch = false;
                 fetch_faction(name.into(), &mut fetched, &mut tasks, &db);
             }
             Searched::Route { start, end, range } => {
@@ -86,33 +89,27 @@ pub fn fetch(
     }
 }
 
-/// The radius searched around the camera
-///
-/// This does nothing while `AlwaysFetch` is false.
-#[derive(Resource)]
-pub struct SpyglassRadius(pub f64);
-
 fn fetch_around_camera(
     camera_query: &Query<&mut PanOrbitCamera>,
     fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
-    radius: &mut ResMut<SpyglassRadius>,
+    spyglass: &ResMut<Spyglass>,
     db: &Res<Db>,
 ) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
     // Regions need to be smaller than the spyglass radius. Once we load cubes,
     // we'll need to change things to hide the entities outside of the sphere.
-    let scale = radius.0 as i32 / REGION_FACTOR;
+    let scale = spyglass.radius as i32 / REGION_FACTOR;
     let region = if scale == 0 {
-        FetchIndex::Region(IVec3::ZERO, radius.0 as i32)
+        FetchIndex::Region(IVec3::ZERO, spyglass.radius as i32)
     } else {
-        FetchIndex::Region(center / scale, radius.0 as i32)
+        FetchIndex::Region(center / scale, spyglass.radius as i32)
     };
     if !fetched.0.contains(&region) && !tasks.fetched.contains_key(&region) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
-        let radius = radius.0;
+        let radius = spyglass.radius;
         let task = task_pool.spawn(async move {
             let cent = [center.x as f64, center.y as f64, center.z as f64];
             DbSystem::fetch_in_range_of_point(&db, radius, cent)

@@ -1,5 +1,5 @@
 use super::{
-    spawn_route, system_to_vec, FetchIndex, FetchTasks, Fetched, Route, System,
+    spawn_route, system_to_vec, FetchIndex, FetchTasks, Route, System,
 };
 use crate::camera::MoveCamera;
 use bevy::pbr::NotShadowCaster;
@@ -9,15 +9,7 @@ use bevy::tasks::futures_lite::future;
 use bevy_mod_picking::prelude::*;
 use elite_journal::{system::Security, Allegiance, Government};
 use galos_db::systems::System as DbSystem;
-use std::ops::Deref;
-
-/// Toggles star system despawning
-//
-// TODO: We still need to come up with a strategy for despawning in general.
-// always despawning everything isn't going to be the only option. We'll have
-// frustum culling etc.
-#[derive(Resource)]
-pub struct AlwaysDespawn(pub bool);
+use std::{collections::HashMap, ops::Deref};
 
 /// Determains what color to draw in system view mode.
 #[derive(Resource, Copy, Clone, Debug, PartialEq)]
@@ -30,36 +22,26 @@ pub enum ColorBy {
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
 /// resulting star systems
 pub fn spawn(
-    systems_query: Query<Entity, With<System>>,
+    systems_query: Query<(Entity, &System)>,
     route_query: Query<Entity, With<Route>>,
-    always_despawn: Res<AlwaysDespawn>,
     color_by: Res<ColorBy>,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut tasks: ResMut<FetchTasks>,
-    mut fetched: ResMut<Fetched>,
 ) {
     tasks.fetched.retain(|index, task| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
-        if let Some(systems) = status {
-            if always_despawn.0 {
-                // TODO: send despawn event, same as in the always_despawn
-                // ui checkbox.
-                fetched.0.clear();
-                fetched.0.insert(index.clone());
-            }
-
+        if let Some(new_systems) = status {
             // TODO: Pass FetchIndex along. I'd like to have index.marker() or
             // similar so I can mark entities with some info about where they
             // were fetched from.
             spawn_systems(
-                &systems,
+                &new_systems,
                 &systems_query,
                 &color_by,
-                &always_despawn,
                 &mut commands,
                 &mut meshes,
                 &mut materials,
@@ -67,7 +49,7 @@ pub fn spawn(
 
             match index {
                 FetchIndex::Faction(..) | FetchIndex::Route(..) => {
-                    if let Some(system) = systems.first() {
+                    if let Some(system) = new_systems.first() {
                         let position = system_to_vec(&system);
                         move_camera_events
                             .send(MoveCamera { position: Some(position) });
@@ -79,7 +61,7 @@ pub fn spawn(
             match index {
                 FetchIndex::Route(..) => {
                     spawn_route(
-                        &systems,
+                        &new_systems,
                         &route_query,
                         &mut commands,
                         &mut meshes,
@@ -97,67 +79,69 @@ pub fn spawn(
 
 /// Generate all the star system entities.
 pub(crate) fn spawn_systems(
-    systems: &[DbSystem],
-    systems_query: &Query<Entity, With<System>>,
+    new_systems: &[DbSystem],
+    systems_query: &Query<(Entity, &System)>,
     color_by: &Res<ColorBy>,
-    always_despawn: &Res<AlwaysDespawn>,
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
     material_assets: &mut ResMut<Assets<StandardMaterial>>,
 ) {
-    if always_despawn.0 {
-        for entity in systems_query.iter() {
-            commands.entity(entity).despawn_recursive();
-        }
-    }
+    let mut existing_systems: HashMap<i64, Entity> = systems_query
+        .iter()
+        .map(|(entity, system)| (system.address, entity))
+        .collect();
 
     let mesh = init_meshes(mesh_asset);
     let materials = init_materials(material_assets);
 
-    for system in systems {
+    for new_system in new_systems {
         let color_idx = match color_by.deref() {
-            ColorBy::Allegiance => allegiance_color_idx(&system),
-            ColorBy::Government => government_color_idx(&system),
-            ColorBy::Security => security_color_idx(&system),
+            ColorBy::Allegiance => allegiance_color_idx(&new_system),
+            ColorBy::Government => government_color_idx(&new_system),
+            ColorBy::Security => security_color_idx(&new_system),
         };
-        commands.spawn((
-            PbrBundle {
-                transform: Transform {
-                    translation: Vec3::new(
-                        system.position.unwrap().x as f32,
-                        system.position.unwrap().y as f32,
-                        system.position.unwrap().z as f32,
-                    ),
-                    scale: Vec3::splat(1.),
+        if let Some(_enitity) = existing_systems.remove(&new_system.address) {
+            // TODO: update
+        } else {
+            commands.spawn((
+                PbrBundle {
+                    transform: Transform {
+                        translation: Vec3::new(
+                            new_system.position.unwrap().x as f32,
+                            new_system.position.unwrap().y as f32,
+                            new_system.position.unwrap().z as f32,
+                        ),
+                        scale: Vec3::splat(1.),
+                        ..default()
+                    },
+                    mesh: mesh.clone(),
+                    material: materials[color_idx].clone(),
                     ..default()
                 },
-                mesh: mesh.clone(),
-                material: materials[color_idx].clone(),
-                ..default()
-            },
-            System {
-                address: system.address,
-                name: system.name.clone(),
-                population: system.population,
-                allegiance: system.allegiance,
-            },
-            NotShadowCaster,
-            PickableBundle::default(),
-            // TODO: toggle system info as well.
-            On::<Pointer<Click>>::send_event::<MoveCamera>(),
-            On::<Pointer<Over>>::target_commands_mut(
-                |_hover, _target_commands| {
-                    // dbg!(_hover);
-                    // TODO: Spawn system label.
+                System {
+                    address: new_system.address,
+                    name: new_system.name.clone(),
+                    population: new_system.population,
+                    allegiance: new_system.allegiance,
                 },
-            ),
-            On::<Pointer<Out>>::target_commands_mut(
-                |_hover, _target_commands| {
-                    // dbg!(_hover);
-                    // TODO: Despawn system label.
-                },
-            ),
-        ));
+                NotShadowCaster,
+                PickableBundle::default(),
+                // TODO: toggle system info as well.
+                On::<Pointer<Click>>::send_event::<MoveCamera>(),
+                On::<Pointer<Over>>::target_commands_mut(
+                    |_hover, _target_commands| {
+                        // dbg!(_hover);
+                        // TODO: Spawn system label.
+                    },
+                ),
+                On::<Pointer<Out>>::target_commands_mut(
+                    |_hover, _target_commands| {
+                        // dbg!(_hover);
+                        // TODO: Despawn system label.
+                    },
+                ),
+            ));
+        }
     }
 }
 
