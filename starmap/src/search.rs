@@ -1,7 +1,7 @@
-use crate::{camera::MoveCamera, Db};
+use crate::{camera::MoveCamera, systems::System, Db};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use galos_db::systems::System;
+use galos_db::systems::System as DbSystem;
 
 /// A collection of search events for responding to the user's UI
 /// interactions.
@@ -19,6 +19,8 @@ pub enum Searched {
 pub fn system(
     mut search_events: EventReader<Searched>,
     mut camera_events: EventWriter<MoveCamera>,
+    mut systems: Query<(Entity, &System)>,
+    mut commands: Commands,
     db: Res<Db>,
 ) {
     for event in search_events.read() {
@@ -26,7 +28,7 @@ pub fn system(
             Searched::System { name, .. } => {
                 future::block_on(async {
                     if let Ok(origin) =
-                        System::fetch_by_name(&db.0, &name).await
+                        DbSystem::fetch_by_name(&db.0, &name).await
                     {
                         if let Some(p) = origin.position {
                             let position =
@@ -36,6 +38,11 @@ pub fn system(
                         }
                     }
                 });
+            }
+            Searched::Faction { .. } => {
+                for (entity, _) in systems.iter() {
+                    commands.entity(entity).despawn_recursive();
+                }
             }
             _ => {}
         };
