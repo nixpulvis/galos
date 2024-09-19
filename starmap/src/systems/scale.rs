@@ -49,7 +49,7 @@ pub fn scale_stars(mut query: Query<(&mut Transform, &System)>) {
     if !query.is_empty() {
         // TODO: Change rgba color/emmisivity. The goal is to fade out to
         // transparent when they are too far away.
-        for (mut system_transform, system) in query.iter_mut() {
+        for (mut system_transform, _system) in query.iter_mut() {
             system_transform.scale = Vec3::splat(1e-2);
         }
     }
