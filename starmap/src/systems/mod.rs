@@ -10,16 +10,16 @@ pub struct System {
     allegiance: Option<Allegiance>,
 }
 
-pub mod fetch;
+mod fetch;
 pub use self::fetch::*;
 
-pub mod scale;
+mod scale;
 pub use self::scale::*;
 
-pub mod spawn;
+mod spawn;
 pub use self::spawn::*;
 
-pub mod route;
+mod route;
 pub use self::route::*;
 
 pub(crate) fn system_to_vec(system: &DbSystem) -> Vec3 {
