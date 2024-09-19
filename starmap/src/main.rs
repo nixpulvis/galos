@@ -88,5 +88,15 @@ fn main() {
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());
 
+    app.add_systems(Update, exit);
     app.run();
+}
+
+fn exit(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut events: ResMut<Events<bevy::app::AppExit>>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        events.send(AppExit::Success);
+    }
 }
