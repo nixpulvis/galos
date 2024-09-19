@@ -1,7 +1,6 @@
 //! A 3D Galaxy Map
 
 use bevy::tasks::futures_lite::future;
-use bevy::window::WindowResolution;
 use bevy::{prelude::*, window::WindowMode};
 use bevy_egui::EguiPlugin;
 #[cfg(feature = "inspector")]
@@ -27,8 +26,7 @@ fn main() {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Galos - Starmap".into(),
-            // mode: WindowMode::BorderlessFullscreen,
-            resolution: WindowResolution::new(800., 640.),
+            mode: WindowMode::BorderlessFullscreen,
             ..default()
         }),
         ..default()

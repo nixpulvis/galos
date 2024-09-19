@@ -6,7 +6,6 @@ use bevy::pbr::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
-use bevy_mod_billboard::{BillboardLockAxis, BillboardTextBundle};
 use bevy_mod_picking::prelude::*;
 use elite_journal::{system::Security, Allegiance, Government};
 use galos_db::systems::System as DbSystem;
@@ -30,8 +29,6 @@ pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<Entity, With<Route>>,
     color_by: Res<ColorBy>,
-    show_names: Res<ShowNames>,
-    asset_server: Res<AssetServer>,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -49,8 +46,6 @@ pub fn spawn(
                 &new_systems,
                 &systems_query,
                 &color_by,
-                &show_names,
-                &asset_server,
                 &mut commands,
                 &mut meshes,
                 &mut materials,
@@ -91,8 +86,6 @@ pub(crate) fn spawn_systems(
     new_systems: &[DbSystem],
     systems_query: &Query<(Entity, &System)>,
     color_by: &Res<ColorBy>,
-    show_names: &Res<ShowNames>,
-    asset_server: &Res<AssetServer>,
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
     material_assets: &mut ResMut<Assets<StandardMaterial>>,
