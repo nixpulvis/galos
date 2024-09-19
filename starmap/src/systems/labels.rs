@@ -25,13 +25,14 @@ pub(crate) fn respawn(
             if let Some(children) = children {
                 for &label_entity in children.iter() {
                     if let Ok(child) = billboards.get(label_entity) {
-                        commands.entity(child).despawn();
+                        commands
+                            .entity(system_entity)
+                            .remove_children(&[child]);
                     }
                 }
             }
         } else {
-            if children.iter().len() == 0 {
-                dbg!("HIT");
+            if children.map_or(true, |c| c.iter().len() == 0) {
                 let mut system_entity = commands.entity(system_entity);
                 let mut commands = system_entity.commands();
                 let billboard = {
