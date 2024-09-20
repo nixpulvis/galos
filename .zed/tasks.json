@@ -12,5 +12,17 @@
     "command": "cargo run --release -p starmap --features starmap/inspector"
     // "use_new_terminal": false,
     // "reveal": "always",
+  },
+  {
+    "label": "doc",
+    "command": "cargo doc --workspace --exclude eddn"
+  },
+  {
+    "label": "build",
+    "command": "cargo build --workspace --exclude eddn"
+  },
+  {
+    "label": "test",
+    "command": "cargo test --workspace --exclude eddn"
   }
 ]

@@ -1,6 +1,4 @@
-#[cfg(unix)]
 use async_std::task;
-#[cfg(unix)]
 use galos::Run;
 use galos_db::{bodies::Body, factions::Faction, systems::System, Database};
 use indicatif::{ProgressBar, ProgressStyle};

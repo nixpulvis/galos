@@ -1,5 +1,5 @@
 [package]
-name    = "galos"
+name = "galos"
 version = "0.0.3"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
@@ -12,23 +12,22 @@ structopt = "*"
 itertools = "*"
 indicatif = "*"
 chrono = "*"
-
 eddb = { path = "./eddb" }
-eddn = { path = "./eddn" }
-edsm     = { path = "./edsm" }
+edsm = { path = "./edsm" }
 galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
+prettytable-rs = "*"
+tui = "*"
 
 [target.'cfg(unix)'.dependencies]
-prettytable-rs = "*"
+eddn = { path = "./eddn" }
 termion = "*"
-tui = "*"
 
 [patch.crates-io]
 # elite_dat     = { path = './elite_dat' }
-eddb          = { path = "./eddb" }
-eddn          = { path = "./eddn" }
-edsm          = { path = "./edsm" }
+eddb = { path = "./eddb" }
+eddn = { path = "./eddn" }
+edsm = { path = "./edsm" }
 elite_journal = { path = "./elite_journal" }
 
 # TODO

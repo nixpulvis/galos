@@ -1,6 +1,4 @@
-#[cfg(unix)]
 use async_std::task;
-#[cfg(unix)]
 use galos::Run;
 use galos_db::{
     systems::{nav::ModuleClass, System},
@@ -8,7 +6,6 @@ use galos_db::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
-#[cfg(unix)]
 use prettytable::{format, Table};
 use std::time::Duration;
 use structopt::StructOpt;
