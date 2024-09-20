@@ -59,7 +59,6 @@ fn main() {
     app.add_event::<camera::MoveCamera>();
     app.add_systems(Startup, camera::spawn_camera);
     app.add_systems(Update, camera::move_camera);
-    app.add_systems(Update, camera::keyboard);
 
     app.add_event::<systems::Despawn>();
     app.add_systems(Update, systems::fetch);
