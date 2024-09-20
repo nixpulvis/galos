@@ -188,21 +188,28 @@ fn process_message(db: &Database, message: Message, user: String) {
                 }
                 Event::NavRoute(NavRoute::Route(destinations)) => {
                     for destination in destinations {
-                        let mut system = JournalSystem::new(
+                        match System::create(
+                            db,
                             destination.system_address as i64,
                             &destination.star_system,
-                        );
-                        system.pos = Some(destination.star_pos);
-                        match System::from_journal(
-                            db,
+                            None,
+                            Some(destination.star_class),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
                             entry.timestamp,
                             &user,
-                            &system,
                         )
                         .await
                         {
                             Ok(_) => {
-                                println!("[EDDN] <ROU:sys> {}", system.name)
+                                println!(
+                                    "[EDDN] <ROU:sys> {}",
+                                    destination.star_system
+                                )
                             }
                             Err(err) => eprintln!("[EDDN] <ROU:sys> {}", err),
                         }

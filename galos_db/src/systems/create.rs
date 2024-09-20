@@ -26,6 +26,7 @@ impl System {
             INSERT INTO systems
                 (address,
                  name,
+                 primary_star_class,
                  position,
                  population,
                  security,
@@ -35,21 +36,24 @@ impl System {
                  secondary_economy,
                  updated_at,
                  updated_by)
-            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, UPPER($2), $3, $4::geometry, $5, $6,
+                $7, $8, $9, $10, $11, $12)
             ON CONFLICT (address)
             DO UPDATE SET
-                population = $4,
-                security = $5,
-                government = $6,
-                allegiance = $7,
-                primary_economy = $8,
-                secondary_economy = $9,
-                updated_at = $10,
-                updated_by = $11
-            WHERE systems.updated_at < $10
+                primary_star_class = $3,
+                population = $5,
+                security = $6,
+                government = $7,
+                allegiance = $8,
+                primary_economy = $9,
+                secondary_economy = $10,
+                updated_at = $11,
+                updated_by = $12
+            WHERE systems.updated_at < $11
             "#,
             address as i64,
             name,
+            primary_star_class,
             position.map(|p| wkb::Encode(p)) as _,
             population.map(|n| n as i64),
             security as _,
