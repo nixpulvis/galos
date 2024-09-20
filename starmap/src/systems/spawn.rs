@@ -82,7 +82,7 @@ pub fn spawn(
 }
 
 /// Generate all the star system entities.
-pub(crate) fn spawn_systems(
+pub fn spawn_systems(
     new_systems: &[DbSystem],
     systems_query: &Query<(Entity, &System)>,
     color_by: &Res<ColorBy>,

@@ -100,8 +100,8 @@ fn settings(
         ui.add_space(2.);
         ui.checkbox(&mut spyglass.fetch, "Load Systems from DB");
         ui.add_space(2.);
-        // ui.checkbox(&mut spyglass.filter, "Hide Systems Outside Spyglass");
-        // ui.add_space(2.);
+        ui.checkbox(&mut spyglass.filter, "Spyglass Filter");
+        ui.add_space(2.);
         if ui.button("Despawn Systems").clicked() {
             despawner.send(Despawn);
         }

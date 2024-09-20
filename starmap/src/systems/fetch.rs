@@ -1,4 +1,4 @@
-use super::fetch_route;
+use super::{fetch_route, Spyglass};
 use crate::{search::Searched, Db};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
@@ -34,14 +34,6 @@ pub struct FetchTasks {
 /// A representation of the spawned systems
 #[derive(Resource)]
 pub struct Fetched(pub HashSet<FetchIndex>);
-
-/// A global setting which controls the spyglass around the camera
-#[derive(Resource)]
-pub struct Spyglass {
-    pub fetch: bool,
-    pub radius: f64,
-    // pub filter: bool,
-}
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
@@ -112,7 +104,7 @@ fn fetch_around_camera(
         let radius = spyglass.radius;
         let task = task_pool.spawn(async move {
             let cent = [center.x as f64, center.y as f64, center.z as f64];
-            DbSystem::fetch_in_range_of_point(&db, radius, cent)
+            DbSystem::fetch_in_range_of_point(&db, radius as f64, cent)
                 .await
                 .unwrap_or_default()
         });

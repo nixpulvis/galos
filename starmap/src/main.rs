@@ -50,7 +50,7 @@ fn main() {
     app.insert_resource(systems::Spyglass {
         radius: 50.,
         fetch: true,
-        // filter: true,
+        filter: true,
     });
 
     app.insert_resource(systems::Fetched(HashSet::new()));
@@ -63,6 +63,7 @@ fn main() {
     app.add_event::<systems::Despawn>();
     app.add_systems(Update, systems::fetch);
     app.add_systems(Update, systems::spawn.after(camera::move_camera));
+    app.add_systems(Update, systems::visibility.after(systems::spawn));
     app.add_systems(Update, systems::labels::respawn.after(systems::spawn));
     app.add_systems(
         Update,
