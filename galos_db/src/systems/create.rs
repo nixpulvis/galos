@@ -11,6 +11,7 @@ impl System {
         address: i64,
         name: &str,
         position: Option<Coordinate>,
+        primary_star_class: Option<String>,
         population: Option<u64>,
         security: Option<Security>,
         government: Option<Government>,

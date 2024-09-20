@@ -10,7 +10,7 @@ CREATE TABLE stars (
     age_my                    int       NOT NULL,
     distance_from_arrival_ls  real      NOT NULL,
     luminosity                varchar   NOT NULL,
-    star_type                 varchar   NOT NULL,
+    star_class                varchar   NOT NULL,
     stellar_mass              real      NOT NULL,
     subclass                  smallint  NOT NULL,
 

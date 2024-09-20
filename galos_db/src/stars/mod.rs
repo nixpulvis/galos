@@ -14,7 +14,7 @@ pub struct Star {
     pub age_my: i32,
     pub distance_from_arrival_ls: f32,
     pub luminosity: String,
-    pub star_type: String,
+    pub star_class: String,
     pub stellar_mass: f32,
     pub subclass: i16,
 

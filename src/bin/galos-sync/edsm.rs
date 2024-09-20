@@ -54,6 +54,7 @@ impl Cli {
                     system.id.unwrap() as i64,
                     &system.name,
                     Some(system.coords.unwrap()),
+                    None,
                     system.information.population,
                     system.information.security,
                     system.information.government,

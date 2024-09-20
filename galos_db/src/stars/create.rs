@@ -1,7 +1,7 @@
 use super::Star;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
-use elite_journal::system::Star as JournalStar;
+use elite_journal::body::Star as JournalStar;
 
 impl Star {
     pub async fn from_journal(
@@ -31,7 +31,7 @@ impl Star {
                 age_my,
                 distance_from_arrival_ls,
                 luminosity,
-                star_type,
+                star_class,
                 stellar_mass,
                 subclass,
 
@@ -62,7 +62,7 @@ impl Star {
                 age_my = $8,
                 distance_from_arrival_ls = $9,
                 luminosity = $10,
-                star_type = $11,
+                star_class = $11,
                 stellar_mass = $12,
                 subclass = $13,
 
@@ -93,7 +93,7 @@ impl Star {
             // TODO: rename _ls (lowercase 's').
             star.distance_from_arrival_lS,
             star.luminosity,
-            star.star_type,
+            star.star_class,
             star.stellar_mass,
             star.subclass,
             star.ascending_node,
@@ -125,7 +125,7 @@ impl Star {
             age_my: row.age_my,
             distance_from_arrival_ls: row.distance_from_arrival_ls,
             luminosity: row.luminosity,
-            star_type: row.star_type,
+            star_class: row.star_class,
             stellar_mass: row.stellar_mass,
             subclass: row.subclass,
 
