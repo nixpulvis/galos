@@ -1,4 +1,4 @@
-use super::{fetch_route, Spyglass};
+use crate::systems::{route::fetch::fetch_route, Spyglass};
 use crate::{search::Searched, Db};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
@@ -64,7 +64,6 @@ pub fn fetch(
             // populate it.
             Searched::System { .. } => {}
             Searched::Faction { name } => {
-                spyglass.fetch = false;
                 fetch_faction(name.into(), &mut fetched, &mut tasks, &db);
             }
             Searched::Route { start, end, range } => {

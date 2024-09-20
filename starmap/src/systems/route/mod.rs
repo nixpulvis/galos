@@ -7,11 +7,8 @@ use super::system_to_vec;
 #[derive(Component)]
 pub struct Route;
 
-mod fetch;
-pub(crate) use self::fetch::*;
-
-mod spawn;
-pub(crate) use self::spawn::*;
+pub mod fetch;
+pub mod spawn;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]

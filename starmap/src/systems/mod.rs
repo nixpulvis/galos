@@ -11,19 +11,11 @@ pub struct System {
     allegiance: Option<Allegiance>,
 }
 
-mod fetch;
-pub use self::fetch::*;
-
-mod scale;
-pub use self::scale::*;
-
-mod spawn;
-pub use self::spawn::*;
-
+pub mod fetch;
 pub mod labels;
-
-mod route;
-pub use self::route::*;
+pub mod route;
+pub mod scale;
+pub mod spawn;
 
 /// A global setting which controls the spyglass around the camera
 #[derive(Resource)]

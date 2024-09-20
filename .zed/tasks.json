@@ -15,7 +15,8 @@
   },
   {
     "label": "doc",
-    "command": "cargo doc --workspace --exclude eddn"
+    "command": "cargo doc --workspace --exclude eddn --document-private-items",
+    "reveal": "never"
   },
   {
     "label": "build",

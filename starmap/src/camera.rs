@@ -3,7 +3,9 @@ use bevy::prelude::*;
 use bevy_mod_picking::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 
-/// Sends the camera to be focused on `position`
+/// An event which triggers the movement of the camera
+///
+/// Send the camera to be focused on `position`.
 #[derive(Event, Debug)]
 pub struct MoveCamera {
     pub position: Option<Vec3>,
@@ -38,7 +40,7 @@ pub fn spawn_camera(mut commands: Commands) {
     ));
 }
 
-/// Smoothly moves the camera on `MoveCamera` event
+/// Smoothly moves the camera on `MoveCamera` events
 pub fn move_camera(
     mut query: Query<&mut PanOrbitCamera>,
     mut camera_events: EventReader<MoveCamera>,

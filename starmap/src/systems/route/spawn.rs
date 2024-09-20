@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use galos_db::systems::System as DbSystem;
 
 // TODO: Save another Local<Option<Handle<Mesh>>>?
-pub(crate) fn spawn_route(
+pub fn spawn_route(
     systems: &[DbSystem],
     route_query: &Query<Entity, With<Route>>,
     commands: &mut Commands,

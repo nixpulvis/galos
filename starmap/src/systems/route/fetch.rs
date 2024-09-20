@@ -1,10 +1,10 @@
-use crate::systems::{FetchIndex, FetchTasks, Fetched};
+use crate::systems::fetch::{FetchIndex, FetchTasks, Fetched};
 use crate::Db;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use galos_db::systems::System as DbSystem;
 
-pub(crate) fn fetch_route(
+pub fn fetch_route(
     start: String,
     end: String,
     range: String,

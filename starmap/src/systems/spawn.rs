@@ -1,7 +1,8 @@
-use super::{
-    spawn_route, system_to_vec, FetchIndex, FetchTasks, Route, System,
-};
 use crate::camera::MoveCamera;
+use crate::systems::{
+    fetch::FetchIndex, fetch::FetchTasks, route::spawn::spawn_route,
+    route::Route, system_to_vec, System,
+};
 use bevy::pbr::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::tasks::block_on;

@@ -1,7 +1,7 @@
 use crate::search::Searched;
-use crate::systems::{
-    ColorBy, Despawn, ScalePopulation, ShowNames, Spyglass, View,
-};
+use crate::systems::scale::{ScalePopulation, View};
+use crate::systems::spawn::{ColorBy, Despawn, ShowNames};
+use crate::systems::Spyglass;
 use bevy::prelude::*;
 use bevy_egui::egui::{Response, Ui};
 use bevy_egui::{egui, EguiContexts};
@@ -54,7 +54,7 @@ pub fn panel(
 }
 
 /// Star system search UI by name or faction
-pub fn search(
+pub(crate) fn search(
     ui: &mut Ui,
     events: &mut EventWriter<Searched>,
     system_name: &mut Local<Option<String>>,
@@ -77,7 +77,7 @@ pub fn search(
     }
 }
 
-fn settings(
+pub(crate) fn settings(
     ui: &mut Ui,
     spyglass: &mut ResMut<Spyglass>,
     view: &mut ResMut<View>,
@@ -140,7 +140,7 @@ fn settings(
 }
 
 /// Route finding UI for finding out how to get from A to B
-pub fn route(
+pub(crate) fn route(
     ui: &mut Ui,
     events: &mut EventWriter<Searched>,
     start: &mut Local<String>,

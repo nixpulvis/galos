@@ -1,5 +1,5 @@
-use super::ShowNames;
-use super::System;
+use crate::systems::spawn::ShowNames;
+use crate::systems::System;
 use bevy::prelude::*;
 use bevy_mod_billboard::Billboard;
 use bevy_mod_billboard::BillboardLockAxis;
