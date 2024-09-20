@@ -19,7 +19,6 @@ fn main() {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Galos - Starmap".into(),
-            mode: WindowMode::BorderlessFullscreen,
             ..default()
         }),
         ..default()
