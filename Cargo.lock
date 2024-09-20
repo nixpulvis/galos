@@ -2940,6 +2940,7 @@ dependencies = [
  "indicatif",
  "itertools",
  "prettytable-rs",
+ "starmap",
  "structopt",
  "termion",
  "tui",

@@ -7,9 +7,7 @@
 //! - [`edsm`] - A [EDSM](https://edsm.net) API adapter and data file parser
 //! - [`galos_db`] - PostgreSQL database and ORM
 //! - [`galos`](#galos) - Shared code and the user CLI, `galos`
-//! - [`galos-server`](#galos-server) - Web-server for the API and website
-//! - [`galos-worker`](#galos-worker) - Background jobs to complement the server
-//! - [`galos-gui`](#galos-gui) - Graphical application, primarily for mapping
+//! - [`starmap`] - A 3D galaxy map
 //!
 //! In order to run the server, worker, locally configured CLI and GUI, the PostgreSQL database
 //! must be running and up to date. The [`galos_db`] crate provides tools to manage this.
@@ -85,14 +83,11 @@
 //! Syncing from the `eddn` provider will subscribe to its ZMQ service and continue to process
 //! events until the process is killed.
 //!
-//! # `galos-server`
-//! TODO
+//! # `starmap`
 //!
-//! # `galos-worker`
-//! TODO
-//!
-//! # `galos-gui`
-//! TODO
+//! ```notrust
+//! Usage: starmap
+//! ```
 
 use galos_db::Database;
 

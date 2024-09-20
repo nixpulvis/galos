@@ -18,6 +18,7 @@ galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
 prettytable-rs = "*"
 tui = "*"
+starmap = { path = "./starmap" }
 
 [target.'cfg(unix)'.dependencies]
 eddn = { path = "./eddn" }
