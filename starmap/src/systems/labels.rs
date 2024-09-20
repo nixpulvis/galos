@@ -40,7 +40,7 @@ pub fn respawn(
             }
         } else {
             if children.map_or(true, |c| c.iter().len() == 0)
-                && asset_server.is_loaded_with_dependencies(font.id())
+                // && asset_server.is_loaded_with_dependencies(font.id())
             {
                 let mut system_entity = commands.entity(system_entity);
                 let mut commands = system_entity.commands();

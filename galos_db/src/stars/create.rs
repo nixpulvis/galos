@@ -90,8 +90,7 @@ impl Star {
             user,
             star.absolute_magnitude,
             star.age_my,
-            // TODO: rename _ls (lowercase 's').
-            star.distance_from_arrival_lS,
+            star.distance_from_arrival_ls,
             star.luminosity,
             star.star_class,
             star.stellar_mass,
