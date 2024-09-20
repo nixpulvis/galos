@@ -3,7 +3,7 @@ CREATE TABLE factions (
     name  varchar  NOT NULL
 );
 
-CREATE UNIQUE INDEX ON factions ((lower(name)));
+CREATE UNIQUE INDEX factions_name ON factions ((lower(name)));
 
 CREATE TYPE State AS ENUM (
     'Blight',
@@ -56,4 +56,4 @@ CREATE TABLE system_factions (
     PRIMARY KEY (system_address, faction_id)
 );
 
-CREATE UNIQUE INDEX ON system_factions (system_address, faction_id);
+CREATE UNIQUE INDEX system_factions_join ON system_factions (system_address, faction_id);

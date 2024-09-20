@@ -68,4 +68,4 @@ CREATE TABLE systems (
     updated_by        varchar          NOT NULL
 );
 
-CREATE INDEX ON systems ((upper(name)));
+CREATE INDEX systems_name ON systems ((upper(name)));
