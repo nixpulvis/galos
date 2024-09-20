@@ -67,7 +67,13 @@ fn main() {
     app.add_systems(Update, systems::labels::respawn.after(systems::spawn));
     app.add_systems(
         Update,
-        systems::labels::visibility.after(systems::labels::respawn),
+        systems::labels::scale.after(systems::labels::respawn),
+    );
+    app.add_systems(
+        Update,
+        systems::labels::visibility
+            .after(systems::labels::respawn)
+            .before(systems::labels::scale),
     );
     app.add_systems(Update, systems::despawn);
     app.add_systems(
