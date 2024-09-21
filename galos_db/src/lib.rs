@@ -1,3 +1,8 @@
+//!  Database adapter and functions for `galos`
+//!
+//! Set `DATABASE_ENV` for configuring the connection. E.g:
+//! - `postgresql://localhost/galos_development`
+//! - `postgresql://postgres:"pw"@10.0.1.2/galos_production`
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::env;
 

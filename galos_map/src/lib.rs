@@ -1,3 +1,6 @@
+//! A 3D Galaxy Map for `galos`
+//!
+//! Requires (read-only) access to [`galos_db`].
 use bevy::prelude::*;
 use galos_db::Database;
 
