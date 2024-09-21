@@ -56,6 +56,7 @@ fn main() {
     app.add_systems(Update, systems::fetch::fetch); // TODO: rename
     app.add_systems(Update, systems::spawn::spawn.after(camera::move_camera)); // TODO: rename
     app.add_systems(Update, systems::visibility.after(systems::spawn::spawn));
+    app.add_systems(Startup, systems::labels::load_font);
     app.add_systems(
         Update,
         systems::labels::respawn.after(systems::spawn::spawn),
