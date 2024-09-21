@@ -106,7 +106,20 @@ pub fn spawn_systems(
             ColorBy::Security => security_color_idx(&new_system),
         };
         if let Some(_enitity) = existing_systems.remove(&new_system.address) {
-            // TODO(#42): update
+            commands.entity(_enitity).insert(PbrBundle {
+                transform: Transform {
+                    translation: Vec3::new(
+                        new_system.position.unwrap().x as f32,
+                        new_system.position.unwrap().y as f32,
+                        new_system.position.unwrap().z as f32,
+                    ),
+                    scale: Vec3::splat(1.),
+                    ..default()
+                },
+                mesh: mesh.clone(),
+                material: materials[color_idx].clone(),
+                ..default()
+            });
         } else {
             commands.spawn((
                 PbrBundle {
