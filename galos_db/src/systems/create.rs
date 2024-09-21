@@ -40,13 +40,14 @@ impl System {
                 $7, $8, $9, $10, $11, $12)
             ON CONFLICT (address)
             DO UPDATE SET
-                primary_star_class = $3,
-                population = $5,
-                security = $6,
-                government = $7,
-                allegiance = $8,
-                primary_economy = $9,
-                secondary_economy = $10,
+                primary_star_class = COALESCE($3, systems.primary_star_class),
+                position = COALESCE($4, systems.position),
+                population = COALESCE($5, systems.population),
+                security = COALESCE($6, systems.security),
+                government = COALESCE($7, systems.government),
+                allegiance = COALESCE($8, systems.allegiance),
+                primary_economy = COALESCE($9, systems.primary_economy),
+                secondary_economy = COALESCE($10, systems.secondary_economy),
                 updated_at = $11,
                 updated_by = $12
             WHERE systems.updated_at < $11
