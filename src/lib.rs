@@ -6,13 +6,14 @@
 //! - [`eddb`] - A [EDDB](https://eddb.io) data file parser (discontinued)
 //! - [`edsm`] - A [EDSM](https://edsm.net) API adapter and data file parser
 //! - [`galos_db`] - PostgreSQL database and ORM
+//! - [`galos_map`] - A 3D galaxy map
+//! - [`galos_server`] - An HTTP server for [`galos_db`]
+//! - [`galos_gui`] - WIP
 //! - [`galos`](#galos) - Shared code and the user CLI, `galos`
-//! - [`starmap`] - A 3D galaxy map
 //!
-//! In order to run the server, worker, locally configured CLI and GUI, the PostgreSQL database
-//! must be running and up to date. The [`galos_db`] crate provides tools to manage this.
-//! Both [`galos-server`](#galos-server) and [`galos-worker`](#galos-worker) can be run
-//! independently by storing job requests and responses in the database.
+//! In order to run the this tool, [`galos-sync`], [`galos-map`],
+//! [`galos-server`], [`galos-gui`], a PostGIS database must be running and up
+//! to date. The [`galos_db`] crate provides tools to manage this.
 //!
 //! # `galos`
 //!
@@ -80,14 +81,8 @@
 //! ##### `galos-sync <provider>`
 //! Syncs the DB with EDDN, EDSM and/or EDDB.
 //!
-//! Syncing from the `eddn` provider will subscribe to its ZMQ service and continue to process
-//! events until the process is killed.
-//!
-//! # `starmap`
-//!
-//! ```notrust
-//! Usage: starmap
-//! ```
+//! Syncing from the `eddn` provider will subscribe to its ZMQ service and
+//! continue to process events until the process is killed.
 
 use galos_db::Database;
 

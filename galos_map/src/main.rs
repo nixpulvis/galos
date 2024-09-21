@@ -9,7 +9,7 @@ use bevy_mod_billboard::prelude::*;
 use bevy_mod_picking::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use galos_db::Database;
-use starmap::*;
+use galos_map::*;
 use std::collections::{HashMap, HashSet};
 
 fn main() {

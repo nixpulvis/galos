@@ -18,7 +18,7 @@ galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
 prettytable-rs = "*"
 tui = "*"
-starmap = { path = "./starmap" }
+galos_map= { path = "./galos_map" }
 
 [target.'cfg(unix)'.dependencies]
 eddn = { path = "./eddn" }
@@ -42,10 +42,10 @@ members = [
     "eddb",
     "edsm",
     "galos_db",
-    "starmap",
-    # "galos-gui",
-    "galos-server",
-    # "galos-worker",
+    "galos_map",
+    # "galos_gui",
+    "galos_server",
+    # "galos_worker",
 ]
 
 [profile.dev]

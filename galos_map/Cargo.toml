@@ -1,6 +1,6 @@
 [package]
-name = "starmap"
-version = "0.0.3"
+name = "galos_map"
+version = "0.1.0"
 edition = "2021"
 
 [features]

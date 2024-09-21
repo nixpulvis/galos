@@ -2937,28 +2937,13 @@ dependencies = [
  "edsm",
  "elite_journal",
  "galos_db",
+ "galos_map",
  "indicatif",
  "itertools",
  "prettytable-rs",
- "starmap",
  "structopt",
  "termion",
  "tui",
-]
-
-[[package]]
-name = "galos-server"
-version = "0.0.3"
-dependencies = [
- "askama",
- "axum",
- "galos_db",
- "itertools",
- "ordered-float",
- "serde",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2973,6 +2958,36 @@ dependencies = [
  "ordered-float",
  "pathfinding",
  "sqlx",
+]
+
+[[package]]
+name = "galos_map"
+version = "0.1.0"
+dependencies = [
+ "async-std",
+ "bevy",
+ "bevy-inspector-egui",
+ "bevy_egui",
+ "bevy_mod_billboard",
+ "bevy_mod_picking",
+ "bevy_panorbit_camera",
+ "elite_journal",
+ "galos_db",
+]
+
+[[package]]
+name = "galos_server"
+version = "0.0.4"
+dependencies = [
+ "askama",
+ "axum",
+ "galos_db",
+ "itertools",
+ "ordered-float",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5910,21 +5925,6 @@ dependencies = [
  "sqlx-core",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "starmap"
-version = "0.0.3"
-dependencies = [
- "async-std",
- "bevy",
- "bevy-inspector-egui",
- "bevy_egui",
- "bevy_mod_billboard",
- "bevy_mod_picking",
- "bevy_panorbit_camera",
- "elite_journal",
- "galos_db",
 ]
 
 [[package]]
