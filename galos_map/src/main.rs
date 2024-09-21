@@ -45,7 +45,7 @@ fn main() {
         filter: true,
     });
 
-    app.insert_resource(systems::fetch::Fetched(HashSet::new()));
+    app.insert_resource(systems::fetch::Fetched(HashMap::new()));
     app.insert_resource(systems::fetch::FetchTasks { fetched: HashMap::new() });
 
     app.add_event::<camera::MoveCamera>();
