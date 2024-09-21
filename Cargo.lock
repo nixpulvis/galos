@@ -2971,6 +2971,7 @@ dependencies = [
  "bevy_mod_billboard",
  "bevy_mod_picking",
  "bevy_panorbit_camera",
+ "chrono",
  "elite_journal",
  "galos_db",
 ]
