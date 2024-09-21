@@ -1,17 +1,15 @@
 [
   {
-    "label": "starmap",
-    "command": "cargo run --release -p starmap"
+    "label": "galos_map",
+    "command": "cargo run --release -p galos_map"
   },
   {
-    "label": "starmap (tracy)",
-    "command": "cargo run --release -p starmap --features starmap/tracy"
+    "label": "galos_map (tracy)",
+    "command": "cargo run --release -p galos_map --features galos_map/tracy"
   },
   {
-    "label": "starmap (inspector)",
-    "command": "cargo run --release -p starmap --features starmap/inspector"
-    // "use_new_terminal": false,
-    // "reveal": "always",
+    "label": "galos_map (inspector)",
+    "command": "cargo run --release -p galos_map --features galos_map/inspector"
   },
   {
     "label": "doc",
