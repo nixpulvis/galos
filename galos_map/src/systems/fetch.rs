@@ -112,7 +112,6 @@ fn fetch_around_camera(
         FetchIndex::Region(center / scale, spyglass.radius as i32)
     };
 
-    // TODO: Refactor duplicate code in `fetch_*` functions.
     let now = time.last_update().unwrap_or(time.startup());
     if fetch_condition(&region, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
