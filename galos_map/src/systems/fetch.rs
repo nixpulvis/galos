@@ -135,7 +135,6 @@ fn fetch_faction(
 ) {
     let index = FetchIndex::Faction(name.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    dbg!(now, fetched.0.get(&index));
     if update_condition(&index, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
