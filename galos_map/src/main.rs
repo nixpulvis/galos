@@ -11,6 +11,7 @@ use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use galos_db::Database;
 use galos_map::*;
 use std::collections::HashMap;
+use systems::labels::NameFont;
 
 fn main() {
     let db = future::block_on(async { Database::new().await.unwrap() });
