@@ -1,5 +1,12 @@
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
+use chrono::{DateTime, Utc};
+use elite_journal::{
+    system::{Economy, Security},
+    // TODO: Fix these imports, they should all be in system.
+    Allegiance,
+    Government,
+};
 use galos_db::systems::System as DbSystem;
 
 #[derive(Component)]
@@ -7,6 +14,12 @@ pub struct System {
     address: i64,
     name: String,
     population: u64,
+    allegiance: Option<Allegiance>,
+    government: Option<Government>,
+    security: Option<Security>,
+    primary_economy: Option<Economy>,
+    secondary_economy: Option<Economy>,
+    updated_at: DateTime<Utc>,
 }
 
 pub mod fetch;

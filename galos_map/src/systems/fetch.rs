@@ -4,7 +4,8 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy_panorbit_camera::PanOrbitCamera;
 use galos_db::systems::System as DbSystem;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// Represents a single fetch request
 //
@@ -22,8 +23,11 @@ pub enum FetchIndex {
     Route(String, String, String),
 }
 
-// A region is as large as the current spyglass radius / this factor.
+/// A region is as large as the current spyglass radius / this factor.
 const REGION_FACTOR: i32 = 10;
+
+/// The fetch throttle amount.
+const FETCH_DELAY: Duration = Duration::from_millis(100);
 
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource)]
@@ -33,7 +37,7 @@ pub struct FetchTasks {
 
 /// A representation of the spawned systems
 #[derive(Resource)]
-pub struct Fetched(pub HashSet<FetchIndex>);
+pub struct Fetched(pub HashMap<FetchIndex, Instant>);
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
@@ -42,6 +46,7 @@ pub fn fetch(
     mut fetched: ResMut<Fetched>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
+    time: Res<Time<Real>>,
     db: Res<Db>,
 ) {
     if spyglass.fetch {
@@ -50,6 +55,7 @@ pub fn fetch(
             &mut fetched,
             &mut tasks,
             &mut spyglass,
+            &time,
             &db,
         );
     }
@@ -64,7 +70,13 @@ pub fn fetch(
             // populate it.
             Searched::System { .. } => {}
             Searched::Faction { name } => {
-                fetch_faction(name.into(), &mut fetched, &mut tasks, &db);
+                fetch_faction(
+                    name.into(),
+                    &mut fetched,
+                    &mut tasks,
+                    &time,
+                    &db,
+                );
             }
             Searched::Route { start, end, range } => {
                 fetch_route(
@@ -73,6 +85,7 @@ pub fn fetch(
                     range.into(),
                     &mut fetched,
                     &mut tasks,
+                    &time,
                     &db,
                 );
             }
@@ -85,6 +98,7 @@ fn fetch_around_camera(
     fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
+    time: &Res<Time<Real>>,
     db: &Res<Db>,
 ) {
     let camera = camera_query.single();
@@ -97,7 +111,9 @@ fn fetch_around_camera(
     } else {
         FetchIndex::Region(center / scale, spyglass.radius as i32)
     };
-    if !fetched.0.contains(&region) && !tasks.fetched.contains_key(&region) {
+
+    let now = time.last_update().unwrap_or(time.startup());
+    if fetch_condition(&region, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let radius = spyglass.radius;
@@ -107,7 +123,7 @@ fn fetch_around_camera(
                 .await
                 .unwrap_or_default()
         });
-        fetched.0.insert(region.clone());
+        fetched.0.insert(region.clone(), now);
         tasks.fetched.insert(region, task);
     }
 }
@@ -116,16 +132,34 @@ fn fetch_faction(
     name: String,
     fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
+    time: &Res<Time<Real>>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Faction(name.clone());
-    if !tasks.fetched.contains_key(&index) {
+    let now = time.last_update().unwrap_or(time.startup());
+    if fetch_condition(&index, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
             DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
         });
-        fetched.0.insert(index.clone());
+        dbg!("\nINSERTING FACTION\n");
+        fetched.0.insert(index.clone(), now);
         tasks.fetched.insert(index, task);
     }
+}
+
+pub fn fetch_condition(
+    index: &FetchIndex,
+    fetched: &ResMut<Fetched>,
+    tasks: &ResMut<FetchTasks>,
+    now: Instant,
+) -> bool {
+    // If the index is either not already fetched or being fetched we must
+    // fetch it.
+    (!fetched.0.contains_key(index) && !tasks.fetched.contains_key(index))
+        // To update existing indicies,
+        || (fetched.0.contains_key(index)
+            // we check "now" is after the last fetch + N.
+            && fetched.0[index] + FETCH_DELAY < now)
 }

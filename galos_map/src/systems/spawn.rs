@@ -100,47 +100,15 @@ pub fn spawn_systems(
     let materials = init_materials(material_assets);
 
     for new_system in new_systems {
-        let color_idx = match color_by.deref() {
-            ColorBy::Allegiance => allegiance_color_idx(&new_system),
-            ColorBy::Government => government_color_idx(&new_system),
-            ColorBy::Security => security_color_idx(&new_system),
-        };
-        if let Some(_enitity) = existing_systems.remove(&new_system.address) {
-            commands.entity(_enitity).insert(PbrBundle {
-                transform: Transform {
-                    translation: Vec3::new(
-                        new_system.position.unwrap().x as f32,
-                        new_system.position.unwrap().y as f32,
-                        new_system.position.unwrap().z as f32,
-                    ),
-                    scale: Vec3::splat(1.),
-                    ..default()
-                },
-                mesh: mesh.clone(),
-                material: materials[color_idx].clone(),
-                ..default()
-            });
+        if let Some(enitity) = existing_systems.remove(&new_system.address) {
+            commands.entity(enitity).insert(System::from(new_system));
+            commands
+                .entity(enitity)
+                .insert(pbr_bundle(new_system, &mesh, &materials, color_by));
         } else {
             commands.spawn((
-                PbrBundle {
-                    transform: Transform {
-                        translation: Vec3::new(
-                            new_system.position.unwrap().x as f32,
-                            new_system.position.unwrap().y as f32,
-                            new_system.position.unwrap().z as f32,
-                        ),
-                        scale: Vec3::splat(1.),
-                        ..default()
-                    },
-                    mesh: mesh.clone(),
-                    material: materials[color_idx].clone(),
-                    ..default()
-                },
-                System {
-                    address: new_system.address,
-                    name: new_system.name.clone(),
-                    population: new_system.population,
-                },
+                pbr_bundle(new_system, &mesh, &materials, color_by),
+                System::from(new_system),
                 NotShadowCaster,
                 PickableBundle::default(),
                 // TODO: toggle system info as well.
@@ -164,18 +132,31 @@ pub fn spawn_systems(
 
 // TODO(#42): update ColorBy
 
-#[derive(Event)]
-pub struct Despawn;
-
-pub fn despawn(
-    mut commands: Commands,
-    systems: Query<(Entity, &System)>,
-    mut events: EventReader<Despawn>,
-) {
-    for _ in events.read() {
-        for (entity, _) in systems.iter() {
-            commands.entity(entity).despawn_recursive();
-        }
+// TODO: Use `System` values.
+fn pbr_bundle(
+    system: &DbSystem,
+    mesh: &Handle<Mesh>,
+    materials: &Vec<Handle<StandardMaterial>>,
+    color_by: &Res<ColorBy>,
+) -> PbrBundle {
+    let color_idx = match color_by.deref() {
+        ColorBy::Allegiance => allegiance_color_idx(&system),
+        ColorBy::Government => government_color_idx(&system),
+        ColorBy::Security => security_color_idx(&system),
+    };
+    PbrBundle {
+        transform: Transform {
+            translation: Vec3::new(
+                system.position.unwrap().x as f32,
+                system.position.unwrap().y as f32,
+                system.position.unwrap().z as f32,
+            ),
+            scale: Vec3::splat(1.),
+            ..default()
+        },
+        mesh: mesh.clone(),
+        material: materials[color_idx].clone(),
+        ..default()
     }
 }
 
@@ -251,5 +232,36 @@ fn security_color_idx(system: &DbSystem) -> usize {
         Some(Security::Low) => 0,         // Green
         Some(Security::Anarchy) => 2,     // Red
         Some(Security::None) | None => 7, // Grey
+    }
+}
+
+impl From<&DbSystem> for System {
+    fn from(system: &DbSystem) -> System {
+        System {
+            address: system.address,
+            name: system.name.clone(),
+            population: system.population,
+            allegiance: system.allegiance,
+            government: system.government,
+            security: system.security,
+            primary_economy: system.primary_economy,
+            secondary_economy: system.secondary_economy,
+            updated_at: system.updated_at,
+        }
+    }
+}
+
+#[derive(Event)]
+pub struct Despawn;
+
+pub fn despawn(
+    mut commands: Commands,
+    systems: Query<(Entity, &System)>,
+    mut events: EventReader<Despawn>,
+) {
+    for _ in events.read() {
+        for (entity, _) in systems.iter() {
+            commands.entity(entity).despawn_recursive();
+        }
     }
 }

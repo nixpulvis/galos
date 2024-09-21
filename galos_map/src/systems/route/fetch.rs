@@ -1,4 +1,4 @@
-use crate::systems::fetch::{FetchIndex, FetchTasks, Fetched};
+use crate::systems::fetch::{fetch_condition, FetchIndex, FetchTasks, Fetched};
 use crate::Db;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
@@ -10,10 +10,12 @@ pub fn fetch_route(
     range: String,
     fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
+    time: &Res<Time<Real>>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Route(start.clone(), end.clone(), range.clone());
-    if !tasks.fetched.contains_key(&index) {
+    let now = time.last_update().unwrap_or(time.startup());
+    if fetch_condition(&index, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
@@ -28,7 +30,7 @@ pub fn fetch_route(
             }
             vec![]
         });
-        fetched.0.insert(index.clone());
+        fetched.0.insert(index.clone(), now);
         tasks.fetched.insert(index, task);
     }
 }
