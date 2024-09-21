@@ -25,61 +25,57 @@ pub fn respawn(
 ) {
     let camera_translation = camera.single().translation;
 
-    if !asset_server.is_loaded_with_dependencies(font.0.id()) {
-        for (system_entity, system, system_transform, children) in
-            systems.iter()
-        {
-            let d = camera_translation.distance(system_transform.translation);
+    for (system_entity, system, system_transform, children) in systems.iter() {
+        let d = camera_translation.distance(system_transform.translation);
 
-            if d > RADIUS {
-                if let Some(children) = children {
-                    for &billboard_entity in children.iter() {
-                        if let Ok(billboard_entity) =
-                            billboards.get(billboard_entity)
-                        {
-                            commands
-                                .entity(system_entity)
-                                .remove_children(&[billboard_entity]);
-                            commands.entity(billboard_entity).despawn();
-                        }
+        if d > RADIUS {
+            if let Some(children) = children {
+                for &billboard_entity in children.iter() {
+                    if let Ok(billboard_entity) =
+                        billboards.get(billboard_entity)
+                    {
+                        commands
+                            .entity(system_entity)
+                            .remove_children(&[billboard_entity]);
+                        commands.entity(billboard_entity).despawn();
                     }
                 }
-            } else {
-                if children.map_or(true, |c| c.iter().len() == 0)
-                    && asset_server.is_loaded_with_dependencies(font.0.id())
-                {
-                    let mut system_entity = commands.entity(system_entity);
-                    let mut commands = system_entity.commands();
-                    let billboard = {
-                        let mut billboard_entity = commands.spawn((
-                            BillboardTextBundle {
-                                transform: Transform::from_scale(Vec3::splat(
-                                    SCALE,
-                                ))
-                                .with_translation(Vec3::new(3., 0., 0.)),
-                                text: Text::from_section(
-                                    system.name.clone(),
-                                    TextStyle {
-                                        font_size: SIZE,
-                                        font: font.0.clone(),
-                                        color: Color::WHITE,
-                                    },
-                                )
-                                .with_justify(JustifyText::Left),
-                                ..default()
-                            },
-                            BillboardLockAxis::default(),
-                        ));
+            }
+        } else {
+            if children.map_or(true, |c| c.iter().len() == 0)
+                && asset_server.is_loaded_with_dependencies(font.0.id())
+            {
+                let mut system_entity = commands.entity(system_entity);
+                let mut commands = system_entity.commands();
+                let billboard = {
+                    let mut billboard_entity = commands.spawn((
+                        BillboardTextBundle {
+                            transform: Transform::from_scale(Vec3::splat(
+                                SCALE,
+                            ))
+                            .with_translation(Vec3::new(3., 0., 0.)),
+                            text: Text::from_section(
+                                system.name.clone(),
+                                TextStyle {
+                                    font_size: SIZE,
+                                    font: font.0.clone(),
+                                    color: Color::WHITE,
+                                },
+                            )
+                            .with_justify(JustifyText::Left),
+                            ..default()
+                        },
+                        BillboardLockAxis::default(),
+                    ));
 
-                        if !show_names.0 {
-                            billboard_entity.insert(Visibility::Hidden);
-                        }
+                    if !show_names.0 {
+                        billboard_entity.insert(Visibility::Hidden);
+                    }
 
-                        billboard_entity.id()
-                    };
+                    billboard_entity.id()
+                };
 
-                    system_entity.add_child(billboard);
-                }
+                system_entity.add_child(billboard);
             }
         }
     }
