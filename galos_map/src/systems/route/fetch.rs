@@ -1,6 +1,4 @@
-use crate::systems::fetch::{
-    update_condition, FetchIndex, FetchTasks, Fetched,
-};
+use crate::systems::fetch::{fetch_condition, FetchIndex, FetchTasks, Fetched};
 use crate::Db;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
@@ -17,7 +15,7 @@ pub fn fetch_route(
 ) {
     let index = FetchIndex::Route(start.clone(), end.clone(), range.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if update_condition(&index, &fetched, &tasks, now) {
+    if fetch_condition(&index, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {

@@ -111,7 +111,7 @@ fn fetch_around_camera(
 
     // TODO: Refactor duplicate code in `fetch_*` functions.
     let now = time.last_update().unwrap_or(time.startup());
-    if update_condition(&region, &fetched, &tasks, now) {
+    if fetch_condition(&region, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let radius = spyglass.radius;
@@ -135,25 +135,29 @@ fn fetch_faction(
 ) {
     let index = FetchIndex::Faction(name.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if update_condition(&index, &fetched, &tasks, now) {
+    if fetch_condition(&index, &fetched, &tasks, now) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
             DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
         });
+        dbg!("\nINSERTING FACTION\n");
         fetched.0.insert(index.clone(), now);
         tasks.fetched.insert(index, task);
     }
 }
 
-pub fn update_condition(
+pub fn fetch_condition(
     index: &FetchIndex,
     fetched: &ResMut<Fetched>,
     tasks: &ResMut<FetchTasks>,
     now: Instant,
 ) -> bool {
-    (fetched.0.contains_key(index)
-        && fetched.0[index] + Duration::from_millis(100) < now)
-        || (!fetched.0.contains_key(index)
-            && !tasks.fetched.contains_key(index))
+    // If the index is either not already fetched or being fetched we must
+    // fetch it.
+    (!fetched.0.contains_key(index) && !tasks.fetched.contains_key(index))
+        // To update existing indicies,
+        || (fetched.0.contains_key(index)
+            // we check "now" is after the last fetch + N.
+            && fetched.0[index] + Duration::from_millis(100) < now)
 }

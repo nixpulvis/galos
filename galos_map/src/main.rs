@@ -10,7 +10,7 @@ use bevy_mod_picking::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use galos_db::Database;
 use galos_map::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 fn main() {
     let db = future::block_on(async { Database::new().await.unwrap() });
