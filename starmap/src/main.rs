@@ -1,7 +1,7 @@
 //! A 3D Galaxy Map
 
+use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use bevy::{prelude::*, window::WindowMode};
 use bevy_egui::EguiPlugin;
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
