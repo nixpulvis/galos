@@ -140,7 +140,6 @@ pub fn spawn_systems(
                     address: new_system.address,
                     name: new_system.name.clone(),
                     population: new_system.population,
-                    allegiance: new_system.allegiance,
                 },
                 NotShadowCaster,
                 PickableBundle::default(),

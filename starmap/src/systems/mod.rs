@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
-use elite_journal::Allegiance;
 use galos_db::systems::System as DbSystem;
 
 #[derive(Component)]
@@ -8,7 +7,6 @@ pub struct System {
     address: i64,
     name: String,
     population: u64,
-    allegiance: Option<Allegiance>,
 }
 
 pub mod fetch;
