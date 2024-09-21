@@ -23,8 +23,11 @@ pub enum FetchIndex {
     Route(String, String, String),
 }
 
-// A region is as large as the current spyglass radius / this factor.
+/// A region is as large as the current spyglass radius / this factor.
 const REGION_FACTOR: i32 = 10;
+
+/// The fetch throttle amount.
+const FETCH_DELAY: Duration = Duration::from_millis(100);
 
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource)]
@@ -159,5 +162,5 @@ pub fn fetch_condition(
         // To update existing indicies,
         || (fetched.0.contains_key(index)
             // we check "now" is after the last fetch + N.
-            && fetched.0[index] + Duration::from_millis(100) < now)
+            && fetched.0[index] + FETCH_DELAY < now)
 }
