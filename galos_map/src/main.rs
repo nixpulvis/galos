@@ -11,6 +11,7 @@ use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use galos_db::Database;
 use galos_map::*;
 use std::collections::HashMap;
+use systems::labels::NameFont;
 
 fn main() {
     let db = future::block_on(async { Database::new().await.unwrap() });
@@ -56,6 +57,7 @@ fn main() {
     app.add_systems(Update, systems::fetch::fetch); // TODO: rename
     app.add_systems(Update, systems::spawn::spawn.after(camera::move_camera)); // TODO: rename
     app.add_systems(Update, systems::visibility.after(systems::spawn::spawn));
+    app.add_systems(Startup, systems::labels::load_font);
     app.add_systems(
         Update,
         systems::labels::respawn.after(systems::spawn::spawn),

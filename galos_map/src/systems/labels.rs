@@ -10,6 +10,9 @@ const SCALE: f32 = 0.02;
 const SIZE: f32 = 64.;
 const RADIUS: f32 = 35.;
 
+#[derive(Resource)]
+pub struct NameFont(Handle<Font>);
+
 /// Spawn and despawn system labels
 pub fn respawn(
     mut commands: Commands,
@@ -17,9 +20,9 @@ pub fn respawn(
     systems: Query<(Entity, &System, &Transform, Option<&Children>)>,
     billboards: Query<Entity, With<Billboard>>,
     show_names: Res<ShowNames>,
+    font: Res<NameFont>,
     asset_server: Res<AssetServer>,
 ) {
-    let font = asset_server.load("gautami.ttf");
     let camera_translation = camera.single().translation;
 
     for (system_entity, system, system_transform, children) in systems.iter() {
@@ -40,7 +43,7 @@ pub fn respawn(
             }
         } else {
             if children.map_or(true, |c| c.iter().len() == 0)
-                // && asset_server.is_loaded_with_dependencies(font.id())
+                && asset_server.is_loaded_with_dependencies(font.0.id())
             {
                 let mut system_entity = commands.entity(system_entity);
                 let mut commands = system_entity.commands();
@@ -55,7 +58,7 @@ pub fn respawn(
                                 system.name.clone(),
                                 TextStyle {
                                     font_size: SIZE,
-                                    font: font.clone(),
+                                    font: font.0.clone(),
                                     color: Color::WHITE,
                                 },
                             )
@@ -109,4 +112,9 @@ pub fn visibility(
             }
         }
     }
+}
+
+pub fn load_font(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands
+        .insert_resource(NameFont(asset_server.load::<Font>("gautami.ttf")));
 }
