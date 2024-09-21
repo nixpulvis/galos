@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM system_faction_states\n            WHERE system_address = $1 AND faction_id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4bfbbaa4335b32023520efb8f6589f7461af30fc5c1ced0883b75aa0d7968d9c"
+}

@@ -1,0 +1,121 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 primary_star_class,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at,\n                 updated_by)\n            VALUES ($1, UPPER($2), $3, $4::geometry, $5, $6,\n                $7, $8, $9, $10, $11, $12)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                primary_star_class = $3,\n                population = $5,\n                security = $6,\n                government = $7,\n                allegiance = $8,\n                primary_economy = $9,\n                secondary_economy = $10,\n                updated_at = $11,\n                updated_by = $12\n            WHERE systems.updated_at < $11\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Varchar",
+        {
+          "Custom": {
+            "name": "geometry",
+            "kind": "Simple"
+          }
+        },
+        "Int8",
+        {
+          "Custom": {
+            "name": "security",
+            "kind": {
+              "Enum": [
+                "Low",
+                "Medium",
+                "High"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "economy",
+            "kind": {
+              "Enum": [
+                "Agriculture",
+                "Carrier",
+                "Colony",
+                "Extraction",
+                "HighTech",
+                "Industrial",
+                "Military",
+                "Prison",
+                "Refinery",
+                "Service",
+                "Terraforming",
+                "Tourism",
+                "Undefined"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "economy",
+            "kind": {
+              "Enum": [
+                "Agriculture",
+                "Carrier",
+                "Colony",
+                "Extraction",
+                "HighTech",
+                "Industrial",
+                "Military",
+                "Prison",
+                "Refinery",
+                "Service",
+                "Terraforming",
+                "Tourism",
+                "Undefined"
+              ]
+            }
+          }
+        },
+        "Timestamp",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "59f54ff44a45db6be47ef31657b3adce36781f78219ebdbfc326723896f9d67b"
+}

@@ -1,0 +1,191 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO system_factions\n                (system_address,\n                 faction_id,\n                 state,\n                 influence,\n                 happiness,\n                 government,\n                 allegiance,\n                 updated_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n            ON CONFLICT (system_address, faction_id)\n            DO UPDATE SET\n                state = $3,\n                influence = $4,\n                happiness = $5,\n                government = $6,\n                allegiance = $7,\n                updated_at = $8\n            WHERE system_factions.updated_at < $8\n            RETURNING\n                system_address,\n                faction_id,\n                state AS \"state: JournalState\",\n                influence,\n                happiness \"happiness: Happiness\",\n                updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "faction_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "state: JournalState",
+        "type_info": {
+          "Custom": {
+            "name": "state",
+            "kind": {
+              "Enum": [
+                "Blight",
+                "Boom",
+                "Bust",
+                "CivilLiberty",
+                "CivilUnrest",
+                "CivilWar",
+                "ColdWar",
+                "Colonisation",
+                "Drought",
+                "Election",
+                "Expansion",
+                "Famine",
+                "HistoricEvent",
+                "InfrastructureFailure",
+                "Investment",
+                "Lockdown",
+                "NaturalDisaster",
+                "Outbreak",
+                "PirateAttack",
+                "PublicHoliday",
+                "Retreat",
+                "Revolution",
+                "TechnologicalLeap",
+                "Terrorism",
+                "TradeWar",
+                "War"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "influence",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 4,
+        "name": "happiness: Happiness",
+        "type_info": {
+          "Custom": {
+            "name": "happiness",
+            "kind": {
+              "Enum": [
+                "Elated",
+                "Happy",
+                "Discontented",
+                "Unhappy",
+                "Despondent"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        {
+          "Custom": {
+            "name": "state",
+            "kind": {
+              "Enum": [
+                "Blight",
+                "Boom",
+                "Bust",
+                "CivilLiberty",
+                "CivilUnrest",
+                "CivilWar",
+                "ColdWar",
+                "Colonisation",
+                "Drought",
+                "Election",
+                "Expansion",
+                "Famine",
+                "HistoricEvent",
+                "InfrastructureFailure",
+                "Investment",
+                "Lockdown",
+                "NaturalDisaster",
+                "Outbreak",
+                "PirateAttack",
+                "PublicHoliday",
+                "Retreat",
+                "Revolution",
+                "TechnologicalLeap",
+                "Terrorism",
+                "TradeWar",
+                "War"
+              ]
+            }
+          }
+        },
+        "Float4",
+        {
+          "Custom": {
+            "name": "happiness",
+            "kind": {
+              "Enum": [
+                "Elated",
+                "Happy",
+                "Discontented",
+                "Unhappy",
+                "Despondent"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid"
+              ]
+            }
+          }
+        },
+        "Timestamp"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "4c2cd24e2d973db4371e811528886684e1952a6cc992be3c39d572eb5373c622"
+}

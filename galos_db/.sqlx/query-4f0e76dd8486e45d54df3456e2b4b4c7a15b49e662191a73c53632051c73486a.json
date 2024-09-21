@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT *\n            FROM articles\n            WHERE date BETWEEN $1 AND $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "body",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "4f0e76dd8486e45d54df3456e2b4b4c7a15b49e662191a73c53632051c73486a"
+}

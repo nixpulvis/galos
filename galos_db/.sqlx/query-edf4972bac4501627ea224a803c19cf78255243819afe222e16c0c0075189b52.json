@@ -1,0 +1,155 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                system_address,\n                faction_id,\n                name,\n                state AS \"state: JournalState\",\n                influence,\n                happiness AS \"happiness: Happiness\",\n                government AS \"government: Government\",\n                allegiance AS \"allegiance: Allegiance\",\n                updated_at\n            FROM system_factions\n            JOIN factions ON faction_id = id\n            WHERE system_address = $1\n            ORDER BY influence DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "faction_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "state: JournalState",
+        "type_info": {
+          "Custom": {
+            "name": "state",
+            "kind": {
+              "Enum": [
+                "Blight",
+                "Boom",
+                "Bust",
+                "CivilLiberty",
+                "CivilUnrest",
+                "CivilWar",
+                "ColdWar",
+                "Colonisation",
+                "Drought",
+                "Election",
+                "Expansion",
+                "Famine",
+                "HistoricEvent",
+                "InfrastructureFailure",
+                "Investment",
+                "Lockdown",
+                "NaturalDisaster",
+                "Outbreak",
+                "PirateAttack",
+                "PublicHoliday",
+                "Retreat",
+                "Revolution",
+                "TechnologicalLeap",
+                "Terrorism",
+                "TradeWar",
+                "War"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "influence",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 5,
+        "name": "happiness: Happiness",
+        "type_info": {
+          "Custom": {
+            "name": "happiness",
+            "kind": {
+              "Enum": [
+                "Elated",
+                "Happy",
+                "Discontented",
+                "Unhappy",
+                "Despondent"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "government: Government",
+        "type_info": {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "allegiance: Allegiance",
+        "type_info": {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "edf4972bac4501627ea224a803c19cf78255243819afe222e16c0c0075189b52"
+}

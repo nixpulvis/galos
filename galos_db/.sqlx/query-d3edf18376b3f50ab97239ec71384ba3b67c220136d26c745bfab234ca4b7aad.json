@@ -1,0 +1,120 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at,\n                 updated_by)\n            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                position = COALESCE($3, systems.position),\n                population = COALESCE($4, systems.population),\n                security = COALESCE($5, systems.security),\n                government = COALESCE($6, systems.government),\n                allegiance = COALESCE($7, systems.allegiance),\n                primary_economy = COALESCE($8, systems.primary_economy),\n                secondary_economy = COALESCE($9, systems.secondary_economy),\n                updated_at = $10,\n                updated_by = $11\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        {
+          "Custom": {
+            "name": "geometry",
+            "kind": "Simple"
+          }
+        },
+        "Int8",
+        {
+          "Custom": {
+            "name": "security",
+            "kind": {
+              "Enum": [
+                "Low",
+                "Medium",
+                "High"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "economy",
+            "kind": {
+              "Enum": [
+                "Agriculture",
+                "Carrier",
+                "Colony",
+                "Extraction",
+                "HighTech",
+                "Industrial",
+                "Military",
+                "Prison",
+                "Refinery",
+                "Service",
+                "Terraforming",
+                "Tourism",
+                "Undefined"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "economy",
+            "kind": {
+              "Enum": [
+                "Agriculture",
+                "Carrier",
+                "Colony",
+                "Extraction",
+                "HighTech",
+                "Industrial",
+                "Military",
+                "Prison",
+                "Refinery",
+                "Service",
+                "Terraforming",
+                "Tourism",
+                "Undefined"
+              ]
+            }
+          }
+        },
+        "Timestamp",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d3edf18376b3f50ab97239ec71384ba3b67c220136d26c745bfab234ca4b7aad"
+}

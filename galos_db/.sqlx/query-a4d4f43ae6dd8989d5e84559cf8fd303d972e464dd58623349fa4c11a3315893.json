@@ -1,0 +1,197 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO stars (\n                system_address,\n                id,\n                name,\n                parent_id,\n                updated_at,\n                updated_by,\n\n                absolute_magnitude,\n                age_my,\n                distance_from_arrival_ls,\n                luminosity,\n                star_class,\n                stellar_mass,\n                subclass,\n\n                ascending_node,\n                axial_tilt,\n                eccentricity,\n                mean_anomaly,\n                orbital_inclination,\n                orbital_period,\n                periapsis,\n                radius,\n                rotation_period,\n                semi_major_axis,\n                surface_temperature,\n\n                was_mapped,\n                was_discovered)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,\n                $18, $19, $20, $21, $22, $23, $24, $25, $26)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                name = $3,\n                parent_id = $4,\n                updated_at = $5,\n                updated_by = $6,\n\n                absolute_magnitude = $7,\n                age_my = $8,\n                distance_from_arrival_ls = $9,\n                luminosity = $10,\n                star_class = $11,\n                stellar_mass = $12,\n                subclass = $13,\n\n                ascending_node = $14,\n                axial_tilt = $15,\n                eccentricity = $16,\n                mean_anomaly = $17,\n                orbital_inclination = $18,\n                orbital_period = $19,\n                periapsis = $20,\n                radius = $21,\n                rotation_period = $22,\n                semi_major_axis = $23,\n                surface_temperature = $24,\n\n                was_mapped = $25,\n                was_discovered = $26\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "absolute_magnitude",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 7,
+        "name": "age_my",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "distance_from_arrival_ls",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 9,
+        "name": "luminosity",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "star_class",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "stellar_mass",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 12,
+        "name": "subclass",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 13,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 14,
+        "name": "axial_tilt",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 15,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 16,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 17,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 18,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 19,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 20,
+        "name": "radius",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 21,
+        "name": "rotation_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 22,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 23,
+        "name": "surface_temperature",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 24,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 25,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Varchar",
+        "Int2",
+        "Timestamp",
+        "Varchar",
+        "Float4",
+        "Int4",
+        "Float4",
+        "Varchar",
+        "Varchar",
+        "Float4",
+        "Int2",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a4d4f43ae6dd8989d5e84559cf8fd303d972e464dd58623349fa4c11a3315893"
+}
