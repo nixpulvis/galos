@@ -3,4 +3,4 @@
 *~
 *.swp
 .env
-galos_db/backups/elite_development-backup-2024-09-19.backup
+galos_db/backups/*
