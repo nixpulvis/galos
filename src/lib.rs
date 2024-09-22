@@ -19,34 +19,20 @@
 //!
 //! To launch the interactive terminal application, simply run `galos`.
 //!```notrust
-//!     ----------------------------------------------------------------------------
-//!     | Current Location: Ngalinn, Fall Station                                  |
-//!     ----------------------------------------------------------------------------
-//!     | Filter: +good:"Food and Water" -*M                                       |
-//!     ----------------------------------------------------------------------------
-//!     | [ ] Mannani                                                              |
-//!     | [x] Aitvas                                                               |
-//!     | [x] Sol                                                                  |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     |                                                                          |
-//!     ----------------------------------------------------------------------------
-//!     | Totals: Hyperspace 453Ly,                                                |
-//!     ----------------------------------------------------------------------------
+//! -------------------------------------------
+//! | Current Location: Ngalinn, Fall Station |
+//! -------------------------------------------
+//! | Filter: +good:"Food and Water" -*M      |
+//! -------------------------------------------
+//! | [ ] Mannani                             |
+//! | [x] Aitvas                              |
+//! | [x] Sol                                 |
+//! -------------------------------------------
+//! | Totals: Hyperspace 453Ly,               |
+//! -------------------------------------------
 //!```
 //!
-//! ```notrust
-//! Usage: galos <command> ...
-//! ```
-//!
-//!
-//! ##### `galos search [OPTIONS] <query>`
+//! ### `galos search [OPTIONS] <query>`
 //!
 //! Search for systems, bodies, and stations in the database. This command shows a
 //! selection of details for each object found.
@@ -59,7 +45,8 @@
 //! ```
 //!
 //!
-//! ##### `galos route <system> <op> <system> [<op> <system>]...`
+//! ### `galos route <system> <op> <system> [<op> <system>]...`
+//!
 //! Plot routes between systems, bodies, and stations in the database.
 //!
 //! Where `op` is one of:
@@ -78,7 +65,8 @@
 //!
 //! TODO: Incorperate queries for both `+` and `|` nodes in the route.
 //!
-//! ##### `galos-sync <provider>`
+//! ### `galos-sync <provider>`
+//!
 //! Syncs the DB with EDDN, EDSM and/or EDDB.
 //!
 //! Syncing from the `eddn` provider will subscribe to its ZMQ service and
