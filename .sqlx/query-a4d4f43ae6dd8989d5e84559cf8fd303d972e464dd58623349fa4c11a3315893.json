@@ -10,13 +10,13 @@
       },
       {
         "ordinal": 1,
-        "name": "id",
-        "type_info": "Int2"
+        "name": "name",
+        "type_info": "Varchar"
       },
       {
         "ordinal": 2,
-        "name": "name",
-        "type_info": "Varchar"
+        "name": "id",
+        "type_info": "Int2"
       },
       {
         "ordinal": 3,
