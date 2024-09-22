@@ -4,15 +4,14 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy_panorbit_camera::PanOrbitCamera;
 use galos_db::systems::System as DbSystem;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
 /// Represents a single fetch request
 //
-// TODO: Put region math inside custom Hash impl?
-// TODO: once we have a hash impl let's save f64 instead of String for route
-// range.
+// TODO(#59): Put region math inside custom Hash impl?
 // TODO(#43): fetched regions should be cubes with `region_size` side length, they
 // are currently spheres with `region_size` radius.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -24,26 +23,52 @@ pub enum FetchIndex {
     Route(String, String, String),
 }
 
+impl Ord for FetchIndex {
+    fn cmp(&self, other: &Self) -> Ordering {
+        use FetchIndex::*;
+
+        match (self, other) {
+            (Region(sc, sr), Region(oc, or)) => {
+                if sc == oc {
+                    sr.cmp(or)
+                } else {
+                    // NOTE: It's critical that this be greater so
+                    // comparisions on translating regions
+                    Ordering::Greater
+                }
+            }
+            (Faction(sn), Faction(on)) => sn.cmp(on),
+            (Route(ss, se, sr), Route(os, oe, or)) => {
+                ss.cmp(os).then(se.cmp(oe)).then(sr.cmp(or))
+            }
+            _ => Ordering::Less,
+        }
+    }
+}
+
+impl PartialOrd for FetchIndex {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl fmt::Debug for FetchIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use FetchIndex::*;
+
         match self {
-            FetchIndex::Region(center, radius) => write!(
+            Region(center, radius) => write!(
                 f,
                 "<({},{},{}),{}>",
                 center.x, center.y, center.z, radius
             ),
-            FetchIndex::Faction(name) => write!(f, "<{}>", name),
-            FetchIndex::Route(start, end, range) => {
+            Faction(name) => write!(f, "<{}>", name),
+            Route(start, end, range) => {
                 write!(f, "<{}-{}>{}>", start, end, range)
             }
         }
     }
 }
-
-/// The amount to throttle requests for old indices.
-const UPDATE_DELAY: Duration = Duration::from_secs(1);
-/// The amount to throttle requests for new indices.
-const FRESH_DELAY: Duration = Duration::from_millis(50);
 
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource, Default)]
@@ -170,6 +195,11 @@ fn fetch_faction(
     }
 }
 
+/// The amount to throttle requests for old indices.
+const UPDATE_DELAY: Duration = Duration::from_secs(1);
+/// The amount to throttle requests for new indices.
+const FRESH_DELAY: Duration = Duration::from_millis(48);
+
 pub fn fetch_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
@@ -177,7 +207,7 @@ pub fn fetch_condition(
     last_fetched_at: &ResMut<LastFetchedAt>,
 ) -> bool {
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
-        if *index == *last_fetched {
+        if *index <= *last_fetched {
             last_fetched_at.0 + UPDATE_DELAY < now
         } else {
             last_fetched_at.0 + FRESH_DELAY < now
