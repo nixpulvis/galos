@@ -1,0 +1,129 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO conflicts (\n                system_address,\n                type,\n                status,\n                faction_1_id,\n                faction_1_stake,\n                faction_1_won_days,\n                faction_2_id,\n                faction_2_stake,\n                faction_2_won_days,\n                updated_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ON CONFLICT (system_address, faction_1_id, faction_2_id)\n            DO UPDATE SET\n                type = $2,\n                status = $3,\n                faction_1_stake = $5,\n                faction_1_won_days = $6,\n                faction_2_stake = $8,\n                faction_2_won_days = $9,\n                updated_at = $10\n            RETURNING\n                system_address,\n                type AS \"ty: FactionConflictType\",\n                status AS \"status: Status\",\n                faction_1_id,\n                faction_1_stake,\n                faction_1_won_days,\n                faction_2_id,\n                faction_2_stake,\n                faction_2_won_days,\n                updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "ty: FactionConflictType",
+        "type_info": {
+          "Custom": {
+            "name": "conflict",
+            "kind": {
+              "Enum": [
+                "War",
+                "CivilWar",
+                "Election"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status: Status",
+        "type_info": {
+          "Custom": {
+            "name": "status",
+            "kind": {
+              "Enum": [
+                "Active",
+                "Pending",
+                "Recovering"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "faction_1_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "faction_1_stake",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "faction_1_won_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "faction_2_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "faction_2_stake",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "faction_2_won_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        {
+          "Custom": {
+            "name": "conflict",
+            "kind": {
+              "Enum": [
+                "War",
+                "CivilWar",
+                "Election"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "status",
+            "kind": {
+              "Enum": [
+                "Active",
+                "Pending",
+                "Recovering"
+              ]
+            }
+          }
+        },
+        "Int4",
+        "Varchar",
+        "Int4",
+        "Int4",
+        "Varchar",
+        "Int4",
+        "Timestamp"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ba8b442f85af1ccf3c60a7e68fce6ace96bbeecb8fd0008b356f77c94245a60b"
+}

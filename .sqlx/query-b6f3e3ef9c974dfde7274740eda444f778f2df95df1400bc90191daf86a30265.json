@@ -1,0 +1,218 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO bodies (\n                name,\n                id,\n                parent_id,\n                system_address,\n                updated_at,\n                updated_by,\n\n                planet_class,\n                tidal_lock,\n                landable,\n                terraform_state,\n                atmosphere,\n                atmosphere_type,\n                volcanism,\n\n                mass,\n                radius,\n                surface_gravity,\n                surface_temperature,\n                surface_pressure,\n                semi_major_axis,\n                eccentricity,\n                orbital_inclination,\n                periapsis,\n                orbital_period,\n                rotation_period,\n                axial_tilt,\n                ascending_node,\n                mean_anomaly,\n\n                was_mapped,\n                was_discovered)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,\n                $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                name = $1,\n                parent_id = $3,\n                updated_at = $5,\n                updated_by = $6,\n\n                planet_class = $7,\n                tidal_lock = $8,\n                landable = $9,\n                terraform_state = $10,\n                atmosphere = $11,\n                atmosphere_type = $12,\n                volcanism = $13,\n\n                mass = $14,\n                radius = $15,\n                surface_gravity = $16,\n                surface_temperature = $17,\n                surface_pressure = $18,\n                semi_major_axis = $19,\n                eccentricity = $20,\n                orbital_inclination = $21,\n                periapsis = $22,\n                orbital_period = $23,\n                rotation_period = $24,\n                axial_tilt = $25,\n                ascending_node = $26,\n                mean_anomaly = $27,\n\n                was_mapped = $28,\n                was_discovered = $29\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "planet_class",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "tidal_lock",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "landable",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "terraform_state",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "atmosphere",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "atmosphere_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "volcanism",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "mass",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 14,
+        "name": "radius",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 15,
+        "name": "surface_gravity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 16,
+        "name": "surface_temperature",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 17,
+        "name": "surface_pressure",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 18,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 19,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 20,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 21,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 22,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 23,
+        "name": "rotation_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 24,
+        "name": "axial_tilt",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 25,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 26,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 27,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 28,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Int2",
+        "Int2",
+        "Int8",
+        "Timestamp",
+        "Varchar",
+        "Varchar",
+        "Bool",
+        "Bool",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b6f3e3ef9c974dfde7274740eda444f778f2df95df1400bc90191daf86a30265"
+}

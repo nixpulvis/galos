@@ -1,0 +1,266 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by\n            FROM stations\n            WHERE system_address = $1 AND name = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "ty: StationType",
+        "type_info": {
+          "Custom": {
+            "name": "stationtype",
+            "kind": {
+              "Enum": [
+                "AsteroidBase",
+                "Coriolis",
+                "CraterOutpost",
+                "CraterPort",
+                "FleetCarrier",
+                "MegaShip",
+                "Ocellus",
+                "Orbis",
+                "Outpost"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "dist_from_star_ls",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 4,
+        "name": "market_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "landing_pads: LandingPads",
+        "type_info": {
+          "Custom": {
+            "name": "landingpads",
+            "kind": {
+              "Composite": [
+                [
+                  "large",
+                  "Int2"
+                ],
+                [
+                  "medium",
+                  "Int2"
+                ],
+                [
+                  "small",
+                  "Int2"
+                ]
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "faction",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "government: Government",
+        "type_info": {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "allegiance: Allegiance",
+        "type_info": {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "services: Vec<Service>",
+        "type_info": {
+          "Custom": {
+            "name": "service[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "service",
+                  "kind": {
+                    "Enum": [
+                      "Autodock",
+                      "Blackmarket",
+                      "CarrierFuel",
+                      "CarrierManagement",
+                      "Commodities",
+                      "Contacts",
+                      "CrewLounge",
+                      "Dock",
+                      "Engineer",
+                      "Exploration",
+                      "Facilitator",
+                      "FlightController",
+                      "Initiatives",
+                      "MaterialTrader",
+                      "Missions",
+                      "MissionsGenerated",
+                      "Modulepacks",
+                      "Outfitting",
+                      "Powerplay",
+                      "Rearm",
+                      "Refuel",
+                      "Repair",
+                      "SearchRescue",
+                      "Shipyard",
+                      "Shop",
+                      "StationMenu",
+                      "StationOperations",
+                      "TechBroker",
+                      "Tuning",
+                      "VoucherRedemption",
+                      "Livery",
+                      "SocialSpace",
+                      "Bartender",
+                      "VistaGenomics",
+                      "PioneerSupplies",
+                      "ApexInterstellar",
+                      "FrontlineSolutions"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "economies: Vec<EconomyShare>",
+        "type_info": {
+          "Custom": {
+            "name": "economyshare[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "economyshare",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "name",
+                        {
+                          "Custom": {
+                            "name": "economy",
+                            "kind": {
+                              "Enum": [
+                                "Agriculture",
+                                "Carrier",
+                                "Colony",
+                                "Extraction",
+                                "HighTech",
+                                "Industrial",
+                                "Military",
+                                "Prison",
+                                "Refinery",
+                                "Service",
+                                "Terraforming",
+                                "Tourism",
+                                "Undefined"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      [
+                        "proportion",
+                        "Float8"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "b256195bb2da63c8c6466a7b6510cde26017b56fb5248882383e90e831042503"
+}
