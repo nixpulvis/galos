@@ -20,14 +20,23 @@ pub fn panel(
     mut despawner: EventWriter<Despawn>,
     mut system_name: Local<Option<String>>,
     mut faction_name: Local<Option<String>>,
-    mut route_start: Local<String>,
-    mut route_end: Local<String>,
-    mut route_range: Local<String>,
+    mut route_start: Local<Option<String>>,
+    mut route_end: Local<Option<String>>,
+    mut route_range: Local<Option<String>>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
         egui::Window::new("Galos").resizable(false).show(ctx, |ui| {
             ui.collapsing("Search", |ui| {
                 search(ui, &mut searched, &mut system_name, &mut faction_name);
+            });
+            ui.collapsing("Route", |ui| {
+                route(
+                    ui,
+                    &mut searched,
+                    &mut route_start,
+                    &mut route_end,
+                    &mut route_range,
+                );
             });
             ui.collapsing("Settings", |ui| {
                 settings(
@@ -40,21 +49,12 @@ pub fn panel(
                     &mut despawner,
                 );
             });
-            ui.collapsing("Route", |ui| {
-                route(
-                    ui,
-                    &mut searched,
-                    &mut route_start,
-                    &mut route_end,
-                    &mut route_range,
-                );
-            });
         });
     }
 }
 
 /// Star system search UI by name or faction
-pub(crate) fn search(
+pub fn search(
     ui: &mut Ui,
     events: &mut EventWriter<Searched>,
     system_name: &mut Local<Option<String>>,
@@ -77,7 +77,7 @@ pub(crate) fn search(
     }
 }
 
-pub(crate) fn settings(
+pub fn settings(
     ui: &mut Ui,
     spyglass: &mut ResMut<Spyglass>,
     view: &mut ResMut<View>,
@@ -140,31 +140,31 @@ pub(crate) fn settings(
 }
 
 /// Route finding UI for finding out how to get from A to B
-pub(crate) fn route(
+pub fn route(
     ui: &mut Ui,
     events: &mut EventWriter<Searched>,
-    start: &mut Local<String>,
-    end: &mut Local<String>,
-    range: &mut Local<String>,
+    start: &mut Local<Option<String>>,
+    end: &mut Local<Option<String>>,
+    range: &mut Local<Option<String>>,
 ) {
-    ui.label("Start: ");
-    ui.add_sized(
-        egui::vec2(125., 0.),
-        egui::TextEdit::singleline(&mut **start),
-    );
+    singleline(ui, &mut **start, "Start System");
     ui.add_space(2.);
-    ui.label("End: ");
-    ui.add_sized(egui::vec2(125., 0.), egui::TextEdit::singleline(&mut **end));
+    singleline(ui, &mut **end, "End System");
     ui.add_space(2.);
-    ui.label("Range (Ly): ");
-    ui.add_sized(egui::vec2(50., 0.), egui::TextEdit::singleline(&mut **range));
-    ui.add_space(5.);
+    singleline(ui, &mut **end, "Range (Ly)");
+    ui.add_space(2.);
     if ui.button("Plot Route...").clicked() {
-        events.send(Searched::Route {
-            start: start.clone(),
-            end: end.clone(),
-            range: range.parse().unwrap_or("10".into()),
-        });
+        if let (Some(ref s), Some(ref e), Some(ref r)) =
+            (start.as_ref(), end.as_ref(), range.as_ref())
+        {
+            if let Ok(r) = r.parse() {
+                events.send(Searched::Route {
+                    start: (*s).clone(),
+                    end: (*e).clone(),
+                    range: r,
+                });
+            }
+        }
     }
 }
 
