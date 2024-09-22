@@ -1,3 +1,4 @@
+use crate::systems::Spyglass;
 use bevy::core_pipeline::bloom::BloomSettings;
 use bevy::prelude::*;
 use bevy_mod_picking::prelude::*;
@@ -18,7 +19,7 @@ impl From<ListenerInput<Pointer<Click>>> for MoveCamera {
 }
 
 /// Place a camera in space
-pub fn spawn_camera(mut commands: Commands) {
+pub fn spawn_camera(mut commands: Commands, spyglass: Res<Spyglass>) {
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
@@ -28,7 +29,7 @@ pub fn spawn_camera(mut commands: Commands) {
         PanOrbitCamera {
             pitch: Some(0.),
             yaw: Some(0.),
-            radius: Some(25.0),
+            radius: Some(spyglass.radius * 3.),
 
             // Achenar, home of the Empire!
             focus: Vec3::new(67.5, -119.46875, 24.84375),

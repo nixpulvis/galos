@@ -10,7 +10,7 @@ use bevy::tasks::futures_lite::future;
 use bevy_mod_picking::prelude::*;
 use elite_journal::{system::Security, Allegiance, Government};
 use galos_db::systems::System as DbSystem;
-use std::{collections::HashMap, ops::Deref};
+use std::{collections::HashMap, ops::Deref, time::Instant};
 
 /// Determains what color to draw in system view mode.
 #[derive(Resource, Copy, Clone, Debug, PartialEq)]
@@ -35,6 +35,7 @@ pub fn spawn(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut tasks: ResMut<FetchTasks>,
+    time: Res<Time<Real>>,
 ) {
     tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
@@ -50,6 +51,8 @@ pub fn spawn(
                 &mut commands,
                 &mut meshes,
                 &mut materials,
+                &time,
+                fetched_at,
             );
 
             match index {
@@ -90,6 +93,8 @@ pub fn spawn_systems(
     commands: &mut Commands,
     mesh_asset: &mut ResMut<Assets<Mesh>>,
     material_assets: &mut ResMut<Assets<StandardMaterial>>,
+    time: &Res<Time<Real>>,
+    fetched_at: &Instant,
 ) {
     let mut existing_systems: HashMap<i64, Entity> = systems_query
         .iter()
@@ -101,11 +106,23 @@ pub fn spawn_systems(
 
     for new_system in new_systems {
         if let Some(enitity) = existing_systems.remove(&new_system.address) {
+            debug!(
+                "updating {} @ {:?}",
+                new_system.address,
+                fetched_at.duration_since(time.startup())
+            );
+
             commands.entity(enitity).insert(System::from(new_system));
             commands
                 .entity(enitity)
                 .insert(pbr_bundle(new_system, &mesh, &materials, color_by));
         } else {
+            debug!(
+                "spawning {} {:?}",
+                new_system.address,
+                fetched_at.duration_since(time.startup())
+            );
+
             commands.spawn((
                 pbr_bundle(new_system, &mesh, &materials, color_by),
                 System::from(new_system),

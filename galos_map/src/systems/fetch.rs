@@ -5,6 +5,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy_panorbit_camera::PanOrbitCamera;
 use galos_db::systems::System as DbSystem;
 use std::collections::HashMap;
+use std::fmt;
 use std::time::{Duration, Instant};
 
 /// Represents a single fetch request
@@ -23,14 +24,26 @@ pub enum FetchIndex {
     Route(String, String, String),
 }
 
-/// A region is as large as the current spyglass radius / this factor.
-const REGION_FACTOR: i32 = 10;
+impl fmt::Debug for FetchIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FetchIndex::Region(center, radius) => write!(
+                f,
+                "<({},{},{}),{}>",
+                center.x, center.y, center.z, radius
+            ),
+            FetchIndex::Faction(name) => write!(f, "<{}>", name),
+            FetchIndex::Route(start, end, range) => {
+                write!(f, "<{}-{}>{}>", start, end, range)
+            }
+        }
+    }
+}
 
 /// The amount to throttle requests for old indices.
-const LAST_FETCH_DELAY: Duration = Duration::from_secs(1);
+const UPDATE_DELAY: Duration = Duration::from_secs(1);
 /// The amount to throttle requests for new indices.
-const NEW_FETCH_DELAY: Duration =
-    Duration::from_millis((1. / 60. * 1000.) as u64);
+const FRESH_DELAY: Duration = Duration::from_millis(50);
 
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource, Default)]
@@ -55,7 +68,7 @@ pub fn fetch(
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
     time: Res<Time<Real>>,
-    mut last_fetched: ResMut<LastFetchedAt>,
+    mut last_fetched_at: ResMut<LastFetchedAt>,
     db: Res<Db>,
 ) {
     if spyglass.fetch {
@@ -64,7 +77,7 @@ pub fn fetch(
             &mut tasks,
             &mut spyglass,
             &time,
-            &mut last_fetched,
+            &mut last_fetched_at,
             &db,
         );
     }
@@ -83,7 +96,7 @@ pub fn fetch(
                     name.into(),
                     &mut tasks,
                     &time,
-                    &mut last_fetched,
+                    &mut last_fetched_at,
                     &db,
                 );
             }
@@ -94,7 +107,7 @@ pub fn fetch(
                     range.into(),
                     &mut tasks,
                     &time,
-                    &mut last_fetched,
+                    &mut last_fetched_at,
                     &db,
                 );
             }
@@ -107,34 +120,32 @@ fn fetch_around_camera(
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
     time: &Res<Time<Real>>,
-    last_fetched: &mut ResMut<LastFetchedAt>,
+    last_fetched_at: &mut ResMut<LastFetchedAt>,
     db: &Res<Db>,
 ) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
-    // Regions need to be smaller than the spyglass radius. Once we load cubes,
-    // we'll need to change things to hide the entities outside of the sphere.
-    let scale = spyglass.radius as i32 / REGION_FACTOR;
-    let index = if scale == 0 {
-        FetchIndex::Region(IVec3::ZERO, spyglass.radius as i32)
-    } else {
-        FetchIndex::Region(center / scale, spyglass.radius as i32)
-    };
-
+    let index = FetchIndex::Region(center, spyglass.radius as i32);
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, &tasks, now, &last_fetched) {
+    if fetch_condition(&index, &tasks, now, &last_fetched_at) {
+        debug!(
+            "fetching {:?} @ {:?}",
+            index,
+            now.duration_since(time.startup())
+        );
+
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let radius = spyglass.radius;
         let task = task_pool.spawn(async move {
             let cent = [center.x as f64, center.y as f64, center.z as f64];
-            DbSystem::fetch_in_range_of_point(&db, radius as f64, cent)
+            DbSystem::fetch_in_range_of_point(&db, radius.floor() as f64, cent)
                 .await
                 .unwrap_or_default()
         });
         tasks.fetched.insert(index.clone(), (task, now));
         tasks.last_fetched = Some(index);
-        **last_fetched = LastFetchedAt(now);
+        **last_fetched_at = LastFetchedAt(now);
     }
 }
 
@@ -142,12 +153,12 @@ fn fetch_faction(
     name: String,
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
-    last_fetched: &mut ResMut<LastFetchedAt>,
+    last_fetched_at: &mut ResMut<LastFetchedAt>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Faction(name.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, &tasks, now, &last_fetched) {
+    if fetch_condition(&index, &tasks, now, &last_fetched_at) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
@@ -155,7 +166,7 @@ fn fetch_faction(
         });
         tasks.fetched.insert(index.clone(), (task, now));
         tasks.last_fetched = Some(index);
-        **last_fetched = LastFetchedAt(now);
+        **last_fetched_at = LastFetchedAt(now);
     }
 }
 
@@ -167,9 +178,9 @@ pub fn fetch_condition(
 ) -> bool {
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
         if *index == *last_fetched {
-            last_fetched_at.0 + LAST_FETCH_DELAY < now
+            last_fetched_at.0 + UPDATE_DELAY < now
         } else {
-            last_fetched_at.0 + NEW_FETCH_DELAY < now
+            last_fetched_at.0 + FRESH_DELAY < now
         }
     })
 }
