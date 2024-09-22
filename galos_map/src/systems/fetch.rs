@@ -9,6 +9,26 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
+/// Controls the background systems fetch
+///
+/// If this value is `None` it disables updates for existing [`FetchIndex`]s.
+#[derive(Resource)]
+pub struct Poll(pub Option<Duration>);
+
+/// The amount to throttle requests for new indices.
+#[derive(Resource)]
+pub struct Throttle(pub Duration);
+
+/// A resource which keeps the instant the last fetch was made
+#[derive(Resource)]
+pub struct LastFetchedAt(pub Instant);
+
+impl Default for LastFetchedAt {
+    fn default() -> LastFetchedAt {
+        LastFetchedAt(Instant::now())
+    }
+}
+
 /// Represents a single fetch request
 //
 // TODO(#59): Put region math inside custom Hash impl?
@@ -77,15 +97,6 @@ pub struct FetchTasks {
     pub last_fetched: Option<FetchIndex>,
 }
 
-#[derive(Resource)]
-pub struct LastFetchedAt(pub Instant);
-
-impl Default for LastFetchedAt {
-    fn default() -> LastFetchedAt {
-        LastFetchedAt(Instant::now())
-    }
-}
-
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
     camera_query: Query<&mut PanOrbitCamera>,
@@ -94,6 +105,8 @@ pub fn fetch(
     mut spyglass: ResMut<Spyglass>,
     time: Res<Time<Real>>,
     mut last_fetched_at: ResMut<LastFetchedAt>,
+    throttle: Res<Throttle>,
+    poll: Res<Poll>,
     db: Res<Db>,
 ) {
     if spyglass.fetch {
@@ -103,6 +116,8 @@ pub fn fetch(
             &mut spyglass,
             &time,
             &mut last_fetched_at,
+            &throttle,
+            &poll,
             &db,
         );
     }
@@ -122,6 +137,8 @@ pub fn fetch(
                     &mut tasks,
                     &time,
                     &mut last_fetched_at,
+                    &throttle,
+                    &poll,
                     &db,
                 );
             }
@@ -133,6 +150,8 @@ pub fn fetch(
                     &mut tasks,
                     &time,
                     &mut last_fetched_at,
+                    &throttle,
+                    &poll,
                     &db,
                 );
             }
@@ -146,13 +165,15 @@ fn fetch_around_camera(
     spyglass: &ResMut<Spyglass>,
     time: &Res<Time<Real>>,
     last_fetched_at: &mut ResMut<LastFetchedAt>,
+    throttle: &Res<Throttle>,
+    poll: &Res<Poll>,
     db: &Res<Db>,
 ) {
     let camera = camera_query.single();
     let center = camera.focus.as_ivec3();
     let index = FetchIndex::Region(center, spyglass.radius as i32);
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, &tasks, now, &last_fetched_at) {
+    if fetch_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
         debug!(
             "fetching {:?} @ {:?}",
             index,
@@ -179,11 +200,13 @@ fn fetch_faction(
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
     last_fetched_at: &mut ResMut<LastFetchedAt>,
+    throttle: &Res<Throttle>,
+    poll: &Res<Poll>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Faction(name.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, &tasks, now, &last_fetched_at) {
+    if fetch_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
@@ -205,12 +228,14 @@ pub fn fetch_condition(
     tasks: &ResMut<FetchTasks>,
     now: Instant,
     last_fetched_at: &ResMut<LastFetchedAt>,
+    throttle: &Res<Throttle>,
+    poll: &Res<Poll>,
 ) -> bool {
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
         if *index <= *last_fetched {
-            last_fetched_at.0 + UPDATE_DELAY < now
+            poll.0.map_or(false, |p| last_fetched_at.0 + p < now)
         } else {
-            last_fetched_at.0 + FRESH_DELAY < now
+            last_fetched_at.0 + throttle.0 < now
         }
     })
 }

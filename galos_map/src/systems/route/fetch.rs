@@ -1,5 +1,5 @@
 use crate::systems::fetch::{
-    fetch_condition, FetchIndex, FetchTasks, LastFetchedAt,
+    fetch_condition, FetchIndex, FetchTasks, LastFetchedAt, Throttle, Poll,
 };
 use crate::Db;
 use bevy::prelude::*;
@@ -13,11 +13,13 @@ pub fn fetch_route(
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
     last_fetched: &mut ResMut<LastFetchedAt>,
+    throttle: &Res<Throttle>,
+    poll: &Res<Poll>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Route(start.clone(), end.clone(), range.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, &tasks, now, &last_fetched) {
+    if fetch_condition(&index, tasks, now, last_fetched, throttle, poll) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {

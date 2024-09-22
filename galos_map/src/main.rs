@@ -10,6 +10,7 @@ use bevy_mod_picking::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use galos_db::Database;
 use galos_map::*;
+use std::time::Duration;
 
 fn main() {
     let db = future::block_on(async { Database::new().await.unwrap() });
@@ -44,8 +45,11 @@ fn main() {
         filter: true,
     });
 
-    app.insert_resource(systems::fetch::FetchTasks::default());
+    app.insert_resource(systems::fetch::Poll(Some(Duration::from_secs(1))));
+    app.insert_resource(systems::fetch::Throttle(Duration::from_millis(50)));
+
     app.insert_resource(systems::fetch::LastFetchedAt::default());
+    app.insert_resource(systems::fetch::FetchTasks::default());
 
     app.add_event::<camera::MoveCamera>();
     app.add_systems(Startup, camera::spawn_camera);
