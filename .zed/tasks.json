@@ -1,10 +1,10 @@
 [
   {
     "label": "galos_map",
-    "command": "cargo run --release -p galos_map",
-    "env": {
-      "RUST_LOG": "sqlx=debug"
-    }
+    "command": "cargo run --release -p galos_map"
+    // "env": {
+    //   "RUST_LOG": "sqlx=debug"
+    // }
   },
   {
     "label": "galos_map (tracy)",
