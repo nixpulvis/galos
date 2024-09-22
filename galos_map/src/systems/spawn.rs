@@ -36,7 +36,7 @@ pub fn spawn(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut tasks: ResMut<FetchTasks>,
 ) {
-    tasks.fetched.retain(|index, task| {
+    tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(new_systems) = status {

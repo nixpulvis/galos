@@ -26,36 +26,45 @@ pub enum FetchIndex {
 /// A region is as large as the current spyglass radius / this factor.
 const REGION_FACTOR: i32 = 10;
 
-/// The fetch throttle amount.
-const FETCH_DELAY: Duration = Duration::from_millis(100);
+/// The amount to throttle requests for old indices.
+const LAST_FETCH_DELAY: Duration = Duration::from_secs(1);
+/// The amount to throttle requests for new indices.
+const NEW_FETCH_DELAY: Duration =
+    Duration::from_millis((1. / 60. * 1000.) as u64);
 
 /// Tasks for systems in the DB which will be spawned
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct FetchTasks {
-    pub fetched: HashMap<FetchIndex, Task<Vec<DbSystem>>>,
+    pub fetched: HashMap<FetchIndex, (Task<Vec<DbSystem>>, Instant)>,
+    pub last_fetched: Option<FetchIndex>,
 }
 
-/// A representation of the spawned systems
 #[derive(Resource)]
-pub struct Fetched(pub HashMap<FetchIndex, Instant>);
+pub struct LastFetchedAt(pub Instant);
+
+impl Default for LastFetchedAt {
+    fn default() -> LastFetchedAt {
+        LastFetchedAt(Instant::now())
+    }
+}
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
     camera_query: Query<&mut PanOrbitCamera>,
     mut search_events: EventReader<Searched>,
-    mut fetched: ResMut<Fetched>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
     time: Res<Time<Real>>,
+    mut last_fetched: ResMut<LastFetchedAt>,
     db: Res<Db>,
 ) {
     if spyglass.fetch {
         fetch_around_camera(
             &camera_query,
-            &mut fetched,
             &mut tasks,
             &mut spyglass,
             &time,
+            &mut last_fetched,
             &db,
         );
     }
@@ -72,9 +81,9 @@ pub fn fetch(
             Searched::Faction { name } => {
                 fetch_faction(
                     name.into(),
-                    &mut fetched,
                     &mut tasks,
                     &time,
+                    &mut last_fetched,
                     &db,
                 );
             }
@@ -83,9 +92,9 @@ pub fn fetch(
                     start.into(),
                     end.into(),
                     range.into(),
-                    &mut fetched,
                     &mut tasks,
                     &time,
+                    &mut last_fetched,
                     &db,
                 );
             }
@@ -95,10 +104,10 @@ pub fn fetch(
 
 fn fetch_around_camera(
     camera_query: &Query<&mut PanOrbitCamera>,
-    fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
     time: &Res<Time<Real>>,
+    last_fetched: &mut ResMut<LastFetchedAt>,
     db: &Res<Db>,
 ) {
     let camera = camera_query.single();
@@ -106,14 +115,14 @@ fn fetch_around_camera(
     // Regions need to be smaller than the spyglass radius. Once we load cubes,
     // we'll need to change things to hide the entities outside of the sphere.
     let scale = spyglass.radius as i32 / REGION_FACTOR;
-    let region = if scale == 0 {
+    let index = if scale == 0 {
         FetchIndex::Region(IVec3::ZERO, spyglass.radius as i32)
     } else {
         FetchIndex::Region(center / scale, spyglass.radius as i32)
     };
 
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&region, &fetched, &tasks, now) {
+    if fetch_condition(&index, &tasks, now, &last_fetched) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let radius = spyglass.radius;
@@ -123,43 +132,44 @@ fn fetch_around_camera(
                 .await
                 .unwrap_or_default()
         });
-        fetched.0.insert(region.clone(), now);
-        tasks.fetched.insert(region, task);
+        tasks.fetched.insert(index.clone(), (task, now));
+        tasks.last_fetched = Some(index);
+        **last_fetched = LastFetchedAt(now);
     }
 }
 
 fn fetch_faction(
     name: String,
-    fetched: &mut ResMut<Fetched>,
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
+    last_fetched: &mut ResMut<LastFetchedAt>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Faction(name.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, &fetched, &tasks, now) {
+    if fetch_condition(&index, &tasks, now, &last_fetched) {
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let task = task_pool.spawn(async move {
             DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
         });
-        dbg!("\nINSERTING FACTION\n");
-        fetched.0.insert(index.clone(), now);
-        tasks.fetched.insert(index, task);
+        tasks.fetched.insert(index.clone(), (task, now));
+        tasks.last_fetched = Some(index);
+        **last_fetched = LastFetchedAt(now);
     }
 }
 
 pub fn fetch_condition(
     index: &FetchIndex,
-    fetched: &ResMut<Fetched>,
     tasks: &ResMut<FetchTasks>,
     now: Instant,
+    last_fetched_at: &ResMut<LastFetchedAt>,
 ) -> bool {
-    // If the index is either not already fetched or being fetched we must
-    // fetch it.
-    (!fetched.0.contains_key(index) && !tasks.fetched.contains_key(index))
-        // To update existing indicies,
-        || (fetched.0.contains_key(index)
-            // we check "now" is after the last fetch + N.
-            && fetched.0[index] + FETCH_DELAY < now)
+    tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
+        if *index == *last_fetched {
+            last_fetched_at.0 + LAST_FETCH_DELAY < now
+        } else {
+            last_fetched_at.0 + NEW_FETCH_DELAY < now
+        }
+    })
 }
