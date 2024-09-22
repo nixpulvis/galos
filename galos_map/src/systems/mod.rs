@@ -50,7 +50,7 @@ pub fn visibility(
     }
 
     if spyglass.filter {
-        let camera_translation = camera.single().target_focus;
+        let camera_translation = camera.single().focus;
         for (entity, system_transform) in &systems {
             let dist =
                 camera_translation.distance(system_transform.translation);
