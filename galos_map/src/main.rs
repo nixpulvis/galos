@@ -90,7 +90,7 @@ fn main() {
     app.add_event::<search::Searched>();
     app.add_systems(Update, search::searched);
 
-    app.add_systems(Update, ui::panel);
+    app.add_systems(Update, ui::panels);
 
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());

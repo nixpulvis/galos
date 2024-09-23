@@ -1,6 +1,4 @@
-use crate::systems::fetch::{
-    FetchIndex, FetchTasks, LastFetchedAt, Poll, Throttle,
-};
+use crate::systems::fetch::{FetchIndex, FetchTasks, LastFetchedAt};
 use crate::Db;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;

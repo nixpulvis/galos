@@ -10,7 +10,7 @@ use bevy_egui::{egui, EguiContexts};
 // TODO: Form validation.
 
 /// Map settings and controls
-pub fn panel(
+pub fn panels(
     mut contexts: EguiContexts,
     mut spyglass: ResMut<Spyglass>,
     mut view: ResMut<View>,
@@ -28,165 +28,142 @@ pub fn panel(
     mut route_range: Local<Option<String>>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
-        egui::Window::new("Galos").resizable(false).show(ctx, |ui| {
-            ui.collapsing("Search", |ui| {
-                search(ui, &mut searched, &mut system_name, &mut faction_name);
-            });
-            ui.collapsing("Route", |ui| {
-                route(
-                    ui,
-                    &mut searched,
-                    &mut route_start,
-                    &mut route_end,
-                    &mut route_range,
-                );
-            });
-            ui.collapsing("Settings", |ui| {
-                settings(
-                    ui,
-                    &mut spyglass,
-                    &mut view,
-                    &mut color_by,
-                    &mut population_scale,
-                    &mut show_names,
-                    &mut throttle,
-                    &mut poll,
-                    &mut despawner,
-                );
-            });
-        });
-    }
-}
-
-/// Star system search UI by name or faction
-pub fn search(
-    ui: &mut Ui,
-    events: &mut EventWriter<Searched>,
-    system_name: &mut Local<Option<String>>,
-    faction_name: &mut Local<Option<String>>,
-) {
-    let response = singleline(ui, &mut **system_name, "System Search");
-    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        **faction_name = None;
-        if let Some(ref search) = **system_name {
-            events.send(Searched::System { name: search.clone() });
-        }
-    }
-
-    let response = singleline(ui, &mut **faction_name, "Faction Search");
-    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        **system_name = None;
-        if let Some(ref search) = **faction_name {
-            events.send(Searched::Faction { name: search.clone() });
-        }
-    }
-}
-
-pub fn settings(
-    ui: &mut Ui,
-    spyglass: &mut ResMut<Spyglass>,
-    view: &mut ResMut<View>,
-    color_by: &mut ResMut<ColorBy>,
-    population_scale: &mut ResMut<ScalePopulation>,
-    show_names: &mut ResMut<ShowNames>,
-    throttle: &mut ResMut<Throttle>,
-    poll: &mut ResMut<Poll>,
-    despawner: &mut EventWriter<Despawn>,
-) {
-    // TODO: IDK why this is necessary, the groups should fill the correct
-    // size, no?
-    ui.set_width(150.);
-
-    ui.group(|ui| {
-        ui.label("Spyglass Radius");
-        ui.add(
-            egui::Slider::new(&mut spyglass.radius, 10.0..=25000.0)
-                .logarithmic(true)
-                .drag_value_speed(0.1),
-        );
-        ui.add_space(2.);
-        ui.checkbox(&mut spyglass.disabled, "Override Spyglass");
-        ui.add_space(2.);
-        ui.collapsing("Advanced", |ui| {
-            ui.checkbox(&mut spyglass.fetch, "Fetch Systems");
-            if spyglass.fetch {
-                ui.horizontal(|ui| {
-                    poll_value(ui, &mut poll.0);
-                    ui.label("Poll (Hz)");
-                });
+        egui::Window::new("Search").default_open(false).resizable(false).show(
+            ctx,
+            |ui| {
+                ui.label("Focus");
+                let response = singleline(ui, &mut *system_name, "System");
+                if response.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    *faction_name = None;
+                    if let Some(ref search) = *system_name {
+                        searched
+                            .send(Searched::System { name: search.clone() });
+                    }
+                }
                 ui.add_space(2.);
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut throttle.0).speed(5));
-                    ui.label("Throttle (ms)");
+
+                let response = singleline(ui, &mut *faction_name, "Faction");
+                if response.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    *system_name = None;
+                    if let Some(ref search) = *faction_name {
+                        searched
+                            .send(Searched::Faction { name: search.clone() });
+                    }
+                }
+                ui.add_space(5.);
+
+                ui.label("Route");
+                singleline(ui, &mut *route_start, "Start System");
+                ui.add_space(2.);
+                singleline(ui, &mut *route_end, "End System");
+                ui.add_space(2.);
+                singleline(ui, &mut *route_range, "Range (Ly)");
+                ui.add_space(5.);
+
+                if ui.button("Plot Route...").clicked() {
+                    if let (Some(ref s), Some(ref e), Some(ref r)) = (
+                        route_start.as_ref(),
+                        route_end.as_ref(),
+                        route_range.as_ref(),
+                    ) {
+                        #[allow(irrefutable_let_patterns)]
+                        if let Ok(r) = r.parse() {
+                            searched.send(Searched::Route {
+                                start: (*s).clone(),
+                                end: (*e).clone(),
+                                range: r,
+                            });
+                        }
+                    }
+                }
+            },
+        );
+
+        egui::Window::new("Settings")
+            .default_open(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                // TODO: IDK why this is necessary, the groups should fill the correct
+                // size, no?
+                ui.set_width(150.);
+
+                ui.group(|ui| {
+                    ui.label("Spyglass Radius");
+                    ui.add(
+                        // Width of the galaxy is 105,700 Ly.
+                        egui::Slider::new(&mut spyglass.radius, 10.0..=1.1e5)
+                            .logarithmic(true)
+                            .drag_value_speed(0.1),
+                    );
+                    ui.add_space(2.);
+                    ui.checkbox(&mut spyglass.disabled, "Override Spyglass");
+                    ui.add_space(2.);
+                    ui.collapsing("Advanced", |ui| {
+                        ui.checkbox(&mut spyglass.fetch, "Fetch Systems");
+                        if spyglass.fetch {
+                            ui.horizontal(|ui| {
+                                poll_value(ui, &mut poll.0);
+                                ui.label("Poll (Hz)");
+                            });
+                            ui.add_space(2.);
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut throttle.0)
+                                        .speed(5),
+                                );
+                                ui.label("Throttle (ms)");
+                            });
+                        }
+                        ui.add_space(2.);
+                        if ui.button("Despawn Systems").clicked() {
+                            despawner.send(Despawn);
+                        }
+                        ui.add_space(2.);
+                    });
                 });
-            }
-            ui.add_space(2.);
-            if ui.button("Despawn Systems").clicked() {
-                despawner.send(Despawn);
-            }
-            ui.add_space(2.);
-        });
-    });
 
-    ui.add_space(5.);
+                ui.add_space(5.);
 
-    ui.group(|ui| {
-        ui.label("View:");
-        ui.radio_value(&mut **view, View::Systems, "Systems");
-        ui.radio_value(&mut **view, View::Stars, "Stars");
-        ui.separator();
+                ui.group(|ui| {
+                    ui.label("View:");
+                    ui.radio_value(&mut *view, View::Systems, "Systems");
+                    ui.radio_value(&mut *view, View::Stars, "Stars");
+                    ui.separator();
 
-        match **view {
-            View::Systems => {
-                ui.label("Color By:");
-                ui.radio_value(
-                    &mut **color_by,
-                    ColorBy::Allegiance,
-                    "Allegiance",
-                );
-                ui.radio_value(
-                    &mut **color_by,
-                    ColorBy::Government,
-                    "Government",
-                );
-                ui.radio_value(&mut **color_by, ColorBy::Security, "Security");
-                ui.separator();
-                ui.checkbox(&mut population_scale.0, "Scale w/ Population");
-            }
-            View::Stars => {}
-        }
+                    match *view {
+                        View::Systems => {
+                            ui.label("Color By:");
+                            ui.radio_value(
+                                &mut *color_by,
+                                ColorBy::Allegiance,
+                                "Allegiance",
+                            );
+                            ui.radio_value(
+                                &mut *color_by,
+                                ColorBy::Government,
+                                "Government",
+                            );
+                            ui.radio_value(
+                                &mut *color_by,
+                                ColorBy::Security,
+                                "Security",
+                            );
+                            ui.separator();
+                            ui.checkbox(
+                                &mut population_scale.0,
+                                "Scale w/ Population",
+                            );
+                        }
+                        View::Stars => {}
+                    }
 
-        ui.checkbox(&mut show_names.0, "Show System Names");
-    });
-}
-
-/// Route finding UI for finding out how to get from A to B
-pub fn route(
-    ui: &mut Ui,
-    events: &mut EventWriter<Searched>,
-    start: &mut Local<Option<String>>,
-    end: &mut Local<Option<String>>,
-    range: &mut Local<Option<String>>,
-) {
-    singleline(ui, &mut **start, "Start System");
-    ui.add_space(2.);
-    singleline(ui, &mut **end, "End System");
-    ui.add_space(2.);
-    singleline(ui, &mut **range, "Range (Ly)");
-    ui.add_space(2.);
-    if ui.button("Plot Route...").clicked() {
-        if let (Some(ref s), Some(ref e), Some(ref r)) =
-            (start.as_ref(), end.as_ref(), range.as_ref())
-        {
-            #[allow(irrefutable_let_patterns)]
-            if let Ok(r) = (**r).parse() {
-                events.send(Searched::Route {
-                    start: (*s).clone(),
-                    end: (*e).clone(),
-                    range: r,
+                    ui.checkbox(&mut show_names.0, "Show System Names");
                 });
-            }
-        }
+            });
     }
 }
 

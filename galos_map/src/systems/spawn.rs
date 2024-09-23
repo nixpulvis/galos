@@ -147,9 +147,7 @@ pub fn spawn_systems(
     }
 }
 
-// TODO(#42): update ColorBy
-
-// TODO: Use `System` values.
+// TODO(#42): update ColorBy, use `System` values.
 fn pbr_bundle(
     system: &DbSystem,
     mesh: &Handle<Mesh>,
@@ -185,14 +183,14 @@ fn init_materials(
     assets: &mut Assets<StandardMaterial>,
 ) -> Vec<Handle<StandardMaterial>> {
     let colors = vec![
-        Color::srgba(0., 1., 0., 0.4),    // Green
-        Color::srgba(0., 1., 1., 0.4),    // Cyan
-        Color::srgba(1., 0., 0., 0.4),    // Red
-        Color::srgba(1., 0.5, 0., 0.4),   // Orange
-        Color::srgba(1., 1., 0., 0.4),    // Yellow
-        Color::srgba(0., 0., 1., 0.4),    // Blue
-        Color::srgba(1., 0., 1., 0.4),    // Magenta
-        Color::srgba(0.1, 0.1, 0.1, 0.1), // Grey
+        Color::srgba(0., 1., 0., 0.4),       // Green
+        Color::srgba(0., 1., 1., 0.4),       // Cyan
+        Color::srgba(1., 0., 0., 0.4),       // Red
+        Color::srgba(1., 0.5, 0., 0.4),      // Orange
+        Color::srgba(1., 1., 0., 0.4),       // Yellow
+        Color::srgba(0., 0., 1., 0.4),       // Blue
+        Color::srgba(1., 0., 1., 0.4),       // Magenta
+        Color::srgba(0.15, 0.15, 0.15, 0.3), // Grey
     ];
 
     colors
