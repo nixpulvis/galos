@@ -1,10 +1,15 @@
 use crate::camera::MoveCamera;
-use crate::systems::spawn::Despawn;
+use crate::systems::despawn::Despawn;
 use crate::systems::Spyglass;
 use crate::Db;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use galos_db::systems::System as DbSystem;
+
+pub fn plugin(app: &mut App) {
+    app.add_event::<Searched>();
+    app.add_systems(Update, searched);
+}
 
 /// A collection of search events for responding to the user's UI
 /// interactions.

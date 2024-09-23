@@ -9,6 +9,18 @@ use elite_journal::{
 };
 use galos_db::systems::System as DbSystem;
 
+pub fn plugin(app: &mut App) {
+    app.insert_resource(Spyglass { radius: 50., fetch: true, disabled: false });
+
+    app.add_plugins(fetch::plugin);
+    app.add_plugins(spawn::plugin);
+    app.add_plugins(despawn::plugin);
+    app.add_plugins(scale::plugin);
+    app.add_plugins(labels::plugin);
+
+    app.add_systems(Update, visibility.after(spawn::spawn));
+}
+
 #[derive(Component)]
 pub struct System {
     address: i64,
@@ -22,6 +34,7 @@ pub struct System {
     updated_at: DateTime<Utc>,
 }
 
+pub mod despawn;
 pub mod fetch;
 pub mod labels;
 pub mod route;

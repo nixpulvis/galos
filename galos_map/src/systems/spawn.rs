@@ -12,6 +12,14 @@ use elite_journal::{system::Security, Allegiance, Government};
 use galos_db::systems::System as DbSystem;
 use std::{collections::HashMap, ops::Deref, time::Instant};
 
+pub fn plugin(app: &mut App) {
+    app.add_plugins(DefaultPickingPlugins);
+    app.insert_resource(ColorBy::Allegiance);
+    app.insert_resource(ShowNames(false));
+
+    app.add_systems(Update, spawn);
+}
+
 /// Determains what color to draw in system view mode.
 #[derive(Resource, Copy, Clone, Debug, PartialEq)]
 pub enum ColorBy {
@@ -262,21 +270,6 @@ impl From<&DbSystem> for System {
             primary_economy: system.primary_economy,
             secondary_economy: system.secondary_economy,
             updated_at: system.updated_at,
-        }
-    }
-}
-
-#[derive(Event)]
-pub struct Despawn;
-
-pub fn despawn(
-    mut commands: Commands,
-    systems: Query<(Entity, &System)>,
-    mut events: EventReader<Despawn>,
-) {
-    for _ in events.read() {
-        for (entity, _) in systems.iter() {
-            commands.entity(entity).despawn_recursive();
         }
     }
 }

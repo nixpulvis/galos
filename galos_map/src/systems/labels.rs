@@ -1,10 +1,19 @@
 use crate::systems::spawn::ShowNames;
 use crate::systems::System;
 use bevy::prelude::*;
+use bevy_mod_billboard::prelude::*;
 use bevy_mod_billboard::Billboard;
 use bevy_mod_billboard::BillboardLockAxis;
 use bevy_mod_billboard::BillboardTextBundle;
 use bevy_panorbit_camera::PanOrbitCamera;
+
+pub(crate) fn plugin(app: &mut App) {
+    app.add_plugins(BillboardPlugin);
+    app.add_systems(Startup, load_font);
+    app.add_systems(Update, respawn.after(super::spawn::spawn));
+    app.add_systems(Update, scale.after(respawn));
+    app.add_systems(Update, visibility.after(respawn).before(scale));
+}
 
 const SCALE: f32 = 0.02;
 const SIZE: f32 = 64.;

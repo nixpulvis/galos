@@ -2,7 +2,14 @@ use crate::systems::Spyglass;
 use bevy::core_pipeline::bloom::BloomSettings;
 use bevy::prelude::*;
 use bevy_mod_picking::prelude::*;
-use bevy_panorbit_camera::PanOrbitCamera;
+use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
+
+pub fn plugin(app: &mut App) {
+    app.add_plugins(PanOrbitCameraPlugin);
+    app.add_event::<MoveCamera>();
+    app.add_systems(Startup, spawn_camera);
+    app.add_systems(Update, move_camera);
+}
 
 /// An event which triggers the movement of the camera
 ///

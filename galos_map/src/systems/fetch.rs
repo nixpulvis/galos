@@ -9,6 +9,16 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
+pub fn plugin(app: &mut App) {
+    app.insert_resource(Poll(Some(1.)));
+    app.insert_resource(Throttle(50));
+
+    app.init_resource::<LastFetchedAt>();
+    app.init_resource::<FetchTasks>();
+
+    app.add_systems(Update, fetch);
+}
+
 /// Controls the background systems fetch rate (Hz).
 ///
 /// If this value is `None` it disables updates for existing [`FetchIndex`]s.

@@ -2,6 +2,23 @@ use super::System;
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 
+pub fn plugin(app: &mut App) {
+    app.insert_resource(View::Systems);
+    app.insert_resource(ScalePopulation(false));
+    app.add_systems(
+        Update,
+        scale_systems
+            .after(super::spawn::spawn)
+            .run_if(resource_equals(View::Systems)),
+    );
+    app.add_systems(
+        Update,
+        scale_stars
+            .after(super::spawn::spawn)
+            .run_if(resource_equals(View::Stars)),
+    );
+}
+
 #[derive(Resource, Debug, PartialEq)]
 pub enum View {
     // #[default]

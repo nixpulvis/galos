@@ -1,11 +1,16 @@
 use crate::search::Searched;
+use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::scale::{ScalePopulation, View};
-use crate::systems::spawn::{ColorBy, Despawn, ShowNames};
+use crate::systems::spawn::{ColorBy, ShowNames};
 use crate::systems::Spyglass;
 use bevy::prelude::*;
 use bevy_egui::egui::{Response, Ui};
 use bevy_egui::{egui, EguiContexts};
+
+pub fn plugin(app: &mut App) {
+    app.add_systems(Update, panels);
+}
 
 // TODO: Form validation.
 
