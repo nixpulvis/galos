@@ -9,15 +9,15 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-/// Controls the background systems fetch
+/// Controls the background systems fetch rate (Hz).
 ///
 /// If this value is `None` it disables updates for existing [`FetchIndex`]s.
 #[derive(Resource)]
-pub struct Poll(pub Option<Duration>);
+pub struct Poll(pub Option<f64>);
 
-/// The amount to throttle requests for new indices.
+/// The amount to throttle requests for new indices (millis).
 #[derive(Resource)]
-pub struct Throttle(pub Duration);
+pub struct Throttle(pub u64);
 
 /// A resource which keeps the instant the last fetch was made
 #[derive(Resource)]
@@ -31,7 +31,9 @@ impl Default for LastFetchedAt {
 
 /// Represents a single fetch request
 //
-// TODO(#59): Put region math inside custom Hash impl?
+// TODO: Put region math inside custom Hash impl?
+// TODO: once we have a hash impl let's save f64 instead of String for route
+// range.
 // TODO(#43): fetched regions should be cubes with `region_size` side length, they
 // are currently spheres with `region_size` radius.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -218,11 +220,6 @@ fn fetch_faction(
     }
 }
 
-/// The amount to throttle requests for old indices.
-const UPDATE_DELAY: Duration = Duration::from_secs(1);
-/// The amount to throttle requests for new indices.
-const FRESH_DELAY: Duration = Duration::from_millis(48);
-
 pub fn fetch_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
@@ -233,9 +230,13 @@ pub fn fetch_condition(
 ) -> bool {
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
         if *index <= *last_fetched {
-            poll.0.map_or(false, |p| last_fetched_at.0 + p < now)
+            poll.0.map_or(false, |poll| {
+                // Convert from Hz to millis.
+                let poll = Duration::from_millis((1e3 / poll) as u64);
+                last_fetched_at.0 + poll < now
+            })
         } else {
-            last_fetched_at.0 + throttle.0 < now
+            last_fetched_at.0 + Duration::from_millis(throttle.0) < now
         }
     })
 }

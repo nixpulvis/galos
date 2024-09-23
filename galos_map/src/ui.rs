@@ -1,4 +1,5 @@
 use crate::search::Searched;
+use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::spawn::{ColorBy, Despawn, ShowNames};
 use crate::systems::Spyglass;
@@ -16,6 +17,8 @@ pub fn panel(
     mut color_by: ResMut<ColorBy>,
     mut population_scale: ResMut<ScalePopulation>,
     mut show_names: ResMut<ShowNames>,
+    mut throttle: ResMut<Throttle>,
+    mut poll: ResMut<Poll>,
     mut searched: EventWriter<Searched>,
     mut despawner: EventWriter<Despawn>,
     mut system_name: Local<Option<String>>,
@@ -46,6 +49,8 @@ pub fn panel(
                     &mut color_by,
                     &mut population_scale,
                     &mut show_names,
+                    &mut throttle,
+                    &mut poll,
                     &mut despawner,
                 );
             });
@@ -84,27 +89,43 @@ pub fn settings(
     color_by: &mut ResMut<ColorBy>,
     population_scale: &mut ResMut<ScalePopulation>,
     show_names: &mut ResMut<ShowNames>,
+    throttle: &mut ResMut<Throttle>,
+    poll: &mut ResMut<Poll>,
     despawner: &mut EventWriter<Despawn>,
 ) {
     // TODO: IDK why this is necessary, the groups should fill the correct
     // size, no?
-    ui.set_width(125.);
+    ui.set_width(150.);
 
     ui.group(|ui| {
+        ui.label("Spyglass Radius");
         ui.add(
             egui::Slider::new(&mut spyglass.radius, 10.0..=25000.0)
                 .logarithmic(true)
                 .drag_value_speed(0.1)
-                .text("Radius"),
         );
         ui.add_space(2.);
-        ui.checkbox(&mut spyglass.fetch, "Load Systems from DB");
+        ui.checkbox(&mut spyglass.disabled, "Override Spyglass");
         ui.add_space(2.);
-        ui.checkbox(&mut spyglass.filter, "Spyglass Filter");
-        ui.add_space(2.);
-        if ui.button("Despawn Systems").clicked() {
-            despawner.send(Despawn);
-        }
+        ui.collapsing("Advanced", |ui| {
+            ui.checkbox(&mut spyglass.fetch, "Fetch Systems");
+            if spyglass.fetch {
+                ui.horizontal(|ui| {
+                    poll_value(ui, &mut poll.0);
+                    ui.label("Poll (Hz)");
+                });
+                ui.add_space(2.);
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut throttle.0).speed(5));
+                    ui.label("Throttle (ms)");
+                });
+            }
+            ui.add_space(2.);
+            if ui.button("Despawn Systems").clicked() {
+                despawner.send(Despawn);
+            }
+            ui.add_space(2.);
+        });
     });
 
     ui.add_space(5.);
@@ -151,13 +172,14 @@ pub fn route(
     ui.add_space(2.);
     singleline(ui, &mut **end, "End System");
     ui.add_space(2.);
-    singleline(ui, &mut **end, "Range (Ly)");
+    singleline(ui, &mut **range, "Range (Ly)");
     ui.add_space(2.);
     if ui.button("Plot Route...").clicked() {
         if let (Some(ref s), Some(ref e), Some(ref r)) =
             (start.as_ref(), end.as_ref(), range.as_ref())
         {
-            if let Ok(r) = r.parse() {
+            #[allow(irrefutable_let_patterns)]
+            if let Ok(r) = (**r).parse() {
                 events.send(Searched::Route {
                     start: (*s).clone(),
                     end: (*e).clone(),
@@ -202,4 +224,19 @@ fn singleline(
     }
 
     response
+}
+
+fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
+    let mut placeholder = 0.;
+    if let Some(ref mut val) = opt {
+        ui.add(egui::DragValue::new(val).range(0.0..=60.).speed(0.01));
+    } else {
+        ui.add(
+            egui::DragValue::new(&mut placeholder)
+                .custom_formatter(|_, _| "—".into()),
+        );
+    }
+    if placeholder != 0. && opt.is_none() {
+        *opt = Some(0.);
+    }
 }

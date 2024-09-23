@@ -33,7 +33,7 @@ pub mod spawn;
 pub struct Spyglass {
     pub fetch: bool,
     pub radius: f32,
-    pub filter: bool,
+    pub disabled: bool,
 }
 
 pub fn visibility(
@@ -43,13 +43,13 @@ pub fn visibility(
     spyglass: Res<Spyglass>,
 ) {
     // Make sure we make systems visible again.
-    if spyglass.is_changed() && !spyglass.filter {
+    if spyglass.is_changed() && spyglass.disabled {
         for (entity, _) in &systems {
             commands.entity(entity).insert(Visibility::Visible);
         }
     }
 
-    if spyglass.filter {
+    if !spyglass.disabled {
         let camera_translation = camera.single().focus;
         for (entity, system_transform) in &systems {
             let dist =

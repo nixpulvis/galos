@@ -1,5 +1,5 @@
 use crate::systems::fetch::{
-    fetch_condition, FetchIndex, FetchTasks, LastFetchedAt, Throttle, Poll,
+    fetch_condition, FetchIndex, FetchTasks, LastFetchedAt, Poll, Throttle,
 };
 use crate::Db;
 use bevy::prelude::*;
