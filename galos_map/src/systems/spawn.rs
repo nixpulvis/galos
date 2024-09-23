@@ -17,8 +17,17 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
 
+    app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn);
+    app.add_systems(Update, update.after(spawn));
 }
+
+#[derive(Resource)]
+pub struct SystemMesh(pub Handle<Mesh>);
+
+#[derive(Resource)]
+pub struct SystemMaterials(pub Vec<Handle<StandardMaterial>>);
+// pub struct SystemMaterials(pub HashMap<String, Handle<StandardMaterial>>);
 
 /// Determains what color to draw in system view mode.
 #[derive(Resource, Copy, Clone, Debug, PartialEq)]
@@ -38,12 +47,12 @@ pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<Entity, With<Route>>,
     color_by: Res<ColorBy>,
-    mut move_camera_events: EventWriter<MoveCamera>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut tasks: ResMut<FetchTasks>,
+    mesh: Res<SystemMesh>,
+    materials: Res<SystemMaterials>,
     time: Res<Time<Real>>,
+    mut commands: Commands,
+    mut move_camera_events: EventWriter<MoveCamera>,
+    mut tasks: ResMut<FetchTasks>,
 ) {
     tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
@@ -57,8 +66,8 @@ pub fn spawn(
                 &systems_query,
                 &color_by,
                 &mut commands,
-                &mut meshes,
-                &mut materials,
+                &mesh,
+                &materials,
                 &time,
                 fetched_at,
             );
@@ -76,13 +85,13 @@ pub fn spawn(
 
             match index {
                 FetchIndex::Route(..) => {
-                    spawn_route(
-                        &new_systems,
-                        &route_query,
-                        &mut commands,
-                        &mut meshes,
-                        &mut materials,
-                    );
+                    // spawn_route(
+                    //     &new_systems,
+                    //     &route_query,
+                    //     &mut commands,
+                    //     &mesh,
+                    //     &materials,
+                    // );
                 }
                 _ => {}
             }
@@ -95,45 +104,58 @@ pub fn spawn(
 
 /// Generate all the star system entities.
 pub fn spawn_systems(
-    new_systems: &[DbSystem],
-    systems_query: &Query<(Entity, &System)>,
+    db_systems: &[DbSystem],
+    systems: &Query<(Entity, &System)>,
     color_by: &Res<ColorBy>,
     commands: &mut Commands,
-    mesh_asset: &mut ResMut<Assets<Mesh>>,
-    material_assets: &mut ResMut<Assets<StandardMaterial>>,
+    mesh: &Res<SystemMesh>,
+    materials: &Res<SystemMaterials>,
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
 ) {
-    let mut existing_systems: HashMap<i64, Entity> = systems_query
+    let mut existing_systems: HashMap<i64, Entity> = systems
         .iter()
         .map(|(entity, system)| (system.address, entity))
         .collect();
 
-    let mesh = init_meshes(mesh_asset);
-    let materials = init_materials(material_assets);
-
-    for new_system in new_systems {
-        if let Some(enitity) = existing_systems.remove(&new_system.address) {
+    for db_system in db_systems {
+        if let Some(enitity) = existing_systems.remove(&db_system.address) {
             debug!(
                 "updating {} @ {:?}",
-                new_system.address,
+                db_system.address,
                 fetched_at.duration_since(time.startup())
             );
 
-            commands.entity(enitity).insert(System::from(new_system));
-            commands
-                .entity(enitity)
-                .insert(pbr_bundle(new_system, &mesh, &materials, color_by));
+            commands.entity(enitity).insert(System::from(db_system));
         } else {
             debug!(
                 "spawning {} {:?}",
-                new_system.address,
+                db_system.address,
                 fetched_at.duration_since(time.startup())
             );
 
+            let system = System::from(db_system);
+            let color_idx = match color_by.deref() {
+                ColorBy::Allegiance => allegiance_color_idx(&system),
+                ColorBy::Government => government_color_idx(&system),
+                ColorBy::Security => security_color_idx(&system),
+            };
             commands.spawn((
-                pbr_bundle(new_system, &mesh, &materials, color_by),
-                System::from(new_system),
+                PbrBundle {
+                    transform: Transform {
+                        translation: Vec3::new(
+                            system.position[0],
+                            system.position[1],
+                            system.position[2],
+                        ),
+                        scale: Vec3::splat(1.),
+                        ..default()
+                    },
+                    mesh: mesh.0.clone(),
+                    material: materials.0[color_idx].clone(),
+                    ..default()
+                },
+                system,
                 NotShadowCaster,
                 PickableBundle::default(),
                 // TODO: toggle system info as well.
@@ -155,41 +177,35 @@ pub fn spawn_systems(
     }
 }
 
-// TODO(#42): update ColorBy, use `System` values.
-fn pbr_bundle(
-    system: &DbSystem,
-    mesh: &Handle<Mesh>,
-    materials: &Vec<Handle<StandardMaterial>>,
-    color_by: &Res<ColorBy>,
-) -> PbrBundle {
-    let color_idx = match color_by.deref() {
-        ColorBy::Allegiance => allegiance_color_idx(&system),
-        ColorBy::Government => government_color_idx(&system),
-        ColorBy::Security => security_color_idx(&system),
-    };
-    PbrBundle {
-        transform: Transform {
-            translation: Vec3::new(
-                system.position.unwrap().x as f32,
-                system.position.unwrap().y as f32,
-                system.position.unwrap().z as f32,
-            ),
-            scale: Vec3::splat(1.),
-            ..default()
-        },
-        mesh: mesh.clone(),
-        material: materials[color_idx].clone(),
-        ..default()
+fn update(
+    systems_query: Query<(Entity, Ref<System>)>,
+    color_by: Res<ColorBy>,
+    commands: Commands,
+    mesh: Res<SystemMesh>,
+    materials: Res<SystemMaterials>,
+) {
+    for (entity, system) in &systems_query {
+        if system.is_changed() {
+            info!("hit");
+            // dbg!(materials);
+            // commands
+            //     .entity(entity)
+            //     .insert()
+        }
     }
 }
 
-fn init_meshes(assets: &mut Assets<Mesh>) -> Handle<Mesh> {
-    assets.add(Sphere::new(1.).mesh().ico(3).unwrap())
+fn init_mesh(
+    mut mesh: ResMut<SystemMesh>,
+    mut assets: ResMut<Assets<Mesh>>,
+) {
+    mesh.0 = assets.add(Sphere::new(1.).mesh().ico(3).unwrap());
 }
 
 fn init_materials(
-    assets: &mut Assets<StandardMaterial>,
-) -> Vec<Handle<StandardMaterial>> {
+    mut materials: ResMut<SystemMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+) {
     let colors = vec![
         Color::srgba(0., 1., 0., 0.4),       // Green
         Color::srgba(0., 1., 1., 0.4),       // Cyan
@@ -201,7 +217,7 @@ fn init_materials(
         Color::srgba(0.15, 0.15, 0.15, 0.3), // Grey
     ];
 
-    colors
+    let handles = colors
         .into_iter()
         .map(|color| {
             assets.add(StandardMaterial {
@@ -211,10 +227,12 @@ fn init_materials(
                 ..default()
             })
         })
-        .collect()
+        .collect();
+
+    materials.0 = handles;
 }
 
-fn allegiance_color_idx(system: &DbSystem) -> usize {
+fn allegiance_color_idx(system: &System) -> usize {
     match system.allegiance {
         Some(Allegiance::Alliance) => 0,         // Green
         Some(Allegiance::Empire) => 1,           // Cyan
@@ -228,7 +246,7 @@ fn allegiance_color_idx(system: &DbSystem) -> usize {
     }
 }
 
-fn government_color_idx(system: &DbSystem) -> usize {
+fn government_color_idx(system: &System) -> usize {
     match system.government {
         Some(Government::Anarchy) => 4,      // Yellow
         Some(Government::Carrier) => 0,      // Green
@@ -248,7 +266,7 @@ fn government_color_idx(system: &DbSystem) -> usize {
     }
 }
 
-fn security_color_idx(system: &DbSystem) -> usize {
+fn security_color_idx(system: &System) -> usize {
     match system.security {
         Some(Security::High) => 5,        // Blue
         Some(Security::Medium) => 1,      // Cyan
@@ -260,8 +278,15 @@ fn security_color_idx(system: &DbSystem) -> usize {
 
 impl From<&DbSystem> for System {
     fn from(system: &DbSystem) -> System {
+        let pos = [
+            system.position.unwrap().x as f32,
+            system.position.unwrap().y as f32,
+            system.position.unwrap().z as f32,
+        ];
+
         System {
             address: system.address,
+            position: pos,
             name: system.name.clone(),
             population: system.population,
             allegiance: system.allegiance,

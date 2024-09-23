@@ -25,6 +25,7 @@ pub fn plugin(app: &mut App) {
 pub struct System {
     address: i64,
     name: String,
+    position: [f32; 3],
     population: u64,
     allegiance: Option<Allegiance>,
     government: Option<Government>,
