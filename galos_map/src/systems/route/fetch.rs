@@ -1,5 +1,5 @@
 use crate::systems::fetch::{
-    fetch_condition, FetchIndex, FetchTasks, LastFetchedAt, Poll, Throttle,
+    FetchIndex, FetchTasks, LastFetchedAt, Poll, Throttle,
 };
 use crate::Db;
 use bevy::prelude::*;
@@ -12,29 +12,25 @@ pub fn fetch_route(
     range: String,
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
-    last_fetched: &mut ResMut<LastFetchedAt>,
-    throttle: &Res<Throttle>,
-    poll: &Res<Poll>,
+    last_fetched_at: &mut ResMut<LastFetchedAt>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Route(start.clone(), end.clone(), range.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, tasks, now, last_fetched, throttle, poll) {
-        let task_pool = AsyncComputeTaskPool::get();
-        let db = db.0.clone();
-        let task = task_pool.spawn(async move {
-            if let (Ok(a), Ok(b), Ok(r)) = (
-                DbSystem::fetch_by_name(&db, &start).await,
-                DbSystem::fetch_by_name(&db, &end).await,
-                range.parse::<f64>(),
-            ) {
-                if let Some(route) = a.route_to(&db, &b, r) {
-                    return route.0;
-                }
+    let task_pool = AsyncComputeTaskPool::get();
+    let db = db.0.clone();
+    let task = task_pool.spawn(async move {
+        if let (Ok(a), Ok(b), Ok(r)) = (
+            DbSystem::fetch_by_name(&db, &start).await,
+            DbSystem::fetch_by_name(&db, &end).await,
+            range.parse::<f64>(),
+        ) {
+            if let Some(route) = a.route_to(&db, &b, r) {
+                return route.0;
             }
-            vec![]
-        });
-        tasks.fetched.insert(index, (task, now));
-        **last_fetched = LastFetchedAt(now);
-    }
+        }
+        vec![]
+    });
+    tasks.fetched.insert(index, (task, now));
+    **last_fetched_at = LastFetchedAt(now);
 }

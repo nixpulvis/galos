@@ -112,7 +112,7 @@ pub fn fetch(
     db: Res<Db>,
 ) {
     if spyglass.fetch {
-        fetch_around_camera(
+        fetch_spyglass(
             &camera_query,
             &mut tasks,
             &mut spyglass,
@@ -139,8 +139,6 @@ pub fn fetch(
                     &mut tasks,
                     &time,
                     &mut last_fetched_at,
-                    &throttle,
-                    &poll,
                     &db,
                 );
             }
@@ -152,8 +150,6 @@ pub fn fetch(
                     &mut tasks,
                     &time,
                     &mut last_fetched_at,
-                    &throttle,
-                    &poll,
                     &db,
                 );
             }
@@ -161,7 +157,7 @@ pub fn fetch(
     }
 }
 
-fn fetch_around_camera(
+fn fetch_spyglass(
     camera_query: &Query<&mut PanOrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
@@ -175,7 +171,7 @@ fn fetch_around_camera(
     let center = camera.focus.as_ivec3();
     let index = FetchIndex::Region(center, spyglass.radius as i32);
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
+    if spyglass_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
         debug!(
             "fetching {:?} @ {:?}",
             index,
@@ -202,25 +198,21 @@ fn fetch_faction(
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
     last_fetched_at: &mut ResMut<LastFetchedAt>,
-    throttle: &Res<Throttle>,
-    poll: &Res<Poll>,
     db: &Res<Db>,
 ) {
     let index = FetchIndex::Faction(name.clone());
     let now = time.last_update().unwrap_or(time.startup());
-    if fetch_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
-        let task_pool = AsyncComputeTaskPool::get();
-        let db = db.0.clone();
-        let task = task_pool.spawn(async move {
-            DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
-        });
-        tasks.fetched.insert(index.clone(), (task, now));
-        tasks.last_fetched = Some(index);
-        **last_fetched_at = LastFetchedAt(now);
-    }
+    let task_pool = AsyncComputeTaskPool::get();
+    let db = db.0.clone();
+    let task = task_pool.spawn(async move {
+        DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
+    });
+    tasks.fetched.insert(index.clone(), (task, now));
+    tasks.last_fetched = Some(index);
+    **last_fetched_at = LastFetchedAt(now);
 }
 
-pub fn fetch_condition(
+pub fn spyglass_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
     now: Instant,

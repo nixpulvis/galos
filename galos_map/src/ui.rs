@@ -102,7 +102,7 @@ pub fn settings(
         ui.add(
             egui::Slider::new(&mut spyglass.radius, 10.0..=25000.0)
                 .logarithmic(true)
-                .drag_value_speed(0.1)
+                .drag_value_speed(0.1),
         );
         ui.add_space(2.);
         ui.checkbox(&mut spyglass.disabled, "Override Spyglass");
