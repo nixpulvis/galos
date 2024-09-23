@@ -1,5 +1,6 @@
 # Galos
-![Galos Starmap Demo](galos-map/demo.gif)
+![Galos Starmap Demo](galos_map/demo.gif)
+![Galos Galaxy Zoom](galos_map/galaxy.png)
 -----
 [![CI](https://github.com/nixpulvis/galos/actions/workflows/ci.yml/badge.svg)](https://github.com/nixpulvis/galos/actions/workflows/ci.yml)
 
