@@ -215,7 +215,7 @@ fn pbr_bundle(
 }
 
 fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
-    let handle = assets.add(Sphere::new(1.).mesh().ico(3).unwrap());
+    let handle = assets.add(Sphere::new(1.).mesh().ico(1).unwrap());
     commands.insert_resource(SystemMesh(handle));
 }
 

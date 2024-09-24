@@ -110,6 +110,7 @@ pub fn panels(
                     ui.label("10 - 500 Ly");
                     ui.add(
                         egui::Slider::new(&mut spyglass.radius, 10.0..=500.)
+                            .logarithmic(true)
                             .step_by(1.)
                             .drag_value_speed(0.2),
                     );
@@ -135,10 +136,7 @@ pub fn panels(
                             });
                             ui.add_space(2.);
                             ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::DragValue::new(&mut throttle.0)
-                                        .speed(5),
-                                );
+                                ui.add(egui::DragValue::new(&mut throttle.0));
                                 ui.label("Throttle (ms)");
                             });
                         }
