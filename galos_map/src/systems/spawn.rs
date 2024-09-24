@@ -50,6 +50,8 @@ pub fn spawn(
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
     time: Res<Time<Real>>,
+    mut mesh_assets: ResMut<Assets<Mesh>>,
+    mut material_assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
     mut move_camera_events: EventWriter<MoveCamera>,
     mut tasks: ResMut<FetchTasks>,
@@ -84,14 +86,16 @@ pub fn spawn(
             }
 
             match index {
+                // TODO: Refactor into it's own system by spawning a new
+                // Route component.
                 FetchIndex::Route(..) => {
-                    // spawn_route(
-                    //     &new_systems,
-                    //     &route_query,
-                    //     &mut commands,
-                    //     &mesh,
-                    //     &materials,
-                    // );
+                    spawn_route(
+                        &new_systems,
+                        &route_query,
+                        &mut commands,
+                        &mut mesh_assets,
+                        &mut material_assets,
+                    );
                 }
                 _ => {}
             }
