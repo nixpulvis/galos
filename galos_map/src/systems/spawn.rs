@@ -196,15 +196,16 @@ fn update(
 }
 
 fn init_mesh(
-    mut mesh: ResMut<SystemMesh>,
     mut assets: ResMut<Assets<Mesh>>,
+    mut commands: Commands,
 ) {
-    mesh.0 = assets.add(Sphere::new(1.).mesh().ico(3).unwrap());
+    let handle = assets.add(Sphere::new(1.).mesh().ico(3).unwrap());
+    commands.insert_resource(SystemMesh(handle));
 }
 
 fn init_materials(
-    mut materials: ResMut<SystemMaterials>,
     mut assets: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
 ) {
     let colors = vec![
         Color::srgba(0., 1., 0., 0.4),       // Green
@@ -229,7 +230,7 @@ fn init_materials(
         })
         .collect();
 
-    materials.0 = handles;
+    commands.insert_resource(SystemMaterials(handles));
 }
 
 fn allegiance_color_idx(system: &System) -> usize {
