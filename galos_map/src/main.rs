@@ -5,6 +5,7 @@ use bevy::tasks::futures_lite::future;
 use bevy_egui::EguiPlugin;
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use big_space::BigSpacePlugin;
 use galos_db::Database;
 use galos_map::*;
 
@@ -12,14 +13,19 @@ fn main() {
     let db = future::block_on(async { Database::new().await.unwrap() });
 
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "Galos - Starmap".into(),
-            ..default()
-        }),
-        ..default()
-    }));
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Galos - Starmap".into(),
+                    ..default()
+                }),
+                ..default()
+            })
+            .disable::<TransformPlugin>(),
+    );
     app.add_plugins(EguiPlugin);
+    app.add_plugins(BigSpacePlugin::<i64>::new(true));
 
     app.insert_resource(ClearColor(Color::BLACK));
     app.insert_resource(AmbientLight {

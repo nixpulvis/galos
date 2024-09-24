@@ -15,6 +15,7 @@ bevy_egui = "*"
 bevy_mod_billboard = "*"
 bevy_mod_picking = "*"
 bevy_panorbit_camera = { version = "*", features = ["bevy_egui"] }
+big_space = "*"
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_db = { path = "../galos_db" }
