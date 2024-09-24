@@ -1,10 +1,14 @@
 # Galos
-![Galos Starmap Demo](galos_map/demo.gif)
-![Galos Galaxy Zoom](galos_map/galaxy.png)
 -----
 [![CI](https://github.com/nixpulvis/galos/actions/workflows/ci.yml/badge.svg)](https://github.com/nixpulvis/galos/actions/workflows/ci.yml)
 
 Somewhere between reality and the space/flight sim E:D.
+
+Use `galos-sync` to populate the databas and `galos` to perform basic queries
+from the CLI.
+
+The [`galos-map`](./galos_map) program is a 3D galaxy map, see it's
+documentation for more.
 
 ### Database Setup
 
