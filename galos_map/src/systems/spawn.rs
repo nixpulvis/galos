@@ -19,7 +19,7 @@ pub fn plugin(app: &mut App) {
 
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn);
-    app.add_systems(Update, update.after(spawn));
+    app.add_systems(Update, update.before(spawn));
 }
 
 #[derive(Resource)]
@@ -135,26 +135,8 @@ pub fn spawn_systems(
             );
 
             let system = System::from(db_system);
-            let color_idx = match color_by.deref() {
-                ColorBy::Allegiance => allegiance_color_idx(&system),
-                ColorBy::Government => government_color_idx(&system),
-                ColorBy::Security => security_color_idx(&system),
-            };
             commands.spawn((
-                PbrBundle {
-                    transform: Transform {
-                        translation: Vec3::new(
-                            system.position[0],
-                            system.position[1],
-                            system.position[2],
-                        ),
-                        scale: Vec3::splat(1.),
-                        ..default()
-                    },
-                    mesh: mesh.0.clone(),
-                    material: materials.0[color_idx].clone(),
-                    ..default()
-                },
+                pbr_bundle(&system, color_by, mesh, materials),
                 system,
                 NotShadowCaster,
                 PickableBundle::default(),
@@ -180,29 +162,55 @@ pub fn spawn_systems(
 fn update(
     systems_query: Query<(Entity, Ref<System>)>,
     color_by: Res<ColorBy>,
+    mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
     mut commands: Commands,
 ) {
     for (entity, system) in &systems_query {
-        let color_idx = match color_by.deref() {
-            ColorBy::Allegiance => allegiance_color_idx(&system),
-            ColorBy::Government => government_color_idx(&system),
-            ColorBy::Security => security_color_idx(&system),
-        };
         if system.is_changed() {
-            // TODO: Insert full new bundle
-        } else if color_by.is_changed() {
             commands
                 .entity(entity)
-                .insert(materials.0[color_idx].clone());
+                .insert(pbr_bundle(&system, &color_by, &mesh, &materials));
+        } else if color_by.is_changed() {
+            let color_idx = match color_by.deref() {
+                ColorBy::Allegiance => allegiance_color_idx(&system),
+                ColorBy::Government => government_color_idx(&system),
+                ColorBy::Security => security_color_idx(&system),
+            };
+            commands.entity(entity).insert(materials.0[color_idx].clone());
         }
     }
 }
 
-fn init_mesh(
-    mut assets: ResMut<Assets<Mesh>>,
-    mut commands: Commands,
-) {
+fn pbr_bundle(
+    system: &System,
+    color_by: &Res<ColorBy>,
+    mesh: &Res<SystemMesh>,
+    materials: &Res<SystemMaterials>,
+) -> PbrBundle {
+    let color_idx = match color_by.deref() {
+        ColorBy::Allegiance => allegiance_color_idx(&system),
+        ColorBy::Government => government_color_idx(&system),
+        ColorBy::Security => security_color_idx(&system),
+    };
+
+    PbrBundle {
+        transform: Transform {
+            translation: Vec3::new(
+                system.position[0],
+                system.position[1],
+                system.position[2],
+            ),
+            scale: Vec3::splat(1.),
+            ..default()
+        },
+        mesh: mesh.0.clone(),
+        material: materials.0[color_idx].clone(),
+        ..default()
+    }
+}
+
+fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
     let handle = assets.add(Sphere::new(1.).mesh().ico(3).unwrap());
     commands.insert_resource(SystemMesh(handle));
 }
