@@ -37,10 +37,7 @@ pub fn spawn_camera(mut commands: Commands, spyglass: Res<Spyglass>) {
             pitch: Some(0.),
             yaw: Some(0.),
             radius: Some(spyglass.radius * 3.),
-
-            // Achenar, home of the Empire!
-            focus: Vec3::new(67.5, -119.46875, 24.84375),
-
+            focus: Vec3::splat(0.),
             zoom_sensitivity: 1.0,
             ..default()
         },

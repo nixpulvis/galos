@@ -11,7 +11,7 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Spyglass {
-        radius: 50.,
+        radius: 10.,
         fetch: true,
         disabled: false,
         lock_camera: false,

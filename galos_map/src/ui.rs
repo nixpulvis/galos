@@ -98,13 +98,27 @@ pub fn panels(
                 // size, no?
                 ui.set_width(150.);
 
+                ui.label("Spyglass Radius");
                 ui.group(|ui| {
-                    ui.label("Spyglass Radius");
+                    ui.label("Linear (1-50)");
+                    ui.add(
+                        egui::Slider::new(&mut spyglass.radius, 1.0..=50.)
+                            .step_by(0.1)
+                            .drag_value_speed(0.2),
+                    );
+                    ui.label("Exponential (10-500)");
+                    ui.add(
+                        egui::Slider::new(&mut spyglass.radius, 10.0..=500.)
+                            .step_by(1.)
+                            .drag_value_speed(0.2),
+                    );
+                    ui.label("Exponential (10-1.1e5)");
                     ui.add(
                         // Width of the galaxy is 105,700 Ly.
                         egui::Slider::new(&mut spyglass.radius, 10.0..=1.1e5)
                             .logarithmic(true)
-                            .drag_value_speed(0.1),
+                            .step_by(10.)
+                            .drag_value_speed(0.5),
                     );
                     ui.add_space(2.);
                     ui.checkbox(&mut spyglass.lock_camera, "Lock Camera");

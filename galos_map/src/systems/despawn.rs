@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_event::<Despawn>();
-    app.add_systems(Update, despawn);
+    app.add_systems(Update, despawn.after(super::spawn::spawn));
 }
 
 #[derive(Event)]
