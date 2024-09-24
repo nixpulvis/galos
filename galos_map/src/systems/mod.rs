@@ -10,7 +10,12 @@ use elite_journal::{
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
-    app.insert_resource(Spyglass { radius: 50., fetch: true, disabled: false });
+    app.insert_resource(Spyglass {
+        radius: 50.,
+        fetch: true,
+        disabled: false,
+        lock_camera: false,
+    });
 
     app.add_plugins(fetch::plugin);
     app.add_plugins(spawn::plugin);
@@ -19,6 +24,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(labels::plugin);
 
     app.add_systems(Update, visibility.after(spawn::spawn));
+    app.add_systems(Update, zoom_with_spyglass);
 }
 
 #[derive(Component)]
@@ -48,6 +54,7 @@ pub struct Spyglass {
     pub fetch: bool,
     pub radius: f32,
     pub disabled: bool,
+    pub lock_camera: bool,
 }
 
 pub fn visibility(
@@ -74,6 +81,15 @@ pub fn visibility(
                 commands.entity(entity).insert(Visibility::Hidden);
             }
         }
+    }
+}
+
+pub fn zoom_with_spyglass(
+    spyglass: Res<Spyglass>,
+    mut camera: Query<&mut PanOrbitCamera>,
+) {
+    if spyglass.lock_camera {
+        camera.single_mut().target_radius = spyglass.radius * 3.;
     }
 }
 

@@ -107,6 +107,8 @@ pub fn panels(
                             .drag_value_speed(0.1),
                     );
                     ui.add_space(2.);
+                    ui.checkbox(&mut spyglass.lock_camera, "Lock Camera");
+                    ui.add_space(2.);
                     ui.checkbox(&mut spyglass.disabled, "Override Spyglass");
                     ui.add_space(2.);
                     ui.collapsing("Advanced", |ui| {
