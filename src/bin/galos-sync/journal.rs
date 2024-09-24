@@ -3,7 +3,8 @@ use async_std::task;
 use elite_journal::entry::{self, Event};
 use galos_db::{systems::System, Database};
 use indicatif::{ProgressBar, ProgressStyle};
-use std::fs;
+use notify::{RecursiveMode, Watcher};
+use std::{fs, path::Path};
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -14,6 +15,43 @@ pub struct Cli {
 
 impl Run for Cli {
     fn run(&self, db: &Database) {
+        // TODO: Setup CLI flag
+        if true {
+            self.run_watch(db)
+        } else {
+            self.run_dump(db)
+        }
+    }
+}
+
+impl Cli {
+    fn run_watch(&self, db: &Database) {
+        // setup debouncer
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        // Automatically select the best implementation for your platform.
+        let mut watcher = notify::recommended_watcher(move |res| {
+            tx.send(res);
+        })
+        .expect("ERROR: unable to get filesystem watcher");
+
+        // Add a path to be watched. All files and directories at that path and
+        // below will be monitored for changes.
+        watcher
+            .watch(Path::new("."), RecursiveMode::Recursive)
+            .expect("ERROR: unable to setup watcher");
+
+        for result in rx {
+            match result {
+                Ok(event) => {
+                    println!("Event {event:?}")
+                }
+                Err(error) => println!("Error {error:?}"),
+            }
+        }
+    }
+
+    fn run_dump(&self, db: &Database) {
         let entries = if let Ok(m) = fs::metadata(&self.path) {
             if m.is_dir() {
                 entry::parse_journal_dir(&self.path).unwrap()

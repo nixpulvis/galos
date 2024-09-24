@@ -11,6 +11,7 @@ async-std = "*"
 structopt = "*"
 itertools = "*"
 indicatif = "*"
+notify = "*"
 chrono = "*"
 eddb = { path = "./eddb" }
 edsm = { path = "./edsm" }
@@ -18,7 +19,7 @@ galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
 prettytable-rs = "*"
 tui = "*"
-galos_map= { path = "./galos_map" }
+galos_map = { path = "./galos_map" }
 
 [target.'cfg(unix)'.dependencies]
 eddn = { path = "./eddn" }

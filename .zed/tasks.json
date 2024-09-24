@@ -15,6 +15,10 @@
     "command": "cargo run --release -p galos_map --features galos_map/inspector"
   },
   {
+    "label": "galos-sync --watch",
+    "command": "cargo run --release --bin galos-sync -- --watch C:\\Users\\Nate\\Saved Games\\Frontier Developments\\Elite Dangerous"
+  },
+  {
     "label": "doc",
     "command": "cargo doc --workspace --exclude eddn --document-private-items",
     "reveal": "never"
