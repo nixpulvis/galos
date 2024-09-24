@@ -100,19 +100,20 @@ pub fn panels(
 
                 ui.label("Spyglass Radius");
                 ui.group(|ui| {
-                    ui.label("Linear (1-50)");
+                    ui.label("1 - 50 Ly");
                     ui.add(
                         egui::Slider::new(&mut spyglass.radius, 1.0..=50.)
+                            .logarithmic(true)
                             .step_by(0.1)
                             .drag_value_speed(0.2),
                     );
-                    ui.label("Exponential (10-500)");
+                    ui.label("10 - 500 Ly");
                     ui.add(
                         egui::Slider::new(&mut spyglass.radius, 10.0..=500.)
                             .step_by(1.)
                             .drag_value_speed(0.2),
                     );
-                    ui.label("Exponential (10-1.1e5)");
+                    ui.label("10 - 1.1e5 Ly");
                     ui.add(
                         // Width of the galaxy is 105,700 Ly.
                         egui::Slider::new(&mut spyglass.radius, 10.0..=1.1e5)
