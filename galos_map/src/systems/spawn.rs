@@ -180,17 +180,21 @@ pub fn spawn_systems(
 fn update(
     systems_query: Query<(Entity, Ref<System>)>,
     color_by: Res<ColorBy>,
-    commands: Commands,
-    mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
+    mut commands: Commands,
 ) {
     for (entity, system) in &systems_query {
+        let color_idx = match color_by.deref() {
+            ColorBy::Allegiance => allegiance_color_idx(&system),
+            ColorBy::Government => government_color_idx(&system),
+            ColorBy::Security => security_color_idx(&system),
+        };
         if system.is_changed() {
-            info!("hit");
-            // dbg!(materials);
-            // commands
-            //     .entity(entity)
-            //     .insert()
+            // TODO: Insert full new bundle
+        } else if color_by.is_changed() {
+            commands
+                .entity(entity)
+                .insert(materials.0[color_idx].clone());
         }
     }
 }
