@@ -21,7 +21,7 @@ pub fn spawn_route(
             }),
             transform: Transform::from_xyz(0., 0., 0.),
             material: materials.add(StandardMaterial {
-                base_color: Color::srgba(1., 1., 1., 0.1),
+                base_color: Color::srgba(1., 1., 1., 0.3),
                 alpha_mode: AlphaMode::Blend,
                 ..default()
             }),
