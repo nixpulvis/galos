@@ -24,7 +24,7 @@ fn main() {
     app.insert_resource(ClearColor(Color::BLACK));
     app.insert_resource(AmbientLight {
         color: Color::default(),
-        brightness: 0.,
+        brightness: 1e3,
     });
     app.insert_resource(Db(db));
 
