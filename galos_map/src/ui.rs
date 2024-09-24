@@ -130,14 +130,11 @@ pub fn panels(
                     ui.collapsing("Advanced", |ui| {
                         ui.checkbox(&mut spyglass.fetch, "Fetch Systems");
                         if spyglass.fetch {
-                            ui.horizontal(|ui| {
-                                poll_value(ui, &mut poll.0);
-                                ui.label("Poll (Hz)");
-                            });
+                            ui.horizontal(|ui| poll_value(ui, &mut poll.0));
                             ui.add_space(2.);
                             ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut throttle.0));
                                 ui.label("Throttle (ms)");
+                                ui.add(egui::DragValue::new(&mut throttle.0));
                             });
                         }
                         ui.add_space(2.);
@@ -226,16 +223,17 @@ fn singleline(
 }
 
 fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
-    let mut placeholder = 0.;
-    if let Some(ref mut val) = opt {
-        ui.add(egui::DragValue::new(val).range(0.0..=60.).speed(0.01));
-    } else {
-        ui.add(
-            egui::DragValue::new(&mut placeholder)
-                .custom_formatter(|_, _| "—".into()),
-        );
+    let mut enabled = opt.is_some();
+    if ui.checkbox(&mut enabled, "Poll").changed() {
+        if enabled {
+            *opt = Some(1.);
+        } else {
+            *opt = None
+        }
     }
-    if placeholder != 0. && opt.is_none() {
-        *opt = Some(0.);
+
+    if let Some(ref mut val) = opt {
+        ui.label("(Hz)");
+        ui.add(egui::DragValue::new(val).range(0.0..=60.).speed(0.01));
     }
 }
