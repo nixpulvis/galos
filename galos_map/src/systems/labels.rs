@@ -112,10 +112,9 @@ pub fn visibility(
     show_names: Res<ShowNames>,
 ) {
     if show_names.is_changed() {
-        // TODO: remove iter()?
-        for (entity, _) in billboards.iter() {
+        for (entity, _) in &billboards {
             if show_names.0 {
-                commands.entity(entity).insert(Visibility::Visible);
+                commands.entity(entity).insert(Visibility::Inherited);
             } else {
                 commands.entity(entity).insert(Visibility::Hidden);
             }
