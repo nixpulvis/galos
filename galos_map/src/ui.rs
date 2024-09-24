@@ -27,17 +27,17 @@ pub fn panels(
     mut searched: EventWriter<Searched>,
     mut despawner: EventWriter<Despawn>,
     mut system_name: Local<Option<String>>,
-    mut faction_name: Local<Option<String>>,
-    mut route_start: Local<Option<String>>,
     mut route_end: Local<Option<String>>,
     mut route_range: Local<Option<String>>,
+    mut faction_name: Local<Option<String>>,
 ) {
     if let Some(ctx) = contexts.try_ctx_mut() {
         egui::Window::new("Search").default_open(false).resizable(false).show(
             ctx,
             |ui| {
-                ui.label("Focus");
-                let response = singleline(ui, &mut *system_name, "System");
+                ui.set_width(125.);
+
+                let response = singleline(ui, &mut *system_name, "System Name");
                 if response.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
@@ -47,9 +47,37 @@ pub fn panels(
                             .send(Searched::System { name: search.clone() });
                     }
                 }
-                ui.add_space(2.);
+                if system_name.is_some() {
+                    ui.add_space(2.);
+                    ui.label("Route");
+                    singleline(ui, &mut *route_end, "End System");
+                    ui.add_space(2.);
+                    singleline(ui, &mut *route_range, "Range (Ly)");
+                    ui.add_space(3.);
 
-                let response = singleline(ui, &mut *faction_name, "Faction");
+                    if ui.button("Plot Route...").clicked() {
+                        if let (Some(ref s), Some(ref e), Some(ref r)) = (
+                            system_name.as_ref(),
+                            route_end.as_ref(),
+                            route_range.as_ref(),
+                        ) {
+                            #[allow(irrefutable_let_patterns)]
+                            if let Ok(r) = r.parse() {
+                                searched.send(Searched::Route {
+                                    start: (*s).clone(),
+                                    end: (*e).clone(),
+                                    range: r,
+                                });
+                            }
+                        }
+                    }
+                    ui.add_space(2.);
+                }
+
+                ui.separator();
+
+                let response =
+                    singleline(ui, &mut *faction_name, "Faction Name");
                 if response.lost_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
@@ -57,32 +85,6 @@ pub fn panels(
                     if let Some(ref search) = *faction_name {
                         searched
                             .send(Searched::Faction { name: search.clone() });
-                    }
-                }
-                ui.add_space(5.);
-
-                ui.label("Route");
-                singleline(ui, &mut *route_start, "Start System");
-                ui.add_space(2.);
-                singleline(ui, &mut *route_end, "End System");
-                ui.add_space(2.);
-                singleline(ui, &mut *route_range, "Range (Ly)");
-                ui.add_space(5.);
-
-                if ui.button("Plot Route...").clicked() {
-                    if let (Some(ref s), Some(ref e), Some(ref r)) = (
-                        route_start.as_ref(),
-                        route_end.as_ref(),
-                        route_range.as_ref(),
-                    ) {
-                        #[allow(irrefutable_let_patterns)]
-                        if let Ok(r) = r.parse() {
-                            searched.send(Searched::Route {
-                                start: (*s).clone(),
-                                end: (*e).clone(),
-                                range: r,
-                            });
-                        }
                     }
                 }
             },
