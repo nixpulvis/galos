@@ -3,29 +3,23 @@ use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::spawn::{ColorBy, ShowNames};
-use crate::systems::Spyglass;
+use crate::systems::{Spyglass, Target};
 use bevy::prelude::*;
 use bevy_egui::egui::{Response, Ui};
 use bevy_egui::{egui, EguiContexts};
+use egui_extras::{Column, TableBuilder};
+use std::fmt::Debug;
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, panels);
+    app.add_systems(Update, (search, settings, target));
 }
 
 // TODO: Form validation.
 
 /// Map settings and controls
-pub fn panels(
+pub fn search(
     mut contexts: EguiContexts,
-    mut spyglass: ResMut<Spyglass>,
-    mut view: ResMut<View>,
-    mut color_by: ResMut<ColorBy>,
-    mut population_scale: ResMut<ScalePopulation>,
-    mut show_names: ResMut<ShowNames>,
-    mut throttle: ResMut<Throttle>,
-    mut poll: ResMut<Poll>,
     mut searched: EventWriter<Searched>,
-    mut despawner: EventWriter<Despawn>,
     mut system_name: Local<Option<String>>,
     mut route_end: Local<Option<String>>,
     mut route_range: Local<Option<String>>,
@@ -89,7 +83,21 @@ pub fn panels(
                 }
             },
         );
+    }
+}
 
+pub fn settings(
+    mut contexts: EguiContexts,
+    mut spyglass: ResMut<Spyglass>,
+    mut view: ResMut<View>,
+    mut color_by: ResMut<ColorBy>,
+    mut population_scale: ResMut<ScalePopulation>,
+    mut show_names: ResMut<ShowNames>,
+    mut throttle: ResMut<Throttle>,
+    mut poll: ResMut<Poll>,
+    mut despawner: EventWriter<Despawn>,
+) {
+    if let Some(ctx) = contexts.try_ctx_mut() {
         egui::Window::new("Settings")
             .default_open(false)
             .resizable(false)
@@ -186,6 +194,66 @@ pub fn panels(
     }
 }
 
+pub fn target(
+    mut contexts: EguiContexts,
+    target: Res<Target>,
+    // mut searched: EventWriter<MoveCamera>,
+) {
+    if let (Some(ctx), Some(system)) =
+        (contexts.try_ctx_mut(), target.0.as_ref())
+    {
+        egui::Window::new("Target").default_open(true).resizable(false).show(
+            ctx,
+            |ui| {
+                ui.set_width(300.);
+
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .column(Column::auto().resizable(true))
+                    .column(Column::remainder())
+                    .body(|mut body| {
+                        let data = [
+                            ("Address", format!("{}", system.address)),
+                            ("Name", system.name.clone()),
+                            (
+                                "Position",
+                                format!(
+                                    "({}, {}, {})",
+                                    system.position[0],
+                                    system.position[1],
+                                    system.position[2]
+                                ),
+                            ),
+                            ("Population", system.population.to_string()),
+                            ("Allegiance", format_option(system.allegiance)),
+                            ("Government", format_option(system.government)),
+                            ("Security", format_option(system.security)),
+                            (
+                                "Primary Economy",
+                                format_option(system.primary_economy),
+                            ),
+                            (
+                                "Secondary Economy",
+                                format_option(system.secondary_economy),
+                            ),
+                        ];
+
+                        for (field, value) in data {
+                            body.row(10., |mut row| {
+                                row.col(|ui| {
+                                    ui.label(field);
+                                });
+                                row.col(|ui| {
+                                    ui.label(value);
+                                });
+                            });
+                        }
+                    });
+            },
+        );
+    }
+}
+
 fn singleline(
     ui: &mut Ui,
     value: &mut Option<String>,
@@ -236,4 +304,8 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
         ui.label("(Hz)");
         ui.add(egui::DragValue::new(val).range(0.0..=60.).speed(0.01));
     }
+}
+
+fn format_option<T: Debug>(option: Option<T>) -> String {
+    option.map_or("None".into(), |v| format!("{:?}", v))
 }

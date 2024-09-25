@@ -1,7 +1,7 @@
 use crate::camera::MoveCamera;
 use crate::systems::{
     fetch::FetchIndex, fetch::FetchTasks, route::spawn::spawn_route,
-    route::Route, system_to_vec, System,
+    route::Route, system_to_vec, System, Target,
 };
 use bevy::pbr::NotShadowCaster;
 use bevy::prelude::*;
@@ -144,8 +144,17 @@ pub fn spawn_systems(
                 system,
                 NotShadowCaster,
                 PickableBundle::default(),
-                // TODO: toggle system info as well.
-                On::<Pointer<Click>>::send_event::<MoveCamera>(),
+                On::<Pointer<Click>>::run(move |
+                    systems: Query<&System>,
+                    click: Res<ListenerInput<Pointer<Click>>>,
+                    mut target: ResMut<Target>,
+                    mut camera: EventWriter<MoveCamera>,
+                | {
+                    if let Ok(system) = systems.get(click.target()) {
+                        camera.send(MoveCamera::from(click.clone()));
+                        target.0 = Some(system.clone());
+                    }
+                }),
                 On::<Pointer<Over>>::target_commands_mut(
                     |_hover, _target_commands| {
                         // dbg!(_hover);

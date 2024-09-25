@@ -16,6 +16,7 @@ pub fn plugin(app: &mut App) {
         disabled: false,
         lock_camera: false,
     });
+    app.insert_resource(Target(None));
 
     app.add_plugins(fetch::plugin);
     app.add_plugins(spawn::plugin);
@@ -30,18 +31,18 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, zoom_with_spyglass);
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Debug)]
 pub struct System {
-    address: i64,
-    name: String,
-    position: [f32; 3],
-    population: u64,
-    allegiance: Option<Allegiance>,
-    government: Option<Government>,
-    security: Option<Security>,
-    primary_economy: Option<Economy>,
-    secondary_economy: Option<Economy>,
-    updated_at: DateTime<Utc>,
+    pub address: i64,
+    pub name: String,
+    pub position: [f32; 3],
+    pub population: u64,
+    pub allegiance: Option<Allegiance>,
+    pub government: Option<Government>,
+    pub security: Option<Security>,
+    pub primary_economy: Option<Economy>,
+    pub secondary_economy: Option<Economy>,
+    pub updated_at: DateTime<Utc>,
 }
 
 pub mod despawn;
@@ -95,6 +96,9 @@ pub fn zoom_with_spyglass(
         camera.single_mut().target_radius = spyglass.radius * 3.;
     }
 }
+
+#[derive(Resource)]
+pub struct Target(pub Option<System>);
 
 pub fn system_to_vec(system: &DbSystem) -> Vec3 {
     Vec3::new(
