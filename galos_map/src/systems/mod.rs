@@ -23,7 +23,10 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
 
-    app.add_systems(Update, visibility.after(spawn::spawn));
+    app.add_systems(
+        Update,
+        visibility.after(spawn::spawn).after(despawn::despawn),
+    );
     app.add_systems(Update, zoom_with_spyglass);
 }
 
