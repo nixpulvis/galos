@@ -219,10 +219,29 @@ fn process_message(db: &Database, message: Message, user: String) {
             },
             Message::Commodity(
                 ref e @ Entry { event: ref m @ JournalMarket { .. }, .. },
-            ) => match Market::from_journal(db, e.timestamp, &m).await {
-                Ok(_) => println!("[EDDN] <MKT:mkt> {}", m.station_name),
-                Err(err) => eprintln!("[EDDN] <MKT:mkt> {}", err),
-            },
+            ) => {
+                if let Ok(system) =
+                    System::fetch_by_name(db, &m.system_name).await
+                {
+                    if let Ok(_) = Station::create(
+                        db,
+                        e.timestamp,
+                        &user,
+                        system.address,
+                        &m.station_name,
+                    )
+                    .await
+                    {
+                        println!("[EDDN] <MKT:sta> {}", m.station_name);
+                        match Market::from_journal(db, e.timestamp, &m).await {
+                            Ok(_) => {
+                                println!("[EDDN] <MKT:mkt> {}", m.station_name)
+                            }
+                            Err(err) => eprintln!("[EDDN] <MKT:mkt> {}", err),
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     })

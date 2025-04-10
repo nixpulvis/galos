@@ -6,6 +6,65 @@ use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
 impl Station {
+    pub async fn create(
+        db: &Database,
+        timestamp: DateTime<Utc>,
+        user: &str,
+        system_address: i64,
+        name: &str,
+    ) -> Result<Station, Error> {
+        let row = sqlx::query!(
+            r#"
+            INSERT INTO stations (
+                system_address,
+                name,
+                updated_at,
+                updated_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (system_address, name)
+            DO UPDATE SET
+                updated_at = $3,
+                updated_by = $4
+            RETURNING
+                system_address,
+                name,
+                ty as "ty: StationType",
+                dist_from_star_ls,
+                market_id,
+                landing_pads as "landing_pads: LandingPads",
+                faction,
+                government as "government: Government",
+                allegiance as "allegiance: Allegiance",
+                services as "services: Vec<Service>",
+                economies as "economies: Vec<EconomyShare>",
+                updated_at,
+                updated_by
+            "#,
+            system_address,
+            name,
+            timestamp.naive_utc(),
+            user,
+        )
+        .fetch_one(&db.pool)
+        .await?;
+
+        Ok(Station {
+            system_address: row.system_address,
+            name: row.name,
+            ty: row.ty,
+            dist_from_star_ls: row.dist_from_star_ls,
+            market_id: row.market_id,
+            landing_pads: row.landing_pads,
+            faction: row.faction,
+            government: row.government,
+            allegiance: row.allegiance,
+            services: row.services,
+            economies: row.economies,
+            updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
+        })
+    }
+
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
@@ -78,7 +137,7 @@ impl Station {
         Ok(Station {
             system_address: row.system_address,
             name: row.name,
-            ty: Some(row.ty),
+            ty: row.ty,
             dist_from_star_ls: row.dist_from_star_ls,
             market_id: row.market_id,
             landing_pads: row.landing_pads,
