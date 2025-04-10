@@ -219,10 +219,8 @@ fn process_message(db: &Database, message: Message, user: String) {
             },
             Message::Commodity(
                 ref e @ Entry { event: ref m @ JournalMarket { .. }, .. },
-            ) => {
-                if let Ok(system) =
-                    System::fetch_by_name(db, &m.system_name).await
-                {
+            ) => match System::fetch_by_name(db, &m.system_name).await {
+                Ok(system) => {
                     if let Ok(_) = Station::create(
                         db,
                         e.timestamp,
@@ -241,7 +239,8 @@ fn process_message(db: &Database, message: Message, user: String) {
                         }
                     }
                 }
-            }
+                Err(err) => eprintln!("[EDDN] <MKT:sys> {}", err),
+            },
             _ => {}
         }
     })
