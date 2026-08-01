@@ -35,6 +35,7 @@ elite_journal = { path = "./elite_journal" }
 geozero = { git = "https://github.com/nixpulvis/geozero" }
 
 [workspace]
+resolver = "2"
 members = [
     # "elite_dat",
     "elite_journal",
@@ -42,6 +43,7 @@ members = [
     "eddb",
     "edsm",
     "galos_db",
+    "galos_factory",
     "galos_map",
     # "galos_gui",
     "galos_server",

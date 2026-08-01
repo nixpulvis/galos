@@ -1,0 +1,54 @@
+// Hand-authored mini-Sol fixture for the standalone runner and tests.
+// Shape matches snapshot::SystemSnapshot; a captured live-DB snapshot
+// replaces this in M2.
+(
+    address: 10477373803,
+    name: "Sol",
+    security: "high",
+    population: 22780919531,
+    stars: [
+        (name: "Sol", class: "G"),
+    ],
+    bodies: [
+        (id: 1, name: "Mercury",  planet_class: "Metal rich body",         landable: true,  volcanism: None, atmosphere: None, dist_ls: 190),
+        (id: 4, name: "Mars",     planet_class: "High metal content body", landable: true,  volcanism: None, atmosphere: Some("thin carbon dioxide"), dist_ls: 760),
+        (id: 7, name: "Titan",    planet_class: "Rocky body",              landable: true,  volcanism: None, atmosphere: Some("methane"), dist_ls: 4400),
+        (id: 9, name: "Europa",   planet_class: "Icy body",                landable: true,  volcanism: None, atmosphere: None, dist_ls: 2500),
+        (id: 3, name: "Earth",    planet_class: "Earthlike body",          landable: false, volcanism: None, atmosphere: Some("nitrogen oxygen"), dist_ls: 500),
+    ],
+    stations: [
+        (
+            name: "Abraham Lincoln", ty: "Coriolis", body: Some("Earth"), surface: false,
+            dist_ls: 500, shipyard: true,
+            listings: [
+                (item: "aluminium",          mean_price: 340,  stock: 5000, demand: 200),
+                (item: "titanium",           mean_price: 1000, stock: 2500, demand: 150),
+                (item: "copper",             mean_price: 480,  stock: 3000, demand: 100),
+                (item: "polymers",           mean_price: 170,  stock: 4000, demand: 300),
+                (item: "semiconductors",     mean_price: 970,  stock: 1200, demand: 400),
+                (item: "powergenerators",    mean_price: 590,  stock: 800,  demand: 250),
+                (item: "computercomponents", mean_price: 800,  stock: 300,  demand: 900),
+                (item: "consumertechnology", mean_price: 6700, stock: 40,   demand: 1200),
+                (item: "robotics",           mean_price: 1900, stock: 100,  demand: 700),
+                (item: "hydrogenfuel",       mean_price: 110,  stock: 9000, demand: 500),
+                (item: "water",              mean_price: 120,  stock: 6000, demand: 400),
+                (item: "foodcartridges",     mean_price: 105,  stock: 5000, demand: 600),
+                (item: "algae",              mean_price: 130,  stock: 2000, demand: 200),
+            ],
+        ),
+        (
+            name: "Galileo", ty: "Ocellus", body: Some("Europa"), surface: false,
+            dist_ls: 2500, shipyard: false,
+            listings: [
+                (item: "water",        mean_price: 120, stock: 8000, demand: 100),
+                (item: "hydrogenfuel", mean_price: 110, stock: 2000, demand: 800),
+                (item: "polymers",     mean_price: 170, stock: 500,  demand: 700),
+            ],
+        ),
+    ],
+    factions: [
+        (name: "Mother Gaia",           influence: 45.0, state: "Boom", happiness_band: 2),
+        (name: "Sol Workers' Party",    influence: 25.0, state: "None", happiness_band: 3),
+        (name: "Federal Congress",      influence: 18.0, state: "None", happiness_band: 3),
+    ],
+)

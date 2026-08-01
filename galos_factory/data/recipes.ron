@@ -1,0 +1,43 @@
+// MVP recipes. `power_mw` positive = consumes, negative = generates.
+// Extraction recipes have no inputs; their site requirements gate placement.
+// Output rates scale with deposit richness for Deposit-gated recipes.
+[
+    // ---- Extraction ----
+    (id: "mine_bauxite",    building: Extractor, outputs: [("bauxite", 2)],      ticks: 4, power_mw: 4,  requires: [Deposit("bauxite")]),
+    (id: "mine_rutile",     building: Extractor, outputs: [("rutile", 2)],       ticks: 4, power_mw: 4,  requires: [Deposit("rutile")]),
+    (id: "mine_gallite",    building: Extractor, outputs: [("gallite", 1)],      ticks: 4, power_mw: 4,  requires: [Deposit("gallite")]),
+    (id: "mine_cobalt",     building: Extractor, outputs: [("cobalt", 1)],       ticks: 4, power_mw: 4,  requires: [Deposit("cobalt")]),
+    (id: "mine_copper",     building: Extractor, outputs: [("copper", 2)],       ticks: 4, power_mw: 4,  requires: [Deposit("copper")]),
+    (id: "mine_water",      building: Extractor, outputs: [("water", 4)],        ticks: 4, power_mw: 3,  requires: [Deposit("water")]),
+    (id: "pump_mineraloil", building: Extractor, outputs: [("mineraloil", 2)],   ticks: 4, power_mw: 3,  requires: [Deposit("mineraloil")]),
+    (id: "harvest_algae",   building: Extractor, outputs: [("algae", 2)],        ticks: 5, power_mw: 2,  requires: [Deposit("algae")]),
+    (id: "scoop_hydrogen",  building: FuelScoop, outputs: [("hydrogenfuel", 3)], ticks: 5, power_mw: 2,  requires: [ScoopableStar]),
+
+    // ---- Refinery: smelt ----
+    (id: "smelt_aluminium", building: Refinery, inputs: [("bauxite", 3)], outputs: [("aluminium", 2)], ticks: 6, power_mw: 6),
+    (id: "smelt_titanium",  building: Refinery, inputs: [("rutile", 3)],  outputs: [("titanium", 1)],  ticks: 8, power_mw: 8),
+    (id: "smelt_gallium",   building: Refinery, inputs: [("gallite", 2)], outputs: [("gallium", 1)],   ticks: 6, power_mw: 6),
+
+    // ---- Refinery: purify (always 1:1 — costs time and power, never mass) ----
+    (id: "purify_copper", building: Refinery, inputs: [("copper", 1)], outputs: [("pure_copper", 1)], ticks: 3, power_mw: 4),
+    (id: "purify_cobalt", building: Refinery, inputs: [("cobalt", 1)], outputs: [("pure_cobalt", 1)], ticks: 3, power_mw: 4),
+
+    // ---- Refinery: chemistry ----
+    (id: "crack_polymers",    building: Refinery, inputs: [("mineraloil", 2)], outputs: [("polymers", 3)],                            ticks: 6, power_mw: 5),
+    (id: "electrolyse_water", building: Refinery, inputs: [("water", 4)],      outputs: [("hydrogenfuel", 2), ("liquidoxygen", 1)],   ticks: 8, power_mw: 10),
+
+    // ---- Assembler ----
+    (id: "make_semiconductors",     building: Assembler, inputs: [("gallium", 1), ("polymers", 2)],                                          outputs: [("semiconductors", 2)],     ticks: 8,  power_mw: 8),
+    (id: "make_superconductors",    building: Assembler, inputs: [("titanium", 1), ("pure_cobalt", 2)],                                      outputs: [("superconductors", 1)],    ticks: 10, power_mw: 12),
+    (id: "make_computercomponents", building: Assembler, inputs: [("semiconductors", 2), ("aluminium", 1), ("pure_copper", 1)],              outputs: [("computercomponents", 2)], ticks: 10, power_mw: 10),
+    (id: "make_foodcartridges",     building: Assembler, inputs: [("algae", 2), ("water", 1)],                                               outputs: [("foodcartridges", 3)],     ticks: 6,  power_mw: 4),
+    (id: "make_powergenerators",    building: Assembler, inputs: [("superconductors", 1), ("titanium", 2), ("pure_copper", 1)],              outputs: [("powergenerators", 1)],    ticks: 15, power_mw: 12),
+    (id: "make_consumertechnology", building: Assembler, inputs: [("computercomponents", 2), ("polymers", 2)],                               outputs: [("consumertechnology", 1)], ticks: 12, power_mw: 10),
+    (id: "make_robotics",           building: Assembler, inputs: [("computercomponents", 2), ("superconductors", 1), ("aluminium", 1)],      outputs: [("robotics", 1)],           ticks: 15, power_mw: 12),
+    (id: "make_autofabricators",    building: Assembler, inputs: [("robotics", 1), ("computercomponents", 2), ("titanium", 1)],              outputs: [("autofabricators", 1)],    ticks: 20, power_mw: 15),
+
+    // ---- Power generation (negative power; fuel burn is the input) ----
+    (id: "burn_hydrogen",     building: PowerPlant,  inputs: [("hydrogenfuel", 1)], ticks: 10, power_mw: -20),
+    (id: "solar_power",       building: SolarArray,  ticks: 1, power_mw: -8),
+    (id: "geothermal_power",  building: Geothermal,  ticks: 1, power_mw: -15, requires: [Volcanism]),
+]
