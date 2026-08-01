@@ -16,7 +16,16 @@ pub const BUILDINGS_RON: &str = include_str!("../data/buildings.ron");
 
 /// Dense index into [`StaticData::items`].
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
 )]
 pub struct ItemId(pub u16);
 
@@ -154,13 +163,17 @@ impl StaticData {
         Self::parse(ITEMS_RON, RECIPES_RON, BUILDINGS_RON)
     }
 
-    pub fn parse(items: &str, recipes: &str, buildings: &str) -> Result<Self, String> {
+    pub fn parse(
+        items: &str,
+        recipes: &str,
+        buildings: &str,
+    ) -> Result<Self, String> {
         let items: Vec<ItemDefRaw> =
             ron::from_str(items).map_err(|e| format!("items.ron: {e}"))?;
         let recipes: Vec<RecipeDefRaw> =
             ron::from_str(recipes).map_err(|e| format!("recipes.ron: {e}"))?;
-        let buildings: Vec<BuildingDefRaw> =
-            ron::from_str(buildings).map_err(|e| format!("buildings.ron: {e}"))?;
+        let buildings: Vec<BuildingDefRaw> = ron::from_str(buildings)
+            .map_err(|e| format!("buildings.ron: {e}"))?;
 
         let mut by_name = HashMap::new();
         let items: Vec<ItemDef> = items
@@ -180,7 +193,9 @@ impl StaticData {
             }
         }
 
-        let intern = |list: &[(String, u32)], ctx: &str| -> Result<Vec<(ItemId, u32)>, String> {
+        let intern = |list: &[(String, u32)],
+                      ctx: &str|
+         -> Result<Vec<(ItemId, u32)>, String> {
             list.iter()
                 .map(|(name, n)| {
                     by_name
@@ -208,7 +223,10 @@ impl StaticData {
             })
             .collect::<Result<_, String>>()?;
         for (i, recipe) in recipes.iter().enumerate() {
-            if recipe_by_name.insert(recipe.id.clone(), RecipeId(i as u16)).is_some() {
+            if recipe_by_name
+                .insert(recipe.id.clone(), RecipeId(i as u16))
+                .is_some()
+            {
                 return Err(format!("duplicate recipe id `{}`", recipe.id));
             }
         }
@@ -226,7 +244,8 @@ impl StaticData {
             })
             .collect::<Result<_, String>>()?;
 
-        let data = StaticData { items, recipes, buildings, by_name, recipe_by_name };
+        let data =
+            StaticData { items, recipes, buildings, by_name, recipe_by_name };
         data.validate()?;
         Ok(data)
     }
@@ -254,7 +273,10 @@ impl StaticData {
             .expect("validated: every kind has a def")
     }
 
-    pub fn recipes_for(&self, kind: BuildingKind) -> impl Iterator<Item = (RecipeId, &RecipeDef)> {
+    pub fn recipes_for(
+        &self,
+        kind: BuildingKind,
+    ) -> impl Iterator<Item = (RecipeId, &RecipeDef)> {
         self.recipes
             .iter()
             .enumerate()
@@ -269,7 +291,10 @@ impl StaticData {
             for req in &recipe.requires {
                 if let Req::Deposit(name) = req {
                     if self.item_by_name(name).is_none() {
-                        return Err(format!("{}: unknown deposit item `{name}`", recipe.id));
+                        return Err(format!(
+                            "{}: unknown deposit item `{name}`",
+                            recipe.id
+                        ));
                     }
                 }
             }
@@ -317,7 +342,10 @@ impl StaticData {
         }
         for (i, item) in self.items.iter().enumerate() {
             if !producible[i] {
-                return Err(format!("item `{}` is not producible from extraction", item.id));
+                return Err(format!(
+                    "item `{}` is not producible from extraction",
+                    item.id
+                ));
             }
         }
         Ok(())

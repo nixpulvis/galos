@@ -19,7 +19,8 @@ fn main() {
     let headless = args.iter().position(|a| a == "--headless");
 
     if let Some(i) = headless {
-        let ticks: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2000);
+        let ticks: u64 =
+            args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2000);
         let fixture = args.get(i + 2).cloned();
         run_headless(ticks, fixture);
     } else {
@@ -38,7 +39,8 @@ fn load_fixture(path: Option<String>) -> SystemSnapshot {
         Some(path) => {
             let text = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("reading {path}: {e}"));
-            ron::from_str(&text).unwrap_or_else(|e| panic!("parsing {path}: {e}"))
+            ron::from_str(&text)
+                .unwrap_or_else(|e| panic!("parsing {path}: {e}"))
         }
         None => ron::from_str(include_str!("../data/fixtures/sol.ron"))
             .expect("embedded sol fixture parses"),
@@ -49,7 +51,8 @@ fn load_fixture(path: Option<String>) -> SystemSnapshot {
 /// selling computer components at Abraham Lincoln — the full core loop.
 fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
     let stations = seed::apply(world, snapshot);
-    let mercury = seed::body_by_name(world, "Mercury").expect("Mercury in fixture");
+    let mercury =
+        seed::body_by_name(world, "Mercury").expect("Mercury in fixture");
     let lincoln = stations["Abraham Lincoln"];
 
     let data = world.resource::<StaticData>().clone();
@@ -128,14 +131,22 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
         let mut query = world.query::<(Entity, &Factory)>();
         query.iter(world).map(|(e, f)| (e, f.kind)).collect()
     };
-    let mut extractors =
-        factories.iter().filter(|(_, k)| *k == BuildingKind::Extractor).map(|(e, _)| *e);
-    let mut refineries =
-        factories.iter().filter(|(_, k)| *k == BuildingKind::Refinery).map(|(e, _)| *e);
-    let plants =
-        factories.iter().filter(|(_, k)| *k == BuildingKind::PowerPlant).map(|(e, _)| *e);
-    let assemblers =
-        factories.iter().filter(|(_, k)| *k == BuildingKind::Assembler).map(|(e, _)| *e);
+    let mut extractors = factories
+        .iter()
+        .filter(|(_, k)| *k == BuildingKind::Extractor)
+        .map(|(e, _)| *e);
+    let mut refineries = factories
+        .iter()
+        .filter(|(_, k)| *k == BuildingKind::Refinery)
+        .map(|(e, _)| *e);
+    let plants = factories
+        .iter()
+        .filter(|(_, k)| *k == BuildingKind::PowerPlant)
+        .map(|(e, _)| *e);
+    let assemblers = factories
+        .iter()
+        .filter(|(_, k)| *k == BuildingKind::Assembler)
+        .map(|(e, _)| *e);
 
     // (recipe, output cap): caps throttle everything without a fast consumer
     // or export, so the shared pool never silts up.
@@ -147,12 +158,19 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
     assignments.push((extractors.next().unwrap(), "mine_gallite", Some(150)));
     assignments.push((extractors.next().unwrap(), "mine_gallite", Some(150)));
     assignments.push((extractors.next().unwrap(), "mine_copper", Some(200)));
-    assignments.push((refineries.next().unwrap(), "smelt_aluminium", Some(150)));
+    assignments.push((
+        refineries.next().unwrap(),
+        "smelt_aluminium",
+        Some(150),
+    ));
     assignments.push((refineries.next().unwrap(), "smelt_gallium", Some(80)));
     assignments.push((refineries.next().unwrap(), "smelt_gallium", Some(80)));
     assignments.push((refineries.next().unwrap(), "purify_copper", Some(60)));
-    let mut assembler_recipes =
-        [("make_semiconductors", Some(80u32)), ("make_computercomponents", None)].iter();
+    let mut assembler_recipes = [
+        ("make_semiconductors", Some(80u32)),
+        ("make_computercomponents", None),
+    ]
+    .iter();
     for assembler in assemblers {
         let (name, cap) = assembler_recipes.next().unwrap();
         assignments.push((assembler, name, *cap));
@@ -193,7 +211,10 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
             target,
             reserve,
         });
-        queue.0.push(PlayerCommand::BuyShip { at: lincoln, class: ShipClass::Hauler });
+        queue.0.push(PlayerCommand::BuyShip {
+            at: lincoln,
+            class: ShipClass::Hauler,
+        });
     }
     world.run_schedule(SimTick);
 
@@ -208,7 +229,9 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
     assert_eq!(contracts.len(), ships.len(), "one ship per contract");
     let mut queue = world.resource_mut::<CommandQueue>();
     for (ship, contract) in ships.into_iter().zip(contracts) {
-        queue.0.push(PlayerCommand::AssignShip { ship, contract: Some(contract) });
+        queue
+            .0
+            .push(PlayerCommand::AssignShip { ship, contract: Some(contract) });
     }
 }
 
@@ -247,11 +270,18 @@ fn report(world: &mut World, ticks: u64) {
             continue;
         }
         let rate = produced as f64 * 100.0 / clock_tick.max(1) as f64;
-        println!(" {:<20} {:>8} {:>9} {:>9}  {:>6.1}", def.id, produced, consumed, sold, rate);
+        println!(
+            " {:<20} {:>8} {:>9} {:>9}  {:>6.1}",
+            def.id, produced, consumed, sold, rate
+        );
     }
-    println!("\n revenue: {} cr   expenses: {} cr", stats.revenue, stats.expenses);
+    println!(
+        "\n revenue: {} cr   expenses: {} cr",
+        stats.revenue, stats.expenses
+    );
 
-    let mut stations = world.query::<(&Station, &Storage, &PowerGrid, Option<&LifeSupport>)>();
+    let mut stations =
+        world.query::<(&Station, &Storage, &PowerGrid, Option<&LifeSupport>)>();
     println!("\n station                      stored  power(sup/dem)  life");
     for (station, storage, grid, condition) in stations.iter(world) {
         if station.owner != Owner::Player {
@@ -264,7 +294,11 @@ fn report(world: &mut World, ticks: u64) {
             storage.cap,
             grid.supply_mw,
             grid.demand_mw,
-            condition.map_or("-", |c| if c.life_support_ok { "ok" } else { "SHORT" }),
+            condition.map_or("-", |c| if c.life_support_ok {
+                "ok"
+            } else {
+                "SHORT"
+            }),
         );
         let mut inventory: Vec<_> = storage.pool.iter().collect();
         inventory.sort_by_key(|(item, _)| item.0);

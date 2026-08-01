@@ -19,7 +19,8 @@ pub fn output_capped(
     if progress.holding {
         return false;
     }
-    let (Some(cap), Some((primary, _))) = (cap.0, recipe.outputs.first()) else {
+    let (Some(cap), Some((primary, _))) = (cap.0, recipe.outputs.first())
+    else {
         return false;
     };
     storage.count(*primary) >= cap
@@ -90,9 +91,14 @@ pub fn craft(
     )>,
 ) {
     for (station_entity, mut storage, grid, condition) in stations.iter_mut() {
-        for (factory, active, cap, mut progress, mut status, due) in factories.iter_mut() {
+        for (factory, active, cap, mut progress, mut status, due) in
+            factories.iter_mut()
+        {
             if factory.station != station_entity
-                || !matches!(factory.kind, BuildingKind::Refinery | BuildingKind::Assembler)
+                || !matches!(
+                    factory.kind,
+                    BuildingKind::Refinery | BuildingKind::Assembler
+                )
             {
                 continue;
             }
@@ -109,13 +115,21 @@ pub fn craft(
                 status.0 = FactoryStatus::Idle;
                 continue;
             }
-            let life_milli: u64 = if condition.life_support_ok { 1000 } else { 500 };
+            let life_milli: u64 =
+                if condition.life_support_ok { 1000 } else { 500 };
             let rate_milli = grid.satisfaction_milli as u64
                 * mods.productivity_milli as u64
                 / 1000
                 * life_milli
                 / 1000;
-            step_factory(recipe, &mut storage, &mut progress, &mut status, rate_milli, &mut stats);
+            step_factory(
+                recipe,
+                &mut storage,
+                &mut progress,
+                &mut status,
+                rate_milli,
+                &mut stats,
+            );
         }
     }
 }

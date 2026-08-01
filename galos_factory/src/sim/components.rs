@@ -257,11 +257,18 @@ pub struct Ship {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShipState {
     /// Docked at a station with nothing to do.
-    Idle { at: Entity },
+    Idle {
+        at: Entity,
+    },
     /// At the contract's origin, waiting for cargo + fuel.
     Loading,
-    Outbound { ticks_left: u32, cargo: u32 },
-    Returning { ticks_left: u32 },
+    Outbound {
+        ticks_left: u32,
+        cargo: u32,
+    },
+    Returning {
+        ticks_left: u32,
+    },
 }
 
 // --------------------------------------------------------------- markets

@@ -14,7 +14,10 @@ pub fn stats(
     }
     for (station, grid) in stations.iter() {
         if grid.demand_mw > 0 && grid.satisfaction_milli < 1000 {
-            notices.0.push((clock.tick, Notice::Brownout { station: station.name.clone() }));
+            notices.0.push((
+                clock.tick,
+                Notice::Brownout { station: station.name.clone() },
+            ));
         }
     }
 }

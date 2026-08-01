@@ -11,7 +11,13 @@ pub fn extract(
     data: Res<StaticData>,
     mods: Res<SystemModifiers>,
     mut stats: ResMut<Stats>,
-    mut stations: Query<(Entity, &Station, &mut Storage, &PowerGrid, &LifeSupport)>,
+    mut stations: Query<(
+        Entity,
+        &Station,
+        &mut Storage,
+        &PowerGrid,
+        &LifeSupport,
+    )>,
     bodies: Query<&Deposits>,
     mut factories: Query<(
         &Factory,
@@ -22,10 +28,17 @@ pub fn extract(
         &MaintenanceDue,
     )>,
 ) {
-    for (station_entity, station, mut storage, grid, condition) in stations.iter_mut() {
-        for (factory, active, cap, mut progress, mut status, due) in factories.iter_mut() {
+    for (station_entity, station, mut storage, grid, condition) in
+        stations.iter_mut()
+    {
+        for (factory, active, cap, mut progress, mut status, due) in
+            factories.iter_mut()
+        {
             if factory.station != station_entity
-                || !matches!(factory.kind, BuildingKind::Extractor | BuildingKind::FuelScoop)
+                || !matches!(
+                    factory.kind,
+                    BuildingKind::Extractor | BuildingKind::FuelScoop
+                )
             {
                 continue;
             }
@@ -38,7 +51,8 @@ pub fn extract(
                 continue;
             };
             let recipe = data.recipe(recipe_id);
-            if super::craft::output_capped(cap, recipe, &storage, &mut progress) {
+            if super::craft::output_capped(cap, recipe, &storage, &mut progress)
+            {
                 status.0 = FactoryStatus::Idle;
                 continue;
             }
@@ -47,13 +61,17 @@ pub fn extract(
             let mut richness_milli: u64 = 1000;
             for req in &recipe.requires {
                 if let Req::Deposit(name) = req {
-                    let item = data.item_by_name(name).expect("validated deposit item");
+                    let item = data
+                        .item_by_name(name)
+                        .expect("validated deposit item");
                     richness_milli = match station.placement {
                         Placement::Surface(body) => bodies
                             .get(body)
                             .ok()
                             .and_then(|d| {
-                                d.0.iter().find(|(i, _)| *i == item).map(|(_, r)| *r as u64)
+                                d.0.iter()
+                                    .find(|(i, _)| *i == item)
+                                    .map(|(_, r)| *r as u64)
                             })
                             .unwrap_or(0),
                         Placement::Orbital(_) => 0,
@@ -61,7 +79,8 @@ pub fn extract(
                 }
             }
 
-            let life_milli: u64 = if condition.life_support_ok { 1000 } else { 500 };
+            let life_milli: u64 =
+                if condition.life_support_ok { 1000 } else { 500 };
             let rate_milli = grid.satisfaction_milli as u64
                 * mods.productivity_milli as u64
                 / 1000
@@ -69,7 +88,14 @@ pub fn extract(
                 / 1000
                 * life_milli
                 / 1000;
-            step_factory(recipe, &mut storage, &mut progress, &mut status, rate_milli, &mut stats);
+            step_factory(
+                recipe,
+                &mut storage,
+                &mut progress,
+                &mut status,
+                rate_milli,
+                &mut stats,
+            );
         }
     }
 }
