@@ -19,11 +19,14 @@ pub fn power_balance(
         &MaintenanceDue,
     )>,
 ) {
-    for (station_entity, station, mut storage, mut grid) in stations.iter_mut() {
+    for (station_entity, station, mut storage, mut grid) in stations.iter_mut()
+    {
         let mut supply: u32 = 0;
         let mut demand: u32 = 0;
 
-        for (factory, active, mut progress, mut status, due) in factories.iter_mut() {
+        for (factory, active, mut progress, mut status, due) in
+            factories.iter_mut()
+        {
             if factory.station != station_entity {
                 continue;
             }
@@ -47,7 +50,8 @@ pub fn power_balance(
                         Placement::Surface(_) => 500,
                         Placement::Orbital(_) => 1000,
                     };
-                    supply += mw * placement_milli / 1000 * mods.solar_milli / 1000;
+                    supply +=
+                        mw * placement_milli / 1000 * mods.solar_milli / 1000;
                     status.0 = FactoryStatus::Running;
                 }
                 _ if recipe.inputs.is_empty() => {

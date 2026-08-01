@@ -13,7 +13,10 @@ pub const NPC_STATION_SLOTS: u32 = 24;
 pub const NPC_STORAGE: u32 = 10_000;
 
 /// Deposits granted per planet class: `(item, richness_milli)`.
-fn deposits_for(data: &StaticData, body: &BodySnapshot) -> Vec<(crate::data::ItemId, u32)> {
+fn deposits_for(
+    data: &StaticData,
+    body: &BodySnapshot,
+) -> Vec<(crate::data::ItemId, u32)> {
     let item = |name: &str| data.item_by_name(name).expect("catalog item");
     let volcanism_bonus = if body.volcanism.is_some() { 500 } else { 0 };
     let metal = |richness: u32| -> Vec<(crate::data::ItemId, u32)> {
@@ -52,7 +55,10 @@ fn deposits_for(data: &StaticData, body: &BodySnapshot) -> Vec<(crate::data::Ite
 }
 
 fn scoopable(class: &str) -> bool {
-    matches!(class.chars().next(), Some('O' | 'B' | 'A' | 'F' | 'G' | 'K' | 'M'))
+    matches!(
+        class.chars().next(),
+        Some('O' | 'B' | 'A' | 'F' | 'G' | 'K' | 'M')
+    )
 }
 
 fn solar_milli(class: &str) -> u32 {
@@ -67,7 +73,10 @@ fn solar_milli(class: &str) -> u32 {
 
 /// Seeds the world and returns the station name → entity mapping so hosts
 /// can wire up scenarios.
-pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> HashMap<String, Entity> {
+pub fn apply(
+    world: &mut World,
+    snapshot: &SystemSnapshot,
+) -> HashMap<String, Entity> {
     let data = world.resource::<StaticData>().clone();
 
     // System modifiers from BGS context.
@@ -75,13 +84,14 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> HashMap<String, En
         .factions
         .iter()
         .max_by(|a, b| a.influence.total_cmp(&b.influence));
-    let productivity_milli = match controlling.map(|f| f.happiness_band).unwrap_or(3) {
-        1 => 1100,
-        2 => 1050,
-        3 => 1000,
-        4 => 900,
-        _ => 800,
-    };
+    let productivity_milli =
+        match controlling.map(|f| f.happiness_band).unwrap_or(3) {
+            1 => 1100,
+            2 => 1050,
+            3 => 1000,
+            4 => 900,
+            _ => 800,
+        };
     let tax_milli = match controlling.map(|f| f.influence).unwrap_or(0.0) {
         i if i >= 60.0 => 25,
         i if i >= 40.0 => 50,
@@ -95,8 +105,12 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> HashMap<String, En
         _ => 100,
     };
     let boom = controlling.map(|f| f.state == "Boom").unwrap_or(false);
-    let star_class =
-        snapshot.stars.first().map(|s| s.class.as_str()).unwrap_or("").to_string();
+    let star_class = snapshot
+        .stars
+        .first()
+        .map(|s| s.class.as_str())
+        .unwrap_or("")
+        .to_string();
     world.insert_resource(SystemModifiers {
         productivity_milli,
         tax_milli,
@@ -113,7 +127,10 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> HashMap<String, En
             .spawn((
                 Body { name: body.name.clone(), dist_ls: body.dist_ls },
                 deposits,
-                BodyEnv { volcanism: body.volcanism.is_some(), overhead_milli: 1000 },
+                BodyEnv {
+                    volcanism: body.volcanism.is_some(),
+                    overhead_milli: 1000,
+                },
             ))
             .id();
         body_entities.insert(body.name.clone(), entity);
@@ -126,14 +143,19 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> HashMap<String, En
             (Some(body), true) => {
                 Placement::Surface(body_entities[body.as_str()])
             }
-            (Some(body), false) => Placement::Orbital(Some(body_entities[body.as_str()])),
+            (Some(body), false) => {
+                Placement::Orbital(Some(body_entities[body.as_str()]))
+            }
             (None, _) => Placement::Orbital(None),
         };
         let mut market = Market::default();
         for listing in &station.listings {
             let Some(item) = data.item_by_name(&listing.item) else { continue };
-            let demand_baseline =
-                if boom { listing.demand + listing.demand / 2 } else { listing.demand };
+            let demand_baseline = if boom {
+                listing.demand + listing.demand / 2
+            } else {
+                listing.demand
+            };
             market.entries.insert(
                 item,
                 MarketEntry {
@@ -142,7 +164,8 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> HashMap<String, En
                     demand_baseline: demand_baseline.max(1),
                     // Bracket-ish NPC drain: consume the demand baseline
                     // over ~2000 ticks.
-                    consumption_milli: (demand_baseline as u64 * 1000 / 2000).max(1) as u32,
+                    consumption_milli: (demand_baseline as u64 * 1000 / 2000)
+                        .max(1) as u32,
                     consum_accum_milli: 0,
                 },
             );

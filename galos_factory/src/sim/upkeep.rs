@@ -22,7 +22,9 @@ pub fn upkeep(
         data.item_by_name("foodcartridges").expect("foodcartridges in items"),
     );
 
-    for (station_entity, station, mut storage, mut condition) in stations.iter_mut() {
+    for (station_entity, station, mut storage, mut condition) in
+        stations.iter_mut()
+    {
         // NPC stations manage their own affairs (their markets are their
         // stores); upkeep pressure applies to the player's estate.
         if station.owner == Owner::Npc {
@@ -58,9 +60,10 @@ pub fn upkeep(
             condition.life_support_ok = true;
         } else {
             condition.life_support_ok = false;
-            notices
-                .0
-                .push((clock.tick, Notice::LifeSupportShort { station: station.name.clone() }));
+            notices.0.push((
+                clock.tick,
+                Notice::LifeSupportShort { station: station.name.clone() },
+            ));
         }
     }
 }

@@ -26,7 +26,8 @@ pub fn shipping(
     mut stations: Query<(&Station, &mut Storage)>,
     mut markets: Query<&mut Market>,
 ) {
-    let fuel = data.item_by_name("hydrogenfuel").expect("hydrogenfuel in items");
+    let fuel =
+        data.item_by_name("hydrogenfuel").expect("hydrogenfuel in items");
 
     for (ship_entity, mut ship) in ships.iter_mut() {
         let Some(contract_entity) = ship.contract else { continue };
@@ -51,7 +52,9 @@ pub fn shipping(
                         continue;
                     }
                 }
-                let Ok((station, mut storage)) = stations.get_mut(contract.from) else {
+                let Ok((station, mut storage)) =
+                    stations.get_mut(contract.from)
+                else {
                     continue;
                 };
                 let station_name = station.name.clone();
@@ -74,7 +77,10 @@ pub fn shipping(
                 }
                 if fuel_have < fuel_needed {
                     storage.add(fuel, fuel_have); // Put partial fuel back.
-                    notices.0.push((clock.tick, Notice::NoFuel { station: station_name }));
+                    notices.0.push((
+                        clock.tick,
+                        Notice::NoFuel { station: station_name },
+                    ));
                     continue;
                 }
 
@@ -92,11 +98,16 @@ pub fn shipping(
                 // Cargo: station pool first (respecting the origin reserve);
                 // a player contract loading at an NPC market station buys
                 // the remainder at curve price.
-                let above_reserve =
-                    storage.count(contract.item).saturating_sub(contract.reserve);
-                let mut cargo =
-                    storage.take(contract.item, ship.class.cargo_cap().min(above_reserve));
-                if cargo < ship.class.cargo_cap() && contract.issuer == Owner::Player {
+                let above_reserve = storage
+                    .count(contract.item)
+                    .saturating_sub(contract.reserve);
+                let mut cargo = storage.take(
+                    contract.item,
+                    ship.class.cargo_cap().min(above_reserve),
+                );
+                if cargo < ship.class.cargo_cap()
+                    && contract.issuer == Owner::Player
+                {
                     if let Ok(mut market) = markets.get_mut(contract.from) {
                         cargo += market_buy(
                             &mut market,
@@ -111,22 +122,29 @@ pub fn shipping(
                     storage.add(fuel, fuel_have); // Nothing to haul; refund fuel.
                     continue;
                 }
-                let (from_ls, to_ls) = station_distances(&stations, contract.from, contract.to);
-                ship.state =
-                    ShipState::Outbound { ticks_left: travel_ticks(from_ls, to_ls), cargo };
+                let (from_ls, to_ls) =
+                    station_distances(&stations, contract.from, contract.to);
+                ship.state = ShipState::Outbound {
+                    ticks_left: travel_ticks(from_ls, to_ls),
+                    cargo,
+                };
             }
             ShipState::Outbound { ticks_left, cargo } => {
                 if ticks_left > 1 {
-                    ship.state = ShipState::Outbound { ticks_left: ticks_left - 1, cargo };
+                    ship.state = ShipState::Outbound {
+                        ticks_left: ticks_left - 1,
+                        cargo,
+                    };
                     continue;
                 }
                 // Arrival: piracy roll first.
                 if mods.piracy_milli > 0
                     && rng.0.gen_range(0..1000u32) < mods.piracy_milli
                 {
-                    notices
-                        .0
-                        .push((clock.tick, Notice::PiracyLoss { item: contract.item, qty: cargo }));
+                    notices.0.push((
+                        clock.tick,
+                        Notice::PiracyLoss { item: contract.item, qty: cargo },
+                    ));
                     commands.entity(ship_entity).despawn();
                     continue;
                 }
@@ -140,15 +158,19 @@ pub fn shipping(
                 if dest_is_npc_market && contract.issuer == Owner::Player {
                     // Sell on delivery at curve price, after tax.
                     let mut market = markets.get_mut(contract.to).unwrap();
-                    if let Some(entry) = market.entries.get_mut(&contract.item) {
+                    if let Some(entry) = market.entries.get_mut(&contract.item)
+                    {
                         let gross = unit_price(entry) * cargo as i64;
                         let net = gross * (1000 - mods.tax_milli as i64) / 1000;
                         entry.stock += cargo;
                         credits.0 += net;
                         stats.revenue += net;
-                        *stats.sold.entry(contract.item).or_insert(0) += cargo as u64;
-                        let station_name =
-                            stations.get(contract.to).map(|(s, _)| s.name.clone()).unwrap();
+                        *stats.sold.entry(contract.item).or_insert(0) +=
+                            cargo as u64;
+                        let station_name = stations
+                            .get(contract.to)
+                            .map(|(s, _)| s.name.clone())
+                            .unwrap();
                         notices.0.push((
                             clock.tick,
                             Notice::Sold {
@@ -159,19 +181,25 @@ pub fn shipping(
                             },
                         ));
                     }
-                } else if let Ok((_, mut storage)) = stations.get_mut(contract.to) {
+                } else if let Ok((_, mut storage)) =
+                    stations.get_mut(contract.to)
+                {
                     storage.add(contract.item, cargo);
                 }
 
                 // Carrier pay from a foreign issuer.
-                if contract.issuer == Owner::Npc && ship.owner == Owner::Player {
+                if contract.issuer == Owner::Npc && ship.owner == Owner::Player
+                {
                     let pay = contract.pay_per_unit as i64 * cargo as i64;
                     credits.0 += pay;
                     stats.revenue += pay;
                 }
 
-                let (from_ls, to_ls) = station_distances(&stations, contract.from, contract.to);
-                ship.state = ShipState::Returning { ticks_left: travel_ticks(from_ls, to_ls) };
+                let (from_ls, to_ls) =
+                    station_distances(&stations, contract.from, contract.to);
+                ship.state = ShipState::Returning {
+                    ticks_left: travel_ticks(from_ls, to_ls),
+                };
             }
             ShipState::Returning { ticks_left } => {
                 ship.state = if ticks_left > 1 {
@@ -195,7 +223,8 @@ fn market_buy(
 ) -> u32 {
     let Some(entry) = market.entries.get_mut(&item) else { return 0 };
     let price = unit_price(entry);
-    let affordable = if price > 0 { (credits.0.max(0) / price) as u32 } else { qty };
+    let affordable =
+        if price > 0 { (credits.0.max(0) / price) as u32 } else { qty };
     let bought = qty.min(entry.stock).min(affordable);
     if bought > 0 {
         let cost = price * bought as i64;

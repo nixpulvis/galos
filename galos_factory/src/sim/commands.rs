@@ -15,10 +15,23 @@ pub const MARKET_BUY_PREMIUM_MILLI: i64 = 1100;
 #[derive(Clone, Debug)]
 pub enum PlayerCommand {
     /// Buy a turnkey outpost on (or orbiting) a body.
-    BuyOutpost { body: Entity, orbital: bool, name: String },
-    Build { station: Entity, kind: BuildingKind },
-    SetRecipe { factory: Entity, recipe: Option<RecipeId>, output_cap: Option<u32> },
-    Demolish { factory: Entity },
+    BuyOutpost {
+        body: Entity,
+        orbital: bool,
+        name: String,
+    },
+    Build {
+        station: Entity,
+        kind: BuildingKind,
+    },
+    SetRecipe {
+        factory: Entity,
+        recipe: Option<RecipeId>,
+        output_cap: Option<u32>,
+    },
+    Demolish {
+        factory: Entity,
+    },
     /// Standing contract; a player supply route when self-issued.
     CreateContract {
         from: Entity,
@@ -28,12 +41,23 @@ pub enum PlayerCommand {
         target: Option<u32>,
         reserve: u32,
     },
-    BuyShip { at: Entity, class: ShipClass },
-    AssignShip { ship: Entity, contract: Option<Entity> },
+    BuyShip {
+        at: Entity,
+        class: ShipClass,
+    },
+    AssignShip {
+        ship: Entity,
+        contract: Option<Entity>,
+    },
     /// Instant, premium-priced purchase from an NPC market, couriered into a
     /// player station. Bulk flows should use contracts; this is for
     /// construction bootstrap. TODO: replace with real haulage.
-    MarketBuy { market: Entity, to: Entity, item: ItemId, qty: u32 },
+    MarketBuy {
+        market: Entity,
+        to: Entity,
+        item: ItemId,
+        qty: u32,
+    },
     SetSpeed(SimSpeed),
     SetRngSeed(u64),
 }
@@ -51,7 +75,12 @@ pub fn apply_commands(
     mut stations: Query<(&Station, &mut Storage, &Slots)>,
     bodies: Query<(&Body, &Deposits, &BodyEnv)>,
     factories: Query<&Factory>,
-    mut recipe_q: Query<(&Factory, &mut ActiveRecipe, &mut CraftProgress, &mut OutputCap)>,
+    mut recipe_q: Query<(
+        &Factory,
+        &mut ActiveRecipe,
+        &mut CraftProgress,
+        &mut OutputCap,
+    )>,
     shipyards: Query<(), With<Shipyard>>,
     mut ships: Query<&mut Ship>,
     contracts: Query<&Contract>,
@@ -80,7 +109,8 @@ pub fn apply_commands(
                 } else {
                     Placement::Surface(body)
                 };
-                let dist_ls = bodies.get(body).map(|(b, _, _)| b.dist_ls).unwrap_or(0);
+                let dist_ls =
+                    bodies.get(body).map(|(b, _, _)| b.dist_ls).unwrap_or(0);
                 commands.spawn((
                     Station { name, placement, owner: Owner::Player, dist_ls },
                     Slots { total: OUTPOST_SLOTS },
@@ -90,11 +120,14 @@ pub fn apply_commands(
                 ));
             }
             PlayerCommand::Build { station, kind } => {
-                let Ok((st, mut storage, slots)) = stations.get_mut(station) else {
+                let Ok((st, mut storage, slots)) = stations.get_mut(station)
+                else {
                     continue;
                 };
                 let def = data.building(kind);
-                let used = factories.iter().filter(|f| f.station == station).count() as u32;
+                let used =
+                    factories.iter().filter(|f| f.station == station).count()
+                        as u32;
                 let site_ok = match (def.site, st.placement) {
                     (SiteKind::Any, _) => true,
                     (SiteKind::Surface, Placement::Surface(_)) => true,
@@ -132,17 +165,28 @@ pub fn apply_commands(
                     Status::default(),
                     MaintenanceDue(false),
                 ));
-                notices.0.push((tick, Notice::Built { station: st.name.clone(), kind }));
+                notices.0.push((
+                    tick,
+                    Notice::Built { station: st.name.clone(), kind },
+                ));
             }
             PlayerCommand::SetRecipe { factory, recipe, output_cap } => {
-                let Ok((fac, mut active, mut progress, mut cap)) = recipe_q.get_mut(factory)
+                let Ok((fac, mut active, mut progress, mut cap)) =
+                    recipe_q.get_mut(factory)
                 else {
                     continue;
                 };
                 let valid = recipe.map_or(true, |id| {
                     let def = data.recipe(id);
                     def.building == fac.kind
-                        && requirements_met(&def.requires, fac.station, &stations, &bodies, &mods, &data)
+                        && requirements_met(
+                            &def.requires,
+                            fac.station,
+                            &stations,
+                            &bodies,
+                            &mods,
+                            &data,
+                        )
                 });
                 if valid {
                     *active = ActiveRecipe(recipe);
@@ -155,8 +199,18 @@ pub fn apply_commands(
                     commands.entity(factory).despawn();
                 }
             }
-            PlayerCommand::CreateContract { from, to, item, pay_per_unit, target, reserve } => {
-                if stations.get(from).is_ok() && stations.get(to).is_ok() && from != to {
+            PlayerCommand::CreateContract {
+                from,
+                to,
+                item,
+                pay_per_unit,
+                target,
+                reserve,
+            } => {
+                if stations.get(from).is_ok()
+                    && stations.get(to).is_ok()
+                    && from != to
+                {
                     commands.spawn(Contract {
                         issuer: Owner::Player,
                         from,
@@ -205,21 +259,32 @@ pub fn apply_commands(
                     continue;
                 }
                 let cost =
-                    unit_price(entry) * qty as i64 * MARKET_BUY_PREMIUM_MILLI / 1000;
+                    unit_price(entry) * qty as i64 * MARKET_BUY_PREMIUM_MILLI
+                        / 1000;
                 if credits.0 < cost {
                     continue;
                 }
-                let Ok((st, mut storage, _)) = stations.get_mut(to) else { continue };
+                let Ok((st, mut storage, _)) = stations.get_mut(to) else {
+                    continue;
+                };
                 let stored = storage.add(item, qty);
                 if stored == 0 {
                     continue;
                 }
-                let cost = unit_price(entry) * stored as i64 * MARKET_BUY_PREMIUM_MILLI / 1000;
+                let cost = unit_price(entry)
+                    * stored as i64
+                    * MARKET_BUY_PREMIUM_MILLI
+                    / 1000;
                 entry.stock -= stored;
                 credits.0 -= cost;
                 notices.0.push((
                     tick,
-                    Notice::Bought { station: st.name.clone(), item, qty: stored, credits: cost },
+                    Notice::Bought {
+                        station: st.name.clone(),
+                        item,
+                        qty: stored,
+                        credits: cost,
+                    },
                 ));
             }
             PlayerCommand::SetSpeed(s) => *speed = s,
@@ -243,7 +308,9 @@ fn requirements_met(
             match st.placement {
                 Placement::Surface(body) => bodies
                     .get(body)
-                    .map(|(_, deposits, _)| deposits.0.iter().any(|(i, _)| *i == item))
+                    .map(|(_, deposits, _)| {
+                        deposits.0.iter().any(|(i, _)| *i == item)
+                    })
                     .unwrap_or(false),
                 Placement::Orbital(_) => false,
             }
@@ -252,9 +319,10 @@ fn requirements_met(
             matches!(st.placement, Placement::Orbital(_)) && mods.scoopable_star
         }
         Req::Volcanism => match st.placement {
-            Placement::Surface(body) => {
-                bodies.get(body).map(|(_, _, env)| env.volcanism).unwrap_or(false)
-            }
+            Placement::Surface(body) => bodies
+                .get(body)
+                .map(|(_, _, env)| env.volcanism)
+                .unwrap_or(false),
             Placement::Orbital(_) => false,
         },
     })
