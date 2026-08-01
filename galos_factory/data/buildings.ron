@@ -1,0 +1,14 @@
+// Construction costs are deliberately buyable ED goods (bootstrap: buy your
+// first machines' parts at NPC markets). Raw copper is usable in cruder
+// construction. Upkeep items are consumed per 100 ticks; polymers is the
+// universal maintenance bleed.
+[
+    (kind: Extractor,     cost: [("aluminium", 20), ("polymers", 4), ("powergenerators", 1)], credits_cost: 2000,  site: Surface, upkeep: [("polymers", 1)]),
+    (kind: FuelScoop,     cost: [("aluminium", 15), ("polymers", 6), ("powergenerators", 1)], credits_cost: 2500,  site: Orbital, upkeep: [("polymers", 1)]),
+    (kind: Refinery,      cost: [("aluminium", 30), ("titanium", 10), ("powergenerators", 2)], credits_cost: 5000, site: Any,     upkeep: [("polymers", 2)]),
+    (kind: Assembler,     cost: [("aluminium", 25), ("semiconductors", 4), ("powergenerators", 1)], credits_cost: 8000, site: Any, upkeep: [("polymers", 2)]),
+    (kind: PowerPlant,    cost: [("titanium", 15), ("aluminium", 10), ("copper", 8)],          credits_cost: 6000,  site: Any,     upkeep: [("polymers", 1)]),
+    (kind: SolarArray,    cost: [("aluminium", 12), ("semiconductors", 4), ("copper", 6)],     credits_cost: 4000,  site: Any,     upkeep: []),
+    (kind: Geothermal,    cost: [("titanium", 20), ("copper", 10)],                            credits_cost: 7000,  site: Surface, upkeep: [("polymers", 2)]),
+    (kind: StorageModule, cost: [("aluminium", 15), ("polymers", 2)],                          credits_cost: 1500,  site: Any,     upkeep: []),
+]

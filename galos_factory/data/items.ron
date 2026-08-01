@@ -1,0 +1,36 @@
+// The MVP item set: a superset of E:D's commodities. `ed: true` ids are
+// EDDN internal commodity names and join live `listings.name` directly.
+// Galos-unique production grades carry `ed: false`.
+[
+    // ---- T0: raw, straight from the ground / star / sea ----
+    (id: "bauxite",          name: "Bauxite",             category: Mineral,   tier: 0, base_price: 120,  ed: true),
+    (id: "rutile",           name: "Rutile",              category: Mineral,   tier: 0, base_price: 150,  ed: true),
+    (id: "gallite",          name: "Gallite",             category: Mineral,   tier: 0, base_price: 400,  ed: true),
+    (id: "cobalt",           name: "Cobalt",              category: Mineral,   tier: 0, base_price: 650,  ed: true),
+    (id: "copper",           name: "Copper",              category: Metal,     tier: 0, base_price: 480,  ed: true),
+    (id: "water",            name: "Water",               category: Chemical,  tier: 0, base_price: 120,  ed: true),
+    (id: "mineraloil",       name: "Mineral Oil",         category: Chemical,  tier: 0, base_price: 260,  ed: true),
+    (id: "hydrogenfuel",     name: "Hydrogen Fuel",       category: Chemical,  tier: 0, base_price: 110,  ed: true),
+    (id: "algae",            name: "Algae",               category: Food,      tier: 0, base_price: 130,  ed: true),
+
+    // ---- T1: first-stage processing ----
+    (id: "aluminium",        name: "Aluminium",           category: Metal,     tier: 1, base_price: 340,  ed: true),
+    (id: "titanium",         name: "Titanium",            category: Metal,     tier: 1, base_price: 1000, ed: true),
+    (id: "gallium",          name: "Gallium",             category: Metal,     tier: 1, base_price: 5000, ed: true),
+    (id: "pure_copper",      name: "Pure Copper",         category: Metal,     tier: 1, base_price: 900,  ed: false),
+    (id: "pure_cobalt",      name: "Pure Cobalt",         category: Metal,     tier: 1, base_price: 1200, ed: false),
+    (id: "polymers",         name: "Polymers",            category: Chemical,  tier: 1, base_price: 170,  ed: true),
+    (id: "liquidoxygen",     name: "Liquid Oxygen",       category: Chemical,  tier: 1, base_price: 260,  ed: true),
+    (id: "foodcartridges",   name: "Food Cartridges",     category: Food,      tier: 1, base_price: 105,  ed: true),
+
+    // ---- T2: components ----
+    (id: "semiconductors",     name: "Semiconductors",      category: Component, tier: 2, base_price: 970,  ed: true),
+    (id: "superconductors",    name: "Superconductors",     category: Component, tier: 2, base_price: 6600, ed: true),
+    (id: "computercomponents", name: "Computer Components", category: Component, tier: 2, base_price: 800,  ed: true),
+
+    // ---- T3: goods ----
+    (id: "powergenerators",    name: "Power Generators",    category: Machinery, tier: 3, base_price: 590,  ed: true),
+    (id: "consumertechnology", name: "Consumer Technology", category: Consumer,  tier: 3, base_price: 6700, ed: true),
+    (id: "robotics",           name: "Robotics",            category: Tech,      tier: 3, base_price: 1900, ed: true),
+    (id: "autofabricators",    name: "Auto-Fabricators",    category: Tech,      tier: 3, base_price: 3700, ed: true),
+]
