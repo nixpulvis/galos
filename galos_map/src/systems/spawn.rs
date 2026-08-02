@@ -24,11 +24,14 @@ pub fn plugin(app: &mut App) {
     });
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
+    app.init_resource::<DragDistance>();
 
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn);
     app.add_systems(Update, update.before(spawn));
 
+    app.add_observer(start_drag);
+    app.add_observer(track_drag);
     app.add_observer(focus_camera_on_click);
 }
 
@@ -51,15 +54,42 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
+/// How far the pointer may travel while pressed and still count as a click,
+/// in pixels
+const CLICK_SLOP: f32 = 5.;
+
+/// How far the pointer has travelled since it was last pressed, in pixels
+#[derive(Resource, Default)]
+struct DragDistance(f32);
+
+/// Start measuring pointer travel when a button goes down
+fn start_drag(_press: On<Pointer<Press>>, mut drag: ResMut<DragDistance>) {
+    drag.0 = 0.;
+}
+
+/// Keep the furthest the pointer has been from where it was pressed
+fn track_drag(moved: On<Pointer<Drag>>, mut drag: ResMut<DragDistance>) {
+    drag.0 = drag.0.max(moved.distance.length());
+}
+
 /// Focus the camera on clicked star systems
+///
+/// The left button orbits the camera as well as selecting, so an orbit that
+/// happens to start and end on the same star has to be told apart from a
+/// click on it. Picking calls it a drag after a single pixel of movement,
+/// which is too eager to use by itself, so measure the travel instead.
 //
 // TODO: toggle system info as well.
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
     systems: Query<(), With<System>>,
+    drag: Res<DragDistance>,
     mut move_camera_events: MessageWriter<MoveCamera>,
 ) {
+    if click.button != PointerButton::Primary || drag.0 > CLICK_SLOP {
+        return;
+    }
     if systems.contains(click.entity) {
         move_camera_events.write(MoveCamera { position: click.hit.position });
     }
