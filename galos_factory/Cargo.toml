@@ -9,6 +9,9 @@ default = ["ui"]
 ui = ["bevy/default", "dep:bevy_egui"]
 
 [dependencies]
+# Pure serde journal/EDDN types (no sqlx in default features), so snapshots
+# speak the same vocabulary as galos_db rows and the live sync.
+elite_journal = { path = "../elite_journal" }
 bevy = { version = "0.14", default-features = false, features = ["bevy_state"] }
 bevy_egui = { version = "0.29", optional = true }
 serde = { version = "1", features = ["derive"] }

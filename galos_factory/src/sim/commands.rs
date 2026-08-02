@@ -185,7 +185,6 @@ pub fn apply_commands(
                             &stations,
                             &bodies,
                             &mods,
-                            &data,
                         )
                 });
                 if valid {
@@ -299,22 +298,18 @@ fn requirements_met(
     stations: &Query<(&Station, &mut Storage, &Slots)>,
     bodies: &Query<(&Body, &Deposits, &BodyEnv)>,
     mods: &SystemModifiers,
-    data: &StaticData,
 ) -> bool {
     let Ok((st, _, _)) = stations.get(station) else { return false };
     reqs.iter().all(|req| match req {
-        Req::Deposit(name) => {
-            let Some(item) = data.item_by_name(name) else { return false };
-            match st.placement {
-                Placement::Surface(body) => bodies
-                    .get(body)
-                    .map(|(_, deposits, _)| {
-                        deposits.0.iter().any(|(i, _)| *i == item)
-                    })
-                    .unwrap_or(false),
-                Placement::Orbital(_) => false,
-            }
-        }
+        Req::Deposit(item) => match st.placement {
+            Placement::Surface(body) => bodies
+                .get(body)
+                .map(|(_, deposits, _)| {
+                    deposits.0.iter().any(|(i, _)| i == item)
+                })
+                .unwrap_or(false),
+            Placement::Orbital(_) => false,
+        },
         Req::ScoopableStar => {
             matches!(st.placement, Placement::Orbital(_)) && mods.scoopable_star
         }

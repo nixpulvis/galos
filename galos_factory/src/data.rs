@@ -5,6 +5,11 @@
 //! keep their EDDN internal id and join live `listings.name` directly;
 //! galos-unique items (production grades, invented intermediates) price
 //! purely from `base_price`.
+//!
+//! Definitions that reference items are generic over how they do so: RON
+//! parses them as `Def<String>`, [`StaticData::parse`] resolves them once
+//! into `Def<ItemId>` for the sim to use. One type per concept, no
+//! parallel "raw" mirror.
 
 use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
@@ -13,6 +18,9 @@ use std::collections::HashMap;
 pub const ITEMS_RON: &str = include_str!("../data/items.ron");
 pub const RECIPES_RON: &str = include_str!("../data/recipes.ron");
 pub const BUILDINGS_RON: &str = include_str!("../data/buildings.ron");
+
+/// Ticks between building-maintenance and station life-support charges.
+pub const UPKEEP_PERIOD: u64 = 100;
 
 /// Dense index into [`StaticData::items`].
 #[derive(
@@ -57,6 +65,19 @@ pub enum BuildingKind {
     StorageModule,
 }
 
+impl BuildingKind {
+    pub const ALL: [BuildingKind; 8] = [
+        BuildingKind::Extractor,
+        BuildingKind::FuelScoop,
+        BuildingKind::Refinery,
+        BuildingKind::Assembler,
+        BuildingKind::PowerPlant,
+        BuildingKind::SolarArray,
+        BuildingKind::Geothermal,
+        BuildingKind::StorageModule,
+    ];
+}
+
 /// Where a building may be installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SiteKind {
@@ -66,87 +87,121 @@ pub enum SiteKind {
 }
 
 /// Extra requirements a recipe places on its host station's environment.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Req {
-    /// Host body must have a deposit of this item (by string id in RON,
-    /// interned to the deposit item at load).
-    Deposit(String),
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Req<I = ItemId> {
+    /// Host body must have a deposit of this item.
+    Deposit(I),
     /// Station must orbit a scoopable star.
     ScoopableStar,
     /// Host body must have volcanism.
     Volcanism,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct ItemDefRaw {
-    pub id: String,
-    pub name: String,
-    pub category: Category,
-    pub tier: u8,
-    pub base_price: u32,
-    /// True when this id is a real EDDN commodity name.
-    pub ed: bool,
+impl Req<String> {
+    fn resolve(self, items: &Items) -> Result<Req, String> {
+        Ok(match self {
+            Req::Deposit(name) => Req::Deposit(items.id(&name, "deposit")?),
+            Req::ScoopableStar => Req::ScoopableStar,
+            Req::Volcanism => Req::Volcanism,
+        })
+    }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct RecipeDefRaw {
-    pub id: String,
-    pub building: BuildingKind,
-    #[serde(default)]
-    pub inputs: Vec<(String, u32)>,
-    #[serde(default)]
-    pub outputs: Vec<(String, u32)>,
-    pub ticks: u32,
-    /// Positive = consumes power, negative = generates.
-    pub power_mw: i32,
-    #[serde(default)]
-    pub requires: Vec<Req>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct BuildingDefRaw {
-    pub kind: BuildingKind,
-    #[serde(default)]
-    pub cost: Vec<(String, u32)>,
-    #[serde(default)]
-    pub credits_cost: u32,
-    pub site: SiteKind,
-    /// Maintenance items consumed per [`UPKEEP_PERIOD`] ticks.
-    #[serde(default)]
-    pub upkeep: Vec<(String, u32)>,
-}
-
-/// Ticks between building-maintenance and station life-support charges.
-pub const UPKEEP_PERIOD: u64 = 100;
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ItemDef {
     pub id: String,
     pub name: String,
     pub category: Category,
     pub tier: u8,
     pub base_price: u32,
+    /// True when this id is a real EDDN commodity name (joins live
+    /// `listings.name`); false for galos-unique production grades.
     pub ed: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct RecipeDef {
+/// A production step. `I` is `String` as authored, [`ItemId`] once loaded.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecipeDef<I = ItemId> {
     pub id: String,
     pub building: BuildingKind,
-    pub inputs: Vec<(ItemId, u32)>,
-    pub outputs: Vec<(ItemId, u32)>,
+    #[serde(default)]
+    pub inputs: Vec<(I, u32)>,
+    #[serde(default)]
+    pub outputs: Vec<(I, u32)>,
     pub ticks: u32,
+    /// Positive = consumes power, negative = generates.
     pub power_mw: i32,
-    pub requires: Vec<Req>,
+    #[serde(default)]
+    pub requires: Vec<Req<I>>,
 }
 
-#[derive(Clone, Debug)]
-pub struct BuildingDef {
+impl RecipeDef<String> {
+    fn resolve(self, items: &Items) -> Result<RecipeDef, String> {
+        Ok(RecipeDef {
+            inputs: items.pairs(self.inputs, &self.id)?,
+            outputs: items.pairs(self.outputs, &self.id)?,
+            requires: self
+                .requires
+                .into_iter()
+                .map(|req| req.resolve(items))
+                .collect::<Result<_, _>>()?,
+            id: self.id,
+            building: self.building,
+            ticks: self.ticks,
+            power_mw: self.power_mw,
+        })
+    }
+}
+
+/// What a building costs to raise and to keep standing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BuildingDef<I = ItemId> {
     pub kind: BuildingKind,
-    pub cost: Vec<(ItemId, u32)>,
+    #[serde(default)]
+    pub cost: Vec<(I, u32)>,
+    #[serde(default)]
     pub credits_cost: u32,
     pub site: SiteKind,
-    pub upkeep: Vec<(ItemId, u32)>,
+    /// Maintenance items consumed per [`UPKEEP_PERIOD`] ticks.
+    #[serde(default)]
+    pub upkeep: Vec<(I, u32)>,
+}
+
+impl BuildingDef<String> {
+    fn resolve(self, items: &Items) -> Result<BuildingDef, String> {
+        let ctx = format!("{:?}", self.kind);
+        Ok(BuildingDef {
+            cost: items.pairs(self.cost, &ctx)?,
+            upkeep: items.pairs(self.upkeep, &ctx)?,
+            kind: self.kind,
+            credits_cost: self.credits_cost,
+            site: self.site,
+        })
+    }
+}
+
+/// The interned item table, used while resolving the other definitions.
+struct Items {
+    by_name: HashMap<String, ItemId>,
+}
+
+impl Items {
+    fn id(&self, name: &str, ctx: &str) -> Result<ItemId, String> {
+        self.by_name
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("{ctx}: unknown item `{name}`"))
+    }
+
+    fn pairs(
+        &self,
+        list: Vec<(String, u32)>,
+        ctx: &str,
+    ) -> Result<Vec<(ItemId, u32)>, String> {
+        list.into_iter()
+            .map(|(name, qty)| Ok((self.id(&name, ctx)?, qty)))
+            .collect()
+    }
 }
 
 #[derive(Resource, Clone, Debug)]
@@ -168,60 +223,31 @@ impl StaticData {
         recipes: &str,
         buildings: &str,
     ) -> Result<Self, String> {
-        let items: Vec<ItemDefRaw> =
+        let items: Vec<ItemDef> =
             ron::from_str(items).map_err(|e| format!("items.ron: {e}"))?;
-        let recipes: Vec<RecipeDefRaw> =
+        let recipes: Vec<RecipeDef<String>> =
             ron::from_str(recipes).map_err(|e| format!("recipes.ron: {e}"))?;
-        let buildings: Vec<BuildingDefRaw> = ron::from_str(buildings)
+        let buildings: Vec<BuildingDef<String>> = ron::from_str(buildings)
             .map_err(|e| format!("buildings.ron: {e}"))?;
 
         let mut by_name = HashMap::new();
-        let items: Vec<ItemDef> = items
-            .into_iter()
-            .map(|raw| ItemDef {
-                id: raw.id,
-                name: raw.name,
-                category: raw.category,
-                tier: raw.tier,
-                base_price: raw.base_price,
-                ed: raw.ed,
-            })
-            .collect();
         for (i, item) in items.iter().enumerate() {
             if by_name.insert(item.id.clone(), ItemId(i as u16)).is_some() {
                 return Err(format!("duplicate item id `{}`", item.id));
             }
         }
+        let table = Items { by_name };
 
-        let intern = |list: &[(String, u32)],
-                      ctx: &str|
-         -> Result<Vec<(ItemId, u32)>, String> {
-            list.iter()
-                .map(|(name, n)| {
-                    by_name
-                        .get(name)
-                        .copied()
-                        .map(|id| (id, *n))
-                        .ok_or_else(|| format!("{ctx}: unknown item `{name}`"))
-                })
-                .collect()
-        };
-
-        let mut recipe_by_name = HashMap::new();
         let recipes: Vec<RecipeDef> = recipes
             .into_iter()
-            .map(|raw| {
-                Ok(RecipeDef {
-                    inputs: intern(&raw.inputs, &raw.id)?,
-                    outputs: intern(&raw.outputs, &raw.id)?,
-                    id: raw.id,
-                    building: raw.building,
-                    ticks: raw.ticks,
-                    power_mw: raw.power_mw,
-                    requires: raw.requires,
-                })
-            })
-            .collect::<Result<_, String>>()?;
+            .map(|recipe| recipe.resolve(&table))
+            .collect::<Result<_, _>>()?;
+        let buildings: Vec<BuildingDef> = buildings
+            .into_iter()
+            .map(|building| building.resolve(&table))
+            .collect::<Result<_, _>>()?;
+
+        let mut recipe_by_name = HashMap::new();
         for (i, recipe) in recipes.iter().enumerate() {
             if recipe_by_name
                 .insert(recipe.id.clone(), RecipeId(i as u16))
@@ -231,21 +257,13 @@ impl StaticData {
             }
         }
 
-        let buildings: Vec<BuildingDef> = buildings
-            .into_iter()
-            .map(|raw| {
-                Ok(BuildingDef {
-                    cost: intern(&raw.cost, "building cost")?,
-                    upkeep: intern(&raw.upkeep, "building upkeep")?,
-                    kind: raw.kind,
-                    credits_cost: raw.credits_cost,
-                    site: raw.site,
-                })
-            })
-            .collect::<Result<_, String>>()?;
-
-        let data =
-            StaticData { items, recipes, buildings, by_name, recipe_by_name };
+        let data = StaticData {
+            items,
+            recipes,
+            buildings,
+            by_name: table.by_name,
+            recipe_by_name,
+        };
         data.validate()?;
         Ok(data)
     }
@@ -284,32 +302,11 @@ impl StaticData {
             .map(|(i, r)| (RecipeId(i as u16), r))
     }
 
-    /// Structural validation: every reference resolves, every non-raw item is
-    /// producible, everything is reachable from extraction.
+    /// Structural validation: every building kind is defined and every item
+    /// is reachable from extraction. (Item references resolved during
+    /// parsing, so unknown ids are already rejected.)
     fn validate(&self) -> Result<(), String> {
-        for recipe in &self.recipes {
-            for req in &recipe.requires {
-                if let Req::Deposit(name) = req {
-                    if self.item_by_name(name).is_none() {
-                        return Err(format!(
-                            "{}: unknown deposit item `{name}`",
-                            recipe.id
-                        ));
-                    }
-                }
-            }
-        }
-
-        for kind in [
-            BuildingKind::Extractor,
-            BuildingKind::FuelScoop,
-            BuildingKind::Refinery,
-            BuildingKind::Assembler,
-            BuildingKind::PowerPlant,
-            BuildingKind::SolarArray,
-            BuildingKind::Geothermal,
-            BuildingKind::StorageModule,
-        ] {
+        for kind in BuildingKind::ALL {
             if !self.buildings.iter().any(|b| b.kind == kind) {
                 return Err(format!("no building def for {kind:?}"));
             }

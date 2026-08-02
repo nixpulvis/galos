@@ -2966,6 +2966,7 @@ version = "0.0.1"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "elite_journal",
  "rand",
  "rand_chacha",
  "ron",
