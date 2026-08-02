@@ -127,7 +127,15 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> Seeded {
         .id();
 
     // Factions are corporations: an account, and a presence per system.
+    // A snapshot with no factions at all still needs somebody to own the
+    // stations, so stand up an independent one.
     let mut factions = HashMap::new();
+    if snapshot.factions.is_empty() && !snapshot.stations.is_empty() {
+        let entity = world
+            .spawn(FactionBundle::new("Independent", FACTION_TREASURY))
+            .id();
+        factions.insert("Independent".to_string(), entity);
+    }
     for faction in &snapshot.factions {
         let entity = world
             .spawn(FactionBundle::new(faction.name.clone(), FACTION_TREASURY))
@@ -146,7 +154,8 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> Seeded {
         .factions
         .iter()
         .max_by(|a, b| a.influence.total_cmp(&b.influence))
-        .and_then(|f| factions.get(&f.name).copied());
+        .and_then(|f| factions.get(&f.name).copied())
+        .or_else(|| factions.values().next().copied());
 
     let mut bodies = HashMap::new();
     for body in &snapshot.bodies {
@@ -174,9 +183,19 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> Seeded {
     let mut stations = HashMap::new();
     for station in &snapshot.stations {
         let placement = match (&station.body, station.surface) {
-            (Some(body), true) => Placement::Surface(bodies[body.as_str()]),
-            (Some(body), false) => {
-                Placement::Orbital(Some(bodies[body.as_str()]))
+            (Some(name), surface) => {
+                let body =
+                    bodies.get(name.as_str()).copied().unwrap_or_else(|| {
+                        panic!(
+                            "station `{}` sits at unknown body `{name}`",
+                            station.name,
+                        )
+                    });
+                if surface {
+                    Placement::Surface(body)
+                } else {
+                    Placement::Orbital(Some(body))
+                }
             }
             (None, _) => Placement::Orbital(None),
         };
@@ -185,7 +204,9 @@ pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> Seeded {
             .as_ref()
             .and_then(|name| factions.get(name).copied())
             .or(default_owner)
-            .expect("a system with stations has at least one faction");
+            .unwrap_or_else(|| {
+                panic!("station `{}` has no owning faction", station.name)
+            });
 
         let mut market = Market::default();
         for listing in &station.listings {
