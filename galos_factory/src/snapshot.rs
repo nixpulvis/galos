@@ -58,6 +58,10 @@ pub struct StationSnapshot {
     pub body: Option<String>,
     pub surface: bool,
     pub dist_ls: u32,
+    /// `stations.faction` — the faction that owns and runs this station.
+    /// Falls back to the system's highest-influence faction when absent.
+    #[serde(default)]
+    pub controlling_faction: Option<String>,
     /// From `stations.economies`, most significant first.
     #[serde(default)]
     pub economies: Vec<Economy>,

@@ -4,12 +4,68 @@
 use bevy::prelude::*;
 use galos_factory::data::{BuildingKind, StaticData};
 use galos_factory::sim::*;
-use galos_factory::{sim_plugin, SimTick};
+use galos_factory::{seed, sim_plugin, snapshot::SystemSnapshot, SimTick};
 
 fn headless_app() -> App {
     let mut app = App::new();
     sim_plugin(&mut app);
     app
+}
+
+fn sol() -> SystemSnapshot {
+    ron::from_str(include_str!("../data/fixtures/sol.ron")).unwrap()
+}
+
+/// Spawns a commander with money, and an orbital station they own, in a
+/// bare system with no BGS context.
+fn commander_with_station(
+    world: &mut World,
+    storage: Storage,
+) -> (Entity, Entity) {
+    let system = world
+        .spawn(StarSystemBundle {
+            system: StarSystem { address: 1, name: "Test".into() },
+            env: SystemEnv::default(),
+            control: Control::default(),
+        })
+        .id();
+    let commander = world.spawn(CommanderBundle::new("Tester", 1_000_000)).id();
+    let station = world
+        .spawn(StationBundle {
+            station: Station {
+                name: "Test Station".into(),
+                placement: Placement::Orbital(None),
+                dist_ls: 0,
+            },
+            in_system: InSystem(system),
+            owner: OwnedBy(commander),
+            slots: Slots { total: 8 },
+            storage,
+            power: PowerGrid::default(),
+            life_support: LifeSupport::default(),
+        })
+        .id();
+    (commander, station)
+}
+
+fn add_factory(
+    world: &mut World,
+    station: Entity,
+    kind: BuildingKind,
+    recipe: &str,
+) -> Entity {
+    let id = world
+        .resource::<StaticData>()
+        .recipe_by_name(recipe)
+        .expect("known recipe");
+    let factory = world
+        .spawn(FactoryBundle {
+            recipe: ActiveRecipe(Some(id)),
+            ..FactoryBundle::new(kind)
+        })
+        .id();
+    world.entity_mut(station).add_child(factory);
+    factory
 }
 
 #[test]
@@ -39,36 +95,9 @@ fn smelter_output_is_exact() {
 
     let mut storage = Storage::new(1000);
     storage.add(bauxite, 30);
-    let station = world
-        .spawn((
-            Station {
-                name: "Test".into(),
-                placement: Placement::Orbital(None),
-                owner: Owner::Player,
-                dist_ls: 0,
-            },
-            Slots { total: 4 },
-            storage,
-            PowerGrid::default(),
-            LifeSupport::default(),
-        ))
-        .id();
-    world.spawn((
-        Factory { kind: BuildingKind::SolarArray, station },
-        ActiveRecipe(Some(data.recipe_by_name("solar_power").unwrap())),
-        OutputCap(None),
-        CraftProgress::default(),
-        Status::default(),
-        MaintenanceDue(false),
-    ));
-    world.spawn((
-        Factory { kind: BuildingKind::Refinery, station },
-        ActiveRecipe(Some(data.recipe_by_name("smelt_aluminium").unwrap())),
-        OutputCap(None),
-        CraftProgress::default(),
-        Status::default(),
-        MaintenanceDue(false),
-    ));
+    let (commander, station) = commander_with_station(world, storage);
+    add_factory(world, station, BuildingKind::SolarArray, "solar_power");
+    add_factory(world, station, BuildingKind::Refinery, "smelt_aluminium");
 
     // 10 crafts of 6 ticks each: 30 bauxite -> 20 aluminium.
     for _ in 0..60 {
@@ -78,10 +107,14 @@ fn smelter_output_is_exact() {
     assert_eq!(storage.count(aluminium), 20);
     assert_eq!(storage.count(bauxite), 0);
     assert_eq!(world.resource::<SimClock>().tick, 60);
+
+    // Production is booked to the station's owner, not a global counter.
+    let ledger = world.entity(commander).get::<Ledger>().unwrap();
+    assert_eq!(ledger.produced.get(&aluminium), Some(&20));
+    assert_eq!(ledger.consumed.get(&bauxite), Some(&30));
 }
 
-/// Without power, nothing moves; with half power, everything browns out
-/// proportionally.
+/// Without power, nothing moves.
 #[test]
 fn brownout_scales_production() {
     let mut app = headless_app();
@@ -92,28 +125,8 @@ fn brownout_scales_production() {
 
     let mut storage = Storage::new(1000);
     storage.add(bauxite, 300);
-    let station = world
-        .spawn((
-            Station {
-                name: "Dark".into(),
-                placement: Placement::Orbital(None),
-                owner: Owner::Player,
-                dist_ls: 0,
-            },
-            Slots { total: 4 },
-            storage,
-            PowerGrid::default(),
-            LifeSupport::default(),
-        ))
-        .id();
-    world.spawn((
-        Factory { kind: BuildingKind::Refinery, station },
-        ActiveRecipe(Some(data.recipe_by_name("smelt_aluminium").unwrap())),
-        OutputCap(None),
-        CraftProgress::default(),
-        Status::default(),
-        MaintenanceDue(false),
-    ));
+    let (_, station) = commander_with_station(world, storage);
+    add_factory(world, station, BuildingKind::Refinery, "smelt_aluminium");
 
     for _ in 0..60 {
         world.run_schedule(SimTick);
@@ -125,6 +138,36 @@ fn brownout_scales_production() {
     assert_eq!(grid.satisfaction_milli, 0);
 }
 
+/// An actor may only act on assets it owns.
+#[test]
+fn commands_are_validated_against_ownership() {
+    let mut app = headless_app();
+    let world = app.world_mut();
+    let (_, station) = commander_with_station(world, Storage::new(1000));
+
+    // A second commander tries to build in the first one's station.
+    let intruder =
+        world.spawn(CommanderBundle::new("Intruder", 1_000_000)).id();
+    world.send_event(PlayerCommand::new(
+        intruder,
+        Action::Build { station, kind: BuildingKind::Refinery },
+    ));
+    world.run_schedule(SimTick);
+
+    assert!(
+        world.entity(station).get::<Children>().is_none(),
+        "no factory should have been built by a non-owner",
+    );
+    let rejected = world
+        .resource::<Notices>()
+        .entries
+        .iter()
+        .any(|(_, n)| matches!(n, Notice::CommandRejected { .. }));
+    assert!(rejected, "the attempt should be reported as rejected");
+    // And the intruder's money is untouched.
+    assert_eq!(world.entity(intruder).get::<Credits>().unwrap().0, 1_000_000);
+}
+
 /// Same seed, same commands => identical worlds after N ticks.
 #[test]
 fn runs_are_reproducible() {
@@ -132,14 +175,21 @@ fn runs_are_reproducible() {
         let mut app = App::new();
         sim_plugin(&mut app);
         let world = app.world_mut();
-        let snapshot: galos_factory::snapshot::SystemSnapshot =
-            ron::from_str(include_str!("../data/fixtures/sol.ron")).unwrap();
-        galos_factory::seed::apply(world, &snapshot);
-        world.resource_mut::<Credits>().0 = 100_000;
+        let seeded = seed::apply(world, &sol());
+        let commander =
+            world.spawn(CommanderBundle::new("Tester", 100_000)).id();
+        world.send_event(PlayerCommand::new(
+            commander,
+            Action::BuyOutpost {
+                body: seeded.bodies["Mercury"],
+                orbital: false,
+                name: "Repro".into(),
+            },
+        ));
         for _ in 0..500 {
             world.run_schedule(SimTick);
         }
-        let credits = world.resource::<Credits>().0;
+        let credits = world.entity(commander).get::<Credits>().unwrap().0;
         let tick = world.resource::<SimClock>().tick;
         (credits, tick)
     }
@@ -178,32 +228,42 @@ fn happiness_round_trips_as_a_band_number() {
     .is_err());
 }
 
-/// Seeding reads elite_journal's own enums: security sets piracy, station
-/// type sets leasable slots, the controlling faction's state and happiness
-/// set market demand and productivity.
+/// Seeding spawns the real BGS structure — factions as corporations with a
+/// presence per system — and control is re-derived from it each tick.
 #[test]
-fn seeding_reads_bgs_types() {
+fn seeding_spawns_factions_and_derives_control() {
     use elite_journal::station::StationType;
 
     let mut app = headless_app();
     let world = app.world_mut();
-    let snapshot: galos_factory::snapshot::SystemSnapshot =
-        ron::from_str(include_str!("../data/fixtures/sol.ron")).unwrap();
-    let stations = galos_factory::seed::apply(world, &snapshot);
+    let seeded = seed::apply(world, &sol());
+    world.run_schedule(SimTick); // resolve_control runs
 
-    // Sol is High security and its controlling faction (Mother Gaia, 45%
-    // influence) is Booming and Happy.
-    let mods = world.resource::<SystemModifiers>();
-    assert_eq!(mods.piracy_milli, 0);
-    assert_eq!(mods.tax_milli, 50);
-    assert_eq!(mods.productivity_milli, 1050);
-    assert!(mods.scoopable_star, "G-class star is scoopable");
+    assert_eq!(seeded.factions.len(), 3, "every faction is an entity");
+    let mut presences = world.query::<&Presence>();
+    assert_eq!(presences.iter(world).count(), 3, "one presence per faction");
 
-    // Slots come from the real station type, not a constant.
-    let lincoln = stations["Abraham Lincoln"];
+    // Sol is High security; Mother Gaia (45% influence, Happy) controls it.
+    let env = world.entity(seeded.system).get::<SystemEnv>().unwrap();
+    assert_eq!(env.piracy_milli, 0);
+    assert!(env.scoopable_star, "G-class star is scoopable");
+
+    let control = world.entity(seeded.system).get::<Control>().unwrap();
+    assert_eq!(control.faction, Some(seeded.factions["Mother Gaia"]));
+    assert_eq!(control.tax_milli, 50);
+    assert_eq!(control.productivity_milli, 1050);
+    assert!(control.boom);
+
+    // Stations belong to their real controlling faction, and slot counts
+    // come from the station type.
+    let lincoln = seeded.stations["Abraham Lincoln"];
+    assert_eq!(
+        world.entity(lincoln).get::<OwnedBy>().unwrap().0,
+        seeded.factions["Mother Gaia"],
+    );
     assert_eq!(
         world.entity(lincoln).get::<Slots>().unwrap().total,
-        galos_factory::seed::slots_for(&StationType::Coriolis),
+        seed::slots_for(&StationType::Coriolis),
     );
     assert!(world.entity(lincoln).contains::<Shipyard>());
 
@@ -228,4 +288,15 @@ fn price_curve_shape() {
     assert_eq!(price_milli(&entry(1000)), 800);
     assert_eq!(price_milli(&entry(10_000)), 400);
     assert!(unit_price(&entry(0)) > unit_price(&entry(500)));
+}
+
+/// The notice feed is bounded — a long game must not grow it forever.
+#[test]
+fn notices_are_bounded() {
+    let mut notices = Notices { cap: 4, ..Default::default() };
+    for tick in 0..100 {
+        notices.push(tick, Notice::NoFuel { station: "X".into() });
+    }
+    assert_eq!(notices.entries.len(), 4);
+    assert_eq!(notices.entries.front().unwrap().0, 96);
 }

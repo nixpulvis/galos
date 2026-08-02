@@ -1,23 +1,29 @@
-//! End-of-tick bookkeeping: brownout notices (sampled to avoid spam).
-//! Rate dashboards derive from the cumulative [`Stats`] counters.
+//! End-of-tick derived state: factory status for buildings that are down
+//! for maintenance, and sampled notices that would otherwise spam every
+//! tick. Rate dashboards derive from each actor's [`Ledger`].
 
 use super::*;
 use bevy::prelude::*;
 
-pub fn stats(
+/// Buildings down for maintenance are skipped by every producing system, so
+/// nothing else would ever refresh their status.
+pub fn mark_offline(mut factories: Query<&mut Status, With<MaintenanceDue>>) {
+    for mut status in factories.iter_mut() {
+        status.0 = FactoryStatus::Offline;
+    }
+}
+
+pub fn sample_notices(
     clock: Res<SimClock>,
     mut notices: ResMut<Notices>,
     stations: Query<(&Station, &PowerGrid)>,
 ) {
-    if clock.tick % 100 != 0 {
-        return;
-    }
     for (station, grid) in stations.iter() {
         if grid.demand_mw > 0 && grid.satisfaction_milli < 1000 {
-            notices.0.push((
+            notices.push(
                 clock.tick,
                 Notice::Brownout { station: station.name.clone() },
-            ));
+            );
         }
     }
 }

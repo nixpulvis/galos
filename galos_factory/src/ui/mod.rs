@@ -1,10 +1,10 @@
 //! Shared egui panels for the production sim. Added by both the standalone
 //! runner and the full game (`galos_game`), so every dashboard built here
-//! is available in both. Panels never mutate sim state directly — they push
-//! [`PlayerCommand`]s, keeping every action tick-aligned.
+//! is available in both. Panels never mutate sim state directly — they send
+//! [`PlayerCommand`] events on behalf of [`LocalCommander`], keeping every
+//! action tick-aligned and attributable.
 
 use crate::data::{BuildingKind, StaticData};
-use crate::sim::commands::PlayerCommand;
 use crate::sim::*;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
@@ -13,9 +13,15 @@ pub fn ui_plugin(app: &mut App) {
     app.init_resource::<Selected>();
     app.add_systems(
         Update,
-        (status_bar, stations_panel, logistics_panel, ticker_panel),
+        (status_bar, stations_panel, logistics_panel, ticker_panel)
+            .run_if(resource_exists::<LocalCommander>),
     );
 }
+
+/// The commander this client is playing. In a shared world every other
+/// commander's assets are visible but not actionable.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct LocalCommander(pub Entity);
 
 /// UI selection state (which station's detail view is open).
 #[derive(Resource, Default)]
@@ -45,53 +51,75 @@ fn status_label(status: FactoryStatus) -> &'static str {
 fn status_bar(
     mut contexts: EguiContexts,
     clock: Res<SimClock>,
-    credits: Res<Credits>,
     speed: Res<SimSpeed>,
-    mut queue: ResMut<CommandQueue>,
+    me: Res<LocalCommander>,
+    commanders: Query<(&Commander, &Credits)>,
+    mut commands: EventWriter<PlayerCommand>,
 ) {
     egui::TopBottomPanel::top("status").show(contexts.ctx_mut(), |ui| {
         ui.horizontal(|ui| {
+            if let Ok((commander, credits)) = commanders.get(me.0) {
+                ui.label(&commander.name);
+                ui.separator();
+                ui.label(format!("{} cr", credits.0));
+                ui.separator();
+            }
             ui.label(format!("tick {}", clock.tick));
-            ui.separator();
-            ui.label(format!("{} cr", credits.0));
             ui.separator();
             for s in
                 [SimSpeed::Paused, SimSpeed::X1, SimSpeed::X10, SimSpeed::X60]
             {
                 if ui.selectable_label(*speed == s, speed_label(s)).clicked() {
-                    queue.0.push(PlayerCommand::SetSpeed(s));
+                    commands
+                        .send(PlayerCommand::new(me.0, Action::SetSpeed(s)));
                 }
             }
         });
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stations_panel(
     mut contexts: EguiContexts,
     data: Res<StaticData>,
+    me: Res<LocalCommander>,
     mut selected: ResMut<Selected>,
-    mut queue: ResMut<CommandQueue>,
+    mut commands: EventWriter<PlayerCommand>,
     stations: Query<(
         Entity,
         &Station,
+        &OwnedBy,
         &Storage,
         &PowerGrid,
-        Option<&LifeSupport>,
+        &LifeSupport,
         &Slots,
+        Option<&Children>,
     )>,
-    factories: Query<(Entity, &Factory, &ActiveRecipe, &Status)>,
+    owners: Query<AnyOf<(&Commander, &Faction)>>,
+    factories: Query<(&Factory, &ActiveRecipe, &Status)>,
 ) {
     egui::Window::new("Stations").default_width(380.0).show(
         contexts.ctx_mut(),
         |ui| {
-            for (entity, station, storage, grid, life, slots) in stations.iter()
+            for (
+                entity,
+                station,
+                owner,
+                storage,
+                grid,
+                life,
+                slots,
+                children,
+            ) in stations.iter()
             {
-                let owner = match station.owner {
-                    Owner::Player => "you",
-                    Owner::Npc => "npc",
+                let mine = owner.0 == me.0;
+                let owner_name = match owners.get(owner.0) {
+                    Ok((Some(commander), _)) => commander.name.clone(),
+                    Ok((_, Some(faction))) => faction.name.clone(),
+                    _ => "unknown".into(),
                 };
                 let header = format!(
-                    "{} [{owner}]  {}/{} stored  {}MW/{}MW",
+                    "{} [{owner_name}]  {}/{} stored  {}MW/{}MW",
                     station.name,
                     storage.total(),
                     storage.cap,
@@ -107,67 +135,64 @@ fn stations_panel(
                 }
 
                 ui.indent(entity, |ui| {
-                    if let Some(life) = life {
-                        if !life.life_support_ok {
-                            ui.colored_label(
-                                egui::Color32::RED,
-                                "LIFE SUPPORT SHORT",
-                            );
-                        }
+                    if !life.ok {
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            "LIFE SUPPORT SHORT",
+                        );
                     }
+                    let kids = children.map(|c| &**c).unwrap_or(&[]);
+                    ui.label(format!("slots {}/{}", kids.len(), slots.total));
 
-                    let mine: Vec<_> = factories
-                        .iter()
-                        .filter(|(_, f, _, _)| f.station == entity)
-                        .collect();
-                    ui.label(format!("slots {}/{}", mine.len(), slots.total));
-
-                    for (factory_entity, factory, active, status) in &mine {
+                    for &child in kids {
+                        let Ok((factory, active, status)) =
+                            factories.get(child)
+                        else {
+                            continue;
+                        };
                         ui.horizontal(|ui| {
                             ui.label(format!("{:?}", factory.kind));
                             let current = active
                                 .0
                                 .map(|id| data.recipe(id).id.as_str())
                                 .unwrap_or("-");
-                            egui::ComboBox::from_id_source(*factory_entity)
-                                .selected_text(current)
-                                .show_ui(ui, |ui| {
-                                    for (recipe_id, recipe) in
-                                        data.recipes_for(factory.kind)
-                                    {
-                                        if ui
-                                            .selectable_label(
-                                                active.0 == Some(recipe_id),
-                                                &recipe.id,
-                                            )
-                                            .clicked()
+                            ui.add_enabled_ui(mine, |ui| {
+                                egui::ComboBox::from_id_source(child)
+                                    .selected_text(current)
+                                    .show_ui(ui, |ui| {
+                                        for (recipe_id, recipe) in
+                                            data.recipes_for(factory.kind)
                                         {
-                                            queue.0.push(
-                                                PlayerCommand::SetRecipe {
-                                                    factory: *factory_entity,
-                                                    recipe: Some(recipe_id),
-                                                    output_cap: None,
-                                                },
-                                            );
+                                            if ui
+                                                .selectable_label(
+                                                    active.0 == Some(recipe_id),
+                                                    &recipe.id,
+                                                )
+                                                .clicked()
+                                            {
+                                                commands.send(
+                                                    PlayerCommand::new(
+                                                        me.0,
+                                                        Action::SetRecipe {
+                                                            factory: child,
+                                                            recipe: Some(
+                                                                recipe_id,
+                                                            ),
+                                                            output_cap: None,
+                                                        },
+                                                    ),
+                                                );
+                                            }
                                         }
-                                    }
-                                });
+                                    });
+                            });
                             ui.label(status_label(status.0));
                         });
                     }
 
-                    if station.owner == Owner::Player {
+                    if mine {
                         ui.menu_button("build…", |ui| {
-                            for kind in [
-                                BuildingKind::Extractor,
-                                BuildingKind::FuelScoop,
-                                BuildingKind::Refinery,
-                                BuildingKind::Assembler,
-                                BuildingKind::PowerPlant,
-                                BuildingKind::SolarArray,
-                                BuildingKind::Geothermal,
-                                BuildingKind::StorageModule,
-                            ] {
+                            for kind in BuildingKind::ALL {
                                 let def = data.building(kind);
                                 let cost: Vec<String> = def
                                     .cost
@@ -182,10 +207,10 @@ fn stations_panel(
                                     def.credits_cost
                                 );
                                 if ui.button(label).clicked() {
-                                    queue.0.push(PlayerCommand::Build {
-                                        station: entity,
-                                        kind,
-                                    });
+                                    commands.send(PlayerCommand::new(
+                                        me.0,
+                                        Action::Build { station: entity, kind },
+                                    ));
                                     ui.close_menu();
                                 }
                             }
@@ -214,7 +239,8 @@ fn stations_panel(
 fn logistics_panel(
     mut contexts: EguiContexts,
     data: Res<StaticData>,
-    contracts: Query<(Entity, &Contract)>,
+    me: Res<LocalCommander>,
+    contracts: Query<(Entity, &Contract, &OwnedBy)>,
     ships: Query<&Ship>,
     stations: Query<&Station>,
 ) {
@@ -228,7 +254,10 @@ fn logistics_panel(
                     .unwrap_or("?")
                     .to_string()
             };
-            for (contract_entity, contract) in contracts.iter() {
+            for (contract_entity, contract, owner) in contracts.iter() {
+                if owner.0 != me.0 {
+                    continue;
+                }
                 let fleet = ships
                     .iter()
                     .filter(|s| s.contract == Some(contract_entity))
@@ -275,13 +304,13 @@ fn ticker_panel(
         contexts.ctx_mut(),
         |ui| {
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                for (tick, notice) in notices.0.iter().rev().take(40) {
+                for (tick, notice) in notices.recent(40) {
                     let text = match notice {
                         Notice::Built { station, kind } => {
                             format!("built {kind:?} at {station}")
                         }
-                        Notice::BuildFailed { station, reason } => {
-                            format!("build failed at {station}: {reason}")
+                        Notice::CommandRejected { reason } => {
+                            format!("rejected: {reason}")
                         }
                         Notice::Brownout { station } => {
                             format!("brownout at {station}")
@@ -295,12 +324,10 @@ fn ticker_panel(
                         Notice::NoFuel { station } => {
                             format!("no fuel at {station}")
                         }
-                        Notice::PiracyLoss { item, qty } => {
-                            format!(
-                                "PIRACY: lost {qty} {}",
-                                data.item(*item).name
-                            )
-                        }
+                        Notice::PiracyLoss { item, qty } => format!(
+                            "PIRACY: lost {qty} {}",
+                            data.item(*item).name
+                        ),
                         Notice::Sold { station, item, qty, credits } => {
                             format!(
                                 "sold {qty} {} at {station} for {credits} cr",

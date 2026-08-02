@@ -1,19 +1,189 @@
-//! ECS components mirroring the world model: bodies carry geology, stations
-//! are the buildable containers (power grid + shared storage + slots),
-//! factories occupy slots, ships fulfill contracts between stations.
+//! The world model as ECS components.
+//!
+//! Five layers, mirroring DESIGN.md and the galos_db schema:
+//!
+//! - **Star system** — the weather. Carries environment (security-driven
+//!   piracy, star class) and the derived [`Control`] of whoever holds the
+//!   most influence right now.
+//! - **Faction** — a real, synced BGS faction, modelled as a corporation:
+//!   it holds an account, owns NPC stations and ships, and issues contracts.
+//!   Its per-system standing lives in a [`Presence`] entity, one per
+//!   (faction, system) pair — the same shape as `system_factions`.
+//! - **Commander** — a player. Holds a personal account and may be a
+//!   [`MemberOf`] a faction. (How members interact with faction money is
+//!   deliberately unmodelled for now.)
+//! - **Body** — the geology a station inherits.
+//! - **Station** — the container: power grid, shared storage, slots — with
+//!   **factories as its ECS children**.
+//!
+//! Assets (stations, ships, contracts) point at their owning actor with
+//! [`OwnedBy`], which may be a commander or a faction.
 
 use crate::data::{BuildingKind, ItemId, RecipeId};
 use bevy::prelude::*;
+use elite_journal::faction::{Happiness, State};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Owner {
-    Player,
-    Npc,
+// ----------------------------------------------------------------- actors
+
+/// An economic actor's balance. Present on commanders and factions alike.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Credits(pub i64);
+
+/// Interest accrues on a negative balance; sustained insolvency past the
+/// ceiling is bankruptcy.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Debt {
+    pub interest_milli: u32,
+    pub ceiling: i64,
 }
 
-// ---------------------------------------------------------------- bodies
+impl Default for Debt {
+    fn default() -> Self {
+        Debt { interest_milli: 0, ceiling: -1_000_000 }
+    }
+}
+
+/// A player.
+#[derive(Component, Clone, Debug)]
+pub struct Commander {
+    pub name: String,
+}
+
+/// A real BGS faction, acting as a corporation for the NPC economy.
+#[derive(Component, Clone, Debug)]
+pub struct Faction {
+    pub name: String,
+}
+
+/// Which faction an actor flies for. Carries no economic meaning yet.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct MemberOf(pub Entity);
+
+/// Standing with factions the actor does *not* belong to.
+#[derive(Component, Clone, Debug, Default)]
+pub struct Reputation(pub HashMap<Entity, i32>);
+
+/// The actor that owns this station, ship, or contract.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnedBy(pub Entity);
+
+/// Per-actor production and trade accounting.
+#[derive(Component, Clone, Debug, Default)]
+pub struct Ledger {
+    pub produced: HashMap<ItemId, u64>,
+    pub consumed: HashMap<ItemId, u64>,
+    pub sold: HashMap<ItemId, u64>,
+    pub revenue: i64,
+    pub expenses: i64,
+}
+
+#[derive(Bundle)]
+pub struct CommanderBundle {
+    pub commander: Commander,
+    pub credits: Credits,
+    pub debt: Debt,
+    pub ledger: Ledger,
+    pub reputation: Reputation,
+}
+
+impl CommanderBundle {
+    pub fn new(name: impl Into<String>, credits: i64) -> Self {
+        CommanderBundle {
+            commander: Commander { name: name.into() },
+            credits: Credits(credits),
+            debt: Debt::default(),
+            ledger: Ledger::default(),
+            reputation: Reputation::default(),
+        }
+    }
+}
+
+#[derive(Bundle)]
+pub struct FactionBundle {
+    pub faction: Faction,
+    pub credits: Credits,
+    pub ledger: Ledger,
+}
+
+impl FactionBundle {
+    pub fn new(name: impl Into<String>, treasury: i64) -> Self {
+        FactionBundle {
+            faction: Faction { name: name.into() },
+            credits: Credits(treasury),
+            ledger: Ledger::default(),
+        }
+    }
+}
+
+// ----------------------------------------------------------- star systems
+
+#[derive(Component, Clone, Debug)]
+pub struct StarSystem {
+    pub address: i64,
+    pub name: String,
+}
+
+/// Environment that belongs to the system itself rather than to whoever
+/// happens to control it. Milli-scaled (1000 = neutral).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct SystemEnv {
+    /// Chance per ship arrival of losing the ship, from security.
+    pub piracy_milli: u32,
+    pub solar_milli: u32,
+    pub scoopable_star: bool,
+}
+
+impl Default for SystemEnv {
+    fn default() -> Self {
+        SystemEnv { piracy_milli: 0, solar_milli: 1000, scoopable_star: true }
+    }
+}
+
+/// A faction's standing in one system — one entity per (faction, system),
+/// mirroring the `system_factions` table.
+#[derive(Component, Clone, Debug)]
+pub struct Presence {
+    pub faction: Entity,
+    pub system: Entity,
+    /// 0..=100 as delivered by the journal.
+    pub influence: f32,
+    pub state: State,
+    pub happiness: Happiness,
+}
+
+/// Derived each tick from the [`Presence`] entities: who runs this system
+/// and what that costs everyone operating here.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Control {
+    pub faction: Option<Entity>,
+    /// Cut the controlling faction takes on market sales.
+    pub tax_milli: u32,
+    /// Workforce productivity from the controlling faction's happiness.
+    pub productivity_milli: u32,
+    pub boom: bool,
+}
+
+impl Default for Control {
+    fn default() -> Self {
+        Control {
+            faction: None,
+            tax_milli: 100,
+            productivity_milli: 1000,
+            boom: false,
+        }
+    }
+}
+
+#[derive(Bundle)]
+pub struct StarSystemBundle {
+    pub system: StarSystem,
+    pub env: SystemEnv,
+    pub control: Control,
+}
+
+// ----------------------------------------------------------------- bodies
 
 #[derive(Component, Clone, Debug)]
 pub struct Body {
@@ -29,11 +199,19 @@ pub struct Deposits(pub Vec<(ItemId, u32)>);
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct BodyEnv {
     pub volcanism: bool,
-    /// Extra power demand multiplier from hostile temp/atmosphere (1000 = none).
+    /// Extra power demand from hostile temp/atmosphere (1000 = none).
     pub overhead_milli: u32,
 }
 
-// -------------------------------------------------------------- stations
+#[derive(Bundle)]
+pub struct BodyBundle {
+    pub body: Body,
+    pub in_system: InSystem,
+    pub deposits: Deposits,
+    pub env: BodyEnv,
+}
+
+// --------------------------------------------------------------- stations
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
@@ -47,10 +225,18 @@ pub enum Placement {
 pub struct Station {
     pub name: String,
     pub placement: Placement,
-    pub owner: Owner,
     /// Light-seconds from the arrival star; drives travel times.
     pub dist_ls: u32,
 }
+
+/// The star system a station or body sits in.
+///
+/// The ECS hierarchy (`Parent`/`Children`) is reserved for the hot
+/// station → factory relation that the production systems walk every tick;
+/// the colder system link is an explicit reference so there is never any
+/// ambiguity about what a `Parent` means at a given level.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct InSystem(pub Entity);
 
 #[derive(Component, Clone, Debug)]
 pub struct Slots {
@@ -130,28 +316,40 @@ pub struct PowerGrid {
     pub satisfaction_milli: u32,
 }
 
-/// Marks stations offering the E:D `Shipyard` service — where ships are bought.
+/// Marks stations offering the E:D `Shipyard` service — where ships are
+/// bought.
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Shipyard;
 
-/// Station condition from the upkeep system.
+/// Set while station life support went unsupplied.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct LifeSupport {
-    pub life_support_ok: bool,
+    pub ok: bool,
 }
 
 impl Default for LifeSupport {
     fn default() -> Self {
-        LifeSupport { life_support_ok: true }
+        LifeSupport { ok: true }
     }
 }
 
-// ------------------------------------------------------------- factories
+#[derive(Bundle)]
+pub struct StationBundle {
+    pub station: Station,
+    pub in_system: InSystem,
+    pub owner: OwnedBy,
+    pub slots: Slots,
+    pub storage: Storage,
+    pub power: PowerGrid,
+    pub life_support: LifeSupport,
+}
 
+// -------------------------------------------------------------- factories
+
+/// A production facility. Its station is its ECS [`Parent`].
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Factory {
     pub kind: BuildingKind,
-    pub station: Entity,
 }
 
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -184,12 +382,34 @@ pub enum FactoryStatus {
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Status(pub FactoryStatus);
 
-/// Set while a building's maintenance went unpaid; cleared on the next
-/// successful charge. Offline buildings neither work nor draw power.
+/// Present while a building's maintenance went unpaid. Offline buildings
+/// neither work nor draw power; the marker is removed on the next
+/// successful charge, so queries filter by archetype.
 #[derive(Component, Clone, Copy, Debug, Default)]
-pub struct MaintenanceDue(pub bool);
+pub struct MaintenanceDue;
 
-// -------------------------------------------------------------- shipping
+#[derive(Bundle)]
+pub struct FactoryBundle {
+    pub factory: Factory,
+    pub recipe: ActiveRecipe,
+    pub cap: OutputCap,
+    pub progress: CraftProgress,
+    pub status: Status,
+}
+
+impl FactoryBundle {
+    pub fn new(kind: BuildingKind) -> Self {
+        FactoryBundle {
+            factory: Factory { kind },
+            recipe: ActiveRecipe(None),
+            cap: OutputCap(None),
+            progress: CraftProgress::default(),
+            status: Status::default(),
+        }
+    }
+}
+
+// -------------------------------------------------------------- logistics
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShipClass {
@@ -228,19 +448,19 @@ impl ShipClass {
     }
 }
 
-/// A standing agreement to move `item` from one station to another.
-/// A player "supply route" is a self-issued contract with assigned ships.
+/// A standing agreement to move `item` between two stations. A player
+/// "supply route" is a self-issued contract with assigned ships; the issuer
+/// is the contract's [`OwnedBy`].
 #[derive(Component, Clone, Debug)]
 pub struct Contract {
-    pub issuer: Owner,
     pub from: Entity,
     pub to: Entity,
     pub item: ItemId,
     /// Credits per delivered unit, paid by the issuer to the carrier.
     /// Zero for self-contracts.
     pub pay_per_unit: u32,
-    /// Stop hauling while the destination holds at least this much of the
-    /// item (request threshold). `None` = haul everything available.
+    /// Stop hauling while the destination holds at least this much
+    /// (request threshold). `None` = haul everything available.
     pub target: Option<u32>,
     /// Never draw the origin below this floor (surplus-export threshold).
     pub reserve: u32,
@@ -249,7 +469,6 @@ pub struct Contract {
 #[derive(Component, Clone, Debug)]
 pub struct Ship {
     pub class: ShipClass,
-    pub owner: Owner,
     pub contract: Option<Entity>,
     pub state: ShipState,
 }
@@ -271,9 +490,10 @@ pub enum ShipState {
     },
 }
 
-// --------------------------------------------------------------- markets
+// ---------------------------------------------------------------- markets
 
-/// NPC market. Prices derive from the supply/demand curve each tick:
+/// An NPC market, on a faction-owned station. Prices derive from the
+/// supply/demand curve each tick:
 /// `price = base × curve(stock/demand_baseline) × modifiers`.
 #[derive(Component, Clone, Debug, Default)]
 pub struct Market {

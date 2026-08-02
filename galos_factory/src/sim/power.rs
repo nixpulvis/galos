@@ -9,31 +9,32 @@ use bevy::prelude::*;
 
 pub fn power_balance(
     data: Res<StaticData>,
-    mods: Res<SystemModifiers>,
-    mut stations: Query<(Entity, &Station, &mut Storage, &mut PowerGrid)>,
-    mut factories: Query<(
-        &Factory,
-        &ActiveRecipe,
-        &mut CraftProgress,
-        &mut Status,
-        &MaintenanceDue,
+    systems: Query<&SystemEnv>,
+    mut stations: Query<(
+        &Station,
+        &InSystem,
+        &mut Storage,
+        &mut PowerGrid,
+        Option<&Children>,
     )>,
+    mut factories: Query<
+        (&Factory, &ActiveRecipe, &mut CraftProgress, &mut Status),
+        Without<MaintenanceDue>,
+    >,
 ) {
-    for (station_entity, station, mut storage, mut grid) in stations.iter_mut()
+    for (station, in_system, mut storage, mut grid, children) in
+        stations.iter_mut()
     {
+        let env = systems.get(in_system.0).copied().unwrap_or_default();
         let mut supply: u32 = 0;
         let mut demand: u32 = 0;
 
-        for (factory, active, mut progress, mut status, due) in
-            factories.iter_mut()
-        {
-            if factory.station != station_entity {
+        for &child in children.map(|c| &**c).unwrap_or(&[]) {
+            let Ok((factory, active, mut progress, mut status)) =
+                factories.get_mut(child)
+            else {
                 continue;
-            }
-            if due.0 {
-                status.0 = FactoryStatus::Offline;
-                continue;
-            }
+            };
             let Some(recipe_id) = active.0 else { continue };
             let recipe = data.recipe(recipe_id);
 
@@ -51,7 +52,7 @@ pub fn power_balance(
                         Placement::Orbital(_) => 1000,
                     };
                     supply +=
-                        mw * placement_milli / 1000 * mods.solar_milli / 1000;
+                        mw * placement_milli / 1000 * env.solar_milli / 1000;
                     status.0 = FactoryStatus::Running;
                 }
                 _ if recipe.inputs.is_empty() => {

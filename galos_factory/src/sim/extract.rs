@@ -2,48 +2,46 @@
 //! richness), fuel scoops skim scoopable stars. Same cycle machinery as
 //! crafting, with the deposit richness folded into the rate.
 
-use super::craft::step_factory;
+use super::craft::{base_rate_milli, output_capped, step_factory};
 use super::*;
 use crate::data::{BuildingKind, Req, StaticData};
 use bevy::prelude::*;
 
 pub fn extract(
     data: Res<StaticData>,
-    mods: Res<SystemModifiers>,
-    mut stats: ResMut<Stats>,
+    controls: Query<&Control>,
+    mut actors: Query<&mut Ledger>,
+    bodies: Query<&Deposits>,
     mut stations: Query<(
-        Entity,
         &Station,
+        &InSystem,
+        &OwnedBy,
         &mut Storage,
         &PowerGrid,
         &LifeSupport,
+        Option<&Children>,
     )>,
-    bodies: Query<&Deposits>,
-    mut factories: Query<(
-        &Factory,
-        &ActiveRecipe,
-        &OutputCap,
-        &mut CraftProgress,
-        &mut Status,
-        &MaintenanceDue,
-    )>,
+    mut factories: Query<
+        (&Factory, &ActiveRecipe, &OutputCap, &mut CraftProgress, &mut Status),
+        Without<MaintenanceDue>,
+    >,
 ) {
-    for (station_entity, station, mut storage, grid, condition) in
+    for (station, in_system, owner, mut storage, grid, life, children) in
         stations.iter_mut()
     {
-        for (factory, active, cap, mut progress, mut status, due) in
-            factories.iter_mut()
-        {
-            if factory.station != station_entity
-                || !matches!(
-                    factory.kind,
-                    BuildingKind::Extractor | BuildingKind::FuelScoop
-                )
-            {
+        let control = controls.get(in_system.0).copied().unwrap_or_default();
+        let base_milli = base_rate_milli(grid, &control, life);
+
+        for &child in children.map(|c| &**c).unwrap_or(&[]) {
+            let Ok((factory, active, cap, mut progress, mut status)) =
+                factories.get_mut(child)
+            else {
                 continue;
-            }
-            if due.0 {
-                status.0 = FactoryStatus::Offline;
+            };
+            if !matches!(
+                factory.kind,
+                BuildingKind::Extractor | BuildingKind::FuelScoop
+            ) {
                 continue;
             }
             let Some(recipe_id) = active.0 else {
@@ -51,8 +49,7 @@ pub fn extract(
                 continue;
             };
             let recipe = data.recipe(recipe_id);
-            if super::craft::output_capped(cap, recipe, &storage, &mut progress)
-            {
+            if output_capped(cap, recipe, &storage, &mut progress) {
                 status.0 = FactoryStatus::Idle;
                 continue;
             }
@@ -76,22 +73,14 @@ pub fn extract(
                 }
             }
 
-            let life_milli: u64 =
-                if condition.life_support_ok { 1000 } else { 500 };
-            let rate_milli = grid.satisfaction_milli as u64
-                * mods.productivity_milli as u64
-                / 1000
-                * richness_milli
-                / 1000
-                * life_milli
-                / 1000;
+            let mut ledger = actors.get_mut(owner.0).ok();
             step_factory(
                 recipe,
                 &mut storage,
                 &mut progress,
                 &mut status,
-                rate_milli,
-                &mut stats,
+                base_milli * richness_milli / 1000,
+                ledger.as_deref_mut(),
             );
         }
     }

@@ -4,13 +4,18 @@
 //! - No floats in sim state: quantities are integers, fractional rates use
 //!   milli-unit accumulators.
 //! - All randomness flows through the single seeded [`SimRng`].
-//! - UI and hosts never mutate sim state directly; they push
-//!   [`PlayerCommand`]s into the [`CommandQueue`], drained at tick start.
+//! - Nothing mutates sim state directly; UI and hosts send
+//!   [`PlayerCommand`] events, drained at tick start and validated against
+//!   the issuing actor's ownership.
 //! - The fixed clock never changes; [`SimSpeed`] runs the whole tick
 //!   schedule 0..N times per `FixedUpdate` step.
+//!
+//! Only genuinely global facts live in resources. Money, ledgers, and
+//! market/political context are per-entity — see [`components`].
 
 pub mod commands;
 pub mod components;
+pub mod control;
 pub mod craft;
 pub mod extract;
 pub mod market;
@@ -19,21 +24,44 @@ pub mod shipping;
 pub mod stats;
 pub mod upkeep;
 
-pub use commands::PlayerCommand;
+pub use commands::{Action, PlayerCommand};
 pub use components::*;
 
-use crate::data::ItemId;
+use crate::data::{ItemId, UPKEEP_PERIOD};
 use bevy::prelude::*;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use std::collections::HashMap;
+use std::collections::VecDeque;
+
+/// Ordered stages of one tick. Named so hosts (`galos_game`, tests) can
+/// schedule their own systems against sim phases.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SimSet {
+    /// Drain player commands.
+    Commands,
+    /// Re-derive who controls each system.
+    Control,
+    /// Per-station supply vs demand.
+    Power,
+    /// Maintenance and life support.
+    Upkeep,
+    /// Extraction and crafting.
+    Production,
+    /// Ships and contracts.
+    Logistics,
+    /// Market curves, interest.
+    Market,
+    /// Derived status, notices, bookkeeping.
+    Stats,
+}
 
 #[derive(Resource, Default, Debug)]
 pub struct SimClock {
     pub tick: u64,
 }
 
-/// Whole sim ticks per `FixedUpdate` step (the fixed clock stays at 10 Hz).
+/// Whole sim ticks per `FixedUpdate` step (the fixed clock stays at 10 Hz,
+/// so speed never changes outcomes).
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SimSpeed {
     Paused,
@@ -63,58 +91,37 @@ impl SimRng {
     }
 }
 
-#[derive(Resource, Default, Debug)]
-pub struct Credits(pub i64);
-
+/// Rolling event feed for the UI ticker and headless log. Bounded — a long
+/// game must not grow this forever.
 #[derive(Resource, Debug)]
-pub struct Debt {
-    pub interest_milli: u32,
-    pub ceiling: i64,
+pub struct Notices {
+    pub entries: VecDeque<(u64, Notice)>,
+    pub cap: usize,
 }
 
-impl Default for Debt {
+impl Default for Notices {
     fn default() -> Self {
-        // ~0.01% interest per tick on negative balances; run ends past the
-        // ceiling (enforced in a later milestone).
-        Debt { interest_milli: 0, ceiling: -1_000_000 }
+        Notices { entries: VecDeque::new(), cap: 512 }
     }
 }
 
-/// System-wide modifiers derived from BGS data at seed/refresh time.
-/// All multipliers are milli-scaled (1000 = neutral).
-#[derive(Resource, Debug, Clone)]
-pub struct SystemModifiers {
-    pub productivity_milli: u32,
-    pub tax_milli: u32,
-    pub piracy_milli: u32,
-    pub solar_milli: u32,
-    pub scoopable_star: bool,
-}
-
-impl Default for SystemModifiers {
-    fn default() -> Self {
-        SystemModifiers {
-            productivity_milli: 1000,
-            tax_milli: 50,
-            piracy_milli: 0,
-            solar_milli: 1000,
-            scoopable_star: true,
+impl Notices {
+    pub fn push(&mut self, tick: u64, notice: Notice) {
+        if self.entries.len() == self.cap {
+            self.entries.pop_front();
         }
+        self.entries.push_back((tick, notice));
+    }
+
+    pub fn recent(&self, n: usize) -> impl Iterator<Item = &(u64, Notice)> {
+        self.entries.iter().rev().take(n).rev()
     }
 }
-
-/// Player commands queued by UI/hosts, drained at tick boundary.
-#[derive(Resource, Default, Debug)]
-pub struct CommandQueue(pub Vec<PlayerCommand>);
-
-/// Tick-stamped notices for the UI ticker and headless log.
-#[derive(Resource, Default, Debug)]
-pub struct Notices(pub Vec<(u64, Notice)>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
     Built { station: String, kind: crate::data::BuildingKind },
-    BuildFailed { station: String, reason: String },
+    CommandRejected { reason: String },
     Brownout { station: String },
     LifeSupportShort { station: String },
     MaintenanceShort { station: String, kind: crate::data::BuildingKind },
@@ -122,16 +129,6 @@ pub enum Notice {
     PiracyLoss { item: ItemId, qty: u32 },
     Sold { station: String, item: ItemId, qty: u32, credits: i64 },
     Bought { station: String, item: ItemId, qty: u32, credits: i64 },
-}
-
-/// Cumulative production accounting (rates derived by callers).
-#[derive(Resource, Default, Debug)]
-pub struct Stats {
-    pub produced: HashMap<ItemId, u64>,
-    pub consumed: HashMap<ItemId, u64>,
-    pub sold: HashMap<ItemId, u64>,
-    pub revenue: i64,
-    pub expenses: i64,
 }
 
 /// Runs the tick schedule [`SimSpeed`] times per fixed step.
@@ -144,4 +141,14 @@ pub fn drive_ticks(world: &mut World) {
 
 pub fn advance_clock(mut clock: ResMut<SimClock>) {
     clock.tick += 1;
+}
+
+/// Standing costs are charged on a slower cadence than production.
+pub fn on_upkeep_tick(clock: Res<SimClock>) -> bool {
+    clock.tick > 0 && clock.tick % UPKEEP_PERIOD == 0
+}
+
+/// Sampling cadence for notices that would otherwise fire every tick.
+pub fn on_report_tick(clock: Res<SimClock>) -> bool {
+    clock.tick > 0 && clock.tick % 100 == 0
 }
