@@ -10,3 +10,7 @@ DROP TYPE Security;
 -- postgis, so the extensions outlive the table and topology goes first.
 DROP EXTENSION postgis_topology;
 DROP EXTENSION postgis;
+
+-- postgis_topology installs itself into a schema of its own, which it makes
+-- on the way in and leaves standing on the way out. By here it is empty.
+DROP SCHEMA topology;
