@@ -83,6 +83,9 @@ impl Market {
         .execute(&mut *tx)
         .await?;
 
+        // TODO: This sends one statement per commodity, and a market can name
+        // several hundred of them. The whole set could go in a single INSERT
+        // by passing each column as an array and UNNESTing them.
         for commodity in &market.commodities {
             // The rows this writes were just cleared, so the conflict clause
             // answers only for one event naming a commodity twice, which two
