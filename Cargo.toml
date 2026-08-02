@@ -3,6 +3,7 @@ name = "galos"
 version = "0.0.3"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
+rust-version.workspace = true
 
 default-run = "galos"
 
@@ -33,6 +34,15 @@ elite_journal = { path = "./elite_journal" }
 
 # TODO
 geozero = { git = "https://github.com/nixpulvis/geozero" }
+
+[workspace.package]
+# Set by bevy 0.19, the highest floor anything here depends on, and well above
+# the 1.85 that galos_map's edition needs.
+#
+# Inherited by the crates kept in this repository. The other members are
+# submodules with their own release cycles, and a crate that inherits this
+# cannot be built outside the workspace.
+rust-version = "1.95.0"
 
 [workspace]
 # Resolver 2 keeps platform-specific dependency features from being unified
