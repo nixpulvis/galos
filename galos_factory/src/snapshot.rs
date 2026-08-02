@@ -7,10 +7,10 @@
 //! concept, so a snapshot loaded from Postgres needs no translation: the
 //! DB columns are these same types.
 
-use elite_journal::faction::State;
+use elite_journal::faction::{Happiness, State};
 use elite_journal::station::StationType;
 use elite_journal::system::{Economy, Security};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SystemSnapshot {
@@ -80,23 +80,49 @@ pub struct FactionSnapshot {
     /// 0..=100 as delivered by the journal.
     pub influence: f32,
     pub state: State,
-    /// Happiness band 1 (elated) ..= 5 (despondent); 3 = discontented.
-    /// `elite_journal::Happiness` renames its variants to the raw
-    /// `$Faction_HappinessBand2;` tokens, which RON cannot spell, so
-    /// snapshots carry the band number and [`happiness_band`] converts.
-    pub happiness_band: u8,
+    /// Serialized as its band number — see [`happiness_band`].
+    #[serde(with = "happiness_band", rename = "happiness_band")]
+    pub happiness: Happiness,
 }
 
-/// Band number for an `elite_journal::Happiness`, for callers loading
-/// snapshots straight from the database.
-pub fn happiness_band(happiness: elite_journal::faction::Happiness) -> u8 {
-    use elite_journal::faction::Happiness::*;
-    match happiness {
-        Elated => 1,
-        Happy => 2,
-        Discontented => 3,
-        Unhappy => 4,
-        Despondent => 5,
-        None => 3,
+/// `Happiness` on the wire.
+///
+/// Every other BGS field here is its `elite_journal` type verbatim, but
+/// that crate renames the `Happiness` variants to the raw journal tokens
+/// (`$Faction_HappinessBand2;`), which RON cannot spell as identifiers.
+/// Snapshots therefore carry the band number — 1 (elated) ..= 5
+/// (despondent), 0 for unknown — and convert here, so the band
+/// representation never escapes the parsing layer.
+mod happiness_band {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(
+        happiness: &Happiness,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(match happiness {
+            Happiness::Elated => 1,
+            Happiness::Happy => 2,
+            Happiness::Discontented => 3,
+            Happiness::Unhappy => 4,
+            Happiness::Despondent => 5,
+            Happiness::None => 0,
+        })
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Happiness, D::Error> {
+        match u8::deserialize(deserializer)? {
+            0 => Ok(Happiness::None),
+            1 => Ok(Happiness::Elated),
+            2 => Ok(Happiness::Happy),
+            3 => Ok(Happiness::Discontented),
+            4 => Ok(Happiness::Unhappy),
+            5 => Ok(Happiness::Despondent),
+            band => Err(serde::de::Error::custom(format!(
+                "happiness band {band} is not in 0..=5"
+            ))),
+        }
     }
 }
