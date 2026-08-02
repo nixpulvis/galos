@@ -171,9 +171,17 @@ pub fn face_camera(
     for (mut label, child_of) in &mut labels {
         let Ok(system) = systems.get(child_of.parent()) else { continue };
 
+        // Every value below is divided by the star's scale, so a star that
+        // is not drawn at a sane size has to be left alone. Clamping instead
+        // would turn a scale of zero into a division by a hair above zero,
+        // which throws the name millions of units away rather than hiding it.
+        let parent_scale = system.scale.x;
+        if !parent_scale.is_finite() || parent_scale <= 0. {
+            continue;
+        }
+
         // Measure to the star, not to the label's offset within it.
         let d = camera.translation.distance(system.translation);
-        let parent_scale = system.scale.x.max(f32::EPSILON);
         let scale = 0.75 * d.max(MIN_DISTANCE).ln() * SCALE;
 
         // Offset along the camera's own axes, so the label keeps sitting up
