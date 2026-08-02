@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1 FROM markets\n                 WHERE system_address IS NULL AND system_name = UPPER($1)\n            ) AS \"waiting!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "waiting!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d60d4b07d6ff86215d3bb36476bf1228bb76f0e6f786e36e057b7807feed0d6d"
+}

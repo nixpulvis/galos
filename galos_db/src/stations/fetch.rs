@@ -37,7 +37,7 @@ impl Station {
         Ok(Station {
             system_address: row.system_address,
             name: row.name,
-            ty: Some(row.ty),
+            ty: row.ty,
             dist_from_star_ls: row.dist_from_star_ls,
             market_id: row.market_id,
             landing_pads: row.landing_pads,
@@ -84,7 +84,7 @@ impl Station {
             .map(|row| Station {
                 system_address: row.system_address,
                 name: row.name,
-                ty: Some(row.ty),
+                ty: row.ty,
                 dist_from_star_ls: row.dist_from_star_ls,
                 market_id: row.market_id,
                 landing_pads: row.landing_pads,

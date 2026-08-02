@@ -10,26 +10,52 @@ impl Market {
         timestamp: DateTime<Utc>,
         market: &JournalMarket,
     ) -> Result<Market, Error> {
-        let system = System::fetch_by_name(db, &market.system_name).await?;
+        // Not knowing the system is not a reason to lose the prices. The
+        // name is recorded either way, and `System::create` links the market
+        // up if the system turns up later.
+        //
+        // A market can move. Fleet carriers jump, and one of them shows up in
+        // this database under three systems in an hour. So where it is now
+        // replaces where it was, rather than filling in a blank: a carrier
+        // that jumps somewhere unheard of goes back to waiting, instead of
+        // keeping the last system it was seen in.
+        let address = match System::fetch_by_name(db, &market.system_name).await
+        {
+            Ok(system) => Some(system.address),
+            // There is no such system yet, so the market waits for one.
+            Err(Error::Sqlx(sqlx::Error::RowNotFound)) => None,
+            // Anything else is the database failing to answer, which is not
+            // the same as an answer of no. Filing the market as waiting on
+            // that would leave it waiting on a system that already exists,
+            // for a write that may never come.
+            Err(err) => return Err(err),
+        };
+
         let row = sqlx::query!(
             r#"
             INSERT INTO markets (
                 id,
                 system_address,
+                system_name,
                 station_name,
                 updated_at)
-            VALUES ($1, $2, $3, $4)
+            VALUES ($1, $2, UPPER($3), $4, $5)
             ON CONFLICT (id)
             DO UPDATE SET
-                updated_at = $4
+                system_address = $2,
+                system_name = UPPER($3),
+                station_name = $4,
+                updated_at = $5
             RETURNING
                 id,
                 system_address,
+                system_name,
                 station_name,
                 updated_at
             "#,
             market.market_id,
-            system.address,
+            address,
+            market.system_name,
             market.station_name,
             timestamp.naive_utc(),
         )
@@ -81,6 +107,7 @@ impl Market {
         Ok(Market {
             id: row.id,
             system_address: row.system_address,
+            system_name: row.system_name,
             station_name: row.station_name,
             updated_at: row.updated_at.and_utc(),
         })

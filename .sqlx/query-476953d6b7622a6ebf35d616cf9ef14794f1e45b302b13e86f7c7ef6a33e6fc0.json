@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by\n            FROM stations\n            WHERE system_address = $1\n            ",
+  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (system_address, name) DO NOTHING\n            RETURNING\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by\n            ",
   "describe": {
     "columns": [
       {
@@ -242,13 +242,16 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Int8",
+        "Varchar",
+        "Timestamp",
+        "Varchar"
       ]
     },
     "nullable": [
       false,
       false,
-      false,
+      true,
       true,
       true,
       true,
@@ -261,5 +264,5 @@
       false
     ]
   },
-  "hash": "0afbc0eb0bf992c1bc02dd9c5f317f09a839a9f468c591a03356cee2175a30b5"
+  "hash": "476953d6b7622a6ebf35d616cf9ef14794f1e45b302b13e86f7c7ef6a33e6fc0"
 }

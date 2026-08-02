@@ -6,6 +6,73 @@ use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
 impl Station {
+    /// Note that a station exists, without claiming to know anything else
+    ///
+    /// Called for market data, which says only that the station is there.
+    /// An existing row is left untouched, so `updated_at` and `updated_by`
+    /// keep pointing at whoever last actually described the station rather
+    /// than at the commander who happened to sell something there.
+    pub async fn create(
+        db: &Database,
+        timestamp: DateTime<Utc>,
+        user: &str,
+        system_address: i64,
+        name: &str,
+    ) -> Result<Station, Error> {
+        let row = sqlx::query!(
+            r#"
+            INSERT INTO stations (
+                system_address,
+                name,
+                updated_at,
+                updated_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (system_address, name) DO NOTHING
+            RETURNING
+                system_address,
+                name,
+                ty as "ty: StationType",
+                dist_from_star_ls,
+                market_id,
+                landing_pads as "landing_pads: LandingPads",
+                faction,
+                government as "government: Government",
+                allegiance as "allegiance: Allegiance",
+                services as "services: Vec<Service>",
+                economies as "economies: Vec<EconomyShare>",
+                updated_at,
+                updated_by
+            "#,
+            system_address,
+            name,
+            timestamp.naive_utc(),
+            user,
+        )
+        .fetch_optional(&db.pool)
+        .await?;
+
+        // Nothing came back, so the station was already on record.
+        let Some(row) = row else {
+            return Station::fetch(db, system_address, name).await;
+        };
+
+        Ok(Station {
+            system_address: row.system_address,
+            name: row.name,
+            ty: row.ty,
+            dist_from_star_ls: row.dist_from_star_ls,
+            market_id: row.market_id,
+            landing_pads: row.landing_pads,
+            faction: row.faction,
+            government: row.government,
+            allegiance: row.allegiance,
+            services: row.services,
+            economies: row.economies,
+            updated_at: row.updated_at.and_utc(),
+            updated_by: row.updated_by,
+        })
+    }
+
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
@@ -78,7 +145,7 @@ impl Station {
         Ok(Station {
             system_address: row.system_address,
             name: row.name,
-            ty: Some(row.ty),
+            ty: row.ty,
             dist_from_star_ls: row.dist_from_star_ls,
             market_id: row.market_id,
             landing_pads: row.landing_pads,

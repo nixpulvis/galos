@@ -4,7 +4,12 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, PartialEq, Eq)]
 pub struct Market {
     pub id: i64,
-    pub system_address: i64,
+    /// The system this market's station sits in, once it is known
+    ///
+    /// A market message names its system but cannot give an address, so a
+    /// market can be recorded before the system it belongs to exists.
+    pub system_address: Option<i64>,
+    pub system_name: String,
     pub station_name: String,
     pub updated_at: DateTime<Utc>,
 }
