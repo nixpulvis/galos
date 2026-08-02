@@ -12,13 +12,22 @@ fn main() {
     let db = future::block_on(async { Database::new().await.unwrap() });
 
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "Galos - Starmap".into(),
-            ..default()
-        }),
-        ..default()
-    }));
+    // `big_space` computes every `GlobalTransform` relative to the floating
+    // origin, which is a different answer than bevy's own propagation gives.
+    // Running both would leave whichever wrote last to decide, so bevy's is
+    // turned off. See `space` for what replaces it.
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Galos - Starmap".into(),
+                    ..default()
+                }),
+                ..default()
+            })
+            .build()
+            .disable::<TransformPlugin>(),
+    );
     app.add_plugins(EguiPlugin {
         // Bevy cannot use bindless textures on Metal, and bevy_egui warns at
         // startup whenever they're requested. This UI is a couple of small
@@ -31,6 +40,7 @@ fn main() {
     app.insert_resource(Db(db));
 
     app.add_plugins(schedule::plugin);
+    app.add_plugins(space::plugin);
     app.add_plugins(camera::plugin);
     app.add_plugins(systems::plugin);
     app.add_plugins(ui::plugin);

@@ -9,6 +9,7 @@ use galos_db::Database;
 pub mod camera;
 pub mod schedule;
 pub mod search;
+pub mod space;
 pub mod systems;
 pub mod ui;
 

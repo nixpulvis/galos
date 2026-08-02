@@ -1,9 +1,10 @@
+use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::spawn::ShowNames;
 use bevy::camera::visibility::VisibilitySystems;
+use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_rich_text3d::{
     LoadFonts, Text3d, Text3dPlugin, Text3dStyling, TextAnchor, TextAtlas,
 };
@@ -89,17 +90,17 @@ pub struct LabelMaterial(Handle<StandardMaterial>);
 /// Spawn and despawn system labels
 pub fn respawn(
     mut commands: Commands,
-    camera: Query<&Transform, With<PanOrbitCamera>>,
-    systems: Query<(Entity, &System, &Transform, Option<&Children>)>,
+    camera: Query<&OrbitCamera>,
+    systems: Query<(Entity, &System, Option<&Children>)>,
     labels: Query<Entity, With<Label>>,
     show_names: Res<ShowNames>,
     material: Res<LabelMaterial>,
 ) {
     let Ok(camera) = camera.single() else { return };
-    let camera_translation = camera.translation;
+    let eye = camera.eye;
 
-    for (system_entity, system, system_transform, children) in systems.iter() {
-        let d = camera_translation.distance(system_transform.translation);
+    for (system_entity, system, children) in systems.iter() {
+        let d = eye.distance(DVec3::from(system.position)) as f32;
 
         if d > RADIUS {
             if let Some(children) = children {
@@ -155,33 +156,34 @@ pub fn respawn(
 /// that scale to land on the intended world size and offset. Systems are
 /// unrotated, so the camera's rotation can be copied straight in.
 pub fn face_camera(
-    camera: Query<&Transform, With<PanOrbitCamera>>,
-    systems: Query<&Transform, (With<System>, Without<Label>)>,
-    // `Without<System>` and `Without<PanOrbitCamera>` are already true of any
-    // label. They are spelled out so the scheduler can prove this query is
-    // disjoint from the two above, and from every other system that reads a
-    // star's or the camera's transform.
+    camera: Query<&OrbitCamera>,
+    systems: Query<(&Transform, &System), Without<Label>>,
+    // `Without<System>` is already true of any label. It is spelled out so
+    // the scheduler can prove this query is disjoint from the one above, and
+    // from every other system that reads a star's transform.
     mut labels: Query<
         (&mut Transform, &ChildOf),
-        (With<Label>, Without<System>, Without<PanOrbitCamera>),
+        (With<Label>, Without<System>),
     >,
 ) {
     let Ok(camera) = camera.single() else { return };
 
     for (mut label, child_of) in &mut labels {
-        let Ok(system) = systems.get(child_of.parent()) else { continue };
+        let Ok((transform, system)) = systems.get(child_of.parent()) else {
+            continue;
+        };
 
         // Every value below is divided by the star's scale, so a star that
         // is not drawn at a sane size has to be left alone. Clamping instead
         // would turn a scale of zero into a division by a hair above zero,
         // which throws the name millions of units away rather than hiding it.
-        let parent_scale = system.scale.x;
+        let parent_scale = transform.scale.x;
         if !parent_scale.is_finite() || parent_scale <= 0. {
             continue;
         }
 
         // Measure to the star, not to the label's offset within it.
-        let d = camera.translation.distance(system.translation);
+        let d = camera.eye.distance(DVec3::from(system.position)) as f32;
         let scale = 0.75 * d.max(MIN_DISTANCE).ln() * SCALE;
 
         // Offset along the camera's own axes, so the label keeps sitting up

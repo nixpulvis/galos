@@ -1,8 +1,9 @@
+use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
+use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_panorbit_camera::PanOrbitCamera;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(View::Systems);
@@ -64,24 +65,28 @@ fn population_factor(population: u64, average: f64) -> f32 {
         .clamp(POP_MIN, POP_MAX)
 }
 
+/// How large to draw each system, given where the camera ended up
+///
+/// Distance is measured between the camera's own position and the system's,
+/// both of which are absolute galactic light years. A star's `Transform` is
+/// no longer an answer to where it is — it holds only the remainder left
+/// over from its grid cell — and its `GlobalTransform` is not written until
+/// after this runs, so neither can be measured against.
 pub fn scale_systems(
     scale_population: Res<ScalePopulation>,
-    mut set: ParamSet<(
-        Query<(&mut Transform, &System)>,
-        Query<&Transform, With<PanOrbitCamera>>,
-    )>,
+    camera: Query<&OrbitCamera>,
+    mut systems: Query<(&mut Transform, &System)>,
 ) {
-    if !set.p0().is_empty() {
-        let Ok(camera_translation) = set.p1().single().map(|c| c.translation)
-        else {
-            return;
-        };
+    if !systems.is_empty() {
+        let Ok(eye) = camera.single().map(|c| c.eye) else { return };
         let pop_avg = if scale_population.0 {
             // TODO(#45): This is *very* slow and should be precomputed when
             // the set of systems changes.
-            let total: f64 =
-                set.p0().iter().map(|(_, s)| s.population as f64).sum();
-            total / set.p0().iter().len() as f64
+            let (total, count) =
+                systems.iter().fold((0., 0.), |(t, n), (_, s)| {
+                    (t + s.population as f64, n + 1.)
+                });
+            total / count
         } else {
             0.
         };
@@ -89,9 +94,8 @@ pub fn scale_systems(
         // The goal is to avoid fading out any stars, but scale them as the
         // camera moves further away from them.
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut system_transform, system) in set.p0().iter_mut() {
-            let dist =
-                camera_translation.distance(system_transform.translation);
+        for (mut system_transform, system) in systems.iter_mut() {
+            let dist = eye.distance(DVec3::from(system.position)) as f32;
             let mut scale = 4e-4 * dist + 8.5e-2;
             if scale_population.0 {
                 scale *= population_factor(system.population, pop_avg);

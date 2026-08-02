@@ -13,8 +13,12 @@ async-std = "*"
 bevy = "0.19"
 bevy-inspector-egui = { version = "0.37", optional = true }
 bevy_egui = "0.40"
-bevy_panorbit_camera = { version = "0.35", features = ["bevy_egui"] }
 bevy_rich_text3d = "0.7"
+# Bevy 0.19 support is on a branch; the newest release, 0.12, is 0.18 only.
+# See https://github.com/aevyrie/big_space/pull/78.
+big_space = { git = "https://github.com/aevyrie/big_space", branch = "bevy-0.19", features = [
+    "i64",
+] }
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_db = { path = "../galos_db" }
