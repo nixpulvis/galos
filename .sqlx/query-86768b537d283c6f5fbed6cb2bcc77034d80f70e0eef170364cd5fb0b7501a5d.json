@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM commodities WHERE market_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "86768b537d283c6f5fbed6cb2bcc77034d80f70e0eef170364cd5fb0b7501a5d"
+}

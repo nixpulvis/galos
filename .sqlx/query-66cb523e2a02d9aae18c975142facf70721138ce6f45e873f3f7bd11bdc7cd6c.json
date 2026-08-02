@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                INSERT INTO listings (\n                    market_id,\n                    name,\n                    mean_price,\n                    buy_price,\n                    sell_price,\n                    demand,\n                    demand_bracket,\n                    stock,\n                    stock_bracket,\n                    listed_at)\n                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n                ON CONFLICT (market_id, name)\n                DO UPDATE SET\n                    mean_price = $3,\n                    buy_price = $4,\n                    sell_price = $5,\n                    demand = $6,\n                    demand_bracket = $7,\n                    stock = $8,\n                    stock_bracket = $9,\n                    listed_at = $10\n                RETURNING *\n                ",
+  "query": "\n                INSERT INTO commodities (\n                    market_id,\n                    name,\n                    mean_price,\n                    buy_price,\n                    sell_price,\n                    demand,\n                    demand_bracket,\n                    stock,\n                    stock_bracket,\n                    listed_at)\n                VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10)\n                ON CONFLICT (market_id, name)\n                DO UPDATE SET\n                    mean_price = $3,\n                    buy_price = $4,\n                    sell_price = $5,\n                    demand = $6,\n                    demand_bracket = $7,\n                    stock = $8,\n                    stock_bracket = $9,\n                    listed_at = $10\n                RETURNING *\n                ",
   "describe": {
     "columns": [
       {
@@ -81,5 +81,5 @@
       false
     ]
   },
-  "hash": "7e9cd1fb57d0b89517dd6bf549fb95d50031989d55bb5b5d4f2b2d1db2821481"
+  "hash": "66cb523e2a02d9aae18c975142facf70721138ce6f45e873f3f7bd11bdc7cd6c"
 }
