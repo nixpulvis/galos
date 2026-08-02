@@ -58,12 +58,8 @@ fn add_factory(
         .resource::<StaticData>()
         .recipe_by_name(recipe)
         .expect("known recipe");
-    let factory = world
-        .spawn(FactoryBundle {
-            recipe: ActiveRecipe(Some(id)),
-            ..FactoryBundle::new(kind)
-        })
-        .id();
+    let factory =
+        world.spawn((FactoryBundle::new(kind), ActiveRecipe(id))).id();
     world.entity_mut(station).add_child(factory);
     factory
 }
@@ -288,6 +284,36 @@ fn price_curve_shape() {
     assert_eq!(price_milli(&entry(1000)), 800);
     assert_eq!(price_milli(&entry(10_000)), 400);
     assert!(unit_price(&entry(0)) > unit_price(&entry(500)));
+}
+
+/// Storage iterates in item-id order regardless of insertion order, so a
+/// system that consumes the pool in iteration order stays reproducible.
+#[test]
+fn storage_iteration_is_deterministic() {
+    let data = StaticData::load().unwrap();
+    let names = ["titanium", "bauxite", "water", "aluminium", "cobalt"];
+    let mut ids: Vec<_> =
+        names.iter().map(|n| data.item_by_name(n).unwrap()).collect();
+
+    let mut forwards = Storage::new(1000);
+    for id in &ids {
+        forwards.add(*id, 5);
+    }
+    let mut backwards = Storage::new(1000);
+    for id in ids.iter().rev() {
+        backwards.add(*id, 5);
+    }
+
+    ids.sort();
+    let expected: Vec<_> = ids.into_iter().map(|id| (id, 5)).collect();
+    assert_eq!(forwards.iter().collect::<Vec<_>>(), expected);
+    assert_eq!(backwards.iter().collect::<Vec<_>>(), expected);
+    assert_eq!(forwards.total(), 25);
+
+    // Emptying a slot drops it from iteration but keeps the order.
+    forwards.take(expected[0].0, 5);
+    assert_eq!(forwards.iter().count(), 4);
+    assert_eq!(forwards.total(), 20);
 }
 
 /// The notice feed is bounded — a long game must not grow it forever.

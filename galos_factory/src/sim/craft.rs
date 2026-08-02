@@ -120,10 +120,7 @@ pub fn craft(
         &LifeSupport,
         Option<&Children>,
     )>,
-    mut factories: Query<
-        (&Factory, &ActiveRecipe, &OutputCap, &mut CraftProgress, &mut Status),
-        Without<MaintenanceDue>,
-    >,
+    mut factories: Query<FactoryWork, Without<MaintenanceDue>>,
 ) {
     for (in_system, owner, mut storage, grid, life, children) in
         stations.iter_mut()
@@ -132,32 +129,24 @@ pub fn craft(
         let rate_milli = base_rate_milli(grid, &control, life);
 
         for &child in children.map(|c| &**c).unwrap_or(&[]) {
-            let Ok((factory, active, cap, mut progress, mut status)) =
-                factories.get_mut(child)
-            else {
-                continue;
-            };
+            let Ok(mut work) = factories.get_mut(child) else { continue };
             if !matches!(
-                factory.kind,
+                work.factory.kind,
                 BuildingKind::Refinery | BuildingKind::Assembler
             ) {
                 continue;
             }
-            let Some(recipe_id) = active.0 else {
-                status.0 = FactoryStatus::Idle;
-                continue;
-            };
-            let recipe = data.recipe(recipe_id);
-            if output_capped(cap, recipe, &storage, &mut progress) {
-                status.0 = FactoryStatus::Idle;
+            let recipe = data.recipe(work.recipe.0);
+            if output_capped(work.cap, recipe, &storage, &mut work.progress) {
+                work.status.0 = FactoryStatus::Idle;
                 continue;
             }
             let mut ledger = actors.get_mut(owner.0).ok();
             step_factory(
                 recipe,
                 &mut storage,
-                &mut progress,
-                &mut status,
+                &mut work.progress,
+                &mut work.status,
                 rate_milli,
                 ledger.as_deref_mut(),
             );
