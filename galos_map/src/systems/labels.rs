@@ -106,10 +106,6 @@ pub fn respawn(
                         },
                         Mesh3d::default(),
                         MeshMaterial3d(material.0.clone()),
-                        // Labels sit in front of their system, and mesh
-                        // picking hits every mesh by default. Without this a
-                        // label absorbs clicks aimed at the star behind it.
-                        Pickable::IGNORE,
                         // Placed by `face_camera` before the first draw.
                         Transform::default(),
                     ));

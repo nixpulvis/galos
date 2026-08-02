@@ -4,7 +4,7 @@ use crate::systems::{
     route::spawn::spawn_route, system_to_vec,
 };
 use bevy::light::NotShadowCaster;
-use bevy::picking::mesh_picking::MeshPickingPlugin;
+use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
@@ -14,6 +14,14 @@ use std::{collections::HashMap, ops::Deref, time::Instant};
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(MeshPickingPlugin);
+    // Stars are the only thing worth clicking, so they are the only thing
+    // ray cast against. The alternative is every mesh in the world, which
+    // means the route line and a name label per nearby star. Requires
+    // `MeshPickingCamera` on the camera and `Pickable` on each star.
+    app.insert_resource(MeshPickingSettings {
+        require_markers: true,
+        ..default()
+    });
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
 

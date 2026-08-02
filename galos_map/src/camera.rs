@@ -1,5 +1,6 @@
 use crate::systems::Spyglass;
 use bevy::camera::Hdr;
+use bevy::picking::mesh_picking::MeshPickingCamera;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
@@ -24,6 +25,8 @@ pub fn spawn_camera(mut commands: Commands, spyglass: Res<Spyglass>) {
     commands.spawn((
         Camera3d::default(),
         Hdr,
+        // Mesh picking requires markers, see `systems::spawn::plugin`.
+        MeshPickingCamera,
         AmbientLight { color: Color::default(), brightness: 1e3, ..default() },
         Transform::from_translation(Vec3::new(0., 0., 0.)),
         PanOrbitCamera {
