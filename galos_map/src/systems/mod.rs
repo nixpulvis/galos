@@ -71,30 +71,34 @@ pub struct Spyglass {
     pub lock_camera: bool,
 }
 
+/// Show the systems inside the spyglass and hide the rest
+///
+/// Runs over every star every frame, so it writes only where the answer
+/// actually changed. Assigning regardless would mark the whole sky as
+/// changed each frame, and each star drags its name along with it.
 pub fn visibility(
-    mut commands: Commands,
     camera: Query<&PanOrbitCamera>,
-    systems: Query<(Entity, &Transform), With<System>>,
+    mut systems: Query<(&Transform, &mut Visibility), With<System>>,
     spyglass: Res<Spyglass>,
 ) {
     // Make sure we make systems visible again.
     if spyglass.is_changed() && spyglass.disabled {
-        for (entity, _) in &systems {
-            commands.entity(entity).insert(Visibility::Visible);
+        for (_, mut visibility) in &mut systems {
+            visibility.set_if_neq(Visibility::Visible);
         }
     }
 
     if !spyglass.disabled {
         let Ok(camera) = camera.single() else { return };
         let camera_translation = camera.focus;
-        for (entity, system_transform) in &systems {
+        for (system_transform, mut visibility) in &mut systems {
             let dist =
                 camera_translation.distance(system_transform.translation);
-            if dist <= spyglass.radius {
-                commands.entity(entity).insert(Visibility::Visible);
+            visibility.set_if_neq(if dist <= spyglass.radius {
+                Visibility::Visible
             } else {
-                commands.entity(entity).insert(Visibility::Hidden);
-            }
+                Visibility::Hidden
+            });
         }
     }
 }

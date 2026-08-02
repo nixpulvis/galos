@@ -6,6 +6,7 @@ use crate::systems::{
 };
 use bevy::light::NotShadowCaster;
 use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
+use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
@@ -25,7 +26,6 @@ pub fn plugin(app: &mut App) {
     });
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
-    app.init_resource::<DragDistance>();
 
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
@@ -55,22 +55,37 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
-/// How far the pointer may travel while pressed and still count as a click,
-/// in pixels
+/// How far a pointer may travel while pressed and still count as a click
+///
+/// Logical pixels, so the same physical slack whatever the display density.
 const CLICK_SLOP: f32 = 5.;
 
-/// How far the pointer has travelled since it was last pressed, in pixels
-#[derive(Resource, Default)]
+/// How far a pointer has travelled since it was last pressed
+///
+/// Kept on the pointer rather than in one shared slot, so a second pointer
+/// cannot answer for the first and the measurement dies with the pointer.
+#[derive(Component, Default)]
 struct DragDistance(f32);
 
-/// Start measuring pointer travel when a button goes down
-fn start_drag(_press: On<Pointer<Press>>, mut drag: ResMut<DragDistance>) {
-    drag.0 = 0.;
+/// Start measuring a pointer's travel when one of its buttons goes down
+fn start_drag(
+    press: On<Pointer<Press>>,
+    pointers: Res<PointerMap>,
+    mut commands: Commands,
+) {
+    let Some(pointer) = pointers.get_entity(press.pointer_id) else { return };
+    commands.entity(pointer).insert(DragDistance(0.));
 }
 
-/// Keep the furthest the pointer has been from where it was pressed
-fn track_drag(moved: On<Pointer<Drag>>, mut drag: ResMut<DragDistance>) {
-    drag.0 = drag.0.max(moved.distance.length());
+/// Keep the furthest a pointer has been from where it was pressed
+fn track_drag(
+    moved: On<Pointer<Drag>>,
+    pointers: Res<PointerMap>,
+    mut dragged: Query<&mut DragDistance>,
+) {
+    let Some(pointer) = pointers.get_entity(moved.pointer_id) else { return };
+    let Ok(mut travelled) = dragged.get_mut(pointer) else { return };
+    travelled.0 = travelled.0.max(moved.distance.length());
 }
 
 /// Focus the camera on clicked star systems
@@ -85,10 +100,15 @@ fn track_drag(moved: On<Pointer<Drag>>, mut drag: ResMut<DragDistance>) {
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
     systems: Query<(), With<System>>,
-    drag: Res<DragDistance>,
+    pointers: Res<PointerMap>,
+    dragged: Query<&DragDistance>,
     mut move_camera_events: MessageWriter<MoveCamera>,
 ) {
-    if click.button != PointerButton::Primary || drag.0 > CLICK_SLOP {
+    let travelled = pointers
+        .get_entity(click.pointer_id)
+        .and_then(|pointer| dragged.get(pointer).ok())
+        .map_or(0., |travelled| travelled.0);
+    if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
         return;
     }
     if systems.contains(click.entity) {
