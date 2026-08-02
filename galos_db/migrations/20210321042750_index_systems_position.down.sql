@@ -1,1 +1,1 @@
-DROP INDEX systems_position_idx ON systems
+DROP INDEX systems_position_idx;

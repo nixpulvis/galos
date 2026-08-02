@@ -1,3 +1,5 @@
-DROP EXTENSION pg_trgm;
+-- The index uses an operator class from pg_trgm, so the extension goes last.
+DROP INDEX body_gist;
 DROP TABLE articles;
-DROP INDEX body_gist ON articles;
+
+DROP EXTENSION pg_trgm;

@@ -1,10 +1,12 @@
-DROP EXTENSION postgis;
-DROP EXTENSION postgis_topology;
-
-DELETE TYPE Security;
-DELETE TYPE Government;
-DELETE TYPE Allegiance;
-DELETE TYPE Economy;
-
+DROP INDEX systems_name;
 DROP TABLE systems;
-DROP INDEX systems_name ON systems;
+
+DROP TYPE Economy;
+DROP TYPE Allegiance;
+DROP TYPE Government;
+DROP TYPE Security;
+
+-- `systems.position` is a PostGIS type, and postgis_topology is built on
+-- postgis, so the extensions outlive the table and topology goes first.
+DROP EXTENSION postgis_topology;
+DROP EXTENSION postgis;
