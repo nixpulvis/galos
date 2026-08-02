@@ -192,7 +192,7 @@ fn process_message(db: &Database, message: Message, user: String) {
                             db,
                             destination.system_address as i64,
                             &destination.star_system,
-                            None,
+                            Some(destination.star_pos),
                             Some(destination.star_class),
                             None,
                             None,

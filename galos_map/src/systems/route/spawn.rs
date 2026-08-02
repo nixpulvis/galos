@@ -16,7 +16,7 @@ pub fn spawn_route(
 
     commands.spawn((
         Mesh3d(meshes.add(LineStrip {
-            points: systems.iter().map(system_to_vec).collect(),
+            points: systems.iter().filter_map(system_to_vec).collect(),
         })),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgba(1., 1., 1., 0.25),
