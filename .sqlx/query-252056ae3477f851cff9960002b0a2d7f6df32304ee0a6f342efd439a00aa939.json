@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO stations (system_address, name, updated_at, updated_by)\n            SELECT $1, m.station_name, $3, $4\n              FROM markets m\n             WHERE m.system_address IS NULL AND m.system_name = UPPER($2)\n            ON CONFLICT (system_address, name) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Timestamp",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "252056ae3477f851cff9960002b0a2d7f6df32304ee0a6f342efd439a00aa939"
+}

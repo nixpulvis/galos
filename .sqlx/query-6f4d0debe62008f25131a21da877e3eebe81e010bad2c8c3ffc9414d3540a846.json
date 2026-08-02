@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE markets SET system_address = $1\n             WHERE system_address IS NULL AND system_name = UPPER($2)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6f4d0debe62008f25131a21da877e3eebe81e010bad2c8c3ffc9414d3540a846"
+}

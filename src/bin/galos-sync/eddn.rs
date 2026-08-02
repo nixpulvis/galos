@@ -219,9 +219,15 @@ fn process_message(db: &Database, message: Message, user: String) {
             },
             Message::Commodity(
                 ref e @ Entry { event: ref m @ JournalMarket { .. }, .. },
-            ) => match System::fetch_by_name(db, &m.system_name).await {
-                Ok(system) => {
-                    if let Ok(_) = Station::create(
+            ) => {
+                // A market message cannot name its system by address, only
+                // by name, so the system may well be one we have never seen.
+                // Record the prices regardless. The station and the link to
+                // the system follow whenever the system itself turns up.
+                if let Ok(system) =
+                    System::fetch_by_name(db, &m.system_name).await
+                {
+                    match Station::create(
                         db,
                         e.timestamp,
                         &user,
@@ -230,17 +236,26 @@ fn process_message(db: &Database, message: Message, user: String) {
                     )
                     .await
                     {
-                        println!("[EDDN] <MKT:sta> {}", m.station_name);
-                        match Market::from_journal(db, e.timestamp, &m).await {
-                            Ok(_) => {
-                                println!("[EDDN] <MKT:mkt> {}", m.station_name)
-                            }
-                            Err(err) => eprintln!("[EDDN] <MKT:mkt> {}", err),
+                        Ok(_) => {
+                            println!("[EDDN] <MKT:sta> {}", m.station_name)
                         }
+                        Err(err) => eprintln!("[EDDN] <MKT:sta> {}", err),
                     }
                 }
-                Err(err) => eprintln!("[EDDN] <MKT:sys> {}", err),
-            },
+
+                match Market::from_journal(db, e.timestamp, &m).await {
+                    Ok(market) => println!(
+                        "[EDDN] <MKT:mkt> {}{}",
+                        m.station_name,
+                        if market.system_address.is_none() {
+                            " (waiting on its system)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    Err(err) => eprintln!("[EDDN] <MKT:mkt> {}", err),
+                }
+            }
             _ => {}
         }
     })

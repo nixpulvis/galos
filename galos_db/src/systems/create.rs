@@ -68,6 +68,77 @@ impl System {
         .execute(&db.pool)
         .await?;
 
+        Self::adopt_waiting_markets(db, address, name, updated_at, updated_by)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Link up any markets that named this system before it existed
+    ///
+    /// A market message gives a system name and no address, so its market is
+    /// recorded unlinked and waits. This is the moment that wait can end, so
+    /// it is answered here rather than swept for later.
+    ///
+    /// The station has to exist before a market may point at it, because the
+    /// foreign key onto it stops being satisfied by a null the instant the
+    /// address is filled in.
+    async fn adopt_waiting_markets(
+        db: &Database,
+        address: i64,
+        name: &str,
+        updated_at: DateTime<Utc>,
+        updated_by: &str,
+    ) -> Result<(), Error> {
+        // This runs on every system write, including the inner loop of the
+        // bulk importers, and almost always there is nothing waiting. Ask
+        // the partial index before opening a transaction for no reason.
+        let waiting = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM markets
+                 WHERE system_address IS NULL AND system_name = UPPER($1)
+            ) AS "waiting!"
+            "#,
+            name,
+        )
+        .fetch_one(&db.pool)
+        .await?;
+
+        if !waiting {
+            return Ok(());
+        }
+
+        let mut tx = db.pool.begin().await?;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO stations (system_address, name, updated_at, updated_by)
+            SELECT $1, m.station_name, $3, $4
+              FROM markets m
+             WHERE m.system_address IS NULL AND m.system_name = UPPER($2)
+            ON CONFLICT (system_address, name) DO NOTHING
+            "#,
+            address,
+            name,
+            updated_at.naive_utc(),
+            updated_by,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query!(
+            r#"
+            UPDATE markets SET system_address = $1
+             WHERE system_address IS NULL AND system_name = UPPER($2)
+            "#,
+            address,
+            name,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -137,6 +208,15 @@ impl System {
             Conflict::from_journal(db, system.address, &conflict, timestamp)
                 .await?;
         }
+
+        Self::adopt_waiting_markets(
+            db,
+            system.address,
+            &system.name,
+            timestamp,
+            user,
+        )
+        .await?;
 
         Ok(())
     }
