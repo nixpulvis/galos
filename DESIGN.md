@@ -85,6 +85,47 @@ contracts, fleet size, fuel supply, and risk.
    it — most good deposit bodies have no NPC port. Small (few slots),
    upgradeable, costs goods + credits, no market of their own.
 
+### The goal
+
+**No ending.** This is a living sandbox with milestones, not a campaign with a
+credits roll — the galaxy is real, shared, and never stops changing, so
+finishing it would be a lie.
+
+The objective is to **grow a diversified industrial enterprise**. Wealth is
+the score and it is genuinely achievable, but the supply/demand price curve
+means it cannot be reached by scaling one thing: every product-market pair
+saturates, because selling into a market pushes its price down. Growth
+therefore has to come from *breadth* —
+
+- **more products** — climb the tree; tier-3 goods carry far more value per
+  unit of cargo capacity than ore does,
+- **more markets** — more stations, then more systems, each with its own
+  demand curve to fill,
+- **better positioning** — read which markets are starved and which are
+  glutted, and move before your own success erodes the margin.
+
+That is the inverse of the usual factory game, where you scale a single line
+forever. Here monoculture is punished and a portfolio is rewarded, which is
+what keeps the tech tree and the map both worth exploring.
+
+**Milestones** mark progress in place of an ending. The satisfying ones are
+the moments the enterprise changes character:
+
+- first profitable production chain,
+- first station that needs no imports to hold itself up,
+- first tier-3 product line,
+- **the flywheel closing**: an outpost built entirely from goods you produced,
+  with nothing bought from a market,
+- first commodity where you supply the majority of a system's consumption,
+- first station constructed from scratch,
+- first, fifth, twentieth system.
+
+**Politics is deliberately out of scope until the sync story settles.** The
+influence-authority design below stays as the seam, but no gameplay depends
+on being able to *move* real BGS influence, because at tier 1 we cannot. The
+BGS remains what it already is in the sim: weather. It sets prices, piracy,
+productivity, and taxes, and it changes under you without your permission.
+
 ### Game phases
 
 The progression arc doubles as the tutorial — each phase teaches the systems
