@@ -98,9 +98,12 @@ pub fn respawn(
                             size: SIZE,
                             font: FONT.into(),
                             color: Srgba::WHITE,
-                            // Grow rightwards from the star rather than
-                            // straddling it.
-                            anchor: TextAnchor::CENTER_LEFT,
+                            // The anchor says where the text sits relative
+                            // to the entity, not which edge of the text
+                            // lands on it. CENTER_RIGHT puts the name to
+                            // the right of its star rather than straddling
+                            // it, leaving room for the gap below.
+                            anchor: TextAnchor::CENTER_RIGHT,
                             ..default()
                         },
                         Mesh3d::default(),
