@@ -1,25 +1,27 @@
 use crate::camera::MoveCamera;
 use crate::systems::{
-    fetch::FetchIndex, fetch::FetchTasks, route::spawn::spawn_route,
-    route::Route, system_to_vec, System,
+    System, fetch::FetchIndex, fetch::FetchTasks, route::Route,
+    route::spawn::spawn_route, system_to_vec,
 };
-use bevy::pbr::NotShadowCaster;
+use bevy::light::NotShadowCaster;
+use bevy::picking::mesh_picking::MeshPickingPlugin;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
-use bevy_mod_picking::prelude::*;
-use elite_journal::{system::Security, Allegiance, Government};
+use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
 use std::{collections::HashMap, ops::Deref, time::Instant};
 
 pub fn plugin(app: &mut App) {
-    app.add_plugins(DefaultPickingPlugins);
+    app.add_plugins(MeshPickingPlugin);
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
 
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn);
     app.add_systems(Update, update.before(spawn));
+
+    app.add_observer(focus_camera_on_click);
 }
 
 #[derive(Resource)]
@@ -41,6 +43,20 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
+/// Focus the camera on clicked star systems
+//
+// TODO: toggle system info as well.
+// TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
+fn focus_camera_on_click(
+    click: On<Pointer<Click>>,
+    systems: Query<(), With<System>>,
+    mut move_camera_events: MessageWriter<MoveCamera>,
+) {
+    if systems.contains(click.entity) {
+        move_camera_events.write(MoveCamera { position: click.hit.position });
+    }
+}
+
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
 /// resulting star systems
 pub fn spawn(
@@ -53,7 +69,7 @@ pub fn spawn(
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
-    mut move_camera_events: EventWriter<MoveCamera>,
+    mut move_camera_events: MessageWriter<MoveCamera>,
     mut tasks: ResMut<FetchTasks>,
 ) {
     tasks.fetched.retain(|index, (task, fetched_at)| {
@@ -79,7 +95,7 @@ pub fn spawn(
                     if let Some(system) = new_systems.first() {
                         let position = system_to_vec(&system);
                         move_camera_events
-                            .send(MoveCamera { position: Some(position) });
+                            .write(MoveCamera { position: Some(position) });
                     }
                 }
                 _ => {}
@@ -140,24 +156,10 @@ pub fn spawn_systems(
 
             let system = System::from(db_system);
             commands.spawn((
-                pbr_bundle(&system, color_by, mesh, materials),
+                pbr_components(&system, color_by, mesh, materials),
                 system,
                 NotShadowCaster,
-                PickableBundle::default(),
-                // TODO: toggle system info as well.
-                On::<Pointer<Click>>::send_event::<MoveCamera>(),
-                On::<Pointer<Over>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Spawn system label.
-                    },
-                ),
-                On::<Pointer<Out>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Despawn system label.
-                    },
-                ),
+                Pickable::default(),
             ));
         }
     }
@@ -174,32 +176,36 @@ fn update(
         if system.is_changed() {
             commands
                 .entity(entity)
-                .insert(pbr_bundle(&system, &color_by, &mesh, &materials));
+                .insert(pbr_components(&system, &color_by, &mesh, &materials));
         } else if color_by.is_changed() {
             let color_idx = match color_by.deref() {
                 ColorBy::Allegiance => allegiance_color_idx(&system),
                 ColorBy::Government => government_color_idx(&system),
                 ColorBy::Security => security_color_idx(&system),
             };
-            commands.entity(entity).insert(materials.0[color_idx].clone());
+            commands
+                .entity(entity)
+                .insert(MeshMaterial3d(materials.0[color_idx].clone()));
         }
     }
 }
 
-fn pbr_bundle(
+fn pbr_components(
     system: &System,
     color_by: &Res<ColorBy>,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
-) -> PbrBundle {
+) -> (Mesh3d, MeshMaterial3d<StandardMaterial>, Transform) {
     let color_idx = match color_by.deref() {
         ColorBy::Allegiance => allegiance_color_idx(&system),
         ColorBy::Government => government_color_idx(&system),
         ColorBy::Security => security_color_idx(&system),
     };
 
-    PbrBundle {
-        transform: Transform {
+    (
+        Mesh3d(mesh.0.clone()),
+        MeshMaterial3d(materials.0[color_idx].clone()),
+        Transform {
             translation: Vec3::new(
                 system.position[0],
                 system.position[1],
@@ -208,10 +214,7 @@ fn pbr_bundle(
             scale: Vec3::splat(1.),
             ..default()
         },
-        mesh: mesh.0.clone(),
-        material: materials.0[color_idx].clone(),
-        ..default()
-    }
+    )
 }
 
 fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {

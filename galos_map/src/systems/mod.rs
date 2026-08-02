@@ -2,10 +2,10 @@ use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 use chrono::{DateTime, Utc};
 use elite_journal::{
-    system::{Economy, Security},
     // TODO: Fix these imports, they should all be in system.
     Allegiance,
     Government,
+    system::{Economy, Security},
 };
 use galos_db::systems::System as DbSystem;
 
@@ -74,7 +74,8 @@ pub fn visibility(
     }
 
     if !spyglass.disabled {
-        let camera_translation = camera.single().focus;
+        let Ok(camera) = camera.single() else { return };
+        let camera_translation = camera.focus;
         for (entity, system_transform) in &systems {
             let dist =
                 camera_translation.distance(system_transform.translation);
@@ -92,7 +93,9 @@ pub fn zoom_with_spyglass(
     mut camera: Query<&mut PanOrbitCamera>,
 ) {
     if spyglass.lock_camera {
-        camera.single_mut().target_radius = spyglass.radius * 3.;
+        if let Ok(mut camera) = camera.single_mut() {
+            camera.target_radius = spyglass.radius * 3.;
+        }
     }
 }
 

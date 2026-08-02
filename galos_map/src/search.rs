@@ -1,19 +1,19 @@
-use crate::camera::MoveCamera;
-use crate::systems::despawn::Despawn;
-use crate::systems::Spyglass;
 use crate::Db;
+use crate::camera::MoveCamera;
+use crate::systems::Spyglass;
+use crate::systems::despawn::Despawn;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
-    app.add_event::<Searched>();
+    app.add_message::<Searched>();
     app.add_systems(Update, searched);
 }
 
-/// A collection of search events for responding to the user's UI
+/// A collection of search messages for responding to the user's UI
 /// interactions.
-#[derive(Event, Debug)]
+#[derive(Message, Debug)]
 pub enum Searched {
     System { name: String },
     Faction { name: String },
@@ -22,15 +22,15 @@ pub enum Searched {
 
 /// Move the camera to the searched system
 ///
-/// A system for responding to [`Searched`] events.
+/// A system for responding to [`Searched`] messages.
 /// - On [`Searched::System`] the camera is moved to the searched system and
 /// letting the `fetch` system's `fetch_around_camera` logic handle the rest.
 /// - On [`Searched::Faction`] we disable the spyglass's fetch and send
-/// a [`Despawn`] event for all systems.
+/// a [`Despawn`] message for all systems.
 pub fn searched(
-    mut search_events: EventReader<Searched>,
-    mut camera_events: EventWriter<MoveCamera>,
-    mut despawner: EventWriter<Despawn>,
+    mut search_events: MessageReader<Searched>,
+    mut camera_events: MessageWriter<MoveCamera>,
+    mut despawner: MessageWriter<Despawn>,
     mut spyglass: ResMut<Spyglass>,
     db: Res<Db>,
 ) {
@@ -45,14 +45,14 @@ pub fn searched(
                             let position =
                                 Vec3::new(p.x as f32, p.y as f32, p.z as f32);
                             camera_events
-                                .send(MoveCamera { position: Some(position) });
+                                .write(MoveCamera { position: Some(position) });
                         }
                     }
                 });
             }
             Searched::Faction { .. } => {
                 spyglass.fetch = false;
-                despawner.send(Despawn);
+                despawner.write(Despawn);
             }
             _ => {}
         };

@@ -38,7 +38,10 @@ pub fn scale_systems(
     )>,
 ) {
     if !set.p0().is_empty() {
-        let camera_translation = set.p1().single().translation;
+        let Ok(camera_translation) = set.p1().single().map(|c| c.translation)
+        else {
+            return;
+        };
         let pop_avg = if scale_population.0 {
             // TODO(#45): This is *very* slow and should be precomputed when
             // the set of systems changes.

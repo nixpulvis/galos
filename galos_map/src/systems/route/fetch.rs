@@ -1,5 +1,5 @@
-use crate::systems::fetch::{FetchIndex, FetchTasks, LastFetchedAt};
 use crate::Db;
+use crate::systems::fetch::{FetchIndex, FetchTasks, LastFetchedAt};
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use galos_db::systems::System as DbSystem;

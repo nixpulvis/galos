@@ -19,13 +19,15 @@ fn main() {
         }),
         ..default()
     }));
-    app.add_plugins(EguiPlugin);
+    app.add_plugins(EguiPlugin {
+        // Bevy cannot use bindless textures on Metal, and bevy_egui warns at
+        // startup whenever they're requested. This UI is a couple of small
+        // windows, so batching texture binds gains nothing anywhere.
+        bindless_mode_array_size: None,
+        ..default()
+    });
 
     app.insert_resource(ClearColor(Color::BLACK));
-    app.insert_resource(AmbientLight {
-        color: Color::default(),
-        brightness: 1e3,
-    });
     app.insert_resource(Db(db));
 
     app.add_plugins(camera::plugin);
@@ -40,11 +42,8 @@ fn main() {
     app.run();
 }
 
-fn exit(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut events: ResMut<Events<bevy::app::AppExit>>,
-) {
+fn exit(keys: Res<ButtonInput<KeyCode>>, mut events: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
-        events.send(AppExit::Success);
+        events.write(AppExit::Success);
     }
 }

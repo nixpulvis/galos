@@ -1,15 +1,15 @@
 use crate::search::Searched;
+use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::spawn::{ColorBy, ShowNames};
-use crate::systems::Spyglass;
 use bevy::prelude::*;
 use bevy_egui::egui::{Response, Ui};
-use bevy_egui::{egui, EguiContexts};
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, panels);
+    app.add_systems(EguiPrimaryContextPass, panels);
 }
 
 // TODO: Form validation.
@@ -24,14 +24,15 @@ pub fn panels(
     mut show_names: ResMut<ShowNames>,
     mut throttle: ResMut<Throttle>,
     mut poll: ResMut<Poll>,
-    mut searched: EventWriter<Searched>,
-    mut despawner: EventWriter<Despawn>,
+    mut searched: MessageWriter<Searched>,
+    mut despawner: MessageWriter<Despawn>,
     mut system_name: Local<Option<String>>,
     mut route_end: Local<Option<String>>,
     mut route_range: Local<Option<String>>,
     mut faction_name: Local<Option<String>>,
-) {
-    if let Some(ctx) = contexts.try_ctx_mut() {
+) -> Result {
+    {
+        let ctx = contexts.ctx_mut()?;
         egui::Window::new("Search").default_open(false).resizable(false).show(
             ctx,
             |ui| {
@@ -44,7 +45,7 @@ pub fn panels(
                     *faction_name = None;
                     if let Some(ref search) = *system_name {
                         searched
-                            .send(Searched::System { name: search.clone() });
+                            .write(Searched::System { name: search.clone() });
                     }
                 }
                 if system_name.is_some() {
@@ -63,7 +64,7 @@ pub fn panels(
                         ) {
                             #[allow(irrefutable_let_patterns)]
                             if let Ok(r) = r.parse() {
-                                searched.send(Searched::Route {
+                                searched.write(Searched::Route {
                                     start: (*s).clone(),
                                     end: (*e).clone(),
                                     range: r,
@@ -84,7 +85,7 @@ pub fn panels(
                     *system_name = None;
                     if let Some(ref search) = *faction_name {
                         searched
-                            .send(Searched::Faction { name: search.clone() });
+                            .write(Searched::Faction { name: search.clone() });
                     }
                 }
             },
@@ -100,9 +101,14 @@ pub fn panels(
 
                 ui.label("Spyglass Radius");
                 ui.group(|ui| {
+                    // These sliders share one value across different ranges,
+                    // so none of them may clamp it. Egui clamps to the
+                    // slider's own range by default, which would let the
+                    // narrowest slider pull the radius back down every frame.
                     ui.label("1 - 50 Ly");
                     ui.add(
                         egui::Slider::new(&mut spyglass.radius, 1.0..=50.)
+                            .clamping(egui::SliderClamping::Never)
                             .logarithmic(true)
                             .step_by(0.1)
                             .drag_value_speed(0.2),
@@ -110,6 +116,7 @@ pub fn panels(
                     ui.label("10 - 500 Ly");
                     ui.add(
                         egui::Slider::new(&mut spyglass.radius, 10.0..=500.)
+                            .clamping(egui::SliderClamping::Never)
                             .logarithmic(true)
                             .step_by(1.)
                             .drag_value_speed(0.2),
@@ -118,6 +125,7 @@ pub fn panels(
                     ui.add(
                         // Width of the galaxy is 105,700 Ly.
                         egui::Slider::new(&mut spyglass.radius, 10.0..=1.1e5)
+                            .clamping(egui::SliderClamping::Never)
                             .logarithmic(true)
                             .step_by(10.)
                             .drag_value_speed(0.5),
@@ -139,7 +147,7 @@ pub fn panels(
                         }
                         ui.add_space(2.);
                         if ui.button("Despawn Systems").clicked() {
-                            despawner.send(Despawn);
+                            despawner.write(Despawn);
                         }
                         ui.add_space(2.);
                     });
@@ -184,6 +192,8 @@ pub fn panels(
                 });
             });
     }
+
+    Ok(())
 }
 
 fn singleline(
@@ -196,7 +206,7 @@ fn singleline(
     }
 
     let mut text = match value {
-        Some(ref input) => input.clone(),
+        Some(input) => input.clone(),
         None => placeholer.into(),
     };
 
@@ -232,7 +242,7 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
         }
     }
 
-    if let Some(ref mut val) = opt {
+    if let Some(val) = opt {
         ui.label("(Hz)");
         ui.add(egui::DragValue::new(val).range(0.0..=60.).speed(0.01));
     }

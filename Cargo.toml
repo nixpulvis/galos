@@ -35,6 +35,12 @@ elite_journal = { path = "./elite_journal" }
 geozero = { git = "https://github.com/nixpulvis/geozero" }
 
 [workspace]
+# Resolver 2 keeps platform-specific dependency features from being unified
+# across targets we aren't building. bevy_shader depends on naga_oil with
+# default features only under wasm32; under resolver 1 that leaks naga_oil's
+# `glsl` feature into native builds, where naga's GLSL backend panics while
+# bevy validates composed shaders.
+resolver = "2"
 members = [
     # "elite_dat",
     "elite_journal",
