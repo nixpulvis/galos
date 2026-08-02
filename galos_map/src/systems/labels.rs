@@ -1,6 +1,7 @@
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::spawn::ShowNames;
+use bevy::camera::visibility::VisibilitySystems;
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 use bevy_rich_text3d::{
@@ -19,11 +20,22 @@ pub(crate) fn plugin(app: &mut App) {
     // frame's value rather than the previous frame's.
     app.add_systems(
         Update,
-        (respawn, visibility, face_camera, leaders)
+        (respawn, visibility, face_camera)
             .chain()
             .in_set(MapSet::Present)
             .after(super::scale::scale_systems)
             .after(super::scale::scale_stars),
+    );
+    // `leaders` reads where a label ended up rather than deciding it, and
+    // neither of the two answers it needs exists during `Update`. A label's
+    // `GlobalTransform` is computed from the local one in `PostUpdate`, and
+    // its `ViewVisibility` is not settled until everything has had a chance
+    // to hide it. Reading either any earlier draws last frame's line.
+    app.add_systems(
+        PostUpdate,
+        leaders
+            .after(TransformSystems::Propagate)
+            .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
     );
 }
 
