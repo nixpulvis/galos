@@ -1,6 +1,6 @@
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
-use bevy::render::mesh::PrimitiveTopology;
-use bevy::render::render_asset::RenderAssetUsages;
 
 use super::system_to_vec;
 

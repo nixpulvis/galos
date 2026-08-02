@@ -1,3 +1,5 @@
+use crate::schedule::MapSet;
+
 use super::System;
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
@@ -5,16 +7,20 @@ use bevy_panorbit_camera::PanOrbitCamera;
 pub fn plugin(app: &mut App) {
     app.insert_resource(View::Systems);
     app.insert_resource(ScalePopulation(false));
+    // One view is drawn at a time, so these two never run in the same frame.
+    // The scheduler cannot see that from the run conditions alone.
     app.add_systems(
         Update,
         scale_systems
-            .after(super::spawn::spawn)
+            .in_set(MapSet::Present)
+            .ambiguous_with(scale_stars)
             .run_if(resource_equals(View::Systems)),
     );
     app.add_systems(
         Update,
         scale_stars
-            .after(super::spawn::spawn)
+            .in_set(MapSet::Present)
+            .ambiguous_with(scale_systems)
             .run_if(resource_equals(View::Stars)),
     );
 }
@@ -38,7 +44,10 @@ pub fn scale_systems(
     )>,
 ) {
     if !set.p0().is_empty() {
-        let camera_translation = set.p1().single().translation;
+        let Ok(camera_translation) = set.p1().single().map(|c| c.translation)
+        else {
+            return;
+        };
         let pop_avg = if scale_population.0 {
             // TODO(#45): This is *very* slow and should be precomputed when
             // the set of systems changes.

@@ -1,11 +1,12 @@
+use crate::schedule::MapSet;
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 use chrono::{DateTime, Utc};
 use elite_journal::{
-    system::{Economy, Security},
     // TODO: Fix these imports, they should all be in system.
     Allegiance,
     Government,
+    system::{Economy, Security},
 };
 use galos_db::systems::System as DbSystem;
 
@@ -23,11 +24,21 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
 
+    // Both write the camera, though to different fields, so pick an order.
     app.add_systems(
         Update,
-        visibility.after(spawn::spawn).after(despawn::despawn),
+        zoom_with_spyglass
+            .in_set(MapSet::Camera)
+            .after(crate::camera::move_camera),
     );
-    app.add_systems(Update, zoom_with_spyglass);
+    // Reads a star's transform, which the `scale` systems write.
+    app.add_systems(
+        Update,
+        visibility
+            .in_set(MapSet::Present)
+            .after(scale::scale_systems)
+            .after(scale::scale_stars),
+    );
 }
 
 #[derive(Component)]
@@ -60,29 +71,34 @@ pub struct Spyglass {
     pub lock_camera: bool,
 }
 
+/// Show the systems inside the spyglass and hide the rest
+///
+/// Runs over every star every frame, so it writes only where the answer
+/// actually changed. Assigning regardless would mark the whole sky as
+/// changed each frame, and each star drags its name along with it.
 pub fn visibility(
-    mut commands: Commands,
     camera: Query<&PanOrbitCamera>,
-    systems: Query<(Entity, &Transform), With<System>>,
+    mut systems: Query<(&Transform, &mut Visibility), With<System>>,
     spyglass: Res<Spyglass>,
 ) {
     // Make sure we make systems visible again.
     if spyglass.is_changed() && spyglass.disabled {
-        for (entity, _) in &systems {
-            commands.entity(entity).insert(Visibility::Visible);
+        for (_, mut visibility) in &mut systems {
+            visibility.set_if_neq(Visibility::Visible);
         }
     }
 
     if !spyglass.disabled {
-        let camera_translation = camera.single().focus;
-        for (entity, system_transform) in &systems {
+        let Ok(camera) = camera.single() else { return };
+        let camera_translation = camera.focus;
+        for (system_transform, mut visibility) in &mut systems {
             let dist =
                 camera_translation.distance(system_transform.translation);
-            if dist <= spyglass.radius {
-                commands.entity(entity).insert(Visibility::Visible);
+            visibility.set_if_neq(if dist <= spyglass.radius {
+                Visibility::Visible
             } else {
-                commands.entity(entity).insert(Visibility::Hidden);
-            }
+                Visibility::Hidden
+            });
         }
     }
 }
@@ -92,7 +108,9 @@ pub fn zoom_with_spyglass(
     mut camera: Query<&mut PanOrbitCamera>,
 ) {
     if spyglass.lock_camera {
-        camera.single_mut().target_radius = spyglass.radius * 3.;
+        if let Ok(mut camera) = camera.single_mut() {
+            camera.target_radius = spyglass.radius * 3.;
+        }
     }
 }
 

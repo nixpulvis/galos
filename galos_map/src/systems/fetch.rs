@@ -1,5 +1,6 @@
-use crate::systems::{route::fetch::fetch_route, Spyglass};
-use crate::{search::Searched, Db};
+use crate::schedule::MapSet;
+use crate::systems::{Spyglass, route::fetch::fetch_route};
+use crate::{Db, search::Searched};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy_panorbit_camera::PanOrbitCamera;
@@ -16,7 +17,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();
 
-    app.add_systems(Update, fetch);
+    app.add_systems(Update, fetch.in_set(MapSet::Fetch));
 }
 
 /// Controls the background systems fetch rate (Hz).
@@ -111,8 +112,8 @@ pub struct FetchTasks {
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
-    camera_query: Query<&mut PanOrbitCamera>,
-    mut search_events: EventReader<Searched>,
+    camera_query: Query<&PanOrbitCamera>,
+    mut search_events: MessageReader<Searched>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
     time: Res<Time<Real>>,
@@ -168,7 +169,7 @@ pub fn fetch(
 }
 
 fn fetch_spyglass(
-    camera_query: &Query<&mut PanOrbitCamera>,
+    camera_query: &Query<&PanOrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
     time: &Res<Time<Real>>,
@@ -177,7 +178,7 @@ fn fetch_spyglass(
     poll: &Res<Poll>,
     db: &Res<Db>,
 ) {
-    let camera = camera_query.single();
+    let Ok(camera) = camera_query.single() else { return };
     let center = camera.focus.as_ivec3();
     let index = FetchIndex::Region(center, spyglass.radius as i32);
     let now = time.last_update().unwrap_or(time.startup());

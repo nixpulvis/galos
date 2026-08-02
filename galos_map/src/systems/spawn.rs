@@ -1,25 +1,39 @@
 use crate::camera::MoveCamera;
+use crate::schedule::MapSet;
 use crate::systems::{
-    fetch::FetchIndex, fetch::FetchTasks, route::spawn::spawn_route,
-    route::Route, system_to_vec, System,
+    System, fetch::FetchIndex, fetch::FetchTasks, route::Route,
+    route::spawn::spawn_route, system_to_vec,
 };
-use bevy::pbr::NotShadowCaster;
+use bevy::light::NotShadowCaster;
+use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
+use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
-use bevy_mod_picking::prelude::*;
-use elite_journal::{system::Security, Allegiance, Government};
+use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
 use std::{collections::HashMap, ops::Deref, time::Instant};
 
 pub fn plugin(app: &mut App) {
-    app.add_plugins(DefaultPickingPlugins);
+    app.add_plugins(MeshPickingPlugin);
+    // Stars are the only thing worth clicking, so they are the only thing
+    // ray cast against. The alternative is every mesh in the world, which
+    // means the route line and a name label per nearby star. Requires
+    // `MeshPickingCamera` on the camera and `Pickable` on each star.
+    app.insert_resource(MeshPickingSettings {
+        require_markers: true,
+        ..default()
+    });
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
 
     app.add_systems(Startup, (init_mesh, init_materials));
-    app.add_systems(Update, spawn);
-    app.add_systems(Update, update.before(spawn));
+    app.add_systems(Update, spawn.in_set(MapSet::Populate));
+    app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
+
+    app.add_observer(start_drag);
+    app.add_observer(track_drag);
+    app.add_observer(focus_camera_on_click);
 }
 
 #[derive(Resource)]
@@ -41,6 +55,67 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
+/// How far a pointer may travel while pressed and still count as a click
+///
+/// Logical pixels, so the same physical slack whatever the display density.
+const CLICK_SLOP: f32 = 5.;
+
+/// How far a pointer has travelled since it was last pressed
+///
+/// Kept on the pointer rather than in one shared slot, so a second pointer
+/// cannot answer for the first and the measurement dies with the pointer.
+#[derive(Component, Default)]
+struct DragDistance(f32);
+
+/// Start measuring a pointer's travel when one of its buttons goes down
+fn start_drag(
+    press: On<Pointer<Press>>,
+    pointers: Res<PointerMap>,
+    mut commands: Commands,
+) {
+    let Some(pointer) = pointers.get_entity(press.pointer_id) else { return };
+    commands.entity(pointer).insert(DragDistance(0.));
+}
+
+/// Keep the furthest a pointer has been from where it was pressed
+fn track_drag(
+    moved: On<Pointer<Drag>>,
+    pointers: Res<PointerMap>,
+    mut dragged: Query<&mut DragDistance>,
+) {
+    let Some(pointer) = pointers.get_entity(moved.pointer_id) else { return };
+    let Ok(mut travelled) = dragged.get_mut(pointer) else { return };
+    travelled.0 = travelled.0.max(moved.distance.length());
+}
+
+/// Focus the camera on clicked star systems
+///
+/// The left button orbits the camera as well as selecting, so an orbit that
+/// happens to start and end on the same star has to be told apart from a
+/// click on it. Picking calls it a drag after a single pixel of movement,
+/// which is too eager to use by itself, so measure the travel instead.
+//
+// TODO: toggle system info as well.
+// TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
+fn focus_camera_on_click(
+    click: On<Pointer<Click>>,
+    systems: Query<(), With<System>>,
+    pointers: Res<PointerMap>,
+    dragged: Query<&DragDistance>,
+    mut move_camera_events: MessageWriter<MoveCamera>,
+) {
+    let travelled = pointers
+        .get_entity(click.pointer_id)
+        .and_then(|pointer| dragged.get(pointer).ok())
+        .map_or(0., |travelled| travelled.0);
+    if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
+        return;
+    }
+    if systems.contains(click.entity) {
+        move_camera_events.write(MoveCamera { position: click.hit.position });
+    }
+}
+
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
 /// resulting star systems
 pub fn spawn(
@@ -53,7 +128,7 @@ pub fn spawn(
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
-    mut move_camera_events: EventWriter<MoveCamera>,
+    mut move_camera_events: MessageWriter<MoveCamera>,
     mut tasks: ResMut<FetchTasks>,
 ) {
     tasks.fetched.retain(|index, (task, fetched_at)| {
@@ -79,7 +154,7 @@ pub fn spawn(
                     if let Some(system) = new_systems.first() {
                         let position = system_to_vec(&system);
                         move_camera_events
-                            .send(MoveCamera { position: Some(position) });
+                            .write(MoveCamera { position: Some(position) });
                     }
                 }
                 _ => {}
@@ -140,24 +215,10 @@ pub fn spawn_systems(
 
             let system = System::from(db_system);
             commands.spawn((
-                pbr_bundle(&system, color_by, mesh, materials),
+                pbr_components(&system, color_by, mesh, materials),
                 system,
                 NotShadowCaster,
-                PickableBundle::default(),
-                // TODO: toggle system info as well.
-                On::<Pointer<Click>>::send_event::<MoveCamera>(),
-                On::<Pointer<Over>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Spawn system label.
-                    },
-                ),
-                On::<Pointer<Out>>::target_commands_mut(
-                    |_hover, _target_commands| {
-                        // dbg!(_hover);
-                        // TODO: Despawn system label.
-                    },
-                ),
+                Pickable::default(),
             ));
         }
     }
@@ -174,32 +235,36 @@ fn update(
         if system.is_changed() {
             commands
                 .entity(entity)
-                .insert(pbr_bundle(&system, &color_by, &mesh, &materials));
+                .insert(pbr_components(&system, &color_by, &mesh, &materials));
         } else if color_by.is_changed() {
             let color_idx = match color_by.deref() {
                 ColorBy::Allegiance => allegiance_color_idx(&system),
                 ColorBy::Government => government_color_idx(&system),
                 ColorBy::Security => security_color_idx(&system),
             };
-            commands.entity(entity).insert(materials.0[color_idx].clone());
+            commands
+                .entity(entity)
+                .insert(MeshMaterial3d(materials.0[color_idx].clone()));
         }
     }
 }
 
-fn pbr_bundle(
+fn pbr_components(
     system: &System,
     color_by: &Res<ColorBy>,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
-) -> PbrBundle {
+) -> (Mesh3d, MeshMaterial3d<StandardMaterial>, Transform) {
     let color_idx = match color_by.deref() {
         ColorBy::Allegiance => allegiance_color_idx(&system),
         ColorBy::Government => government_color_idx(&system),
         ColorBy::Security => security_color_idx(&system),
     };
 
-    PbrBundle {
-        transform: Transform {
+    (
+        Mesh3d(mesh.0.clone()),
+        MeshMaterial3d(materials.0[color_idx].clone()),
+        Transform {
             translation: Vec3::new(
                 system.position[0],
                 system.position[1],
@@ -208,10 +273,7 @@ fn pbr_bundle(
             scale: Vec3::splat(1.),
             ..default()
         },
-        mesh: mesh.0.clone(),
-        material: materials.0[color_idx].clone(),
-        ..default()
-    }
+    )
 }
 
 fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {

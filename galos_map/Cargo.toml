@@ -1,7 +1,8 @@
 [package]
 name = "galos_map"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version.workspace = true
 
 [features]
 inspector = ["bevy-inspector-egui"]
@@ -9,12 +10,11 @@ tracy = ["bevy/trace_tracy"]
 
 [dependencies]
 async-std = "*"
-bevy = { version = "*", features = ["shader_format_glsl"] }
-bevy-inspector-egui = { version = "*", optional = true }
-bevy_egui = "*"
-bevy_mod_billboard = "*"
-bevy_mod_picking = "*"
-bevy_panorbit_camera = { version = "*", features = ["bevy_egui"] }
+bevy = "0.19"
+bevy-inspector-egui = { version = "0.37", optional = true }
+bevy_egui = "0.40"
+bevy_panorbit_camera = { version = "0.35", features = ["bevy_egui"] }
+bevy_rich_text3d = "0.7"
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_db = { path = "../galos_db" }
