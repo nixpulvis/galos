@@ -5,6 +5,7 @@ use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
+use galos_db::Database;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
@@ -30,6 +31,20 @@ pub enum Searched {
     Route { start: String, end: String, range: String },
 }
 
+/// Where a named system is, or why the map cannot go there
+///
+/// Both a plain system search and either end of a route need this same
+/// answer, and both need to say the same thing when they cannot get it.
+async fn locate(db: &Database, name: &str) -> Result<Vec3, String> {
+    match DbSystem::fetch_by_name(db, name).await {
+        Ok(system) => match system.position {
+            Some(p) => Ok(Vec3::new(p.x as f32, p.y as f32, p.z as f32)),
+            None => Err(format!("{} has no position on record", system.name)),
+        },
+        Err(_) => Err(format!("No system named {name}")),
+    }
+}
+
 /// Move the camera to the searched system
 ///
 /// A system for responding to [`Searched`] messages.
@@ -49,31 +64,30 @@ pub fn searched(
         match event {
             Searched::System { name, .. } => {
                 future::block_on(async {
-                    note.0 = match DbSystem::fetch_by_name(&db.0, &name).await {
-                        Ok(origin) => match origin.position {
-                            Some(p) => {
-                                let position = Vec3::new(
-                                    p.x as f32, p.y as f32, p.z as f32,
-                                );
-                                camera_events.write(MoveCamera {
-                                    position: Some(position),
-                                });
-                                None
-                            }
-                            None => Some(format!(
-                                "{} has no position on record",
-                                origin.name
-                            )),
-                        },
-                        Err(_) => Some(format!("No system named {name}")),
+                    note.0 = match locate(&db.0, name).await {
+                        Ok(position) => {
+                            camera_events
+                                .write(MoveCamera { position: Some(position) });
+                            None
+                        }
+                        Err(why) => Some(why),
                     };
+                });
+            }
+            // A route needs both ends. Say which one is the problem rather
+            // than drawing nothing and leaving the user to guess.
+            Searched::Route { start, end, .. } => {
+                future::block_on(async {
+                    note.0 = locate(&db.0, start)
+                        .await
+                        .and(locate(&db.0, end).await)
+                        .err();
                 });
             }
             Searched::Faction { .. } => {
                 spyglass.fetch = false;
                 despawner.write(Despawn);
             }
-            _ => {}
         };
     }
 }
