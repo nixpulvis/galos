@@ -216,7 +216,7 @@ place; tier 2 is the first post-slice political milestone.
   refineries (consume ores), Extraction surface ports run extractors,
   HighTech runs top-tier assembly; Tourism/service stations run none. NPC
   factories are the *same* Factory entities and tick through the same
-  systems, just `Owner::Npc` — they pay no rent and their I/O is their own
+  systems, just faction-owned — they pay no rent and their I/O is their own
   market stock. This makes markets genuinely dynamic: an Industrial station
   actually consumes ore (drawing stock down, raising ore prices → your mining
   is wanted) and actually produces goods (raising stock, capping goods
@@ -224,7 +224,7 @@ place; tier 2 is the first post-slice political milestone.
 - **NPC trade runs on the same contract board.** NPC stations issue import/
   export contracts from their market state (low input stock → import at a
   premium; surplus → export), and NPC hauler fleets accept and fly them with
-  the same ship mechanics, `Owner::Npc`. The board is therefore a live
+  the same ship mechanics, faction-owned. The board is therefore a live
   window into the system's economy: what's scarce, what's glutted, what's
   paying. Player and NPC haulers compete for the same contracts; wars and
   piracy hit NPC ships too — a blockaded Industrial station visibly starves.
@@ -490,8 +490,9 @@ Same Postgres DB, **dedicated `factory` schema** owned by a new
 untouched; both migrators run with `Migrator::set_ignore_missing(true)`,
 factory migration timestamps start after 2024-09-20). Tables: `factory.saves`
 (id, name, system_address, credits, sim_tick, timestamps) + child tables
-(facilities, links, inventories, market_state) FK'd to save id. Single player,
-autosave upsert every N sim-seconds. `GameState` is serde-serializable → RON
+(facilities, links, inventories, market_state) FK'd to save id. Autosave
+upsert every N sim-seconds. Multiplayer shares one world; how commanders
+interact with faction treasuries is deliberately unmodelled for now. `GameState` is serde-serializable → RON
 export doubles as test fixture format.
 
 Rationale: the sim continuously joins live BGS tables, and the map already
@@ -512,12 +513,15 @@ The game is built from two core parts:
 
 ```
 galos_factory/       # A) standalone Bevy crate: production sim + its UI panels
-  src/lib.rs         #   pub fn sim_plugin(app) + pub fn ui_plugin(app)
-  src/sim/{items,recipes,buildings,site,tick,market,seed}.rs
-  src/ui/{build_menu,facilities,links,stats,ticker}.rs   # bevy_egui panels
-  src/main.rs        #   standalone runner: DefaultPlugins + EguiPlugin +
-                     #   sim_plugin + ui_plugin — no galos_map, no 3D
-  data/*.ron  tests/
+  src/lib.rs         #   sim_plugin: resources, SimTick schedule, SimSets
+  src/data.rs        #   RON items/recipes/buildings, interned + validated
+  src/snapshot.rs    #   the sim's view of the world (elite_journal types)
+  src/seed.rs        #   snapshot -> system, factions, bodies, stations
+  src/sim/components.rs
+  src/sim/{commands,control,power,upkeep,extract,craft,shipping,market,stats}.rs
+  src/ui/mod.rs      #   bevy_egui panels (ui feature), shared with the game
+  src/main.rs        #   standalone runner: windowed, or --headless N
+  data/*.ron  data/fixtures/  tests/
 galos_factory_db/    # persistence + snapshot loading — galos_db, galos_factory, sqlx
   migrations/  src/{save,snapshot}.rs
 galos_game/          # bin crate — galos_map (lib) + galos_factory plugins + glue
@@ -684,58 +688,79 @@ Entities mirror the world model: Body entities carry geology, Station
 entities are the buildable containers, Factory entities live in stations.
 
 ```rust
-// Bodies: geology context only, spawned from the snapshot
-#[derive(Component)] struct Body { name: String, body_id: i64 }
-#[derive(Component)] struct Deposits(Vec<(ItemId, Richness)>);
-#[derive(Component)] struct BodyEnv { gravity_milli: u32, temp_k: u32,
-                                      volcanism: bool }
-#[derive(Component)] struct StarEnv { solar_mult_milli: u32, scoopable: bool }
+// Actors: an economic actor holds an account and owns assets. Factions are
+// corporations (they run the NPC economy); commanders are players.
+#[derive(Component)] struct Faction { name: String }
+#[derive(Component)] struct Commander { name: String }
+#[derive(Component)] struct Credits(i64);
+#[derive(Component)] struct Debt { interest_milli: u32, ceiling: i64 }
+#[derive(Component)] struct Ledger { produced/consumed/sold, revenue, expenses }
+#[derive(Component)] struct MemberOf(Entity);   // which faction an actor flies for
+#[derive(Component)] struct OwnedBy(Entity);    // on stations, ships, contracts
 
-// Stations: the container + the grid. NPC (leased slots, market) or player-built.
-#[derive(Component)] struct Station { name: String,
-                                      placement: Placement,   // Surface(body Entity) | Orbital(body Entity)
-                                      owner: Owner }          // Npc{faction} | Player
-#[derive(Component)] struct Slots { total: u32, allowed: Vec<BuildingKind>,
-                                    rent_per_tick: u32 }      // NPC lease terms
-#[derive(Component)] struct Upkeep { needs: Vec<(ItemId, u32)>, // per-tick drain
-                                     shortfall_ticks: u32 }    // degradation counter
-#[derive(Component)] struct Storage { pool: HashMap<ItemId, u32>, cap: u32 }
-#[derive(Component)] struct PowerGrid { supply_mw: u32, demand_mw: u32,
-                                        satisfaction_milli: u32 }  // out of 1000
+// Star systems: the weather. Environment is intrinsic; Control is derived
+// each tick from the Presence entities (one per faction per system,
+// mirroring `system_factions`).
+#[derive(Component)] struct StarSystem { address: i64, name: String }
+#[derive(Component)] struct SystemEnv { piracy_milli, solar_milli, scoopable_star }
+#[derive(Component)] struct Presence { faction: Entity, system: Entity,
+                                       influence: f32, state: State,
+                                       happiness: Happiness }
+#[derive(Component)] struct Control { faction: Option<Entity>, tax_milli: u32,
+                                      productivity_milli: u32, boom: bool }
+
+// Bodies: geology context only, spawned from the snapshot.
+#[derive(Component)] struct Body { name: String, dist_ls: u32 }
+#[derive(Component)] struct Deposits(Vec<(ItemId, u32)>);   // richness, milli
+#[derive(Component)] struct BodyEnv { volcanism: bool, overhead_milli: u32 }
+#[derive(Component)] struct InSystem(Entity);
+
+// Stations: the container + the grid. Factories are their ECS children.
+#[derive(Component)] struct Station { name: String, placement: Placement,
+                                      dist_ls: u32 }
+#[derive(Component)] struct Slots { total: u32 }
+#[derive(Component)] struct Storage { /* dense by ItemId */ cap: u32 }
+#[derive(Component)] struct PowerGrid { supply_mw, demand_mw,
+                                        satisfaction_milli }  // out of 1000
+#[derive(Component)] struct LifeSupport { ok: bool }
+#[derive(Component)] struct Shipyard;                          // marker
 
 // Factories: one slot, one recipe; pull/push the station's shared Storage.
 // Only work-in-progress is held locally (inputs consumed at craft start).
-#[derive(Component)] struct Factory { building: BuildingKind, station: Entity }
-#[derive(Component)] struct ActiveRecipe(Option<RecipeId>);
-#[derive(Component)] struct CraftProgress { ticks_done: u32, holding: bool }
-#[derive(Component)] struct ExtractAccum { milli_items: u32 }   // extractors/scoops
+#[derive(Component)] struct Factory { kind: BuildingKind }     // station = Parent
+#[derive(Component)] struct ActiveRecipe(RecipeId);            // absent = idle
+#[derive(Component)] struct OutputCap(Option<u32>);            // anti-hoarding
+#[derive(Component)] struct CraftProgress { progress_milli: u64, holding: bool }
+#[derive(Component)] struct MaintenanceDue;                    // marker = offline
 
 // Logistics: contracts fulfilled by ships. A "supply route" is a standing
 // self-issued contract with assigned ships; throughput emerges from fleet
 // size × cargo cap ÷ round-trip ticks; fuel gates every departure.
-#[derive(Component)] struct Contract { issuer: Owner,
-                                       from: Entity, to: Entity, item: ItemId,
-                                       terms: Terms,       // Standing{rate} | Lot{qty, deadline}
-                                       pay_per_unit: u32 } // 0 for self-contracts
-#[derive(Component)] struct Ship  { class: ShipClass,       // Hauler, Type6, Type7, Type9
-                                    owner: Owner,
-                                    cargo_cap: u32, fuel_per_leg: u32,
-                                    contract: Option<Entity> }
-#[derive(Component)] enum ShipState { Idle, Loading,
-                                      Outbound { ticks_left: u32, cargo: u32 },
-                                      Unloading, Returning { ticks_left: u32 },
-                                      NoFuel }             // contract stalled, ticker notice
+#[derive(Component)] struct Contract { from: Entity, to: Entity, item: ItemId,
+                                       pay_per_unit: u32,   // 0 for self-contracts
+                                       target: Option<u32>, // dest ceiling
+                                       reserve: u32 }       // origin floor
+#[derive(Component)] struct Ship { class: ShipClass,  // Hauler, Type6/7/9
+                                   contract: Option<Entity>, state: ShipState }
+enum ShipState { Idle { at: Entity }, Loading,
+                 Outbound { ticks_left: u32, cargo: u32 },
+                 Returning { ticks_left: u32 } }
 
-// NPC market, on NPC station entities. Prices derive from the curve each
+// NPC market, on faction-owned stations. Prices derive from the curve each
 // tick: price = base × curve(stock / demand_baseline) × modifiers.
 #[derive(Component)] struct Market { entries: HashMap<ItemId, MarketEntry> }
 struct MarketEntry { base_price: u32,          // seeded from listings.mean_price
                      stock: u32,               // seeded from listings.stock; moved
-                                               // by sales + NPC factory I/O
+                                               // by sales + NPC consumption
                      demand_baseline: u32,     // seeded from listings.demand
-                     consumption_milli: u32 }  // NPC drain independent of factories
-#[derive(Component)] struct Orders(Vec<Order>)  // player sell/buy at this station
+                     consumption_milli: u32 }
 ```
+
+Ownership is a reference, not a tag, and every command is validated against
+it — an actor may only spend its own money and act on its own assets. This
+is what makes multiplayer and the NPC economy the same code path: selling
+into a market debits the owning faction's treasury, pays the seller, and
+hands the system's controlling faction its tax.
 
 Credits and debt: `Credits(i64)` may go negative; a `Debt { principal,
 interest_milli, ceiling }` resource accrues per tick — crossing the ceiling

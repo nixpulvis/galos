@@ -10,7 +10,6 @@
 
 use bevy::prelude::*;
 use galos_factory::data::{BuildingKind, ItemId, StaticData};
-use galos_factory::seed::Seeded;
 use galos_factory::sim::*;
 use galos_factory::{seed, sim_plugin, snapshot::SystemSnapshot, SimTick};
 
@@ -47,14 +46,27 @@ fn load_fixture(path: Option<String>) -> SystemSnapshot {
     }
 }
 
-/// The demo scenario: a commander with a mining outpost on Mercury feeding
-/// a refinery line, selling computer components at Abraham Lincoln — the
-/// full core loop.
+/// The demo scenario: a commander with a mining outpost feeding a refinery
+/// line, selling computer components at the system's trade hub — the full
+/// core loop. Sites are chosen from whatever the snapshot provides, so any
+/// hand-authored system can be run, not just the Sol fixture.
 fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
-    let Seeded { bodies, stations, factions, .. } =
-        seed::apply(world, snapshot);
-    let mercury = bodies["Mercury"];
-    let lincoln = stations["Abraham Lincoln"];
+    let seeded = seed::apply(world, snapshot);
+
+    let mine_site = snapshot
+        .bodies
+        .iter()
+        .find(|body| body.landable && body.planet_class.contains("etal"))
+        .map(|body| seeded.bodies[&body.name])
+        .expect("the system needs a landable metal body to mine");
+    // The hub is the richest market, preferring one with a shipyard.
+    let hub_name = snapshot
+        .stations
+        .iter()
+        .max_by_key(|station| (station.shipyard, station.listings.len()))
+        .map(|station| station.name.clone())
+        .expect("the system needs at least one station to trade with");
+    let hub = seeded.stations[&hub_name];
 
     let data = world.resource::<StaticData>().clone();
     let recipe = |name: &str| data.recipe_by_name(name).expect("known recipe");
@@ -63,13 +75,12 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
     // A commander who has been hauling contracts for a while. Under-
     // capitalization is the classic early-game death spiral (credits hit
     // zero → ships can't fuel → imports stall → life support fails), so the
-    // demo starts with a healthy float.
-    let commander = world
-        .spawn((
-            CommanderBundle::new("Demo Commander", 800_000),
-            MemberOf(factions["Mother Gaia"]),
-        ))
-        .id();
+    // demo starts with a healthy float. They fly for whoever runs the hub.
+    let mut commander = world.spawn(CommanderBundle::new("Demo", 800_000));
+    if let Some(faction) = seeded.factions.values().next() {
+        commander.insert(MemberOf(*faction));
+    }
+    let commander = commander.id();
     let send = |world: &mut World, action: Action| {
         world.send_event(PlayerCommand::new(commander, action));
     };
@@ -77,7 +88,7 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
     send(
         world,
         Action::BuyOutpost {
-            body: mercury,
+            body: mine_site,
             orbital: false,
             name: "Demo Diggings".into(),
         },
@@ -109,7 +120,7 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
         send(
             world,
             Action::MarketBuy {
-                market: lincoln,
+                market: hub,
                 to: outpost,
                 item: item(what),
                 qty,
@@ -117,7 +128,7 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
         );
     }
     // Build the chain: power, mining, smelting, purifying, assembling —
-    // ending in computer components, the product Lincoln's market is
+    // ending in computer components, the product the hub market is
     // actually starved for. Refining capacity is sized to eat the ore.
     for kind in [
         BuildingKind::PowerPlant,
@@ -146,35 +157,58 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
     let of_kind = |kind: BuildingKind| -> Vec<Entity> {
         factories.iter().filter(|(_, k)| *k == kind).map(|(e, _)| *e).collect()
     };
-    let mut extractors = of_kind(BuildingKind::Extractor).into_iter();
-    let mut refineries = of_kind(BuildingKind::Refinery).into_iter();
+    if factories.is_empty() {
+        eprintln!(
+            "warning: nothing could be built — the hub market did not stock \
+             the construction materials this scenario needs",
+        );
+    }
 
     // (recipe, output cap): caps throttle everything without a fast
-    // consumer or export, so the shared pool never silts up.
+    // consumer or export, so the shared pool never silts up. Plans zip
+    // against what actually got built, so a thin fixture degrades rather
+    // than panicking.
+    let plan = [
+        (BuildingKind::PowerPlant, &[("burn_hydrogen", None)][..]),
+        (
+            BuildingKind::Extractor,
+            &[
+                ("mine_bauxite", Some(200)),
+                ("mine_gallite", Some(150)),
+                ("mine_gallite", Some(150)),
+                ("mine_copper", Some(200)),
+            ][..],
+        ),
+        (
+            BuildingKind::Refinery,
+            &[
+                ("smelt_aluminium", Some(150)),
+                ("smelt_gallium", Some(80)),
+                ("smelt_gallium", Some(80)),
+                ("purify_copper", Some(60)),
+            ][..],
+        ),
+        (
+            BuildingKind::Assembler,
+            &[
+                ("make_semiconductors", Some(80)),
+                ("make_computercomponents", None),
+            ][..],
+        ),
+    ];
     let mut assignments: Vec<(Entity, &str, Option<u32>)> = Vec::new();
-    for plant in of_kind(BuildingKind::PowerPlant) {
-        assignments.push((plant, "burn_hydrogen", None));
-    }
-    assignments.push((extractors.next().unwrap(), "mine_bauxite", Some(200)));
-    assignments.push((extractors.next().unwrap(), "mine_gallite", Some(150)));
-    assignments.push((extractors.next().unwrap(), "mine_gallite", Some(150)));
-    assignments.push((extractors.next().unwrap(), "mine_copper", Some(200)));
-    assignments.push((
-        refineries.next().unwrap(),
-        "smelt_aluminium",
-        Some(150),
-    ));
-    assignments.push((refineries.next().unwrap(), "smelt_gallium", Some(80)));
-    assignments.push((refineries.next().unwrap(), "smelt_gallium", Some(80)));
-    assignments.push((refineries.next().unwrap(), "purify_copper", Some(60)));
-    let mut assembler_recipes = [
-        ("make_semiconductors", Some(80u32)),
-        ("make_computercomponents", None),
-    ]
-    .into_iter();
-    for assembler in of_kind(BuildingKind::Assembler) {
-        let (name, cap) = assembler_recipes.next().unwrap();
-        assignments.push((assembler, name, cap));
+    for (kind, recipes) in plan {
+        let built = of_kind(kind);
+        if kind == BuildingKind::PowerPlant {
+            // Every plant burns fuel; the others take one recipe each.
+            for plant in built {
+                assignments.push((plant, recipes[0].0, recipes[0].1));
+            }
+            continue;
+        }
+        for (factory, (name, cap)) in built.into_iter().zip(recipes) {
+            assignments.push((factory, name, *cap));
+        }
     }
     for (factory, name, output_cap) in assignments {
         send(
@@ -194,13 +228,13 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
     // (the player's first expansion decision).
     // (item, from, to, target: dest ceiling, reserve: origin floor)
     let routes = [
-        ("computercomponents", outpost, lincoln, None, 0u32),
-        ("aluminium", outpost, lincoln, None, 60),
-        ("copper", outpost, lincoln, None, 60),
-        ("hydrogenfuel", lincoln, outpost, Some(100), 0),
-        ("polymers", lincoln, outpost, Some(60), 0),
-        ("water", lincoln, outpost, Some(60), 0),
-        ("foodcartridges", lincoln, outpost, Some(60), 0),
+        ("computercomponents", outpost, hub, None, 0u32),
+        ("aluminium", outpost, hub, None, 60),
+        ("copper", outpost, hub, None, 60),
+        ("hydrogenfuel", hub, outpost, Some(100), 0),
+        ("polymers", hub, outpost, Some(60), 0),
+        ("water", hub, outpost, Some(60), 0),
+        ("foodcartridges", hub, outpost, Some(60), 0),
     ];
     for (what, from, to, target, reserve) in routes {
         send(
@@ -214,7 +248,7 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
                 reserve,
             },
         );
-        send(world, Action::BuyShip { at: lincoln, class: ShipClass::Hauler });
+        send(world, Action::BuyShip { at: hub, class: ShipClass::Hauler });
     }
     world.run_schedule(SimTick);
 
@@ -226,7 +260,6 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
         let mut query = world.query::<(Entity, &Ship)>();
         query.iter(world).map(|(e, _)| e).collect()
     };
-    assert_eq!(contracts.len(), ships.len(), "one ship per contract");
     for (ship, contract) in ships.into_iter().zip(contracts) {
         send(world, Action::AssignShip { ship, contract: Some(contract) });
     }
@@ -324,5 +357,17 @@ fn run_windowed() {
     app.add_plugins((sim_plugin, galos_factory::ui::ui_plugin));
     let commander = demo_scenario(app.world_mut(), &snapshot);
     app.insert_resource(galos_factory::ui::LocalCommander(commander));
+    app.add_systems(Update, exit_on_escape);
     app.run();
+}
+
+/// Escape quits, matching `galos_map`.
+#[cfg(feature = "ui")]
+fn exit_on_escape(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut events: ResMut<Events<bevy::app::AppExit>>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        events.send(AppExit::Success);
+    }
 }
