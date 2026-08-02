@@ -1,8 +1,10 @@
-DROP TABLE factions;
-DROP INDEX factions_name ON factions;
-
-DROP TYPE State;
-DROP TYPE Happiness;
-
+-- `system_factions` references `factions` and is typed by both enums, so it
+-- comes off before either.
+DROP INDEX system_factions_join;
 DROP TABLE system_factions;
-DROP INDEX system_factions_join ON system_factions;
+
+DROP TYPE Happiness;
+DROP TYPE State;
+
+DROP INDEX factions_name;
+DROP TABLE factions;
