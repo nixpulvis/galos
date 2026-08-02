@@ -65,3 +65,43 @@ fn spawn_galaxy(mut commands: Commands, spyglass: Res<Spyglass>) {
         },
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::math::DVec3;
+
+    /// Light seconds in a light year
+    const LIGHT_SECONDS: f64 = 3.15576e7;
+
+    /// The grid can separate two points a hundred light seconds apart, out
+    /// where a float has given up entirely
+    ///
+    /// This is the whole reason for the grid. A body sits light seconds from
+    /// its star, and a star sits tens of thousands of light years from the
+    /// galactic centre. Neither number is hard on its own. Holding both at
+    /// once is what a single float cannot do.
+    #[test]
+    fn resolves_light_seconds_at_the_rim() {
+        let grid = Grid::new(CELL_EDGE, SWITCHING_THRESHOLD);
+        // Deliberately not on a cell boundary, so the remainder within the
+        // cell is as large as it realistically gets.
+        let star = DVec3::new(20_000.371, 0., 30_000.628);
+        let body = star + DVec3::X * 100. / LIGHT_SECONDS;
+
+        // One step of a float's precision this far out is worth about
+        // seventy five thousand light seconds, so it places the two on top
+        // of each other.
+        assert_eq!(star.as_vec3(), body.as_vec3());
+
+        let placed = |p: DVec3| {
+            let (cell, offset) = grid.translation_to_grid(p);
+            cell.as_dvec3(&grid) + offset.as_dvec3()
+        };
+        let separation = (placed(body) - placed(star)).length() * LIGHT_SECONDS;
+        assert!(
+            (separation - 100.).abs() < 5.,
+            "expected about 100 light seconds apart, got {separation}"
+        );
+    }
+}
