@@ -6,6 +6,12 @@ use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
 impl Station {
+    /// Note that a station exists, without claiming to know anything else
+    ///
+    /// Called for market data, which says only that the station is there.
+    /// An existing row is left untouched, so `updated_at` and `updated_by`
+    /// keep pointing at whoever last actually described the station rather
+    /// than at the commander who happened to sell something there.
     pub async fn create(
         db: &Database,
         timestamp: DateTime<Utc>,
@@ -21,10 +27,7 @@ impl Station {
                 updated_at,
                 updated_by)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (system_address, name)
-            DO UPDATE SET
-                updated_at = $3,
-                updated_by = $4
+            ON CONFLICT (system_address, name) DO NOTHING
             RETURNING
                 system_address,
                 name,
@@ -45,8 +48,13 @@ impl Station {
             timestamp.naive_utc(),
             user,
         )
-        .fetch_one(&db.pool)
+        .fetch_optional(&db.pool)
         .await?;
+
+        // Nothing came back, so the station was already on record.
+        let Some(row) = row else {
+            return Station::fetch(db, system_address, name).await;
+        };
 
         Ok(Station {
             system_address: row.system_address,
