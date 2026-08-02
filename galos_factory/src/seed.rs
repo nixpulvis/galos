@@ -7,7 +7,7 @@ use crate::data::StaticData;
 use crate::sim::*;
 use crate::snapshot::*;
 use bevy::prelude::*;
-use elite_journal::faction::State;
+use elite_journal::faction::{Happiness, State};
 use elite_journal::station::StationType;
 use elite_journal::system::Security;
 use std::collections::HashMap;
@@ -98,13 +98,14 @@ pub fn apply(
         .factions
         .iter()
         .max_by(|a, b| a.influence.total_cmp(&b.influence));
+    // Happier workforces build faster; an unknown band is neutral.
     let productivity_milli =
-        match controlling.map(|f| f.happiness_band).unwrap_or(3) {
-            1 => 1100,
-            2 => 1050,
-            3 => 1000,
-            4 => 900,
-            _ => 800,
+        match controlling.map(|f| f.happiness).unwrap_or(Happiness::None) {
+            Happiness::Elated => 1100,
+            Happiness::Happy => 1050,
+            Happiness::Discontented | Happiness::None => 1000,
+            Happiness::Unhappy => 900,
+            Happiness::Despondent => 800,
         };
     let tax_milli = match controlling.map(|f| f.influence).unwrap_or(0.0) {
         i if i >= 60.0 => 25,

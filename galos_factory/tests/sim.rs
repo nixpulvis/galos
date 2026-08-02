@@ -146,6 +146,38 @@ fn runs_are_reproducible() {
     assert_eq!(run(), run());
 }
 
+/// Happiness lives in the sim as `elite_journal::Happiness`; the band
+/// number is purely a wire representation and never escapes serde.
+#[test]
+fn happiness_round_trips_as_a_band_number() {
+    use galos_factory::snapshot::FactionSnapshot;
+
+    for (band, variant) in [
+        (0, "None"),
+        (1, "Elated"),
+        (2, "Happy"),
+        (3, "Discontented"),
+        (4, "Unhappy"),
+        (5, "Despondent"),
+    ] {
+        let text = format!(
+            r#"(name: "F", influence: 10.0, state: Boom, happiness_band: {band})"#
+        );
+        let faction: FactionSnapshot = ron::from_str(&text).unwrap();
+        // Happiness has a deliberately non-reflexive PartialEq upstream
+        // (None != None), so compare the variant, not the value.
+        assert_eq!(format!("{:?}", faction.happiness), variant);
+        assert!(ron::to_string(&faction)
+            .unwrap()
+            .contains(&format!("happiness_band:{band}")));
+    }
+
+    assert!(ron::from_str::<FactionSnapshot>(
+        r#"(name: "F", influence: 1.0, state: Boom, happiness_band: 9)"#
+    )
+    .is_err());
+}
+
 /// Seeding reads elite_journal's own enums: security sets piracy, station
 /// type sets leasable slots, the controlling faction's state and happiness
 /// set market demand and productivity.
