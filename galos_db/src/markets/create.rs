@@ -31,6 +31,11 @@ impl Market {
             Err(err) => return Err(err),
         };
 
+        // The market and its commodities go in together. Between clearing the
+        // old prices and writing the new ones the market holds nothing it
+        // trades, which is not a state any reader should be shown.
+        let mut tx = db.pool.begin().await?;
+
         let row = sqlx::query!(
             r#"
             INSERT INTO markets (
@@ -59,10 +64,29 @@ impl Market {
             market.station_name,
             timestamp.naive_utc(),
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // A market event is read as the whole of what the station trades, so
+        // what it leaves out is no longer stocked. Nothing else can retire a
+        // commodity, and without this a station keeps quoting a price for
+        // something it sold the last of months ago.
+        //
+        // A sender that trims commodities it does not recognise will take a
+        // few rows down with it here. That repairs itself: the next event
+        // naming them puts them back, and a row wrongly dropped for a while
+        // is a smaller lie than one that never leaves.
+        sqlx::query!(
+            "DELETE FROM commodities WHERE market_id = $1",
+            market.market_id,
+        )
+        .execute(&mut *tx)
         .await?;
 
         for commodity in &market.commodities {
+            // The rows this writes were just cleared, so the conflict clause
+            // answers only for one event naming a commodity twice, which two
+            // spellings of the same name now do. The later reading wins.
             sqlx::query!(
                 r#"
                 INSERT INTO commodities (
@@ -100,9 +124,11 @@ impl Market {
                 commodity.stock_bracket,
                 timestamp.naive_utc(),
             )
-            .fetch_one(&db.pool)
+            .fetch_one(&mut *tx)
             .await?;
         }
+
+        tx.commit().await?;
 
         Ok(Market {
             id: row.id,
