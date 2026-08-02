@@ -19,7 +19,7 @@ pub(crate) fn plugin(app: &mut App) {
     // frame's value rather than the previous frame's.
     app.add_systems(
         Update,
-        (respawn, visibility, face_camera)
+        (respawn, visibility, face_camera, leaders)
             .chain()
             .in_set(MapSet::Present)
             .after(super::scale::scale_systems)
@@ -55,6 +55,17 @@ const MIN_DISTANCE: f32 = 2.;
 /// The family name inside `assets/gautami.ttf`, used to select it in
 /// [`Text3dStyling`].
 const FONT: &str = "Gautami";
+
+/// Colour of the line joining a star to its name
+///
+/// Dimmer than the text so it reads as a connector rather than as content.
+const LEADER_COLOR: Srgba = Srgba::new(1., 1., 1., 0.35);
+
+/// Air left at each end of the line, as a fraction of its full span
+///
+/// The same gap sits between the line and the body as between the line and
+/// the first glyph, so the connector reads as detached from both.
+const LEADER_GAP: f32 = 0.15;
 
 /// A marker for system name labels
 #[derive(Component)]
@@ -162,6 +173,50 @@ pub fn face_camera(
         label.scale = Vec3::splat(scale / parent_scale);
         label.translation = offset / parent_scale;
         label.rotation = camera.rotation;
+    }
+}
+
+/// Join each star to its name with a line
+///
+/// The name sits off to one side, which is ambiguous once stars are close
+/// together. Drawn as a gizmo rather than a mesh because both ends move
+/// every frame the camera does, and there is nothing to keep between frames.
+///
+/// A line only exists where its name is drawn. Names are hidden by the
+/// spyglass, by the names toggle, and by facing away from the camera, and a
+/// line answering to anything less than the drawn text outlives one of them.
+pub fn leaders(
+    mut gizmos: Gizmos,
+    labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
+    systems: Query<&GlobalTransform, (With<System>, Without<Label>)>,
+) {
+    for (label, drawn, child_of) in &labels {
+        if !drawn.get() {
+            continue;
+        }
+        let Ok(star) = systems.get(child_of.parent()) else { continue };
+
+        // The label's origin is the left edge of the text, so the line runs
+        // from the star straight to where the name begins.
+        let from = star.translation();
+        let to = label.translation();
+        let length = from.distance(to);
+        let Some(direction) = (to - from).try_normalize() else { continue };
+
+        // The body's surface is where it starts, not its centre, so measure
+        // the near gap from there to match the one before the first glyph.
+        let gap = length * LEADER_GAP;
+        let start = star.scale().x + gap;
+        let end = length - gap;
+        if start >= end {
+            continue;
+        }
+
+        gizmos.line(
+            from + direction * start,
+            from + direction * end,
+            LEADER_COLOR,
+        );
     }
 }
 
