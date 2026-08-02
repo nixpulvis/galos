@@ -8,7 +8,7 @@ use galos_factory::{seed, sim_plugin, snapshot::SystemSnapshot, SimTick};
 
 fn headless_app() -> App {
     let mut app = App::new();
-    sim_plugin(&mut app);
+    app.add_plugins(sim_plugin);
     app
 }
 
@@ -169,7 +169,7 @@ fn commands_are_validated_against_ownership() {
 fn runs_are_reproducible() {
     fn run() -> (i64, u64) {
         let mut app = App::new();
-        sim_plugin(&mut app);
+        app.add_plugins(sim_plugin);
         let world = app.world_mut();
         let seeded = seed::apply(world, &sol());
         let commander =

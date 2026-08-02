@@ -236,8 +236,7 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
 fn run_headless(ticks: u64, fixture: Option<String>) {
     let snapshot = load_fixture(fixture);
     let mut app = App::new();
-    app.add_plugins(MinimalPlugins);
-    sim_plugin(&mut app);
+    app.add_plugins((MinimalPlugins, sim_plugin));
     let commander = demo_scenario(app.world_mut(), &snapshot);
 
     let world = app.world_mut();
@@ -322,8 +321,7 @@ fn run_windowed() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
     app.add_plugins(bevy_egui::EguiPlugin);
-    sim_plugin(&mut app);
-    galos_factory::ui::ui_plugin(&mut app);
+    app.add_plugins((sim_plugin, galos_factory::ui::ui_plugin));
     let commander = demo_scenario(app.world_mut(), &snapshot);
     app.insert_resource(galos_factory::ui::LocalCommander(commander));
     app.run();
