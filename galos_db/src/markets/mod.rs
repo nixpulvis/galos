@@ -1,4 +1,4 @@
-//! A station which can be docked at within a system
+//! The commodities a station buys and sells
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, PartialEq, Eq)]
