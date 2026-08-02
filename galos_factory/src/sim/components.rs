@@ -20,6 +20,7 @@
 //! [`OwnedBy`], which may be a commander or a faction.
 
 use crate::data::{BuildingKind, ItemId, RecipeId};
+use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 use elite_journal::faction::{Happiness, State};
 use serde::{Deserialize, Serialize};
@@ -244,48 +245,63 @@ pub struct Slots {
 }
 
 /// The station's shared storage pool — the implicit belt network.
-#[derive(Component, Clone, Debug)]
+///
+/// Quantities are dense, indexed by [`ItemId`], rather than a map: the item
+/// set is small and, more importantly, iteration order must be
+/// deterministic or the sim stops being reproducible.
+#[derive(Component, Clone, Debug, Default)]
 pub struct Storage {
-    pub pool: HashMap<ItemId, u32>,
+    quantities: Vec<u32>,
+    total: u32,
     pub cap: u32,
 }
 
 impl Storage {
     pub fn new(cap: u32) -> Self {
-        Storage { pool: HashMap::new(), cap }
+        Storage { quantities: Vec::new(), total: 0, cap }
     }
 
     pub fn total(&self) -> u32 {
-        self.pool.values().sum()
+        self.total
     }
 
     pub fn count(&self, item: ItemId) -> u32 {
-        self.pool.get(&item).copied().unwrap_or(0)
+        self.quantities.get(item.0 as usize).copied().unwrap_or(0)
     }
 
     pub fn free(&self) -> u32 {
-        self.cap.saturating_sub(self.total())
+        self.cap.saturating_sub(self.total)
+    }
+
+    /// Every held item and quantity, in item-id order.
+    pub fn iter(&self) -> impl Iterator<Item = (ItemId, u32)> + '_ {
+        self.quantities
+            .iter()
+            .enumerate()
+            .filter(|(_, qty)| **qty > 0)
+            .map(|(index, qty)| (ItemId(index as u16), *qty))
     }
 
     /// Adds up to `qty`, clamped by capacity; returns the amount stored.
     pub fn add(&mut self, item: ItemId, qty: u32) -> u32 {
         let stored = qty.min(self.free());
         if stored > 0 {
-            *self.pool.entry(item).or_insert(0) += stored;
+            let index = item.0 as usize;
+            if self.quantities.len() <= index {
+                self.quantities.resize(index + 1, 0);
+            }
+            self.quantities[index] += stored;
+            self.total += stored;
         }
         stored
     }
 
     /// Removes up to `qty`; returns the amount actually taken.
     pub fn take(&mut self, item: ItemId, qty: u32) -> u32 {
-        let have = self.count(item);
-        let taken = qty.min(have);
+        let taken = qty.min(self.count(item));
         if taken > 0 {
-            let slot = self.pool.get_mut(&item).unwrap();
-            *slot -= taken;
-            if *slot == 0 {
-                self.pool.remove(&item);
-            }
+            self.quantities[item.0 as usize] -= taken;
+            self.total -= taken;
         }
         taken
     }
@@ -352,8 +368,10 @@ pub struct Factory {
     pub kind: BuildingKind,
 }
 
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct ActiveRecipe(pub Option<RecipeId>);
+/// The recipe a factory is running. Absent when idle, so the production
+/// systems filter by archetype rather than branching on an `Option`.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ActiveRecipe(pub RecipeId);
 
 /// Idle the factory while the station pool holds at least this much of the
 /// recipe's primary output — the throttle that stops hoarding.
@@ -388,10 +406,10 @@ pub struct Status(pub FactoryStatus);
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct MaintenanceDue;
 
+/// A newly built factory has no recipe until one is assigned.
 #[derive(Bundle)]
 pub struct FactoryBundle {
     pub factory: Factory,
-    pub recipe: ActiveRecipe,
     pub cap: OutputCap,
     pub progress: CraftProgress,
     pub status: Status,
@@ -401,12 +419,25 @@ impl FactoryBundle {
     pub fn new(kind: BuildingKind) -> Self {
         FactoryBundle {
             factory: Factory { kind },
-            recipe: ActiveRecipe(None),
             cap: OutputCap(None),
             progress: CraftProgress::default(),
             status: Status::default(),
         }
     }
+}
+
+/// What every production system needs from a working factory. Offline
+/// buildings and idle ones are filtered out by archetype, so a system that
+/// iterates this only ever sees factories that can actually do something.
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub struct FactoryWork {
+    pub entity: Entity,
+    pub factory: &'static Factory,
+    pub recipe: &'static ActiveRecipe,
+    pub cap: &'static OutputCap,
+    pub progress: &'static mut CraftProgress,
+    pub status: &'static mut Status,
 }
 
 // -------------------------------------------------------------- logistics

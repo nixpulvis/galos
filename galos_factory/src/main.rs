@@ -287,12 +287,10 @@ fn report(world: &mut World, commander: Entity, ticks: u64) {
         .iter(world)
         .filter(|(_, owner, _, _, _)| owner.0 == commander)
         .map(|(station, _, storage, grid, life)| {
-            let mut inventory: Vec<_> = storage.pool.iter().collect();
-            inventory.sort_by_key(|(item, _)| item.0);
-            let lines: String = inventory
+            let lines: String = storage
                 .iter()
                 .map(|(item, qty)| {
-                    format!("\n    {:<24} {:>6}", data.item(**item).id, qty)
+                    format!("\n    {:<24} {:>6}", data.item(item).id, qty)
                 })
                 .collect();
             format!(

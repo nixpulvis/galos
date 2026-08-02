@@ -21,10 +21,7 @@ pub fn extract(
         &LifeSupport,
         Option<&Children>,
     )>,
-    mut factories: Query<
-        (&Factory, &ActiveRecipe, &OutputCap, &mut CraftProgress, &mut Status),
-        Without<MaintenanceDue>,
-    >,
+    mut factories: Query<FactoryWork, Without<MaintenanceDue>>,
 ) {
     for (station, in_system, owner, mut storage, grid, life, children) in
         stations.iter_mut()
@@ -33,24 +30,16 @@ pub fn extract(
         let base_milli = base_rate_milli(grid, &control, life);
 
         for &child in children.map(|c| &**c).unwrap_or(&[]) {
-            let Ok((factory, active, cap, mut progress, mut status)) =
-                factories.get_mut(child)
-            else {
-                continue;
-            };
+            let Ok(mut work) = factories.get_mut(child) else { continue };
             if !matches!(
-                factory.kind,
+                work.factory.kind,
                 BuildingKind::Extractor | BuildingKind::FuelScoop
             ) {
                 continue;
             }
-            let Some(recipe_id) = active.0 else {
-                status.0 = FactoryStatus::Idle;
-                continue;
-            };
-            let recipe = data.recipe(recipe_id);
-            if output_capped(cap, recipe, &storage, &mut progress) {
-                status.0 = FactoryStatus::Idle;
+            let recipe = data.recipe(work.recipe.0);
+            if output_capped(work.cap, recipe, &storage, &mut work.progress) {
+                work.status.0 = FactoryStatus::Idle;
                 continue;
             }
 
@@ -77,8 +66,8 @@ pub fn extract(
             step_factory(
                 recipe,
                 &mut storage,
-                &mut progress,
-                &mut status,
+                &mut work.progress,
+                &mut work.status,
                 base_milli * richness_milli / 1000,
                 ledger.as_deref_mut(),
             );

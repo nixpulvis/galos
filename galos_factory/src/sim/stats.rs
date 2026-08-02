@@ -5,11 +5,23 @@
 use super::*;
 use bevy::prelude::*;
 
-/// Buildings down for maintenance are skipped by every producing system, so
-/// nothing else would ever refresh their status.
+/// Factories the producing systems filter out by archetype — down for
+/// maintenance, or with no recipe assigned — would otherwise keep whatever
+/// status they last had.
 pub fn mark_offline(mut factories: Query<&mut Status, With<MaintenanceDue>>) {
     for mut status in factories.iter_mut() {
         status.0 = FactoryStatus::Offline;
+    }
+}
+
+pub fn mark_idle(
+    mut factories: Query<
+        &mut Status,
+        (Without<ActiveRecipe>, Without<MaintenanceDue>),
+    >,
+) {
+    for mut status in factories.iter_mut() {
+        status.0 = FactoryStatus::Idle;
     }
 }
 

@@ -106,7 +106,6 @@ pub fn apply_commands(
     mut factories: Query<(
         &Factory,
         &Parent,
-        &mut ActiveRecipe,
         &mut CraftProgress,
         &mut OutputCap,
     )>,
@@ -204,7 +203,7 @@ pub fn apply_commands(
             }
 
             Action::SetRecipe { factory, recipe, output_cap } => {
-                let Ok((fac, parent, _, _, _)) = factories.get(factory) else {
+                let Ok((fac, parent, _, _)) = factories.get(factory) else {
                     continue;
                 };
                 let station = parent.get();
@@ -228,18 +227,27 @@ pub fn apply_commands(
                     reject(&mut notices, "recipe not possible here");
                     continue;
                 }
-                let Ok((_, _, mut active, mut progress, mut cap)) =
+                let Ok((_, _, mut progress, mut cap)) =
                     factories.get_mut(factory)
                 else {
                     continue;
                 };
-                *active = ActiveRecipe(recipe);
                 *progress = CraftProgress::default();
                 *cap = OutputCap(output_cap);
+                // Presence of the component *is* "running something", so
+                // clearing a recipe removes it.
+                match recipe {
+                    Some(id) => {
+                        commands.entity(factory).insert(ActiveRecipe(id));
+                    }
+                    None => {
+                        commands.entity(factory).remove::<ActiveRecipe>();
+                    }
+                }
             }
 
             Action::Demolish { factory } => {
-                let Ok((_, parent, _, _, _)) = factories.get(factory) else {
+                let Ok((_, parent, _, _)) = factories.get(factory) else {
                     continue;
                 };
                 if !owns_station(&stations, parent.get(), actor) {

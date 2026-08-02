@@ -96,7 +96,7 @@ fn stations_panel(
         Option<&Children>,
     )>,
     owners: Query<AnyOf<(&Commander, &Faction)>>,
-    factories: Query<(&Factory, &ActiveRecipe, &Status)>,
+    factories: Query<(&Factory, Option<&ActiveRecipe>, &Status)>,
 ) {
     egui::Window::new("Stations").default_width(380.0).show(
         contexts.ctx_mut(),
@@ -153,8 +153,7 @@ fn stations_panel(
                         ui.horizontal(|ui| {
                             ui.label(format!("{:?}", factory.kind));
                             let current = active
-                                .0
-                                .map(|id| data.recipe(id).id.as_str())
+                                .map(|active| data.recipe(active.0).id.as_str())
                                 .unwrap_or("-");
                             ui.add_enabled_ui(mine, |ui| {
                                 egui::ComboBox::from_id_source(child)
@@ -165,7 +164,8 @@ fn stations_panel(
                                         {
                                             if ui
                                                 .selectable_label(
-                                                    active.0 == Some(recipe_id),
+                                                    active.map(|a| a.0)
+                                                        == Some(recipe_id),
                                                     &recipe.id,
                                                 )
                                                 .clicked()
@@ -220,13 +220,10 @@ fn stations_panel(
                     egui::CollapsingHeader::new("storage")
                         .id_source((entity, "storage"))
                         .show(ui, |ui| {
-                            let mut inventory: Vec<_> =
-                                storage.pool.iter().collect();
-                            inventory.sort_by_key(|(item, _)| item.0);
-                            for (item, qty) in inventory {
+                            for (item, qty) in storage.iter() {
                                 ui.label(format!(
                                     "{:<24} {qty}",
-                                    data.item(*item).name
+                                    data.item(item).name
                                 ));
                             }
                         });

@@ -17,10 +17,7 @@ pub fn power_balance(
         &mut PowerGrid,
         Option<&Children>,
     )>,
-    mut factories: Query<
-        (&Factory, &ActiveRecipe, &mut CraftProgress, &mut Status),
-        Without<MaintenanceDue>,
-    >,
+    mut factories: Query<FactoryWork, Without<MaintenanceDue>>,
 ) {
     for (station, in_system, mut storage, mut grid, children) in
         stations.iter_mut()
@@ -30,13 +27,8 @@ pub fn power_balance(
         let mut demand: u32 = 0;
 
         for &child in children.map(|c| &**c).unwrap_or(&[]) {
-            let Ok((factory, active, mut progress, mut status)) =
-                factories.get_mut(child)
-            else {
-                continue;
-            };
-            let Some(recipe_id) = active.0 else { continue };
-            let recipe = data.recipe(recipe_id);
+            let Ok(mut work) = factories.get_mut(child) else { continue };
+            let recipe = data.recipe(work.recipe.0);
 
             if recipe.power_mw >= 0 {
                 demand += recipe.power_mw as u32;
@@ -45,7 +37,7 @@ pub fn power_balance(
 
             // Generator.
             let mw = (-recipe.power_mw) as u32;
-            match factory.kind {
+            match work.factory.kind {
                 BuildingKind::SolarArray => {
                     let placement_milli = match station.placement {
                         Placement::Surface(_) => 500,
@@ -53,29 +45,31 @@ pub fn power_balance(
                     };
                     supply +=
                         mw * placement_milli / 1000 * env.solar_milli / 1000;
-                    status.0 = FactoryStatus::Running;
+                    work.status.0 = FactoryStatus::Running;
                 }
                 _ if recipe.inputs.is_empty() => {
                     supply += mw;
-                    status.0 = FactoryStatus::Running;
+                    work.status.0 = FactoryStatus::Running;
                 }
                 _ => {
                     // Fuel-burning cycle: consume inputs at cycle start,
                     // produce power for `ticks` ticks.
-                    if !progress.holding {
+                    if !work.progress.holding {
                         if storage.take_all(&recipe.inputs) {
-                            progress.holding = true;
-                            progress.progress_milli = 0;
+                            work.progress.holding = true;
+                            work.progress.progress_milli = 0;
                         } else {
-                            status.0 = FactoryStatus::Starved;
+                            work.status.0 = FactoryStatus::Starved;
                             continue;
                         }
                     }
                     supply += mw;
-                    status.0 = FactoryStatus::Running;
-                    progress.progress_milli += 1000;
-                    if progress.progress_milli >= recipe.ticks as u64 * 1000 {
-                        progress.holding = false;
+                    work.status.0 = FactoryStatus::Running;
+                    work.progress.progress_milli += 1000;
+                    if work.progress.progress_milli
+                        >= recipe.ticks as u64 * 1000
+                    {
+                        work.progress.holding = false;
                     }
                 }
             }

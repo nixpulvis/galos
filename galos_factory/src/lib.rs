@@ -68,6 +68,7 @@ pub fn sim_plugin(app: &mut App) {
                 .in_set(SimSet::Market),
             (
                 sim::stats::mark_offline,
+                sim::stats::mark_idle,
                 sim::stats::sample_notices.run_if(sim::on_report_tick),
                 sim::advance_clock,
             )
