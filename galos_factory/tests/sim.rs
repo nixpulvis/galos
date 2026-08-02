@@ -146,6 +146,42 @@ fn runs_are_reproducible() {
     assert_eq!(run(), run());
 }
 
+/// Seeding reads elite_journal's own enums: security sets piracy, station
+/// type sets leasable slots, the controlling faction's state and happiness
+/// set market demand and productivity.
+#[test]
+fn seeding_reads_bgs_types() {
+    use elite_journal::station::StationType;
+
+    let mut app = headless_app();
+    let world = app.world_mut();
+    let snapshot: galos_factory::snapshot::SystemSnapshot =
+        ron::from_str(include_str!("../data/fixtures/sol.ron")).unwrap();
+    let stations = galos_factory::seed::apply(world, &snapshot);
+
+    // Sol is High security and its controlling faction (Mother Gaia, 45%
+    // influence) is Booming and Happy.
+    let mods = world.resource::<SystemModifiers>();
+    assert_eq!(mods.piracy_milli, 0);
+    assert_eq!(mods.tax_milli, 50);
+    assert_eq!(mods.productivity_milli, 1050);
+    assert!(mods.scoopable_star, "G-class star is scoopable");
+
+    // Slots come from the real station type, not a constant.
+    let lincoln = stations["Abraham Lincoln"];
+    assert_eq!(
+        world.entity(lincoln).get::<Slots>().unwrap().total,
+        galos_factory::seed::slots_for(&StationType::Coriolis),
+    );
+    assert!(world.entity(lincoln).contains::<Shipyard>());
+
+    // Boom lifts demand baselines 50% above the listing.
+    let data = world.resource::<StaticData>().clone();
+    let robotics = data.item_by_name("robotics").unwrap();
+    let market = world.entity(lincoln).get::<Market>().unwrap();
+    assert_eq!(market.entries[&robotics].demand_baseline, 1050);
+}
+
 #[test]
 fn price_curve_shape() {
     let entry = |stock| MarketEntry {

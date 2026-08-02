@@ -4,7 +4,7 @@
 (
     address: 10477373803,
     name: "Sol",
-    security: "high",
+    security: High,
     population: 22780919531,
     stars: [
         (name: "Sol", class: "G"),
@@ -18,8 +18,8 @@
     ],
     stations: [
         (
-            name: "Abraham Lincoln", ty: "Coriolis", body: Some("Earth"), surface: false,
-            dist_ls: 500, shipyard: true,
+            name: "Abraham Lincoln", ty: Coriolis, body: Some("Earth"), surface: false,
+            dist_ls: 500, economies: [Service, Refinery], shipyard: true,
             listings: [
                 (item: "aluminium",          mean_price: 340,  stock: 5000, demand: 200),
                 (item: "titanium",           mean_price: 1000, stock: 2500, demand: 150),
@@ -37,8 +37,8 @@
             ],
         ),
         (
-            name: "Galileo", ty: "Ocellus", body: Some("Europa"), surface: false,
-            dist_ls: 2500, shipyard: false,
+            name: "Galileo", ty: Ocellus, body: Some("Europa"), surface: false,
+            dist_ls: 2500, economies: [Industrial], shipyard: false,
             listings: [
                 (item: "water",        mean_price: 120, stock: 8000, demand: 100),
                 (item: "hydrogenfuel", mean_price: 110, stock: 2000, demand: 800),
@@ -47,8 +47,8 @@
         ),
     ],
     factions: [
-        (name: "Mother Gaia",           influence: 45.0, state: "Boom", happiness_band: 2),
-        (name: "Sol Workers' Party",    influence: 25.0, state: "None", happiness_band: 3),
-        (name: "Federal Congress",      influence: 18.0, state: "None", happiness_band: 3),
+        (name: "Mother Gaia",        influence: 45.0, state: Boom, happiness_band: 2),
+        (name: "Sol Workers' Party", influence: 25.0, state: None, happiness_band: 3),
+        (name: "Federal Congress",   influence: 18.0, state: None, happiness_band: 3),
     ],
 )

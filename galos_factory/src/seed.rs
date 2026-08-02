@@ -7,10 +7,24 @@ use crate::data::StaticData;
 use crate::sim::*;
 use crate::snapshot::*;
 use bevy::prelude::*;
+use elite_journal::faction::State;
+use elite_journal::station::StationType;
+use elite_journal::system::Security;
 use std::collections::HashMap;
 
-pub const NPC_STATION_SLOTS: u32 = 24;
 pub const NPC_STORAGE: u32 = 10_000;
+
+/// Leasable factory slots by station type — the big hub ports carry real
+/// industry, outposts barely any, carriers none.
+pub fn slots_for(ty: &StationType) -> u32 {
+    match ty {
+        StationType::Orbis | StationType::Ocellus | StationType::Coriolis => 24,
+        StationType::AsteroidBase | StationType::MegaShip => 16,
+        StationType::CraterPort => 12,
+        StationType::Outpost | StationType::CraterOutpost => 6,
+        StationType::FleetCarrier => 0,
+    }
+}
 
 /// Deposits granted per planet class: `(item, richness_milli)`.
 fn deposits_for(
@@ -98,13 +112,15 @@ pub fn apply(
         i if i >= 20.0 => 75,
         _ => 100,
     };
-    let piracy_milli = match snapshot.security.as_str() {
-        "high" => 0,
-        "medium" => 20,
-        "low" => 50,
-        _ => 100,
+    let piracy_milli = match snapshot.security {
+        Security::High => 0,
+        Security::Medium => 20,
+        Security::Low => 50,
+        // Anarchy and unknown security are equally lawless.
+        Security::Anarchy | Security::None => 100,
     };
-    let boom = controlling.map(|f| f.state == "Boom").unwrap_or(false);
+    let boom =
+        controlling.map(|f| matches!(f.state, State::Boom)).unwrap_or(false);
     let star_class = snapshot
         .stars
         .first()
@@ -178,7 +194,7 @@ pub fn apply(
                     owner: Owner::Npc,
                     dist_ls: station.dist_ls,
                 },
-                Slots { total: NPC_STATION_SLOTS },
+                Slots { total: slots_for(&station.ty) },
                 Storage::new(NPC_STORAGE),
                 PowerGrid::default(),
                 LifeSupport::default(),

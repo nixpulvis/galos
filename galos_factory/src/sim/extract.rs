@@ -60,17 +60,14 @@ pub fn extract(
             // Deposit richness multiplier (milli); scoops run at nominal.
             let mut richness_milli: u64 = 1000;
             for req in &recipe.requires {
-                if let Req::Deposit(name) = req {
-                    let item = data
-                        .item_by_name(name)
-                        .expect("validated deposit item");
+                if let Req::Deposit(item) = req {
                     richness_milli = match station.placement {
                         Placement::Surface(body) => bodies
                             .get(body)
                             .ok()
                             .and_then(|d| {
                                 d.0.iter()
-                                    .find(|(i, _)| *i == item)
+                                    .find(|(i, _)| i == item)
                                     .map(|(_, r)| *r as u64)
                             })
                             .unwrap_or(0),
