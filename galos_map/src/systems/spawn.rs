@@ -151,8 +151,9 @@ pub fn spawn(
 
             match index {
                 FetchIndex::Faction(..) | FetchIndex::Route(..) => {
-                    if let Some(system) = new_systems.first() {
-                        let position = system_to_vec(&system);
+                    if let Some(position) =
+                        new_systems.first().and_then(system_to_vec)
+                    {
                         move_camera_events
                             .write(MoveCamera { position: Some(position) });
                     }
@@ -198,6 +199,11 @@ pub fn spawn_systems(
         .collect();
 
     for db_system in db_systems {
+        let Ok(system) = System::try_from(db_system) else {
+            debug!("skipping {}, no position on record", db_system.address);
+            continue;
+        };
+
         if let Some(enitity) = existing_systems.remove(&db_system.address) {
             debug!(
                 "updating {} @ {:?}",
@@ -205,7 +211,7 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            commands.entity(enitity).insert(System::from(db_system));
+            commands.entity(enitity).insert(system);
         } else {
             debug!(
                 "spawning {} {:?}",
@@ -213,7 +219,6 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            let system = System::from(db_system);
             commands.spawn((
                 pbr_components(&system, color_by, mesh, materials),
                 system,
@@ -355,15 +360,19 @@ fn security_color_idx(system: &System) -> usize {
     }
 }
 
-impl From<&DbSystem> for System {
-    fn from(system: &DbSystem) -> System {
-        let pos = [
-            system.position.unwrap().x as f32,
-            system.position.unwrap().y as f32,
-            system.position.unwrap().z as f32,
-        ];
+/// A system the database has no coordinates for
+///
+/// The map is a map. A system it cannot place is not something it can draw.
+pub struct Unplaceable;
 
-        System {
+impl TryFrom<&DbSystem> for System {
+    type Error = Unplaceable;
+
+    fn try_from(system: &DbSystem) -> Result<System, Unplaceable> {
+        let position = system.position.ok_or(Unplaceable)?;
+        let pos = [position.x as f32, position.y as f32, position.z as f32];
+
+        Ok(System {
             address: system.address,
             position: pos,
             name: system.name.clone(),
@@ -374,6 +383,6 @@ impl From<&DbSystem> for System {
             primary_economy: system.primary_economy,
             secondary_economy: system.secondary_economy,
             updated_at: system.updated_at,
-        }
+        })
     }
 }

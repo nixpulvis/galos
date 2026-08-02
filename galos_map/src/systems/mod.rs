@@ -114,10 +114,10 @@ pub fn zoom_with_spyglass(
     }
 }
 
-pub fn system_to_vec(system: &DbSystem) -> Vec3 {
-    Vec3::new(
-        system.position.unwrap().x as f32,
-        system.position.unwrap().y as f32,
-        system.position.unwrap().z as f32,
-    )
+/// Where a system sits, if the database knows
+///
+/// Roughly three quarters of the systems on record have no coordinates, so
+/// this has to be an answer the caller handles rather than an assumption.
+pub fn system_to_vec(system: &DbSystem) -> Option<Vec3> {
+    system.position.map(|p| Vec3::new(p.x as f32, p.y as f32, p.z as f32))
 }

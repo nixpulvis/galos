@@ -9,8 +9,17 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<Searched>();
+    app.init_resource::<SearchNote>();
     app.add_systems(Update, searched.in_set(MapSet::Search));
 }
+
+/// What to tell the user about the last system they searched for
+///
+/// Roughly three quarters of the systems on record have no coordinates, Sol
+/// among them. Flying to one is impossible, and doing nothing at all reads
+/// exactly like the name not being in the database.
+#[derive(Resource, Default)]
+pub struct SearchNote(pub Option<String>);
 
 /// A collection of search messages for responding to the user's UI
 /// interactions.
@@ -33,22 +42,31 @@ pub fn searched(
     mut camera_events: MessageWriter<MoveCamera>,
     mut despawner: MessageWriter<Despawn>,
     mut spyglass: ResMut<Spyglass>,
+    mut note: ResMut<SearchNote>,
     db: Res<Db>,
 ) {
     for event in search_events.read() {
         match event {
             Searched::System { name, .. } => {
                 future::block_on(async {
-                    if let Ok(origin) =
-                        DbSystem::fetch_by_name(&db.0, &name).await
-                    {
-                        if let Some(p) = origin.position {
-                            let position =
-                                Vec3::new(p.x as f32, p.y as f32, p.z as f32);
-                            camera_events
-                                .write(MoveCamera { position: Some(position) });
-                        }
-                    }
+                    note.0 = match DbSystem::fetch_by_name(&db.0, &name).await {
+                        Ok(origin) => match origin.position {
+                            Some(p) => {
+                                let position = Vec3::new(
+                                    p.x as f32, p.y as f32, p.z as f32,
+                                );
+                                camera_events.write(MoveCamera {
+                                    position: Some(position),
+                                });
+                                None
+                            }
+                            None => Some(format!(
+                                "{} has no position on record",
+                                origin.name
+                            )),
+                        },
+                        Err(_) => Some(format!("No system named {name}")),
+                    };
                 });
             }
             Searched::Faction { .. } => {

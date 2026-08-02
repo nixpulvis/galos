@@ -1,4 +1,4 @@
-use crate::search::Searched;
+use crate::search::{SearchNote, Searched};
 use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
@@ -25,6 +25,7 @@ pub fn panels(
     mut throttle: ResMut<Throttle>,
     mut poll: ResMut<Poll>,
     mut searched: MessageWriter<Searched>,
+    search_note: Res<SearchNote>,
     mut despawner: MessageWriter<Despawn>,
     mut system_name: Local<Option<String>>,
     mut route_end: Local<Option<String>>,
@@ -45,6 +46,9 @@ pub fn panels(
                 if let Some(ref search) = *system_name {
                     searched.write(Searched::System { name: search.clone() });
                 }
+            }
+            if let Some(note) = &search_note.0 {
+                ui.colored_label(egui::Color32::LIGHT_RED, note);
             }
             if system_name.is_some() {
                 ui.add_space(2.);
