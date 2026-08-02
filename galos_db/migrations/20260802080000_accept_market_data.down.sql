@@ -1,30 +1,34 @@
--- Markets whose system is still unknown cannot be represented once the
--- address is mandatory again, so going back discards them.
+-- Going back means dropping whatever the looser schema let in and the
+-- stricter one cannot hold. That is all the same set of rows: market data
+-- knows only that a station is there and which system it claims to be in,
+-- so none of it could have been recorded before this migration.
+--
+-- A market with no system was never representable, and neither was a
+-- station with no type. Both go, along with the listings hanging off them,
+-- deleted in the order the foreign keys allow: listings, then markets, then
+-- stations.
+
 DELETE FROM listings WHERE market_id IN (
-    SELECT id FROM markets WHERE system_address IS NULL
+    SELECT m.id
+      FROM markets m
+      LEFT JOIN stations s
+        ON s.system_address = m.system_address AND s.name = m.station_name
+     WHERE m.system_address IS NULL OR s.ty IS NULL
 );
-DELETE FROM markets WHERE system_address IS NULL;
+
+DELETE FROM markets AS m
+ WHERE m.system_address IS NULL
+    OR EXISTS (
+        SELECT 1
+          FROM stations s
+         WHERE s.system_address = m.system_address
+           AND s.name = m.station_name
+           AND s.ty IS NULL
+    );
+
+DELETE FROM stations WHERE ty IS NULL;
 
 DROP INDEX markets_waiting_on_system;
 ALTER TABLE markets DROP COLUMN system_name;
 ALTER TABLE markets ALTER COLUMN system_address SET NOT NULL;
-
--- A station recorded from market data has no type, and stationtype has no
--- value meaning "unknown", so there is nothing truthful to put back. Say so
--- rather than letting a constraint violation explain it. Deleting the
--- stations is not done here: markets reference them, so it would take the
--- trade history with it.
-DO $$
-DECLARE untyped bigint;
-BEGIN
-    SELECT count(*) INTO untyped FROM stations WHERE ty IS NULL;
-    IF untyped > 0 THEN
-        RAISE EXCEPTION
-            'cannot restore stations.ty NOT NULL: % stations came from market data and have no type',
-            untyped
-        USING HINT =
-            'give them a type, or delete them along with their markets and listings, then revert again';
-    END IF;
-END $$;
-
 ALTER TABLE stations ALTER COLUMN ty SET NOT NULL;
