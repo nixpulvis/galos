@@ -11,19 +11,38 @@ use galos_db::{
     bodies::Body, markets::Market, stars::Star, stations::Station,
     systems::System, Database,
 };
+use std::time::Duration;
 use structopt::StructOpt;
+
+/// How long EDDN may carry nothing before its connection is replaced
+///
+/// A busy hour of it runs at 31 messages a second and does not go a second
+/// without one, so two minutes of quiet is not EDDN being quiet.
+const STALL: Duration = Duration::from_secs(120);
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
     // Type as a URL? ZMQ doesn't bother :(
     #[structopt(short = "r", long = "remote", default_value = URL, help = "ZMQ remote address")]
     pub url: String,
+
+    #[structopt(
+        long = "stall",
+        help = "Seconds of silence before the connection is replaced, or 0 to leave it alone"
+    )]
+    pub stall: Option<u64>,
     // TODO: Filters?
 }
 
 impl Run for Cli {
     fn run(&self, db: &Database) {
-        for result in subscribe(&self.url) {
+        let stall = match self.stall {
+            None => Some(STALL),
+            Some(0) => None,
+            Some(secs) => Some(Duration::from_secs(secs)),
+        };
+
+        for result in subscribe(&self.url, stall) {
             if let Ok(envelop) = result {
                 process_message(
                     db,
@@ -31,7 +50,7 @@ impl Run for Cli {
                     envelop.header.uploader_id,
                 );
             } else if let Err(err) = result {
-                println!("{}", err);
+                tracing::warn!("{}", err);
             }
         }
     }

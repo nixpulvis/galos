@@ -3098,6 +3098,8 @@ dependencies = [
  "miniz_oxide 0.4.4",
  "serde",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
  "zmq",
 ]
 
@@ -3651,6 +3653,8 @@ dependencies = [
  "prettytable-rs",
  "structopt",
  "termion",
+ "tracing",
+ "tracing-subscriber",
  "tui",
 ]
 

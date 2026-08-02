@@ -19,6 +19,8 @@ galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
 prettytable-rs = "*"
 tui = "*"
+tracing = "*"
+tracing-subscriber = { version = "*", features = ["env-filter"] }
 galos_map= { path = "./galos_map" }
 
 [target.'cfg(unix)'.dependencies]
