@@ -65,7 +65,7 @@ impl Market {
         for commodity in &market.commodities {
             sqlx::query!(
                 r#"
-                INSERT INTO listings (
+                INSERT INTO commodities (
                     market_id,
                     name,
                     mean_price,

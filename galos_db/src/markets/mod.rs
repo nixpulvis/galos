@@ -14,18 +14,19 @@ pub struct Market {
     pub updated_at: DateTime<Utc>,
 }
 
+/// One commodity as a market trades it
 #[derive(Debug, PartialEq, Eq)]
-pub struct Listing {
+pub struct Commodity {
     pub market_id: i64,
     pub name: String,
-    pub mean_price: i64,
-    pub buy_price: i64,
-    pub sell_price: i64,
-    pub demand: i64,
-    pub demand_bracket: i64,
-    pub stock: i64,
-    pub stock_bracket: i64,
-    pub updated_at: i64,
+    pub mean_price: i32,
+    pub buy_price: i32,
+    pub sell_price: i32,
+    pub demand: i32,
+    pub demand_bracket: i32,
+    pub stock: i32,
+    pub stock_bracket: i32,
+    pub listed_at: DateTime<Utc>,
 }
 
 mod create;
