@@ -1,3 +1,4 @@
+use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::spawn::ShowNames;
 use bevy::prelude::*;
@@ -13,16 +14,14 @@ pub(crate) fn plugin(app: &mut App) {
         ..default()
     });
     app.add_systems(Startup, init_material);
-    // Labels follow their star's transform, so the whole pipeline runs after
-    // the systems that write it. `face_camera` in particular divides by the
-    // scale the `scale` systems give a star, and needs this frame's value
-    // rather than the previous frame's.
+    // Labels follow their star's transform. `face_camera` in particular
+    // divides by the scale the `scale` systems give a star, and needs this
+    // frame's value rather than the previous frame's.
     app.add_systems(
         Update,
         (respawn, visibility, face_camera)
             .chain()
-            .after(super::spawn::spawn)
-            .after(super::despawn::despawn)
+            .in_set(MapSet::Present)
             .after(super::scale::scale_systems)
             .after(super::scale::scale_stars),
     );

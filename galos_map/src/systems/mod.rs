@@ -1,3 +1,4 @@
+use crate::schedule::MapSet;
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCamera;
 use chrono::{DateTime, Utc};
@@ -23,11 +24,21 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
 
+    // Both write the camera, though to different fields, so pick an order.
     app.add_systems(
         Update,
-        visibility.after(spawn::spawn).after(despawn::despawn),
+        zoom_with_spyglass
+            .in_set(MapSet::Camera)
+            .after(crate::camera::move_camera),
     );
-    app.add_systems(Update, zoom_with_spyglass);
+    // Reads a star's transform, which the `scale` systems write.
+    app.add_systems(
+        Update,
+        visibility
+            .in_set(MapSet::Present)
+            .after(scale::scale_systems)
+            .after(scale::scale_stars),
+    );
 }
 
 #[derive(Component)]

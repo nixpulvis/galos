@@ -1,4 +1,5 @@
 use crate::camera::MoveCamera;
+use crate::schedule::MapSet;
 use crate::systems::{
     System, fetch::FetchIndex, fetch::FetchTasks, route::Route,
     route::spawn::spawn_route, system_to_vec,
@@ -27,8 +28,8 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<DragDistance>();
 
     app.add_systems(Startup, (init_mesh, init_materials));
-    app.add_systems(Update, spawn);
-    app.add_systems(Update, update.before(spawn));
+    app.add_systems(Update, spawn.in_set(MapSet::Populate));
+    app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
 
     app.add_observer(start_drag);
     app.add_observer(track_drag);

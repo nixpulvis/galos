@@ -1,3 +1,4 @@
+use crate::schedule::MapSet;
 use crate::systems::{Spyglass, route::fetch::fetch_route};
 use crate::{Db, search::Searched};
 use bevy::prelude::*;
@@ -16,7 +17,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();
 
-    app.add_systems(Update, fetch);
+    app.add_systems(Update, fetch.in_set(MapSet::Fetch));
 }
 
 /// Controls the background systems fetch rate (Hz).
@@ -111,7 +112,7 @@ pub struct FetchTasks {
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
-    camera_query: Query<&mut PanOrbitCamera>,
+    camera_query: Query<&PanOrbitCamera>,
     mut search_events: MessageReader<Searched>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
@@ -168,7 +169,7 @@ pub fn fetch(
 }
 
 fn fetch_spyglass(
-    camera_query: &Query<&mut PanOrbitCamera>,
+    camera_query: &Query<&PanOrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
     time: &Res<Time<Real>>,

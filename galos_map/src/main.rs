@@ -30,6 +30,7 @@ fn main() {
     app.insert_resource(ClearColor(Color::BLACK));
     app.insert_resource(Db(db));
 
+    app.add_plugins(schedule::plugin);
     app.add_plugins(camera::plugin);
     app.add_plugins(systems::plugin);
     app.add_plugins(ui::plugin);
@@ -38,7 +39,13 @@ fn main() {
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());
 
-    app.add_systems(Update, exit);
+    // Both only append an AppExit message, so the order does not matter.
+    app.add_systems(
+        Update,
+        exit.ambiguous_with(
+            bevy::app::TerminalCtrlCHandlerPlugin::exit_on_flag,
+        ),
+    );
     app.run();
 }
 

@@ -1,9 +1,13 @@
+use crate::schedule::MapSet;
 use crate::systems::System;
 use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<Despawn>();
-    app.add_systems(Update, despawn.after(super::spawn::spawn));
+    app.add_systems(
+        Update,
+        despawn.in_set(MapSet::Populate).after(super::spawn::spawn),
+    );
 }
 
 #[derive(Message)]

@@ -1,5 +1,6 @@
 use crate::Db;
 use crate::camera::MoveCamera;
+use crate::schedule::MapSet;
 use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use bevy::prelude::*;
@@ -8,7 +9,7 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<Searched>();
-    app.add_systems(Update, searched);
+    app.add_systems(Update, searched.in_set(MapSet::Search));
 }
 
 /// A collection of search messages for responding to the user's UI

@@ -1,3 +1,4 @@
+use crate::schedule::MapSet;
 use crate::systems::Spyglass;
 use bevy::camera::Hdr;
 use bevy::picking::mesh_picking::MeshPickingCamera;
@@ -9,7 +10,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(PanOrbitCameraPlugin);
     app.add_message::<MoveCamera>();
     app.add_systems(Startup, spawn_camera);
-    app.add_systems(Update, move_camera);
+    app.add_systems(Update, move_camera.in_set(MapSet::Camera));
 }
 
 /// A message which triggers the movement of the camera
