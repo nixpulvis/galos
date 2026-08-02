@@ -1,18 +1,30 @@
-//! Seeding: maps a [`SystemSnapshot`] onto the ECS world — bodies with
-//! deposits derived from geology, NPC stations with markets seeded from
-//! listings, and system modifiers from BGS state. Implements the BGS →
-//! gameplay table in DESIGN.md.
+//! Seeding: maps a [`SystemSnapshot`] onto the ECS world — a star system
+//! with its environment, the factions present in it (as corporations, with
+//! a treasury and one [`Presence`] per system they operate in), bodies with
+//! deposits derived from geology, and faction-owned stations whose markets
+//! come from real listings. Implements the BGS → gameplay table in
+//! DESIGN.md.
 
-use crate::data::StaticData;
+use crate::data::{ItemId, StaticData};
 use crate::sim::*;
 use crate::snapshot::*;
 use bevy::prelude::*;
-use elite_journal::faction::{Happiness, State};
 use elite_journal::station::StationType;
 use elite_journal::system::Security;
 use std::collections::HashMap;
 
 pub const NPC_STORAGE: u32 = 10_000;
+/// Starting treasury for a seeded faction. Real faction wealth is not
+/// something the BGS exposes, so this is a game-balance number.
+pub const FACTION_TREASURY: i64 = 100_000_000;
+
+/// What a seeded system yielded, so hosts can wire up scenarios.
+pub struct Seeded {
+    pub system: Entity,
+    pub bodies: HashMap<String, Entity>,
+    pub stations: HashMap<String, Entity>,
+    pub factions: HashMap<String, Entity>,
+}
 
 /// Leasable factory slots by station type — the big hub ports carry real
 /// industry, outposts barely any, carriers none.
@@ -27,13 +39,10 @@ pub fn slots_for(ty: &StationType) -> u32 {
 }
 
 /// Deposits granted per planet class: `(item, richness_milli)`.
-fn deposits_for(
-    data: &StaticData,
-    body: &BodySnapshot,
-) -> Vec<(crate::data::ItemId, u32)> {
+fn deposits_for(data: &StaticData, body: &BodySnapshot) -> Vec<(ItemId, u32)> {
     let item = |name: &str| data.item_by_name(name).expect("catalog item");
     let volcanism_bonus = if body.volcanism.is_some() { 500 } else { 0 };
-    let metal = |richness: u32| -> Vec<(crate::data::ItemId, u32)> {
+    let metal = |richness: u32| -> Vec<(ItemId, u32)> {
         vec![
             (item("bauxite"), richness + volcanism_bonus),
             (item("rutile"), richness + volcanism_bonus),
@@ -85,86 +94,99 @@ fn solar_milli(class: &str) -> u32 {
     }
 }
 
-/// Seeds the world and returns the station name → entity mapping so hosts
-/// can wire up scenarios.
-pub fn apply(
-    world: &mut World,
-    snapshot: &SystemSnapshot,
-) -> HashMap<String, Entity> {
-    let data = world.resource::<StaticData>().clone();
-
-    // System modifiers from BGS context.
-    let controlling = snapshot
-        .factions
-        .iter()
-        .max_by(|a, b| a.influence.total_cmp(&b.influence));
-    // Happier workforces build faster; an unknown band is neutral.
-    let productivity_milli =
-        match controlling.map(|f| f.happiness).unwrap_or(Happiness::None) {
-            Happiness::Elated => 1100,
-            Happiness::Happy => 1050,
-            Happiness::Discontented | Happiness::None => 1000,
-            Happiness::Unhappy => 900,
-            Happiness::Despondent => 800,
-        };
-    let tax_milli = match controlling.map(|f| f.influence).unwrap_or(0.0) {
-        i if i >= 60.0 => 25,
-        i if i >= 40.0 => 50,
-        i if i >= 20.0 => 75,
-        _ => 100,
-    };
-    let piracy_milli = match snapshot.security {
+fn piracy_milli(security: Security) -> u32 {
+    match security {
         Security::High => 0,
         Security::Medium => 20,
         Security::Low => 50,
         // Anarchy and unknown security are equally lawless.
         Security::Anarchy | Security::None => 100,
-    };
-    let boom =
-        controlling.map(|f| matches!(f.state, State::Boom)).unwrap_or(false);
-    let star_class = snapshot
-        .stars
-        .first()
-        .map(|s| s.class.as_str())
-        .unwrap_or("")
-        .to_string();
-    world.insert_resource(SystemModifiers {
-        productivity_milli,
-        tax_milli,
-        piracy_milli,
-        solar_milli: solar_milli(&star_class),
-        scoopable_star: scoopable(&star_class),
-    });
+    }
+}
 
-    // Bodies.
-    let mut body_entities: HashMap<String, Entity> = HashMap::new();
-    for body in &snapshot.bodies {
-        let deposits = Deposits(deposits_for(&data, body));
+/// Seeds one star system and everything in it.
+pub fn apply(world: &mut World, snapshot: &SystemSnapshot) -> Seeded {
+    let data = world.resource::<StaticData>().clone();
+    let star_class =
+        snapshot.stars.first().map(|s| s.class.as_str()).unwrap_or("");
+
+    let system = world
+        .spawn(StarSystemBundle {
+            system: StarSystem {
+                address: snapshot.address,
+                name: snapshot.name.clone(),
+            },
+            env: SystemEnv {
+                piracy_milli: piracy_milli(snapshot.security),
+                solar_milli: solar_milli(star_class),
+                scoopable_star: scoopable(star_class),
+            },
+            // Derived from Presence on the first tick.
+            control: Control::default(),
+        })
+        .id();
+
+    // Factions are corporations: an account, and a presence per system.
+    let mut factions = HashMap::new();
+    for faction in &snapshot.factions {
         let entity = world
-            .spawn((
-                Body { name: body.name.clone(), dist_ls: body.dist_ls },
-                deposits,
-                BodyEnv {
+            .spawn(FactionBundle::new(faction.name.clone(), FACTION_TREASURY))
+            .id();
+        world.spawn(Presence {
+            faction: entity,
+            system,
+            influence: faction.influence,
+            state: faction.state,
+            happiness: faction.happiness,
+        });
+        factions.insert(faction.name.clone(), entity);
+    }
+    // Whoever holds the most influence also owns the unattributed stations.
+    let default_owner = snapshot
+        .factions
+        .iter()
+        .max_by(|a, b| a.influence.total_cmp(&b.influence))
+        .and_then(|f| factions.get(&f.name).copied());
+
+    let mut bodies = HashMap::new();
+    for body in &snapshot.bodies {
+        let entity = world
+            .spawn(BodyBundle {
+                body: Body { name: body.name.clone(), dist_ls: body.dist_ls },
+                in_system: InSystem(system),
+                deposits: Deposits(deposits_for(&data, body)),
+                env: BodyEnv {
                     volcanism: body.volcanism.is_some(),
                     overhead_milli: 1000,
                 },
-            ))
+            })
             .id();
-        body_entities.insert(body.name.clone(), entity);
+        bodies.insert(body.name.clone(), entity);
     }
 
-    // NPC stations with markets. Boom raises demand baselines.
-    let mut station_entities = HashMap::new();
+    let boom = snapshot
+        .factions
+        .iter()
+        .max_by(|a, b| a.influence.total_cmp(&b.influence))
+        .map(|f| matches!(f.state, elite_journal::faction::State::Boom))
+        .unwrap_or(false);
+
+    let mut stations = HashMap::new();
     for station in &snapshot.stations {
         let placement = match (&station.body, station.surface) {
-            (Some(body), true) => {
-                Placement::Surface(body_entities[body.as_str()])
-            }
+            (Some(body), true) => Placement::Surface(bodies[body.as_str()]),
             (Some(body), false) => {
-                Placement::Orbital(Some(body_entities[body.as_str()]))
+                Placement::Orbital(Some(bodies[body.as_str()]))
             }
             (None, _) => Placement::Orbital(None),
         };
+        let owner = station
+            .controlling_faction
+            .as_ref()
+            .and_then(|name| factions.get(name).copied())
+            .or(default_owner)
+            .expect("a system with stations has at least one faction");
+
         let mut market = Market::default();
         for listing in &station.listings {
             let Some(item) = data.item_by_name(&listing.item) else { continue };
@@ -187,32 +209,30 @@ pub fn apply(
                 },
             );
         }
+
         let entity = world
             .spawn((
-                Station {
-                    name: station.name.clone(),
-                    placement,
-                    owner: Owner::Npc,
-                    dist_ls: station.dist_ls,
+                StationBundle {
+                    station: Station {
+                        name: station.name.clone(),
+                        placement,
+                        dist_ls: station.dist_ls,
+                    },
+                    in_system: InSystem(system),
+                    owner: OwnedBy(owner),
+                    slots: Slots { total: slots_for(&station.ty) },
+                    storage: Storage::new(NPC_STORAGE),
+                    power: PowerGrid::default(),
+                    life_support: LifeSupport::default(),
                 },
-                Slots { total: slots_for(&station.ty) },
-                Storage::new(NPC_STORAGE),
-                PowerGrid::default(),
-                LifeSupport::default(),
                 market,
             ))
             .id();
         if station.shipyard {
             world.entity_mut(entity).insert(Shipyard);
         }
-        station_entities.insert(station.name.clone(), entity);
+        stations.insert(station.name.clone(), entity);
     }
 
-    station_entities
-}
-
-/// Returns the body name → entity mapping (post-seed helper for scenarios).
-pub fn body_by_name(world: &mut World, name: &str) -> Option<Entity> {
-    let mut query = world.query::<(Entity, &Body)>();
-    query.iter(world).find(|(_, b)| b.name == name).map(|(e, _)| e)
+    Seeded { system, bodies, stations, factions }
 }

@@ -9,8 +9,8 @@
 //! 3D map involved.
 
 use bevy::prelude::*;
-use galos_factory::data::{BuildingKind, StaticData};
-use galos_factory::sim::commands::PlayerCommand;
+use galos_factory::data::{BuildingKind, ItemId, StaticData};
+use galos_factory::seed::Seeded;
 use galos_factory::sim::*;
 use galos_factory::{seed, sim_plugin, snapshot::SystemSnapshot, SimTick};
 
@@ -47,44 +47,54 @@ fn load_fixture(path: Option<String>) -> SystemSnapshot {
     }
 }
 
-/// The demo scenario: a mining outpost on Mercury feeding a refinery line,
-/// selling computer components at Abraham Lincoln — the full core loop.
-fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
-    let stations = seed::apply(world, snapshot);
-    let mercury =
-        seed::body_by_name(world, "Mercury").expect("Mercury in fixture");
+/// The demo scenario: a commander with a mining outpost on Mercury feeding
+/// a refinery line, selling computer components at Abraham Lincoln — the
+/// full core loop.
+fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) -> Entity {
+    let Seeded { bodies, stations, factions, .. } =
+        seed::apply(world, snapshot);
+    let mercury = bodies["Mercury"];
     let lincoln = stations["Abraham Lincoln"];
 
     let data = world.resource::<StaticData>().clone();
     let recipe = |name: &str| data.recipe_by_name(name).expect("known recipe");
+    let item = |name: &str| data.item_by_name(name).expect("known item");
 
-    // Fund the tutorial-skip: credits as if we'd been hauling for a while.
-    // Undercapitalization is the classic early-game death spiral (credits
-    // hit zero → ships can't fuel → imports stall → life support fails →
-    // production halves) — the demo starts with a healthy float instead.
-    world.resource_mut::<Credits>().0 = 800_000;
+    // A commander who has been hauling contracts for a while. Under-
+    // capitalization is the classic early-game death spiral (credits hit
+    // zero → ships can't fuel → imports stall → life support fails), so the
+    // demo starts with a healthy float.
+    let commander = world
+        .spawn((
+            CommanderBundle::new("Demo Commander", 800_000),
+            MemberOf(factions["Mother Gaia"]),
+        ))
+        .id();
+    let send = |world: &mut World, action: Action| {
+        world.send_event(PlayerCommand::new(commander, action));
+    };
 
-    let mut queue = world.resource_mut::<CommandQueue>();
-    queue.0.push(PlayerCommand::BuyOutpost {
-        body: mercury,
-        orbital: false,
-        name: "Demo Diggings".into(),
-    });
+    send(
+        world,
+        Action::BuyOutpost {
+            body: mercury,
+            orbital: false,
+            name: "Demo Diggings".into(),
+        },
+    );
     world.run_schedule(SimTick);
 
     let outpost = {
-        let mut query = world.query::<(Entity, &Station)>();
+        let mut query = world.query::<(Entity, &Station, &OwnedBy)>();
         query
             .iter(world)
-            .find(|(_, s)| s.owner == Owner::Player)
-            .map(|(e, _)| e)
+            .find(|(_, _, owner)| owner.0 == commander)
+            .map(|(e, _, _)| e)
             .expect("outpost spawned")
     };
 
-    // Bootstrap: buy construction materials + fuel + life support from the
-    // NPC market, couriered to the outpost.
-    let item = |name: &str| data.item_by_name(name).expect("known item");
-    let mut queue = world.resource_mut::<CommandQueue>();
+    // Bootstrap: buy construction materials, fuel, and life support from
+    // the NPC market, couriered to the outpost.
     for (what, qty) in [
         ("aluminium", 320u32),
         ("titanium", 100),
@@ -96,17 +106,19 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
         ("water", 60),
         ("foodcartridges", 60),
     ] {
-        queue.0.push(PlayerCommand::MarketBuy {
-            market: lincoln,
-            to: outpost,
-            item: item(what),
-            qty,
-        });
+        send(
+            world,
+            Action::MarketBuy {
+                market: lincoln,
+                to: outpost,
+                item: item(what),
+                qty,
+            },
+        );
     }
     // Build the chain: power, mining, smelting, purifying, assembling —
     // ending in computer components, the product Lincoln's market is
-    // actually starved for. Refining capacity is sized to eat the ore
-    // (surplus metal gets exported rather than hoarded).
+    // actually starved for. Refining capacity is sized to eat the ore.
     for kind in [
         BuildingKind::PowerPlant,
         BuildingKind::PowerPlant,
@@ -122,7 +134,7 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
         BuildingKind::Assembler,
         BuildingKind::Assembler,
     ] {
-        queue.0.push(PlayerCommand::Build { station: outpost, kind });
+        send(world, Action::Build { station: outpost, kind });
     }
     world.run_schedule(SimTick);
 
@@ -131,27 +143,16 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
         let mut query = world.query::<(Entity, &Factory)>();
         query.iter(world).map(|(e, f)| (e, f.kind)).collect()
     };
-    let mut extractors = factories
-        .iter()
-        .filter(|(_, k)| *k == BuildingKind::Extractor)
-        .map(|(e, _)| *e);
-    let mut refineries = factories
-        .iter()
-        .filter(|(_, k)| *k == BuildingKind::Refinery)
-        .map(|(e, _)| *e);
-    let plants = factories
-        .iter()
-        .filter(|(_, k)| *k == BuildingKind::PowerPlant)
-        .map(|(e, _)| *e);
-    let assemblers = factories
-        .iter()
-        .filter(|(_, k)| *k == BuildingKind::Assembler)
-        .map(|(e, _)| *e);
+    let of_kind = |kind: BuildingKind| -> Vec<Entity> {
+        factories.iter().filter(|(_, k)| *k == kind).map(|(e, _)| *e).collect()
+    };
+    let mut extractors = of_kind(BuildingKind::Extractor).into_iter();
+    let mut refineries = of_kind(BuildingKind::Refinery).into_iter();
 
-    // (recipe, output cap): caps throttle everything without a fast consumer
-    // or export, so the shared pool never silts up.
+    // (recipe, output cap): caps throttle everything without a fast
+    // consumer or export, so the shared pool never silts up.
     let mut assignments: Vec<(Entity, &str, Option<u32>)> = Vec::new();
-    for plant in plants {
+    for plant in of_kind(BuildingKind::PowerPlant) {
         assignments.push((plant, "burn_hydrogen", None));
     }
     assignments.push((extractors.next().unwrap(), "mine_bauxite", Some(200)));
@@ -170,51 +171,50 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
         ("make_semiconductors", Some(80u32)),
         ("make_computercomponents", None),
     ]
-    .iter();
-    for assembler in assemblers {
+    .into_iter();
+    for assembler in of_kind(BuildingKind::Assembler) {
         let (name, cap) = assembler_recipes.next().unwrap();
-        assignments.push((assembler, name, *cap));
+        assignments.push((assembler, name, cap));
     }
-
-    let mut queue = world.resource_mut::<CommandQueue>();
     for (factory, name, output_cap) in assignments {
-        queue.0.push(PlayerCommand::SetRecipe {
-            factory,
-            recipe: Some(recipe(name)),
-            output_cap,
-        });
+        send(
+            world,
+            Action::SetRecipe {
+                factory,
+                recipe: Some(recipe(name)),
+                output_cap,
+            },
+        );
     }
 
-    // Contracts: sell semiconductors at Abraham Lincoln; import fuel,
-    // polymers, and life support back. Import contracts load by buying from
-    // Lincoln's market at curve price — the colony lives on trade until
-    // local water/oil/algae mining makes it self-sufficient (the player's
-    // first expansion decision).
+    // Contracts: sell computer components at Abraham Lincoln, export
+    // surplus metals, import fuel/polymers/life support back. Imports load
+    // by buying from Lincoln's market at curve price — the colony lives on
+    // trade until local water/oil/algae mining makes it self-sufficient
+    // (the player's first expansion decision).
     // (item, from, to, target: dest ceiling, reserve: origin floor)
     let routes = [
-        // Exports: the money-maker plus surplus metals (keeps the pool clear).
         ("computercomponents", outpost, lincoln, None, 0u32),
         ("aluminium", outpost, lincoln, None, 60),
         ("copper", outpost, lincoln, None, 60),
-        // Imports with request thresholds.
-        ("hydrogenfuel", lincoln, outpost, Some(100u32), 0),
+        ("hydrogenfuel", lincoln, outpost, Some(100), 0),
         ("polymers", lincoln, outpost, Some(60), 0),
         ("water", lincoln, outpost, Some(60), 0),
         ("foodcartridges", lincoln, outpost, Some(60), 0),
     ];
     for (what, from, to, target, reserve) in routes {
-        queue.0.push(PlayerCommand::CreateContract {
-            from,
-            to,
-            item: item(what),
-            pay_per_unit: 0,
-            target,
-            reserve,
-        });
-        queue.0.push(PlayerCommand::BuyShip {
-            at: lincoln,
-            class: ShipClass::Hauler,
-        });
+        send(
+            world,
+            Action::CreateContract {
+                from,
+                to,
+                item: item(what),
+                pay_per_unit: 0,
+                target,
+                reserve,
+            },
+        );
+        send(world, Action::BuyShip { at: lincoln, class: ShipClass::Hauler });
     }
     world.run_schedule(SimTick);
 
@@ -227,12 +227,10 @@ fn demo_scenario(world: &mut World, snapshot: &SystemSnapshot) {
         query.iter(world).map(|(e, _)| e).collect()
     };
     assert_eq!(contracts.len(), ships.len(), "one ship per contract");
-    let mut queue = world.resource_mut::<CommandQueue>();
     for (ship, contract) in ships.into_iter().zip(contracts) {
-        queue
-            .0
-            .push(PlayerCommand::AssignShip { ship, contract: Some(contract) });
+        send(world, Action::AssignShip { ship, contract: Some(contract) });
     }
+    commander
 }
 
 fn run_headless(ticks: u64, fixture: Option<String>) {
@@ -240,32 +238,32 @@ fn run_headless(ticks: u64, fixture: Option<String>) {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     sim_plugin(&mut app);
-    demo_scenario(app.world_mut(), &snapshot);
+    let commander = demo_scenario(app.world_mut(), &snapshot);
 
     let world = app.world_mut();
     for _ in 0..ticks {
         world.run_schedule(SimTick);
     }
-    report(world, ticks);
+    report(world, commander, ticks);
 }
 
-fn report(world: &mut World, ticks: u64) {
+fn report(world: &mut World, commander: Entity, ticks: u64) {
     let data = world.resource::<StaticData>().clone();
     let clock_tick = world.resource::<SimClock>().tick;
-    let credits = world.resource::<Credits>().0;
+    let credits = world.entity(commander).get::<Credits>().unwrap().0;
+    let ledger = world.entity(commander).get::<Ledger>().unwrap().clone();
 
     println!("=== galos_factory headless report ===");
     println!("ticks: {clock_tick} (requested {ticks})  credits: {credits} cr");
 
-    let stats = world.resource::<Stats>();
     println!("\n item                 produced  consumed      sold   /100t");
     let mut items: Vec<_> = data.items.iter().enumerate().collect();
     items.sort_by_key(|(_, def)| (def.tier, def.id.clone()));
     for (index, def) in items {
-        let id = galos_factory::data::ItemId(index as u16);
-        let produced = stats.produced.get(&id).copied().unwrap_or(0);
-        let consumed = stats.consumed.get(&id).copied().unwrap_or(0);
-        let sold = stats.sold.get(&id).copied().unwrap_or(0);
+        let id = ItemId(index as u16);
+        let produced = ledger.produced.get(&id).copied().unwrap_or(0);
+        let consumed = ledger.consumed.get(&id).copied().unwrap_or(0);
+        let sold = ledger.sold.get(&id).copied().unwrap_or(0);
         if produced == 0 && consumed == 0 && sold == 0 {
             continue;
         }
@@ -277,39 +275,45 @@ fn report(world: &mut World, ticks: u64) {
     }
     println!(
         "\n revenue: {} cr   expenses: {} cr",
-        stats.revenue, stats.expenses
+        ledger.revenue, ledger.expenses
     );
 
-    let mut stations =
-        world.query::<(&Station, &Storage, &PowerGrid, Option<&LifeSupport>)>();
     println!("\n station                      stored  power(sup/dem)  life");
-    for (station, storage, grid, condition) in stations.iter(world) {
-        if station.owner != Owner::Player {
-            continue;
-        }
-        println!(
-            " {:<28} {:>5}/{:<5} {:>5}/{:<5}      {}",
-            station.name,
-            storage.total(),
-            storage.cap,
-            grid.supply_mw,
-            grid.demand_mw,
-            condition.map_or("-", |c| if c.life_support_ok {
-                "ok"
-            } else {
-                "SHORT"
-            }),
-        );
-        let mut inventory: Vec<_> = storage.pool.iter().collect();
-        inventory.sort_by_key(|(item, _)| item.0);
-        for (item, qty) in inventory {
-            println!("    {:<24} {:>6}", data.item(*item).id, qty);
-        }
+    let mut stations =
+        world
+            .query::<(&Station, &OwnedBy, &Storage, &PowerGrid, &LifeSupport)>(
+            );
+    let rows: Vec<String> = stations
+        .iter(world)
+        .filter(|(_, owner, _, _, _)| owner.0 == commander)
+        .map(|(station, _, storage, grid, life)| {
+            let mut inventory: Vec<_> = storage.pool.iter().collect();
+            inventory.sort_by_key(|(item, _)| item.0);
+            let lines: String = inventory
+                .iter()
+                .map(|(item, qty)| {
+                    format!("\n    {:<24} {:>6}", data.item(**item).id, qty)
+                })
+                .collect();
+            format!(
+                " {:<28} {:>5}/{:<5} {:>5}/{:<5}      {}{}",
+                station.name,
+                storage.total(),
+                storage.cap,
+                grid.supply_mw,
+                grid.demand_mw,
+                if life.ok { "ok" } else { "SHORT" },
+                lines,
+            )
+        })
+        .collect();
+    for row in rows {
+        println!("{row}");
     }
 
     let notices = world.resource::<Notices>();
     println!("\n last notices:");
-    for (tick, notice) in notices.0.iter().rev().take(12).rev() {
+    for (tick, notice) in notices.recent(12) {
         println!("  [{tick:>6}] {notice:?}");
     }
 }
@@ -322,6 +326,7 @@ fn run_windowed() {
     app.add_plugins(bevy_egui::EguiPlugin);
     sim_plugin(&mut app);
     galos_factory::ui::ui_plugin(&mut app);
-    demo_scenario(app.world_mut(), &snapshot);
+    let commander = demo_scenario(app.world_mut(), &snapshot);
+    app.insert_resource(galos_factory::ui::LocalCommander(commander));
     app.run();
 }

@@ -1,6 +1,7 @@
-//! Player commands: the only way UI/hosts mutate sim state. Queued into
-//! [`CommandQueue`] and applied at the start of each tick, keeping every
-//! action tick-aligned and replayable.
+//! Player commands: the only way UI, scripts, and (eventually) network
+//! clients mutate sim state. Sent as events, drained at the start of each
+//! tick, and **validated against the issuing actor's ownership** — an actor
+//! may only spend its own money and act on its own assets.
 
 use super::*;
 use crate::data::{BuildingKind, ItemId, RecipeId, Req, SiteKind, StaticData};
@@ -12,8 +13,21 @@ pub const OUTPOST_STORAGE: u32 = 1000;
 /// Instant NPC-market purchases pay a courier premium over curve price.
 pub const MARKET_BUY_PREMIUM_MILLI: i64 = 1100;
 
+/// A command and the actor issuing it.
+#[derive(Event, Clone, Debug)]
+pub struct PlayerCommand {
+    pub actor: Entity,
+    pub action: Action,
+}
+
+impl PlayerCommand {
+    pub fn new(actor: Entity, action: Action) -> Self {
+        PlayerCommand { actor, action }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub enum PlayerCommand {
+pub enum Action {
     /// Buy a turnkey outpost on (or orbiting) a body.
     BuyOutpost {
         body: Entity,
@@ -32,7 +46,7 @@ pub enum PlayerCommand {
     Demolish {
         factory: Entity,
     },
-    /// Standing contract; a player supply route when self-issued.
+    /// Standing contract; a supply route when both ends are the actor's.
     CreateContract {
         from: Entity,
         to: Entity,
@@ -49,58 +63,76 @@ pub enum PlayerCommand {
         ship: Entity,
         contract: Option<Entity>,
     },
-    /// Instant, premium-priced purchase from an NPC market, couriered into a
-    /// player station. Bulk flows should use contracts; this is for
-    /// construction bootstrap. TODO: replace with real haulage.
+    /// Instant, premium-priced purchase from an NPC market, couriered into
+    /// one of the actor's stations. Bulk flows should use contracts; this
+    /// exists for construction bootstrap.
     MarketBuy {
         market: Entity,
         to: Entity,
         item: ItemId,
         qty: u32,
     },
+    /// Session controls, not owned by any actor.
     SetSpeed(SimSpeed),
     SetRngSeed(u64),
 }
 
+type StationQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Station,
+        &'static mut Storage,
+        &'static Slots,
+        &'static OwnedBy,
+        &'static InSystem,
+        Option<&'static Children>,
+    ),
+>;
+
 pub fn apply_commands(
     mut commands: Commands,
-    (data, mods, clock): (Res<StaticData>, Res<SystemModifiers>, Res<SimClock>),
-    (mut credits, mut queue, mut speed, mut rng, mut notices): (
-        ResMut<Credits>,
-        ResMut<CommandQueue>,
+    (data, clock): (Res<StaticData>, Res<SimClock>),
+    (mut incoming, mut speed, mut rng, mut notices): (
+        EventReader<PlayerCommand>,
         ResMut<SimSpeed>,
         ResMut<SimRng>,
         ResMut<Notices>,
     ),
-    mut stations: Query<(&Station, &mut Storage, &Slots)>,
-    bodies: Query<(&Body, &Deposits, &BodyEnv)>,
-    factories: Query<&Factory>,
-    mut recipe_q: Query<(
+    mut actors: Query<(&mut Credits, &mut Ledger)>,
+    mut stations: StationQuery,
+    bodies: Query<(&Body, &InSystem, &Deposits, &BodyEnv)>,
+    systems: Query<&SystemEnv>,
+    mut factories: Query<(
         &Factory,
+        &Parent,
         &mut ActiveRecipe,
         &mut CraftProgress,
         &mut OutputCap,
     )>,
     shipyards: Query<(), With<Shipyard>>,
-    mut ships: Query<&mut Ship>,
+    mut ships: Query<(&mut Ship, &OwnedBy)>,
     contracts: Query<&Contract>,
     mut markets: Query<&mut Market>,
 ) {
     let tick = clock.tick;
-    for command in queue.0.drain(..) {
-        match command {
-            PlayerCommand::BuyOutpost { body, orbital, name } => {
-                if bodies.get(body).is_err() {
+    for PlayerCommand { actor, action } in incoming.read().cloned() {
+        let reject = |notices: &mut Notices, reason: &str| {
+            notices
+                .push(tick, Notice::CommandRejected { reason: reason.into() });
+        };
+
+        match action {
+            Action::BuyOutpost { body, orbital, name } => {
+                let Ok((_, in_system, _, _)) = bodies.get(body) else {
+                    reject(&mut notices, "no such body");
                     continue;
-                }
+                };
+                let Ok((mut credits, _)) = actors.get_mut(actor) else {
+                    continue;
+                };
                 if credits.0 < OUTPOST_PRICE {
-                    notices.0.push((
-                        tick,
-                        Notice::BuildFailed {
-                            station: name,
-                            reason: "insufficient credits for outpost".into(),
-                        },
-                    ));
+                    reject(&mut notices, "insufficient credits for outpost");
                     continue;
                 }
                 credits.0 -= OUTPOST_PRICE;
@@ -110,35 +142,46 @@ pub fn apply_commands(
                     Placement::Surface(body)
                 };
                 let dist_ls =
-                    bodies.get(body).map(|(b, _, _)| b.dist_ls).unwrap_or(0);
-                commands.spawn((
-                    Station { name, placement, owner: Owner::Player, dist_ls },
-                    Slots { total: OUTPOST_SLOTS },
-                    Storage::new(OUTPOST_STORAGE),
-                    PowerGrid::default(),
-                    LifeSupport::default(),
-                ));
+                    bodies.get(body).map(|(b, _, _, _)| b.dist_ls).unwrap_or(0);
+                commands.spawn(StationBundle {
+                    station: Station { name, placement, dist_ls },
+                    in_system: *in_system,
+                    owner: OwnedBy(actor),
+                    slots: Slots { total: OUTPOST_SLOTS },
+                    storage: Storage::new(OUTPOST_STORAGE),
+                    power: PowerGrid::default(),
+                    life_support: LifeSupport::default(),
+                });
             }
-            PlayerCommand::Build { station, kind } => {
-                let Ok((st, mut storage, slots)) = stations.get_mut(station)
+
+            Action::Build { station, kind } => {
+                let Ok((st, mut storage, slots, owner, _, children)) =
+                    stations.get_mut(station)
                 else {
+                    reject(&mut notices, "no such station");
                     continue;
                 };
+                if owner.0 != actor {
+                    reject(&mut notices, "station belongs to someone else");
+                    continue;
+                }
                 let def = data.building(kind);
-                let used =
-                    factories.iter().filter(|f| f.station == station).count()
-                        as u32;
+                let used = children.map_or(0, |c| c.len() as u32);
                 let site_ok = match (def.site, st.placement) {
                     (SiteKind::Any, _) => true,
                     (SiteKind::Surface, Placement::Surface(_)) => true,
                     (SiteKind::Orbital, Placement::Orbital(_)) => true,
                     _ => false,
                 };
+                let credits_ok = actors
+                    .get(actor)
+                    .map_or(false, |(c, _)| c.0 >= def.credits_cost as i64);
+
                 let reason = if used >= slots.total {
                     Some("no free slots")
                 } else if !site_ok {
                     Some("wrong site kind")
-                } else if credits.0 < def.credits_cost as i64 {
+                } else if !credits_ok {
                     Some("insufficient credits")
                 } else if !storage.has_all(&def.cost) {
                     Some("missing construction materials")
@@ -146,59 +189,67 @@ pub fn apply_commands(
                     None
                 };
                 if let Some(reason) = reason {
-                    notices.0.push((
-                        tick,
-                        Notice::BuildFailed {
-                            station: st.name.clone(),
-                            reason: reason.into(),
-                        },
-                    ));
+                    reject(&mut notices, reason);
                     continue;
                 }
+
                 storage.take_all(&def.cost);
-                credits.0 -= def.credits_cost as i64;
-                commands.spawn((
-                    Factory { kind, station },
-                    ActiveRecipe(None),
-                    OutputCap(None),
-                    CraftProgress::default(),
-                    Status::default(),
-                    MaintenanceDue(false),
-                ));
-                notices.0.push((
-                    tick,
-                    Notice::Built { station: st.name.clone(), kind },
-                ));
+                let station_name = st.name.clone();
+                if let Ok((mut credits, _)) = actors.get_mut(actor) {
+                    credits.0 -= def.credits_cost as i64;
+                }
+                commands.spawn(FactoryBundle::new(kind)).set_parent(station);
+                notices
+                    .push(tick, Notice::Built { station: station_name, kind });
             }
-            PlayerCommand::SetRecipe { factory, recipe, output_cap } => {
-                let Ok((fac, mut active, mut progress, mut cap)) =
-                    recipe_q.get_mut(factory)
+
+            Action::SetRecipe { factory, recipe, output_cap } => {
+                let Ok((fac, parent, _, _, _)) = factories.get(factory) else {
+                    continue;
+                };
+                let station = parent.get();
+                if !owns_station(&stations, station, actor) {
+                    reject(&mut notices, "factory belongs to someone else");
+                    continue;
+                }
+                let kind = fac.kind;
+                let valid = recipe.map_or(true, |id| {
+                    let def = data.recipe(id);
+                    def.building == kind
+                        && requirements_met(
+                            &def.requires,
+                            station,
+                            &stations,
+                            &bodies,
+                            &systems,
+                        )
+                });
+                if !valid {
+                    reject(&mut notices, "recipe not possible here");
+                    continue;
+                }
+                let Ok((_, _, mut active, mut progress, mut cap)) =
+                    factories.get_mut(factory)
                 else {
                     continue;
                 };
-                let valid = recipe.map_or(true, |id| {
-                    let def = data.recipe(id);
-                    def.building == fac.kind
-                        && requirements_met(
-                            &def.requires,
-                            fac.station,
-                            &stations,
-                            &bodies,
-                            &mods,
-                        )
-                });
-                if valid {
-                    *active = ActiveRecipe(recipe);
-                    *progress = CraftProgress::default();
-                    *cap = OutputCap(output_cap);
-                }
+                *active = ActiveRecipe(recipe);
+                *progress = CraftProgress::default();
+                *cap = OutputCap(output_cap);
             }
-            PlayerCommand::Demolish { factory } => {
-                if recipe_q.get(factory).is_ok() {
-                    commands.entity(factory).despawn();
+
+            Action::Demolish { factory } => {
+                let Ok((_, parent, _, _, _)) = factories.get(factory) else {
+                    continue;
+                };
+                if !owns_station(&stations, parent.get(), actor) {
+                    reject(&mut notices, "factory belongs to someone else");
+                    continue;
                 }
+                commands.entity(factory).despawn();
             }
-            PlayerCommand::CreateContract {
+
+            Action::CreateContract {
                 from,
                 to,
                 item,
@@ -206,117 +257,164 @@ pub fn apply_commands(
                 target,
                 reserve,
             } => {
-                if stations.get(from).is_ok()
-                    && stations.get(to).is_ok()
-                    && from != to
+                if from == to
+                    || stations.get(from).is_err()
+                    || stations.get(to).is_err()
                 {
-                    commands.spawn(Contract {
-                        issuer: Owner::Player,
-                        from,
-                        to,
-                        item,
-                        pay_per_unit,
-                        target,
-                        reserve,
-                    });
+                    reject(&mut notices, "invalid contract endpoints");
+                    continue;
                 }
+                // At least one end must be the issuer's — you cannot move
+                // goods between two parties you have nothing to do with.
+                if !owns_station(&stations, from, actor)
+                    && !owns_station(&stations, to, actor)
+                {
+                    reject(&mut notices, "neither endpoint belongs to you");
+                    continue;
+                }
+                commands.spawn((
+                    Contract { from, to, item, pay_per_unit, target, reserve },
+                    OwnedBy(actor),
+                ));
             }
-            PlayerCommand::BuyShip { at, class } => {
-                if shipyards.get(at).is_err() || credits.0 < class.price() {
+
+            Action::BuyShip { at, class } => {
+                if shipyards.get(at).is_err() {
+                    reject(&mut notices, "no shipyard here");
+                    continue;
+                }
+                let Ok((mut credits, _)) = actors.get_mut(actor) else {
+                    continue;
+                };
+                if credits.0 < class.price() {
+                    reject(&mut notices, "insufficient credits for ship");
                     continue;
                 }
                 credits.0 -= class.price();
-                commands.spawn(Ship {
-                    class,
-                    owner: Owner::Player,
-                    contract: None,
-                    state: ShipState::Idle { at },
-                });
+                commands.spawn((
+                    Ship {
+                        class,
+                        contract: None,
+                        state: ShipState::Idle { at },
+                    },
+                    OwnedBy(actor),
+                ));
             }
-            PlayerCommand::AssignShip { ship, contract } => {
-                let Ok(mut s) = ships.get_mut(ship) else { continue };
-                if let Some(c) = contract {
-                    if contracts.get(c).is_err() {
-                        continue;
+
+            Action::AssignShip { ship, contract } => {
+                let Ok((mut s, owner)) = ships.get_mut(ship) else { continue };
+                if owner.0 != actor {
+                    reject(&mut notices, "ship belongs to someone else");
+                    continue;
+                }
+                match contract {
+                    Some(c) => {
+                        if contracts.get(c).is_err() {
+                            continue;
+                        }
+                        s.contract = Some(c);
+                        s.state = ShipState::Loading;
                     }
-                    s.contract = Some(c);
-                    s.state = ShipState::Loading;
-                } else {
-                    if let Some(c) = s.contract.take() {
-                        let at = contracts.get(c).map(|c| c.from).ok();
-                        if let Some(at) = at {
-                            s.state = ShipState::Idle { at };
+                    None => {
+                        if let Some(c) = s.contract.take() {
+                            if let Ok(c) = contracts.get(c) {
+                                s.state = ShipState::Idle { at: c.from };
+                            }
                         }
                     }
                 }
             }
-            PlayerCommand::MarketBuy { market, to, item, qty } => {
-                let Ok(mut m) = markets.get_mut(market) else { continue };
-                let Some(entry) = m.entries.get_mut(&item) else { continue };
-                let qty = qty.min(entry.stock);
-                if qty == 0 {
+
+            Action::MarketBuy { market, to, item, qty } => {
+                if !owns_station(&stations, to, actor) {
+                    reject(&mut notices, "destination belongs to someone else");
                     continue;
                 }
-                let cost =
-                    unit_price(entry) * qty as i64 * MARKET_BUY_PREMIUM_MILLI
-                        / 1000;
-                if credits.0 < cost {
-                    continue;
-                }
-                let Ok((st, mut storage, _)) = stations.get_mut(to) else {
+                let Ok(mut market) = markets.get_mut(market) else { continue };
+                let Some(entry) = market.entries.get_mut(&item) else {
                     continue;
                 };
-                let stored = storage.add(item, qty);
+                let price = unit_price(entry) * MARKET_BUY_PREMIUM_MILLI / 1000;
+                let budget = actors.get(actor).map_or(0, |(c, _)| c.0.max(0));
+                let affordable =
+                    if price > 0 { (budget / price) as u32 } else { qty };
+                let wanted = qty.min(entry.stock).min(affordable);
+                if wanted == 0 {
+                    continue;
+                }
+                let Ok((st, mut storage, _, _, _, _)) = stations.get_mut(to)
+                else {
+                    continue;
+                };
+                let stored = storage.add(item, wanted);
                 if stored == 0 {
                     continue;
                 }
-                let cost = unit_price(entry)
-                    * stored as i64
-                    * MARKET_BUY_PREMIUM_MILLI
-                    / 1000;
+                let station_name = st.name.clone();
+                let cost = price * stored as i64;
                 entry.stock -= stored;
-                credits.0 -= cost;
-                notices.0.push((
+                if let Ok((mut credits, mut ledger)) = actors.get_mut(actor) {
+                    credits.0 -= cost;
+                    ledger.expenses += cost;
+                }
+                notices.push(
                     tick,
                     Notice::Bought {
-                        station: st.name.clone(),
+                        station: station_name,
                         item,
                         qty: stored,
                         credits: cost,
                     },
-                ));
+                );
             }
-            PlayerCommand::SetSpeed(s) => *speed = s,
-            PlayerCommand::SetRngSeed(seed) => *rng = SimRng::from_seed(seed),
+
+            Action::SetSpeed(s) => *speed = s,
+            Action::SetRngSeed(seed) => *rng = SimRng::from_seed(seed),
         }
     }
+}
+
+fn owns_station(
+    stations: &StationQuery,
+    station: Entity,
+    actor: Entity,
+) -> bool {
+    stations
+        .get(station)
+        .map_or(false, |(_, _, _, owner, _, _)| owner.0 == actor)
 }
 
 fn requirements_met(
     reqs: &[Req],
     station: Entity,
-    stations: &Query<(&Station, &mut Storage, &Slots)>,
-    bodies: &Query<(&Body, &Deposits, &BodyEnv)>,
-    mods: &SystemModifiers,
+    stations: &StationQuery,
+    bodies: &Query<(&Body, &InSystem, &Deposits, &BodyEnv)>,
+    systems: &Query<&SystemEnv>,
 ) -> bool {
-    let Ok((st, _, _)) = stations.get(station) else { return false };
+    let Ok((st, _, _, _, in_system, _)) = stations.get(station) else {
+        return false;
+    };
     reqs.iter().all(|req| match req {
         Req::Deposit(item) => match st.placement {
             Placement::Surface(body) => bodies
                 .get(body)
-                .map(|(_, deposits, _)| {
+                .map(|(_, _, deposits, _)| {
                     deposits.0.iter().any(|(i, _)| i == item)
                 })
                 .unwrap_or(false),
             Placement::Orbital(_) => false,
         },
         Req::ScoopableStar => {
-            matches!(st.placement, Placement::Orbital(_)) && mods.scoopable_star
+            matches!(st.placement, Placement::Orbital(_))
+                && systems
+                    .get(in_system.0)
+                    .map(|env| env.scoopable_star)
+                    .unwrap_or(false)
         }
         Req::Volcanism => match st.placement {
             Placement::Surface(body) => bodies
                 .get(body)
-                .map(|(_, _, env)| env.volcanism)
+                .map(|(_, _, _, env)| env.volcanism)
                 .unwrap_or(false),
             Placement::Orbital(_) => false,
         },
