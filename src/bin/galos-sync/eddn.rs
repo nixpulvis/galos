@@ -13,6 +13,7 @@ use galos_db::{
 };
 use std::time::Duration;
 use structopt::StructOpt;
+use tracing::{info, warn};
 
 /// How long EDDN may carry nothing before its connection is replaced
 ///
@@ -50,7 +51,7 @@ impl Run for Cli {
                     envelop.header.uploader_id,
                 );
             } else if let Err(err) = result {
-                tracing::warn!("{}", err);
+                warn!(error = %err, "unreadable message");
             }
         }
     }
@@ -74,47 +75,45 @@ fn process_message(db: &Database, message: Message, user: String) {
                     )
                     .await
                     {
-                        Ok(_) => println!("[EDDN] <SCN:sys> {}", system.name),
-                        Err(err) => eprintln!("[EDDN] <SCN:sys> {}", err),
+                        Ok(_) => info!(system = %system.name, "scan"),
+                        Err(err) => {
+                            warn!(system = %system.name, error = %err, "scan")
+                        }
                     }
 
                     match scan.target {
-                        ScanTarget::Star(star) => {
-                            match Star::from_journal(
-                                db,
-                                entry.timestamp,
-                                &user,
-                                &star,
-                                scan.system_address,
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    println!("[EDDN] <SCN:star> {}", star.name)
-                                }
-                                Err(err) => {
-                                    eprintln!("[EDDN] <SCN:star> {}", err)
-                                }
+                        ScanTarget::Star(star) => match Star::from_journal(
+                            db,
+                            entry.timestamp,
+                            &user,
+                            &star,
+                            scan.system_address,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                info!(star = %star.name, "scan")
                             }
-                        }
-                        ScanTarget::Body(body) => {
-                            match Body::from_journal(
-                                db,
-                                entry.timestamp,
-                                &user,
-                                &body,
-                                scan.system_address,
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    println!("[EDDN] <SCN:bod> {}", body.name)
-                                }
-                                Err(err) => {
-                                    eprintln!("[EDDN] <SCN:bod> {}", err)
-                                }
+                            Err(err) => {
+                                warn!(star = %star.name, error = %err, "scan")
                             }
-                        }
+                        },
+                        ScanTarget::Body(body) => match Body::from_journal(
+                            db,
+                            entry.timestamp,
+                            &user,
+                            &body,
+                            scan.system_address,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                info!(body = %body.name, "scan")
+                            }
+                            Err(err) => {
+                                warn!(body = %body.name, error = %err, "scan")
+                            }
+                        },
                     }
                 }
                 Event::Location(e) => {
@@ -126,8 +125,10 @@ fn process_message(db: &Database, message: Message, user: String) {
                     )
                     .await
                     {
-                        Ok(_) => println!("[EDDN] <LOC:sys> {}", e.system.name),
-                        Err(err) => eprintln!("[EDDN] <LOC:sys> {}", err),
+                        Ok(_) => info!(system = %e.system.name, "location"),
+                        Err(err) => {
+                            warn!(system = %e.system.name, error = %err, "location")
+                        }
                     }
 
                     if let Some(ref body) = e.body {
@@ -140,8 +141,10 @@ fn process_message(db: &Database, message: Message, user: String) {
                         )
                         .await
                         {
-                            Ok(_) => println!("[EDDN] <LOC:bod> {}", body.name),
-                            Err(err) => eprintln!("[EDDN] <LOC:bod> {}", err),
+                            Ok(_) => info!(body = %body.name, "location"),
+                            Err(err) => {
+                                warn!(body = %body.name, error = %err, "location")
+                            }
                         }
                     }
 
@@ -156,9 +159,11 @@ fn process_message(db: &Database, message: Message, user: String) {
                         .await
                         {
                             Ok(_) => {
-                                println!("[EDDN] <LOC:sta> {}", station.name)
+                                info!(station = %station.name, "location")
                             }
-                            Err(err) => eprintln!("[EDDN] <LOC:sta> {}", err),
+                            Err(err) => {
+                                warn!(station = %station.name, error = %err, "location")
+                            }
                         }
                     }
                 }
@@ -173,8 +178,10 @@ fn process_message(db: &Database, message: Message, user: String) {
                     )
                     .await
                     {
-                        Ok(_) => println!("[EDDN] <DOC:sys> {}", system.name),
-                        Err(err) => eprintln!("[EDDN] <DOC:sys> {}", err),
+                        Ok(_) => info!(system = %system.name, "docked"),
+                        Err(err) => {
+                            warn!(system = %system.name, error = %err, "docked")
+                        }
                     }
 
                     match Station::from_journal(
@@ -187,9 +194,11 @@ fn process_message(db: &Database, message: Message, user: String) {
                     .await
                     {
                         Ok(_) => {
-                            println!("[EDDN] <DOC:sta> {}", e.station.name)
+                            info!(station = %e.station.name, "docked")
                         }
-                        Err(err) => eprintln!("[EDDN] <DOC:sta> {}", err),
+                        Err(err) => {
+                            warn!(station = %e.station.name, error = %err, "docked")
+                        }
                     }
                 }
                 Event::FsdJump(e) => {
@@ -201,8 +210,10 @@ fn process_message(db: &Database, message: Message, user: String) {
                     )
                     .await
                     {
-                        Ok(_) => println!("[EDDN] <FSD:sys> {}", e.system.name),
-                        Err(err) => eprintln!("[EDDN] <FSD:sys> {}", err),
+                        Ok(_) => info!(system = %e.system.name, "fsd jump"),
+                        Err(err) => {
+                            warn!(system = %e.system.name, error = %err, "fsd jump")
+                        }
                     }
                 }
                 Event::NavRoute(NavRoute::Route(destinations)) => {
@@ -225,12 +236,11 @@ fn process_message(db: &Database, message: Message, user: String) {
                         .await
                         {
                             Ok(_) => {
-                                println!(
-                                    "[EDDN] <ROU:sys> {}",
-                                    destination.star_system
-                                )
+                                info!(system = %destination.star_system, "nav route")
                             }
-                            Err(err) => eprintln!("[EDDN] <ROU:sys> {}", err),
+                            Err(err) => {
+                                warn!(system = %destination.star_system, error = %err, "nav route")
+                            }
                         }
                     }
                 }
@@ -256,23 +266,28 @@ fn process_message(db: &Database, message: Message, user: String) {
                     .await
                     {
                         Ok(_) => {
-                            println!("[EDDN] <MKT:sta> {}", m.station_name)
+                            info!(station = %m.station_name, "commodity")
                         }
-                        Err(err) => eprintln!("[EDDN] <MKT:sta> {}", err),
+                        Err(err) => {
+                            warn!(station = %m.station_name, error = %err, "commodity")
+                        }
                     }
                 }
 
                 match Market::from_journal(db, e.timestamp, &m).await {
-                    Ok(market) => println!(
-                        "[EDDN] <MKT:mkt> {}{}",
-                        m.station_name,
-                        if market.system_address.is_none() {
-                            " (waiting on its system)"
-                        } else {
-                            ""
-                        }
+                    // A market can arrive before anything that would create
+                    // the system it names, and is recorded with no system to
+                    // belong to until that turns up. The name it gave is all
+                    // there is to go on in the meantime.
+                    Ok(market) => info!(
+                        market = %m.station_name,
+                        system = %m.system_name,
+                        orphan = market.system_address.is_none(),
+                        "commodity",
                     ),
-                    Err(err) => eprintln!("[EDDN] <MKT:mkt> {}", err),
+                    Err(err) => {
+                        warn!(market = %m.station_name, error = %err, "commodity")
+                    }
                 }
             }
             _ => {}
