@@ -349,21 +349,29 @@ pub fn choose_names(
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
         .filter_map(|(entity, system)| {
-            // With names turned off, the one under the pointer is still
-            // worth reading, and is the only one asked for.
-            // Only once the pointer has come to rest. A system crossed on
-            // the way to another would otherwise take a name, and with it
-            // the place of whatever name was being reached for.
+            // Pointing at a system asks for its name whatever else has
+            // been set, so it answers to neither of the tests below.
+            //
+            // Only once the pointer has come to rest, though. A system
+            // crossed on the way to another would otherwise take a name,
+            // and with it the place of the name being reached for.
             let pointed_at = pointing
                 .get(entity)
                 .is_ok_and(|at| at.settled(time.elapsed_secs()));
+
+            // Names turned off leaves the one under the pointer the only
+            // one being asked for.
             if !show_names.0 && !pointed_at {
                 return None;
             }
 
             let position = DVec3::from(system.position);
             let from_focus = (position - orbit.focus).length() as f32;
-            if from_focus > reach {
+            // Further out than names were asked to reach, and not the one
+            // being pointed at. That exception cannot name something
+            // invisible: a system the spyglass hides is not drawn, and what
+            // is not drawn cannot be hit, so it cannot be pointed at either.
+            if !pointed_at && from_focus > reach {
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;
