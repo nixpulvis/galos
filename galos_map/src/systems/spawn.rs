@@ -2,9 +2,17 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::space::Galaxy;
 use crate::systems::{
-    System, fetch::FetchIndex, fetch::FetchTasks, route::Route,
-    route::spawn::spawn_route, system_to_vec,
+    System,
+    fetch::FetchIndex,
+    fetch::FetchTasks,
+    pointing::{
+        DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
+    },
+    route::Route,
+    route::spawn::spawn_route,
+    system_to_vec,
 };
+use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
 use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
@@ -19,10 +27,9 @@ use std::{collections::HashMap, ops::Deref, time::Instant};
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(MeshPickingPlugin);
-    // Stars are the only thing worth clicking, so they are the only thing
-    // ray cast against. The alternative is every mesh in the world, which
-    // means the route line and a name label per nearby star. Requires
-    // `MeshPickingCamera` on the camera and `Pickable` on each star.
+    // A star and its name are worth clicking; the route line is not. Marking
+    // what is worth hitting keeps the ray cast off every mesh in the world.
+    // Requires `MeshPickingCamera` on the camera and `Pickable` on each.
     app.insert_resource(MeshPickingSettings {
         require_markers: true,
         ..default()
@@ -34,8 +41,6 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
 
-    app.add_observer(start_drag);
-    app.add_observer(track_drag);
     app.add_observer(focus_camera_on_click);
 }
 
@@ -44,6 +49,10 @@ pub struct SystemMesh(pub Handle<Mesh>);
 
 #[derive(Resource)]
 pub struct SystemMaterials(pub Vec<Handle<StandardMaterial>>);
+
+/// A material that draws nothing, for what only has to be hit
+#[derive(Resource)]
+pub struct InvisibleMaterial(pub Handle<StandardMaterial>);
 // pub struct SystemMaterials(pub HashMap<String, Handle<StandardMaterial>>);
 
 /// Determains what color to draw in system view mode.
@@ -73,39 +82,6 @@ pub struct ShowNames(pub bool);
 #[derive(Component)]
 pub struct Star;
 
-/// How far a pointer may travel while pressed and still count as a click
-///
-/// Logical pixels, so the same physical slack whatever the display density.
-const CLICK_SLOP: f32 = 5.;
-
-/// How far a pointer has travelled since it was last pressed
-///
-/// Kept on the pointer rather than in one shared slot, so a second pointer
-/// cannot answer for the first and the measurement dies with the pointer.
-#[derive(Component, Default)]
-struct DragDistance(f32);
-
-/// Start measuring a pointer's travel when one of its buttons goes down
-fn start_drag(
-    press: On<Pointer<Press>>,
-    pointers: Res<PointerMap>,
-    mut commands: Commands,
-) {
-    let Some(pointer) = pointers.get_entity(press.pointer_id) else { return };
-    commands.entity(pointer).insert(DragDistance(0.));
-}
-
-/// Keep the furthest a pointer has been from where it was pressed
-fn track_drag(
-    moved: On<Pointer<Drag>>,
-    pointers: Res<PointerMap>,
-    mut dragged: Query<&mut DragDistance>,
-) {
-    let Some(pointer) = pointers.get_entity(moved.pointer_id) else { return };
-    let Ok(mut travelled) = dragged.get_mut(pointer) else { return };
-    travelled.0 = travelled.0.max(moved.distance.length());
-}
-
 /// Focus the camera on clicked star systems
 ///
 /// The left button orbits the camera as well as selecting, so an orbit that
@@ -117,29 +93,45 @@ fn track_drag(
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
-    stars: Query<&ChildOf, With<Star>>,
-    systems: Query<&System>,
+    pointed_at: Query<&System, With<PointedAt>>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
+    frame: Res<FrameCount>,
+    mut answered: Local<Option<u32>>,
     mut move_camera_events: MessageWriter<MoveCamera>,
 ) {
     let travelled = pointers
         .get_entity(click.pointer_id)
         .and_then(|pointer| dragged.get(pointer).ok())
         .map_or(0., |travelled| travelled.0);
-    if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
+    if click.button != PointerButton::Primary || travelled > DRAG_THRESHOLD {
         return;
     }
-    // What is hit is a star, so the system holding it is its parent.
+
+    // One click is reported once for everything under the pointer, and
+    // since a star stopped blocking what lies behind it there are usually
+    // several. They are all the same click, and there is only one place to
+    // be sent, so the first of them answers for the rest.
     //
-    // The system that was hit, rather than where on it the ray landed. A hit
-    // is reported in rendering coordinates, which are relative to whichever
-    // grid cell the camera is in and so mean nothing once it has moved on.
-    let Ok(child_of) = stars.get(click.entity) else { return };
-    if let Ok(system) = systems.get(child_of.parent()) {
-        move_camera_events
-            .write(MoveCamera { position: Some(DVec3::from(system.position)) });
+    // Counted by frame rather than by which of them is the one that won:
+    // picking reports a click before `pointing` has looked at the frame it
+    // belongs to, so anything recorded about the winner is a frame old, and
+    // a pointer that has just moved would leave the click unanswered.
+    if *answered == Some(frame.0) {
+        return;
     }
+    *answered = Some(frame.0);
+    // Whatever is being pointed at is what a click is for, and `pointing`
+    // has already settled which system that is, weighing a name over a star
+    // lying nearer behind it. Asking it rather than working the hit out
+    // again keeps the click on whatever the ring and the tint are on.
+    //
+    // The system, rather than where on it the ray landed. A hit is reported
+    // in rendering coordinates, which are relative to whichever grid cell
+    // the camera is in and so mean nothing once it has moved on.
+    let Ok(system) = pointed_at.single() else { return };
+    move_camera_events
+        .write(MoveCamera { position: Some(DVec3::from(system.position)) });
 }
 
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
@@ -152,6 +144,7 @@ pub fn spawn(
     color_by: Res<ColorBy>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
+    invisible: Res<InvisibleMaterial>,
     time: Res<Time<Real>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
@@ -177,6 +170,7 @@ pub fn spawn(
                 &mut commands,
                 &mesh,
                 &materials,
+                &invisible,
                 &time,
                 fetched_at,
             );
@@ -234,6 +228,7 @@ pub fn spawn_systems(
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
+    invisible: &Res<InvisibleMaterial>,
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
 ) {
@@ -264,6 +259,7 @@ pub fn spawn_systems(
             );
 
             let drawn = star(&system, color_by, mesh, materials);
+            let target = pointer_target(mesh, invisible);
             commands
                 .spawn((
                     placement(&system, grid),
@@ -276,7 +272,8 @@ pub fn spawn_systems(
                     // to put it rather than where the cell says.
                     ChildOf(galaxy.0),
                 ))
-                .with_child(drawn);
+                .with_child(drawn)
+                .with_child(target);
         }
     }
 }
@@ -332,6 +329,29 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
     (cell, Transform::from_translation(translation))
 }
 
+/// What catches the pointer for a system
+///
+/// Sized each frame by [`super::pointing`] to match the ring it draws, so a
+/// system is as easy to hit as the mark says it is. Sits at the system's own
+/// position and draws nothing.
+fn pointer_target(
+    mesh: &Res<SystemMesh>,
+    invisible: &Res<InvisibleMaterial>,
+) -> impl Bundle {
+    (
+        PointerTarget,
+        Mesh3d(mesh.0.clone()),
+        MeshMaterial3d(invisible.0.clone()),
+        // Fitted by `pointing::size_targets` before the first draw.
+        Transform::from_scale(Vec3::splat(UNFITTED_SCALE)),
+        NotShadowCaster,
+        // Mesh picking requires markers, see `plugin`. A star does not
+        // block what lies behind it, so a name drawn over one is reported
+        // as well and `pointing` can weigh the two.
+        Pickable { should_block_lower: false, is_hoverable: true },
+    )
+}
+
 /// The one star a system is drawn with
 ///
 /// Sits at the system's own position with an identity transform, since there
@@ -350,8 +370,6 @@ fn star(
         MeshMaterial3d(materials.0[color_idx(system, color_by)].clone()),
         Transform::default(),
         NotShadowCaster,
-        // Mesh picking requires markers, see `plugin`.
-        Pickable::default(),
     )
 }
 
@@ -397,6 +415,12 @@ fn init_materials(
         .collect();
 
     commands.insert_resource(SystemMaterials(handles));
+    commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
+        base_color: Color::NONE,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    })));
 }
 
 fn allegiance_color_idx(system: &System) -> usize {

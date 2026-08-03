@@ -24,6 +24,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(despawn::plugin);
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
+    app.add_plugins(pointing::plugin);
 
     // Both ask the camera for something, and `orbit_camera` then works out
     // where it lands, so both have to have spoken by the time it runs.
@@ -61,6 +62,7 @@ pub struct System {
 pub mod despawn;
 pub mod fetch;
 pub mod labels;
+pub mod pointing;
 pub mod route;
 pub mod scale;
 pub mod spawn;
