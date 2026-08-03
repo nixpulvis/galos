@@ -2,7 +2,7 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::pointing::{INDICATOR, PointedAt, PointerTarget};
-use crate::systems::spawn::ShowNames;
+use crate::systems::spawn::{ShowNames, Star};
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -513,6 +513,7 @@ pub fn leaders(
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
     systems: Query<(&GlobalTransform, &Children, Has<PointedAt>), With<System>>,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
+    stars: Query<&GlobalTransform, With<Star>>,
 ) {
     for (label, drawn, child_of) in &labels {
         if !drawn.get() {
@@ -524,19 +525,28 @@ pub fn leaders(
         };
 
         // A name is the system's, so the line points at the system. What it
-        // has to begin clear of is the ring drawn around it, which reaches
-        // further than the star does and is what the eye takes for the
-        // system's edge. The target [`super::pointing`] fits to that ring is
-        // where its size is kept, and it is fitted every frame, so the line
-        // meets the ring at every zoom rather than crossing it at some.
-        let Some(edge) = children
-            .iter()
-            .filter_map(|child| targets.get(child).ok())
-            .map(|target| target.scale().x)
-            .next()
-        else {
-            continue;
+        // has to begin clear of is whatever is drawn there, which is the
+        // ring while the system is pointed at and the star alone the rest of
+        // the time. The ring reaches the further of the two, so the line
+        // draws back to meet it and runs out again once it goes.
+        //
+        // The ring's size is kept on the target fitted to it, and that is
+        // fitted every frame, so the line meets it at every zoom rather than
+        // at one.
+        let edge = if pointed_at {
+            children
+                .iter()
+                .filter_map(|child| targets.get(child).ok())
+                .map(|target| target.scale().x)
+                .next()
+        } else {
+            children
+                .iter()
+                .filter_map(|child| stars.get(child).ok())
+                .map(|star| star.scale().x)
+                .reduce(f32::max)
         };
+        let Some(edge) = edge else { continue };
 
         // The label's origin is the left edge of the text, so the line runs
         // from the system straight to where the name begins.
