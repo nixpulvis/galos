@@ -6,7 +6,7 @@ use crate::systems::{
     fetch::FetchIndex,
     fetch::FetchTasks,
     pointing::{
-        CLICK_SLOP, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
+        DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
     },
     route::Route,
     route::spawn::spawn_route,
@@ -104,7 +104,7 @@ fn focus_camera_on_click(
         .get_entity(click.pointer_id)
         .and_then(|pointer| dragged.get(pointer).ok())
         .map_or(0., |travelled| travelled.0);
-    if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
+    if click.button != PointerButton::Primary || travelled > DRAG_THRESHOLD {
         return;
     }
 

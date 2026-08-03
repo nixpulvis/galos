@@ -80,10 +80,15 @@ const DWELL: f32 = 0.25;
 /// that thing's transform, and a zero scale has no inverse.
 pub(super) const UNFITTED_SCALE: f32 = 1e-6;
 
-/// How far a pointer may travel while pressed and still count as a click
+/// How far a pointer may travel while pressed before it is dragging
 ///
-/// Logical pixels, so the same physical slack whatever the display density.
-pub(super) const CLICK_SLOP: f32 = 5.;
+/// The line between the two things a press can mean. Short of it the press
+/// is a click, and answers with whatever is under the pointer; past it the
+/// press is moving the map, and asks nothing of what it sweeps across.
+///
+/// Logical pixels, so it is the same distance to the hand whatever the
+/// display density.
+pub(super) const DRAG_THRESHOLD: f32 = 5.;
 
 /// How far a pointer has travelled since it was last pressed
 ///
@@ -174,7 +179,7 @@ pub fn point_at(
         MouseButton::Right,
         MouseButton::Middle,
     ]);
-    if holding && dragged.iter().any(|far| far.0 > CLICK_SLOP) {
+    if holding && dragged.iter().any(|far| far.0 > DRAG_THRESHOLD) {
         for system in &pointed_at {
             commands.entity(system).remove::<PointedAt>();
         }
