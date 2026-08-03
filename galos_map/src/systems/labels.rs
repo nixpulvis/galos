@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::pointing::{INDICATOR, PointedAt, PointerTarget};
+use crate::systems::pointing::{INDICATOR, PointedAt};
 use crate::systems::spawn::{ShowNames, Star};
 use crate::systems::{Spyglass, System};
 use bevy::camera::visibility::VisibilitySystems;
@@ -125,9 +125,6 @@ const FONT: &str = "Gautami";
 ///
 /// Dimmer than the text so it reads as a connector rather than as content.
 const LEADER_COLOR: Srgba = Srgba::new(1., 1., 1., 0.35);
-
-/// Colour of that line while the pointer is over the system
-const LEADER_POINTED_AT: Srgba = INDICATOR;
 
 /// Air left at each end of the line, as a fraction of its full span
 ///
@@ -567,7 +564,6 @@ pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
     systems: Query<(&GlobalTransform, &Children, Has<PointedAt>), With<System>>,
-    targets: Query<&GlobalTransform, With<PointerTarget>>,
     stars: Query<&GlobalTransform, With<Star>>,
 ) {
     for (label, drawn, child_of) in &labels {
@@ -579,29 +575,25 @@ pub fn leaders(
             continue;
         };
 
+        // A ring around a system says which one a name belongs to better
+        // than a line to it does, and leaves nothing for the line to say.
+        if pointed_at {
+            continue;
+        }
+
         // A name is the system's, so the line points at the system. What it
-        // has to begin clear of is whatever is drawn there, which is the
-        // ring while the system is pointed at and the star alone the rest of
-        // the time. The ring reaches the further of the two, so the line
-        // draws back to meet it and runs out again once it goes.
-        //
-        // The ring's size is kept on the target fitted to it, and that is
-        // fitted every frame, so the line meets it at every zoom rather than
-        // at one.
-        let edge = if pointed_at {
-            children
-                .iter()
-                .filter_map(|child| targets.get(child).ok())
-                .map(|target| target.scale().x)
-                .next()
-        } else {
-            children
-                .iter()
-                .filter_map(|child| stars.get(child).ok())
-                .map(|star| star.scale().x)
-                .reduce(f32::max)
+        // has to begin clear of is the star drawn there, which carries the
+        // size it is drawn at where the system deliberately does not. The
+        // largest of them, since a system may hold more than one, and they
+        // all sit at its own position for now.
+        let Some(edge) = children
+            .iter()
+            .filter_map(|child| stars.get(child).ok())
+            .map(|star| star.scale().x)
+            .reduce(f32::max)
+        else {
+            continue;
         };
-        let Some(edge) = edge else { continue };
 
         // The label's origin is the left edge of the text, so the line runs
         // from the system straight to where the name begins.
@@ -622,7 +614,7 @@ pub fn leaders(
         gizmos.line(
             from + direction * start,
             from + direction * end,
-            if pointed_at { LEADER_POINTED_AT } else { LEADER_COLOR },
+            LEADER_COLOR,
         );
     }
 }
