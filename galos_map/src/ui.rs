@@ -46,11 +46,17 @@ const RADIUS_SCALES: [(f32, f32, f64, f64); 3] =
 /// back down every frame it was drawn. `ceiling` clamps instead, once, after
 /// all three have had their say, and a range past it is not offered at all.
 fn radius_sliders(ui: &mut Ui, radius: &mut f32, ceiling: f32) {
+    let mut reached = 0.;
     for (low, high, step, speed) in RADIUS_SCALES {
         let high = high.min(ceiling);
-        if low >= high {
+        // Each scale has to reach further than the last to earn a slider.
+        // Under a low ceiling they clamp to the same number, and a second
+        // slider over a range already offered says nothing the first did
+        // not.
+        if low >= high || high <= reached {
             continue;
         }
+        reached = high;
         ui.label(format!("{low} - {high} Ly"));
         ui.add(
             egui::Slider::new(radius, low..=high)
@@ -222,17 +228,25 @@ pub fn panels(
 
                 ui.checkbox(&mut show_names.0, "Show System Names");
                 if show_names.0 {
-                    // A name can only be drawn for a system that is drawn,
-                    // and the spyglass is what decides that, so asking for
-                    // names further out than it reaches asks for nothing.
-                    // Overriding it draws everything loaded, and then the
-                    // question is open again.
-                    let ceiling =
-                        if spyglass.disabled { 1.1e5 } else { spyglass.radius };
-                    ui.label("Name Radius");
-                    ui.group(|ui| {
-                        radius_sliders(ui, &mut name_radius.0, ceiling)
-                    });
+                    ui.checkbox(
+                        &mut name_radius.follow_spyglass,
+                        "Names Follow Spyglass",
+                    );
+                    if !name_radius.follow_spyglass {
+                        // A name can only be drawn for a system that is
+                        // drawn, and the spyglass decides that. Overriding
+                        // it draws everything loaded, and then names may be
+                        // asked for beyond its reach.
+                        let ceiling = if spyglass.disabled {
+                            1.1e5
+                        } else {
+                            spyglass.radius
+                        };
+                        ui.label("Name Radius");
+                        ui.group(|ui| {
+                            radius_sliders(ui, &mut name_radius.radius, ceiling)
+                        });
+                    }
                 }
             });
         },

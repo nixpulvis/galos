@@ -17,7 +17,10 @@ pub(crate) fn plugin(app: &mut App) {
         font_embedded: vec![include_bytes!("../../assets/gautami.ttf")],
         ..default()
     });
-    app.insert_resource(NameRadius(DEFAULT_NAME_RADIUS));
+    app.insert_resource(NameRadius {
+        follow_spyglass: true,
+        radius: DEFAULT_NAME_RADIUS,
+    });
     app.add_systems(Startup, init_materials);
     app.add_systems(
         Update,
@@ -75,7 +78,33 @@ const NAME_HEIGHT: f32 = 12.;
 /// for more of what is around, and what will not fit is dropped rather than
 /// drawn over, so asking for more of it costs only the asking.
 #[derive(Resource)]
-pub struct NameRadius(pub f32);
+pub struct NameRadius {
+    /// Take the spyglass's reach rather than the one below
+    ///
+    /// On to begin with. The spyglass already answers how much of the
+    /// galaxy is being looked at, and a name belongs to something drawn, so
+    /// there is rarely a second answer worth giving.
+    pub follow_spyglass: bool,
+    /// How far names reach when not following, in light years
+    pub radius: f32,
+}
+
+impl NameRadius {
+    /// How far names actually reach, given what the spyglass is doing
+    ///
+    /// Never past the spyglass while it is in force, since a system it has
+    /// hidden has nothing to put a name against. Overriding it draws
+    /// everything loaded, and then the asking is the only limit.
+    pub fn reach(&self, spyglass: &Spyglass) -> f32 {
+        if self.follow_spyglass {
+            spyglass.radius
+        } else if spyglass.disabled {
+            self.radius
+        } else {
+            self.radius.min(spyglass.radius)
+        }
+    }
+}
 
 /// Sideways gap between a star and its label, in text heights
 const GAP: f32 = 0.75;
@@ -298,17 +327,7 @@ pub fn choose_names(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    // A name can only be drawn for a system that is drawn, and while the
-    // spyglass is in force it is what decides that, measured from the same
-    // point this is. Asking for names further out than it reaches would
-    // build them for systems already hidden, which is what happens when it
-    // is pulled in under a radius set wider. Overriding it draws everything
-    // loaded, and then only the asking limits them.
-    let reach = if spyglass.disabled {
-        radius.0
-    } else {
-        radius.0.min(spyglass.radius)
-    };
+    let reach = radius.reach(&spyglass);
 
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
@@ -716,6 +735,44 @@ mod tests {
             );
             nearer = further;
         }
+    }
+
+    /// A spyglass of a given reach, in force unless said otherwise
+    fn spyglass(radius: f32, disabled: bool) -> Spyglass {
+        Spyglass { fetch: true, radius, disabled, lock_camera: false }
+    }
+
+    /// Names reach no further than the spyglass shows
+    ///
+    /// A system the spyglass has hidden has nothing to put a name against,
+    /// so one drawn for it would build a mesh, hold its place against the
+    /// others, and never appear.
+    #[test]
+    fn names_reach_no_further_than_the_spyglass() {
+        let asked = NameRadius { follow_spyglass: false, radius: 200. };
+
+        assert_eq!(asked.reach(&spyglass(30., false)), 30.);
+    }
+
+    /// Following takes the spyglass's answer whatever it is
+    #[test]
+    fn following_the_spyglass_takes_its_reach() {
+        let following = NameRadius { follow_spyglass: true, radius: 5. };
+
+        for radius in [7., 30., 4_000.] {
+            assert_eq!(following.reach(&spyglass(radius, false)), radius);
+        }
+    }
+
+    /// Overriding the spyglass lets names be asked for beyond it
+    ///
+    /// Everything loaded is drawn then, so there is nothing left for the
+    /// spyglass to say about which of it may be named.
+    #[test]
+    fn overriding_the_spyglass_lifts_the_ceiling() {
+        let asked = NameRadius { follow_spyglass: false, radius: 200. };
+
+        assert_eq!(asked.reach(&spyglass(30., true)), 200.);
     }
 
     /// What the pointer is on takes the top of the order
