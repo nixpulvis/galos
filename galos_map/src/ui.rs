@@ -9,8 +9,22 @@ use bevy_egui::egui::{Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn plugin(app: &mut App) {
+    app.init_resource::<PointerOverUi>();
     app.add_systems(EguiPrimaryContextPass, panels);
 }
+
+/// Whether the pointer is busy with the settings windows
+///
+/// The camera and the UI both want the same drags, and only the UI knows
+/// which ones are its own. It answers here rather than the camera guessing
+/// from window rectangles it would have to be told about.
+///
+/// Egui lays out during its own pass, so this is what the last frame's
+/// layout concluded. A press landing on a control the same frame it appears
+/// therefore reaches the map as well, which no control the map has is
+/// arranged to do.
+#[derive(Resource, Default)]
+pub struct PointerOverUi(pub bool);
 
 // TODO: Form validation.
 
@@ -26,6 +40,7 @@ pub fn panels(
     mut poll: ResMut<Poll>,
     mut searched: MessageWriter<Searched>,
     search_note: Res<SearchNote>,
+    mut over_ui: ResMut<PointerOverUi>,
     mut despawner: MessageWriter<Despawn>,
     mut system_name: Local<Option<String>>,
     mut route_end: Local<Option<String>>,
@@ -191,6 +206,10 @@ pub fn panels(
             });
         },
     );
+
+    // `egui_wants_pointer_input` covers a drag that began on a control and
+    // has since been pulled off it, which being over one does not.
+    over_ui.0 = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
 
     Ok(())
 }

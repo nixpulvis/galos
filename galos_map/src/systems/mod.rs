@@ -1,6 +1,7 @@
+use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_panorbit_camera::PanOrbitCamera;
 use chrono::{DateTime, Utc};
 use elite_journal::{
     // TODO: Fix these imports, they should all be in system.
@@ -24,28 +25,30 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
 
-    // Both write the camera, though to different fields, so pick an order.
+    // Both ask the camera for something, and `orbit_camera` then works out
+    // where it lands, so both have to have spoken by the time it runs.
     app.add_systems(
         Update,
         zoom_with_spyglass
             .in_set(MapSet::Camera)
-            .after(crate::camera::move_camera),
+            .after(crate::camera::move_camera)
+            .before(crate::camera::orbit_camera),
     );
-    // Reads a star's transform, which the `scale` systems write.
-    app.add_systems(
-        Update,
-        visibility
-            .in_set(MapSet::Present)
-            .after(scale::scale_systems)
-            .after(scale::scale_stars),
-    );
+    app.add_systems(Update, visibility.in_set(MapSet::Present));
 }
 
 #[derive(Component)]
 pub struct System {
     address: i64,
     name: String,
-    position: [f32; 3],
+    /// Absolute galactic position, in light years
+    ///
+    /// The grid this is drawn in splits a position into a cell and an offset
+    /// within it, which is what the renderer needs but an awkward thing to
+    /// measure distances between. The database's own answer is kept here,
+    /// undiminished, and everything that wants to know how far apart two
+    /// systems are asks this instead of unpicking the split.
+    position: [f64; 3],
     population: u64,
     allegiance: Option<Allegiance>,
     government: Option<Government>,
@@ -77,8 +80,8 @@ pub struct Spyglass {
 /// actually changed. Assigning regardless would mark the whole sky as
 /// changed each frame, and each star drags its name along with it.
 pub fn visibility(
-    camera: Query<&PanOrbitCamera>,
-    mut systems: Query<(&Transform, &mut Visibility), With<System>>,
+    camera: Query<&OrbitCamera>,
+    mut systems: Query<(&System, &mut Visibility)>,
     spyglass: Res<Spyglass>,
 ) {
     // Make sure we make systems visible again.
@@ -90,11 +93,10 @@ pub fn visibility(
 
     if !spyglass.disabled {
         let Ok(camera) = camera.single() else { return };
-        let camera_translation = camera.focus;
-        for (system_transform, mut visibility) in &mut systems {
-            let dist =
-                camera_translation.distance(system_transform.translation);
-            visibility.set_if_neq(if dist <= spyglass.radius {
+        let radius = spyglass.radius as f64;
+        for (system, mut visibility) in &mut systems {
+            let dist = camera.focus.distance(DVec3::from(system.position));
+            visibility.set_if_neq(if dist <= radius {
                 Visibility::Visible
             } else {
                 Visibility::Hidden
@@ -105,7 +107,7 @@ pub fn visibility(
 
 pub fn zoom_with_spyglass(
     spyglass: Res<Spyglass>,
-    mut camera: Query<&mut PanOrbitCamera>,
+    mut camera: Query<&mut OrbitCamera>,
 ) {
     if spyglass.lock_camera {
         if let Ok(mut camera) = camera.single_mut() {
@@ -118,6 +120,6 @@ pub fn zoom_with_spyglass(
 ///
 /// Roughly three quarters of the systems on record have no coordinates, so
 /// this has to be an answer the caller handles rather than an assumption.
-pub fn system_to_vec(system: &DbSystem) -> Option<Vec3> {
-    system.position.map(|p| Vec3::new(p.x as f32, p.y as f32, p.z as f32))
+pub fn system_to_vec(system: &DbSystem) -> Option<DVec3> {
+    system.position.map(|p| DVec3::new(p.x, p.y, p.z))
 }

@@ -1,15 +1,18 @@
 use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
+use crate::space::Galaxy;
 use crate::systems::{
     System, fetch::FetchIndex, fetch::FetchTasks, route::Route,
     route::spawn::spawn_route, system_to_vec,
 };
 use bevy::light::NotShadowCaster;
+use bevy::math::DVec3;
 use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
 use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
+use big_space::prelude::*;
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
 use std::{collections::HashMap, ops::Deref, time::Instant};
@@ -99,7 +102,7 @@ fn track_drag(
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
-    systems: Query<(), With<System>>,
+    systems: Query<&System>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     mut move_camera_events: MessageWriter<MoveCamera>,
@@ -111,8 +114,12 @@ fn focus_camera_on_click(
     if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
         return;
     }
-    if systems.contains(click.entity) {
-        move_camera_events.write(MoveCamera { position: click.hit.position });
+    // The system that was hit, rather than where on it the ray landed. A hit
+    // is reported in rendering coordinates, which are relative to whichever
+    // grid cell the camera is in and so mean nothing once it has moved on.
+    if let Ok(system) = systems.get(click.entity) {
+        move_camera_events
+            .write(MoveCamera { position: Some(DVec3::from(system.position)) });
     }
 }
 
@@ -121,6 +128,8 @@ fn focus_camera_on_click(
 pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<Entity, With<Route>>,
+    galaxy: Res<Galaxy>,
+    grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
@@ -131,6 +140,8 @@ pub fn spawn(
     mut move_camera_events: MessageWriter<MoveCamera>,
     mut tasks: ResMut<FetchTasks>,
 ) {
+    let Ok(grid) = grids.single() else { return };
+
     tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
@@ -141,6 +152,8 @@ pub fn spawn(
             spawn_systems(
                 &new_systems,
                 &systems_query,
+                &galaxy,
+                grid,
                 &color_by,
                 &mut commands,
                 &mesh,
@@ -168,6 +181,8 @@ pub fn spawn(
                     spawn_route(
                         &new_systems,
                         &route_query,
+                        &galaxy,
+                        grid,
                         &mut commands,
                         &mut mesh_assets,
                         &mut material_assets,
@@ -186,6 +201,8 @@ pub fn spawn(
 pub fn spawn_systems(
     db_systems: &[DbSystem],
     systems: &Query<(Entity, &System)>,
+    galaxy: &Res<Galaxy>,
+    grid: &Grid,
     color_by: &Res<ColorBy>,
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
@@ -220,10 +237,14 @@ pub fn spawn_systems(
             );
 
             commands.spawn((
-                pbr_components(&system, color_by, mesh, materials),
+                pbr_components(&system, grid, color_by, mesh, materials),
                 system,
                 NotShadowCaster,
                 Pickable::default(),
+                // A star outside the galaxy's grid is not placed by it, and
+                // would be drawn wherever its bare transform happened to put
+                // it rather than where the cell says.
+                ChildOf(galaxy.0),
             ));
         }
     }
@@ -231,16 +252,19 @@ pub fn spawn_systems(
 
 fn update(
     systems_query: Query<(Entity, Ref<System>)>,
+    grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
     mut commands: Commands,
 ) {
+    let Ok(grid) = grids.single() else { return };
+
     for (entity, system) in &systems_query {
         if system.is_changed() {
-            commands
-                .entity(entity)
-                .insert(pbr_components(&system, &color_by, &mesh, &materials));
+            commands.entity(entity).insert(pbr_components(
+                &system, grid, &color_by, &mesh, &materials,
+            ));
         } else if color_by.is_changed() {
             let color_idx = match color_by.deref() {
                 ColorBy::Allegiance => allegiance_color_idx(&system),
@@ -256,28 +280,29 @@ fn update(
 
 fn pbr_components(
     system: &System,
+    grid: &Grid,
     color_by: &Res<ColorBy>,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
-) -> (Mesh3d, MeshMaterial3d<StandardMaterial>, Transform) {
+) -> (Mesh3d, MeshMaterial3d<StandardMaterial>, CellCoord, Transform) {
     let color_idx = match color_by.deref() {
         ColorBy::Allegiance => allegiance_color_idx(&system),
         ColorBy::Government => government_color_idx(&system),
         ColorBy::Security => security_color_idx(&system),
     };
 
+    // Split the galactic position into the cell it falls in and how far into
+    // that cell it sits. The cell is an integer, so it stays exact however
+    // far out the system is, and the transform left over is small enough to
+    // be carried without losing anything.
+    let (cell, translation) =
+        grid.translation_to_grid(DVec3::from(system.position));
+
     (
         Mesh3d(mesh.0.clone()),
         MeshMaterial3d(materials.0[color_idx].clone()),
-        Transform {
-            translation: Vec3::new(
-                system.position[0],
-                system.position[1],
-                system.position[2],
-            ),
-            scale: Vec3::splat(1.),
-            ..default()
-        },
+        cell,
+        Transform { translation, scale: Vec3::splat(1.), ..default() },
     )
 }
 
@@ -370,7 +395,7 @@ impl TryFrom<&DbSystem> for System {
 
     fn try_from(system: &DbSystem) -> Result<System, Unplaceable> {
         let position = system.position.ok_or(Unplaceable)?;
-        let pos = [position.x as f32, position.y as f32, position.z as f32];
+        let pos = [position.x, position.y, position.z];
 
         Ok(System {
             address: system.address,

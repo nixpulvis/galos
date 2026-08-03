@@ -3,6 +3,7 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use galos_db::Database;
@@ -35,10 +36,10 @@ pub enum Searched {
 ///
 /// Both a plain system search and either end of a route need this same
 /// answer, and both need to say the same thing when they cannot get it.
-async fn locate(db: &Database, name: &str) -> Result<Vec3, String> {
+async fn locate(db: &Database, name: &str) -> Result<DVec3, String> {
     match DbSystem::fetch_by_name(db, name).await {
         Ok(system) => match system.position {
-            Some(p) => Ok(Vec3::new(p.x as f32, p.y as f32, p.z as f32)),
+            Some(p) => Ok(DVec3::new(p.x, p.y, p.z)),
             None => Err(format!("{} has no position on record", system.name)),
         },
         Err(_) => Err(format!("No system named {name}")),
