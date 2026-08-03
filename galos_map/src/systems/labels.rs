@@ -1,7 +1,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::spawn::ShowNames;
+use crate::systems::spawn::{ShowNames, Star};
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -16,9 +16,9 @@ pub(crate) fn plugin(app: &mut App) {
         ..default()
     });
     app.add_systems(Startup, init_material);
-    // Labels follow their star's transform. `face_camera` in particular
-    // divides by the scale the `scale` systems give a star, and needs this
-    // frame's value rather than the previous frame's.
+    // `face_camera` and the sizing systems both write a `Transform`, on
+    // different entities, so the scheduler cannot run them together whatever
+    // is said here. Ordering them costs nothing and fixes which goes first.
     app.add_systems(
         Update,
         (respawn, visibility, face_camera)
@@ -45,8 +45,8 @@ const SIZE: f32 = 64.;
 
 /// Tuning factor for how large labels draw, before distance is applied
 ///
-/// This is a world scale. Labels used to inherit the star's scale, so the
-/// equivalent value here is roughly a tenth of what it was.
+/// A world scale, applied to the label alone. A label is a child of its
+/// system, which carries no size, so this is the size it is drawn at.
 const SCALE: f32 = 0.0032;
 
 /// How far from the camera a system may be before it stops being labelled
@@ -149,17 +149,12 @@ pub fn respawn(
     }
 }
 
-/// Turn labels toward the camera, and place them beside their star
+/// Turn each label to the camera and place it beside its system
 ///
-/// Labels are children of their system, so they inherit the scale that
-/// [`super::scale`] gives the star. Every value here is therefore divided by
-/// that scale to land on the intended world size and offset. Systems are
-/// unrotated, so the camera's rotation can be copied straight in.
-/// Turn each label to the camera and size it for its distance
-///
-/// A label is a child of the star it names, which carries no size of its
-/// own, so what is written here is the size and offset the label is actually
-/// drawn at.
+/// A label is a child of the system it names, which carries neither a size
+/// nor a rotation of its own, so everything written here is what the label
+/// is drawn with. That a system is never rotated is what lets the camera's
+/// rotation be written straight into a slot that is read as local.
 pub fn face_camera(
     camera: Query<&OrbitCamera>,
     systems: Query<&System, Without<Label>>,
@@ -204,25 +199,39 @@ pub fn face_camera(
 pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
-    systems: Query<&GlobalTransform, (With<System>, Without<Label>)>,
+    systems: Query<(&GlobalTransform, &Children), With<System>>,
+    stars: Query<&GlobalTransform, With<Star>>,
 ) {
     for (label, drawn, child_of) in &labels {
         if !drawn.get() {
             continue;
         }
-        let Ok(star) = systems.get(child_of.parent()) else { continue };
+        let Ok((system, children)) = systems.get(child_of.parent()) else {
+            continue;
+        };
+
+        // A name is the system's, so the line points at the system. What it
+        // has to begin clear of is whatever is drawn there, which is the
+        // stars, and they carry the size they are drawn at where the system
+        // deliberately does not. The largest of them, since a system may hold
+        // more than one, and they all sit at its own position for now.
+        let drawn_radius = children
+            .iter()
+            .filter_map(|child| stars.get(child).ok())
+            .map(|star| star.scale().x)
+            .fold(0., f32::max);
 
         // The label's origin is the left edge of the text, so the line runs
-        // from the star straight to where the name begins.
-        let from = star.translation();
+        // from the system straight to where the name begins.
+        let from = system.translation();
         let to = label.translation();
         let length = from.distance(to);
         let Some(direction) = (to - from).try_normalize() else { continue };
 
-        // The body's surface is where it starts, not its centre, so measure
-        // the near gap from there to match the one before the first glyph.
+        // What is drawn ends at its surface, not its centre, so measure the
+        // near gap from there to match the one before the first glyph.
         let gap = length * LEADER_GAP;
-        let start = star.scale().x + gap;
+        let start = drawn_radius + gap;
         let end = length - gap;
         if start >= end {
             continue;
