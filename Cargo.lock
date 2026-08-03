@@ -2223,6 +2223,7 @@ source = "git+https://github.com/aevyrie/big_space?branch=bevy-0.19#5f255228e9b4
 dependencies = [
  "async-channel 2.5.0",
  "bevy_app",
+ "bevy_camera",
  "bevy_color",
  "bevy_ecs",
  "bevy_input",
