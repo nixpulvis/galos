@@ -1,8 +1,8 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::pointing::{INDICATOR, PointedAt};
-use crate::systems::spawn::{ShowNames, Star};
+use crate::systems::pointing::{INDICATOR, PointedAt, PointerTarget};
+use crate::systems::spawn::ShowNames;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -512,7 +512,7 @@ pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
     systems: Query<(&GlobalTransform, &Children, Has<PointedAt>), With<System>>,
-    stars: Query<&GlobalTransform, With<Star>>,
+    targets: Query<&GlobalTransform, With<PointerTarget>>,
 ) {
     for (label, drawn, child_of) in &labels {
         if !drawn.get() {
@@ -524,15 +524,19 @@ pub fn leaders(
         };
 
         // A name is the system's, so the line points at the system. What it
-        // has to begin clear of is whatever is drawn there, which is the
-        // stars, and they carry the size they are drawn at where the system
-        // deliberately does not. The largest of them, since a system may hold
-        // more than one, and they all sit at its own position for now.
-        let drawn_radius = children
+        // has to begin clear of is the ring drawn around it, which reaches
+        // further than the star does and is what the eye takes for the
+        // system's edge. The target [`super::pointing`] fits to that ring is
+        // where its size is kept, and it is fitted every frame, so the line
+        // meets the ring at every zoom rather than crossing it at some.
+        let Some(edge) = children
             .iter()
-            .filter_map(|child| stars.get(child).ok())
-            .map(|star| star.scale().x)
-            .fold(0., f32::max);
+            .filter_map(|child| targets.get(child).ok())
+            .map(|target| target.scale().x)
+            .next()
+        else {
+            continue;
+        };
 
         // The label's origin is the left edge of the text, so the line runs
         // from the system straight to where the name begins.
@@ -541,10 +545,10 @@ pub fn leaders(
         let length = from.distance(to);
         let Some(direction) = (to - from).try_normalize() else { continue };
 
-        // What is drawn ends at its surface, not its centre, so measure the
-        // near gap from there to match the one before the first glyph.
+        // Measured out from the ring rather than from the centre, so that
+        // the air before the line matches the air after it.
         let gap = length * LEADER_GAP;
-        let start = drawn_radius + gap;
+        let start = edge + gap;
         let end = length - gap;
         if start >= end {
             continue;
