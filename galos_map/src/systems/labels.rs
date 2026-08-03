@@ -24,7 +24,9 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_systems(Startup, init_materials);
     app.add_systems(
         Update,
-        (fit_name_boxes, tint_pointed_at_names).in_set(MapSet::Present),
+        (fit_name_boxes, tint_pointed_at_names)
+            .in_set(MapSet::Present)
+            .after(super::pointing::point_at),
     );
     // `face_camera` and the sizing systems both write a `Transform`, on
     // different entities, so the scheduler cannot run them together whatever
@@ -34,6 +36,9 @@ pub(crate) fn plugin(app: &mut App) {
         (choose_names, respawn, face_camera)
             .chain()
             .in_set(MapSet::Present)
+            // Both read which system is pointed at, which is decided this
+            // frame rather than last.
+            .after(super::pointing::point_at)
             .after(super::scale::size_by_distance)
             .after(super::scale::size_uniformly),
     );
@@ -315,7 +320,8 @@ pub fn choose_names(
     show_names: Res<ShowNames>,
     systems: Query<(Entity, &System)>,
     named: Query<Entity, With<Named>>,
-    pointing: Query<(), With<PointedAt>>,
+    pointing: Query<&PointedAt>,
+    time: Res<Time<Real>>,
 ) {
     let clear = |commands: &mut Commands| {
         for entity in &named {
@@ -336,7 +342,12 @@ pub fn choose_names(
         .filter_map(|(entity, system)| {
             // With names turned off, the one under the pointer is still
             // worth reading, and is the only one asked for.
-            let pointed_at = pointing.contains(entity);
+            // Only once the pointer has come to rest. A system crossed on
+            // the way to another would otherwise take a name, and with it
+            // the place of whatever name was being reached for.
+            let pointed_at = pointing
+                .get(entity)
+                .is_ok_and(|at| at.settled(time.elapsed_secs()));
             if !show_names.0 && !pointed_at {
                 return None;
             }

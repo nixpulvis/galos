@@ -63,13 +63,38 @@ const INDICATOR_MIN_RADIUS: f32 = 9.5;
 #[derive(Component)]
 pub struct PointerTarget;
 
+/// How long the pointer must rest on a system before it is asking about it
+///
+/// Crossing a system on the way to another is not pointing at it. A name
+/// takes its place from the ones around it, so a claim staked in passing
+/// takes away the very name that was being reached for.
+const DWELL: f32 = 0.25;
+
 /// A system the pointer is over
 ///
 /// Carried by the system rather than by whatever the pointer actually
 /// landed on, which may be its star or its name, so that anything wanting
 /// to draw a system as pointed at asks one question.
 #[derive(Component)]
-pub struct PointedAt;
+pub struct PointedAt {
+    /// When the pointer came to rest here, in seconds since startup
+    since: f32,
+}
+
+impl PointedAt {
+    /// Reached at `now`, in seconds since startup
+    pub fn reached(now: f32) -> Self {
+        Self { since: now }
+    }
+
+    /// Whether the pointer has rested here long enough to be asking
+    ///
+    /// What is shown of a system costs nothing and answers at once. What is
+    /// shown of its neighbours does not, so that waits.
+    pub fn settled(&self, now: f32) -> bool {
+        now - self.since >= DWELL
+    }
+}
 
 /// Mark the one system the pointer is on
 ///
@@ -83,6 +108,7 @@ pub struct PointedAt;
 /// would if they blocked each other.
 pub fn point_at(
     hovered: Res<HoverMap>,
+    time: Res<Time<Real>>,
     boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
     targets: Query<&ChildOf, With<PointerTarget>>,
@@ -107,13 +133,20 @@ pub fn point_at(
     }
 
     let wanted = named.or(nearest.map(|(system, _)| system));
+    let mut already = false;
     for system in &pointed_at {
-        if Some(system) != wanted {
+        if Some(system) == wanted {
+            // Left as it is, so that resting somewhere goes on counting
+            // rather than starting over every frame.
+            already = true;
+        } else {
             commands.entity(system).remove::<PointedAt>();
         }
     }
-    if let Some(system) = wanted {
-        commands.entity(system).insert(PointedAt);
+    if let Some(system) = wanted
+        && !already
+    {
+        commands.entity(system).insert(PointedAt::reached(time.elapsed_secs()));
     }
 }
 
@@ -210,5 +243,39 @@ pub fn ring(
             radius,
             INDICATOR,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Crossing a system does not count as pointing at it
+    ///
+    /// This is the whole reason for the wait. A name takes its place from
+    /// the ones around it, so a system claiming one in passing takes it
+    /// from whatever the pointer was on its way to.
+    #[test]
+    fn passing_over_a_system_is_not_pointing_at_it() {
+        let brushed = PointedAt::reached(10.);
+
+        assert!(!brushed.settled(10.), "counted the instant it was reached");
+        assert!(
+            !brushed.settled(10. + DWELL * 0.9),
+            "counted before the pointer had settled"
+        );
+    }
+
+    /// Resting on one does
+    ///
+    /// Measured a shade past the wait rather than exactly on it, since a
+    /// subtraction of two floats does not land on the boundary and it is
+    /// not the boundary that matters.
+    #[test]
+    fn resting_on_a_system_is_pointing_at_it() {
+        let rested = PointedAt::reached(10.);
+
+        assert!(rested.settled(10. + DWELL * 1.1));
+        assert!(rested.settled(10. + DWELL * 10.));
     }
 }
