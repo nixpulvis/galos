@@ -10,6 +10,7 @@ use crate::systems::{
     route::spawn::spawn_route,
     system_to_vec,
 };
+use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
 use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
@@ -128,6 +129,8 @@ fn focus_camera_on_click(
     pointed_at: Query<&System, With<PointedAt>>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
+    frame: Res<FrameCount>,
+    mut answered: Local<Option<u32>>,
     mut move_camera_events: MessageWriter<MoveCamera>,
 ) {
     let travelled = pointers
@@ -137,6 +140,20 @@ fn focus_camera_on_click(
     if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
         return;
     }
+
+    // One click is reported once for everything under the pointer, and
+    // since a star stopped blocking what lies behind it there are usually
+    // several. They are all the same click, and there is only one place to
+    // be sent, so the first of them answers for the rest.
+    //
+    // Counted by frame rather than by which of them is the one that won:
+    // picking reports a click before `pointing` has looked at the frame it
+    // belongs to, so anything recorded about the winner is a frame old, and
+    // a pointer that has just moved would leave the click unanswered.
+    if *answered == Some(frame.0) {
+        return;
+    }
+    *answered = Some(frame.0);
     // Whatever is being pointed at is what a click is for, and `pointing`
     // has already settled which system that is, weighing a name over a star
     // lying nearer behind it. Asking it rather than working the hit out
