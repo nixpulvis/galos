@@ -12,6 +12,7 @@ use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
 use crate::systems::spawn::Star;
 use bevy::math::DVec3;
 use bevy::picking::hover::HoverMap;
+use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 
@@ -26,6 +27,8 @@ pub fn plugin(app: &mut App) {
     // Reads where a star ended up rather than deciding it, so it waits for
     // the transforms to be worked out, as `labels::leaders` does.
     app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
+    app.add_observer(start_drag);
+    app.add_observer(track_drag);
 }
 
 /// The colour everything pointed at is drawn in
@@ -77,6 +80,39 @@ const DWELL: f32 = 0.25;
 /// that thing's transform, and a zero scale has no inverse.
 pub(super) const UNFITTED_SCALE: f32 = 1e-6;
 
+/// How far a pointer may travel while pressed and still count as a click
+///
+/// Logical pixels, so the same physical slack whatever the display density.
+pub(super) const CLICK_SLOP: f32 = 5.;
+
+/// How far a pointer has travelled since it was last pressed
+///
+/// Kept on the pointer rather than in one shared slot, so a second pointer
+/// cannot answer for the first and the measurement dies with the pointer.
+#[derive(Component, Default)]
+pub(super) struct DragDistance(pub f32);
+
+/// Start measuring a pointer's travel when one of its buttons goes down
+fn start_drag(
+    press: On<Pointer<Press>>,
+    pointers: Res<PointerMap>,
+    mut commands: Commands,
+) {
+    let Some(pointer) = pointers.get_entity(press.pointer_id) else { return };
+    commands.entity(pointer).insert(DragDistance(0.));
+}
+
+/// Keep the furthest a pointer has been from where it was pressed
+fn track_drag(
+    moved: On<Pointer<Drag>>,
+    pointers: Res<PointerMap>,
+    mut dragged: Query<&mut DragDistance>,
+) {
+    let Some(pointer) = pointers.get_entity(moved.pointer_id) else { return };
+    let Ok(mut travelled) = dragged.get_mut(pointer) else { return };
+    travelled.0 = travelled.0.max(moved.distance.length());
+}
+
 /// A system the pointer is over
 ///
 /// Carried by the system rather than by whatever the pointer actually
@@ -116,12 +152,35 @@ impl PointedAt {
 pub fn point_at(
     hovered: Res<HoverMap>,
     time: Res<Time<Real>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    dragged: Query<&DragDistance>,
     boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
     targets: Query<&ChildOf, With<PointerTarget>>,
     pointed_at: Query<Entity, With<PointedAt>>,
     mut commands: Commands,
 ) {
+    // A pointer dragging the map is holding the view, not asking about
+    // what it happens to sweep over, and rings and names lighting up under
+    // a turning map are noise.
+    //
+    // Past the same travel that tells a click from a drag, so the two agree:
+    // within it the press is a click and what it is on stays pointed at,
+    // and beyond it the press is a drag and answers nothing. Only while a
+    // button is down, since the distance a pointer last travelled outlives
+    // the press that measured it.
+    let holding = buttons.any_pressed([
+        MouseButton::Left,
+        MouseButton::Right,
+        MouseButton::Middle,
+    ]);
+    if holding && dragged.iter().any(|far| far.0 > CLICK_SLOP) {
+        for system in &pointed_at {
+            commands.entity(system).remove::<PointedAt>();
+        }
+        return;
+    }
+
     let mut named: Option<Entity> = None;
     let mut nearest: Option<(Entity, f32)> = None;
 

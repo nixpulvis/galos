@@ -5,7 +5,9 @@ use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
-    pointing::{PointedAt, PointerTarget, UNFITTED_SCALE},
+    pointing::{
+        CLICK_SLOP, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
+    },
     route::Route,
     route::spawn::spawn_route,
     system_to_vec,
@@ -39,8 +41,6 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
 
-    app.add_observer(start_drag);
-    app.add_observer(track_drag);
     app.add_observer(focus_camera_on_click);
 }
 
@@ -81,39 +81,6 @@ pub struct ShowNames(pub bool);
 /// it says, and lets labels and, later, bodies sit at their true size.
 #[derive(Component)]
 pub struct Star;
-
-/// How far a pointer may travel while pressed and still count as a click
-///
-/// Logical pixels, so the same physical slack whatever the display density.
-const CLICK_SLOP: f32 = 5.;
-
-/// How far a pointer has travelled since it was last pressed
-///
-/// Kept on the pointer rather than in one shared slot, so a second pointer
-/// cannot answer for the first and the measurement dies with the pointer.
-#[derive(Component, Default)]
-struct DragDistance(f32);
-
-/// Start measuring a pointer's travel when one of its buttons goes down
-fn start_drag(
-    press: On<Pointer<Press>>,
-    pointers: Res<PointerMap>,
-    mut commands: Commands,
-) {
-    let Some(pointer) = pointers.get_entity(press.pointer_id) else { return };
-    commands.entity(pointer).insert(DragDistance(0.));
-}
-
-/// Keep the furthest a pointer has been from where it was pressed
-fn track_drag(
-    moved: On<Pointer<Drag>>,
-    pointers: Res<PointerMap>,
-    mut dragged: Query<&mut DragDistance>,
-) {
-    let Some(pointer) = pointers.get_entity(moved.pointer_id) else { return };
-    let Ok(mut travelled) = dragged.get_mut(pointer) else { return };
-    travelled.0 = travelled.0.max(moved.distance.length());
-}
 
 /// Focus the camera on clicked star systems
 ///
