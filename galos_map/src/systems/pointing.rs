@@ -18,7 +18,7 @@ use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 pub fn plugin(app: &mut App) {
     app.add_systems(
         Update,
-        (size_targets, point_the_cursor)
+        (point_at, size_targets, point_the_cursor)
             .in_set(MapSet::Present)
             .after(super::scale::size_by_distance)
             .after(super::scale::size_uniformly),
@@ -26,8 +26,6 @@ pub fn plugin(app: &mut App) {
     // Reads where a star ended up rather than deciding it, so it waits for
     // the transforms to be worked out, as `labels::leaders` does.
     app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
-    app.add_observer(point_at);
-    app.add_observer(look_away);
 }
 
 /// The colour everything pointed at is drawn in
@@ -73,49 +71,50 @@ pub struct PointerTarget;
 #[derive(Component)]
 pub struct PointedAt;
 
-/// Mark the system behind whatever the pointer has come over
-fn point_at(
-    over: On<Pointer<Over>>,
-    targets: Query<&ChildOf, With<PointerTarget>>,
+/// Mark the one system the pointer is on
+///
+/// Read from what is hovered rather than from coming and going, so that the
+/// choice between two things under the pointer at once is made in one place
+/// instead of falling to whichever event happened to arrive last.
+///
+/// A name wins over a star. Names are drawn over everything, so a name under
+/// the pointer is what the eye says is being pointed at, whatever happens to
+/// lie nearer the camera behind it. Between stars the nearest wins, as it
+/// would if they blocked each other.
+pub fn point_at(
+    hovered: Res<HoverMap>,
     boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
+    targets: Query<&ChildOf, With<PointerTarget>>,
+    pointed_at: Query<Entity, With<PointedAt>>,
     mut commands: Commands,
 ) {
-    if let Some(system) = pointed_system(over.entity, &targets, &boxes, &names)
-    {
+    let mut named: Option<Entity> = None;
+    let mut nearest: Option<(Entity, f32)> = None;
+
+    for hits in hovered.values() {
+        for (entity, hit) in hits.iter() {
+            if let Ok(hit_box) = boxes.get(*entity) {
+                if let Ok(name) = names.get(hit_box.parent()) {
+                    named = Some(name.parent());
+                }
+            } else if let Ok(target) = targets.get(*entity) {
+                if nearest.is_none_or(|(_, depth)| hit.depth < depth) {
+                    nearest = Some((target.parent(), hit.depth));
+                }
+            }
+        }
+    }
+
+    let wanted = named.or(nearest.map(|(system, _)| system));
+    for system in &pointed_at {
+        if Some(system) != wanted {
+            commands.entity(system).remove::<PointedAt>();
+        }
+    }
+    if let Some(system) = wanted {
         commands.entity(system).insert(PointedAt);
     }
-}
-
-/// And unmark it once the pointer has left
-fn look_away(
-    out: On<Pointer<Out>>,
-    targets: Query<&ChildOf, With<PointerTarget>>,
-    boxes: Query<&ChildOf, With<NameBox>>,
-    names: Query<&ChildOf, With<Label>>,
-    mut commands: Commands,
-) {
-    if let Some(system) = pointed_system(out.entity, &targets, &boxes, &names) {
-        commands.entity(system).remove::<PointedAt>();
-    }
-}
-
-/// Which system the pointer is really on, given what it landed on
-///
-/// A system's target hangs off it directly. The box catching a name hangs
-/// off the name, which hangs off the system in turn, so it is one step
-/// further up.
-fn pointed_system(
-    hit: Entity,
-    targets: &Query<&ChildOf, With<PointerTarget>>,
-    boxes: &Query<&ChildOf, With<NameBox>>,
-    names: &Query<&ChildOf, With<Label>>,
-) -> Option<Entity> {
-    if let Ok(target) = targets.get(hit) {
-        return Some(target.parent());
-    }
-    let name = boxes.get(hit).ok()?;
-    Some(names.get(name.parent()).ok()?.parent())
 }
 
 /// Fit each system's target to what its indicator will be drawn at

@@ -2,9 +2,13 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::space::Galaxy;
 use crate::systems::{
-    System, fetch::FetchIndex, fetch::FetchTasks, labels::Label,
-    labels::NameBox, pointing::PointerTarget, route::Route,
-    route::spawn::spawn_route, system_to_vec,
+    System,
+    fetch::FetchIndex,
+    fetch::FetchTasks,
+    pointing::{PointedAt, PointerTarget},
+    route::Route,
+    route::spawn::spawn_route,
+    system_to_vec,
 };
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -121,10 +125,7 @@ fn track_drag(
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
-    targets: Query<&ChildOf, With<PointerTarget>>,
-    name_boxes: Query<&ChildOf, With<NameBox>>,
-    names: Query<&ChildOf, With<Label>>,
-    systems: Query<&System>,
+    pointed_at: Query<&System, With<PointedAt>>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     mut move_camera_events: MessageWriter<MoveCamera>,
@@ -136,24 +137,17 @@ fn focus_camera_on_click(
     if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
         return;
     }
-    // A system's target hangs off it directly. The box that catches a click
-    // on a name hangs off the name, which hangs off the system in turn, so
-    // it is one step further up.
+    // Whatever is being pointed at is what a click is for, and `pointing`
+    // has already settled which system that is, weighing a name over a star
+    // lying nearer behind it. Asking it rather than working the hit out
+    // again keeps the click on whatever the ring and the tint are on.
     //
-    // The system that was hit, rather than where on it the ray landed. A hit
-    // is reported in rendering coordinates, which are relative to whichever
-    // grid cell the camera is in and so mean nothing once it has moved on.
-    let hit = targets.get(click.entity).map(|t| t.parent()).or_else(|_| {
-        name_boxes
-            .get(click.entity)
-            .and_then(|hit_box| names.get(hit_box.parent()))
-            .map(|name| name.parent())
-    });
-    let Ok(hit) = hit else { return };
-    if let Ok(system) = systems.get(hit) {
-        move_camera_events
-            .write(MoveCamera { position: Some(DVec3::from(system.position)) });
-    }
+    // The system, rather than where on it the ray landed. A hit is reported
+    // in rendering coordinates, which are relative to whichever grid cell
+    // the camera is in and so mean nothing once it has moved on.
+    let Ok(system) = pointed_at.single() else { return };
+    move_camera_events
+        .write(MoveCamera { position: Some(DVec3::from(system.position)) });
 }
 
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
@@ -367,8 +361,10 @@ fn pointer_target(
         // Fitted by `pointing::size_targets` before the first draw.
         Transform::from_scale(Vec3::ZERO),
         NotShadowCaster,
-        // Mesh picking requires markers, see `plugin`.
-        Pickable::default(),
+        // Mesh picking requires markers, see `plugin`. A star does not
+        // block what lies behind it, so a name drawn over one is reported
+        // as well and `pointing` can weigh the two.
+        Pickable { should_block_lower: false, is_hoverable: true },
     )
 }
 
