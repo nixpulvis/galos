@@ -10,6 +10,7 @@ use crate::systems::{
     },
     route::Route,
     route::spawn::spawn_route,
+    selection::Selection,
     system_to_vec,
 };
 use bevy::diagnostic::FrameCount;
@@ -99,6 +100,7 @@ fn focus_camera_on_click(
     frame: Res<FrameCount>,
     mut answered: Local<Option<u32>>,
     mut move_camera_events: MessageWriter<MoveCamera>,
+    mut selection: ResMut<Selection>,
 ) {
     let travelled = pointers
         .get_entity(click.pointer_id)
@@ -130,6 +132,7 @@ fn focus_camera_on_click(
     // in rendering coordinates, which are relative to whichever grid cell
     // the camera is in and so mean nothing once it has moved on.
     let Ok(system) = pointed_at.single() else { return };
+    selection.set(system.clone());
     move_camera_events
         .write(MoveCamera { position: Some(DVec3::from(system.position)) });
 }

@@ -25,6 +25,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
     app.add_plugins(pointing::plugin);
+    app.add_plugins(selection::plugin);
 
     // Both ask the camera for something, and `orbit_camera` then works out
     // where it lands, so both have to have spoken by the time it runs.
@@ -38,7 +39,9 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, visibility.in_set(MapSet::Present));
 }
 
-#[derive(Component)]
+/// Clones because a selection holds one, and a system may be selected before
+/// the map has fetched it or after it has been despawned.
+#[derive(Component, Clone)]
 pub struct System {
     address: i64,
     name: String,
@@ -65,6 +68,7 @@ pub mod labels;
 pub mod pointing;
 pub mod route;
 pub mod scale;
+pub mod selection;
 pub mod spawn;
 
 /// A global setting which controls the spyglass around the camera

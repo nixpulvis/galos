@@ -9,6 +9,7 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
+use crate::systems::selection::Selected;
 use crate::systems::spawn::Star;
 use bevy::math::DVec3;
 use bevy::picking::hover::HoverMap;
@@ -79,6 +80,14 @@ const DWELL: f32 = 0.25;
 /// Not zero: a ray is put into the space of what it might hit by inverting
 /// that thing's transform, and a zero scale has no inverse.
 pub(super) const UNFITTED_SCALE: f32 = 1e-6;
+
+/// The button that answers for whatever is under the pointer
+///
+/// Picking knows it as [`PointerButton::Primary`], and [`ButtonInput`] knows
+/// it by where it sits, so the two names are put together here. What a press
+/// selects and what a press clears are then the same button by construction
+/// rather than by two files happening to agree.
+pub(super) const PRIMARY: MouseButton = MouseButton::Left;
 
 /// How far a pointer may travel while pressed before it is dragging
 ///
@@ -289,9 +298,12 @@ pub fn point_the_cursor(
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<&OrbitCamera>,
+    // A selected system is already ringed, in its own colour. Ringing it
+    // again for being pointed at would draw one circle over the other and
+    // read as the selection having been lost.
     pointed_at: Query<
         (&GlobalTransform, &Children),
-        (With<System>, With<PointedAt>),
+        (With<System>, With<PointedAt>, Without<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
 ) {
