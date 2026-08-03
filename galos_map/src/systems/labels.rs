@@ -17,7 +17,7 @@ pub(crate) fn plugin(app: &mut App) {
         font_embedded: vec![include_bytes!("../../assets/gautami.ttf")],
         ..default()
     });
-    app.insert_resource(LabelSize(16.));
+    app.insert_resource(NameRadius(DEFAULT_NAME_RADIUS));
     app.add_systems(Startup, init_materials);
     app.add_systems(
         Update,
@@ -57,16 +57,24 @@ const SIZE: f32 = 64.;
 /// mirrored. Anything this close is inside the near plane regardless.
 const MIN_DEPTH: f32 = 0.1;
 
-/// How far from what the camera looks at a system may be before it stops
-/// being labelled
-const RADIUS: f32 = 100.;
+/// How far a name is drawn from what the camera looks at, to begin with
+///
+/// What [`NameRadius`] starts at, and what the tests measure against.
+const DEFAULT_NAME_RADIUS: f32 = 100.;
 
 /// How tall a system's name draws, in logical pixels
 ///
-/// The one number that decides label size. Everything else follows from the
-/// viewport and where the camera is.
+/// The one number that decides how large a name is. Everything else follows
+/// from the viewport and where the camera is.
+const NAME_HEIGHT: f32 = 16.;
+
+/// How far from what the camera looks at a system may be and still be named
+///
+/// Worth reaching for, where the size of a name is not: turning it up asks
+/// for more of what is around, and what will not fit is dropped rather than
+/// drawn over, so asking for more of it costs only the asking.
 #[derive(Resource)]
-pub struct LabelSize(pub f32);
+pub struct NameRadius(pub f32);
 
 /// Sideways gap between a star and its label, in text heights
 const GAP: f32 = 0.75;
@@ -252,7 +260,7 @@ const HOVER_TINT: Srgba = INDICATOR;
 
 /// Decide which systems get to show their name
 ///
-/// Every name inside [`RADIUS`] drawn at once is unreadable: the dev
+/// Every name inside [`NameRadius`] drawn at once is unreadable: the dev
 /// database holds a couple of thousand systems within a hundred light years
 /// and a full one holds many times that, so they pile into each other. This
 /// keeps the ones that fit.
@@ -269,7 +277,7 @@ const HOVER_TINT: Srgba = INDICATOR;
 pub fn choose_names(
     mut commands: Commands,
     camera: Query<(&OrbitCamera, &Camera)>,
-    size: Res<LabelSize>,
+    radius: Res<NameRadius>,
     show_names: Res<ShowNames>,
     systems: Query<(Entity, &System)>,
     named: Query<Entity, With<Named>>,
@@ -299,11 +307,11 @@ pub fn choose_names(
 
             let position = DVec3::from(system.position);
             let from_focus = (position - orbit.focus).length() as f32;
-            if from_focus > RADIUS {
+            if from_focus > radius.0 {
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;
-            let rect = name_rect(at, &system.name, size.0);
+            let rect = name_rect(at, &system.name);
             let screen = Rect::from_corners(Vec2::ZERO, viewport);
             if screen.intersect(rect).is_empty() {
                 return None;
@@ -365,7 +373,8 @@ fn name_score(from_focus: f32, pointed_at: bool) -> f32 {
 ///
 /// The width is a guess from the letter count, since the mesh that would
 /// give an exact one is the thing being decided about.
-fn name_rect(at: Vec2, name: &str, size: f32) -> Rect {
+fn name_rect(at: Vec2, name: &str) -> Rect {
+    let size = NAME_HEIGHT;
     let width = name.chars().count() as f32 * ADVANCE * size;
     let margin = size * CROWDING;
 
@@ -458,7 +467,6 @@ pub fn respawn(
 /// rotation be written straight into a slot that is read as local.
 pub fn face_camera(
     camera: Query<(&OrbitCamera, &Camera)>,
-    size: Res<LabelSize>,
     systems: Query<&System, Without<Label>>,
     // `Without<System>` is already true of any label. It is spelled out so
     // the scheduler can prove this query is disjoint from the one above, and
@@ -484,7 +492,7 @@ pub fn face_camera(
 
         // The line box is exactly `SIZE` tall, so this is the height the
         // name draws at, in pixels, whatever the camera is doing.
-        let height = size.0 * world_per_pixel;
+        let height = NAME_HEIGHT * world_per_pixel;
         let scale = height / SIZE;
 
         // Offset along the camera's own axes, so the label keeps sitting up
@@ -681,12 +689,13 @@ mod tests {
     fn nearer_systems_are_always_offered_a_name_first() {
         let mut nearer = name_score(0., false);
         for step in 1..=1000 {
-            let further = name_score(step as f32 * RADIUS / 1000., false);
+            let further =
+                name_score(step as f32 * DEFAULT_NAME_RADIUS / 1000., false);
             assert!(
                 further < nearer,
                 "a system {}ly out scored {further}, beating the {nearer} \
                  of one closer in",
-                step as f32 * RADIUS / 1000.
+                step as f32 * DEFAULT_NAME_RADIUS / 1000.
             );
             nearer = further;
         }
@@ -701,7 +710,7 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_focused() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(RADIUS, true);
+        let pointed = name_score(DEFAULT_NAME_RADIUS, true);
 
         // The focused system itself, which is otherwise the best there is.
         let focused = name_score(0., false);
