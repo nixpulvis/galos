@@ -64,9 +64,10 @@ const DEFAULT_NAME_RADIUS: f32 = 100.;
 
 /// How tall a system's name draws, in logical pixels
 ///
-/// The one number that decides how large a name is. Everything else follows
-/// from the viewport and where the camera is.
-const NAME_HEIGHT: f32 = 16.;
+/// The line box, which for a single line of text is the size the font is
+/// set at. The one number that decides how large a name is; everything else
+/// follows from the viewport and where the camera is.
+const NAME_HEIGHT: f32 = 12.;
 
 /// How far from what the camera looks at a system may be and still be named
 ///
