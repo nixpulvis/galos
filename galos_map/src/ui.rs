@@ -5,7 +5,6 @@
 //! system the user picked out is drawn by [`crate::systems::selection`],
 //! which owns the fields it reads.
 
-use self::Edging::{Bare, Boxed};
 use crate::search::{SearchNote, Searched};
 use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
@@ -124,11 +123,10 @@ pub struct SearchFields {
     faction: Option<String>,
     /// Whether the rest of the form is out below the input
     ///
-    /// Last frame's answer, rather than a setting the user turns on and off.
-    /// A field cannot report that it holds focus until it has been drawn, and
-    /// whether to draw it is the question being asked, so [`search_bar`]
-    /// settles it at the end of one frame and the next frame draws what it
-    /// settled on.
+    /// Held from one frame to the next because a field cannot report that it
+    /// holds focus until it has been drawn, and whether to draw it is the
+    /// question being asked. [`search_bar`] settles it at the end of a frame,
+    /// and the next frame draws what it settled on.
     expanded: bool,
 }
 
@@ -319,9 +317,14 @@ fn gear(ctx: &Context, left: f32, open: &mut bool) {
 
 /// Ask for a system, and for whatever else the user unfolds
 ///
-/// One bare line of text at the top of the viewport, centred, since it is the
-/// one question the map is asked over and over. Focusing it brings a pane up
-/// behind it and drops the rest of the form out below.
+/// One field at the top of the viewport, centred, since it is the one
+/// question the map is asked over and over. Focusing it brings a pane up
+/// behind it and drops the rest of the form out below, and a press landing
+/// off the form puts it away again.
+///
+/// It keeps its box while the bar is at rest, so that what stands at the top
+/// of the viewport reads as somewhere to type rather than as a word painted
+/// on the map.
 ///
 /// The pane is the input's own frame drawn in nothing while the bar is at
 /// rest, rather than a frame left out and put back. Nothing shifts as it
@@ -362,13 +365,7 @@ fn search_bar(
                     ui.set_width(BAR_WIDTH);
                     let mut busy = false;
 
-                    // Bare while the bar is at rest, so that what stands at
-                    // the top of the viewport is a line of text. Boxed once
-                    // the pane is up, so that it reads as the first field of
-                    // the form rather than as a caption over it.
-                    let edging = if search.expanded { Boxed } else { Bare };
-                    let response =
-                        singleline(ui, &mut search.system, "Search", edging);
+                    let response = singleline(ui, &mut search.system, "Search");
                     busy |= response.has_focus();
                     if entered(&response, ui) {
                         search.faction = None;
@@ -394,12 +391,16 @@ fn search_bar(
     let over = ctx
         .pointer_latest_pos()
         .is_some_and(|at| bar.response.rect.contains(at));
-    // Settled from what the bar has just reported rather than switched, so
-    // there is no state to be left stuck in: the moment nothing in the form
-    // holds focus and the pointer is elsewhere, it is shut. The pointer only
-    // holds out a form that is already out, since resting on something is not
-    // the same as asking for it.
-    search.expanded = bar.inner || (search.expanded && over);
+    let dismissed = !over && ctx.input(|i| i.pointer.any_pressed());
+    // Brought out by anything in the form taking focus, and put away by a
+    // press landing somewhere else. Nothing else puts it away: pressing Plot
+    // Route leaves focus nowhere in particular, and the form has no business
+    // closing over the pointer having since wandered off it.
+    //
+    // The press is weighed on its own account rather than only while the
+    // form has no focus, so there is no state to be left stuck in. Whatever
+    // the form is in the middle of, the next press outside it is the end.
+    search.expanded = (search.expanded || bar.inner) && !dismissed;
 }
 
 /// Ask where a route ends and what it may be flown in
@@ -416,12 +417,10 @@ fn route_section(
     let named = search.system.is_some();
     let section = ui.add_enabled_ui(named, |ui| {
         let mut busy = false;
-        busy |= singleline(ui, &mut search.route_end, "End System", Boxed)
-            .has_focus();
+        busy |= singleline(ui, &mut search.route_end, "End System").has_focus();
         ui.add_space(FIELD_GAP);
-        busy |=
-            singleline(ui, &mut search.route_range, "Jump Range (Ly)", Boxed)
-                .has_focus();
+        busy |= singleline(ui, &mut search.route_range, "Jump Range (Ly)")
+            .has_focus();
         ui.add_space(FIELD_GAP);
         if ui.button("Plot Route").clicked() {
             plot_route(search, searched);
@@ -448,7 +447,7 @@ fn faction_section(
     searched: &mut MessageWriter<Searched>,
 ) -> bool {
     heading(ui, "Faction");
-    let response = singleline(ui, &mut search.faction, "Faction Name", Boxed);
+    let response = singleline(ui, &mut search.faction, "Faction Name");
     if entered(&response, ui) {
         search.system = None;
         if let Some(name) = search.faction.clone() {
@@ -493,54 +492,48 @@ fn entered(response: &Response, ui: &Ui) -> bool {
     response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
-/// Whether a text field draws a box around itself
-///
-/// Every field of the form is boxed, since stacked bare fields read as one
-/// paragraph rather than as a form. Only the one the bar leads with goes
-/// bare, and only while the bar is at rest, so that what stands at the top of
-/// the viewport asking nothing of anyone is a line of text.
-///
-/// Both are laid out the same, so a field can change from one to the other
-/// without moving. Egui pads a text field as part of building the box around
-/// it, which means a bare field has to be given [`FIELD_PADDING`] by hand to
-/// come out the same size.
-#[derive(PartialEq)]
-enum Edging {
-    Boxed,
-    Bare,
-}
-
 /// How far a text field's text stands from its own edge
 ///
-/// The same for a bare field as for a boxed one, so that the input the bar
-/// leads with keeps its place as the box comes up around it.
+/// Egui's own is tighter above and below than it is at the sides, which
+/// leaves a field looking squeezed against the one under it.
 const FIELD_PADDING: egui::Margin =
     egui::Margin { left: 4, right: 4, top: 4, bottom: 4 };
+
+/// The border a text field keeps while nothing is happening to it
+///
+/// Egui draws a field at rest with no fill and no border, leaving nothing on
+/// screen but the text in it. That reads well enough inside a pane with an
+/// edge of its own, and not at all against the map.
+const FIELD_BORDER: egui::Stroke =
+    egui::Stroke { width: 1., color: egui::Color32::from_gray(90) };
 
 /// One text field, showing what it wants when it holds nothing
 fn singleline(
     ui: &mut Ui,
     value: &mut Option<String>,
     placeholer: &str,
-    edging: Edging,
 ) -> Response {
-    if value.is_none() {
-        ui.style_mut().visuals.override_text_color = Some(egui::Color32::GRAY);
-    }
-
     let mut text = match value {
         Some(input) => input.clone(),
         None => placeholer.into(),
     };
 
-    let mut field = egui::TextEdit::singleline(&mut text).margin(FIELD_PADDING);
-    if edging == Bare {
-        // A frame given by name is taken as given, padding and all, where
-        // one left to egui is built around the field's own margin. So the
-        // padding has to be repeated here to survive losing the box.
-        field = field.frame(egui::Frame::new().inner_margin(FIELD_PADDING));
-    }
-    let response = ui.add_sized(egui::vec2(ui.available_width(), 0.), field);
+    // In a scope of its own, since a style set on a `Ui` is set on the rest
+    // of that `Ui`: the grey a field wants for what it is holding would go
+    // on to grey the headings under it.
+    let response = ui
+        .scope(|ui| {
+            ui.visuals_mut().widgets.inactive.bg_stroke = FIELD_BORDER;
+            if value.is_none() {
+                ui.visuals_mut().override_text_color =
+                    Some(egui::Color32::GRAY);
+            }
+            ui.add_sized(
+                egui::vec2(ui.available_width(), 0.),
+                egui::TextEdit::singleline(&mut text).margin(FIELD_PADDING),
+            )
+        })
+        .inner;
 
     if response.gained_focus() {
         *value = Some("".into());
