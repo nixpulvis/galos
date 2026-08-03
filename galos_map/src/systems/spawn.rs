@@ -90,7 +90,6 @@ pub struct Star;
 /// click on it. Picking calls it a drag after a single pixel of movement,
 /// which is too eager to use by itself, so measure the travel instead.
 //
-// TODO: toggle system info as well.
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,

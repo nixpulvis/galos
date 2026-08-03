@@ -8,8 +8,10 @@
 //! What is selected is held as a value rather than as an entity. A system
 //! reached by name is answered by the database before the map fetches
 //! anything, so there is nothing on the map to mark until the camera
-//! arrives, and the panel has something to say from the moment the name
-//! resolves.
+//! arrives, and the name is worth colouring from the moment it resolves.
+//!
+//! What the map knows about the selected system beyond its name is written
+//! out by [`super::info`], which the user asks for separately.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
@@ -19,9 +21,6 @@ use crate::systems::pointing::{
 };
 use crate::ui::PointerOverUi;
 use bevy::prelude::*;
-use bevy_egui::egui::Ui;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use std::fmt::Display;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Selection>();
@@ -38,10 +37,6 @@ pub fn plugin(app: &mut App) {
     // Reads where a star ended up rather than deciding it, so it waits for
     // the transforms to be worked out, as `pointing::ring` does.
     app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
-    // `ui::panels` concludes at its end whether the pointer is busy with the
-    // UI, from every window drawn in the pass so far. Drawn before it, this
-    // window is counted in the same frame it is shown rather than the next.
-    app.add_systems(EguiPrimaryContextPass, panel.before(crate::ui::panels));
 }
 
 /// The colour everything about the selection is drawn in
@@ -95,12 +90,13 @@ pub struct Selected;
 /// answered before anything was fetched or from a click on a row that may
 /// have been fetched some time ago, and a later fetch replaces the row
 /// without the selection hearing of it. So a row that has changed is copied
-/// back, and the panel says what the map holds rather than what it held.
+/// back, and what is picked out is the row the map holds rather than the one
+/// it held when the user pointed at it.
 ///
-/// The whole row, position included. Nothing reads the position out of the
-/// selection but the panel: the mark is placed by address, and the ring is
-/// drawn where the star's own transform puts it. So a system that moves
-/// simply reads as having moved.
+/// Nothing drawn is placed from the selection's own position: the mark goes
+/// by address, and the ring is drawn where the star's transform puts it. The
+/// row is kept whole all the same, since a selection describing a system in
+/// part would have to be asked which part.
 fn follow_selection(
     mut selection: ResMut<Selection>,
     marked: Query<(Entity, Ref<System>), With<Selected>>,
@@ -204,93 +200,10 @@ fn ring(
     }
 }
 
-/// Tell the user what is known about the system they picked out
-///
-/// Written here rather than alongside the rest of the UI because a
-/// [`System`]'s fields are the business of this module and its neighbours,
-/// and this is the one place they are read out rather than drawn with.
-fn panel(
-    mut contexts: EguiContexts,
-    mut selection: ResMut<Selection>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    let Some(system) = selection.0.as_ref() else { return Ok(()) };
-
-    // Closing the window is what clears the selection, so the panel is shut
-    // the way any window is rather than by a control of its own.
-    let mut open = true;
-    // Named for the system but identified by something that does not change
-    // with it, so that the window stays where the user put it as they go
-    // from one system to the next.
-    egui::Window::new(system.name.as_str())
-        .id(egui::Id::new("selection"))
-        .open(&mut open)
-        .resizable(false)
-        .show(ctx, |ui| {
-            ui.set_width(230.);
-            egui::Grid::new("selection-fields").num_columns(2).show(ui, |ui| {
-                let [x, y, z] = system.position;
-                field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
-                field(ui, "Population", thousands(system.population));
-                field(ui, "Allegiance", named(&system.allegiance));
-                field(ui, "Government", named(&system.government));
-                field(ui, "Security", named(&system.security));
-                field(ui, "Economy", named(&system.primary_economy));
-                field(ui, "Secondary", named(&system.secondary_economy));
-                field(
-                    ui,
-                    "Updated",
-                    system.updated_at.format("%Y-%m-%d %H:%M UTC").to_string(),
-                );
-            });
-        });
-
-    if !open {
-        selection.clear();
-    }
-
-    Ok(())
-}
-
-/// One named thing the database knows about a system
-fn field(ui: &mut Ui, name: &str, value: String) {
-    ui.label(name);
-    ui.label(value);
-    ui.end_row();
-}
-
-/// What the database says, or that it says nothing
-///
-/// Most of what is recorded about a system is optional, and a blank row
-/// reads as a bug rather than as an answer.
-fn named<T: Display>(value: &Option<T>) -> String {
-    match value {
-        Some(value) => value.to_string(),
-        None => "Unknown".into(),
-    }
-}
-
-/// A count with its digits grouped in threes
-///
-/// Populations run to eleven digits, which is a length rather than a number
-/// until it is broken up.
-fn thousands(count: u64) -> String {
-    let digits = count.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (place, digit) in digits.char_indices() {
-        if place > 0 && (digits.len() - place).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::DateTime;
-    use elite_journal::Allegiance;
 
     /// A system with nothing on record but the address that names it
     fn system(address: i64) -> System {
@@ -409,7 +322,7 @@ mod tests {
         assert_eq!(population_shown(&app), 1_000);
     }
 
-    /// What the panel would draw for the population
+    /// What the selection holds for the population
     fn population_shown(app: &App) -> u64 {
         app.world().resource::<Selection>().system().unwrap().population
     }
@@ -426,61 +339,5 @@ mod tests {
         app.update();
 
         assert!(!app.world().entity(one).contains::<Selected>());
-    }
-
-    /// A number short enough to read is left as it is
-    ///
-    /// Including the empty systems, of which there are far more than
-    /// inhabited ones, so this is the common answer rather than an edge.
-    #[test]
-    fn small_populations_are_left_alone() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(7), "7");
-        assert_eq!(thousands(999), "999");
-    }
-
-    /// Longer ones are broken into threes from the right
-    ///
-    /// From the right, so that the leading group is whatever is left over
-    /// rather than the number being padded to fit.
-    #[test]
-    fn long_populations_are_grouped_from_the_right() {
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(22_780), "22,780");
-        assert_eq!(thousands(999_999), "999,999");
-        assert_eq!(thousands(1_000_000), "1,000,000");
-    }
-
-    /// The largest populations on record still read
-    ///
-    /// The most populous systems run to eleven digits, which is the length
-    /// this is here for.
-    #[test]
-    fn the_largest_populations_are_grouped() {
-        assert_eq!(thousands(22_780_919_531), "22,780,919,531");
-    }
-
-    /// A separator never leads or trails
-    ///
-    /// The grouping is decided per digit from how many follow it, so a count
-    /// whose length is a multiple of three is where a stray leading comma
-    /// would show up.
-    #[test]
-    fn grouping_never_leads_or_trails() {
-        for count in [1u64, 100, 1_000, 100_000, 1_000_000] {
-            let grouped = thousands(count);
-            assert!(!grouped.starts_with(','), "{grouped} leads with one");
-            assert!(!grouped.ends_with(','), "{grouped} trails one");
-        }
-    }
-
-    /// What the database does not say is said to be unknown
-    ///
-    /// Most of what is recorded about a system is optional, and a blank row
-    /// reads as the panel having failed rather than as an answer.
-    #[test]
-    fn what_is_not_recorded_says_so() {
-        assert_eq!(named(&Some(Allegiance::Empire)), "Empire");
-        assert_eq!(named::<Allegiance>(&None), "Unknown");
     }
 }
