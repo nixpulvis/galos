@@ -170,6 +170,22 @@ pub(super) fn screen_position(
 /// Two materials rather than one recoloured, because the colour lives on a
 /// shared asset: changing it would repaint every name at once. Swapping which
 /// handle a label points at repaints only that one.
+/// How strongly being what the camera looks at argues for a name being shown
+///
+/// In the same light years as everything else, so this is what the focused
+/// system's name is worth over one sitting at the camera itself. The best
+/// score is always kept, nothing having been placed yet to crowd it out, so
+/// a value above the span of the other terms makes the focused name certain
+/// rather than merely likely. They span a little over two hundred as they
+/// stand, which is why this sits where it does.
+const FOCUS_WEIGHT: f32 = 250.;
+
+/// How far the focus bonus reaches, in light years
+///
+/// It falls to half at this distance. The point the camera orbits is usually
+/// a system exactly, so this only has to forgive one that is merely near it.
+const FOCUS_REACH: f32 = 2.;
+
 /// A system whose name has won a place on screen
 ///
 /// Awarded by [`choose_names`] and read by [`respawn`], which spawns a label
@@ -240,7 +256,8 @@ pub fn choose_names(
             if screen.intersect(rect).is_empty() {
                 return None;
             }
-            let score = name_score(system.population, away);
+            let from_focus = (position - orbit.focus).length() as f32;
+            let score = name_score(system.population, away, from_focus);
             Some((entity, rect, score))
         })
         .collect();
@@ -267,10 +284,14 @@ pub fn choose_names(
 
 /// How much a system deserves to have its name drawn
 ///
-/// Two claims in the same units. Nearness is what the viewer is looking at,
-/// and population is what is worth looking at.
-fn name_score(population: u64, away: f32) -> f32 {
-    (1. + population as f32).ln() * POPULATION_WEIGHT - away
+/// Three claims in the same units. Nearness is what the viewer is looking
+/// at, population is what is worth looking at, and the focus is what they
+/// asked to look at, which outranks both.
+fn name_score(population: u64, away: f32, from_focus: f32) -> f32 {
+    let crowd = (1. + population as f32).ln() * POPULATION_WEIGHT;
+    let focus = FOCUS_WEIGHT / (1. + (from_focus / FOCUS_REACH).powi(2));
+
+    crowd + focus - away
 }
 
 /// The screen rectangle a system's name would occupy, with room around it
@@ -496,6 +517,48 @@ mod tests {
             corner.length() > 130.,
             "the corner point is only {} away, too close to tell the two apart",
             corner.length()
+        );
+    }
+
+    /// The focused system outranks anything else on screen
+    ///
+    /// Nothing has been placed when the best score is taken, so the top of
+    /// the order always keeps its name. This is what makes the focus weight
+    /// a certainty rather than a strong preference, and what would have to
+    /// give first if it were lowered.
+    #[test]
+    fn the_focused_system_outscores_every_rival() {
+        // At the focus, uninhabited, and as far off as a name is drawn.
+        let focused = name_score(0, RADIUS, 0.);
+
+        // The busiest system in the galaxy, sitting at the camera itself.
+        let rival = name_score(10_000_000_000, 0., RADIUS);
+
+        assert!(
+            focused > rival,
+            "the focused system scored {focused} against {rival}"
+        );
+    }
+
+    /// The focus bonus falls away with distance from what is focused
+    ///
+    /// Otherwise every system in the neighbourhood would inherit the claim
+    /// of the one at the middle of it.
+    #[test]
+    fn the_focus_bonus_is_local_to_the_focus() {
+        let at = name_score(0, 10., 0.);
+        let near = name_score(0, 10., FOCUS_REACH);
+        let far = name_score(0, 10., FOCUS_REACH * 10.);
+
+        assert!(
+            near < at,
+            "a system {FOCUS_REACH}ly off scored as well as the focus"
+        );
+        assert!(far < near, "the bonus had not faded by ten times its reach");
+        assert!(
+            far - name_score(0, 10., f32::MAX) < FOCUS_WEIGHT * 0.05,
+            "a system ten reaches out still held {} of the bonus",
+            far - name_score(0, 10., f32::MAX)
         );
     }
 
