@@ -4,6 +4,7 @@ use crate::systems::pointing::{INDICATOR, PointedAt};
 use crate::systems::spawn::{ShowNames, Star};
 use crate::systems::{Spyglass, System};
 use bevy::camera::visibility::VisibilitySystems;
+use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_rich_text3d::{
@@ -338,8 +339,14 @@ pub fn choose_names(
         }
     };
 
-    let Ok((orbit, camera)) = camera.single() else { return };
-    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let Ok((orbit, camera)) = camera.single() else {
+        clear(&mut commands);
+        return;
+    };
+    let Some(viewport) = camera.logical_viewport_size() else {
+        clear(&mut commands);
+        return;
+    };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     let reach = radius.reach(&spyglass);
@@ -390,18 +397,28 @@ pub fn choose_names(
     wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2));
 
     let mut kept: Vec<Rect> = Vec::new();
-    let mut winners: Vec<Entity> = Vec::new();
+    let mut winners = EntityHashSet::default();
     for (entity, rect, _) in wanted {
         if kept.iter().any(|taken| !taken.intersect(rect).is_empty()) {
             continue;
         }
         kept.push(rect);
-        winners.push(entity);
+        winners.insert(entity);
     }
 
-    clear(&mut commands);
+    // Only what changed hands. Nearly every name is the same name it was
+    // last frame, and taking one away to give it straight back moves its
+    // system between archetypes twice for nothing, and reads as a change to
+    // anything watching for one.
+    for entity in &named {
+        if !winners.contains(&entity) {
+            commands.entity(entity).remove::<Named>();
+        }
+    }
     for entity in winners {
-        commands.entity(entity).insert(Named);
+        if !named.contains(entity) {
+            commands.entity(entity).insert(Named);
+        }
     }
 }
 
