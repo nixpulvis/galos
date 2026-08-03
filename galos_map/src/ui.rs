@@ -29,6 +29,19 @@ pub struct PointerOverUi(pub bool);
 // TODO: Form validation.
 
 /// Map settings and controls
+/// What the user has typed into the search boxes
+///
+/// One form, so one piece of state. Held together rather than as four
+/// separate locals because a system param is a scarce thing and these are
+/// only ever read and cleared as a group.
+#[derive(Default)]
+pub struct SearchFields {
+    system: Option<String>,
+    route_end: Option<String>,
+    route_range: Option<String>,
+    faction: Option<String>,
+}
+
 pub fn panels(
     mut contexts: EguiContexts,
     mut spyglass: ResMut<Spyglass>,
@@ -42,10 +55,7 @@ pub fn panels(
     search_note: Res<SearchNote>,
     mut over_ui: ResMut<PointerOverUi>,
     mut despawner: MessageWriter<Despawn>,
-    mut system_name: Local<Option<String>>,
-    mut route_end: Local<Option<String>>,
-    mut route_range: Local<Option<String>>,
-    mut faction_name: Local<Option<String>>,
+    mut search: Local<SearchFields>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::Window::new("Search").default_open(false).resizable(false).show(
@@ -53,31 +63,31 @@ pub fn panels(
         |ui| {
             ui.set_width(125.);
 
-            let response = singleline(ui, &mut *system_name, "System Name");
+            let response = singleline(ui, &mut search.system, "System Name");
             if response.lost_focus()
                 && ui.input(|i| i.key_pressed(egui::Key::Enter))
             {
-                *faction_name = None;
-                if let Some(ref search) = *system_name {
-                    searched.write(Searched::System { name: search.clone() });
+                search.faction = None;
+                if let Some(name) = search.system.clone() {
+                    searched.write(Searched::System { name });
                 }
             }
             if let Some(note) = &search_note.0 {
                 ui.colored_label(egui::Color32::LIGHT_RED, note);
             }
-            if system_name.is_some() {
+            if search.system.is_some() {
                 ui.add_space(2.);
                 ui.label("Route");
-                singleline(ui, &mut *route_end, "End System");
+                singleline(ui, &mut search.route_end, "End System");
                 ui.add_space(2.);
-                singleline(ui, &mut *route_range, "Range (Ly)");
+                singleline(ui, &mut search.route_range, "Range (Ly)");
                 ui.add_space(3.);
 
                 if ui.button("Plot Route...").clicked() {
                     if let (Some(ref s), Some(ref e), Some(ref r)) = (
-                        system_name.as_ref(),
-                        route_end.as_ref(),
-                        route_range.as_ref(),
+                        search.system.as_ref(),
+                        search.route_end.as_ref(),
+                        search.route_range.as_ref(),
                     ) {
                         #[allow(irrefutable_let_patterns)]
                         if let Ok(r) = r.parse() {
@@ -94,13 +104,13 @@ pub fn panels(
 
             ui.separator();
 
-            let response = singleline(ui, &mut *faction_name, "Faction Name");
+            let response = singleline(ui, &mut search.faction, "Faction Name");
             if response.lost_focus()
                 && ui.input(|i| i.key_pressed(egui::Key::Enter))
             {
-                *system_name = None;
-                if let Some(ref search) = *faction_name {
-                    searched.write(Searched::Faction { name: search.clone() });
+                search.system = None;
+                if let Some(name) = search.faction.clone() {
+                    searched.write(Searched::Faction { name });
                 }
             }
         },
