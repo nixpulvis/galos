@@ -41,7 +41,7 @@ pub const INDICATOR: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
 ///
 /// Far enough out to read as something around the star rather than as part
 /// of it.
-const INDICATOR_MARGIN: f32 = 1.8;
+const INDICATOR_MARGIN: f32 = 1.5;
 
 /// The smallest an indicator may be, as a radius in logical pixels
 ///
@@ -49,7 +49,7 @@ const INDICATOR_MARGIN: f32 = 1.8;
 /// would be a dot, and it is the indicator that has to be aimed at. Held in
 /// pixels because that is what aiming is done in, so the target stays the
 /// same size to the hand at every zoom.
-const INDICATOR_MIN_RADIUS: f32 = 11.;
+const INDICATOR_MIN_RADIUS: f32 = 9.5;
 
 /// What catches the pointer for a system
 ///

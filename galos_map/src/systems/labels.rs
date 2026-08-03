@@ -114,6 +114,15 @@ const CROWDING: f32 = 0.35;
 /// stand, which is why this sits where it does.
 const FOCUS_WEIGHT: f32 = 250.;
 
+/// How strongly being pointed at argues for a name being shown
+///
+/// Above [`FOCUS_WEIGHT`], so that a system under the pointer takes the top
+/// of the order from the one the camera was sent to. The best score is
+/// always kept, nothing having been placed yet to crowd it out, so the name
+/// of whatever is pointed at is certain to be drawn and anything that would
+/// have overlapped it gives way instead.
+const POINTED_WEIGHT: f32 = 500.;
+
 /// How far the focus bonus reaches, in light years
 ///
 /// It falls to half at this distance. The point the camera orbits is usually
@@ -264,6 +273,7 @@ pub fn choose_names(
     show_names: Res<ShowNames>,
     systems: Query<(Entity, &System)>,
     named: Query<Entity, With<Named>>,
+    pointing: Query<(), With<PointedAt>>,
 ) {
     let clear = |commands: &mut Commands| {
         for entity in &named {
@@ -271,10 +281,6 @@ pub fn choose_names(
         }
     };
 
-    if !show_names.0 {
-        clear(&mut commands);
-        return;
-    }
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
@@ -284,6 +290,13 @@ pub fn choose_names(
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
         .filter_map(|(entity, system)| {
+            // With names turned off, the one under the pointer is still
+            // worth reading, and is the only one asked for.
+            let pointed_at = pointing.contains(entity);
+            if !show_names.0 && !pointed_at {
+                return None;
+            }
+
             let position = DVec3::from(system.position);
             let from_focus = (position - orbit.focus).length() as f32;
             if from_focus > RADIUS {
@@ -295,7 +308,7 @@ pub fn choose_names(
             if screen.intersect(rect).is_empty() {
                 return None;
             }
-            let score = name_score(from_focus);
+            let score = name_score(from_focus, pointed_at);
             Some((entity, rect, score))
         })
         .collect();
@@ -322,7 +335,8 @@ pub fn choose_names(
 
 /// How much a system deserves to have its name drawn
 ///
-/// One question: how far the system is from what the camera is pointed at.
+/// Being under the pointer settles it outright. Failing that, one question:
+/// how far the system is from what the camera is pointed at.
 /// A sharp term picks out the focused system itself, and a flat one puts
 /// everything else in order of nearness to it. Strictly falling, so names
 /// are awarded nearest first and the closest system to the focus is always
@@ -340,10 +354,11 @@ pub fn choose_names(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(from_focus: f32) -> f32 {
+fn name_score(from_focus: f32, pointed_at: bool) -> f32 {
     let focused = FOCUS_WEIGHT / (1. + (from_focus / FOCUS_REACH).powi(2));
+    let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
 
-    focused - from_focus
+    pointed + focused - from_focus
 }
 
 /// The screen rectangle a system's name would occupy, with room around it
@@ -650,9 +665,9 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(0.);
+        let mut nearer = name_score(0., false);
         for step in 1..=1000 {
-            let further = name_score(step as f32 * RADIUS / 1000.);
+            let further = name_score(step as f32 * RADIUS / 1000., false);
             assert!(
                 further < nearer,
                 "a system {}ly out scored {further}, beating the {nearer} \
@@ -661,6 +676,26 @@ mod tests {
             );
             nearer = further;
         }
+    }
+
+    /// What the pointer is on takes the top of the order
+    ///
+    /// The best score is kept before anything has been placed, so the name
+    /// under the pointer is always drawn, and whatever would have overlapped
+    /// it gives way. It has to beat the focused system to do that, which is
+    /// the only other claim strong enough to matter.
+    #[test]
+    fn what_is_pointed_at_outranks_what_is_focused() {
+        // Pointed at, and as far out as a name is ever drawn.
+        let pointed = name_score(RADIUS, true);
+
+        // The focused system itself, which is otherwise the best there is.
+        let focused = name_score(0., false);
+
+        assert!(
+            pointed > focused,
+            "pointed at scored {pointed}, behind the {focused} of the focus"
+        );
     }
 
     /// The focus bonus falls away with distance from what is focused
