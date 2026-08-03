@@ -10,6 +10,12 @@
 //! anything, so there is nothing on the map to mark until the camera
 //! arrives, and the name is worth colouring from the moment it resolves.
 //!
+//! A click on empty sky lets go of a selection, unless the UI has already
+//! answered that press. A search leaves the camera where it is, so what is
+//! picked out is what the user is working with rather than where they happen
+//! to be looking, and the press that shuts a form is no reason to throw a
+//! typed name away.
+//!
 //! What the map knows about the selected system beyond its name is written
 //! out by [`super::info`], which the user asks for separately.
 
@@ -19,7 +25,8 @@ use crate::systems::System;
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
 };
-use crate::ui::PointerOverUi;
+use crate::ui::{PointerOverUi, PressAnswered};
+use bevy::math::DVec3;
 use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
@@ -67,6 +74,25 @@ impl Selection {
     /// What is picked out
     pub fn system(&self) -> Option<&System> {
         self.0.as_ref()
+    }
+
+    /// What is picked out is called, if anything is
+    ///
+    /// Alongside [`Self::position`] and there for the same reason: the
+    /// search bar says what it is holding, and a [`System`]'s fields are
+    /// private to [`super`].
+    pub fn name(&self) -> Option<&str> {
+        self.0.as_ref().map(|system| system.name.as_str())
+    }
+
+    /// Where what is picked out is, if anything is
+    ///
+    /// A [`System`]'s fields are private to [`super`], and the control that
+    /// sends the camera to the selection is drawn with the rest of the UI,
+    /// which is not. So this is the one thing about the selected system the
+    /// rest of the crate can ask for.
+    pub fn position(&self) -> Option<DVec3> {
+        self.0.as_ref().map(|system| DVec3::from(system.position))
     }
 }
 
@@ -140,14 +166,25 @@ fn follow_selection(
 /// two cannot both answer one press: the primary button, travel short enough
 /// to be a click rather than a drag of the map, and the pointer's own
 /// business rather than the UI's. What is left is a click on empty sky.
+///
+/// A press the UI has already spent is the UI's own business too, even
+/// though it landed on the map. Shutting the search form is done by pressing
+/// off it, and that press closing a form and letting go of a selection would
+/// be one gesture doing two things.
 fn clear_when_nothing_is_clicked(
     buttons: Res<ButtonInput<MouseButton>>,
     over_ui: Res<PointerOverUi>,
+    mut press: ResMut<PressAnswered>,
     dragged: Query<&DragDistance>,
     pointed_at: Query<(), With<PointedAt>>,
     mut selection: ResMut<Selection>,
 ) {
-    if !buttons.just_released(PRIMARY) || over_ui.0 {
+    if !buttons.just_released(PRIMARY) {
+        return;
+    }
+    // Spent either way, since whatever the press was for is over.
+    let answered = std::mem::take(&mut press.0);
+    if over_ui.0 || answered {
         return;
     }
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
@@ -325,6 +362,23 @@ mod tests {
     /// What the selection holds for the population
     fn population_shown(app: &App) -> u64 {
         app.world().resource::<Selection>().system().unwrap().population
+    }
+
+    /// The selection says where what is picked out is
+    ///
+    /// Which is all the control that centres the camera on it can ask: a
+    /// `System`'s fields are private to this module and its neighbours, and
+    /// that control is drawn with the rest of the UI.
+    #[test]
+    fn the_selection_says_where_it_is() {
+        let mut selection = Selection::default();
+        assert_eq!(selection.position(), None);
+
+        let mut sol = system(1);
+        sol.position = [1., -2., 3.];
+        selection.set(sol);
+
+        assert_eq!(selection.position(), Some(DVec3::new(1., -2., 3.)));
     }
 
     /// Clearing the selection takes the mark with it

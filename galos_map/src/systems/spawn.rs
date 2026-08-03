@@ -6,13 +6,15 @@ use crate::systems::{
     fetch::FetchIndex,
     fetch::FetchTasks,
     pointing::{
-        DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
+        DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
+        UNFITTED_SCALE,
     },
     route::Route,
     route::spawn::spawn_route,
     selection::Selection,
     system_to_vec,
 };
+use crate::ui::PointerOverUi;
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -42,7 +44,14 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
 
-    app.add_observer(focus_camera_on_click);
+    app.add_observer(select_on_click);
+    // Answers what is pointed at this frame, which `point_at` decides.
+    app.add_systems(
+        Update,
+        fly_on_double_click
+            .in_set(MapSet::Present)
+            .after(super::pointing::point_at),
+    );
 }
 
 #[derive(Resource)]
@@ -83,7 +92,12 @@ pub struct ShowNames(pub bool);
 #[derive(Component)]
 pub struct Star;
 
-/// Focus the camera on clicked star systems
+/// Pick out a clicked star system
+///
+/// Clicking says which system the user means and nothing more. Where the
+/// camera goes is asked for separately, by the row that names what is picked
+/// out, so that a system can be pointed out from wherever the user happens
+/// to be looking without the map moving out from under them.
 ///
 /// The left button orbits the camera as well as selecting, so an orbit that
 /// happens to start and end on the same star has to be told apart from a
@@ -91,14 +105,13 @@ pub struct Star;
 /// which is too eager to use by itself, so measure the travel instead.
 //
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
-fn focus_camera_on_click(
+fn select_on_click(
     click: On<Pointer<Click>>,
     pointed_at: Query<&System, With<PointedAt>>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     frame: Res<FrameCount>,
     mut answered: Local<Option<u32>>,
-    mut move_camera_events: MessageWriter<MoveCamera>,
     mut selection: ResMut<Selection>,
 ) {
     let travelled = pointers
@@ -111,8 +124,8 @@ fn focus_camera_on_click(
 
     // One click is reported once for everything under the pointer, and
     // since a star stopped blocking what lies behind it there are usually
-    // several. They are all the same click, and there is only one place to
-    // be sent, so the first of them answers for the rest.
+    // several. They are all the same click, and only one system can be
+    // picked out, so the first of them answers for the rest.
     //
     // Counted by frame rather than by which of them is the one that won:
     // picking reports a click before `pointing` has looked at the frame it
@@ -126,14 +139,69 @@ fn focus_camera_on_click(
     // has already settled which system that is, weighing a name over a star
     // lying nearer behind it. Asking it rather than working the hit out
     // again keeps the click on whatever the ring and the tint are on.
-    //
-    // The system, rather than where on it the ray landed. A hit is reported
-    // in rendering coordinates, which are relative to whichever grid cell
-    // the camera is in and so mean nothing once it has moved on.
     let Ok(system) = pointed_at.single() else { return };
     selection.set(system.clone());
-    move_camera_events
-        .write(MoveCamera { position: Some(DVec3::from(system.position)) });
+}
+
+/// How long a second click may take to arrive and still make a double
+///
+/// Seconds. Long enough to be reached without hurrying, short enough that
+/// two deliberate clicks on the same system are not read as one gesture.
+const DOUBLE_CLICK: f32 = 0.4;
+
+/// Fly the camera to a system the user double clicks
+///
+/// One click says which system is meant and a second says to go there, so
+/// the map can be pointed at from where the user is without moving, and
+/// travelled with the same hand when they do want to move.
+///
+/// A click is weighed by the same three questions everywhere on the map: the
+/// primary button, travel short enough to be a click rather than a drag, and
+/// the pointer's own business rather than the UI's. What is asked on top of
+/// those is that the click before it landed on the same system, recently.
+fn fly_on_double_click(
+    buttons: Res<ButtonInput<MouseButton>>,
+    over_ui: Res<PointerOverUi>,
+    dragged: Query<&DragDistance>,
+    pointed_at: Query<&System, With<PointedAt>>,
+    time: Res<Time<Real>>,
+    mut last: Local<LastClick>,
+    mut camera: MessageWriter<MoveCamera>,
+) {
+    if !buttons.just_released(PRIMARY) || over_ui.0 {
+        return;
+    }
+    if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
+        return;
+    }
+    let Ok(system) = pointed_at.single() else { return };
+
+    if last.doubled(system.address, time.elapsed_secs()) {
+        camera
+            .write(MoveCamera { position: Some(DVec3::from(system.position)) });
+    }
+}
+
+/// The click a second one would be counted against
+///
+/// Which system as well as when, so that two clicks a moment apart on two
+/// different stars are two answers rather than one gesture. Stars stand
+/// close together on screen at any distance, and picking one out after
+/// another is an ordinary thing to do quickly.
+#[derive(Default)]
+struct LastClick(Option<(i64, f32)>);
+
+impl LastClick {
+    /// Whether a click on `address` at `now` is the second of a pair
+    ///
+    /// A double is spent as soon as it is answered, so a third click starts
+    /// counting afresh rather than making a second pair with the second.
+    fn doubled(&mut self, address: i64, now: f32) -> bool {
+        let doubled = matches!(self.0, Some((clicked, when))
+            if clicked == address && now - when <= DOUBLE_CLICK);
+        self.0 = if doubled { None } else { Some((address, now)) };
+        doubled
+    }
 }
 
 /// Polls the tasks in `FetchTasks` and spawns entities for each of the
@@ -493,5 +561,67 @@ impl TryFrom<&DbSystem> for System {
             secondary_economy: system.secondary_economy,
             updated_at: system.updated_at,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One click on its own opens nothing
+    #[test]
+    fn a_single_click_is_not_a_double() {
+        let mut last = LastClick::default();
+        assert!(!last.doubled(1, 0.));
+    }
+
+    /// Two clicks in quick succession on one system make a double
+    #[test]
+    fn two_quick_clicks_on_one_system_are_a_double() {
+        let mut last = LastClick::default();
+        last.doubled(1, 0.);
+        assert!(last.doubled(1, DOUBLE_CLICK));
+    }
+
+    /// Two clicks far enough apart are two singles
+    #[test]
+    fn two_slow_clicks_are_not_a_double() {
+        let mut last = LastClick::default();
+        last.doubled(1, 0.);
+        assert!(!last.doubled(1, DOUBLE_CLICK + 0.01));
+    }
+
+    /// Two clicks on different systems are two singles
+    ///
+    /// Clicking a system flies the camera to it, so the star that lands
+    /// under the pointer next is a different one often enough for this to be
+    /// the usual way an accidental double would happen.
+    #[test]
+    fn two_clicks_on_different_systems_are_not_a_double() {
+        let mut last = LastClick::default();
+        last.doubled(1, 0.);
+        assert!(!last.doubled(2, 0.1));
+    }
+
+    /// A third quick click does not make a second double
+    ///
+    /// Otherwise a held-down finger would open a panel per click, and there
+    /// would be no way to close one without it coming straight back.
+    #[test]
+    fn a_third_quick_click_is_not_a_double() {
+        let mut last = LastClick::default();
+        last.doubled(1, 0.);
+        assert!(last.doubled(1, 0.1));
+        assert!(!last.doubled(1, 0.2));
+    }
+
+    /// A slow click after a double starts a fresh pair
+    #[test]
+    fn counting_starts_again_after_a_double() {
+        let mut last = LastClick::default();
+        last.doubled(1, 0.);
+        last.doubled(1, 0.1);
+        assert!(!last.doubled(1, 0.2));
+        assert!(last.doubled(1, 0.3));
     }
 }

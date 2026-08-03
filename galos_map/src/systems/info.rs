@@ -2,20 +2,20 @@
 //!
 //! Pointing at a system and picking one out are both answered on the map
 //! itself, by a ring and a name. This is the long form of the same answer,
-//! and the user asks for it deliberately by double clicking a system. It is
-//! kept until they shut it, and as many of them stand open at once as they
-//! care to open, so two systems can be read side by side.
+//! and the user asks for it deliberately, from the mark beside the name of
+//! whatever is picked out. A panel is kept until they shut it, and as many
+//! of them stand open at once as they care to open, so two systems can be
+//! read side by side.
 //!
 //! A panel holds a [`System`] value rather than an entity, for the reason a
 //! selection does: a system flown away from is despawned, and a panel opened
 //! for it has no reason to go with it.
 
+use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::pointing::{
-    DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt,
-};
-use crate::ui::{MARGIN, PointerOverUi};
+use crate::ui::MARGIN;
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::Ui;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -23,13 +23,6 @@ use std::fmt::Display;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Panels>();
-    // Answers what is pointed at this frame, which `point_at` decides.
-    app.add_systems(
-        Update,
-        open_on_double_click
-            .in_set(MapSet::Present)
-            .after(super::pointing::point_at),
-    );
     app.add_systems(Update, refresh.in_set(MapSet::Present));
     // `ui::chrome` concludes at its end whether the pointer is busy with the
     // UI, from every window drawn in the pass so far. Drawn before it, these
@@ -43,12 +36,6 @@ pub fn plugin(app: &mut App) {
 /// answered with, so that the two columns do not shift from one system to
 /// the next.
 const WIDTH: f32 = 230.;
-
-/// How long a second click may take to arrive and still make a double
-///
-/// Seconds. Long enough to be reached without hurrying, short enough that
-/// two deliberate clicks on the same system are not read as one gesture.
-const DOUBLE_CLICK: f32 = 0.4;
 
 /// The systems the user has a panel open for
 ///
@@ -92,7 +79,7 @@ impl Panels {
     /// A system already being read about is left where it is rather than
     /// opened a second time, since two windows describing one system are two
     /// copies of one answer.
-    fn open(&mut self, system: System) {
+    pub fn open(&mut self, system: System) {
         if self.showing(system.address) {
             return;
         }
@@ -120,56 +107,6 @@ fn tile(slot: usize, down: usize, across: usize) -> (usize, usize) {
     let down = down.max(1);
     let slot = slot % (down * across.max(1));
     (slot % down, slot / down)
-}
-
-/// Open a panel for a system the user double clicks
-///
-/// A click is weighed by the same three questions everywhere on the map: the
-/// primary button, travel short enough to be a click rather than a drag, and
-/// the pointer's own business rather than the UI's. What is asked on top of
-/// those is that the click before it landed on the same system, recently.
-fn open_on_double_click(
-    buttons: Res<ButtonInput<MouseButton>>,
-    over_ui: Res<PointerOverUi>,
-    dragged: Query<&DragDistance>,
-    pointed_at: Query<&System, With<PointedAt>>,
-    time: Res<Time<Real>>,
-    mut last: Local<LastClick>,
-    mut panels: ResMut<Panels>,
-) {
-    if !buttons.just_released(PRIMARY) || over_ui.0 {
-        return;
-    }
-    if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
-        return;
-    }
-    let Ok(system) = pointed_at.single() else { return };
-
-    if last.doubled(system.address, time.elapsed_secs()) {
-        panels.open(system.clone());
-    }
-}
-
-/// The click a second one would be counted against
-///
-/// Which system as well as when, so that two clicks a moment apart on two
-/// different stars are two answers rather than one gesture. That is the
-/// common way to hit a double by accident, since clicking one system flies
-/// the camera and the next star lands under the pointer on its own.
-#[derive(Default)]
-struct LastClick(Option<(i64, f32)>);
-
-impl LastClick {
-    /// Whether a click on `address` at `now` is the second of a pair
-    ///
-    /// A double is spent as soon as it is answered, so a third click starts
-    /// counting afresh rather than making a second pair with the second.
-    fn doubled(&mut self, address: i64, now: f32) -> bool {
-        let doubled = matches!(self.0, Some((clicked, when))
-            if clicked == address && now - when <= DOUBLE_CLICK);
-        self.0 = if doubled { None } else { Some((address, now)) };
-        doubled
-    }
 }
 
 /// Keep each panel on whatever the map last heard about its system
@@ -201,7 +138,11 @@ fn refresh(
 /// Written here rather than alongside the rest of the UI because a
 /// [`System`]'s fields are the business of this module and its neighbours,
 /// and this is the one place they are read out rather than drawn with.
-fn panels(mut contexts: EguiContexts, mut panels: ResMut<Panels>) -> Result {
+fn panels(
+    mut contexts: EguiContexts,
+    mut panels: ResMut<Panels>,
+    mut camera: MessageWriter<MoveCamera>,
+) -> Result {
     if panels.open.is_empty() {
         return Ok(());
     }
@@ -231,6 +172,7 @@ fn panels(mut contexts: EguiContexts, mut panels: ResMut<Panels>) -> Result {
     for panel in &panels.open {
         let system = &panel.system;
         let mut showing = true;
+        let mut centred = None;
         let (row, column) = tile(panel.slot, down, across);
         // Named for the system but identified by its address, which does not
         // change with the row it was fetched in, so a window keeps the place
@@ -276,10 +218,26 @@ fn panels(mut contexts: EguiContexts, mut panels: ResMut<Panels>) -> Result {
                                 .to_string(),
                         );
                     });
+
+                // Its own system rather than whatever is selected, since
+                // several panels stand open at once and each one is about
+                // the system named in its title bar.
+                ui.add_space(MARGIN);
+                if ui.button("Center Camera").clicked() {
+                    centred = Some(DVec3::from(system.position));
+                }
             });
 
-        if let Some(window) = window {
+        // Only a panel that drew what it holds. A window rolled up into its
+        // title bar stands a line high, which is no height to place the next
+        // panel by.
+        if let Some(window) = window
+            && window.inner.is_some()
+        {
             tallest = tallest.max(window.response.rect.height());
+        }
+        if let Some(position) = centred {
+            camera.write(MoveCamera { position: Some(position) });
         }
         if !showing {
             shut.push(system.address);
@@ -352,63 +310,6 @@ mod tests {
             secondary_economy: None,
             updated_at: DateTime::UNIX_EPOCH,
         }
-    }
-
-    /// One click on its own opens nothing
-    #[test]
-    fn a_single_click_is_not_a_double() {
-        let mut last = LastClick::default();
-        assert!(!last.doubled(1, 0.));
-    }
-
-    /// Two clicks in quick succession on one system make a double
-    #[test]
-    fn two_quick_clicks_on_one_system_are_a_double() {
-        let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(last.doubled(1, DOUBLE_CLICK));
-    }
-
-    /// Two clicks far enough apart are two singles
-    #[test]
-    fn two_slow_clicks_are_not_a_double() {
-        let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(!last.doubled(1, DOUBLE_CLICK + 0.01));
-    }
-
-    /// Two clicks on different systems are two singles
-    ///
-    /// Clicking a system flies the camera to it, so the star that lands
-    /// under the pointer next is a different one often enough for this to be
-    /// the usual way an accidental double would happen.
-    #[test]
-    fn two_clicks_on_different_systems_are_not_a_double() {
-        let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(!last.doubled(2, 0.1));
-    }
-
-    /// A third quick click does not make a second double
-    ///
-    /// Otherwise a held-down finger would open a panel per click, and there
-    /// would be no way to close one without it coming straight back.
-    #[test]
-    fn a_third_quick_click_is_not_a_double() {
-        let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(last.doubled(1, 0.1));
-        assert!(!last.doubled(1, 0.2));
-    }
-
-    /// A slow click after a double starts a fresh pair
-    #[test]
-    fn counting_starts_again_after_a_double() {
-        let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        last.doubled(1, 0.1);
-        assert!(!last.doubled(1, 0.2));
-        assert!(last.doubled(1, 0.3));
     }
 
     /// Each panel takes the place after the last one opened

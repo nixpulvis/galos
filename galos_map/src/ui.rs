@@ -5,13 +5,18 @@
 //! system the user picked out is drawn by [`crate::systems::selection`],
 //! which owns the fields it reads.
 
+use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{SearchNote, Searched};
 use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
+use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
+use crate::systems::selection::{SELECTION, Selection};
 use crate::systems::spawn::{ColorBy, ShowNames};
+use bevy::ecs::system::SystemParam;
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -19,6 +24,7 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
     app.init_resource::<SettingsOpen>();
+    app.init_resource::<PressAnswered>();
     app.add_systems(EguiPrimaryContextPass, chrome);
 }
 
@@ -42,6 +48,18 @@ pub struct PointerOverUi(pub bool);
 /// can stand clear of it.
 #[derive(Resource, Default)]
 pub struct SettingsOpen(bool);
+
+/// Whether the press under way has already been answered by the UI
+///
+/// Shutting the search form is done by pressing somewhere off it, and the
+/// map has no business answering that press as well: letting go of a
+/// selection because the press that closed a form happened to land on empty
+/// sky is one gesture doing two things.
+///
+/// Set when the form is shut and held until the button comes up, since the
+/// map weighs a click on its release and the form weighs it on its press.
+#[derive(Resource, Default)]
+pub struct PressAnswered(pub bool);
 
 // TODO: Form validation.
 
@@ -67,8 +85,31 @@ const PADDING: i8 = 6;
 /// How far one field of a form stands from the next
 const FIELD_GAP: f32 = 4.;
 
-/// How far one section of a form stands from the last
-const SECTION_GAP: f32 = 6.;
+/// How wide the dot standing for the selection is drawn
+const DOT: f32 = 7.;
+
+/// The mark on the control that opens what is known about the selection
+const INFO: &str = "ℹ";
+
+/// How far the selection's row stands from what is around it
+///
+/// The same above and below, so that the row sits balanced between the
+/// input over it and whatever follows rather than hanging off one of them.
+const ROW_MARGIN: f32 = 2.;
+
+/// How far the selection's row holds its contents off its own edge
+const ROW_PADDING: f32 = 3.;
+
+/// The colour that dot is drawn in
+///
+/// [`SELECTION`] in egui's terms, so that the status line under the search
+/// box and the ring out on the map are one mark in two places rather than
+/// two colours to be matched up.
+const SELECTION_DOT: egui::Color32 = egui::Color32::from_rgb(
+    (SELECTION.red * 255.) as u8,
+    (SELECTION.green * 255.) as u8,
+    (SELECTION.blue * 255.) as u8,
+);
 
 /// The scales a radius is offered at, and how finely each one steps
 ///
@@ -123,29 +164,45 @@ pub struct SearchFields {
     faction: Option<String>,
     /// Whether the rest of the form is out below the input
     ///
-    /// Held from one frame to the next because a field cannot report that it
-    /// holds focus until it has been drawn, and whether to draw it is the
-    /// question being asked. [`search_bar`] settles it at the end of a frame,
-    /// and the next frame draws what it settled on.
+    /// Turned on when a field takes focus and off when a press lands off the
+    /// form, both of which [`search_bar`] settles at the end of a frame from
+    /// what it has just drawn. So this is one frame behind, which is as
+    /// close as an immediate mode UI gets: a field cannot report that it has
+    /// been clicked until it has been drawn, and whether to draw it is the
+    /// question being asked.
     expanded: bool,
+}
+
+/// Everything the settings pane sets
+///
+/// One parameter rather than nine. A system may take only sixteen, and these
+/// are all the same thing: the knobs the pane is a pane of.
+#[derive(SystemParam)]
+pub struct Knobs<'w> {
+    spyglass: ResMut<'w, Spyglass>,
+    view: ResMut<'w, View>,
+    color_by: ResMut<'w, ColorBy>,
+    population_scale: ResMut<'w, ScalePopulation>,
+    show_names: ResMut<'w, ShowNames>,
+    throttle: ResMut<'w, Throttle>,
+    poll: ResMut<'w, Poll>,
+    name_radius: ResMut<'w, NameRadius>,
+    despawner: MessageWriter<'w, Despawn>,
 }
 
 pub fn chrome(
     mut contexts: EguiContexts,
-    mut spyglass: ResMut<Spyglass>,
-    mut view: ResMut<View>,
-    mut color_by: ResMut<ColorBy>,
-    mut population_scale: ResMut<ScalePopulation>,
-    mut show_names: ResMut<ShowNames>,
-    mut throttle: ResMut<Throttle>,
-    mut poll: ResMut<Poll>,
-    mut name_radius: ResMut<NameRadius>,
+    mut knobs: Knobs,
     mut searched: MessageWriter<Searched>,
-    search_note: Res<SearchNote>,
+    mut search_note: ResMut<SearchNote>,
     mut over_ui: ResMut<PointerOverUi>,
-    mut despawner: MessageWriter<Despawn>,
     mut settings: ResMut<SettingsOpen>,
     mut search: Local<SearchFields>,
+    selection: Res<Selection>,
+    mut camera: MessageWriter<MoveCamera>,
+    orbit: Query<&OrbitCamera>,
+    mut press: ResMut<PressAnswered>,
+    mut panels: ResMut<Panels>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -153,25 +210,25 @@ pub fn chrome(
     let edge = settings_pane(ctx, settings.0, |ui| {
         ui.label("Spyglass Radius");
         ui.group(|ui| {
-            radius_sliders(ui, &mut spyglass.radius, 1.1e5);
+            radius_sliders(ui, &mut knobs.spyglass.radius, 1.1e5);
             ui.add_space(2.);
-            ui.checkbox(&mut spyglass.lock_camera, "Lock Camera");
+            ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
             ui.add_space(2.);
-            ui.checkbox(&mut spyglass.disabled, "Override Spyglass");
+            ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
             ui.add_space(2.);
             ui.collapsing("Advanced", |ui| {
-                ui.checkbox(&mut spyglass.fetch, "Fetch Systems");
-                if spyglass.fetch {
-                    ui.horizontal(|ui| poll_value(ui, &mut poll.0));
+                ui.checkbox(&mut knobs.spyglass.fetch, "Fetch Systems");
+                if knobs.spyglass.fetch {
+                    ui.horizontal(|ui| poll_value(ui, &mut knobs.poll.0));
                     ui.add_space(2.);
                     ui.horizontal(|ui| {
                         ui.label("Throttle (ms)");
-                        ui.add(egui::DragValue::new(&mut throttle.0));
+                        ui.add(egui::DragValue::new(&mut knobs.throttle.0));
                     });
                 }
                 ui.add_space(2.);
                 if ui.button("Despawn Systems").clicked() {
-                    despawner.write(Despawn);
+                    knobs.despawner.write(Despawn);
                 }
                 ui.add_space(2.);
             });
@@ -181,50 +238,60 @@ pub fn chrome(
 
         ui.group(|ui| {
             ui.label("View:");
-            ui.radio_value(&mut *view, View::Systems, "Systems");
-            ui.radio_value(&mut *view, View::Stars, "Stars");
+            ui.radio_value(&mut *knobs.view, View::Systems, "Systems");
+            ui.radio_value(&mut *knobs.view, View::Stars, "Stars");
             ui.separator();
 
-            match *view {
+            match *knobs.view {
                 View::Systems => {
                     ui.label("Color By:");
                     ui.radio_value(
-                        &mut *color_by,
+                        &mut *knobs.color_by,
                         ColorBy::Allegiance,
                         "Allegiance",
                     );
                     ui.radio_value(
-                        &mut *color_by,
+                        &mut *knobs.color_by,
                         ColorBy::Government,
                         "Government",
                     );
                     ui.radio_value(
-                        &mut *color_by,
+                        &mut *knobs.color_by,
                         ColorBy::Security,
                         "Security",
                     );
                     ui.separator();
-                    ui.checkbox(&mut population_scale.0, "Scale w/ Population");
+                    ui.checkbox(
+                        &mut knobs.population_scale.0,
+                        "Scale w/ Population",
+                    );
                 }
                 View::Stars => {}
             }
 
-            ui.checkbox(&mut show_names.0, "Show System Names");
-            if show_names.0 {
+            ui.checkbox(&mut knobs.show_names.0, "Show System Names");
+            if knobs.show_names.0 {
                 ui.checkbox(
-                    &mut name_radius.follow_spyglass,
+                    &mut knobs.name_radius.follow_spyglass,
                     "Names Follow Spyglass",
                 );
-                if !name_radius.follow_spyglass {
+                if !knobs.name_radius.follow_spyglass {
                     // A name can only be drawn for a system that is drawn,
                     // and the spyglass decides that. Overriding it draws
                     // everything loaded, and then names may be asked for
                     // beyond its reach.
-                    let ceiling =
-                        if spyglass.disabled { 1.1e5 } else { spyglass.radius };
+                    let ceiling = if knobs.spyglass.disabled {
+                        1.1e5
+                    } else {
+                        knobs.spyglass.radius
+                    };
                     ui.label("Name Radius");
                     ui.group(|ui| {
-                        radius_sliders(ui, &mut name_radius.radius, ceiling)
+                        radius_sliders(
+                            ui,
+                            &mut knobs.name_radius.radius,
+                            ceiling,
+                        )
                     });
                 }
             }
@@ -232,7 +299,19 @@ pub fn chrome(
     });
 
     gear(ctx, edge, &mut settings.0);
-    search_bar(ctx, &mut search, &mut searched, &search_note);
+    let shut = search_bar(
+        ctx,
+        &mut search,
+        &mut searched,
+        &mut search_note,
+        &selection,
+        &mut camera,
+        orbit.single().map(|camera| camera.focus).ok(),
+        &mut panels,
+    );
+    if shut {
+        press.0 = true;
+    }
 
     // `egui_wants_pointer_input` covers a drag that began on a control and
     // has since been pulled off it, which being over one does not.
@@ -339,8 +418,12 @@ fn search_bar(
     ctx: &Context,
     search: &mut SearchFields,
     searched: &mut MessageWriter<Searched>,
-    note: &SearchNote,
-) {
+    note: &mut SearchNote,
+    selection: &Selection,
+    camera: &mut MessageWriter<MoveCamera>,
+    focus: Option<DVec3>,
+    panels: &mut Panels,
+) -> bool {
     let style = ctx.global_style();
     let mut frame =
         egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
@@ -363,10 +446,15 @@ fn search_bar(
                     // Fixed, so that the bar keeps its width and its place as
                     // the form drops out of it.
                     ui.set_width(BAR_WIDTH);
-                    let mut busy = false;
+                    let mut taken = false;
 
                     let response = singleline(ui, &mut search.system, "Search");
-                    busy |= response.has_focus();
+                    taken |= response.gained_focus();
+                    // The note answers a name, so it is no answer at all
+                    // once that name is being typed over.
+                    if response.changed() {
+                        note.0 = None;
+                    }
                     if entered(&response, ui) {
                         search.faction = None;
                         if let Some(name) = search.system.clone() {
@@ -374,16 +462,21 @@ fn search_bar(
                         }
                     }
 
+                    // Both, and in this order: the note answers the query
+                    // in the input above it, and the status below says what
+                    // is picked out, which after a search that failed is
+                    // some other system entirely.
                     if let Some(note) = &note.0 {
                         ui.colored_label(egui::Color32::LIGHT_RED, note);
                     }
+                    selected(ui, selection, focus, camera, panels);
 
                     if search.expanded {
-                        busy |= route_section(ui, search, searched);
-                        busy |= faction_section(ui, search, searched);
+                        taken |= route_section(ui, search, searched, selection);
+                        taken |= faction_section(ui, search, searched);
                     }
 
-                    busy
+                    taken
                 })
                 .inner
         });
@@ -392,53 +485,222 @@ fn search_bar(
         .pointer_latest_pos()
         .is_some_and(|at| bar.response.rect.contains(at));
     let dismissed = !over && ctx.input(|i| i.pointer.any_pressed());
-    // Brought out by anything in the form taking focus, and put away by a
-    // press landing somewhere else. Nothing else puts it away: pressing Plot
-    // Route leaves focus nowhere in particular, and the form has no business
-    // closing over the pointer having since wandered off it.
+    // Only a press that actually shut something is spent, or every press off
+    // the bar would be one the map is not free to answer.
     //
-    // The press is weighed on its own account rather than only while the
-    // form has no focus, so there is no state to be left stuck in. Whatever
-    // the form is in the middle of, the next press outside it is the end.
-    search.expanded = (search.expanded || bar.inner) && !dismissed;
+    // And only a press of the button the map answers. Any button shuts the
+    // form, but the map weighs the primary alone, so a spend charged against
+    // some other button is one it never comes to collect: it would sit there
+    // and be taken out of the next primary click instead.
+    let shut = search.expanded
+        && dismissed
+        && ctx
+            .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+    // Two moments, and nothing else: a field in the form takes focus, or a
+    // press lands off the form. Moments rather than states, so that neither
+    // can undo the other. A field goes on holding focus after the press that
+    // shut the form, and asking whether it holds focus would open the form
+    // again the very next frame.
+    if bar.inner {
+        search.expanded = true;
+    }
+    if dismissed {
+        search.expanded = false;
+    }
+    shut
+}
+
+/// Say what is picked out, and how far off it is
+///
+/// The status of the selection, which is not what the search box holds. The
+/// box is a query, and a query answers with however many systems match it,
+/// so it can never stand for the one system picked out. This says which that
+/// is, in its own words, and goes on being right when a star is clicked on
+/// the map and the box still holds whatever was last typed into it.
+///
+/// It is also what says a search worked. A search that resolves picks its
+/// system out, and that shows up here.
+///
+/// The line is the control that sends the camera to what is picked out.
+/// Clicking the answer to go to what it names beats a button saying so in
+/// words, and the dot in the ring's own colour says which mark out on the
+/// map is about to be flown to.
+///
+/// Measured from where the camera is looking rather than from the camera
+/// itself, since that is the distance the spyglass and the fetch are
+/// measured in: a system nearer than the spyglass radius is one that is
+/// drawn.
+fn selected(
+    ui: &mut Ui,
+    selection: &Selection,
+    focus: Option<DVec3>,
+    camera: &mut MessageWriter<MoveCamera>,
+    panels: &mut Panels,
+) {
+    let Some(name) = selection.name() else { return };
+    let away = selection
+        .position()
+        .zip(focus)
+        .map(|(at, focus)| format!("{:.1} Ly away", focus.distance(at)));
+
+    // Laid out and painted rather than assembled from labels. A label is a
+    // widget in its own right, and two of them under one clickable row leave
+    // three widgets bidding for the pointer: the row answers over the gaps
+    // and the labels answer over the words, so it flickers between being a
+    // control and not as the pointer crosses them.
+    let away = away.map(|line| {
+        egui::WidgetText::from(egui::RichText::new(line).weak()).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+    });
+
+    // Laid out in nothing, so that the colour it comes out in can be chosen
+    // once the pointer has been asked about, which cannot happen until the
+    // row it sits in has been placed.
+    let icon = egui::WidgetText::from(
+        egui::RichText::new(INFO).color(egui::Color32::PLACEHOLDER),
+    )
+    .into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+
+    // Whatever the dot, the distance and the mark leave the name. System
+    // names run to "Col 285 Sector XY-Z b12-34", and one laid out against no
+    // bound at all is painted straight out past the edge of the bar.
+    let gap = ui.spacing().item_spacing.x;
+    let room = ui.available_width()
+        - ROW_PADDING * 2.
+        - DOT
+        - gap
+        - icon.size().x
+        - gap
+        - away.as_ref().map_or(0., |away| away.size().x + gap);
+    let name = egui::WidgetText::from(egui::RichText::new(name).strong())
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            room.max(0.),
+            egui::TextStyle::Body,
+        );
+    let (outer, row) = ui.allocate_exact_size(
+        // The width the rest of the form is laid out in, so that the row
+        // lines up with the fields above and below it rather than being
+        // measured against anything of its own.
+        egui::vec2(
+            ui.available_width(),
+            name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
+        ),
+        egui::Sense::click(),
+    );
+    let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
+
+    if row.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    let middle = rect.center().y;
+    let mut x = rect.left() + ROW_PADDING;
+    ui.painter().circle_filled(
+        egui::pos2(x + DOT / 2., middle),
+        DOT / 2.,
+        SELECTION_DOT,
+    );
+    x += DOT + gap;
+    for galley in [Some(name), away].into_iter().flatten() {
+        let size = galley.size();
+        // The galleys carry the colours they were laid out in, so there is
+        // nothing for a fallback to answer for.
+        ui.painter().galley(
+            egui::pos2(x, middle - size.y / 2.),
+            galley,
+            egui::Color32::PLACEHOLDER,
+        );
+        x += size.x + gap;
+    }
+
+    // Asked for after the row, so that it is the one answering where the two
+    // overlap. Under it the row would have to work out what it was not being
+    // clicked on.
+    let mark = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - ROW_PADDING - icon.size().x, rect.top()),
+        egui::pos2(rect.right() - ROW_PADDING, rect.bottom()),
+    );
+    let opening =
+        ui.interact(mark, ui.id().with("open-info"), egui::Sense::click());
+    ui.painter().galley(
+        egui::pos2(mark.left(), middle - icon.size().y / 2.),
+        icon,
+        if opening.hovered() {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        },
+    );
+
+    if opening.clicked() {
+        if let Some(system) = selection.system() {
+            panels.open(system.clone());
+        }
+    } else if row.clicked() {
+        camera.write(MoveCamera { position: selection.position() });
+    }
+    row.on_hover_cursor(egui::CursorIcon::PointingHand);
+    opening.on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
 /// Ask where a route ends and what it may be flown in
 ///
-/// Answers whether the user is busy with it. Where the route starts is the
-/// name in the search input above, so the whole section is greyed until there
-/// is one, rather than appearing and disappearing under the pointer.
+/// Answers whether a field of it has just taken focus. A route runs from
+/// whatever is
+/// picked out, since that is the one system the map is holding, and not from
+/// the search box, which holds a query and will one day answer with a list.
+/// So the section is greyed until something is picked out, rather than
+/// appearing and disappearing under the pointer.
 fn route_section(
     ui: &mut Ui,
     search: &mut SearchFields,
     searched: &mut MessageWriter<Searched>,
+    selection: &Selection,
 ) -> bool {
     heading(ui, "Route");
-    let named = search.system.is_some();
-    let section = ui.add_enabled_ui(named, |ui| {
-        let mut busy = false;
-        busy |= singleline(ui, &mut search.route_end, "End System").has_focus();
+    let start = selection.name();
+    let section = ui.add_enabled_ui(start.is_some(), |ui| {
+        let mut taken = false;
+        taken |=
+            singleline(ui, &mut search.route_end, "End System").gained_focus();
         ui.add_space(FIELD_GAP);
-        busy |= singleline(ui, &mut search.route_range, "Jump Range (Ly)")
-            .has_focus();
+        taken |= singleline(ui, &mut search.route_range, "Jump Range (Ly)")
+            .gained_focus();
         ui.add_space(FIELD_GAP);
-        if ui.button("Plot Route").clicked() {
-            plot_route(search, searched);
+        if ui.button("Plot Route").clicked()
+            && let Some(start) = start
+        {
+            plot_route(start, search, searched);
         }
-        busy
+        taken
     });
 
-    if !named {
+    if start.is_none() {
         section
             .response
-            .on_disabled_hover_text("Name a system above to plot a route from");
+            .on_disabled_hover_text("Pick out a system to plot a route from");
     }
     section.inner
 }
 
 /// Ask after a faction by name
 ///
-/// Answers whether the user is busy with it. Its own section rather than a
+/// Answers whether its field has just taken focus. Its own section rather
+/// than a
 /// field on the end of the route's, since a faction has nothing to do with
 /// either end of a route and searching for one clears the system search.
 fn faction_section(
@@ -454,33 +716,39 @@ fn faction_section(
             searched.write(Searched::Faction { name });
         }
     }
-    response.has_focus()
+    response.gained_focus()
 }
 
 /// Open a section of the form
+///
+/// The rule is the break between one section and the next, and needs no
+/// run-up of its own: the row above it keeps as much room under itself as it
+/// keeps over, and a section gap on top of that would sit the row nearer the
+/// input than the section and read as belonging to neither.
 fn heading(ui: &mut Ui, name: &str) {
-    ui.add_space(SECTION_GAP);
     ui.separator();
     ui.label(egui::RichText::new(name).strong());
     ui.add_space(FIELD_GAP);
 }
 
-/// Ask for a route between the two systems named, at the range given
+/// Ask for a route from `start` to the system named, at the range given
 ///
 /// Says nothing at all when a field is empty or the range will not parse,
 /// which is what form validation is a TODO for.
-fn plot_route(search: &SearchFields, searched: &mut MessageWriter<Searched>) {
-    let (Some(start), Some(end), Some(range)) = (
-        search.system.as_ref(),
-        search.route_end.as_ref(),
-        search.route_range.as_ref(),
-    ) else {
+fn plot_route(
+    start: &str,
+    search: &SearchFields,
+    searched: &mut MessageWriter<Searched>,
+) {
+    let (Some(end), Some(range)) =
+        (search.route_end.as_ref(), search.route_range.as_ref())
+    else {
         return;
     };
     #[allow(irrefutable_let_patterns)]
     if let Ok(range) = range.parse() {
         searched.write(Searched::Route {
-            start: start.clone(),
+            start: start.to_owned(),
             end: end.clone(),
             range,
         });

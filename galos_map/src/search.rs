@@ -1,9 +1,8 @@
 use crate::Db;
-use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::systems::despawn::Despawn;
 use crate::systems::selection::Selection;
-use crate::systems::{Spyglass, System, system_to_vec};
+use crate::systems::{Spyglass, System};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use galos_db::Database;
@@ -48,16 +47,16 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
     }
 }
 
-/// Move the camera to the searched system
+/// Answer what the user asked for
 ///
 /// A system for responding to [`Searched`] messages.
-/// - On [`Searched::System`] the camera is moved to the searched system and
-/// letting the `fetch` system's `fetch_around_camera` logic handle the rest.
+/// - On [`Searched::System`] the named system is picked out, and the camera
+/// is left where it is. Naming a system is asking which one it is, not
+/// asking to be taken there, and the map has a control of its own for that.
 /// - On [`Searched::Faction`] we disable the spyglass's fetch and send
 /// a [`Despawn`] message for all systems.
 pub fn searched(
     mut search_events: MessageReader<Searched>,
-    mut camera_events: MessageWriter<MoveCamera>,
     mut despawner: MessageWriter<Despawn>,
     mut spyglass: ResMut<Spyglass>,
     mut note: ResMut<SearchNote>,
@@ -70,12 +69,9 @@ pub fn searched(
                 future::block_on(async {
                     note.0 = match locate(&db.0, name).await {
                         Ok(row) => {
-                            camera_events.write(MoveCamera {
-                                position: system_to_vec(&row),
-                            });
-                            // Named is as good as picked out. The map has
-                            // nothing to mark until the camera gets there,
-                            // but the panel can say what the row says now.
+                            // The map has nothing to mark until the system
+                            // is fetched, but the row the name resolved
+                            // against says everything a panel would.
                             if let Ok(system) = System::try_from(&row) {
                                 selection.set(system);
                             }
