@@ -1,12 +1,11 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::pointing::{INDICATOR, PointedAt};
 use crate::systems::spawn::{ShowNames, Star};
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
-use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
-use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 use bevy_rich_text3d::{
     LoadFonts, Text3d, Text3dDimensionOut, Text3dPlugin, Text3dStyling,
     TextAnchor, TextAtlas,
@@ -22,10 +21,8 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_systems(Startup, init_materials);
     app.add_systems(
         Update,
-        (fit_name_boxes, point_at_names).in_set(MapSet::Present),
+        (fit_name_boxes, tint_pointed_at_names).in_set(MapSet::Present),
     );
-    app.add_observer(highlight);
-    app.add_observer(unhighlight);
     // `face_camera` and the sizing systems both write a `Transform`, on
     // different entities, so the scheduler cannot run them together whatever
     // is said here. Ordering them costs nothing and fixes which goes first.
@@ -86,12 +83,8 @@ const FONT: &str = "Gautami";
 /// Dimmer than the text so it reads as a connector rather than as content.
 const LEADER_COLOR: Srgba = Srgba::new(1., 1., 1., 0.35);
 
-/// Colour of that line while the pointer is over the name
-///
-/// The tint the name itself takes, at full strength, so that the two read as
-/// one thing being pointed at rather than as a name and a line that happen
-/// to have both changed.
-const LEADER_POINTED_AT: Srgba = HOVER_TINT;
+/// Colour of that line while the pointer is over the system
+const LEADER_POINTED_AT: Srgba = INDICATOR;
 
 /// Air left at each end of the line, as a fraction of its full span
 ///
@@ -139,15 +132,6 @@ pub struct Named;
 /// A marker for system name labels
 #[derive(Component)]
 pub struct Label;
-
-/// A name the pointer is currently over
-///
-/// Put on the name rather than on the box that caught the pointer, since the
-/// name is what everything else is hung off. Anything that wants to show a
-/// name as pointed at reads this, so the name and the line to it cannot
-/// disagree about whether they are.
-#[derive(Component)]
-pub struct PointedAt;
 
 /// How far in front of the camera a point is, in light years
 ///
@@ -251,11 +235,11 @@ const BOX_DEPTH: f32 = 1.;
 #[derive(Component)]
 pub struct NameBox;
 
-/// What a name is tinted when the pointer is over it
+/// What a name is tinted while its system is pointed at
 ///
 /// The glyphs are drawn white and unlit, so the material's base colour
 /// multiplies straight through them.
-const HOVER_TINT: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
+const HOVER_TINT: Srgba = INDICATOR;
 
 /// Decide which systems get to show their name
 ///
@@ -511,18 +495,16 @@ pub fn face_camera(
 /// line answering to anything less than the drawn text outlives one of them.
 pub fn leaders(
     mut gizmos: Gizmos,
-    labels: Query<
-        (&GlobalTransform, &ViewVisibility, &ChildOf, Has<PointedAt>),
-        With<Label>,
-    >,
-    systems: Query<(&GlobalTransform, &Children), With<System>>,
+    labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
+    systems: Query<(&GlobalTransform, &Children, Has<PointedAt>), With<System>>,
     stars: Query<&GlobalTransform, With<Star>>,
 ) {
-    for (label, drawn, child_of, pointed_at) in &labels {
+    for (label, drawn, child_of) in &labels {
         if !drawn.get() {
             continue;
         }
-        let Ok((system, children)) = systems.get(child_of.parent()) else {
+        let Ok((system, children, pointed_at)) = systems.get(child_of.parent())
+        else {
             continue;
         };
 
@@ -607,57 +589,28 @@ pub fn fit_name_boxes(
     }
 }
 
-/// Tint the name under the pointer, and put it back when it leaves
-pub fn highlight(
-    over: On<Pointer<Over>>,
-    boxes: Query<&ChildOf, With<NameBox>>,
-    materials: Res<LabelMaterials>,
-    mut commands: Commands,
-) {
-    if let Ok(child_of) = boxes.get(over.entity) {
-        commands
-            .entity(child_of.parent())
-            .insert((PointedAt, MeshMaterial3d(materials.pointed_at.clone())));
-    }
-}
-
-/// Put a name back to its resting colour once the pointer leaves it
-pub fn unhighlight(
-    out: On<Pointer<Out>>,
-    boxes: Query<&ChildOf, With<NameBox>>,
-    materials: Res<LabelMaterials>,
-    mut commands: Commands,
-) {
-    if let Ok(child_of) = boxes.get(out.entity) {
-        commands
-            .entity(child_of.parent())
-            .remove::<PointedAt>()
-            .insert(MeshMaterial3d(materials.resting.clone()));
-    }
-}
-
-/// Show a pointing cursor while a name is under the pointer
+/// Tint a name while its system is pointed at
 ///
-/// Read from the hover state rather than from entering and leaving, so that
-/// moving straight from one name to another cannot leave the cursor behind
-/// whichever of the two events happens to be delivered last.
-pub fn point_at_names(
-    hovered: Res<HoverMap>,
-    boxes: Query<(), With<NameBox>>,
-    window: Query<Entity, With<PrimaryWindow>>,
-    mut commands: Commands,
+/// Keyed on the system rather than on the name, so that pointing at a star
+/// lights its name as well, and both go out together.
+pub fn tint_pointed_at_names(
+    pointed_at: Query<(), With<PointedAt>>,
+    materials: Res<LabelMaterials>,
+    mut names: Query<
+        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
+        With<Label>,
+    >,
 ) {
-    let Ok(window) = window.single() else { return };
-    let over_a_name = hovered
-        .values()
-        .flat_map(|hits| hits.keys())
-        .any(|entity| boxes.contains(*entity));
-
-    commands.entity(window).insert(if over_a_name {
-        CursorIcon::System(SystemCursorIcon::Pointer)
-    } else {
-        CursorIcon::default()
-    });
+    for (child_of, mut material) in &mut names {
+        let wanted = if pointed_at.contains(child_of.parent()) {
+            &materials.pointed_at
+        } else {
+            &materials.resting
+        };
+        if material.0 != *wanted {
+            material.0 = wanted.clone();
+        }
+    }
 }
 
 #[cfg(test)]
