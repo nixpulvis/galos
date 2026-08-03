@@ -1,8 +1,28 @@
+//! How large a system's stars are drawn
+//!
+//! Two sizings, one per [`View`]. Neither is a real size: a star drawn at its
+//! own scale is invisible from the next system over, so what is drawn is
+//! whatever keeps it on screen and tells the viewer something.
+//!
+//! # Where this is going
+//!
+//! Once the camera is close enough to see inside a system, its extent should
+//! come from what is in it, so that its drawn radius is the orbit of its
+//! outermost body and zooming in lands on the system at its true size.
+//! Further out that is far too small to see, and has to give way to the
+//! sizings here, which exist so a system stays visible from light years off
+//! and can carry population or anything else the galaxy view wants to show.
+//!
+//! The two want blending over the range where neither is right on its own,
+//! rather than switching between them at a threshold.
+
+use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
+use super::spawn::Star;
+use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_panorbit_camera::PanOrbitCamera;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(View::Systems);
@@ -11,16 +31,16 @@ pub fn plugin(app: &mut App) {
     // The scheduler cannot see that from the run conditions alone.
     app.add_systems(
         Update,
-        scale_systems
+        size_by_distance
             .in_set(MapSet::Present)
-            .ambiguous_with(scale_stars)
+            .ambiguous_with(size_uniformly)
             .run_if(resource_equals(View::Systems)),
     );
     app.add_systems(
         Update,
-        scale_stars
+        size_uniformly
             .in_set(MapSet::Present)
-            .ambiguous_with(scale_systems)
+            .ambiguous_with(size_by_distance)
             .run_if(resource_equals(View::Stars)),
     );
 }
@@ -64,24 +84,31 @@ fn population_factor(population: u64, average: f64) -> f32 {
         .clamp(POP_MIN, POP_MAX)
 }
 
-pub fn scale_systems(
+/// Draw each star large enough to be seen from where the camera is
+///
+/// The size goes on the [`Star`], not on the [`System`] holding it, so that
+/// labels and anything else hanging off the system keep their own size.
+///
+/// Distance is measured between two absolute galactic positions, the
+/// camera's [`OrbitCamera::eye`] and the system's. A system's `Transform`
+/// holds only the remainder left over from its grid cell, and its
+/// `GlobalTransform` is written after this runs, so neither answers where it
+/// is.
+pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
-    mut set: ParamSet<(
-        Query<(&mut Transform, &System)>,
-        Query<&Transform, With<PanOrbitCamera>>,
-    )>,
+    camera: Query<&OrbitCamera>,
+    systems: Query<&System>,
+    mut stars: Query<(&mut Transform, &ChildOf), With<Star>>,
 ) {
-    if !set.p0().is_empty() {
-        let Ok(camera_translation) = set.p1().single().map(|c| c.translation)
-        else {
-            return;
-        };
+    if !stars.is_empty() {
+        let Ok(eye) = camera.single().map(|c| c.eye) else { return };
         let pop_avg = if scale_population.0 {
             // TODO(#45): This is *very* slow and should be precomputed when
             // the set of systems changes.
-            let total: f64 =
-                set.p0().iter().map(|(_, s)| s.population as f64).sum();
-            total / set.p0().iter().len() as f64
+            let (total, count) = systems
+                .iter()
+                .fold((0., 0.), |(t, n), s| (t + s.population as f64, n + 1.));
+            total / count
         } else {
             0.
         };
@@ -89,24 +116,26 @@ pub fn scale_systems(
         // The goal is to avoid fading out any stars, but scale them as the
         // camera moves further away from them.
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut system_transform, system) in set.p0().iter_mut() {
-            let dist =
-                camera_translation.distance(system_transform.translation);
+        for (mut star_transform, child_of) in stars.iter_mut() {
+            let Ok(system) = systems.get(child_of.parent()) else { continue };
+            let dist = eye.distance(DVec3::from(system.position)) as f32;
             let mut scale = 4e-4 * dist + 8.5e-2;
             if scale_population.0 {
                 scale *= population_factor(system.population, pop_avg);
             }
-            system_transform.scale = Vec3::splat(scale);
+            star_transform.scale = Vec3::splat(scale);
         }
     }
 }
 
-pub fn scale_stars(mut query: Query<(&mut Transform, &System)>) {
-    if !query.is_empty() {
-        // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
-        // transparent when they are too far away.
-        for (mut system_transform, _system) in query.iter_mut() {
-            system_transform.scale = Vec3::splat(1e-2);
-        }
+/// Draw every star the same size, whatever the camera is doing
+///
+/// This view is a picture of where things are rather than of how far away
+/// they are, so nothing here reads the camera.
+pub fn size_uniformly(mut stars: Query<&mut Transform, With<Star>>) {
+    // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
+    // transparent when they are too far away.
+    for mut star_transform in stars.iter_mut() {
+        star_transform.scale = Vec3::splat(1e-2);
     }
 }

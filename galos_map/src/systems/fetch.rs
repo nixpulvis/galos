@@ -1,9 +1,9 @@
+use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::{Spyglass, route::fetch::fetch_route};
 use crate::{Db, search::Searched};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
-use bevy_panorbit_camera::PanOrbitCamera;
 use galos_db::systems::System as DbSystem;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -112,7 +112,7 @@ pub struct FetchTasks {
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
-    camera_query: Query<&PanOrbitCamera>,
+    camera_query: Query<&OrbitCamera>,
     mut search_events: MessageReader<Searched>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
@@ -169,7 +169,7 @@ pub fn fetch(
 }
 
 fn fetch_spyglass(
-    camera_query: &Query<&PanOrbitCamera>,
+    camera_query: &Query<&OrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
     time: &Res<Time<Real>>,

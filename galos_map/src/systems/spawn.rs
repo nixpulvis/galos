@@ -1,15 +1,18 @@
 use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
+use crate::space::Galaxy;
 use crate::systems::{
     System, fetch::FetchIndex, fetch::FetchTasks, route::Route,
     route::spawn::spawn_route, system_to_vec,
 };
 use bevy::light::NotShadowCaster;
+use bevy::math::DVec3;
 use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
 use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
+use big_space::prelude::*;
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
 use std::{collections::HashMap, ops::Deref, time::Instant};
@@ -55,6 +58,21 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
+/// A star, drawn inside the [`System`] that holds it
+///
+/// A system is a place and a star is a thing in it. Only one is drawn per
+/// system today, but a system can have several, and they will differ in
+/// where they sit and how large they are.
+///
+/// [`super::scale`] writes a size onto this entity rather than onto the
+/// system, because a star is drawn far larger than it is so as to stay
+/// visible from light years away. Scale is inherited, so anything sharing an
+/// entity with a star would be stretched by the same exaggeration; keeping
+/// stars on children of their own leaves the system's transform meaning what
+/// it says, and lets labels and, later, bodies sit at their true size.
+#[derive(Component)]
+pub struct Star;
+
 /// How far a pointer may travel while pressed and still count as a click
 ///
 /// Logical pixels, so the same physical slack whatever the display density.
@@ -99,7 +117,8 @@ fn track_drag(
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
-    systems: Query<(), With<System>>,
+    stars: Query<&ChildOf, With<Star>>,
+    systems: Query<&System>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     mut move_camera_events: MessageWriter<MoveCamera>,
@@ -111,8 +130,15 @@ fn focus_camera_on_click(
     if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
         return;
     }
-    if systems.contains(click.entity) {
-        move_camera_events.write(MoveCamera { position: click.hit.position });
+    // What is hit is a star, so the system holding it is its parent.
+    //
+    // The system that was hit, rather than where on it the ray landed. A hit
+    // is reported in rendering coordinates, which are relative to whichever
+    // grid cell the camera is in and so mean nothing once it has moved on.
+    let Ok(child_of) = stars.get(click.entity) else { return };
+    if let Ok(system) = systems.get(child_of.parent()) {
+        move_camera_events
+            .write(MoveCamera { position: Some(DVec3::from(system.position)) });
     }
 }
 
@@ -121,6 +147,8 @@ fn focus_camera_on_click(
 pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<Entity, With<Route>>,
+    galaxy: Res<Galaxy>,
+    grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
@@ -131,6 +159,8 @@ pub fn spawn(
     mut move_camera_events: MessageWriter<MoveCamera>,
     mut tasks: ResMut<FetchTasks>,
 ) {
+    let Ok(grid) = grids.single() else { return };
+
     tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
@@ -141,6 +171,8 @@ pub fn spawn(
             spawn_systems(
                 &new_systems,
                 &systems_query,
+                &galaxy,
+                grid,
                 &color_by,
                 &mut commands,
                 &mesh,
@@ -168,6 +200,8 @@ pub fn spawn(
                     spawn_route(
                         &new_systems,
                         &route_query,
+                        &galaxy,
+                        grid,
                         &mut commands,
                         &mut mesh_assets,
                         &mut material_assets,
@@ -182,10 +216,20 @@ pub fn spawn(
     // TODO(#43): despawn stuff...
 }
 
-/// Generate all the star system entities.
+/// Create or refresh the entities for each row fetched
+///
+/// A [`System`] carries the database row and the grid placement, and is what
+/// the rest of the map addresses. What is drawn hangs off it: a [`Star`]
+/// today, and labels alongside. Nothing there inherits a size, so each is
+/// drawn at whatever size suits it.
+///
+/// A row already on the map has its [`System`] replaced rather than being
+/// respawned, which [`update`] then acts on.
 pub fn spawn_systems(
     db_systems: &[DbSystem],
     systems: &Query<(Entity, &System)>,
+    galaxy: &Res<Galaxy>,
+    grid: &Grid,
     color_by: &Res<ColorBy>,
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
@@ -219,66 +263,105 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            commands.spawn((
-                pbr_components(&system, color_by, mesh, materials),
-                system,
-                NotShadowCaster,
-                Pickable::default(),
-            ));
+            let drawn = star(&system, color_by, mesh, materials);
+            commands
+                .spawn((
+                    placement(&system, grid),
+                    system,
+                    // The star is what is shown or hidden; the mesh and any
+                    // labels inherit that from it.
+                    Visibility::default(),
+                    // A star outside the galaxy's grid is not placed by it,
+                    // and would be drawn wherever its bare transform happened
+                    // to put it rather than where the cell says.
+                    ChildOf(galaxy.0),
+                ))
+                .with_child(drawn);
         }
     }
 }
 
+/// Carry a changed row, or a changed colour scheme, onto what is drawn
+///
+/// The two halves of a star are refreshed from different things. Its
+/// placement follows the row it was built from, and its material follows
+/// both the row and [`ColorBy`], so the second is checked against the star
+/// each mesh hangs off rather than a copy of it.
 fn update(
     systems_query: Query<(Entity, Ref<System>)>,
+    stars: Query<(Entity, &ChildOf), With<Star>>,
+    grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
-    mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
     mut commands: Commands,
 ) {
+    let Ok(grid) = grids.single() else { return };
+
     for (entity, system) in &systems_query {
         if system.is_changed() {
+            commands.entity(entity).insert(placement(&system, grid));
+        }
+    }
+
+    for (entity, child_of) in &stars {
+        let Ok((_, system)) = systems_query.get(child_of.parent()) else {
+            continue;
+        };
+        if system.is_changed() || color_by.is_changed() {
+            let idx = color_idx(&system, &color_by);
             commands
                 .entity(entity)
-                .insert(pbr_components(&system, &color_by, &mesh, &materials));
-        } else if color_by.is_changed() {
-            let color_idx = match color_by.deref() {
-                ColorBy::Allegiance => allegiance_color_idx(&system),
-                ColorBy::Government => government_color_idx(&system),
-                ColorBy::Security => security_color_idx(&system),
-            };
-            commands
-                .entity(entity)
-                .insert(MeshMaterial3d(materials.0[color_idx].clone()));
+                .insert(MeshMaterial3d(materials.0[idx].clone()));
         }
     }
 }
 
-fn pbr_components(
+/// Where a star sits, as the galaxy's grid wants it
+///
+/// Split into the cell the position falls in and how far into that cell it
+/// sits. The cell is an integer, so it stays exact however far out the system
+/// is, and the transform left over is small enough to be carried without
+/// losing anything.
+///
+/// The scale is left alone. This is the star's own transform, and everything
+/// hung off it is placed relative to a light year meaning a light year.
+fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
+    let (cell, translation) =
+        grid.translation_to_grid(DVec3::from(system.position));
+
+    (cell, Transform::from_translation(translation))
+}
+
+/// The one star a system is drawn with
+///
+/// Sits at the system's own position with an identity transform, since there
+/// is nothing yet to tell one star of a system from another. [`super::scale`]
+/// writes a size onto it each frame, and picking hits land here rather than
+/// on the system, so [`focus_camera_on_click`] reads through to the parent.
+fn star(
     system: &System,
     color_by: &Res<ColorBy>,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
-) -> (Mesh3d, MeshMaterial3d<StandardMaterial>, Transform) {
-    let color_idx = match color_by.deref() {
-        ColorBy::Allegiance => allegiance_color_idx(&system),
-        ColorBy::Government => government_color_idx(&system),
-        ColorBy::Security => security_color_idx(&system),
-    };
-
+) -> impl Bundle {
     (
+        Star,
         Mesh3d(mesh.0.clone()),
-        MeshMaterial3d(materials.0[color_idx].clone()),
-        Transform {
-            translation: Vec3::new(
-                system.position[0],
-                system.position[1],
-                system.position[2],
-            ),
-            scale: Vec3::splat(1.),
-            ..default()
-        },
+        MeshMaterial3d(materials.0[color_idx(system, color_by)].clone()),
+        Transform::default(),
+        NotShadowCaster,
+        // Mesh picking requires markers, see `plugin`.
+        Pickable::default(),
     )
+}
+
+/// Which of the [`SystemMaterials`] a star is drawn in
+fn color_idx(system: &System, color_by: &Res<ColorBy>) -> usize {
+    match color_by.deref() {
+        ColorBy::Allegiance => allegiance_color_idx(system),
+        ColorBy::Government => government_color_idx(system),
+        ColorBy::Security => security_color_idx(system),
+    }
 }
 
 fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
@@ -370,7 +453,7 @@ impl TryFrom<&DbSystem> for System {
 
     fn try_from(system: &DbSystem) -> Result<System, Unplaceable> {
         let position = system.position.ok_or(Unplaceable)?;
-        let pos = [position.x as f32, position.y as f32, position.z as f32];
+        let pos = [position.x, position.y, position.z];
 
         Ok(System {
             address: system.address,
