@@ -8,14 +8,21 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::labels::{Label, NameBox};
+use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
 use crate::systems::spawn::Star;
+use bevy::math::DVec3;
 use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, point_the_cursor.in_set(MapSet::Present));
+    app.add_systems(
+        Update,
+        (size_targets, point_the_cursor)
+            .in_set(MapSet::Present)
+            .after(super::scale::size_by_distance)
+            .after(super::scale::size_uniformly),
+    );
     // Reads where a star ended up rather than deciding it, so it waits for
     // the transforms to be worked out, as `labels::leaders` does.
     app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
@@ -30,18 +37,33 @@ pub fn plugin(app: &mut App) {
 /// happen to have all changed at once.
 pub const INDICATOR: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
 
-/// How much wider than its star a system's ring is drawn
+/// How much wider than its star a system's indicator is drawn
 ///
 /// Far enough out to read as something around the star rather than as part
 /// of it.
-const RING_MARGIN: f32 = 2.5;
+const INDICATOR_MARGIN: f32 = 1.8;
 
-/// The smallest a ring may be drawn, as a fraction of the orbit radius
+/// The smallest an indicator may be, as a radius in logical pixels
 ///
-/// A star is drawn small enough at a distance that a ring hugging it would
-/// be a dot. This holds it to something the eye can find, and being a
-/// fraction of how far out the camera is, it holds it there at every zoom.
-const RING_FLOOR: f32 = 0.012;
+/// A star draws small enough at a distance that an indicator hugging it
+/// would be a dot, and it is the indicator that has to be aimed at. Held in
+/// pixels because that is what aiming is done in, so the target stays the
+/// same size to the hand at every zoom.
+const INDICATOR_MIN_RADIUS: f32 = 11.;
+
+/// What catches the pointer for a system
+///
+/// The same shape and size as the ring drawn around it, so that what can be
+/// clicked is exactly what is shown. A star is drawn far too small to aim
+/// at, and a target larger than the mark would be as misleading as one
+/// smaller.
+///
+/// A sphere rather than a disc facing the camera, so that it presents the
+/// same circle from wherever it is seen and nothing has to turn it.
+/// Invisible, being drawn in a fully transparent material, since picking
+/// only considers what is being drawn.
+#[derive(Component)]
+pub struct PointerTarget;
 
 /// A system the pointer is over
 ///
@@ -54,12 +76,13 @@ pub struct PointedAt;
 /// Mark the system behind whatever the pointer has come over
 fn point_at(
     over: On<Pointer<Over>>,
-    stars: Query<&ChildOf, With<Star>>,
+    targets: Query<&ChildOf, With<PointerTarget>>,
     boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
     mut commands: Commands,
 ) {
-    if let Some(system) = pointed_system(over.entity, &stars, &boxes, &names) {
+    if let Some(system) = pointed_system(over.entity, &targets, &boxes, &names)
+    {
         commands.entity(system).insert(PointedAt);
     }
 }
@@ -67,31 +90,66 @@ fn point_at(
 /// And unmark it once the pointer has left
 fn look_away(
     out: On<Pointer<Out>>,
-    stars: Query<&ChildOf, With<Star>>,
+    targets: Query<&ChildOf, With<PointerTarget>>,
     boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
     mut commands: Commands,
 ) {
-    if let Some(system) = pointed_system(out.entity, &stars, &boxes, &names) {
+    if let Some(system) = pointed_system(out.entity, &targets, &boxes, &names) {
         commands.entity(system).remove::<PointedAt>();
     }
 }
 
 /// Which system the pointer is really on, given what it landed on
 ///
-/// A star hangs off its system. The box catching a name hangs off the name,
-/// which hangs off the system in turn, so it is one step further up.
+/// A system's target hangs off it directly. The box catching a name hangs
+/// off the name, which hangs off the system in turn, so it is one step
+/// further up.
 fn pointed_system(
     hit: Entity,
-    stars: &Query<&ChildOf, With<Star>>,
+    targets: &Query<&ChildOf, With<PointerTarget>>,
     boxes: &Query<&ChildOf, With<NameBox>>,
     names: &Query<&ChildOf, With<Label>>,
 ) -> Option<Entity> {
-    if let Ok(star) = stars.get(hit) {
-        return Some(star.parent());
+    if let Ok(target) = targets.get(hit) {
+        return Some(target.parent());
     }
     let name = boxes.get(hit).ok()?;
     Some(names.get(name.parent()).ok()?.parent())
+}
+
+/// Fit each system's target to what its indicator will be drawn at
+///
+/// One answer for both, worked out here and read back by [`ring`], so that
+/// the mark and the area catching the pointer cannot come apart.
+pub fn size_targets(
+    camera: Query<(&OrbitCamera, &Camera)>,
+    systems: Query<(&System, &Children)>,
+    stars: Query<&Transform, With<Star>>,
+    mut targets: Query<&mut Transform, (With<PointerTarget>, Without<Star>)>,
+) {
+    let Ok((orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    for (system, children) in &systems {
+        let drawn = children
+            .iter()
+            .filter_map(|child| stars.get(child).ok())
+            .map(|star| star.scale.x)
+            .fold(0., f32::max);
+
+        let into_view = depth(orbit, DVec3::from(system.position)).max(1e-3);
+        let smallest = INDICATOR_MIN_RADIUS
+            * world_per_pixel(cot_half_fov, viewport.y, into_view);
+        let radius = (drawn * INDICATOR_MARGIN).max(smallest);
+
+        for child in children.iter() {
+            if let Ok(mut target) = targets.get_mut(child) {
+                target.scale = Vec3::splat(radius);
+            }
+        }
+    }
 }
 
 /// Show a pointing cursor while anything worth clicking is under the pointer
@@ -101,7 +159,7 @@ fn pointed_system(
 /// behind whichever of the two events happens to arrive last.
 pub fn point_the_cursor(
     hovered: Res<HoverMap>,
-    clickable: Query<(), Or<(With<Star>, With<NameBox>)>>,
+    clickable: Query<(), Or<(With<PointerTarget>, With<NameBox>)>>,
     window: Query<Entity, With<PrimaryWindow>>,
     mut commands: Commands,
 ) {
@@ -132,22 +190,26 @@ pub fn ring(
         (&GlobalTransform, &Children),
         (With<System>, With<PointedAt>),
     >,
-    stars: Query<&GlobalTransform, With<Star>>,
+    targets: Query<&GlobalTransform, With<PointerTarget>>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
     for (system, children) in &pointed_at {
-        // The star is what is drawn there, and carries the size it is drawn
-        // at, which the system deliberately does not.
-        let drawn = children
+        // Drawn at whatever the target was fitted to, so the ring is the
+        // outline of the very thing the pointer is tested against.
+        let Some(radius) = children
             .iter()
-            .filter_map(|child| stars.get(child).ok())
-            .map(|star| star.scale().x)
-            .fold(0., f32::max);
+            .filter_map(|child| targets.get(child).ok())
+            .map(|target| target.scale().x)
+            .next()
+        else {
+            continue;
+        };
 
-        let at = system.translation();
-        let radius = (drawn * RING_MARGIN).max(camera.radius * RING_FLOOR);
-
-        gizmos.circle(Isometry3d::new(at, camera.rotation), radius, INDICATOR);
+        gizmos.circle(
+            Isometry3d::new(system.translation(), camera.rotation),
+            radius,
+            INDICATOR,
+        );
     }
 }

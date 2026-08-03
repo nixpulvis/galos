@@ -3,7 +3,8 @@ use crate::schedule::MapSet;
 use crate::space::Galaxy;
 use crate::systems::{
     System, fetch::FetchIndex, fetch::FetchTasks, labels::Label,
-    labels::NameBox, route::Route, route::spawn::spawn_route, system_to_vec,
+    labels::NameBox, pointing::PointerTarget, route::Route,
+    route::spawn::spawn_route, system_to_vec,
 };
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -43,6 +44,10 @@ pub struct SystemMesh(pub Handle<Mesh>);
 
 #[derive(Resource)]
 pub struct SystemMaterials(pub Vec<Handle<StandardMaterial>>);
+
+/// A material that draws nothing, for what only has to be hit
+#[derive(Resource)]
+pub struct InvisibleMaterial(pub Handle<StandardMaterial>);
 // pub struct SystemMaterials(pub HashMap<String, Handle<StandardMaterial>>);
 
 /// Determains what color to draw in system view mode.
@@ -116,7 +121,7 @@ fn track_drag(
 // TODO: Spawn/despawn system label on Pointer<Over>/Pointer<Out>.
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
-    stars: Query<&ChildOf, With<Star>>,
+    targets: Query<&ChildOf, With<PointerTarget>>,
     name_boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
     systems: Query<&System>,
@@ -131,14 +136,14 @@ fn focus_camera_on_click(
     if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
         return;
     }
-    // A star hangs off the system it belongs to. The box that catches a
-    // click on a name hangs off the name, which hangs off the system in
-    // turn, so it is one step further up.
+    // A system's target hangs off it directly. The box that catches a click
+    // on a name hangs off the name, which hangs off the system in turn, so
+    // it is one step further up.
     //
     // The system that was hit, rather than where on it the ray landed. A hit
     // is reported in rendering coordinates, which are relative to whichever
     // grid cell the camera is in and so mean nothing once it has moved on.
-    let hit = stars.get(click.entity).map(|star| star.parent()).or_else(|_| {
+    let hit = targets.get(click.entity).map(|t| t.parent()).or_else(|_| {
         name_boxes
             .get(click.entity)
             .and_then(|hit_box| names.get(hit_box.parent()))
@@ -161,6 +166,7 @@ pub fn spawn(
     color_by: Res<ColorBy>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
+    invisible: Res<InvisibleMaterial>,
     time: Res<Time<Real>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
@@ -186,6 +192,7 @@ pub fn spawn(
                 &mut commands,
                 &mesh,
                 &materials,
+                &invisible,
                 &time,
                 fetched_at,
             );
@@ -243,6 +250,7 @@ pub fn spawn_systems(
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
+    invisible: &Res<InvisibleMaterial>,
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
 ) {
@@ -273,6 +281,7 @@ pub fn spawn_systems(
             );
 
             let drawn = star(&system, color_by, mesh, materials);
+            let target = pointer_target(mesh, invisible);
             commands
                 .spawn((
                     placement(&system, grid),
@@ -285,7 +294,8 @@ pub fn spawn_systems(
                     // to put it rather than where the cell says.
                     ChildOf(galaxy.0),
                 ))
-                .with_child(drawn);
+                .with_child(drawn)
+                .with_child(target);
         }
     }
 }
@@ -341,6 +351,27 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
     (cell, Transform::from_translation(translation))
 }
 
+/// What catches the pointer for a system
+///
+/// Sized each frame by [`super::pointing`] to match the ring it draws, so a
+/// system is as easy to hit as the mark says it is. Sits at the system's own
+/// position and draws nothing.
+fn pointer_target(
+    mesh: &Res<SystemMesh>,
+    invisible: &Res<InvisibleMaterial>,
+) -> impl Bundle {
+    (
+        PointerTarget,
+        Mesh3d(mesh.0.clone()),
+        MeshMaterial3d(invisible.0.clone()),
+        // Fitted by `pointing::size_targets` before the first draw.
+        Transform::from_scale(Vec3::ZERO),
+        NotShadowCaster,
+        // Mesh picking requires markers, see `plugin`.
+        Pickable::default(),
+    )
+}
+
 /// The one star a system is drawn with
 ///
 /// Sits at the system's own position with an identity transform, since there
@@ -359,8 +390,6 @@ fn star(
         MeshMaterial3d(materials.0[color_idx(system, color_by)].clone()),
         Transform::default(),
         NotShadowCaster,
-        // Mesh picking requires markers, see `plugin`.
-        Pickable::default(),
     )
 }
 
@@ -406,6 +435,12 @@ fn init_materials(
         .collect();
 
     commands.insert_resource(SystemMaterials(handles));
+    commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
+        base_color: Color::NONE,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    })));
 }
 
 fn allegiance_color_idx(system: &System) -> usize {
