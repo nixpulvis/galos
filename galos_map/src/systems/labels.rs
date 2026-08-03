@@ -297,12 +297,6 @@ const BOX_DEPTH: f32 = 1.;
 #[derive(Component)]
 pub struct NameBox;
 
-/// What a name is tinted while its system is pointed at
-///
-/// The glyphs are drawn white and unlit, so the material's base colour
-/// multiplies straight through them.
-const HOVER_TINT: Srgba = INDICATOR;
-
 /// Decide which systems get to show their name
 ///
 /// Held to whichever is nearer of [`NameRadius`] and the spyglass, since a
@@ -663,6 +657,8 @@ pub fn init_materials(
     commands.insert_resource(NameBoxMesh(
         meshes.add(Mesh::from(Rectangle::new(1., 1.))),
     ));
+    // The glyphs are drawn white and unlit, so a material's base colour
+    // multiplies straight through them and is what a name comes out.
     let mut label = |tint: Srgba| {
         assets.add(StandardMaterial {
             base_color: tint.into(),
@@ -675,7 +671,7 @@ pub fn init_materials(
 
     commands.insert_resource(LabelMaterials {
         resting: label(Srgba::WHITE),
-        pointed_at: label(HOVER_TINT),
+        pointed_at: label(INDICATOR),
         invisible: label(Srgba::NONE),
     });
 }
