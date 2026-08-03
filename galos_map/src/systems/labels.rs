@@ -22,7 +22,7 @@ pub(crate) fn plugin(app: &mut App) {
     // is said here. Ordering them costs nothing and fixes which goes first.
     app.add_systems(
         Update,
-        (respawn, visibility, face_camera)
+        (choose_names, respawn, face_camera)
             .chain()
             .in_set(MapSet::Present)
             .after(super::scale::size_by_distance)
@@ -119,6 +119,66 @@ pub(super) fn world_per_pixel(
     2. * depth / (cot_half_fov * viewport_height)
 }
 
+/// Average glyph width, in line heights
+///
+/// Used to guess how wide a name will draw before a mesh for it exists.
+/// Generous on purpose: overestimating leaves a gap between two names, and
+/// underestimating overlaps them, which is the thing being prevented.
+const ADVANCE: f32 = 0.6;
+
+/// How much of a name's own height is kept clear around it
+///
+/// Names that merely touch are still hard to read apart.
+const CROWDING: f32 = 0.35;
+
+/// How strongly population argues for a name being shown
+///
+/// Weighed against nearness, which is measured in light years, so this is
+/// how many light years of nearness one e-fold of population is worth.
+const POPULATION_WEIGHT: f32 = 6.;
+
+/// Where a point lands on screen, in logical pixels from the top left
+///
+/// [`None`] for anything level with the camera or behind it, which has no
+/// place on screen to land on.
+///
+/// The camera's own axes turn the offset to a point into how far right, how
+/// far up, and how far in it lies. The first two divided by what a pixel
+/// covers at that depth are the offset from the middle of the viewport, in
+/// pixels. Screen y counts downwards, where the camera's counts up.
+pub(super) fn screen_position(
+    camera: &OrbitCamera,
+    cot_half_fov: f32,
+    viewport: Vec2,
+    point: DVec3,
+) -> Option<Vec2> {
+    let offset = point - camera.eye;
+    let depth = offset.dot((camera.rotation * Vec3::NEG_Z).as_dvec3()) as f32;
+    if depth <= 0. {
+        return None;
+    }
+
+    let right = offset.dot((camera.rotation * Vec3::X).as_dvec3()) as f32;
+    let up = offset.dot((camera.rotation * Vec3::Y).as_dvec3()) as f32;
+    let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
+
+    Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
+}
+
+/// What a name is drawn in, resting and pointed at
+///
+/// Two materials rather than one recoloured, because the colour lives on a
+/// shared asset: changing it would repaint every name at once. Swapping which
+/// handle a label points at repaints only that one.
+/// A system whose name has won a place on screen
+///
+/// Awarded by [`choose_names`] and read by [`respawn`], which spawns a label
+/// for a system that has one and takes the label away from a system that
+/// does not. A name that would not be readable never gets a mesh built for
+/// it at all.
+#[derive(Component)]
+pub struct Named;
+
 /// A marker for system name labels
 #[derive(Component)]
 pub struct Label;
@@ -126,65 +186,167 @@ pub struct Label;
 #[derive(Resource)]
 pub struct LabelMaterial(Handle<StandardMaterial>);
 
-/// Spawn and despawn system labels
+/// Decide which systems get to show their name
+///
+/// Every name inside [`RADIUS`] drawn at once is unreadable: the dev
+/// database holds a couple of thousand systems within a hundred light years
+/// and a full one holds many times that, so they pile into each other. This
+/// keeps the ones that fit.
+///
+/// Worked in screen pixels, because that is where the crowding happens. Two
+/// systems light years apart share a pixel when the camera is far enough
+/// away, and two a stone's throw apart fill the screen when it is close.
+///
+/// Nearest and most populous win, and the rest are dropped where they would
+/// overlap something already kept. Greedy rather than optimal: the best
+/// arrangement of a few hundred overlapping rectangles is not worth solving
+/// each frame, and taking them in order of what the viewer most wants to see
+/// gives them the ones that matter.
+pub fn choose_names(
+    mut commands: Commands,
+    camera: Query<(&OrbitCamera, &Camera)>,
+    size: Res<LabelSize>,
+    show_names: Res<ShowNames>,
+    systems: Query<(Entity, &System)>,
+    named: Query<Entity, With<Named>>,
+) {
+    let clear = |commands: &mut Commands| {
+        for entity in &named {
+            commands.entity(entity).remove::<Named>();
+        }
+    };
+
+    if !show_names.0 {
+        clear(&mut commands);
+        return;
+    }
+    let Ok((orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    // Everything close enough to name and in front of the camera, with the
+    // rectangle its name would occupy and how much it deserves one.
+    let mut wanted: Vec<(Entity, Rect, f32)> = systems
+        .iter()
+        .filter_map(|(entity, system)| {
+            let position = DVec3::from(system.position);
+            let away = (position - orbit.eye).length() as f32;
+            if away > RADIUS {
+                return None;
+            }
+            let at = screen_position(orbit, cot_half_fov, viewport, position)?;
+            let rect = name_rect(at, &system.name, size.0);
+            let screen = Rect::from_corners(Vec2::ZERO, viewport);
+            if screen.intersect(rect).is_empty() {
+                return None;
+            }
+            let score = name_score(system.population, away);
+            Some((entity, rect, score))
+        })
+        .collect();
+
+    // Best first, so that what is dropped is dropped in favour of something
+    // the viewer wanted more.
+    wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2));
+
+    let mut kept: Vec<Rect> = Vec::new();
+    let mut winners: Vec<Entity> = Vec::new();
+    for (entity, rect, _) in wanted {
+        if kept.iter().any(|taken| !taken.intersect(rect).is_empty()) {
+            continue;
+        }
+        kept.push(rect);
+        winners.push(entity);
+    }
+
+    clear(&mut commands);
+    for entity in winners {
+        commands.entity(entity).insert(Named);
+    }
+}
+
+/// How much a system deserves to have its name drawn
+///
+/// Two claims in the same units. Nearness is what the viewer is looking at,
+/// and population is what is worth looking at.
+fn name_score(population: u64, away: f32) -> f32 {
+    (1. + population as f32).ln() * POPULATION_WEIGHT - away
+}
+
+/// The screen rectangle a system's name would occupy, with room around it
+///
+/// The width is a guess from the letter count, since the mesh that would
+/// give an exact one is the thing being decided about.
+fn name_rect(at: Vec2, name: &str, size: f32) -> Rect {
+    let width = name.chars().count() as f32 * ADVANCE * size;
+    let margin = size * CROWDING;
+
+    // `face_camera` puts a name up and to the right of its system by these
+    // same multiples of its height.
+    let left = at.x + size * GAP;
+    let middle = at.y - size * RISE;
+
+    Rect::new(
+        left - margin,
+        middle - size / 2. - margin,
+        left + width + margin,
+        middle + size / 2. + margin,
+    )
+}
+
+/// Give a label to every system that has won a name, and take it from the
+/// rest
+///
+/// [`choose_names`] decides; this only carries the decision out. A system
+/// without a [`Named`] has no label, which is what keeps the mesh cost to
+/// the names actually drawn, and means nothing has to be hidden after the
+/// fact.
 pub fn respawn(
     mut commands: Commands,
-    camera: Query<&OrbitCamera>,
-    systems: Query<(Entity, &System, Option<&Children>)>,
+    named: Query<(Entity, &System, Option<&Children>), With<Named>>,
+    unnamed: Query<&Children, (With<System>, Without<Named>)>,
     labels: Query<Entity, With<Label>>,
-    show_names: Res<ShowNames>,
     material: Res<LabelMaterial>,
 ) {
-    let Ok(camera) = camera.single() else { return };
-    let eye = camera.eye;
-
-    for (system_entity, system, children) in systems.iter() {
-        let d = eye.distance(DVec3::from(system.position)) as f32;
-
-        if d > RADIUS {
-            if let Some(children) = children {
-                for child in children.iter() {
-                    if let Ok(label_entity) = labels.get(child) {
-                        commands.entity(label_entity).despawn();
-                    }
-                }
-            }
-        } else {
-            let labelled = children
-                .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
-            if !labelled {
-                let label = {
-                    let mut label_entity = commands.spawn((
-                        Label,
-                        Text3d::new(system.name.clone()),
-                        Text3dStyling {
-                            size: SIZE,
-                            font: FONT.into(),
-                            color: Srgba::WHITE,
-                            // The anchor says where the text sits relative
-                            // to the entity, not which edge of the text
-                            // lands on it. CENTER_RIGHT puts the name to
-                            // the right of its star rather than straddling
-                            // it, leaving room for the gap below.
-                            anchor: TextAnchor::CENTER_RIGHT,
-                            ..default()
-                        },
-                        Mesh3d::default(),
-                        MeshMaterial3d(material.0.clone()),
-                        // Placed by `face_camera` before the first draw.
-                        Transform::default(),
-                    ));
-
-                    if !show_names.0 {
-                        label_entity.insert(Visibility::Hidden);
-                    }
-
-                    label_entity.id()
-                };
-
-                commands.entity(system_entity).add_child(label);
+    for children in &unnamed {
+        for child in children.iter() {
+            if let Ok(label) = labels.get(child) {
+                commands.entity(label).despawn();
             }
         }
+    }
+
+    for (entity, system, children) in &named {
+        let labelled = children
+            .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
+        if labelled {
+            continue;
+        }
+
+        let label = commands
+            .spawn((
+                Label,
+                Text3d::new(system.name.clone()),
+                Text3dStyling {
+                    size: SIZE,
+                    font: FONT.into(),
+                    color: Srgba::WHITE,
+                    // The anchor says where the text sits relative to the
+                    // entity, not which edge of the text lands on it.
+                    // CENTER_RIGHT puts the name to the right of its system
+                    // rather than straddling it, leaving room for the gap
+                    // below.
+                    anchor: TextAnchor::CENTER_RIGHT,
+                    ..default()
+                },
+                Mesh3d::default(),
+                MeshMaterial3d(material.0.clone()),
+                // Placed by `face_camera` before the first draw.
+                Transform::default(),
+            ))
+            .id();
+
+        commands.entity(entity).add_child(label);
     }
 }
 
@@ -292,23 +454,6 @@ pub fn leaders(
             from + direction * end,
             LEADER_COLOR,
         );
-    }
-}
-
-/// Add visibility components when ShowName changes
-pub fn visibility(
-    mut commands: Commands,
-    labels: Query<Entity, With<Label>>,
-    show_names: Res<ShowNames>,
-) {
-    if show_names.is_changed() {
-        for entity in &labels {
-            if show_names.0 {
-                commands.entity(entity).insert(Visibility::Inherited);
-            } else {
-                commands.entity(entity).insert(Visibility::Hidden);
-            }
-        }
     }
 }
 
