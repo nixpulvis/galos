@@ -132,12 +132,24 @@ const LEADER_COLOR: Srgba = Srgba::new(1., 1., 1., 0.35);
 /// the first glyph, so the connector reads as detached from both.
 const LEADER_GAP: f32 = 0.15;
 
-/// Average glyph width, in line heights
+/// How wide a character is taken to be, as a fraction of the font size
 ///
-/// Used to guess how wide a name will draw before a mesh for it exists.
-/// Generous on purpose: overestimating leaves a gap between two names, and
-/// underestimating overlaps them, which is the thing being prevented.
-const ADVANCE: f32 = 0.6;
+/// Whether two names overlap is decided from their rectangles, and a name's
+/// width depends on which glyphs it is made of. The width it will draw at is
+/// known exactly, in `Text3dDimensionOut`, but only once the text mesh has
+/// been built, and building it is what [`choose_names`] is deciding whether
+/// to do. So the width is guessed from the letter count instead.
+///
+/// Named for the typographic advance, how far the pen moves along after
+/// drawing a glyph. An `i` advances a little and a `W` a lot, so this is an
+/// average over a name rather than a measurement of one.
+///
+/// Deliberately above that average, so that it errs wide. Erring wide costs
+/// a gap between two names, and with it a third name that would have fitted
+/// between them; erring narrow overlaps them, which is the thing being
+/// prevented. Over the names of a hundred and fifty systems the widest ran
+/// to a little under seven tenths, which is where this sits.
+const ADVANCE: f32 = 0.7;
 
 /// How much of a name's own height is kept clear around it
 ///
