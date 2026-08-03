@@ -2,6 +2,7 @@ use crate::search::{SearchNote, Searched};
 use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
+use crate::systems::labels::LabelSize;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::spawn::{ColorBy, ShowNames};
 use bevy::prelude::*;
@@ -51,6 +52,7 @@ pub fn panels(
     mut show_names: ResMut<ShowNames>,
     mut throttle: ResMut<Throttle>,
     mut poll: ResMut<Poll>,
+    mut label_size: ResMut<LabelSize>,
     mut searched: MessageWriter<Searched>,
     search_note: Res<SearchNote>,
     mut over_ui: ResMut<PointerOverUi>,
@@ -213,6 +215,15 @@ pub fn panels(
                 }
 
                 ui.checkbox(&mut show_names.0, "Show System Names");
+                if show_names.0 {
+                    ui.horizontal(|ui| {
+                        ui.label("Name Size");
+                        ui.add(
+                            egui::Slider::new(&mut label_size.0, 10.0..=36.)
+                                .suffix(" px"),
+                        );
+                    });
+                }
             });
         },
     );

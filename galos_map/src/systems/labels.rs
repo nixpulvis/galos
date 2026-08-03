@@ -15,6 +15,7 @@ pub(crate) fn plugin(app: &mut App) {
         font_embedded: vec![include_bytes!("../../assets/gautami.ttf")],
         ..default()
     });
+    app.insert_resource(LabelSize(16.));
     app.add_systems(Startup, init_material);
     // `face_camera` and the sizing systems both write a `Transform`, on
     // different entities, so the scheduler cannot run them together whatever
@@ -43,27 +44,28 @@ pub(crate) fn plugin(app: &mut App) {
 /// World size of a label at unit scale
 const SIZE: f32 = 64.;
 
-/// Tuning factor for how large labels draw, before distance is applied
+/// Depth floor for the label size, in light years
 ///
-/// A world scale, applied to the label alone. A label is a child of its
-/// system, which carries no size, so this is the size it is drawn at.
-const SCALE: f32 = 0.0032;
+/// Size is proportional to depth, so a system level with the camera would
+/// draw at nothing and one just behind it at a negative size, which is
+/// mirrored. Anything this close is inside the near plane regardless.
+const MIN_DEPTH: f32 = 0.1;
 
 /// How far from the camera a system may be before it stops being labelled
 const RADIUS: f32 = 100.;
+
+/// How tall a system's name draws, in logical pixels
+///
+/// The one number that decides label size. Everything else follows from the
+/// viewport and where the camera is.
+#[derive(Resource)]
+pub struct LabelSize(pub f32);
 
 /// Sideways gap between a star and its label, in text heights
 const GAP: f32 = 0.75;
 
 /// How far a label sits above its star, in text heights
 const RISE: f32 = 1.0;
-
-/// Distance floor for the label scale curve
-///
-/// Scale grows with `ln(distance)`, which is zero at 1 and negative below
-/// that. A label at zero scale is invisible and one at negative scale is
-/// mirrored, so the curve is clamped before it reaches either.
-const MIN_DISTANCE: f32 = 2.;
 
 /// The family name inside `assets/gautami.ttf`, used to select it in
 /// [`Text3dStyling`].
@@ -79,6 +81,43 @@ const LEADER_COLOR: Srgba = Srgba::new(1., 1., 1., 0.35);
 /// The same gap sits between the line and the body as between the line and
 /// the first glyph, so the connector reads as detached from both.
 const LEADER_GAP: f32 = 0.15;
+
+/// How far in front of the camera a point is, in light years
+///
+/// Depth into the view, which is not the same as the distance to the camera.
+/// A point at the corner of the screen is further from the eye than one at
+/// the centre at the same depth, so sizing by distance draws the corner one
+/// larger. At the corner of a 16:9 viewport with a quarter-turn field of
+/// view, distance is about 1.31 times the depth.
+///
+/// Both ends come from [`OrbitCamera`], which publishes an absolute position
+/// and a rotation during `Update`. The camera's `GlobalTransform` answers
+/// neither question: it is written in `PostUpdate`, so it lags a frame, and
+/// it holds a position relative to the floating origin rather than to the
+/// galaxy. Negative behind the camera.
+pub(super) fn depth(camera: &OrbitCamera, point: DVec3) -> f32 {
+    let forward = (camera.rotation * Vec3::NEG_Z).as_dvec3();
+    (point - camera.eye).dot(forward) as f32
+}
+
+/// How much world one logical pixel covers, at a given depth
+///
+/// A perspective view widens with depth, so a pixel spans more world the
+/// further in it is measured. Multiplying a size in pixels by this gives the
+/// world size that draws at it, which is what makes a label hold its size on
+/// screen however far away the system is.
+///
+/// `cot_half_fov` is `Camera::clip_from_view().y_axis.y`, which glam fills
+/// with `1 / tan(fov_y / 2)`. The vertical field of view is what the
+/// viewport's height is divided into; aspect ratio lives in the matrix's x
+/// axis and does not enter.
+pub(super) fn world_per_pixel(
+    cot_half_fov: f32,
+    viewport_height: f32,
+    depth: f32,
+) -> f32 {
+    2. * depth / (cot_half_fov * viewport_height)
+}
 
 /// A marker for system name labels
 #[derive(Component)]
@@ -156,7 +195,8 @@ pub fn respawn(
 /// is drawn with. That a system is never rotated is what lets the camera's
 /// rotation be written straight into a slot that is read as local.
 pub fn face_camera(
-    camera: Query<&OrbitCamera>,
+    camera: Query<(&OrbitCamera, &Camera)>,
+    size: Res<LabelSize>,
     systems: Query<&System, Without<Label>>,
     // `Without<System>` is already true of any label. It is spelled out so
     // the scheduler can prove this query is disjoint from the one above, and
@@ -166,24 +206,34 @@ pub fn face_camera(
         (With<Label>, Without<System>),
     >,
 ) {
-    let Ok(camera) = camera.single() else { return };
+    let Ok((orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     for (mut label, child_of) in &mut labels {
         let Ok(system) = systems.get(child_of.parent()) else { continue };
 
-        // Measure to the star, not to the label's offset within it.
-        let d = camera.eye.distance(DVec3::from(system.position)) as f32;
-        let scale = 0.75 * d.max(MIN_DISTANCE).ln() * SCALE;
+        // Measured to the system, not to the label's offset within it, so
+        // that every name on screen is sized against the same view.
+        let into_view =
+            depth(orbit, DVec3::from(system.position)).max(MIN_DEPTH);
+        let world_per_pixel =
+            world_per_pixel(cot_half_fov, viewport.y, into_view);
+
+        // The line box is exactly `SIZE` tall, so this is the height the
+        // name draws at, in pixels, whatever the camera is doing.
+        let height = size.0 * world_per_pixel;
+        let scale = height / SIZE;
 
         // Offset along the camera's own axes, so the label keeps sitting up
-        // and to the right on screen however the view is orbited.
-        let height = SIZE * scale;
-        let offset = camera.rotation * Vec3::X * (height * GAP)
-            + camera.rotation * Vec3::Y * (height * RISE);
+        // and to the right on screen however the view is orbited. Both are
+        // multiples of the height, so they are fixed pixel gaps too.
+        let offset = orbit.rotation * Vec3::X * (height * GAP)
+            + orbit.rotation * Vec3::Y * (height * RISE);
 
         label.scale = Vec3::splat(scale);
         label.translation = offset;
-        label.rotation = camera.rotation;
+        label.rotation = orbit.rotation;
     }
 }
 
@@ -273,4 +323,100 @@ pub fn init_material(
         ..default()
     });
     commands.insert_resource(LabelMaterial(handle));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A camera at the origin, looking the way `Quat::IDENTITY` faces
+    fn camera(rotation: Quat) -> OrbitCamera {
+        OrbitCamera { eye: DVec3::ZERO, rotation, ..default() }
+    }
+
+    /// Two points at the same depth measure the same, however far apart
+    ///
+    /// This is the whole distinction. Both points below sit a hundred light
+    /// years into the view, but the second is a third further from the eye,
+    /// and measuring the distance would size it a third larger for it.
+    #[test]
+    fn depth_ignores_how_far_off_axis_a_point_is() {
+        let camera = camera(Quat::IDENTITY);
+        let ahead = DVec3::new(0., 0., -100.);
+        let corner = DVec3::new(80., 45., -100.);
+
+        assert!((depth(&camera, ahead) - 100.).abs() < 1e-3);
+        assert!((depth(&camera, corner) - 100.).abs() < 1e-3);
+        assert!(
+            corner.length() > 130.,
+            "the corner point is only {} away, too close to tell the two apart",
+            corner.length()
+        );
+    }
+
+    /// A pixel covers the visible world at that depth, divided by the height
+    #[test]
+    fn a_pixel_covers_its_share_of_the_view() {
+        let fov = std::f32::consts::FRAC_PI_4;
+        let cot = 1. / (fov / 2.).tan();
+        let depth = 100.;
+
+        // What the viewport spans at that depth, from the field of view
+        // alone, is what its pixels divide between them.
+        let visible = 2. * depth * (fov / 2.).tan();
+        let expected = visible / 1080.;
+
+        assert!(
+            (world_per_pixel(cot, 1080., depth) - expected).abs() < 1e-6,
+            "a pixel covered {}, not {expected}",
+            world_per_pixel(cot, 1080., depth)
+        );
+    }
+
+    /// A label sized this way holds its apparent size at any depth
+    ///
+    /// This is what #58 asks for. What the eye sees is the world size over
+    /// the depth, and the world size is proportional to depth, so the depth
+    /// cancels and the same number of pixels is left at every range.
+    #[test]
+    fn a_label_holds_its_apparent_size_at_any_depth() {
+        let (cot, height, pixels) = (2.414, 1080., 16.);
+        let apparent = |d: f32| pixels * world_per_pixel(cot, height, d) / d;
+
+        let near = apparent(1.);
+        for depth in [10., 1_000., 100_000.] {
+            assert!(
+                (apparent(depth) - near).abs() < 1e-9,
+                "{depth}ly away it subtended {}, against {near} at one",
+                apparent(depth)
+            );
+        }
+    }
+
+    /// A point behind the camera measures negative
+    #[test]
+    fn depth_is_negative_behind_the_camera() {
+        let camera = camera(Quat::IDENTITY);
+        assert!(depth(&camera, DVec3::new(0., 0., 100.)) < 0.);
+    }
+
+    /// Whatever the camera orbits sits exactly its own radius deep
+    ///
+    /// `orbit_camera` places the eye at `focus + rotation * Z * radius`, so
+    /// this pins the helper to the convention the camera is written to. A
+    /// forward of `+Z` would put the focus behind the camera instead.
+    #[test]
+    fn depth_agrees_with_where_the_camera_puts_its_eye() {
+        let rotation = Quat::from_euler(EulerRot::YXZ, 0.9, -0.4, 0.);
+        let focus = DVec3::new(1234.5, -678.9, 4321.);
+        let radius = 250f32;
+        let eye = focus + (rotation * Vec3::Z * radius).as_dvec3();
+
+        let camera = OrbitCamera { eye, rotation, ..default() };
+        assert!(
+            (depth(&camera, focus) - radius).abs() < 1e-2,
+            "the focus measured {} deep, not the {radius} the camera sits at",
+            depth(&camera, focus)
+        );
+    }
 }
