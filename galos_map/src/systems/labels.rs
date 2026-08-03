@@ -24,8 +24,8 @@ pub(crate) fn plugin(app: &mut App) {
         (respawn, visibility, face_camera)
             .chain()
             .in_set(MapSet::Present)
-            .after(super::scale::scale_systems)
-            .after(super::scale::scale_stars),
+            .after(super::scale::size_by_distance)
+            .after(super::scale::size_uniformly),
     );
     // `leaders` reads where a label ended up rather than deciding it, and
     // neither of the two answers it needs exists during `Update`. A label's
@@ -155,9 +155,14 @@ pub fn respawn(
 /// [`super::scale`] gives the star. Every value here is therefore divided by
 /// that scale to land on the intended world size and offset. Systems are
 /// unrotated, so the camera's rotation can be copied straight in.
+/// Turn each label to the camera and size it for its distance
+///
+/// A label is a child of the star it names, which carries no size of its
+/// own, so what is written here is the size and offset the label is actually
+/// drawn at.
 pub fn face_camera(
     camera: Query<&OrbitCamera>,
-    systems: Query<(&Transform, &System), Without<Label>>,
+    systems: Query<&System, Without<Label>>,
     // `Without<System>` is already true of any label. It is spelled out so
     // the scheduler can prove this query is disjoint from the one above, and
     // from every other system that reads a star's transform.
@@ -169,18 +174,7 @@ pub fn face_camera(
     let Ok(camera) = camera.single() else { return };
 
     for (mut label, child_of) in &mut labels {
-        let Ok((transform, system)) = systems.get(child_of.parent()) else {
-            continue;
-        };
-
-        // Every value below is divided by the star's scale, so a star that
-        // is not drawn at a sane size has to be left alone. Clamping instead
-        // would turn a scale of zero into a division by a hair above zero,
-        // which throws the name millions of units away rather than hiding it.
-        let parent_scale = transform.scale.x;
-        if !parent_scale.is_finite() || parent_scale <= 0. {
-            continue;
-        }
+        let Ok(system) = systems.get(child_of.parent()) else { continue };
 
         // Measure to the star, not to the label's offset within it.
         let d = camera.eye.distance(DVec3::from(system.position)) as f32;
@@ -192,8 +186,8 @@ pub fn face_camera(
         let offset = camera.rotation * Vec3::X * (height * GAP)
             + camera.rotation * Vec3::Y * (height * RISE);
 
-        label.scale = Vec3::splat(scale / parent_scale);
-        label.translation = offset / parent_scale;
+        label.scale = Vec3::splat(scale);
+        label.translation = offset;
         label.rotation = camera.rotation;
     }
 }
