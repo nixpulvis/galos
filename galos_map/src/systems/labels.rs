@@ -1,8 +1,8 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::System;
 use crate::systems::pointing::{INDICATOR, PointedAt, PointerTarget};
 use crate::systems::spawn::{ShowNames, Star};
+use crate::systems::{Spyglass, System};
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -261,7 +261,10 @@ const HOVER_TINT: Srgba = INDICATOR;
 
 /// Decide which systems get to show their name
 ///
-/// Every name inside [`NameRadius`] drawn at once is unreadable: the dev
+/// Held to whichever is nearer of [`NameRadius`] and the spyglass, since a
+/// system the spyglass has hidden has nothing to put a name against.
+///
+/// Every name inside that reach drawn at once is unreadable: the dev
 /// database holds a couple of thousand systems within a hundred light years
 /// and a full one holds many times that, so they pile into each other. This
 /// keeps the ones that fit.
@@ -279,6 +282,7 @@ pub fn choose_names(
     mut commands: Commands,
     camera: Query<(&OrbitCamera, &Camera)>,
     radius: Res<NameRadius>,
+    spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
     systems: Query<(Entity, &System)>,
     named: Query<Entity, With<Named>>,
@@ -294,6 +298,18 @@ pub fn choose_names(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
+    // A name can only be drawn for a system that is drawn, and while the
+    // spyglass is in force it is what decides that, measured from the same
+    // point this is. Asking for names further out than it reaches would
+    // build them for systems already hidden, which is what happens when it
+    // is pulled in under a radius set wider. Overriding it draws everything
+    // loaded, and then only the asking limits them.
+    let reach = if spyglass.disabled {
+        radius.0
+    } else {
+        radius.0.min(spyglass.radius)
+    };
+
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
@@ -308,7 +324,7 @@ pub fn choose_names(
 
             let position = DVec3::from(system.position);
             let from_focus = (position - orbit.focus).length() as f32;
-            if from_focus > radius.0 {
+            if from_focus > reach {
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;

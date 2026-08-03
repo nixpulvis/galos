@@ -29,6 +29,40 @@ pub struct PointerOverUi(pub bool);
 
 // TODO: Form validation.
 
+/// The scales a radius is offered at, and how finely each one steps
+///
+/// Width of the galaxy is 105,700 Ly.
+const RADIUS_SCALES: [(f32, f32, f64, f64); 3] =
+    [(1., 50., 0.1, 0.2), (10., 500., 1., 0.2), (10., 1.1e5, 10., 0.5)];
+
+/// Offer one radius at each scale it might be wanted at
+///
+/// A single slider over five orders of magnitude has no purchase near the
+/// bottom, where a light year is a real distance, and no reach at the top.
+/// Three ranges over the same number give both, and whichever is at hand is
+/// the one that suits the value at the time.
+///
+/// None of them clamps, since the narrowest would otherwise drag the value
+/// back down every frame it was drawn. `ceiling` clamps instead, once, after
+/// all three have had their say, and a range past it is not offered at all.
+fn radius_sliders(ui: &mut Ui, radius: &mut f32, ceiling: f32) {
+    for (low, high, step, speed) in RADIUS_SCALES {
+        let high = high.min(ceiling);
+        if low >= high {
+            continue;
+        }
+        ui.label(format!("{low} - {high} Ly"));
+        ui.add(
+            egui::Slider::new(radius, low..=high)
+                .clamping(egui::SliderClamping::Never)
+                .logarithmic(true)
+                .step_by(step)
+                .drag_value_speed(speed),
+        );
+    }
+    *radius = radius.clamp(RADIUS_SCALES[0].0, ceiling);
+}
+
 /// Map settings and controls
 /// What the user has typed into the search boxes
 ///
@@ -127,35 +161,7 @@ pub fn panels(
 
             ui.label("Spyglass Radius");
             ui.group(|ui| {
-                // These sliders share one value across different ranges,
-                // so none of them may clamp it. Egui clamps to the
-                // slider's own range by default, which would let the
-                // narrowest slider pull the radius back down every frame.
-                ui.label("1 - 50 Ly");
-                ui.add(
-                    egui::Slider::new(&mut spyglass.radius, 1.0..=50.)
-                        .clamping(egui::SliderClamping::Never)
-                        .logarithmic(true)
-                        .step_by(0.1)
-                        .drag_value_speed(0.2),
-                );
-                ui.label("10 - 500 Ly");
-                ui.add(
-                    egui::Slider::new(&mut spyglass.radius, 10.0..=500.)
-                        .clamping(egui::SliderClamping::Never)
-                        .logarithmic(true)
-                        .step_by(1.)
-                        .drag_value_speed(0.2),
-                );
-                ui.label("10 - 1.1e5 Ly");
-                ui.add(
-                    // Width of the galaxy is 105,700 Ly.
-                    egui::Slider::new(&mut spyglass.radius, 10.0..=1.1e5)
-                        .clamping(egui::SliderClamping::Never)
-                        .logarithmic(true)
-                        .step_by(10.)
-                        .drag_value_speed(0.5),
-                );
+                radius_sliders(ui, &mut spyglass.radius, 1.1e5);
                 ui.add_space(2.);
                 ui.checkbox(&mut spyglass.lock_camera, "Lock Camera");
                 ui.add_space(2.);
@@ -216,13 +222,16 @@ pub fn panels(
 
                 ui.checkbox(&mut show_names.0, "Show System Names");
                 if show_names.0 {
-                    ui.horizontal(|ui| {
-                        ui.label("Name Radius");
-                        ui.add(
-                            egui::Slider::new(&mut name_radius.0, 5.0..=1000.)
-                                .logarithmic(true)
-                                .suffix(" Ly"),
-                        );
+                    // A name can only be drawn for a system that is drawn,
+                    // and the spyglass is what decides that, so asking for
+                    // names further out than it reaches asks for nothing.
+                    // Overriding it draws everything loaded, and then the
+                    // question is open again.
+                    let ceiling =
+                        if spyglass.disabled { 1.1e5 } else { spyglass.radius };
+                    ui.label("Name Radius");
+                    ui.group(|ui| {
+                        radius_sliders(ui, &mut name_radius.0, ceiling)
                     });
                 }
             });
