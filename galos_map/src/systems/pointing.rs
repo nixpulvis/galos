@@ -70,6 +70,13 @@ pub struct PointerTarget;
 /// takes away the very name that was being reached for.
 const DWELL: f32 = 0.25;
 
+/// The scale a thing that catches the pointer stands at before it is fitted
+///
+/// Small enough to catch nothing, since it does not yet stand for anything.
+/// Not zero: a ray is put into the space of what it might hit by inverting
+/// that thing's transform, and a zero scale has no inverse.
+pub(super) const UNFITTED_SCALE: f32 = 1e-6;
+
 /// A system the pointer is over
 ///
 /// Carried by the system rather than by whatever the pointer actually

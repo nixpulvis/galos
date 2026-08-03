@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::pointing::{INDICATOR, PointedAt};
+use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
 use crate::systems::spawn::{ShowNames, Star};
 use crate::systems::{Spyglass, System};
 use bevy::camera::visibility::VisibilitySystems;
@@ -528,10 +528,9 @@ pub fn respawn(
                 Mesh3d(box_mesh.0.clone()),
                 MeshMaterial3d(materials.invisible.clone()),
                 // Sized by `fit_name_boxes` once the name has a mesh to
-                // measure. Until then it stands a pixel wide and catches
-                // nothing, which is the right answer for a name not yet
-                // drawn.
-                Transform::from_scale(Vec3::ZERO),
+                // measure, and catching nothing until then, which is the
+                // right answer for a name not yet drawn.
+                Transform::from_scale(Vec3::splat(UNFITTED_SCALE)),
                 Pickable::default(),
             ))
             .id();

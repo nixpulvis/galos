@@ -5,7 +5,7 @@ use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
-    pointing::{PointedAt, PointerTarget},
+    pointing::{PointedAt, PointerTarget, UNFITTED_SCALE},
     route::Route,
     route::spawn::spawn_route,
     system_to_vec,
@@ -359,7 +359,7 @@ fn pointer_target(
         Mesh3d(mesh.0.clone()),
         MeshMaterial3d(invisible.0.clone()),
         // Fitted by `pointing::size_targets` before the first draw.
-        Transform::from_scale(Vec3::ZERO),
+        Transform::from_scale(Vec3::splat(UNFITTED_SCALE)),
         NotShadowCaster,
         // Mesh picking requires markers, see `plugin`. A star does not
         // block what lies behind it, so a name drawn over one is reported
