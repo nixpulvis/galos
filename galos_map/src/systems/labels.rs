@@ -4,9 +4,12 @@ use crate::systems::System;
 use crate::systems::spawn::{ShowNames, Star};
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
+use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
+use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 use bevy_rich_text3d::{
-    LoadFonts, Text3d, Text3dPlugin, Text3dStyling, TextAnchor, TextAtlas,
+    LoadFonts, Text3d, Text3dDimensionOut, Text3dPlugin, Text3dStyling,
+    TextAnchor, TextAtlas,
 };
 
 pub(crate) fn plugin(app: &mut App) {
@@ -16,7 +19,13 @@ pub(crate) fn plugin(app: &mut App) {
         ..default()
     });
     app.insert_resource(LabelSize(16.));
-    app.add_systems(Startup, init_material);
+    app.add_systems(Startup, init_materials);
+    app.add_systems(
+        Update,
+        (fit_name_boxes, point_at_names).in_set(MapSet::Present),
+    );
+    app.add_observer(highlight);
+    app.add_observer(unhighlight);
     // `face_camera` and the sizing systems both write a `Transform`, on
     // different entities, so the scheduler cannot run them together whatever
     // is said here. Ordering them costs nothing and fixes which goes first.
@@ -76,11 +85,74 @@ const FONT: &str = "Gautami";
 /// Dimmer than the text so it reads as a connector rather than as content.
 const LEADER_COLOR: Srgba = Srgba::new(1., 1., 1., 0.35);
 
+/// Colour of that line while the pointer is over the name
+///
+/// The tint the name itself takes, at full strength, so that the two read as
+/// one thing being pointed at rather than as a name and a line that happen
+/// to have both changed.
+const LEADER_POINTED_AT: Srgba = HOVER_TINT;
+
 /// Air left at each end of the line, as a fraction of its full span
 ///
 /// The same gap sits between the line and the body as between the line and
 /// the first glyph, so the connector reads as detached from both.
 const LEADER_GAP: f32 = 0.15;
+
+/// Average glyph width, in line heights
+///
+/// Used to guess how wide a name will draw before a mesh for it exists.
+/// Generous on purpose: overestimating leaves a gap between two names, and
+/// underestimating overlaps them, which is the thing being prevented.
+const ADVANCE: f32 = 0.6;
+
+/// How much of a name's own height is kept clear around it
+///
+/// Names that merely touch are still hard to read apart.
+const CROWDING: f32 = 0.35;
+
+/// How strongly population argues for a name being shown
+///
+/// Weighed against nearness, which is measured in light years, so this is
+/// how many light years of nearness one e-fold of population is worth.
+const POPULATION_WEIGHT: f32 = 6.;
+
+/// How strongly being what the camera looks at argues for a name being shown
+///
+/// In the same light years as everything else, so this is what the focused
+/// system's name is worth over one sitting at the camera itself. The best
+/// score is always kept, nothing having been placed yet to crowd it out, so
+/// a value above the span of the other terms makes the focused name certain
+/// rather than merely likely. They span a little over two hundred as they
+/// stand, which is why this sits where it does.
+const FOCUS_WEIGHT: f32 = 250.;
+
+/// How far the focus bonus reaches, in light years
+///
+/// It falls to half at this distance. The point the camera orbits is usually
+/// a system exactly, so this only has to forgive one that is merely near it.
+const FOCUS_REACH: f32 = 2.;
+
+/// A system whose name has won a place on screen
+///
+/// Awarded by [`choose_names`] and read by [`respawn`], which spawns a label
+/// for a system that has one and takes the label away from a system that
+/// does not. A name that would not be readable never gets a mesh built for
+/// it at all.
+#[derive(Component)]
+pub struct Named;
+
+/// A marker for system name labels
+#[derive(Component)]
+pub struct Label;
+
+/// A name the pointer is currently over
+///
+/// Put on the name rather than on the box that caught the pointer, since the
+/// name is what everything else is hung off. Anything that wants to show a
+/// name as pointed at reads this, so the name and the line to it cannot
+/// disagree about whether they are.
+#[derive(Component)]
+pub struct PointedAt;
 
 /// How far in front of the camera a point is, in light years
 ///
@@ -119,24 +191,6 @@ pub(super) fn world_per_pixel(
     2. * depth / (cot_half_fov * viewport_height)
 }
 
-/// Average glyph width, in line heights
-///
-/// Used to guess how wide a name will draw before a mesh for it exists.
-/// Generous on purpose: overestimating leaves a gap between two names, and
-/// underestimating overlaps them, which is the thing being prevented.
-const ADVANCE: f32 = 0.6;
-
-/// How much of a name's own height is kept clear around it
-///
-/// Names that merely touch are still hard to read apart.
-const CROWDING: f32 = 0.35;
-
-/// How strongly population argues for a name being shown
-///
-/// Weighed against nearness, which is measured in light years, so this is
-/// how many light years of nearness one e-fold of population is worth.
-const POPULATION_WEIGHT: f32 = 6.;
-
 /// Where a point lands on screen, in logical pixels from the top left
 ///
 /// [`None`] for anything level with the camera or behind it, which has no
@@ -170,37 +224,43 @@ pub(super) fn screen_position(
 /// Two materials rather than one recoloured, because the colour lives on a
 /// shared asset: changing it would repaint every name at once. Swapping which
 /// handle a label points at repaints only that one.
-/// How strongly being what the camera looks at argues for a name being shown
-///
-/// In the same light years as everything else, so this is what the focused
-/// system's name is worth over one sitting at the camera itself. The best
-/// score is always kept, nothing having been placed yet to crowd it out, so
-/// a value above the span of the other terms makes the focused name certain
-/// rather than merely likely. They span a little over two hundred as they
-/// stand, which is why this sits where it does.
-const FOCUS_WEIGHT: f32 = 250.;
-
-/// How far the focus bonus reaches, in light years
-///
-/// It falls to half at this distance. The point the camera orbits is usually
-/// a system exactly, so this only has to forgive one that is merely near it.
-const FOCUS_REACH: f32 = 2.;
-
-/// A system whose name has won a place on screen
-///
-/// Awarded by [`choose_names`] and read by [`respawn`], which spawns a label
-/// for a system that has one and takes the label away from a system that
-/// does not. A name that would not be readable never gets a mesh built for
-/// it at all.
-#[derive(Component)]
-pub struct Named;
-
-/// A marker for system name labels
-#[derive(Component)]
-pub struct Label;
-
 #[derive(Resource)]
-pub struct LabelMaterial(Handle<StandardMaterial>);
+pub struct LabelMaterials {
+    resting: Handle<StandardMaterial>,
+    pointed_at: Handle<StandardMaterial>,
+    /// Drawn for a [`NameBox`], and drawing nothing
+    invisible: Handle<StandardMaterial>,
+}
+
+/// The unit rectangle every [`NameBox`] is stretched from
+#[derive(Resource)]
+pub struct NameBoxMesh(Handle<Mesh>);
+
+/// How far behind its name a hit box sits, in the name's own units
+///
+/// Enough that the two never argue over which is in front, and far less
+/// than the gap to anything else.
+const BOX_DEPTH: f32 = 1.;
+
+/// The box behind a name that catches the pointer
+///
+/// A name's mesh is one quad per glyph, so a ray aimed between two letters,
+/// or at the space between two words, falls through it to whatever is
+/// behind. Probing along a name a letter at a time found this: aimed at the
+/// middle, only two thirds of names were hit at all.
+///
+/// This is a single rectangle covering the whole name, which is what the
+/// pointer is actually tested against. Invisible, being drawn in a fully
+/// transparent material, since picking only considers what is being drawn
+/// and hiding it would take it out of the running.
+#[derive(Component)]
+pub struct NameBox;
+
+/// What a name is tinted when the pointer is over it
+///
+/// The glyphs are drawn white and unlit, so the material's base colour
+/// multiplies straight through them.
+const HOVER_TINT: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
 
 /// Decide which systems get to show their name
 ///
@@ -327,7 +387,8 @@ pub fn respawn(
     named: Query<(Entity, &System, Option<&Children>), With<Named>>,
     unnamed: Query<&Children, (With<System>, Without<Named>)>,
     labels: Query<Entity, With<Label>>,
-    material: Res<LabelMaterial>,
+    materials: Res<LabelMaterials>,
+    box_mesh: Res<NameBoxMesh>,
 ) {
     for children in &unnamed {
         for child in children.iter() {
@@ -361,9 +422,20 @@ pub fn respawn(
                     ..default()
                 },
                 Mesh3d::default(),
-                MeshMaterial3d(material.0.clone()),
+                MeshMaterial3d(materials.resting.clone()),
                 // Placed by `face_camera` before the first draw.
                 Transform::default(),
+            ))
+            .with_child((
+                NameBox,
+                Mesh3d(box_mesh.0.clone()),
+                MeshMaterial3d(materials.invisible.clone()),
+                // Sized by `fit_name_boxes` once the name has a mesh to
+                // measure. Until then it stands a pixel wide and catches
+                // nothing, which is the right answer for a name not yet
+                // drawn.
+                Transform::from_scale(Vec3::ZERO),
+                Pickable::default(),
             ))
             .id();
 
@@ -431,11 +503,14 @@ pub fn face_camera(
 /// line answering to anything less than the drawn text outlives one of them.
 pub fn leaders(
     mut gizmos: Gizmos,
-    labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
+    labels: Query<
+        (&GlobalTransform, &ViewVisibility, &ChildOf, Has<PointedAt>),
+        With<Label>,
+    >,
     systems: Query<(&GlobalTransform, &Children), With<System>>,
     stars: Query<&GlobalTransform, With<Star>>,
 ) {
-    for (label, drawn, child_of) in &labels {
+    for (label, drawn, child_of, pointed_at) in &labels {
         if !drawn.get() {
             continue;
         }
@@ -473,22 +548,108 @@ pub fn leaders(
         gizmos.line(
             from + direction * start,
             from + direction * end,
-            LEADER_COLOR,
+            if pointed_at { LEADER_POINTED_AT } else { LEADER_COLOR },
         );
     }
 }
 
-pub fn init_material(
+pub fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
 ) {
-    let handle = assets.add(StandardMaterial {
-        base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
+    commands.insert_resource(NameBoxMesh(
+        meshes.add(Mesh::from(Rectangle::new(1., 1.))),
+    ));
+    let mut label = |tint: Srgba| {
+        assets.add(StandardMaterial {
+            base_color: tint.into(),
+            base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        })
+    };
+
+    commands.insert_resource(LabelMaterials {
+        resting: label(Srgba::WHITE),
+        pointed_at: label(HOVER_TINT),
+        invisible: label(Srgba::NONE),
     });
-    commands.insert_resource(LabelMaterial(handle));
+}
+
+/// Stretch each hit box over the name it stands behind
+///
+/// The extent comes from the name's own mesh, so a box only gets its size
+/// once there is a name to measure. A name is anchored so that its glyphs
+/// run rightwards from its origin, which is where the offset comes from.
+pub fn fit_name_boxes(
+    names: Query<&Text3dDimensionOut, With<Label>>,
+    mut boxes: Query<(&mut Transform, &ChildOf), With<NameBox>>,
+) {
+    for (mut hit_box, child_of) in &mut boxes {
+        let Ok(name) = names.get(child_of.parent()) else { continue };
+        let width = name.dimension.x;
+        if width <= 0. {
+            continue;
+        }
+
+        hit_box.translation = Vec3::new(width / 2., 0., -BOX_DEPTH);
+        hit_box.scale = Vec3::new(width, name.dimension.y.max(SIZE), 1.);
+    }
+}
+
+/// Tint the name under the pointer, and put it back when it leaves
+pub fn highlight(
+    over: On<Pointer<Over>>,
+    boxes: Query<&ChildOf, With<NameBox>>,
+    materials: Res<LabelMaterials>,
+    mut commands: Commands,
+) {
+    if let Ok(child_of) = boxes.get(over.entity) {
+        commands
+            .entity(child_of.parent())
+            .insert((PointedAt, MeshMaterial3d(materials.pointed_at.clone())));
+    }
+}
+
+/// Put a name back to its resting colour once the pointer leaves it
+pub fn unhighlight(
+    out: On<Pointer<Out>>,
+    boxes: Query<&ChildOf, With<NameBox>>,
+    materials: Res<LabelMaterials>,
+    mut commands: Commands,
+) {
+    if let Ok(child_of) = boxes.get(out.entity) {
+        commands
+            .entity(child_of.parent())
+            .remove::<PointedAt>()
+            .insert(MeshMaterial3d(materials.resting.clone()));
+    }
+}
+
+/// Show a pointing cursor while a name is under the pointer
+///
+/// Read from the hover state rather than from entering and leaving, so that
+/// moving straight from one name to another cannot leave the cursor behind
+/// whichever of the two events happens to be delivered last.
+pub fn point_at_names(
+    hovered: Res<HoverMap>,
+    boxes: Query<(), With<NameBox>>,
+    window: Query<Entity, With<PrimaryWindow>>,
+    mut commands: Commands,
+) {
+    let Ok(window) = window.single() else { return };
+    let over_a_name = hovered
+        .values()
+        .flat_map(|hits| hits.keys())
+        .any(|entity| boxes.contains(*entity));
+
+    commands.entity(window).insert(if over_a_name {
+        CursorIcon::System(SystemCursorIcon::Pointer)
+    } else {
+        CursorIcon::default()
+    });
 }
 
 #[cfg(test)]

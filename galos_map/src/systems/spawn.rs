@@ -2,8 +2,8 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::space::Galaxy;
 use crate::systems::{
-    System, fetch::FetchIndex, fetch::FetchTasks, route::Route,
-    route::spawn::spawn_route, system_to_vec,
+    System, fetch::FetchIndex, fetch::FetchTasks, labels::Label,
+    labels::NameBox, route::Route, route::spawn::spawn_route, system_to_vec,
 };
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -19,10 +19,9 @@ use std::{collections::HashMap, ops::Deref, time::Instant};
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(MeshPickingPlugin);
-    // Stars are the only thing worth clicking, so they are the only thing
-    // ray cast against. The alternative is every mesh in the world, which
-    // means the route line and a name label per nearby star. Requires
-    // `MeshPickingCamera` on the camera and `Pickable` on each star.
+    // A star and its name are worth clicking; the route line is not. Marking
+    // what is worth hitting keeps the ray cast off every mesh in the world.
+    // Requires `MeshPickingCamera` on the camera and `Pickable` on each.
     app.insert_resource(MeshPickingSettings {
         require_markers: true,
         ..default()
@@ -118,6 +117,8 @@ fn track_drag(
 fn focus_camera_on_click(
     click: On<Pointer<Click>>,
     stars: Query<&ChildOf, With<Star>>,
+    name_boxes: Query<&ChildOf, With<NameBox>>,
+    names: Query<&ChildOf, With<Label>>,
     systems: Query<&System>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
@@ -130,13 +131,21 @@ fn focus_camera_on_click(
     if click.button != PointerButton::Primary || travelled > CLICK_SLOP {
         return;
     }
-    // What is hit is a star, so the system holding it is its parent.
+    // A star hangs off the system it belongs to. The box that catches a
+    // click on a name hangs off the name, which hangs off the system in
+    // turn, so it is one step further up.
     //
     // The system that was hit, rather than where on it the ray landed. A hit
     // is reported in rendering coordinates, which are relative to whichever
     // grid cell the camera is in and so mean nothing once it has moved on.
-    let Ok(child_of) = stars.get(click.entity) else { return };
-    if let Ok(system) = systems.get(child_of.parent()) {
+    let hit = stars.get(click.entity).map(|star| star.parent()).or_else(|_| {
+        name_boxes
+            .get(click.entity)
+            .and_then(|hit_box| names.get(hit_box.parent()))
+            .map(|name| name.parent())
+    });
+    let Ok(hit) = hit else { return };
+    if let Ok(system) = systems.get(hit) {
         move_camera_events
             .write(MoveCamera { position: Some(DVec3::from(system.position)) });
     }
