@@ -11,16 +11,35 @@ use galos_db::systems::System as DbSystem;
 pub fn plugin(app: &mut App) {
     app.add_message::<Searched>();
     app.init_resource::<SearchNote>();
+    app.init_resource::<Plot>();
     app.add_systems(Update, searched.in_set(MapSet::Search));
 }
 
-/// What to tell the user about the last system they searched for
+/// What to tell the user about the last name they searched for
 ///
 /// Roughly three quarters of the systems on record have no coordinates, Sol
 /// among them. Flying to one is impossible, and doing nothing at all reads
 /// exactly like the name not being in the database.
 #[derive(Resource, Default)]
 pub struct SearchNote(pub Option<String>);
+
+/// How the route last asked for is getting on
+///
+/// Routing is worked out against the database in the background, and until
+/// it comes back nothing is drawn. Neither is anything drawn for a route
+/// that was asked for and does not exist, so without somewhere to say which
+/// is which, a plot still being worked out and one that failed look exactly
+/// alike: nothing happens either way.
+#[derive(Resource, Default, PartialEq, Eq)]
+pub enum Plot {
+    /// Nothing has been asked for, or what was asked for is drawn
+    #[default]
+    Nothing,
+    /// Asked for, and not yet come back
+    Working,
+    /// Why the route could not be plotted
+    Trouble(String),
+}
 
 /// A collection of search messages for responding to the user's UI
 /// interactions.
@@ -60,6 +79,7 @@ pub fn searched(
     mut despawner: MessageWriter<Despawn>,
     mut spyglass: ResMut<Spyglass>,
     mut note: ResMut<SearchNote>,
+    mut plot: ResMut<Plot>,
     mut selection: ResMut<Selection>,
     db: Res<Db>,
 ) {
@@ -85,10 +105,13 @@ pub fn searched(
             // than drawing nothing and leaving the user to guess.
             Searched::Route { start, end, .. } => {
                 future::block_on(async {
-                    note.0 = locate(&db.0, start)
+                    *plot = match locate(&db.0, start)
                         .await
                         .and(locate(&db.0, end).await)
-                        .err();
+                    {
+                        Ok(_) => Plot::Working,
+                        Err(why) => Plot::Trouble(why),
+                    };
                 });
             }
             Searched::Faction { .. } => {

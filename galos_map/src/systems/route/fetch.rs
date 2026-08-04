@@ -13,6 +13,12 @@ pub fn fetch_route(
     last_fetched_at: &mut ResMut<LastFetchedAt>,
     db: &Res<Db>,
 ) {
+    // One route at a time. Asking for another replaces the one under way
+    // rather than racing it: two of them landing would draw one line over
+    // the other, and whichever finished last would answer for the one the
+    // user is waiting on. Dropping the task is what stops it.
+    tasks.fetched.retain(|index, _| !matches!(index, FetchIndex::Route(..)));
+
     let index = FetchIndex::Route(start.clone(), end.clone(), range.clone());
     let now = time.last_update().unwrap_or(time.startup());
     let task_pool = AsyncComputeTaskPool::get();

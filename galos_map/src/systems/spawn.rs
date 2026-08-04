@@ -1,5 +1,6 @@
 use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
+use crate::search::Plot;
 use crate::space::Galaxy;
 use crate::systems::{
     System,
@@ -221,6 +222,7 @@ pub fn spawn(
     mut commands: Commands,
     mut move_camera_events: MessageWriter<MoveCamera>,
     mut tasks: ResMut<FetchTasks>,
+    mut plot: ResMut<Plot>,
 ) {
     let Ok(grid) = grids.single() else { return };
 
@@ -260,7 +262,28 @@ pub fn spawn(
             match index {
                 // TODO: Refactor into it's own system by spawning a new
                 // Route component.
-                FetchIndex::Route(..) => {
+                FetchIndex::Route(start, end, range) => {
+                    // A route is a line between systems, so one system is
+                    // no route. Coming back with nothing is how the
+                    // database says it could not get from one end to the
+                    // other in jumps that long, and nothing drawn is the
+                    // same nothing as a route still being worked out.
+                    //
+                    // Only ever an answer to a route still being waited on.
+                    // A name that resolved to nothing is already said, and
+                    // said more exactly than this could: the route was
+                    // fetched anyway, and it comes back empty for the same
+                    // reason, so without this the better answer is talked
+                    // over a moment after it arrives.
+                    if *plot == Plot::Working {
+                        *plot = if new_systems.len() < 2 {
+                            Plot::Trouble(format!(
+                                "No route from {start} to {end} at {range} Ly"
+                            ))
+                        } else {
+                            Plot::Nothing
+                        };
+                    }
                     spawn_route(
                         &new_systems,
                         &route_query,

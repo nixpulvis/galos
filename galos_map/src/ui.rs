@@ -6,7 +6,7 @@
 //! which owns the fields it reads.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::search::{SearchNote, Searched};
+use crate::search::{Plot, SearchNote, Searched};
 use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
@@ -87,6 +87,12 @@ const FIELD_GAP: f32 = 4.;
 
 /// How wide the dot standing for the selection is drawn
 const DOT: f32 = 7.;
+
+/// How much of a line of text a spinner standing beside a label fills
+///
+/// A line is taller than the letters standing on it, and a spinner drawn to
+/// the whole line towers over the word it is next to.
+const SPINNER: f32 = 0.75;
 
 /// The mark on the control that opens what is known about the selection
 const INFO: &str = "ℹ";
@@ -203,6 +209,7 @@ pub fn chrome(
     orbit: Query<&OrbitCamera>,
     mut press: ResMut<PressAnswered>,
     mut panels: ResMut<Panels>,
+    mut plot: ResMut<Plot>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -308,6 +315,7 @@ pub fn chrome(
         &mut camera,
         orbit.single().map(|camera| camera.focus).ok(),
         &mut panels,
+        &mut plot,
     );
     if shut {
         press.0 = true;
@@ -423,6 +431,7 @@ fn search_bar(
     camera: &mut MessageWriter<MoveCamera>,
     focus: Option<DVec3>,
     panels: &mut Panels,
+    plot: &mut Plot,
 ) -> bool {
     let style = ctx.global_style();
     let mut frame =
@@ -455,7 +464,15 @@ fn search_bar(
                     if response.changed() {
                         note.0 = None;
                     }
-                    if entered(&response, ui) {
+                    // Tab as well as return. A route starts from whatever
+                    // is picked out and nothing is picked out until a name
+                    // has been asked for, so tabbing on from a name typed
+                    // here is how a route is begun. Not so of the faction
+                    // field below, where the same would empty the map on
+                    // the way past.
+                    let tabbed = response.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Tab));
+                    if entered(&response, ui) || tabbed {
                         search.faction = None;
                         if let Some(name) = search.system.clone() {
                             searched.write(Searched::System { name });
@@ -472,7 +489,9 @@ fn search_bar(
                     selected(ui, selection, focus, camera, panels);
 
                     if search.expanded {
-                        taken |= route_section(ui, search, searched, selection);
+                        taken |= route_section(
+                            ui, search, searched, selection, plot,
+                        );
                         taken |= faction_section(ui, search, searched);
                     }
 
@@ -600,7 +619,7 @@ fn selected(
     );
     let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
 
-    if row.hovered() {
+    if row.hovered() || row.has_focus() {
         ui.painter().rect_filled(
             rect,
             ui.visuals().widgets.hovered.corner_radius,
@@ -636,10 +655,22 @@ fn selected(
     );
     let opening =
         ui.interact(mark, ui.id().with("open-info"), egui::Sense::click());
+    // Lit for the pointer resting on it and for the keyboard reaching it
+    // alike. It stands in the tab order between the row and the route
+    // fields, and a stop that shows nothing when it is reached reads as the
+    // focus having gone missing.
+    let lit = opening.hovered() || opening.has_focus();
+    if lit {
+        ui.painter().rect_filled(
+            mark,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
     ui.painter().galley(
         egui::pos2(mark.left(), middle - icon.size().y / 2.),
         icon,
-        if opening.hovered() {
+        if lit {
             ui.visuals().strong_text_color()
         } else {
             ui.visuals().weak_text_color()
@@ -657,44 +688,121 @@ fn selected(
     opening.on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
+/// What a field holds, if it holds anything
+///
+/// A field clicked into and not yet typed in holds an empty string, which is
+/// not something the user has said. Neither is a line of spaces.
+fn typed(field: &Option<String>) -> Option<&str> {
+    field.as_deref().map(str::trim).filter(|text| !text.is_empty())
+}
+
+/// The jump range asked for, or what is wrong with what was asked
+fn jump_range(asked: &str) -> Result<f64, &'static str> {
+    match asked.trim().parse::<f64>() {
+        Ok(range) if range > 0. => Ok(range),
+        Ok(_) => Err("Jump range must be more than nothing"),
+        Err(_) => Err("Jump range must be a number of light years"),
+    }
+}
+
 /// Ask where a route ends and what it may be flown in
 ///
 /// Answers whether a field of it has just taken focus. A route runs from
-/// whatever is
-/// picked out, since that is the one system the map is holding, and not from
-/// the search box, which holds a query and will one day answer with a list.
-/// So the section is greyed until something is picked out, rather than
-/// appearing and disappearing under the pointer.
+/// whatever is picked out, since that is the one system the map is holding,
+/// and not from the search box, which holds a query and will one day answer
+/// with a list. So the section is greyed until something is picked out,
+/// rather than appearing and disappearing under the pointer.
+///
+/// How it is getting on is said between the fields and the button, where
+/// what it is about is on either side of it. The note under the search input
+/// answers a name typed into the search input, and a route's answer read out
+/// up there would sit a long way from its question.
 fn route_section(
     ui: &mut Ui,
     search: &mut SearchFields,
     searched: &mut MessageWriter<Searched>,
     selection: &Selection,
+    plot: &mut Plot,
 ) -> bool {
     heading(ui, "Route");
     let start = selection.name();
-    let section = ui.add_enabled_ui(start.is_some(), |ui| {
-        let mut taken = false;
-        taken |=
-            singleline(ui, &mut search.route_end, "End System").gained_focus();
-        ui.add_space(FIELD_GAP);
-        taken |= singleline(ui, &mut search.route_range, "Jump Range (Ly)")
-            .gained_focus();
-        ui.add_space(FIELD_GAP);
-        if ui.button("Plot Route").clicked()
-            && let Some(start) = start
-        {
-            plot_route(start, search, searched);
-        }
-        taken
-    });
+    let mut taken = false;
 
-    if start.is_none() {
-        section
-            .response
-            .on_disabled_hover_text("Pick out a system to plot a route from");
+    // Live whether or not a system is picked out. What waits on a start is
+    // the button, since only it needs one, and fields that come and go with
+    // the selection cannot be tabbed into on the way from naming a system to
+    // asking where to go from it: they are still disabled on the frame the
+    // tab lands, the selection being a frame behind the name that set it.
+    let end = singleline(ui, &mut search.route_end, "End System");
+    taken |= end.gained_focus();
+    ui.add_space(FIELD_GAP);
+    let range = singleline(ui, &mut search.route_range, "Jump Range (Ly)");
+    taken |= range.gained_focus();
+    // What came back of the last route asked for answers the fields as they
+    // were then, so it goes as soon as they are not. Work still under way is
+    // not an answer to anything yet, and stays.
+    if (end.changed() || range.changed()) && matches!(*plot, Plot::Trouble(_)) {
+        *plot = Plot::Nothing;
     }
-    section.inner
+
+    // One line, for what the route still wants or for how the last one is
+    // getting on. Only ever a route that was asked for: a field being typed
+    // into is not an attempt at anything, and a form that answers back
+    // before it has been submitted is a form scolding whoever fills it in.
+    if start.is_none() {
+        ui.add_space(FIELD_GAP);
+        ui.label(egui::RichText::new("Pick out a system to route from").weak());
+    } else if let Plot::Trouble(trouble) = &*plot {
+        ui.add_space(FIELD_GAP);
+        ui.colored_label(egui::Color32::LIGHT_RED, trouble);
+    }
+
+    ui.add_space(FIELD_GAP);
+    let asked =
+        start.zip(typed(&search.route_end)).zip(typed(&search.route_range));
+    // Egui lays a button's contents out as atoms, and a custom atom is a
+    // slot of a given size that hands its rect back to be painted into. So
+    // the spinner takes a place in the row beside the label rather than
+    // being painted over the top of it, and asks for no room at all on a
+    // button that has nothing to say.
+    let slot = ui.id().with("plotting");
+    let mut atoms = egui::Atoms::new("Plot Route");
+    if *plot == Plot::Working {
+        let turning = ui.text_style_height(&egui::TextStyle::Button) * SPINNER;
+        atoms.push_left(egui::Atom::custom(slot, egui::Vec2::splat(turning)));
+    }
+    let button = ui
+        .add_enabled_ui(asked.is_some(), |ui| {
+            egui::Button::new(atoms).atom_ui(ui)
+        })
+        .inner;
+    // A route is worked out against a database that takes as long as it
+    // takes, and a button that has gone quiet says nothing about whether it
+    // heard.
+    if let Some(turning) = button.rect(slot) {
+        egui::Spinner::new().paint_at(ui, turning);
+    }
+
+    if button.response.clicked()
+        && let Some(((start, end), range)) = asked
+    {
+        *plot = match jump_range(range) {
+            Ok(range) => {
+                searched.write(Searched::Route {
+                    start: start.to_owned(),
+                    end: end.to_owned(),
+                    // Back to text, since a route is fetched under a key
+                    // made of what was asked for and a float is no kind of
+                    // key.
+                    range: range.to_string(),
+                });
+                Plot::Working
+            }
+            Err(trouble) => Plot::Trouble(trouble.to_owned()),
+        };
+    }
+
+    taken
 }
 
 /// Ask after a faction by name
@@ -729,30 +837,6 @@ fn heading(ui: &mut Ui, name: &str) {
     ui.separator();
     ui.label(egui::RichText::new(name).strong());
     ui.add_space(FIELD_GAP);
-}
-
-/// Ask for a route from `start` to the system named, at the range given
-///
-/// Says nothing at all when a field is empty or the range will not parse,
-/// which is what form validation is a TODO for.
-fn plot_route(
-    start: &str,
-    search: &SearchFields,
-    searched: &mut MessageWriter<Searched>,
-) {
-    let (Some(end), Some(range)) =
-        (search.route_end.as_ref(), search.route_range.as_ref())
-    else {
-        return;
-    };
-    #[allow(irrefutable_let_patterns)]
-    if let Ok(range) = range.parse() {
-        searched.write(Searched::Route {
-            start: start.to_owned(),
-            end: end.clone(),
-            range,
-        });
-    }
 }
 
 /// Whether the user has just finished with a field by pressing return
@@ -835,5 +919,52 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
     if let Some(val) = opt {
         ui.label("(Hz)");
         ui.add(egui::DragValue::new(val).range(0.0..=60.).speed(0.01));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A field clicked into and left alone holds nothing
+    ///
+    /// Egui hands back an empty string for it, and taking that as an answer
+    /// is what has a form telling the user off for having touched it.
+    #[test]
+    fn a_field_only_typed_into_holds_anything() {
+        assert_eq!(typed(&None), None);
+        assert_eq!(typed(&Some(String::new())), None);
+        assert_eq!(typed(&Some("   ".to_owned())), None);
+        assert_eq!(typed(&Some(" Sol ".to_owned())), Some("Sol"));
+    }
+
+    /// A distance is what the range field is for
+    #[test]
+    fn a_range_is_a_distance() {
+        assert_eq!(jump_range("10"), Ok(10.));
+        assert_eq!(jump_range("10.5"), Ok(10.5));
+    }
+
+    /// Room around what was typed is not what was meant by it
+    #[test]
+    fn a_range_may_be_typed_with_room_around_it() {
+        assert_eq!(jump_range("  10  "), Ok(10.));
+    }
+
+    /// Anything that is not a number is not a range
+    #[test]
+    fn a_range_that_is_not_a_number_is_refused() {
+        assert!(jump_range("far").is_err());
+        assert!(jump_range("10 Ly").is_err());
+    }
+
+    /// A ship that jumps nowhere plots no route
+    ///
+    /// Both of these parse, so nothing but asking what the number means
+    /// would catch them.
+    #[test]
+    fn a_range_of_nothing_or_less_is_refused() {
+        assert!(jump_range("0").is_err());
+        assert!(jump_range("-5").is_err());
     }
 }
