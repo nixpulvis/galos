@@ -6,7 +6,7 @@ use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
-    filter::{DimTo, Filtered, Filters},
+    filter::{self, Filtered, Filters},
     pointing::{
         DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
         UNFITTED_SCALE,
@@ -45,7 +45,6 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
-    app.add_systems(Update, redim.in_set(MapSet::Populate));
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -65,13 +64,13 @@ pub struct SystemMesh(pub Handle<Mesh>);
 /// Two sets of the same colours rather than one recoloured per star, because
 /// the colour lives on a shared asset. A star moves between the sets by
 /// swapping which handle it points at, which repaints only that star, and the
-/// dim set is recoloured in place when [`DimTo`] moves, which is meant to
-/// repaint every dimmed star at once.
+/// two sets are built once, since how faintly to draw is one number rather
+/// than a setting.
 #[derive(Resource)]
 pub struct SystemMaterials {
     /// One per colour, indexed as [`hue`] answers
     bright: Vec<Handle<StandardMaterial>>,
-    /// The same colours, at whatever [`DimTo`] is asking
+    /// The same colours, at [`filter::DIMMED`] of full
     dim: Vec<Handle<StandardMaterial>>,
 }
 
@@ -511,27 +510,6 @@ fn update(
     }
 }
 
-/// Repaint the dimmed colours when the slider moves
-///
-/// The handles stay as they are, so nothing has to be told which material it
-/// is pointing at. Recolouring a shared asset repaints everything drawn in
-/// it, which here is every star the filters exclude, and is the point.
-fn redim(
-    dim: Res<DimTo>,
-    materials: Res<SystemMaterials>,
-    mut assets: ResMut<Assets<StandardMaterial>>,
-) {
-    if !dim.is_changed() {
-        return;
-    }
-
-    for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
-        if let Some(mut material) = assets.get_mut(handle) {
-            *material = star_material(hue.color(), dim.0);
-        }
-    }
-}
-
 /// Where a star sits, as the galaxy's grid wants it
 ///
 /// Split into the cell the position falls in and how far into that cell it
@@ -609,7 +587,6 @@ fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
 
 fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
-    dim: Res<DimTo>,
     mut commands: Commands,
 ) {
     let mut set = |strength: f32| {
@@ -621,7 +598,7 @@ fn init_materials(
 
     commands.insert_resource(SystemMaterials {
         bright: set(1.),
-        dim: set(dim.0),
+        dim: set(filter::DIMMED),
     });
     commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
         base_color: Color::NONE,

@@ -22,7 +22,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::filter::{DimTo, Filtered};
+use crate::systems::filter::{self, Filtered};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
 };
@@ -217,7 +217,6 @@ fn ring(
         (With<System>, With<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
-    dim: Res<DimTo>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
@@ -238,7 +237,7 @@ fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            dim.against(SELECTION, filtered),
+            filter::dim(SELECTION, filtered),
         );
     }
 }

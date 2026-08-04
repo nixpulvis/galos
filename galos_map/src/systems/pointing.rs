@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::filter::{DimTo, Filtered};
+use crate::systems::filter::{self, Filtered};
 use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Star;
@@ -313,7 +313,6 @@ pub fn ring(
         (With<System>, With<PointedAt>, Without<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
-    dim: Res<DimTo>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
@@ -332,7 +331,7 @@ pub fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            dim.against(INDICATOR, filtered),
+            filter::dim(INDICATOR, filtered),
         );
     }
 }

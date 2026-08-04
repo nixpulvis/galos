@@ -9,11 +9,10 @@
 //! fetching by region, the camera stays where it is, and nothing is
 //! despawned. All that changes is how brightly each system is drawn.
 //!
-//! [`DimTo`] says how faintly, and answers for the whole of it. At zero an
-//! excluded system is not drawn at all, and then it is not worth fetching
-//! either, which is where the filter reaches the database. Anywhere above
-//! zero the excluded systems are wanted on screen, so they have to be fetched
-//! to be dimmed: what was never asked for cannot be drawn faintly.
+//! [`DIMMED`] says how faintly, the same for all of them. What is excluded is
+//! still wanted on screen, so it is still fetched: a system that was never
+//! asked for cannot be drawn faintly, and the space around a faction is the
+//! thing being drawn.
 
 use crate::Db;
 use crate::schedule::MapSet;
@@ -26,7 +25,6 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
-    app.init_resource::<DimTo>();
     app.init_resource::<FilterNote>();
     app.add_message::<Wanted>();
     // Answering what the user asked for, so with the rest of that.
@@ -209,7 +207,7 @@ impl Filters {
 /// A system no enabled filter admits
 ///
 /// The verdict is one bit because filters are ANDed, so it is carried by a
-/// marker and how faintly to draw lives apart in [`DimTo`]. Written when the
+/// marker, and how faintly to draw is [`DIMMED`], the same for all of them. Written when the
 /// filters change or a system does, rather than worked out afresh by each of
 /// the things that draws from it.
 #[derive(Component)]
@@ -217,47 +215,31 @@ pub struct Filtered;
 
 /// How brightly a system the filters exclude is drawn
 ///
-/// A fraction of what it would be drawn at unfiltered, so one is untouched
-/// and zero is not drawn at all. Reads as what it does: dim to a quarter, dim
-/// to nothing.
+/// A fraction of what it would be drawn at unfiltered. Faint enough to read as
+/// background rather than as something picked out, and bright enough to still
+/// be read, which is the whole point of dimming rather than hiding: the space
+/// around a faction stays legible.
 ///
-/// Zero is not merely invisible. A star faded to nothing is still a star
-/// being drawn, and still one the pointer can land on, so zero hides it
-/// outright, which takes its name, its ring and its hit box with it.
-#[derive(Resource)]
-pub struct DimTo(pub f32);
+/// One number rather than a setting. What it is worth setting to is the same
+/// answer every time, and a control that only ever moves between "right" and
+/// "wrong" is a control that costs more than it gives.
+pub const DIMMED: f32 = 0.15;
 
-impl Default for DimTo {
-    fn default() -> Self {
-        DimTo(DEFAULT_DIM)
+/// `color` as it should be drawn for a system, given whether it is excluded
+///
+/// The colour is left alone and the alpha carries it, so that what is dimmed
+/// reads as standing further back rather than as having changed into something
+/// else.
+///
+/// For what is painted straight rather than through a material: the two rings
+/// are gizmos, and a gizmo takes its colour at the call.
+pub fn dim(color: Srgba, filtered: bool) -> Srgba {
+    if filtered {
+        Srgba { alpha: color.alpha * DIMMED, ..color }
+    } else {
+        color
     }
 }
-
-impl DimTo {
-    /// `color` as it should be drawn for a system, given whether it is
-    /// excluded
-    ///
-    /// The colour is left alone and the alpha carries it, so that what is
-    /// dimmed reads as standing further back rather than as having changed
-    /// into something else.
-    ///
-    /// For what is painted straight rather than through a material: the two
-    /// rings are gizmos, and a gizmo takes its colour at the call.
-    pub fn against(&self, color: Srgba, filtered: bool) -> Srgba {
-        if filtered {
-            Srgba { alpha: color.alpha * self.0, ..color }
-        } else {
-            color
-        }
-    }
-}
-
-/// How faint an excluded system is to begin with
-///
-/// Enough to read as background rather than as something picked out, and
-/// enough to still be seen: the point of dimming rather than hiding is that
-/// the space around a faction stays legible.
-const DEFAULT_DIM: f32 = 0.2;
 
 /// Keep the mark on whichever systems the filters exclude
 ///

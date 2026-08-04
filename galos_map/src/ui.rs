@@ -9,7 +9,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{Plot, SearchNote, Searched};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
-use crate::systems::filter::{DimTo, FilterNote, Filters, Wanted};
+use crate::systems::filter::{FilterNote, Filters, Wanted};
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
@@ -277,10 +277,17 @@ pub struct Knobs<'w> {
 /// knows which systems those are.
 #[derive(SystemParam)]
 pub struct FilterBar<'w> {
-    filters: ResMut<'w, Filters>,
-    dim: ResMut<'w, DimTo>,
+    /// The filters themselves, which the rows are drawn from and changed in
+    ///
+    /// Named for what it holds rather than for its type, since this is
+    /// reached through a parameter that is already about filters and
+    /// `filter.filters` says the word twice and the thing once.
+    active: ResMut<'w, Filters>,
+    /// How much of the sky is getting through them
     in_reach: Res<'w, InReach>,
+    /// Where a filter the user has typed is sent to be looked up
     wanted: MessageWriter<'w, Wanted>,
+    /// What to say when one could not be
     note: ResMut<'w, FilterNote>,
 }
 
@@ -361,39 +368,6 @@ pub fn chrome(
             ui.radio_value(&mut *knobs.color_by, ColorBy::Security, "Security");
             ui.add_space(FIELD_GAP);
             ui.checkbox(&mut knobs.population_scale.0, "Scale w/ Population");
-        }
-
-        // How the filters answer, rather than which they are: the filters
-        // themselves are asked for in the bar, and this is the one thing
-        // about them that is set once and left alone.
-        heading(ui, "Filters", true);
-        ui.label("Draw What Is Filtered Out At");
-        let mut showing = filter.dim.0 * 100.;
-        fill_width(ui);
-        let slider = ui
-            .horizontal(|ui| {
-                let rail = ui.add(
-                    egui::Slider::new(&mut showing, 0.0..=100.)
-                        .step_by(5.)
-                        .show_value(false),
-                );
-                let typed = value_box(
-                    ui,
-                    egui::DragValue::new(&mut showing)
-                        .range(0.0..=100.)
-                        .suffix("%"),
-                );
-                rail | typed
-            })
-            .inner;
-        // Only on a change, since writing every frame would mark the resource
-        // changed every frame and have every dimmed star repainted for
-        // nothing.
-        if slider.changed() {
-            filter.dim.0 = showing / 100.;
-        }
-        if filter.dim.0 == 0. {
-            ui.label(egui::RichText::new("Not drawn, and not fetched").weak());
         }
 
         // Last, and folded away. Everything above says what the map looks
@@ -603,12 +577,7 @@ fn search_bar(
                     // is and for the same reason. A half lit sky with
                     // nothing on screen to say why is the one thing a filter
                     // must not leave behind.
-                    applied(
-                        ui,
-                        &mut filter.filters,
-                        (filter.in_reach.admitted, filter.in_reach.total),
-                        panels,
-                    );
+                    applied(ui, &mut filter.active, &filter.in_reach, panels);
 
                     if search.expanded {
                         taken |= filter_section(
@@ -914,7 +883,7 @@ fn route_section(
 fn applied(
     ui: &mut Ui,
     filters: &mut Filters,
-    counted: (usize, usize),
+    in_reach: &InReach,
     panels: &mut Panels,
 ) {
     if filters.iter().next().is_none() {
@@ -1009,7 +978,7 @@ fn applied(
         row.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 
-    let (admitted, total) = counted;
+    let InReach { admitted, total } = *in_reach;
     if total > 0 {
         ui.label(
             egui::RichText::new(format!(
@@ -1533,7 +1502,14 @@ mod tests {
         filters.toggle(1);
         let mut panels = Panels::default();
 
-        painted(|ui| applied(ui, &mut filters, (3, 40), &mut panels));
+        painted(|ui| {
+            applied(
+                ui,
+                &mut filters,
+                &InReach { admitted: 3, total: 40 },
+                &mut panels,
+            )
+        });
     }
 
     /// A field clicked into and left alone holds nothing

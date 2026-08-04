@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::filter::{DimTo, Filtered};
+use crate::systems::filter::{self, Filtered};
 use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{ShowNames, Star};
@@ -25,7 +25,6 @@ pub(crate) fn plugin(app: &mut App) {
         radius: DEFAULT_NAME_RADIUS,
     });
     app.add_systems(Startup, init_materials);
-    app.add_systems(Update, redim.in_set(MapSet::Present));
     app.add_systems(
         Update,
         (fit_name_boxes, tint_marked_names)
@@ -305,10 +304,9 @@ pub(super) fn screen_position(
 /// colour lives on a shared asset: changing it would repaint every name at
 /// once. Swapping which handle a label points at repaints only that one.
 ///
-/// Two sets of the same three: full strength, and whatever [`DimTo`] asks for
-/// a name whose system the filters exclude. The dim set is recoloured in
-/// place when that moves, which is the case where repainting every name at
-/// once is exactly what is wanted.
+/// Two sets of the same three: full strength, and [`filter::DIMMED`] of it for
+/// a name whose system the filters exclude. Both built once, since how faintly
+/// to draw is one number rather than a setting.
 #[derive(Resource)]
 pub struct LabelMaterials {
     bright: [Handle<StandardMaterial>; 3],
@@ -767,7 +765,6 @@ pub fn leaders(
 pub fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    dim: Res<DimTo>,
     mut commands: Commands,
 ) {
     commands.insert_resource(NameBoxMesh(
@@ -777,7 +774,7 @@ pub fn init_materials(
 
     commands.insert_resource(LabelMaterials {
         bright: Tint::ALL.map(|tint| label(tint.color())),
-        dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
+        dim: Tint::ALL.map(|tint| label(faded(tint.color(), filter::DIMMED))),
         invisible: label(Srgba::NONE),
     });
 }
@@ -803,26 +800,6 @@ fn name_material(tint: Srgba) -> StandardMaterial {
 /// something standing further back.
 fn faded(tint: Srgba, strength: f32) -> Srgba {
     Srgba { alpha: tint.alpha * strength, ..tint }
-}
-
-/// Repaint the dimmed tints when the slider moves
-///
-/// The handles stay as they are, so no name has to be told which material it
-/// is pointing at.
-fn redim(
-    dim: Res<DimTo>,
-    materials: Res<LabelMaterials>,
-    mut assets: ResMut<Assets<StandardMaterial>>,
-) {
-    if !dim.is_changed() {
-        return;
-    }
-
-    for (handle, tint) in materials.dim.iter().zip(Tint::ALL) {
-        if let Some(mut material) = assets.get_mut(handle) {
-            *material = name_material(faded(tint.color(), dim.0));
-        }
-    }
 }
 
 /// Stretch each hit box over the name it stands behind
