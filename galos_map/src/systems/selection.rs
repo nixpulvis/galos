@@ -540,6 +540,36 @@ mod tests {
         assert!(app.world().entity(one).contains::<Selected>());
     }
 
+    /// A settled selection is not written to as the frames go by
+    ///
+    /// What [`super::fetch::fetch_selected`] leans on. It asks the database
+    /// for whatever is picked out and has no star, and it asks only when the
+    /// selection changes, so a selection that read as changed every frame
+    /// would put a query on the wire every frame for as long as one system
+    /// stayed picked out.
+    #[test]
+    fn a_settled_selection_holds_still() {
+        let mut app = map();
+
+        app.world_mut().resource_mut::<Selection>().set(system(1));
+        app.world_mut().spawn(system(1));
+        // One to place the mark, and one for the write that placing it
+        // brought with it to have been and gone.
+        app.update();
+        app.update();
+
+        let changed_at =
+            app.world().resource_ref::<Selection>().last_changed().get();
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource_ref::<Selection>().last_changed().get(),
+            changed_at,
+            "the selection was written to with nothing about it changing"
+        );
+    }
+
     /// A system arriving on the map answers for itself
     ///
     /// Which is the other half of what a search leaves behind: the selection

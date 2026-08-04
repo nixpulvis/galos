@@ -1,11 +1,12 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::{Spyglass, route::fetch::fetch_route};
+use crate::systems::selection::Selection;
+use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Db, search::Searched};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use galos_db::systems::System as DbSystem;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();
 
-    app.add_systems(Update, fetch.in_set(MapSet::Fetch));
+    app.add_systems(Update, (fetch, fetch_selected).in_set(MapSet::Fetch));
 }
 
 /// How long the map waits before asking again for what it already has
@@ -60,6 +61,12 @@ pub enum FetchIndex {
     Region(IVec3, i32),
     // View<Frustum>,
     Route(String, String, String),
+    /// Named systems, by address
+    ///
+    /// What the map is asked for a row at a time rather than by where it is:
+    /// a system the user picked out of a list is one the map may never have
+    /// been near.
+    Systems(Vec<i64>),
 }
 
 impl FetchIndex {
@@ -85,8 +92,9 @@ impl FetchIndex {
                 FetchIndex::Region(center, radius),
                 FetchIndex::Region(before, reached),
             ) => center == before && radius <= reached,
-            // Only the spyglass records what it last fetched, so a route is
-            // never on either side of this. Somewhere new either way.
+            // Only the spyglass records what it last fetched, so neither a
+            // route nor a named system is ever on either side of this.
+            // Somewhere new either way.
             _ => false,
         }
     }
@@ -105,6 +113,7 @@ impl fmt::Debug for FetchIndex {
             Route(start, end, range) => {
                 write!(f, "<{}-{}>{}>", start, end, range)
             }
+            Systems(addresses) => write!(f, "<{} named>", addresses.len()),
         }
     }
 }
@@ -143,12 +152,9 @@ pub fn fetch(
 
     for event in search_events.read() {
         match event {
-            // TODO: Ensure at least the searched star is fetched. I don't do it
-            // again here because it was already fetched (syncronously) in
-            // `search`. That needs to be refactored anyway. So for now, if
-            // you search for a system with AlwaysFetch(false) it may take you
-            // to a part of empty space. Setting AlwaysFetch(true) will
-            // populate it.
+            // A search offers what it found and picks out nothing, so
+            // there is nothing here to fetch yet. Whatever the user picks
+            // out of the offer is asked for by `fetch_selected`.
             Searched::System { .. } => {}
             Searched::Route { start, end, range } => {
                 fetch_route(
@@ -201,6 +207,63 @@ fn fetch_spyglass(
     }
 }
 
+/// Ask for the systems that are picked out and have no star on the map
+///
+/// A system is picked out of what the database answered, which the map may
+/// never have been near: a name searched for and flown to is exactly that.
+/// Without this the camera arrives at empty space, and the ring and the name
+/// that mark a selection have nothing to hang on.
+///
+/// Whatever the spyglass is set to. Fetching by region is what the user turns
+/// off to stop the map filling itself in as they fly, and a system they
+/// picked out by hand is not the map filling itself in.
+///
+/// Only when the selection changes, which is what keeps a system the database
+/// cannot place from being asked for again every frame. Such a system never
+/// spawns, so what is missing would go on being missing.
+///
+/// The spyglass's own memory of where it last fetched is left alone. This
+/// asks for named rows rather than for somewhere, so it says nothing about
+/// whether the region under the camera is worth asking for again.
+fn fetch_selected(
+    selection: Res<Selection>,
+    systems: Query<&System>,
+    mut tasks: ResMut<FetchTasks>,
+    time: Res<Time<Real>>,
+    db: Res<Db>,
+) {
+    if !selection.is_changed() {
+        return;
+    }
+
+    let spawned = systems.iter().map(|system| system.address).collect();
+    let wanted = unspawned(&selection.addresses(), &spawned);
+    if wanted.is_empty() {
+        return;
+    }
+
+    let now = time.last_update().unwrap_or(time.startup());
+    let task_pool = AsyncComputeTaskPool::get();
+    let asking = wanted.clone();
+    let db = db.0.clone();
+    let task = task_pool.spawn(async move {
+        DbSystem::fetch_many(&db, &asking).await.unwrap_or_default()
+    });
+    tasks.fetched.insert(FetchIndex::Systems(wanted), (task, now));
+}
+
+/// Which of `selected` the map has no star for, by address
+///
+/// One query for all of them, so this answers a list rather than a verdict
+/// per system.
+fn unspawned(selected: &[i64], spawned: &HashSet<i64>) -> Vec<i64> {
+    selected
+        .iter()
+        .copied()
+        .filter(|address| !spawned.contains(address))
+        .collect()
+}
+
 pub fn spyglass_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
@@ -227,6 +290,42 @@ mod tests {
     /// A region of `radius` about `center` on the x axis
     fn region(center: i32, radius: i32) -> FetchIndex {
         FetchIndex::Region(IVec3::new(center, 0, 0), radius)
+    }
+
+    /// The map holding a star for each of `addresses`
+    fn on_the_map(addresses: &[i64]) -> HashSet<i64> {
+        addresses.iter().copied().collect()
+    }
+
+    /// A system picked out with no star on the map is asked for
+    ///
+    /// The case the whole thing is for: a name searched for, picked out of
+    /// what came back, and flown to, from a part of the sky the map has
+    /// never fetched.
+    #[test]
+    fn a_selection_the_map_has_not_reached_is_asked_for() {
+        assert_eq!(unspawned(&[7], &on_the_map(&[])), vec![7]);
+    }
+
+    /// One already on the map is not asked for again
+    #[test]
+    fn a_selection_already_drawn_is_left_alone() {
+        assert_eq!(unspawned(&[7], &on_the_map(&[7])), Vec::<i64>::new());
+    }
+
+    /// A set half on the map asks only for the half that is not
+    ///
+    /// One query for the lot rather than one each, and the order they were
+    /// picked in is what it goes out in.
+    #[test]
+    fn a_gathered_selection_asks_for_what_is_missing() {
+        assert_eq!(unspawned(&[7, 9, 11], &on_the_map(&[9])), vec![7, 11]);
+    }
+
+    /// Nothing picked out asks for nothing
+    #[test]
+    fn an_empty_selection_asks_for_nothing() {
+        assert_eq!(unspawned(&[], &on_the_map(&[7])), Vec::<i64>::new());
     }
 
     /// The same region asked for again is a refresh
