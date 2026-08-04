@@ -36,6 +36,34 @@ impl Faction {
         Ok(Faction { id: row.id, name: row.name })
     }
 
+    /// The factions with any of `ids`
+    ///
+    /// One query for a set of them, since what asks is holding a system's
+    /// whole list and wants all of it named at once.
+    ///
+    /// Ids that match nothing are simply absent from the answer, so the
+    /// caller pairs by id rather than by position.
+    pub async fn fetch_many(
+        db: &Database,
+        ids: &[i32],
+    ) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            "
+            SELECT id, name
+            FROM factions
+            WHERE id = ANY($1)
+            ",
+            ids
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| Faction { id: row.id, name: row.name })
+            .collect())
+    }
+
     pub async fn fetch_like_name(
         db: &Database,
         name: &str,

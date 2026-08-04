@@ -8,7 +8,9 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::filter::{self, Filtered};
 use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
+use crate::systems::selection::Selected;
 use crate::systems::spawn::Star;
 use bevy::math::DVec3;
 use bevy::picking::hover::HoverMap;
@@ -79,6 +81,14 @@ const DWELL: f32 = 0.25;
 /// Not zero: a ray is put into the space of what it might hit by inverting
 /// that thing's transform, and a zero scale has no inverse.
 pub(super) const UNFITTED_SCALE: f32 = 1e-6;
+
+/// The button that answers for whatever is under the pointer
+///
+/// Picking knows it as [`PointerButton::Primary`], and [`ButtonInput`] knows
+/// it by where it sits, so the two names are put together here. What a press
+/// selects and what a press clears are then the same button by construction
+/// rather than by two files happening to agree.
+pub(super) const PRIMARY: MouseButton = MouseButton::Left;
 
 /// How far a pointer may travel while pressed before it is dragging
 ///
@@ -154,7 +164,13 @@ impl PointedAt {
 /// the pointer is what the eye says is being pointed at, whatever happens to
 /// lie nearer the camera behind it. Between stars the nearest wins, as it
 /// would if they blocked each other.
-pub fn point_at(
+///
+/// Reachable across [`super`], since what is drawn for a system is ordered
+/// after it: a ring, a tint and a selection all answer what this decides, and
+/// reading it a frame late is a mark trailing the pointer. No further than
+/// that, though, which is as far as [`DragDistance`] goes and as far as
+/// anything asks.
+pub(super) fn point_at(
     hovered: Res<HoverMap>,
     time: Res<Time<Real>>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -289,15 +305,18 @@ pub fn point_the_cursor(
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<&OrbitCamera>,
+    // A selected system is already ringed, in its own colour. Ringing it
+    // again for being pointed at would draw one circle over the other and
+    // read as the selection having been lost.
     pointed_at: Query<
-        (&GlobalTransform, &Children),
-        (With<System>, With<PointedAt>),
+        (&GlobalTransform, &Children, Has<Filtered>),
+        (With<System>, With<PointedAt>, Without<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
-    for (system, children) in &pointed_at {
+    for (system, children, filtered) in &pointed_at {
         // Drawn at whatever the target was fitted to, so the ring is the
         // outline of the very thing the pointer is tested against.
         let Some(radius) = children
@@ -312,7 +331,7 @@ pub fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            INDICATOR,
+            filter::dim(INDICATOR, filtered),
         );
     }
 }

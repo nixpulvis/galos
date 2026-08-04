@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                updated_at,\n                updated_by\n            FROM systems\n            WHERE name ILIKE $1\n            ORDER BY name\n            ",
+  "query": "\n            SELECT\n                s1.address,\n                s1.name,\n                s1.position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                s1.population,\n                s1.security as \"security: Security\",\n                s1.government as \"government: Government\",\n                s1.allegiance as \"allegiance: Allegiance\",\n                s1.primary_economy as \"primary_economy: Economy\",\n                s1.secondary_economy as \"secondary_economy: Economy\",\n                s1.updated_at,\n                s1.updated_by,\n                COALESCE((\n                    SELECT array_agg(faction_id)\n                    FROM system_factions\n                    WHERE system_address = s1.address\n                ), ARRAY[]::integer[]) AS \"factions!\"\n            FROM systems s1\n            FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)\n            WHERE s2.name = $1\n            ORDER BY ST_3DDistance(s1.position, s2.position)\n            ",
   "describe": {
     "columns": [
       {
@@ -153,11 +153,17 @@
         "ordinal": 10,
         "name": "updated_by",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "factions!",
+        "type_info": "Int4Array"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Text",
+        "Float8"
       ]
     },
     "nullable": [
@@ -171,8 +177,9 @@
       true,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "c9f09c4207b2cf95bb06df7b3308684140f245451d7e5c7b06006f3744733e24"
+  "hash": "7d63dd6a55c99161e936218063d75b02359b18c610ba9f6bf20115a5ae713077"
 }

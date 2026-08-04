@@ -1,6 +1,8 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use crate::systems::filter::{self, Filtered};
 use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
+use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{ShowNames, Star};
 use crate::systems::{Spyglass, System};
 use bevy::camera::visibility::VisibilitySystems;
@@ -25,9 +27,15 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_systems(Startup, init_materials);
     app.add_systems(
         Update,
-        (fit_name_boxes, tint_pointed_at_names)
+        (fit_name_boxes, tint_marked_names)
             .in_set(MapSet::Present)
-            .after(super::pointing::point_at),
+            .after(super::pointing::point_at)
+            // A name is spawned in the colour of a system at rest, so one
+            // that appears because its system has just been marked out
+            // draws untinted for a frame unless the tint follows the spawn.
+            // Both of these want the name that exists rather than the one
+            // asked for last frame.
+            .after(respawn),
     );
     // `face_camera` and the sizing systems both write a `Transform`, on
     // different entities, so the scheduler cannot run them together whatever
@@ -40,6 +48,9 @@ pub(crate) fn plugin(app: &mut App) {
             // Both read which system is pointed at, which is decided this
             // frame rather than last.
             .after(super::pointing::point_at)
+            // A selected system is named whether or not it is within reach,
+            // but only while it is drawn, and that is decided here.
+            .after(super::visibility)
             .after(super::scale::size_by_distance)
             .after(super::scale::size_uniformly),
     );
@@ -176,6 +187,43 @@ const FOCUS_WEIGHT: f32 = 250.;
 /// have overlapped it gives way instead.
 const POINTED_WEIGHT: f32 = 500.;
 
+/// How strongly being selected argues for a name being shown
+///
+/// Above [`POINTED_WEIGHT`], for the same reason the ring of a selection is
+/// drawn in place of the ring of a point: a selection is what the user asked
+/// to keep, and a point is wherever the pointer happens to be resting. Where
+/// the two names would overlap, the one that lasts holds its place.
+///
+/// Far enough above it to clear [`FOCUS_WEIGHT`] as well, since a point may
+/// be sitting on the focus and drawing that bonus with it while the selection
+/// is out at a distance and paying for it. The margin left over is what that
+/// distance may be, which is [`DEFAULT_NAME_RADIUS`] over. Past there a point
+/// on the focus takes the top of the order back, as it already does from the
+/// focus itself at [`POINTED_WEIGHT`].
+const SELECTED_WEIGHT: f32 = 1000.;
+
+/// Whether a system is asked for a name at all
+///
+/// Two ways to be passed over and two to be asked for regardless.
+///
+/// A name is read or it is not; there is no faint reading of one. So a system
+/// the filters exclude gives its name up rather than keeping it dimly: a sky
+/// of faint names over dim stars has nothing legible in it, and what the
+/// filters admit is what the user asked to be able to read. The toggle says
+/// the same thing about every system at once.
+///
+/// Being marked out beats both. Pointing at a system or picking it out is
+/// asking for it by name, which is the one thing a name is for, and neither
+/// the toggle nor a filter has any business refusing it.
+fn worth_naming(
+    shown: bool,
+    filtered: bool,
+    pointed_at: bool,
+    selected: bool,
+) -> bool {
+    pointed_at || selected || (shown && !filtered)
+}
+
 /// How far the focus bonus reaches, in light years
 ///
 /// It falls to half at this distance. The point the camera orbits is usually
@@ -260,17 +308,58 @@ pub(super) fn screen_position(
     Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
 }
 
-/// What a name is drawn in, resting and pointed at
+/// What a name may be drawn in
 ///
-/// Two materials rather than one recoloured, because the colour lives on a
-/// shared asset: changing it would repaint every name at once. Swapping which
-/// handle a label points at repaints only that one.
+/// A material per colour rather than one recoloured per name, because the
+/// colour lives on a shared asset: changing it would repaint every name at
+/// once. Swapping which handle a label points at repaints only that one.
+///
+/// Two sets of the same three: full strength, and [`filter::DIMMED`] of it for
+/// a name whose system the filters exclude. Both built once, since how faintly
+/// to draw is one number rather than a setting.
 #[derive(Resource)]
 pub struct LabelMaterials {
-    resting: Handle<StandardMaterial>,
-    pointed_at: Handle<StandardMaterial>,
+    bright: [Handle<StandardMaterial>; 3],
+    dim: [Handle<StandardMaterial>; 3],
     /// Drawn for a [`NameBox`], and drawing nothing
     invisible: Handle<StandardMaterial>,
+}
+
+/// Which colour a name is drawn in, given what its system is
+///
+/// Named rather than numbered, for the reason [`super::spawn::Hue`] is: the
+/// two sets are laid out in [`Tint::ALL`] order and indexed by the tint.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Tint {
+    Resting,
+    PointedAt,
+    Selected,
+}
+
+impl Tint {
+    /// Every tint, in the order the sets hold them
+    const ALL: [Tint; 3] = [Tint::Resting, Tint::PointedAt, Tint::Selected];
+
+    /// What a name of this tint comes out
+    ///
+    /// A name comes out the colour of the ring drawn around its star, so that
+    /// a system marked out is one thing in two places rather than two answers
+    /// that have to be matched up.
+    const fn color(self) -> Srgba {
+        match self {
+            Tint::Resting => Srgba::WHITE,
+            Tint::PointedAt => INDICATOR,
+            Tint::Selected => SELECTION,
+        }
+    }
+}
+
+impl LabelMaterials {
+    /// The handle for `tint`, at the strength `dimmed` asks for
+    fn get(&self, tint: Tint, dimmed: bool) -> &Handle<StandardMaterial> {
+        let set = if dimmed { &self.dim } else { &self.bright };
+        &set[tint as usize]
+    }
 }
 
 /// The unit rectangle every [`NameBox`] is stretched from
@@ -322,9 +411,10 @@ pub fn choose_names(
     radius: Res<NameRadius>,
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
-    systems: Query<(Entity, &System)>,
+    systems: Query<(Entity, &System, &Visibility, Has<Filtered>)>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
+    selection: Query<(), With<Selected>>,
     time: Res<Time<Real>>,
 ) {
     let clear = |commands: &mut Commands| {
@@ -349,7 +439,7 @@ pub fn choose_names(
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system)| {
+        .filter_map(|(entity, system, visibility, filtered)| {
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -360,19 +450,28 @@ pub fn choose_names(
                 .get(entity)
                 .is_ok_and(|at| at.settled(time.elapsed_secs()));
 
-            // Names turned off leaves the one under the pointer the only
-            // one being asked for.
-            if !show_names.0 && !pointed_at {
+            // Selecting one asks the same, and for longer: the whole point
+            // of a selection is that it stays marked out while the user
+            // moves around it, and a mark that says which star without
+            // saying which system is half an answer.
+            //
+            // Only while it is drawn, though. Unlike a point, a selection
+            // outlives the spyglass hiding its star, and a name is laid out
+            // in screen space whether or not it is rendered, so one asked
+            // for by a hidden star would take the place of a name that
+            // could be read.
+            let selected =
+                selection.contains(entity) && *visibility != Visibility::Hidden;
+
+            if !worth_naming(show_names.0, filtered, pointed_at, selected) {
                 return None;
             }
 
             let position = DVec3::from(system.position);
             let from_focus = (position - orbit.focus).length() as f32;
-            // Further out than names were asked to reach, and not the one
-            // being pointed at. That exception cannot name something
-            // invisible: a system the spyglass hides is not drawn, and what
-            // is not drawn cannot be hit, so it cannot be pointed at either.
-            if !pointed_at && from_focus > reach {
+            // Further out than names were asked to reach, and not one of the
+            // two the map is marking out.
+            if !pointed_at && !selected && from_focus > reach {
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;
@@ -381,7 +480,7 @@ pub fn choose_names(
             if screen.intersect(rect).is_empty() {
                 return None;
             }
-            let score = name_score(from_focus, pointed_at);
+            let score = name_score(from_focus, pointed_at, selected);
             Some((entity, rect, score))
         })
         .collect();
@@ -418,8 +517,9 @@ pub fn choose_names(
 
 /// How much a system deserves to have its name drawn
 ///
-/// Being under the pointer settles it outright. Failing that, one question:
-/// how far the system is from what the camera is pointed at.
+/// Being marked out settles it outright, and being selected outranks being
+/// under the pointer. Failing either, one question: how far the system is
+/// from what the camera is pointed at.
 /// A sharp term picks out the focused system itself, and a flat one puts
 /// everything else in order of nearness to it. Strictly falling, so names
 /// are awarded nearest first and the closest system to the focus is always
@@ -437,11 +537,11 @@ pub fn choose_names(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(from_focus: f32, pointed_at: bool) -> f32 {
+fn name_score(from_focus: f32, pointed_at: bool, selected: bool) -> f32 {
     let focused = FOCUS_WEIGHT / (1. + (from_focus / FOCUS_REACH).powi(2));
     let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
-
-    pointed + focused - from_focus
+    let picked = if selected { SELECTED_WEIGHT } else { 0. };
+    picked.max(pointed) + focused - from_focus
 }
 
 /// The screen rectangle a system's name would occupy, with room around it
@@ -513,7 +613,9 @@ pub fn respawn(
                     ..default()
                 },
                 Mesh3d::default(),
-                MeshMaterial3d(materials.resting.clone()),
+                // Whatever the system is; `tint_marked_names` runs after
+                // this and settles it before the name is drawn.
+                MeshMaterial3d(materials.get(Tint::Resting, false).clone()),
                 // Placed by `face_camera` before the first draw.
                 Transform::default(),
             ))
@@ -593,21 +695,27 @@ pub fn face_camera(
 pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
-    systems: Query<(&GlobalTransform, &Children, Has<PointedAt>), With<System>>,
+    systems: Query<
+        (&GlobalTransform, &Children, Has<PointedAt>, Has<Selected>),
+        With<System>,
+    >,
     stars: Query<&GlobalTransform, With<Star>>,
 ) {
     for (label, drawn, child_of) in &labels {
         if !drawn.get() {
             continue;
         }
-        let Ok((system, children, pointed_at)) = systems.get(child_of.parent())
+        let Ok((system, children, pointed_at, selected)) =
+            systems.get(child_of.parent())
         else {
             continue;
         };
 
         // A ring around a system says which one a name belongs to better
         // than a line to it does, and leaves nothing for the line to say.
-        if pointed_at {
+        // Either ring answers, and a name the colour of the ring it belongs
+        // to has already said which star it came from.
+        if pointed_at || selected {
             continue;
         }
 
@@ -657,23 +765,36 @@ pub fn init_materials(
     commands.insert_resource(NameBoxMesh(
         meshes.add(Mesh::from(Rectangle::new(1., 1.))),
     ));
-    // The glyphs are drawn white and unlit, so a material's base colour
-    // multiplies straight through them and is what a name comes out.
-    let mut label = |tint: Srgba| {
-        assets.add(StandardMaterial {
-            base_color: tint.into(),
-            base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            ..default()
-        })
-    };
+    let mut label = |tint: Srgba| assets.add(name_material(tint));
 
     commands.insert_resource(LabelMaterials {
-        resting: label(Srgba::WHITE),
-        pointed_at: label(INDICATOR),
+        bright: Tint::ALL.map(|tint| label(tint.color())),
+        dim: Tint::ALL.map(|tint| label(faded(tint.color(), filter::DIMMED))),
         invisible: label(Srgba::NONE),
     });
+}
+
+/// How a name is painted in `tint`
+///
+/// The glyphs are drawn white and unlit, so a material's base colour
+/// multiplies straight through them and is what a name comes out.
+fn name_material(tint: Srgba) -> StandardMaterial {
+    StandardMaterial {
+        base_color: tint.into(),
+        base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    }
+}
+
+/// `tint` at `strength` of full
+///
+/// The colour is left alone and the alpha carries it, since a name dimmed by
+/// darkening would go black against the sky and read as a hole rather than as
+/// something standing further back.
+fn faded(tint: Srgba, strength: f32) -> Srgba {
+    Srgba { alpha: tint.alpha * strength, ..tint }
 }
 
 /// Stretch each hit box over the name it stands behind
@@ -697,12 +818,22 @@ pub fn fit_name_boxes(
     }
 }
 
-/// Tint a name while its system is pointed at
+/// Tint a name for what its system is
 ///
 /// Keyed on the system rather than on the name, so that pointing at a star
 /// lights its name as well, and both go out together.
-pub fn tint_pointed_at_names(
-    pointed_at: Query<(), With<PointedAt>>,
+///
+/// Selection wins over pointing where both apply, as it does for the ring:
+/// the pointer will move on, and the selection is what was asked for.
+///
+/// A name dims with the system it belongs to, marked out or not. One rule
+/// with no exceptions, and a name that stayed bright over a dimmed star would
+/// read as the filter having let go of it.
+pub fn tint_marked_names(
+    systems: Query<
+        (Has<PointedAt>, Has<Selected>, Has<Filtered>),
+        With<System>,
+    >,
     materials: Res<LabelMaterials>,
     mut names: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
@@ -710,11 +841,20 @@ pub fn tint_pointed_at_names(
     >,
 ) {
     for (child_of, mut material) in &mut names {
-        let wanted = if pointed_at.contains(child_of.parent()) {
-            &materials.pointed_at
-        } else {
-            &materials.resting
+        let Ok((pointed_at, selected, filtered)) =
+            systems.get(child_of.parent())
+        else {
+            continue;
         };
+        let tint = if selected {
+            Tint::Selected
+        } else if pointed_at {
+            Tint::PointedAt
+        } else {
+            Tint::Resting
+        };
+
+        let wanted = materials.get(tint, filtered);
         if material.0 != *wanted {
             material.0 = wanted.clone();
         }
@@ -750,6 +890,47 @@ mod tests {
         );
     }
 
+    /// A system the filters exclude gives up its name
+    ///
+    /// A name is read or it is not, so one belonging to a dimmed star is not
+    /// dimly readable, it is clutter over what the user asked to see.
+    #[test]
+    fn a_filtered_system_is_not_named() {
+        assert!(!worth_naming(true, true, false, false));
+    }
+
+    /// And keeps it while it is pointed at or picked out
+    ///
+    /// Either is asking for the system by name, which is the one thing a
+    /// name is for.
+    #[test]
+    fn a_marked_system_is_named_through_a_filter() {
+        assert!(worth_naming(true, true, true, false));
+        assert!(worth_naming(true, true, false, true));
+    }
+
+    /// The names toggle bars one the same way, and yields the same way
+    #[test]
+    fn the_names_toggle_bars_and_yields_as_a_filter_does() {
+        assert!(!worth_naming(false, false, false, false));
+        assert!(worth_naming(false, false, true, false));
+        assert!(worth_naming(false, false, false, true));
+    }
+
+    /// A system the filters admit is named when names are on, and not when off
+    #[test]
+    fn an_admitted_system_follows_the_toggle() {
+        assert!(worth_naming(true, false, false, false));
+        assert!(!worth_naming(false, false, false, false));
+    }
+
+    /// Marked out beats both at once
+    #[test]
+    fn a_marked_system_is_named_with_everything_against_it() {
+        assert!(worth_naming(false, true, true, false));
+        assert!(worth_naming(false, true, false, true));
+    }
+
     /// Names are offered in order of nearness to what is focused
     ///
     /// The score falls the whole way out, so the greedy pass takes the
@@ -758,10 +939,13 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(0., false);
+        let mut nearer = name_score(0., false, false);
         for step in 1..=1000 {
-            let further =
-                name_score(step as f32 * DEFAULT_NAME_RADIUS / 1000., false);
+            let further = name_score(
+                step as f32 * DEFAULT_NAME_RADIUS / 1000.,
+                false,
+                false,
+            );
             assert!(
                 further < nearer,
                 "a system {}ly out scored {further}, beating the {nearer} \
@@ -819,15 +1003,45 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_focused() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(DEFAULT_NAME_RADIUS, true);
+        let pointed = name_score(DEFAULT_NAME_RADIUS, true, false);
 
         // The focused system itself, which is otherwise the best there is.
-        let focused = name_score(0., false);
+        let focused = name_score(0., false, false);
 
         assert!(
             pointed > focused,
             "pointed at scored {pointed}, behind the {focused} of the focus"
         );
+    }
+
+    /// What is selected outranks what the pointer is on
+    ///
+    /// Where the two names would overlap, one of them is dropped, and it
+    /// should be the one that goes away by itself when the pointer moves.
+    /// Measured with the selection as far out as a name is ever drawn and
+    /// the point on the focus, so nothing but the two claims decides it.
+    #[test]
+    fn what_is_selected_outranks_what_is_pointed_at() {
+        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
+        let pointed = name_score(0., true, false);
+
+        assert!(
+            selected > pointed,
+            "selected scored {selected}, behind the {pointed} of a point"
+        );
+    }
+
+    /// Pointing at what is already selected does not unseat it
+    ///
+    /// The two claims are one claim, since both are the same system being
+    /// marked out, and the ring and the name it earns are drawn the colour
+    /// of the selection either way.
+    #[test]
+    fn pointing_at_a_selection_leaves_it_where_it_is() {
+        let both = name_score(DEFAULT_NAME_RADIUS, true, true);
+        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
+
+        assert_eq!(both, selected);
     }
 
     /// The focus bonus falls away with distance from what is focused

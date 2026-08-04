@@ -5,7 +5,6 @@ use crate::{Db, search::Searched};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use galos_db::systems::System as DbSystem;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -20,9 +19,17 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, fetch.in_set(MapSet::Fetch));
 }
 
-/// Controls the background systems fetch rate (Hz).
+/// How long the map waits before asking again for what it already has
 ///
-/// If this value is `None` it disables updates for existing [`FetchIndex`]s.
+/// Seconds, which is how the question is put: how often should this be
+/// refreshed. A rate would want 0.167 of a box that will be typed 6 into.
+///
+/// `None` never asks again, which is what the checkbox beside it turns off.
+/// Zero asks every frame, which the two ends being different values is what
+/// makes sayable at all.
+///
+/// Only what has already been fetched waits this long. Somewhere new is a
+/// question the map has not put yet, and waits on [`Throttle`] instead.
 #[derive(Resource)]
 pub struct Poll(pub Option<f64>);
 
@@ -52,36 +59,36 @@ pub enum FetchIndex {
     // System<String>
     Region(IVec3, i32),
     // View<Frustum>,
-    Faction(String),
     Route(String, String, String),
 }
 
-impl Ord for FetchIndex {
-    fn cmp(&self, other: &Self) -> Ordering {
-        use FetchIndex::*;
-
-        match (self, other) {
-            (Region(sc, sr), Region(oc, or)) => {
-                if sc == oc {
-                    sr.cmp(or)
-                } else {
-                    // NOTE: It's critical that this be greater so
-                    // comparisions on translating regions
-                    Ordering::Greater
-                }
-            }
-            (Faction(sn), Faction(on)) => sn.cmp(on),
-            (Route(ss, se, sr), Route(os, oe, or)) => {
-                ss.cmp(os).then(se.cmp(oe)).then(sr.cmp(or))
-            }
-            _ => Ordering::Less,
+impl FetchIndex {
+    /// Whether this asks again for what `last` already fetched
+    ///
+    /// Which is what decides how long the map waits: asking again for what it
+    /// has is a refresh and waits out [`Poll`], while asking for somewhere new
+    /// is a question it has not put yet and waits only on [`Throttle`]. Flying
+    /// somewhere should bring stars promptly however slowly the map is set to
+    /// refresh.
+    ///
+    /// A region refreshes another when it has the same centre and reaches no
+    /// further. A larger radius takes in systems that were never asked for, so
+    /// it is a new question standing in the same place.
+    ///
+    /// A question and a predicate rather than an ordering. Two regions about
+    /// different centres are each no answer to the other, which is a thing an
+    /// [`Ord`] cannot say: it would have to call one of them the greater, and
+    /// whichever it called it would be wrong the other way round.
+    fn refreshes(&self, last: &FetchIndex) -> bool {
+        match (self, last) {
+            (
+                FetchIndex::Region(centre, radius),
+                FetchIndex::Region(before, reached),
+            ) => centre == before && radius <= reached,
+            // Only the spyglass records what it last fetched, so a route is
+            // never on either side of this. Somewhere new either way.
+            _ => false,
         }
-    }
-}
-
-impl PartialOrd for FetchIndex {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -95,7 +102,6 @@ impl fmt::Debug for FetchIndex {
                 "<({},{},{}),{}>",
                 center.x, center.y, center.z, radius
             ),
-            Faction(name) => write!(f, "<{}>", name),
             Route(start, end, range) => {
                 write!(f, "<{}-{}>{}>", start, end, range)
             }
@@ -144,15 +150,6 @@ pub fn fetch(
             // to a part of empty space. Setting AlwaysFetch(true) will
             // populate it.
             Searched::System { .. } => {}
-            Searched::Faction { name } => {
-                fetch_faction(
-                    name.into(),
-                    &mut tasks,
-                    &time,
-                    &mut last_fetched_at,
-                    &db,
-                );
-            }
             Searched::Route { start, end, range } => {
                 fetch_route(
                     start.into(),
@@ -204,25 +201,6 @@ fn fetch_spyglass(
     }
 }
 
-fn fetch_faction(
-    name: String,
-    tasks: &mut ResMut<FetchTasks>,
-    time: &Res<Time<Real>>,
-    last_fetched_at: &mut ResMut<LastFetchedAt>,
-    db: &Res<Db>,
-) {
-    let index = FetchIndex::Faction(name.clone());
-    let now = time.last_update().unwrap_or(time.startup());
-    let task_pool = AsyncComputeTaskPool::get();
-    let db = db.0.clone();
-    let task = task_pool.spawn(async move {
-        DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
-    });
-    tasks.fetched.insert(index.clone(), (task, now));
-    tasks.last_fetched = Some(index);
-    **last_fetched_at = LastFetchedAt(now);
-}
-
 pub fn spyglass_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
@@ -232,14 +210,66 @@ pub fn spyglass_condition(
     poll: &Res<Poll>,
 ) -> bool {
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
-        if *index <= *last_fetched {
-            poll.0.map_or(false, |poll| {
-                // Convert from Hz to millis.
-                let poll = Duration::from_millis((1e3 / poll) as u64);
-                last_fetched_at.0 + poll < now
+        if index.refreshes(last_fetched) {
+            poll.0.map_or(false, |wait| {
+                last_fetched_at.0 + Duration::from_secs_f64(wait.max(0.)) < now
             })
         } else {
             last_fetched_at.0 + Duration::from_millis(throttle.0) < now
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A region of `radius` about `centre` on the x axis
+    fn region(centre: i32, radius: i32) -> FetchIndex {
+        FetchIndex::Region(IVec3::new(centre, 0, 0), radius)
+    }
+
+    /// The same region asked for again is a refresh
+    #[test]
+    fn the_same_region_refreshes() {
+        assert!(region(0, 10).refreshes(&region(0, 10)));
+    }
+
+    /// Somewhere else is a new question, whichever way the camera went
+    ///
+    /// Both directions, since the two regions are symmetric: neither is an
+    /// answer to the other, and a test of one direction alone would pass for
+    /// something that called one of them the greater.
+    #[test]
+    fn another_region_is_not_a_refresh() {
+        assert!(!region(1, 10).refreshes(&region(0, 10)));
+        assert!(!region(0, 10).refreshes(&region(1, 10)));
+    }
+
+    /// Reaching no further is still a refresh
+    ///
+    /// Everything a narrower spyglass asks for has already been fetched, so
+    /// there is nothing new to hurry for.
+    #[test]
+    fn a_smaller_radius_refreshes() {
+        assert!(region(0, 5).refreshes(&region(0, 10)));
+    }
+
+    /// Reaching further is a new question
+    ///
+    /// It takes in systems that were never asked for, so it waits on the
+    /// throttle rather than the poll and the sky fills as the user widens it.
+    #[test]
+    fn a_larger_radius_is_not_a_refresh() {
+        assert!(!region(0, 20).refreshes(&region(0, 10)));
+    }
+
+    /// A route is never a refresh of anything, nor refreshed by one
+    #[test]
+    fn a_route_is_always_a_new_question() {
+        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
+        assert!(!route.refreshes(&region(0, 10)));
+        assert!(!region(0, 10).refreshes(&route));
+        assert!(!route.refreshes(&route));
+    }
 }
