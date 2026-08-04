@@ -1,11 +1,16 @@
-//! The system the user has picked out
+//! The systems the user has picked out
 //!
 //! Pointing at a system says what is under the pointer, for as long as it is
 //! there. Selecting one says what the user came for, and holds while they
 //! pan, orbit and zoom around it. The two are drawn the same way in
 //! different colours, so a selection reads as the lasting form of a point.
 //!
-//! What is selected is held as a value rather than as an entity. A system
+//! Several are held at once, in the order they were picked. A plain click
+//! picks one out in place of the rest and ctrl-click gathers them up, so a
+//! handful can be marked out together and handed to a filter, which is what
+//! makes the set worth holding rather than only the last one clicked.
+//!
+//! What is selected is held as values rather than as entities. A system
 //! reached by name is answered by the database before the map fetches
 //! anything, so there is nothing on the map to mark until the camera
 //! arrives, and the name is worth colouring from the moment it resolves.
@@ -54,75 +59,147 @@ pub fn plugin(app: &mut App) {
 /// both rings at once.
 pub const SELECTION: Srgba = Srgba::new(0.35, 0.7, 1., 1.);
 
-/// The system the user has picked out, if any
+/// The systems the user has picked out
 ///
-/// Kept as the map's own [`System`] rather than as an entity, so that a
+/// Kept as the map's own [`System`]s rather than as entities, so that a
 /// system named by search can be described before it has been fetched.
+///
+/// In the order they were picked. A set with an order is what lets the bar
+/// draw a row per system that holds still: ordering them by anything measured
+/// from the camera would have the rows swap places as the user flies, and a
+/// close mark that moves out from under the pointer is a close mark that
+/// lets go of the wrong system.
 #[derive(Resource, Default)]
-pub struct Selection(Option<System>);
+pub struct Selection(Vec<System>);
 
 impl Selection {
-    /// Pick out `system`, in place of whatever was picked out before
+    /// Pick `system` out, alongside the rest or in place of them
+    ///
+    /// What a click means, wherever the click landed. A star in the sky and
+    /// the line naming it in the search results are the same system offered
+    /// twice, so they are picked out by the one gesture and through the one
+    /// call: `gathering` is whether the user held the modifier that means as
+    /// well as rather than instead.
+    pub fn pick(&mut self, system: System, gathering: bool) {
+        if gathering {
+            self.toggle(system);
+        } else {
+            self.set(system);
+        }
+    }
+
+    /// Pick out `system` alone, in place of whatever was picked out before
     pub fn set(&mut self, system: System) {
-        self.0 = Some(system);
+        self.0.clear();
+        self.0.push(system);
+    }
+
+    /// Pick `system` out alongside the rest, or let go of it if it is already
+    ///
+    /// One gesture that builds a set and takes it apart again, so that a
+    /// system added by mistake is undone by doing the same thing twice rather
+    /// than by starting over.
+    pub fn toggle(&mut self, system: System) {
+        match self.0.iter().position(|held| held.address == system.address) {
+            Some(at) => {
+                self.0.remove(at);
+            }
+            None => self.0.push(system),
+        }
     }
 
     /// Pick out nothing
     pub fn clear(&mut self) {
-        self.0 = None;
+        self.0.clear();
     }
 
-    /// What is picked out
-    pub fn system(&self) -> Option<&System> {
-        self.0.as_ref()
+    /// Let go of the system in the `index`th place, and hold the rest
+    pub fn remove(&mut self, index: usize) {
+        if index < self.0.len() {
+            self.0.remove(index);
+        }
     }
 
-    /// What is picked out is called, if anything is
+    /// The system in the `index`th place
     ///
-    /// Alongside [`Self::position`] and there for the same reason: the
-    /// bar says what it is holding, and a [`System`]'s fields are
-    /// private to [`super`].
-    pub fn name(&self) -> Option<&str> {
-        self.0.as_ref().map(|system| system.name.as_str())
+    /// A whole row, for whoever can read one. A [`System`]'s fields are
+    /// private to [`super`], so the bar reaches what it draws through
+    /// [`Self::name`] and [`Self::position`] and uses this only to hand the
+    /// row on to a panel.
+    pub fn system(&self, index: usize) -> Option<&System> {
+        self.0.get(index)
     }
 
-    /// Where what is picked out is, if anything is
+    /// What the system in the `index`th place is called
+    pub fn name(&self, index: usize) -> Option<&str> {
+        self.0.get(index).map(|system| system.name.as_str())
+    }
+
+    /// Which system stands in the `index`th place
+    ///
+    /// What the bar keys a row on. A row keyed on where it sits would hand
+    /// its place, and whatever egui remembers against it, to whichever row
+    /// moved up when one above it was let go of.
+    pub fn address(&self, index: usize) -> Option<i64> {
+        self.0.get(index).map(|system| system.address)
+    }
+
+    /// How many are picked out
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether nothing at all is picked out
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Every system picked out, by address, in the order it was picked
+    ///
+    /// What a filter over the selection is built from. Addresses rather than
+    /// rows, since that is all a filter tests against, and because a filter
+    /// holding its own copy is what lets the selection be let go of while the
+    /// filter stands.
+    pub fn addresses(&self) -> Vec<i64> {
+        self.0.iter().map(|system| system.address).collect()
+    }
+
+    /// Where the system in the `index`th place is
     ///
     /// A [`System`]'s fields are private to [`super`], and the control that
-    /// sends the camera to the selection is drawn with the rest of the UI,
-    /// which is not. So this is the one thing about the selected system the
-    /// rest of the crate can ask for.
-    pub fn position(&self) -> Option<DVec3> {
-        self.0.as_ref().map(|system| DVec3::from(system.position))
+    /// sends the camera to a selected system is drawn with the rest of the
+    /// UI, which is not. So this is what the rest of the crate can ask.
+    pub fn position(&self, index: usize) -> Option<DVec3> {
+        self.0.get(index).map(|system| DVec3::from(system.position))
     }
 }
 
-/// The selected system, once it is on the map
+/// A selected system, once it is on the map
 ///
 /// What everything drawn for a selection asks, so that none of them has to
-/// search the sky for the system named in [`Selection`].
+/// search the sky for the systems named in [`Selection`].
 #[derive(Component)]
 pub struct Selected;
 
-/// Keep the mark on whichever system is selected, and the selection on
-/// whatever the map last heard about it
+/// Keep a mark on every selected system, and the selection on whatever the
+/// map last heard about each of them
 ///
 /// A selection outlives the entity it names: a searched system is picked out
 /// before it is fetched, and one flown away from is despawned while still
-/// selected. So the mark is placed by matching addresses, and the sky is
-/// only swept while the two disagree.
+/// selected. So the marks are placed by matching addresses, and the sky is
+/// only swept for addresses that have none.
 ///
-/// While the two do agree, the map's row is the fresher of the two. The
-/// selection was taken when the system was picked out, from a search that
+/// Where a mark and a row do meet, the map's row is the fresher of the two.
+/// The selection was taken when the system was picked out, from a search that
 /// answered before anything was fetched or from a click on a row that may
 /// have been fetched some time ago, and a later fetch replaces the row
 /// without the selection hearing of it. So a row that has changed is copied
 /// back, and what is picked out is the row the map holds rather than the one
 /// it held when the user pointed at it.
 ///
-/// Nothing drawn is placed from the selection's own position: the mark goes
-/// by address, and the ring is drawn where the star's transform puts it. The
-/// row is kept whole all the same, since a selection describing a system in
+/// Nothing drawn is placed from the selection's own position: the marks go by
+/// address, and each ring is drawn where its star's transform puts it. The
+/// rows are kept whole all the same, since a selection describing a system in
 /// part would have to be asked which part.
 fn follow_selection(
     mut selection: ResMut<Selection>,
@@ -130,34 +207,49 @@ fn follow_selection(
     systems: Query<(Entity, &System)>,
     mut commands: Commands,
 ) {
-    let wanted = selection.0.as_ref().map(|system| system.address);
+    // Which of the selected systems already wear a mark, so that the sweep
+    // below looks only for the ones that do not.
+    let mut settled = vec![false; selection.0.len()];
 
-    let mut settled = false;
     for (entity, system) in &marked {
-        if wanted == Some(system.address) {
-            settled = true;
-            if system.is_changed() {
-                selection.set((*system).clone());
+        let held = selection
+            .0
+            .iter()
+            .position(|selected| selected.address == system.address);
+        match held {
+            Some(at) => {
+                settled[at] = true;
+                if system.is_changed() {
+                    selection.0[at] = (*system).clone();
+                }
             }
-        } else {
-            commands.entity(entity).remove::<Selected>();
+            None => {
+                commands.entity(entity).remove::<Selected>();
+            }
         }
     }
 
-    let Some(address) = wanted else { return };
-    if settled {
+    if settled.iter().all(|found| *found) {
         return;
     }
 
+    // One sweep for however many are still missing, rather than one each.
+    // The sky runs to thousands of systems and the selection to a handful.
     for (entity, system) in &systems {
-        if system.address == address {
-            commands.entity(entity).insert(Selected);
-            // The row that has just arrived, rather than the one the search
-            // was answered with, which is what the mark being placed here
-            // means in the first place.
-            selection.set(system.clone());
-            break;
+        let held = selection
+            .0
+            .iter()
+            .position(|selected| selected.address == system.address);
+        let Some(at) = held else { continue };
+        if settled[at] {
+            continue;
         }
+        settled[at] = true;
+        commands.entity(entity).insert(Selected);
+        // The row that has just arrived, rather than the one the search was
+        // answered with, which is what the mark being placed here means in
+        // the first place.
+        selection.0[at] = system.clone();
     }
 }
 
@@ -191,10 +283,12 @@ fn clear_when_nothing_is_clicked(
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
         return;
     }
-    if !pointed_at.is_empty() || selection.0.is_none() {
+    if !pointed_at.is_empty() || selection.is_empty() {
         return;
     }
 
+    // All of them. The gesture means let go, and letting go of some of what
+    // is held is not something a click on empty sky could say which of.
     selection.clear();
 }
 
@@ -256,6 +350,78 @@ mod tests {
         app
     }
 
+    /// A click reads as replace or as gather, by the modifier alone
+    ///
+    /// The one call a click goes through, whether it landed on a star or on
+    /// the line naming that star in the search results. Both used to work the
+    /// modifier out for themselves, and two readings of one gesture is one
+    /// more than there is a gesture for.
+    #[test]
+    fn a_pick_replaces_or_gathers_by_the_modifier() {
+        let mut selection = Selection::default();
+
+        selection.pick(system(1), false);
+        selection.pick(system(2), true);
+        assert_eq!(selection.addresses(), vec![1, 2]);
+
+        selection.pick(system(2), true);
+        assert_eq!(selection.addresses(), vec![1]);
+
+        selection.pick(system(3), false);
+        assert_eq!(selection.addresses(), vec![3]);
+    }
+
+    /// Picking one out plainly lets go of whatever was held
+    #[test]
+    fn picking_one_out_replaces_the_rest() {
+        let mut selection = Selection::default();
+        selection.set(system(1));
+        selection.toggle(system(2));
+
+        selection.set(system(3));
+
+        assert_eq!(selection.addresses(), vec![3]);
+    }
+
+    /// Gathering keeps what is held, in the order it was picked
+    #[test]
+    fn gathering_holds_them_in_the_order_they_were_picked() {
+        let mut selection = Selection::default();
+        selection.set(system(2));
+        selection.toggle(system(1));
+        selection.toggle(system(3));
+
+        assert_eq!(selection.addresses(), vec![2, 1, 3]);
+    }
+
+    /// And gathering one already held lets go of it
+    ///
+    /// One gesture that builds a set and takes it apart, so a system added by
+    /// mistake is undone by doing the same thing again.
+    #[test]
+    fn gathering_one_already_held_lets_go_of_it() {
+        let mut selection = Selection::default();
+        selection.set(system(1));
+        selection.toggle(system(2));
+
+        selection.toggle(system(1));
+
+        assert_eq!(selection.addresses(), vec![2]);
+    }
+
+    /// A row's close mark lets go of that one and holds the rest
+    #[test]
+    fn letting_go_of_one_holds_the_rest() {
+        let mut selection = Selection::default();
+        selection.set(system(1));
+        selection.toggle(system(2));
+        selection.toggle(system(3));
+
+        selection.remove(1);
+
+        assert_eq!(selection.addresses(), vec![1, 3]);
+    }
+
     /// The mark goes to the system the selection names
     #[test]
     fn the_mark_lands_on_what_is_selected() {
@@ -270,10 +436,10 @@ mod tests {
         assert!(app.world().entity(two).contains::<Selected>());
     }
 
-    /// Selecting a second system takes the mark off the first
+    /// Picking a second system out plainly takes the mark off the first
     ///
-    /// Only one system is selected at a time, and the mark is how everything
-    /// drawn finds it, so two of them would draw two selections.
+    /// A plain pick replaces what is held, so the mark left on the system let
+    /// go of would ring a star nothing names.
     #[test]
     fn the_mark_follows_a_change_of_selection() {
         let mut app = map();
@@ -287,6 +453,73 @@ mod tests {
 
         assert!(!app.world().entity(one).contains::<Selected>());
         assert!(app.world().entity(two).contains::<Selected>());
+    }
+
+    /// Every system in the set wears a mark
+    ///
+    /// The mark is how everything drawn finds them, so one gathered and left
+    /// unmarked would be a system in the bar with no ring on the map.
+    #[test]
+    fn every_gathered_system_is_marked() {
+        let mut app = map();
+        let one = app.world_mut().spawn(system(1)).id();
+        let two = app.world_mut().spawn(system(2)).id();
+        let three = app.world_mut().spawn(system(3)).id();
+
+        let mut selection = app.world_mut().resource_mut::<Selection>();
+        selection.set(system(1));
+        selection.toggle(system(3));
+        app.update();
+
+        assert!(app.world().entity(one).contains::<Selected>());
+        assert!(!app.world().entity(two).contains::<Selected>());
+        assert!(app.world().entity(three).contains::<Selected>());
+    }
+
+    /// One let go of loses its mark, and the rest keep theirs
+    #[test]
+    fn letting_go_of_one_takes_only_its_mark() {
+        let mut app = map();
+        let one = app.world_mut().spawn(system(1)).id();
+        let two = app.world_mut().spawn(system(2)).id();
+
+        let mut selection = app.world_mut().resource_mut::<Selection>();
+        selection.set(system(1));
+        selection.toggle(system(2));
+        app.update();
+
+        app.world_mut().resource_mut::<Selection>().remove(0);
+        app.update();
+
+        assert!(!app.world().entity(one).contains::<Selected>());
+        assert!(app.world().entity(two).contains::<Selected>());
+    }
+
+    /// A row that changes reaches the right one of several
+    ///
+    /// The copy-back has to find its own place in the set. Writing the fresher
+    /// row into the wrong one would have the bar name a system twice and lose
+    /// the other.
+    #[test]
+    fn a_changed_row_reaches_its_own_place_in_the_set() {
+        let mut app = map();
+        app.world_mut().spawn(system(1));
+        let two = app.world_mut().spawn(system(2)).id();
+
+        let mut selection = app.world_mut().resource_mut::<Selection>();
+        selection.set(system(1));
+        selection.toggle(system(2));
+        app.update();
+
+        let mut fresher = system(2);
+        fresher.population = 900;
+        app.world_mut().entity_mut(two).insert(fresher);
+        app.update();
+
+        let selection = app.world().resource::<Selection>();
+        assert_eq!(selection.addresses(), vec![1, 2]);
+        assert_eq!(selection.system(0).unwrap().population, 0);
+        assert_eq!(selection.system(1).unwrap().population, 900);
     }
 
     /// A system selected before it is on the map is marked when it arrives
@@ -350,7 +583,7 @@ mod tests {
 
     /// What the selection holds for the population
     fn population_shown(app: &App) -> u64 {
-        app.world().resource::<Selection>().system().unwrap().population
+        app.world().resource::<Selection>().system(0).unwrap().population
     }
 
     /// The selection says where what is picked out is
@@ -361,13 +594,13 @@ mod tests {
     #[test]
     fn the_selection_says_where_it_is() {
         let mut selection = Selection::default();
-        assert_eq!(selection.position(), None);
+        assert_eq!(selection.position(0), None);
 
         let mut sol = system(1);
         sol.position = [1., -2., 3.];
         selection.set(sol);
 
-        assert_eq!(selection.position(), Some(DVec3::new(1., -2., 3.)));
+        assert_eq!(selection.position(0), Some(DVec3::new(1., -2., 3.)));
     }
 
     /// Clearing the selection takes the mark with it

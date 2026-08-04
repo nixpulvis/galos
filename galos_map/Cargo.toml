@@ -28,3 +28,6 @@ big_space = { git = "https://github.com/aevyrie/big_space", branch = "bevy-0.19"
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_db = { path = "../galos_db" }
+
+[dev-dependencies]
+log = "0.4"

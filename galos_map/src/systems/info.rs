@@ -571,7 +571,7 @@ fn admitted(
     ui.add_space(MARGIN);
 
     let line = ui.text_style_height(&egui::TextStyle::Body)
-        + LINE_PADDING * 2.
+        + crate::ui::LINE_PADDING * 2.
         + ui.spacing().item_spacing.y;
     let mut order: Vec<(&System, Option<f64>)> = systems
         .iter()
@@ -614,70 +614,6 @@ fn admitted(
     });
 }
 
-/// How far a line in a list holds its text off its own edge
-const LINE_PADDING: f32 = 3.;
-
-/// One full width line of a list, and the pointer's answer to it
-///
-/// The whole line answers rather than the letters on it, so that a short name
-/// is as easy to hit as a long one and a list reads as a column of controls
-/// rather than as text that happens to be clickable. Laid out and painted for
-/// the reason the rows in the bar are: a label is a widget in its own right,
-/// and one inside a row that also answers leaves the two bidding for the
-/// pointer.
-///
-/// `reserved` is room kept clear at the right hand end, which the caller
-/// paints into itself. The rect handed back is the whole line, so it knows
-/// where that room ended up.
-///
-/// A line that is not a `control` is laid out the same and answers to nothing:
-/// it neither lights under the pointer nor takes the hand cursor, so a list
-/// holding one keeps its shape without offering something that cannot be had.
-fn line(
-    ui: &mut Ui,
-    text: egui::RichText,
-    reserved: f32,
-    control: bool,
-) -> (egui::Rect, egui::Response) {
-    let room = ui.available_width() - LINE_PADDING * 2. - reserved;
-    let text = egui::WidgetText::from(text).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        room.max(0.),
-        egui::TextStyle::Body,
-    );
-
-    let height = text.size().y;
-    let (rect, answer) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height + LINE_PADDING * 2.),
-        if control { egui::Sense::click() } else { egui::Sense::empty() },
-    );
-
-    if control && (answer.hovered() || answer.has_focus()) {
-        ui.painter().rect_filled(
-            rect,
-            ui.visuals().widgets.hovered.corner_radius,
-            ui.visuals().widgets.hovered.weak_bg_fill,
-        );
-    }
-    ui.painter().galley(
-        egui::pos2(rect.left() + LINE_PADDING, rect.center().y - height / 2.),
-        text,
-        // A real colour, since a line is laid out from whatever the caller
-        // hands over and that is usually plain text. Plain text carries no
-        // colour of its own, so it comes out of layout as a placeholder for
-        // this to answer, and a placeholder answered by a placeholder reaches
-        // the tessellator, which panics rather than guess.
-        ui.visuals().text_color(),
-    );
-
-    if control {
-        (rect, answer.on_hover_cursor(egui::CursorIcon::PointingHand))
-    } else {
-        (rect, answer)
-    }
-}
-
 /// One system's line in a filter's list, and what it was asked for
 ///
 /// A [`line`] with the distance and a mark kept at its end. The mark says what
@@ -717,16 +653,23 @@ fn line_for(ui: &mut Ui, system: &System, away: Option<f64>) -> Option<Picked> {
     let reserved = mark.size().x
         + gap
         + away.as_ref().map_or(0., |away| away.size().x + gap);
-    let (rect, row) =
-        line(ui, egui::RichText::new(system.name.as_str()), reserved, true);
+    let (rect, row) = crate::ui::line(
+        ui,
+        egui::RichText::new(system.name.as_str()),
+        reserved,
+        true,
+    );
     let middle = rect.center().y;
 
     // Asked about after the line, so that it is the one answering where the
     // two overlap. Under it the line would have to work out what it was not
     // being clicked on.
     let at = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - LINE_PADDING - mark.size().x, rect.top()),
-        egui::pos2(rect.right() - LINE_PADDING, rect.bottom()),
+        egui::pos2(
+            rect.right() - crate::ui::LINE_PADDING - mark.size().x,
+            rect.top(),
+        ),
+        egui::pos2(rect.right() - crate::ui::LINE_PADDING, rect.bottom()),
     );
 
     // Between the name and the mark, right against the mark, so that the
@@ -822,7 +765,7 @@ fn factions(
             Some(name) => egui::RichText::new(name),
             None => egui::RichText::new(UNNAMED).weak(),
         };
-        let (_, answer) = line(ui, text, 0., name.is_some());
+        let (_, answer) = crate::ui::line(ui, text, 0., name.is_some());
 
         if let Some(name) = name
             && answer.clicked()
@@ -933,7 +876,12 @@ mod tests {
     #[test]
     fn a_line_paints_in_a_colour() {
         painted(|ui| {
-            line(ui, egui::RichText::new("Alliance of Sol"), 0., true);
+            crate::ui::line(
+                ui,
+                egui::RichText::new("Alliance of Sol"),
+                0.,
+                true,
+            );
         });
     }
 
@@ -941,7 +889,7 @@ mod tests {
     #[test]
     fn a_line_with_room_reserved_paints_in_a_colour() {
         painted(|ui| {
-            line(ui, egui::RichText::new("Sol"), 20., true);
+            crate::ui::line(ui, egui::RichText::new("Sol"), 20., true);
         });
     }
 

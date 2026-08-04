@@ -153,6 +153,98 @@ impl System {
             .collect())
     }
 
+    /// The systems whose names hold `query`, best first
+    ///
+    /// What a search box asks, where the user is part way through typing a
+    /// name and wants to be shown which systems they might mean.
+    ///
+    /// `query` is read as letters rather than as a pattern. A name is a thing
+    /// the user is halfway through typing, so `%` and `_` in it are
+    /// characters they typed and not wildcards they meant, and [`escaped`]
+    /// takes them at their word. That is the difference between this and
+    /// [`System::fetch_like_name`], which takes a pattern whole from whoever
+    /// wrote it.
+    ///
+    /// Ordered so that the `limit` keeps the rows worth keeping. Names that
+    /// start with the query first, since someone typing `sol` means Sol before
+    /// they mean Nasolituw. Then nearest to `near`, which is where the user is
+    /// looking: a common fragment matches tens of thousands of systems and the
+    /// ones they mean are the ones in front of them. Systems with no position
+    /// on record sort last of all, having no distance to be near by and
+    /// nowhere to be flown to.
+    ///
+    /// Bounded because it has to be. A query of a letter or two matches most
+    /// of the systems on record, `%a%` reaching 180,000 of the 284,000 held
+    /// today, and a list nobody can read to the end of is no more use for
+    /// being complete.
+    pub async fn search_by_name(
+        db: &Database,
+        query: &str,
+        near: Option<Coordinate>,
+        limit: i64,
+    ) -> Result<Vec<Self>, Error> {
+        let query = escaped(query);
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                address,
+                name,
+                position AS "position!: Option<wkb::Decode<Coordinate>>",
+                population,
+                security as "security: Security",
+                government as "government: Government",
+                allegiance as "allegiance: Allegiance",
+                primary_economy as "primary_economy: Economy",
+                secondary_economy as "secondary_economy: Economy",
+                updated_at,
+                updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
+            FROM systems
+            -- $1 decides which rows match and $2 decides which of those come
+            -- first: held anywhere in the name to match, held at the start of
+            -- it to lead. Two patterns because they answer two questions, and
+            -- the second is asked in SQL rather than after the rows arrive
+            -- because ordering is what the LIMIT cuts against.
+            WHERE name ILIKE $1
+            ORDER BY
+                (name ILIKE $2) DESC,
+                position <<->> $3::geometry NULLS LAST,
+                name
+            LIMIT $4
+            "#,
+            format!("%{query}%"),
+            format!("{query}%"),
+            near.map(wkb::Encode) as _,
+            limit
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
+                address: row.address,
+                name: row.name,
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                factions: row.factions,
+                updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
+            })
+            .collect())
+    }
+
     pub async fn fetch_in_range_by_name(
         db: &Database,
         range: f64,
@@ -432,5 +524,48 @@ impl System {
                 updated_by: row.updated_by,
             })
             .collect())
+    }
+}
+
+/// What the user typed, as a `LIKE` pattern matching those letters
+///
+/// `%` and `_` mean something to `LIKE` and nothing to whoever typed them, so
+/// they are held out at the pattern's own escape character. The escape itself
+/// goes first, or escaping the other two would go on to be read as an escape
+/// in its own right.
+fn escaped(query: &str) -> String {
+    query.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name with nothing special in it is left as it is
+    #[test]
+    fn a_plain_name_is_left_alone() {
+        assert_eq!(escaped("Col 285 Sector"), "Col 285 Sector");
+    }
+
+    /// The two characters `LIKE` reads are held out
+    ///
+    /// A user typing either means the character. Left as they are, `%` would
+    /// match the rest of every name on record and `_` any character at all,
+    /// so a search for a literal one would answer with systems that have
+    /// nothing to do with it.
+    #[test]
+    fn the_wildcards_are_held_out() {
+        assert_eq!(escaped("100%"), r"100\%");
+        assert_eq!(escaped("a_b"), r"a\_b");
+    }
+
+    /// The escape character is held out first
+    ///
+    /// Or the backslash put in front of a `%` would itself be escaped
+    /// afterwards, leaving `\\%`: a literal backslash followed by a wildcard,
+    /// which is the wildcard the escaping was there to take away.
+    #[test]
+    fn the_escape_is_held_out_before_what_it_escapes() {
+        assert_eq!(escaped(r"a\%b"), r"a\\\%b");
     }
 }

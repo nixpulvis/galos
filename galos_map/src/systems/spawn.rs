@@ -199,6 +199,7 @@ fn select_on_click(
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     frame: Res<FrameCount>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut answered: Local<Option<u32>>,
     mut selection: ResMut<Selection>,
 ) {
@@ -228,7 +229,23 @@ fn select_on_click(
     // lying nearer behind it. Asking it rather than working the hit out
     // again keeps the click on whatever the ring and the tint are on.
     let Ok(system) = pointed_at.single() else { return };
-    selection.set(system.clone());
+    // Held down, a modifier gathers systems up rather than replacing what is
+    // held, and lets go of one already held, so the same gesture builds a set
+    // and takes it apart.
+    //
+    // Any of the three, and both sides of each. Which one means "as well as
+    // that one" is a matter of what the user came from: control on Windows
+    // and Linux, command on macOS. Shift is offered beside them because it is
+    // the one no platform reads as asking for something else.
+    let gathering = keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+        KeyCode::ShiftLeft,
+        KeyCode::ShiftRight,
+    ]);
+    selection.pick(system.clone(), gathering);
 }
 
 /// How long a second click may take to arrive and still make a double

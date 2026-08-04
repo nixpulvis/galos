@@ -1,17 +1,64 @@
 use crate::Db;
+use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::selection::Selection;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
+use elite_journal::system::Coordinate;
 use galos_db::Database;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<Searched>();
     app.init_resource::<SearchNote>();
+    app.init_resource::<SearchResults>();
     app.init_resource::<Plot>();
     app.add_systems(Update, searched.in_set(MapSet::Search));
+}
+
+/// How many systems a search answers with
+///
+/// Enough that the one wanted is among them, and few enough that the database
+/// is asked for a screenful rather than for every system holding a common
+/// fragment. `%col%` matches better than a hundred thousand of them.
+const RESULTS: i64 = 25;
+
+/// What the last search turned up, for the bar to offer
+///
+/// The database's own rows rather than the map's [`System`]s. Roughly three
+/// quarters of the systems on record have no position, and those are worth
+/// showing: a user searching a name wants to know it exists even where the
+/// map cannot draw it. A map [`System`] is a thing with somewhere to be, so
+/// the unplaceable ones would have to be dropped to hold them here, and the
+/// answer would be missing the systems it most needs to account for.
+#[derive(Resource, Default)]
+pub struct SearchResults(Vec<DbSystem>);
+
+impl SearchResults {
+    /// The systems on offer, best first
+    pub fn iter(&self) -> impl Iterator<Item = &DbSystem> {
+        self.0.iter()
+    }
+
+    /// Whether there is anything to offer
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Offer `found` instead of whatever was on offer
+    pub fn set(&mut self, found: Vec<DbSystem>) {
+        self.0 = found;
+    }
+
+    /// Put the list away
+    ///
+    /// What a search turned up answers the name it was asked about, so it is
+    /// no answer at all once that name is being typed over or once one of
+    /// them has been picked out.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// What to tell the user about the last name they searched for
@@ -68,36 +115,87 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
     }
 }
 
+/// Where in `found` the system `query` spells out in full sits
+///
+/// A name typed whole is a question with one answer, so it is answered rather
+/// than offered: a list headed by the very thing asked for makes the user
+/// pick it twice. Anything short of the whole name is a question about which
+/// system is meant, and the list is what answers that.
+///
+/// Case does not count. Names are held uppercase and nobody types them that
+/// way.
+fn named_outright(query: &str, found: &[DbSystem]) -> Option<usize> {
+    let query = query.trim();
+    found.iter().position(|system| system.name.eq_ignore_ascii_case(query))
+}
+
+/// Pick `system` out, or say why it cannot be
+///
+/// The map has nothing to mark until the system is fetched, but the row the
+/// name resolved against says everything a panel would.
+fn pick_out(system: &DbSystem, selection: &mut Selection) -> Option<String> {
+    match System::try_from(system) {
+        Ok(system) => {
+            selection.set(system);
+            None
+        }
+        Err(_) => Some(format!("{} has no position on record", system.name)),
+    }
+}
+
 /// Answer what the user asked for
 ///
 /// A system for responding to [`Searched`] messages.
-/// - On [`Searched::System`] the named system is picked out, and the camera
-/// is left where it is. Naming a system is asking which one it is, not
-/// asking to be taken there, and the map has a control of its own for that.
+/// - On [`Searched::System`] the systems that might be meant are looked up.
+/// A name given in full is picked out on the spot; anything less is left as a
+/// list for the user to choose from. Either way the camera is left where it
+/// is. Naming a system is asking which one it is, not asking to be taken
+/// there, and the map has a control of its own for that.
 /// - On [`Searched::Route`] both ends are resolved, and which of them could
 /// not be is what the form is told.
+///
+/// The search is measured from where the camera is looking, so that a common
+/// fragment answers with the systems in front of the user rather than with
+/// whichever ones the database reached first.
 pub fn searched(
     mut search_events: MessageReader<Searched>,
     mut note: ResMut<SearchNote>,
+    mut results: ResMut<SearchResults>,
     mut plot: ResMut<Plot>,
     mut selection: ResMut<Selection>,
+    camera: Query<&OrbitCamera>,
     db: Res<Db>,
 ) {
+    let near = camera
+        .single()
+        .map(|camera| Coordinate {
+            x: camera.focus.x,
+            y: camera.focus.y,
+            z: camera.focus.z,
+        })
+        .ok();
+
     for event in search_events.read() {
         match event {
             Searched::System { name, .. } => {
                 future::block_on(async {
-                    note.0 = match locate(&db.0, name).await {
-                        Ok(row) => {
-                            // The map has nothing to mark until the system
-                            // is fetched, but the row the name resolved
-                            // against says everything a panel would.
-                            if let Ok(system) = System::try_from(&row) {
-                                selection.set(system);
-                            }
+                    let found =
+                        DbSystem::search_by_name(&db.0, name, near, RESULTS)
+                            .await
+                            .unwrap_or_default();
+
+                    // Whatever was on offer answered the last name asked
+                    // about, and this is a new one.
+                    results.clear();
+                    note.0 = match named_outright(name, &found) {
+                        Some(at) => pick_out(&found[at], &mut selection),
+                        None if found.is_empty() => {
+                            Some(format!("No system named {name}"))
+                        }
+                        None => {
+                            results.set(found);
                             None
                         }
-                        Err(why) => Some(why),
                     };
                 });
             }
@@ -115,5 +213,72 @@ pub fn searched(
                 });
             }
         };
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A system the database might answer a search with
+    pub(crate) fn row(name: &str) -> DbSystem {
+        DbSystem {
+            address: name.len() as i64,
+            name: name.to_owned(),
+            position: Some(Coordinate { x: 0., y: 0., z: 0. }),
+            population: 0,
+            security: None,
+            government: None,
+            allegiance: None,
+            primary_economy: None,
+            secondary_economy: None,
+            factions: vec![],
+            updated_at: chrono::DateTime::UNIX_EPOCH,
+            updated_by: String::new(),
+        }
+    }
+
+    /// A name given in full is the system it names
+    #[test]
+    fn a_whole_name_answers_itself() {
+        let found = [row("SOLATI"), row("SOL"), row("SOLLARO")];
+
+        assert_eq!(named_outright("SOL", &found), Some(1));
+    }
+
+    /// However it was typed, since names are held in one case and typed in
+    /// another
+    #[test]
+    fn a_whole_name_is_answered_whatever_case_it_is_in() {
+        let found = [row("SOL")];
+
+        assert_eq!(named_outright("sol", &found), Some(0));
+        assert_eq!(named_outright("Sol", &found), Some(0));
+    }
+
+    /// Room around a name is not part of it
+    #[test]
+    fn a_whole_name_is_answered_through_the_space_around_it() {
+        let found = [row("SOL")];
+
+        assert_eq!(named_outright("  sol ", &found), Some(0));
+    }
+
+    /// Part of a name is a question about which system, not an answer
+    ///
+    /// Which is the whole of what the list is for: `sol` is the start of five
+    /// names, and picking the first of them out would be the map deciding
+    /// something the user was in the middle of asking.
+    #[test]
+    fn part_of_a_name_answers_nothing() {
+        let found = [row("SOLATI"), row("SOLLARO")];
+
+        assert_eq!(named_outright("SOL", &found), None);
+    }
+
+    /// Nothing found is nothing named
+    #[test]
+    fn nothing_found_names_nothing() {
+        assert_eq!(named_outright("SOL", &[]), None);
     }
 }

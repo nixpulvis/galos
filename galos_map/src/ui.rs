@@ -13,10 +13,10 @@
 //! starts from the system named up there.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::search::{Plot, SearchNote, Searched};
+use crate::search::{Plot, SearchNote, SearchResults, Searched};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
-use crate::systems::filter::{Asked, Filters, Wanted};
+use crate::systems::filter::{Asked, Filter, Filters, Wanted};
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
@@ -28,6 +28,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
@@ -300,6 +301,7 @@ pub fn chrome(
     mut knobs: Knobs,
     mut searched: MessageWriter<Searched>,
     mut search_note: ResMut<SearchNote>,
+    mut search_results: ResMut<SearchResults>,
     mut over_ui: ResMut<PointerOverUi>,
     mut settings: ResMut<SettingsOpen>,
     mut search: Local<BarFields>,
@@ -398,6 +400,7 @@ pub fn chrome(
         &mut search,
         &mut searched,
         &mut search_note,
+        &mut search_results,
         &mut selection,
         &mut camera,
         orbit.single().map(|camera| camera.focus).ok(),
@@ -520,6 +523,7 @@ fn main_bar(
     search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
     note: &mut SearchNote,
+    results: &mut SearchResults,
     selection: &mut Selection,
     camera: &mut MessageWriter<MoveCamera>,
     focus: Option<DVec3>,
@@ -551,12 +555,15 @@ fn main_bar(
                     ui.set_width(BAR_WIDTH);
                     let mut taken = false;
 
-                    let response = singleline(ui, &mut search.system, "Search");
+                    let (response, cleared) =
+                        search_box(ui, &mut search.system, note, results);
                     taken |= response.gained_focus();
-                    // The note answers a name, so it is no answer at all
-                    // once that name is being typed over.
-                    if response.changed() {
+                    // Both answer a name, so neither is any answer at all
+                    // once that name is being typed over. The mark has
+                    // already taken all three where it was the one asked.
+                    if response.changed() && !cleared {
                         note.0 = None;
+                        results.clear();
                     }
                     // Return and nothing else. Tab moves between the
                     // fields of a form, and a form that went off and asked
@@ -575,7 +582,43 @@ fn main_bar(
                     if let Some(note) = &note.0 {
                         ui.colored_label(egui::Color32::LIGHT_RED, note);
                     }
-                    selected(ui, selection, focus, camera, panels);
+                    // Between the two, since it answers the query above it
+                    // as the note does, and what is picked out of it shows up
+                    // in the status below.
+                    let mut travelled = None;
+                    let mut described = None;
+                    offered(
+                        ui,
+                        results,
+                        focus,
+                        selection,
+                        &mut travelled,
+                        &mut described,
+                    );
+                    if let Some(position) = travelled {
+                        camera.write(MoveCamera {
+                            position: Some(position),
+                            framing: None,
+                        });
+                    }
+                    if let Some(system) = described {
+                        panels.open_system(system);
+                    }
+                    let mut went = None;
+                    selected(
+                        ui,
+                        selection,
+                        focus,
+                        &mut went,
+                        panels,
+                        &mut filter.active,
+                    );
+                    if let Some(position) = went {
+                        camera.write(MoveCamera {
+                            position: Some(position),
+                            framing: None,
+                        });
+                    }
                     // Drawn whether or not the form is out, as the selection
                     // is and for the same reason. A half lit sky with
                     // nothing on screen to say why is the one thing a filter
@@ -621,6 +664,346 @@ fn main_bar(
     shut
 }
 
+/// The search box, and the mark that empties it
+///
+/// The mark stands inside the box at its right hand end, and only while there
+/// is something to clear. A search leaves three things behind that answer the
+/// name typed into it: the query itself, the note about a name that resolved
+/// to nothing, and the list of what it might have meant. All three are the
+/// one answer and the mark takes all three, since clearing the query and
+/// leaving the list standing under it would leave the answer to a question
+/// that is no longer on screen.
+///
+/// Answers whether the box was cleared, which is a change to what is typed
+/// there and reads as one everywhere that watches for it.
+fn search_box(
+    ui: &mut Ui,
+    value: &mut Option<String>,
+    note: &mut SearchNote,
+    results: &mut SearchResults,
+) -> (Response, bool) {
+    // Laid out first, since the room it wants is room the field cannot have.
+    // In nothing, so the colour can be chosen once the pointer has been asked
+    // about, which cannot happen until the field has been placed.
+    let showing = typed(value).is_some() || !results.is_empty();
+    let mark = showing.then(|| {
+        egui::WidgetText::from(
+            egui::RichText::new(CLOSE).color(egui::Color32::PLACEHOLDER),
+        )
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+    });
+
+    let gap = ui.spacing().item_spacing.x;
+    let reserved = mark.as_ref().map_or(0., |mark| mark.size().x + gap);
+    let response = singleline(ui, value, "Search", reserved);
+
+    let Some(mark) = mark else { return (response, false) };
+    let rect = response.rect;
+    let at = egui::Rect::from_min_max(
+        egui::pos2(
+            rect.right() - FIELD_PADDING.right as f32 - mark.size().x,
+            rect.top(),
+        ),
+        egui::pos2(rect.right() - FIELD_PADDING.right as f32, rect.bottom()),
+    );
+    // Asked about after the field, so that it is the one answering where the
+    // two overlap. Under it a click would land in the text and put the caret
+    // somewhere instead.
+    let clearing =
+        ui.interact(at, ui.id().with("clear-search"), egui::Sense::click());
+    let lit = clearing.hovered() || clearing.has_focus();
+    let size = mark.size();
+    ui.painter().galley(
+        egui::pos2(at.left(), rect.center().y - size.y / 2.),
+        mark,
+        if lit {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        },
+    );
+    let clearing = clearing.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    if clearing.clicked() {
+        cleared(value, note, results);
+        return (response, true);
+    }
+
+    (response, false)
+}
+
+/// Take away everything standing as an answer to the name in the box
+///
+/// The query, the note about a name that resolved to nothing, and the list of
+/// what it might have meant. One gesture takes all three because they are one
+/// answer: a list left standing under an empty box answers a question that is
+/// no longer on screen to be read.
+fn cleared(
+    value: &mut Option<String>,
+    note: &mut SearchNote,
+    results: &mut SearchResults,
+) {
+    *value = None;
+    note.0 = None;
+    results.clear();
+}
+
+/// How many systems the bar offers at once before the list scrolls
+///
+/// A screenful of the bar rather than of the viewport. The list hangs under
+/// the input with the map behind it, and one long enough to reach the bottom
+/// of the screen would answer which system did you mean by covering over the
+/// sky the answer is about.
+const OFFERED: usize = 5;
+
+/// What a click on a line in the results asked for
+///
+/// The same ones the map itself answers, and the same ones a filter's list
+/// answers: one click says which system is meant and a second says to go
+/// there.
+enum Chose {
+    /// Pick the system out, as clicking a star does
+    ///
+    /// `gathering` holds the modifier rather than a variant of its own,
+    /// because holding it does not ask for something else. It is the one
+    /// gesture either way, saying which system is meant; all the modifier
+    /// says is whether the rest are meant along with it.
+    Select { gathering: bool },
+    /// Send the camera to it, as double clicking a star does
+    Travel,
+    /// Say what is known about it, and leave the selection alone
+    Describe,
+}
+
+/// Whether a modifier is held down, asking for as well as rather than instead
+///
+/// The same gesture the sky answers, so that a line in the list and the star
+/// it names are picked out the same way. Command covers control where the
+/// user came from Windows or Linux and the cloverleaf where they came from a
+/// Mac, and shift stands beside them as the one no platform reads as asking
+/// for something else.
+fn gathering(ui: &Ui) -> bool {
+    ui.input(|input| {
+        let held = input.modifiers;
+        held.command || held.ctrl || held.shift
+    })
+}
+
+/// Act on what a line was asked for
+///
+/// Apart from the drawing, since a list draws every line before any of them
+/// is acted on: picking one out changes what the lines are drawn from. Which
+/// makes it the piece worth asking about on its own.
+fn took(
+    chose: Chose,
+    system: &DbSystem,
+    selection: &mut Selection,
+    travelled: &mut Option<DVec3>,
+    described: &mut Option<crate::systems::System>,
+) {
+    // Only a line for a system with somewhere to be answers at all, so this
+    // is the same question asked twice and the second asking has nothing to
+    // report.
+    let placed = crate::systems::System::try_from(system).ok();
+    match chose {
+        Chose::Select { gathering } => {
+            if let Some(system) = placed {
+                selection.pick(system, gathering);
+            }
+        }
+        Chose::Travel => *travelled = crate::systems::system_to_vec(system),
+        Chose::Describe => *described = placed,
+    }
+}
+
+/// The systems the last search turned up, for the user to choose between
+///
+/// A name given in full is picked out on the spot and leaves nothing to
+/// choose, so this stands where the note would: the answer to which of these
+/// did you mean. The two never appear together, one being what the other is
+/// not.
+///
+/// The list is left standing once something is picked out of it. Choosing is
+/// most of what it is for, and a list that puts itself away as soon as it is
+/// touched makes trying the second candidate a matter of typing the whole
+/// query again.
+///
+/// A line answers the gestures a star answers. A plain click picks that system
+/// out in place of the rest, a click with ctrl, command or shift held gathers
+/// it up alongside them and lets go of one already held, and a double click
+/// sends the camera there. One search turning up several candidates is where a
+/// handful of systems most often comes from, so the list is where gathering
+/// them has to work.
+///
+/// A system with no position on record is listed and cannot be picked. Three
+/// quarters of the systems on record are in that state, and knowing one exists
+/// is worth the line it takes; there is simply nothing to select, since what
+/// the map marks is a place.
+///
+/// Each line carries the info mark the rows in the bar carry, opening what is
+/// known about that system without picking it out. That is how a list of
+/// candidates is read: several are opened and compared while the selection
+/// stays wherever the user left it, which is the whole point of having been
+/// offered a choice.
+///
+/// `travelled` is where a line asked the camera to go and `described` is what
+/// a line asked to be written out, both of which the caller acts on rather
+/// than this: a message writer cannot be had outside a system, and a list that
+/// reports what it was asked for can be drawn in a test.
+fn offered(
+    ui: &mut Ui,
+    results: &SearchResults,
+    focus: Option<DVec3>,
+    selection: &mut Selection,
+    travelled: &mut Option<DVec3>,
+    described: &mut Option<crate::systems::System>,
+) {
+    if results.is_empty() {
+        return;
+    }
+
+    let gap = ui.spacing().item_spacing.x;
+    let height = ui.text_style_height(&egui::TextStyle::Body)
+        + LINE_PADDING * 2.
+        + ui.spacing().item_spacing.y;
+
+    // Settled after the list is drawn, since picking one out is a change to
+    // what the lines are being drawn from.
+    let mut chose = None;
+
+    scrolling(ui, height * OFFERED as f32, |ui| {
+        for (index, system) in results.iter().enumerate() {
+            let at = crate::systems::system_to_vec(system);
+            // Where it is if it can be reached, and why it cannot if not.
+            // The same slot either way, so the column reads down.
+            let trailing = match (at, focus) {
+                (Some(at), Some(focus)) => {
+                    Some(format!("{:.1} Ly", focus.distance(at)))
+                }
+                (Some(_), None) => None,
+                (None, _) => Some("no position".to_owned()),
+            };
+            let trailing = trailing.map(|text| {
+                egui::WidgetText::from(egui::RichText::new(text).weak())
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    )
+            });
+
+            // A panel is about a system the map can place, so a system with
+            // nowhere to be is not offered one. Nothing is left standing in
+            // its place: the line already says why, in the slot the mark
+            // would sit beside.
+            let mark = at.is_some().then(|| {
+                // Laid out in nothing, so the colour can be chosen once the
+                // pointer has been asked about, which cannot happen until the
+                // line has been placed.
+                egui::WidgetText::from(
+                    egui::RichText::new(INFO).color(egui::Color32::PLACEHOLDER),
+                )
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+            });
+
+            let reserved = mark.as_ref().map_or(0., |mark| mark.size().x + gap)
+                + trailing.as_ref().map_or(0., |text| text.size().x + gap);
+            let (rect, answer) = line(
+                ui,
+                egui::RichText::new(system.name.as_str()),
+                reserved,
+                at.is_some(),
+            );
+            let middle = rect.center().y;
+
+            // Asked about after the line, so that it is the one answering
+            // where the two overlap. Under it the line would have to work out
+            // what it was not being clicked on.
+            let describing = mark.map(|mark| {
+                let at = egui::Rect::from_min_max(
+                    egui::pos2(
+                        rect.right() - LINE_PADDING - mark.size().x,
+                        rect.top(),
+                    ),
+                    egui::pos2(rect.right() - LINE_PADDING, rect.bottom()),
+                );
+                let answer = ui.interact(
+                    at,
+                    // By place, as the selection's rows are keyed and for
+                    // the reason given there: a fresh search leaves the
+                    // lines where they were and makes every one of them
+                    // about something else.
+                    ui.id().with(("describe-result", index)),
+                    egui::Sense::click(),
+                );
+                let lit = answer.hovered() || answer.has_focus();
+                if lit {
+                    ui.painter().rect_filled(
+                        at,
+                        ui.visuals().widgets.hovered.corner_radius,
+                        ui.visuals().widgets.hovered.weak_bg_fill,
+                    );
+                }
+                let height = mark.size().y;
+                ui.painter().galley(
+                    egui::pos2(at.left(), middle - height / 2.),
+                    mark,
+                    if lit {
+                        ui.visuals().strong_text_color()
+                    } else {
+                        ui.visuals().weak_text_color()
+                    },
+                );
+                (at, answer.on_hover_cursor(egui::CursorIcon::PointingHand))
+            });
+
+            // Between the name and the mark, right against whichever of them
+            // ends the line, so the distances line up down the list rather
+            // than following the names.
+            if let Some(text) = trailing {
+                let size = text.size();
+                let right = describing
+                    .as_ref()
+                    .map_or(rect.right() - LINE_PADDING, |(at, _)| {
+                        at.left() - gap
+                    });
+                ui.painter().galley(
+                    egui::pos2(right - size.x, middle - size.y / 2.),
+                    text,
+                    egui::Color32::PLACEHOLDER,
+                );
+            }
+
+            // The mark first, then the double. Egui answers the first click
+            // of a pair as a click and the second as a double, so a line
+            // double clicked has already been picked out by the time this is
+            // asked, which is what the first click of the pair was for.
+            if describing.is_some_and(|(_, mark)| mark.clicked()) {
+                chose = Some((system, Chose::Describe));
+            } else if answer.double_clicked() {
+                chose = Some((system, Chose::Travel));
+            } else if answer.clicked() {
+                chose =
+                    Some((system, Chose::Select { gathering: gathering(ui) }));
+            }
+        }
+    });
+
+    let Some((system, chose)) = chose else { return };
+    took(chose, system, selection, travelled, described);
+}
+
 /// Say what is picked out, and how far off it is
 ///
 /// The status of the selection, which is not what the search box holds. The
@@ -641,106 +1024,200 @@ fn main_bar(
 /// itself, since that is the distance the spyglass and the fetch are
 /// measured in: a system nearer than the spyglass radius is one that is
 /// drawn.
+/// Several picked out are several rows, each about one of them, so that no
+/// row has to answer which system it means. Five of them and then scrolling,
+/// as the results list is, and for the same reason: the bar hangs over the
+/// map and a list long enough to reach the bottom of the viewport answers a
+/// question by covering up what it is about.
+///
+/// The summary line above them is drawn only while more than one is picked
+/// out, and carries the control that turns the set into a filter. One system
+/// picked out is the case the rows already read well, and a line saying "1
+/// system" over a row naming it says the same thing twice.
+/// `travelled` is where a row asked the camera to go, which the caller writes
+/// rather than this, as [`offered`] does and for the same reason.
 fn selected(
     ui: &mut Ui,
     selection: &mut Selection,
     focus: Option<DVec3>,
-    camera: &mut MessageWriter<MoveCamera>,
+    travelled: &mut Option<DVec3>,
     panels: &mut Panels,
+    filters: &mut Filters,
 ) {
-    // Owned, so that the borrow on the selection ends before the row asks to
-    // let go of it.
-    let Some(name) = selection.name().map(str::to_owned) else { return };
-    let away = selection
-        .position()
-        .zip(focus)
-        .map(|(at, focus)| format!("{:.1} Ly away", focus.distance(at)));
+    if selection.is_empty() {
+        return;
+    }
 
-    // Laid out and painted rather than assembled from labels. A label is a
-    // widget in its own right, and two of them under one clickable row leave
-    // three widgets bidding for the pointer: the row answers over the gaps
-    // and the labels answer over the words, so it flickers between being a
-    // control and not as the pointer crosses them.
-    let away = away.map(|line| {
-        egui::WidgetText::from(egui::RichText::new(line).weak()).into_galley(
-            ui,
-            Some(egui::TextWrapMode::Extend),
-            f32::INFINITY,
-            egui::TextStyle::Body,
-        )
-    });
-
-    let marks = lay_out_marks(ui);
-
-    // Whatever the dot, the distance and the marks leave the name. System
-    // names run to "Col 285 Sector XY-Z b12-34", and one laid out against no
-    // bound at all is painted straight out past the edge of the bar.
     let gap = ui.spacing().item_spacing.x;
-    let room = ui.available_width()
-        - ROW_PADDING * 2.
-        - DOT
-        - gap
-        - marks_width(&marks, gap)
-        - away.as_ref().map_or(0., |away| away.size().x + gap);
-    let name = egui::WidgetText::from(egui::RichText::new(name).strong())
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            room.max(0.),
-            egui::TextStyle::Body,
-        );
-    let (outer, row) = row_of(
-        ui,
-        // The width the rest of the form is laid out in, so that the row
-        // lines up with the fields above and below it rather than being
-        // measured against anything of its own.
-        name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
-        "selection-row",
-    );
-    let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
+    // Settled after the rows, since each is drawn from the same selection it
+    // asks to change.
+    let mut chose = None;
 
-    if row.hovered() || row.has_focus() {
-        ui.painter().rect_filled(
-            rect,
-            ui.visuals().widgets.hovered.corner_radius,
-            ui.visuals().widgets.hovered.weak_bg_fill,
-        );
-    }
-    let middle = rect.center().y;
-    let mut x = rect.left() + ROW_PADDING;
-    ui.painter().circle_filled(
-        egui::pos2(x + DOT / 2., middle),
-        DOT / 2.,
-        SELECTION_DOT,
-    );
-    x += DOT + gap;
-    for galley in [Some(name), away].into_iter().flatten() {
-        let size = galley.size();
-        // The galleys carry the colours they were laid out in, so there is
-        // nothing for a fallback to answer for.
-        ui.painter().galley(
-            egui::pos2(x, middle - size.y / 2.),
-            galley,
-            egui::Color32::PLACEHOLDER,
-        );
-        x += size.x + gap;
+    if selection.len() > 1 {
+        gathered(ui, selection, filters);
     }
 
-    let Marks { info, close } = place_marks(ui, rect, marks, "selection-row");
+    let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
+        + (ROW_PADDING + ROW_MARGIN) * 2.
+        + ui.spacing().item_spacing.y;
+    let mut rows = |ui: &mut Ui| {
+        for index in 0..selection.len() {
+            let Some(name) = selection.name(index) else { continue };
+            let away =
+                selection.position(index).zip(focus).map(|(at, focus)| {
+                    format!("{:.1} Ly away", focus.distance(at))
+                });
 
-    if close.clicked() {
-        selection.clear();
-    } else if info.clicked() {
-        if let Some(system) = selection.system() {
-            panels.open_system(system.clone());
+            // Laid out and painted rather than assembled from labels. A label
+            // is a widget in its own right, and two of them under one
+            // clickable row leave three widgets bidding for the pointer: the
+            // row answers over the gaps and the labels answer over the words,
+            // so it flickers between being a control and not as the pointer
+            // crosses them.
+            let away = away.map(|line| {
+                egui::WidgetText::from(egui::RichText::new(line).weak())
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    )
+            });
+
+            let marks = lay_out_marks(ui);
+
+            // Whatever the dot, the distance and the marks leave the name.
+            // System names run to "Col 285 Sector XY-Z b12-34", and one laid
+            // out against no bound at all is painted straight out past the
+            // edge of the bar.
+            let room = ui.available_width()
+                - ROW_PADDING * 2.
+                - DOT
+                - gap
+                - marks_width(&marks, gap)
+                - away.as_ref().map_or(0., |away| away.size().x + gap);
+            let name =
+                egui::WidgetText::from(egui::RichText::new(name).strong())
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Truncate),
+                        room.max(0.),
+                        egui::TextStyle::Body,
+                    );
+            // Keyed on where the row sits rather than on what it holds. A
+            // row is clicked and hovered and nothing more, and egui keeps
+            // only that against an id, so a place is the honest key: the
+            // pointer is over the third row, whichever system that is now.
+            //
+            // Keying it on the system instead paints a red rectangle over
+            // the bar. Egui watches for a rect that keeps its place while
+            // everything in it changes identity, which is what a replaced
+            // selection is, and cannot tell it apart from a widget taking
+            // another's state. See `TODO.md`.
+            let of = ("selection-row", index);
+            let (outer, row) = row_of(
+                ui,
+                // The width the rest of the form is laid out in, so that the
+                // row lines up with the fields above and below it rather than
+                // being measured against anything of its own.
+                name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
+                of,
+            );
+            let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
+
+            if row.hovered() || row.has_focus() {
+                ui.painter().rect_filled(
+                    rect,
+                    ui.visuals().widgets.hovered.corner_radius,
+                    ui.visuals().widgets.hovered.weak_bg_fill,
+                );
+            }
+            let middle = rect.center().y;
+            let mut x = rect.left() + ROW_PADDING;
+            ui.painter().circle_filled(
+                egui::pos2(x + DOT / 2., middle),
+                DOT / 2.,
+                SELECTION_DOT,
+            );
+            x += DOT + gap;
+            for galley in [Some(name), away].into_iter().flatten() {
+                let size = galley.size();
+                // The galleys carry the colours they were laid out in, so
+                // there is nothing for a fallback to answer for.
+                ui.painter().galley(
+                    egui::pos2(x, middle - size.y / 2.),
+                    galley,
+                    egui::Color32::PLACEHOLDER,
+                );
+                x += size.x + gap;
+            }
+
+            let Marks { info, close } = place_marks(ui, rect, marks, of);
+
+            if close.clicked() {
+                chose = Some((index, Held::LetGo));
+            } else if info.clicked() {
+                chose = Some((index, Held::Describe));
+            } else if row.clicked() {
+                chose = Some((index, Held::Travel));
+            }
+            row.on_hover_cursor(egui::CursorIcon::PointingHand);
         }
-    } else if row.clicked() {
-        camera.write(MoveCamera {
-            position: selection.position(),
-            framing: None,
-        });
+    };
+
+    // Only once there are more than the bar holds. A scroll area around three
+    // rows is a scroll area that never scrolls and takes a little room off
+    // the end of every one of them for a bar that is not there.
+    if selection.len() > SELECTED {
+        scrolling(ui, height * SELECTED as f32, &mut rows);
+    } else {
+        rows(ui);
     }
-    row.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    let Some((index, chose)) = chose else { return };
+    match chose {
+        Held::Travel => *travelled = selection.position(index),
+        Held::Describe => {
+            if let Some(system) = selection.system(index) {
+                panels.open_system(system.clone());
+            }
+        }
+        Held::LetGo => selection.remove(index),
+    }
+}
+
+/// What a click on a selected system's row asked for
+///
+/// The same three the row has always answered, now said by index because
+/// several rows stand at once and each is about one of them.
+enum Held {
+    /// Send the camera to it, as the one row always did
+    Travel,
+    /// Open the panel describing it
+    Describe,
+    /// Let go of this one, and hold the rest
+    LetGo,
+}
+
+/// How many selected systems the bar shows before the rows start scrolling
+const SELECTED: usize = 5;
+
+/// Say how many are picked out, and offer to narrow the map to them
+///
+/// The set is left alone once it has been filtered on. The filter took a copy
+/// of the addresses, so letting go of the rings and the rows afterwards
+/// leaves the sky narrowed, which is most of what the filter is for.
+fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) {
+    let held = selection.len();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("{held} systems")).weak());
+        if ui.button("Filter These").clicked() {
+            filters.add(Filter::Systems {
+                label: format!("{held} systems"),
+                systems: selection.addresses(),
+            });
+        }
+    });
 }
 
 /// What a field holds, if it holds anything
@@ -781,10 +1258,10 @@ fn route_section(
     heading(ui, "Route", true);
     let mut taken = false;
 
-    let end = singleline(ui, &mut search.route_end, "End System");
+    let end = singleline(ui, &mut search.route_end, "End System", 0.);
     taken |= end.gained_focus();
     ui.add_space(FIELD_GAP);
-    let range = singleline(ui, &mut search.route_range, "Jump Range (Ly)");
+    let range = singleline(ui, &mut search.route_range, "Jump Range (Ly)", 0.);
     taken |= range.gained_focus();
     // Return in either field asks for the route, as pressing the button
     // does. They are the last two things a route waits on, and a form with
@@ -922,10 +1399,17 @@ fn applied(
             egui::TextStyle::Body,
         );
 
+        // By place rather than by which filter it names, as the selection's
+        // rows are keyed and for the reason given there: dropping one moves
+        // the rows below it up into the rectangle it left, and egui reads a
+        // rect that keeps its place while its contents change identity as a
+        // widget taking another's state, painting a red rectangle over the
+        // bar to say so.
+        let of = ("filter-row", index);
         let (outer, row) = row_of(
             ui,
             name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
-            ("filter-row", &active.filter),
+            of,
         );
         let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
 
@@ -964,8 +1448,7 @@ fn applied(
             egui::Color32::PLACEHOLDER,
         );
 
-        let Marks { info, close } =
-            place_marks(ui, rect, marks, ("filter-row", &active.filter));
+        let Marks { info, close } = place_marks(ui, rect, marks, of);
 
         if close.clicked() {
             removing = Some(index);
@@ -1023,7 +1506,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
         *filter.asked = Asked::Nothing;
     }
 
-    let response = singleline(ui, &mut filter.field, "Faction Name");
+    let response = singleline(ui, &mut filter.field, "Faction Name", 0.);
     // The answer is about a name, so it is no answer at all once that name is
     // being typed over.
     if response.changed() {
@@ -1064,16 +1547,28 @@ fn heading(ui: &mut Ui, name: &str, ruled: bool) {
 
 /// Take a row's worth of the bar, and answer for it under an id of its own
 ///
-/// Every id in these rows is spelled out rather than taken from the order they
-/// were drawn in. Egui hands out an id per widget from its place in that
-/// order, and the rows of the bar do not keep their places: the note about a
-/// name that resolved to nothing comes and goes above them, the selection's
-/// row comes and goes with the selection, and dropping one filter moves every
-/// row below it up. Any of those hands a row's id, and whatever egui was
-/// remembering against it, to whatever slid into its place.
+/// Every id in these rows is spelled out rather than taken from the order the
+/// widgets happened to be drawn in. Egui hands out an unspelled id from that
+/// order, and the rows of the bar do not keep their places within it: the note
+/// about a name that resolved to nothing comes and goes above them, and the
+/// selection's rows come and go with the selection. Either shifts the count
+/// every row below is numbered by.
 ///
-/// `push_id` does not answer this. A child `Ui` is keyed on its salt and on
-/// the parent's running count of children, so it moves with the rest.
+/// What is spelled out is where the row sits among rows of its own kind, the
+/// third selected system or the second filter, and not which system or filter
+/// that is. A row here is clicked and hovered and nothing else, and that is
+/// all egui keeps against an id, so a place is the honest key: the pointer is
+/// over the third row, whichever system stands there now.
+///
+/// Keying a row on what it holds paints a red rectangle across the bar.
+/// Between one pass and the next egui looks for a rect that kept its place
+/// while everything in it changed identity, which is what a replaced selection
+/// and a dropped filter both are, and it cannot tell that apart from one
+/// widget taking another's state. It warns and paints the rect in red.
+///
+/// `push_id` does not answer this either, and makes it worse: a child `Ui`
+/// registers a rect of its own, so a parent named for the row's system adds a
+/// second widget at the row's rect that changes identity along with it.
 ///
 /// The space is taken without a widget of its own, since the row is what
 /// answers for it and two things at one rect is what the ordering was
@@ -1193,6 +1688,70 @@ fn place_marks(
     Marks { info, close }
 }
 
+/// How far a line in a list holds its text off its own edge
+pub(crate) const LINE_PADDING: f32 = 3.;
+
+/// One full width line of a list, and the pointer's answer to it
+///
+/// The whole line answers rather than the letters on it, so that a short name
+/// is as easy to hit as a long one and a list reads as a column of controls
+/// rather than as text that happens to be clickable. Laid out and painted for
+/// the reason the rows in the bar are: a label is a widget in its own right,
+/// and one inside a row that also answers leaves the two bidding for the
+/// pointer.
+///
+/// `reserved` is room kept clear at the right hand end, which the caller
+/// paints into itself. The rect handed back is the whole line, so it knows
+/// where that room ended up.
+///
+/// A line that is not a `control` is laid out the same and answers to nothing:
+/// it neither lights under the pointer nor takes the hand cursor, so a list
+/// holding one keeps its shape without offering something that cannot be had.
+pub(crate) fn line(
+    ui: &mut Ui,
+    text: egui::RichText,
+    reserved: f32,
+    control: bool,
+) -> (egui::Rect, Response) {
+    let room = ui.available_width() - LINE_PADDING * 2. - reserved;
+    let text = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room.max(0.),
+        egui::TextStyle::Body,
+    );
+
+    let height = text.size().y;
+    let (rect, answer) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height + LINE_PADDING * 2.),
+        if control { egui::Sense::click() } else { egui::Sense::empty() },
+    );
+
+    if control && (answer.hovered() || answer.has_focus()) {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    ui.painter().galley(
+        egui::pos2(rect.left() + LINE_PADDING, rect.center().y - height / 2.),
+        text,
+        // A real colour, since a line is laid out from whatever the caller
+        // hands over and that is usually plain text. Plain text carries no
+        // colour of its own, so it comes out of layout as a placeholder for
+        // this to answer, and a placeholder answered by a placeholder reaches
+        // the tessellator, which panics rather than guess.
+        ui.visuals().text_color(),
+    );
+
+    if control {
+        (rect, answer.on_hover_cursor(egui::CursorIcon::PointingHand))
+    } else {
+        (rect, answer)
+    }
+}
+
 /// A scrolling list whose bar stands beside its contents rather than over them
 ///
 /// Egui floats a scroll bar over the top right corner of what it is
@@ -1247,14 +1806,25 @@ const FIELD_BORDER: egui::Stroke =
     egui::Stroke { width: 1., color: egui::Color32::from_gray(90) };
 
 /// One text field, showing what it wants when it holds nothing
+///
+/// `reserved` is room kept clear inside the right hand end, which the caller
+/// paints into itself. Kept by widening the field's own margin rather than by
+/// narrowing the field, so that the box goes on reaching the full width and a
+/// name long enough runs up to what is standing in there rather than under
+/// it.
 fn singleline(
     ui: &mut Ui,
     value: &mut Option<String>,
     placeholer: &str,
+    reserved: f32,
 ) -> Response {
     let mut text = match value {
         Some(input) => input.clone(),
         None => placeholer.into(),
+    };
+    let margin = egui::Margin {
+        right: FIELD_PADDING.right + reserved as i8,
+        ..FIELD_PADDING
     };
 
     // In a scope of its own, since a style set on a `Ui` is set on the rest
@@ -1269,7 +1839,7 @@ fn singleline(
             }
             ui.add_sized(
                 egui::vec2(ui.available_width(), 0.),
-                egui::TextEdit::singleline(&mut text).margin(FIELD_PADDING),
+                egui::TextEdit::singleline(&mut text).margin(margin),
             )
         })
         .inner;
@@ -1314,8 +1884,565 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::tests::row;
     use crate::systems::filter::Filter;
-    use crate::tests::painted;
+    use crate::tests::{painted, words};
+
+    /// A results list holding `names`, the last of them nowhere in particular
+    fn results(names: &[&str], placed: bool) -> SearchResults {
+        let mut found: Vec<_> = names.iter().map(|name| row(name)).collect();
+        if !placed && let Some(last) = found.last_mut() {
+            last.position = None;
+        }
+        let mut results = SearchResults::default();
+        results.set(found);
+        results
+    }
+
+    /// What the list says, drawn from `focus`
+    fn listed(results: &SearchResults, focus: Option<DVec3>) -> Vec<String> {
+        words(|ui| {
+            let mut selection = Selection::default();
+            let mut travelled = None;
+            let mut described = None;
+            offered(
+                ui,
+                results,
+                focus,
+                &mut selection,
+                &mut travelled,
+                &mut described,
+            );
+        })
+    }
+
+    /// Every system found is named, whatever it is
+    #[test]
+    fn the_list_names_what_was_found() {
+        let said = listed(&results(&["SOL", "SOLATI"], true), None);
+
+        assert!(said.contains(&"SOL".to_owned()), "{said:?}");
+        assert!(said.contains(&"SOLATI".to_owned()), "{said:?}");
+    }
+
+    /// And says how far off it is, from where the camera is looking
+    ///
+    /// Said as well as sorted by. A list in an order nobody can see reads as
+    /// an order nobody chose.
+    #[test]
+    fn the_list_says_how_far_off_each_system_is() {
+        let said =
+            listed(&results(&["SOL"], true), Some(DVec3::new(3., 4., 0.)));
+
+        assert!(said.contains(&"5.0 Ly".to_owned()), "{said:?}");
+    }
+
+    /// With no camera there is no distance to give
+    #[test]
+    fn a_list_measured_from_nowhere_gives_no_distance() {
+        let said = listed(&results(&["SOL"], true), None);
+
+        assert!(!said.iter().any(|line| line.contains("Ly")), "{said:?}");
+    }
+
+    /// A system with nowhere to be says so, in the slot the distance uses
+    ///
+    /// It is listed rather than dropped, since knowing the name is on record
+    /// is most of what was asked, and the line says why it cannot be had.
+    #[test]
+    fn a_system_with_nowhere_to_be_says_so() {
+        let said = listed(&results(&["SOL", "NOWHERE"], false), None);
+
+        assert!(said.contains(&"NOWHERE".to_owned()), "{said:?}");
+        assert!(said.contains(&"no position".to_owned()), "{said:?}");
+    }
+
+    /// Every system that can be had carries the mark that describes it
+    ///
+    /// Which is how a list of candidates is read through: several are opened
+    /// and compared while the selection stays where the user left it.
+    #[test]
+    fn each_result_carries_a_mark_that_describes_it() {
+        let said = listed(&results(&["SOL", "SOLATI"], true), None);
+
+        assert_eq!(said.iter().filter(|line| *line == INFO).count(), 2);
+    }
+
+    /// A system with nowhere to be is offered no panel
+    ///
+    /// A panel is about a system the map can place, so there is nothing for
+    /// the mark to open and it is not stood there to be tried.
+    #[test]
+    fn a_system_with_nowhere_to_be_carries_no_mark() {
+        let said = listed(&results(&["SOL", "NOWHERE"], false), None);
+
+        assert_eq!(said.iter().filter(|line| *line == INFO).count(), 1);
+    }
+
+    /// A click on the line for `name`, with or without the modifier held
+    ///
+    /// The camera and the panel are not what these are about, so what a line
+    /// asks of them is taken and dropped.
+    fn clicked(gathering: bool, name: &str, selection: &mut Selection) {
+        picked(gathering, &row(name), selection);
+    }
+
+    /// A click on the line for `system`, whatever the row says about it
+    fn picked(gathering: bool, system: &DbSystem, selection: &mut Selection) {
+        let mut travelled = None;
+        let mut described = None;
+        took(
+            Chose::Select { gathering },
+            system,
+            selection,
+            &mut travelled,
+            &mut described,
+        );
+    }
+
+    /// A plain click picks one out in place of whatever was held
+    ///
+    /// As clicking a star does. The list is where a search is answered from,
+    /// so the two gestures have to mean the same thing.
+    #[test]
+    fn a_click_on_a_line_replaces_what_is_held() {
+        let mut selection = Selection::default();
+
+        clicked(false, "SOL", &mut selection);
+        clicked(false, "SOLATI", &mut selection);
+
+        assert_eq!(selection.len(), 1);
+        assert_eq!(selection.name(0), Some("SOLATI"));
+    }
+
+    /// A click with a modifier held gathers them up instead
+    ///
+    /// Several candidates come back from one search, and picking a handful of
+    /// them out is what the list is for. Made to mean the same in the list as
+    /// it does in the sky, since a user who has learnt the gesture on a star
+    /// has learnt it.
+    #[test]
+    fn a_gathered_click_holds_what_was_already_picked() {
+        let mut selection = Selection::default();
+
+        clicked(false, "SOL", &mut selection);
+        clicked(true, "SOLATI", &mut selection);
+
+        assert_eq!(selection.name(0), Some("SOL"));
+        assert_eq!(selection.name(1), Some("SOLATI"));
+    }
+
+    /// And one already held is let go of
+    ///
+    /// One gesture that builds a set and takes it apart, as it is on the map.
+    #[test]
+    fn a_gathered_click_on_one_already_held_lets_go_of_it() {
+        let mut selection = Selection::default();
+
+        clicked(false, "SOL", &mut selection);
+        clicked(true, "SOLATI", &mut selection);
+        clicked(true, "SOL", &mut selection);
+
+        assert_eq!(selection.len(), 1);
+        assert_eq!(selection.name(0), Some("SOLATI"));
+    }
+
+    /// Gathering a system with nowhere to be holds what was already held
+    ///
+    /// There is nothing to select, what the map marks being a place, and the
+    /// set that was gathered is no reason to take apart over it.
+    #[test]
+    fn a_gathered_click_on_a_system_with_nowhere_to_be_holds_the_rest() {
+        let mut selection = Selection::default();
+        let mut nowhere = row("NOWHERE");
+        nowhere.position = None;
+
+        clicked(false, "SOL", &mut selection);
+        picked(true, &nowhere, &mut selection);
+
+        assert_eq!(selection.len(), 1);
+        assert_eq!(selection.name(0), Some("SOL"));
+    }
+
+    /// Which system a name stands for
+    ///
+    /// Derived from the name so that one name means one system across two
+    /// passes and two names never mean the same one. Numbering them by where
+    /// they sit in the list would give every first row the same system, and a
+    /// test for what happens when the system changes would never change it.
+    fn address_of(name: &str) -> i64 {
+        name.bytes().map(i64::from).sum()
+    }
+
+    /// A selection holding `names`
+    fn holding(names: &[&str]) -> Selection {
+        let mut selection = Selection::default();
+        for name in names {
+            selection
+                .toggle(crate::systems::tests::named(address_of(name), name));
+        }
+        selection
+    }
+
+    /// What the bar says about a selection holding `names`
+    fn selection_said(names: &[&str]) -> Vec<String> {
+        let mut selection = holding(names);
+
+        words(|ui| {
+            let mut panels = Panels::default();
+            let mut filters = Filters::default();
+            let mut travelled = None;
+            selected(
+                ui,
+                &mut selection,
+                None,
+                &mut travelled,
+                &mut panels,
+                &mut filters,
+            );
+        })
+    }
+
+    /// Every system picked out gets a row naming it
+    ///
+    /// A row apiece rather than one row about several, so that no row has to
+    /// answer which of them it means.
+    #[test]
+    fn every_selected_system_gets_a_row() {
+        let said = selection_said(&["SOL", "ALPHA CENTAURI", "BARNARD"]);
+
+        assert!(said.contains(&"SOL".to_owned()), "{said:?}");
+        assert!(said.contains(&"ALPHA CENTAURI".to_owned()), "{said:?}");
+        assert!(said.contains(&"BARNARD".to_owned()), "{said:?}");
+    }
+
+    /// Several picked out says how many, and offers to filter on them
+    #[test]
+    fn a_gathered_selection_offers_to_filter_on_itself() {
+        let said = selection_said(&["SOL", "BARNARD"]);
+
+        assert!(said.contains(&"2 systems".to_owned()), "{said:?}");
+        assert!(said.contains(&"Filter These".to_owned()), "{said:?}");
+    }
+
+    /// One picked out says neither
+    ///
+    /// The row already names it, and a line saying "1 system" over a row
+    /// naming that system says the same thing twice. There is nothing to
+    /// gather either, a filter over one system being the system itself.
+    #[test]
+    fn one_selected_system_is_left_to_its_own_row() {
+        let said = selection_said(&["SOL"]);
+
+        assert!(said.contains(&"SOL".to_owned()), "{said:?}");
+        assert!(!said.contains(&"1 systems".to_owned()), "{said:?}");
+        assert!(!said.contains(&"Filter These".to_owned()), "{said:?}");
+    }
+
+    /// The selection rows each answer for themselves
+    #[test]
+    fn the_selection_rows_do_not_share_ids() {
+        let mut selection = holding(&["SOL", "BARNARD", "WOLF 359"]);
+
+        let said = crate::tests::complaints(|ui| {
+            let mut panels = Panels::default();
+            let mut filters = Filters::default();
+            let mut travelled = None;
+            selected(
+                ui,
+                &mut selection,
+                None,
+                &mut travelled,
+                &mut panels,
+                &mut filters,
+            );
+        });
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// Nothing picked out draws no rows at all
+    #[test]
+    fn an_empty_selection_draws_nothing() {
+        assert!(selection_said(&[]).is_empty());
+    }
+
+    /// Draw the results list holding `names`
+    fn draw_offered<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
+        move |ui: &mut Ui| {
+            let mut selection = Selection::default();
+            let mut travelled = None;
+            let mut described = None;
+            offered(
+                ui,
+                &results(names, true),
+                None,
+                &mut selection,
+                &mut travelled,
+                &mut described,
+            );
+        }
+    }
+
+    /// Draw the selection rows holding `names`
+    fn draw_selected<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
+        move |ui: &mut Ui| {
+            let mut selection = holding(names);
+            let mut panels = Panels::default();
+            let mut filters = Filters::default();
+            let mut travelled = None;
+            selected(
+                ui,
+                &mut selection,
+                None,
+                &mut travelled,
+                &mut panels,
+                &mut filters,
+            );
+        }
+    }
+
+    /// The whole bar drawn at once, as a frame of the real thing
+    ///
+    /// The pieces are tested apart, and a clash between two of them shows up
+    /// nowhere until they are drawn together. The selected system is one of
+    /// the ones the search turned up, which is the ordinary case: a name is
+    /// searched, something is picked out of what came back, and the list is
+    /// still standing under the box.
+    #[test]
+    fn the_whole_bar_does_not_clash_with_itself() {
+        let said = crate::tests::complaints(|ui| {
+            let mut query = Some("SOL".to_owned());
+            let mut note = SearchNote(None);
+            let mut found = results(&["SOL", "SOLATI", "SOLLARO"], true);
+            let mut selection = holding(&["SOL"]);
+            let mut filters = Filters::default();
+            filters.add(Filter::Systems {
+                label: "2 systems".to_owned(),
+                systems: vec![1, 2],
+            });
+            let mut panels = Panels::default();
+            let mut travelled = None;
+            let mut described = None;
+
+            search_box(ui, &mut query, &mut note, &mut found);
+            offered(
+                ui,
+                &found,
+                None,
+                &mut selection,
+                &mut travelled,
+                &mut described,
+            );
+            selected(
+                ui,
+                &mut selection,
+                None,
+                &mut travelled,
+                &mut panels,
+                &mut filters,
+            );
+            applied(
+                ui,
+                &mut filters,
+                &InReach { admitted: 1, total: 3 },
+                &mut panels,
+            );
+        });
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// The instrument itself sees a clash when there is one
+    ///
+    /// Two widgets given one id at two rects is the fault `complaints` is
+    /// there to catch. Without this, a run that finds nothing says only that
+    /// nothing was heard, which is not the same as nothing being said.
+    #[test]
+    fn complaints_hears_a_real_clash() {
+        let said = crate::tests::complaints(|ui| {
+            let id = egui::Id::new("the-same-id");
+            let one = egui::Rect::from_min_size(
+                egui::pos2(0., 0.),
+                egui::vec2(50., 20.),
+            );
+            let two = egui::Rect::from_min_size(
+                egui::pos2(0., 200.),
+                egui::vec2(50., 20.),
+            );
+            ui.interact(one, id, egui::Sense::click());
+            ui.interact(two, id, egui::Sense::click());
+        });
+
+        assert!(!said.is_empty(), "complaints heard nothing about a clash");
+    }
+
+    /// Drawn filter rows for `names`
+    fn draw_filters<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
+        move |ui: &mut Ui| {
+            let mut filters = Filters::default();
+            for name in names {
+                filters.add(Filter::Faction {
+                    id: name.len() as i32,
+                    name: (*name).to_owned(),
+                });
+            }
+            let mut panels = Panels::default();
+            applied(
+                ui,
+                &mut filters,
+                &InReach { admitted: 1, total: 3 },
+                &mut panels,
+            );
+        }
+    }
+
+    /// Dropping a filter is not read as a widget changing identity either
+    ///
+    /// The other half of what the bar does when a row goes: the rows below
+    /// move up into the rectangle it left.
+    #[test]
+    fn dropping_a_filter_is_not_an_id_change() {
+        let said = crate::tests::between_passes(
+            draw_filters(&["Empire", "Federation", "Alliance"]),
+            draw_filters(&["Empire", "Alliance"]),
+        );
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// A list whose items change is not read as a widget changing identity
+    ///
+    /// Egui watches for a rect that keeps its place while everything in it
+    /// changes id, and paints a red rectangle over it as well as warning. A
+    /// fresh search and a replaced selection are both exactly that shape, so
+    /// the rows are keyed on where they sit and the ids stay put while what
+    /// they are about changes underneath.
+    #[test]
+    fn a_list_whose_items_change_is_not_an_id_change() {
+        let results = crate::tests::between_passes(
+            draw_offered(&["SOL", "SOLATI"]),
+            draw_offered(&["BARNARD", "WOLF 359"]),
+        );
+        let replaced = crate::tests::between_passes(
+            draw_selected(&["SOL"]),
+            draw_selected(&["BARNARD"]),
+        );
+        let shorter = crate::tests::between_passes(
+            draw_selected(&["SOL", "BARNARD", "WOLF 359"]),
+            draw_selected(&["SOL", "WOLF 359"]),
+        );
+
+        assert!(results.is_empty(), "{results:?}");
+        assert!(replaced.is_empty(), "{replaced:?}");
+        assert!(shorter.is_empty(), "{shorter:?}");
+    }
+
+    /// What the search box says, holding `query` against `results`
+    fn box_said(query: Option<&str>, results: &[&str]) -> Vec<String> {
+        words(|ui| {
+            let mut value = query.map(str::to_owned);
+            let mut note = SearchNote::default();
+            let mut results = results_of(results);
+            search_box(ui, &mut value, &mut note, &mut results);
+        })
+    }
+
+    /// A results list holding `names`, all of them placed
+    fn results_of(names: &[&str]) -> SearchResults {
+        results(names, true)
+    }
+
+    /// A box with something in it offers to empty itself
+    #[test]
+    fn a_box_holding_a_query_offers_to_clear_it() {
+        assert!(box_said(Some("SOL"), &[]).iter().any(|line| line == CLOSE));
+    }
+
+    /// So does one whose query is gone but whose answer is still standing
+    ///
+    /// The list outlives what was typed, since picking a system out of it
+    /// leaves it up to be picked from again. A mark that went with the query
+    /// would leave the list with no way to dismiss it but typing.
+    #[test]
+    fn a_box_answered_by_a_list_offers_to_clear_it() {
+        assert!(box_said(None, &["SOL"]).iter().any(|line| line == CLOSE));
+    }
+
+    /// An empty box offers nothing, having nothing to take away
+    #[test]
+    fn an_empty_box_offers_no_mark() {
+        assert!(!box_said(None, &[]).iter().any(|line| line == CLOSE));
+    }
+
+    /// Clearing takes the query, the note and the list together
+    ///
+    /// All three answer the one name, so leaving any of them standing leaves
+    /// an answer to a question no longer on screen.
+    #[test]
+    fn clearing_takes_everything_that_answered_the_name() {
+        let mut value = Some("SOL".to_owned());
+        let mut note = SearchNote(Some("No system named SOL".to_owned()));
+        let mut results = results_of(&["SOLATI"]);
+
+        cleared(&mut value, &mut note, &mut results);
+
+        assert!(value.is_none());
+        assert!(note.0.is_none());
+        assert!(results.is_empty());
+    }
+
+    /// Nothing found draws nothing at all
+    ///
+    /// Rather than an empty box under the input. A search that found nothing
+    /// is answered by the note, and a list standing empty beside it would be
+    /// a second answer saying less.
+    #[test]
+    fn an_empty_list_is_not_drawn() {
+        assert!(listed(&SearchResults::default(), None).is_empty());
+    }
+
+    /// The list paints in colours something can draw
+    ///
+    /// The distance at the end of a line is laid out apart from the line and
+    /// painted against a placeholder, which is the arrangement that reaches
+    /// the tessellator with nothing to draw and panics there.
+    #[test]
+    fn the_results_paint_in_colours() {
+        painted(|ui| {
+            let mut selection = Selection::default();
+            let mut travelled = None;
+            let mut described = None;
+            offered(
+                ui,
+                &results(&["SOL", "NOWHERE"], false),
+                Some(DVec3::ZERO),
+                &mut selection,
+                &mut travelled,
+                &mut described,
+            );
+        });
+    }
+
+    /// And each line answers for itself
+    #[test]
+    fn the_result_lines_do_not_share_ids() {
+        let said = crate::tests::complaints(|ui| {
+            let mut selection = Selection::default();
+            let mut travelled = None;
+            let mut described = None;
+            offered(
+                ui,
+                &results(&["SOL", "SOLATI", "SOLLARO"], true),
+                None,
+                &mut selection,
+                &mut travelled,
+                &mut described,
+            );
+        });
+
+        assert!(said.is_empty(), "{said:?}");
+    }
 
     /// A slider row drawn in the pane, as it comes out
     ///

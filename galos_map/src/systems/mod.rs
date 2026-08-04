@@ -251,6 +251,17 @@ pub(crate) mod tests {
         }
     }
 
+    /// A system called `name`
+    ///
+    /// For whoever is testing what gets said about a system rather than what
+    /// is done with it. A [`System`]'s fields are private to this module, so
+    /// the name has to be set from in here.
+    pub(crate) fn named(address: i64, name: &str) -> System {
+        let mut system = system(address);
+        system.name = name.to_owned();
+        system
+    }
+
     /// A system at `away` light years from the origin, on the x axis
     fn at(address: i64, away: f64) -> System {
         let mut system = system(address);

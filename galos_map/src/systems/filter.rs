@@ -64,6 +64,15 @@ pub enum Filter {
     /// names the two ends as the database spells them rather than as they
     /// were typed.
     Route { label: String, systems: Vec<i64> },
+    /// The systems the user picked out by hand
+    ///
+    /// A copy of what was selected rather than a reading of the selection as
+    /// it stands. Taking a copy is what makes the filter worth having: the
+    /// rings and the rows can be let go of and the sky stays narrowed to the
+    /// systems that were gathered.
+    ///
+    /// `label` says how many, a hand-picked set having no name of its own.
+    Systems { label: String, systems: Vec<i64> },
 }
 
 impl Filter {
@@ -72,6 +81,9 @@ impl Filter {
         match self {
             Filter::Faction { id, .. } => system.factions.contains(id),
             Filter::Route { systems, .. } => systems.contains(&system.address),
+            Filter::Systems { systems, .. } => {
+                systems.contains(&system.address)
+            }
         }
     }
 
@@ -91,7 +103,7 @@ impl Filter {
     /// system it does not admit at all.
     pub fn place_of(&self, address: i64) -> Option<usize> {
         match self {
-            Filter::Faction { .. } => None,
+            Filter::Faction { .. } | Filter::Systems { .. } => None,
             Filter::Route { systems, .. } => {
                 systems.iter().position(|on| *on == address)
             }
@@ -102,7 +114,9 @@ impl Filter {
     pub fn name(&self) -> &str {
         match self {
             Filter::Faction { name, .. } => name,
-            Filter::Route { label, .. } => label,
+            Filter::Route { label, .. } | Filter::Systems { label, .. } => {
+                label
+            }
         }
     }
 
@@ -120,7 +134,7 @@ impl Filter {
             Filter::Faction { name, .. } => {
                 DbSystem::fetch_faction(db, name).await.unwrap_or_default()
             }
-            Filter::Route { systems, .. } => {
+            Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
             }
         }
@@ -456,6 +470,36 @@ mod tests {
 
         assert!(filters.admit(&member(1, &[7])));
         assert!(!filters.admit(&member(2, &[9])));
+    }
+
+    /// A hand-picked set holding the systems at `addresses`
+    fn gathered(addresses: &[i64]) -> Filter {
+        Filter::Systems {
+            label: format!("{} systems", addresses.len()),
+            systems: addresses.to_vec(),
+        }
+    }
+
+    /// A hand-picked set admits the systems that were picked
+    #[test]
+    fn a_gathered_set_admits_what_was_picked() {
+        let mut filters = Filters::default();
+        filters.add(gathered(&[7, 3]));
+
+        assert!(filters.admit(&member(3, &[])));
+        assert!(filters.admit(&member(7, &[])));
+        assert!(!filters.admit(&member(9, &[])));
+    }
+
+    /// And has no order for a panel to list it in
+    ///
+    /// Unlike a route, which is travelled from one end to the other. A set is
+    /// gathered up, and the order it happened to be clicked in says nothing
+    /// worth holding a list to.
+    #[test]
+    fn a_gathered_set_has_no_order_of_its_own() {
+        assert!(!gathered(&[7, 3]).ordered());
+        assert_eq!(gathered(&[7, 3]).place_of(3), None);
     }
 
     /// A route between the systems at `addresses`
