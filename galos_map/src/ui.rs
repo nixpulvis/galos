@@ -1986,15 +1986,35 @@ const FIELD_BORDER: egui::Stroke =
 /// narrowing the field, so that the box goes on reaching the full width and a
 /// name long enough runs up to what is standing in there rather than under
 /// it.
+///
+/// `placeholer` names the field as well as standing in it, so two fields in
+/// one form want two of them.
 fn singleline(
     ui: &mut Ui,
     value: &mut Option<String>,
     placeholer: &str,
     reserved: f32,
 ) -> Response {
-    let mut text = match value {
-        Some(input) => input.clone(),
-        None => placeholer.into(),
+    // Named rather than left to the running count, so that whether the field
+    // is being typed into can be asked before it is drawn. What it draws
+    // depends on the answer.
+    let id = ui.id().with(("field", placeholer));
+    let editing = ui.memory(|memory| memory.has_focus(id));
+
+    // What it wants stands in the field itself rather than behind it, so a
+    // field holding nothing is a field holding those words.
+    //
+    // Read off what the field holds and who is typing, rather than kept up as
+    // the focus comes and goes. A field is drawn every frame and the focus
+    // moves between two of them in one, so a placeholder put back by the
+    // moment of losing it is a placeholder that stays away whenever that
+    // moment is not seen. Nothing typed is nothing typed, and an empty string
+    // is nothing typed however the field came to hold one.
+    let wanting = typed(value).is_none() && !editing;
+    let mut text = if wanting {
+        placeholer.to_owned()
+    } else {
+        value.clone().unwrap_or_default()
     };
     let margin = egui::Margin {
         right: FIELD_PADDING.right + reserved as i8,
@@ -2007,31 +2027,21 @@ fn singleline(
     let response = ui
         .scope(|ui| {
             ui.visuals_mut().widgets.inactive.bg_stroke = FIELD_BORDER;
-            if value.is_none() {
+            if wanting {
                 ui.visuals_mut().override_text_color =
                     Some(egui::Color32::GRAY);
             }
             ui.add_sized(
                 egui::vec2(ui.available_width(), 0.),
-                egui::TextEdit::singleline(&mut text).margin(margin),
+                egui::TextEdit::singleline(&mut text).id(id).margin(margin),
             )
         })
         .inner;
 
-    if response.gained_focus() {
-        *value = Some("".into());
-    }
-
-    if text != placeholer {
+    // The words the field was standing there wanting are not words anybody
+    // typed, so a field showing them holds nothing whatever is in the box.
+    if !wanting {
         *value = Some(text);
-    }
-
-    if response.lost_focus() {
-        if let Some(ref search) = *value {
-            if search == "" {
-                *value = None;
-            }
-        }
     }
 
     response
@@ -3228,6 +3238,91 @@ mod tests {
             "nothing lit up, so nothing was under the pointer"
         );
         assert_eq!(rectangles(&painted), Vec::new(), "a mark painted a box");
+    }
+
+    /// A field holding an empty string says what it wants
+    ///
+    /// Which is the whole of how the placeholder comes back. A field is
+    /// clicked into and clicked straight out of again, and the focus moves
+    /// between two fields within one frame, so anything that waited to be
+    /// told the field had lost the focus would be waiting for a moment the
+    /// field is not always drawn to see. Nothing typed is nothing typed,
+    /// however the field came to hold an empty string.
+    #[test]
+    fn a_field_holding_nothing_says_what_it_wants() {
+        let mut value = Some(String::new());
+
+        let said = words(|ui| {
+            singleline(ui, &mut value, "Search", 0.);
+        });
+
+        assert!(said.contains(&"Search".to_owned()), "{said:?}");
+    }
+
+    /// And one holding a name says the name
+    #[test]
+    fn a_field_holding_a_name_says_the_name() {
+        let mut value = Some("SOL".to_owned());
+
+        let said = words(|ui| {
+            singleline(ui, &mut value, "Search", 0.);
+        });
+
+        assert!(said.contains(&"SOL".to_owned()), "{said:?}");
+        assert!(!said.contains(&"Search".to_owned()), "{said:?}");
+    }
+
+    /// A field being typed into is empty rather than full of what it wants
+    ///
+    /// The words stand in the field itself, so a field that kept them while
+    /// it was being typed into would have them typed over.
+    #[test]
+    fn a_field_being_typed_into_stands_empty() {
+        let ctx = egui::Context::default();
+        let mut value: Option<String> = None;
+
+        let fields = |input, value: &mut Option<String>| {
+            let mut at = egui::Rect::NOTHING;
+            let output = ctx.run_ui(input, |ui| {
+                at = singleline(ui, value, "Search", 0.).rect;
+            });
+            let mut said = Vec::new();
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    said.push(text.galley.text().to_owned());
+                }
+            }
+            (at, said)
+        };
+
+        // Two passes with nothing happening, to place the field.
+        let _ = fields(egui::RawInput::default(), &mut value);
+        let (at, said) = fields(egui::RawInput::default(), &mut value);
+        assert!(said.contains(&"Search".to_owned()), "{said:?}");
+
+        fields(clicking(at.center()), &mut value);
+        let (_, said) = fields(egui::RawInput::default(), &mut value);
+
+        assert!(!said.contains(&"Search".to_owned()), "{said:?}");
+    }
+
+    /// A primary click at `at`, and the pointer moved there to make it
+    fn clicking(at: egui::Pos2) -> egui::RawInput {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+
+        egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(at),
+                button(true),
+                button(false),
+            ],
+            ..Default::default()
+        }
     }
 
     /// A field clicked into and left alone holds nothing
