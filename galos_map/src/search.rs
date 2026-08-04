@@ -89,9 +89,9 @@ pub enum Plot {
 /// A collection of search messages for responding to the user's UI
 /// interactions.
 ///
-/// A focus is not one of these. Asking for a focus names something and the
+/// A filter is not one of these. Asking for a filter names something and the
 /// map neither goes there, fetches it, nor picks it out, so it is asked for
-/// by [`crate::systems::focus::Wanted`] instead.
+/// by [`crate::systems::filter::Wanted`] instead.
 #[derive(Message, Debug)]
 pub enum Searched {
     System { name: String },

@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::focus::{self, Unfocused};
+use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Star;
@@ -164,11 +164,11 @@ impl PointedAt {
 /// the pointer is what the eye says is being pointed at, whatever happens to
 /// lie nearer the camera behind it.
 ///
-/// Between stars, one in focus wins, and only then the nearer of the two, as
-/// it would if they blocked each other. A focus says which systems the user
-/// is working with, and the rest are drawn faintly to be the space those are
-/// read against; letting that space take the pointer off a system in focus
-/// would have the background answer for the thing in front of it.
+/// Between stars, an admitted one wins, and only then the nearer of the two,
+/// as it would if they blocked each other. A filter says which systems the
+/// user is working with, and the rest are drawn faintly to be the space those
+/// are read against; letting that space take the pointer off an admitted
+/// system would have the background answer for the thing in front of it.
 ///
 /// Reachable across [`super`], since what is drawn for a system is ordered
 /// after it: a ring, a tint and a selection all answer what this decides, and
@@ -183,7 +183,7 @@ pub(super) fn point_at(
     boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
     targets: Query<&ChildOf, With<PointerTarget>>,
-    unfocused: Query<(), With<Unfocused>>,
+    filtered: Query<(), With<Filtered>>,
     pointed_at: Query<Entity, With<PointedAt>>,
     mut commands: Commands,
 ) {
@@ -209,10 +209,10 @@ pub(super) fn point_at(
     }
 
     let mut named: Option<Entity> = None;
-    // What is in focus, and only then what is nearest. A system the focuses
+    // What is admitted, and only then what is nearest. A system the filters
     // admit is what the user asked to be looking at, so one lying behind
     // another they did not ask for is still the one they are pointing at:
-    // the dim star in front is the background the focus is read against, and
+    // the dim star in front is the background the filter is read against, and
     // background that answers the pointer is background in the way.
     let mut nearest: Option<(Entity, bool, f32)> = None;
 
@@ -224,7 +224,7 @@ pub(super) fn point_at(
                 }
             } else if let Ok(target) = targets.get(*entity) {
                 let system = target.parent();
-                let dim = unfocused.contains(system);
+                let dim = filtered.contains(system);
                 let better = nearest.is_none_or(|(_, was_dim, depth)| {
                     (dim, hit.depth) < (was_dim, depth)
                 });
@@ -325,14 +325,15 @@ pub fn ring(
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (&GlobalTransform, &Children, Has<Unfocused>),
+        (&GlobalTransform, &Children, Has<Filtered>),
         (With<System>, With<PointedAt>, Without<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
+    dim: Res<DimTo>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
-    for (system, children, unfocused) in &pointed_at {
+    for (system, children, filtered) in &pointed_at {
         // Drawn at whatever the target was fitted to, so the ring is the
         // outline of the very thing the pointer is tested against.
         let Some(radius) = children
@@ -347,7 +348,7 @@ pub fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            focus::dim(INDICATOR, unfocused),
+            dim.against(INDICATOR, filtered),
         );
     }
 }
@@ -406,7 +407,7 @@ mod tests {
             .map(|(dim, depth)| {
                 let system = app.world_mut().spawn_empty().id();
                 if *dim {
-                    app.world_mut().entity_mut(system).insert(Unfocused);
+                    app.world_mut().entity_mut(system).insert(Filtered);
                 }
                 let target = app
                     .world_mut()
@@ -441,24 +442,24 @@ mod tests {
             .collect()
     }
 
-    /// A system in focus is pointed at through a dim one nearer the camera
+    /// An admitted system is pointed at through a dim one nearer the camera
     ///
-    /// The dim ones are the space a focus is read against. One of them
-    /// answering the pointer over a system in focus behind it would put the
+    /// The dim ones are the space a filter is read against. One of them
+    /// answering the pointer over an admitted system behind it would put the
     /// background in the way of the thing it is there to set off.
     #[test]
-    fn a_system_in_focus_is_pointed_at_through_a_dim_one() {
+    fn an_admitted_system_is_pointed_at_through_a_dim_one() {
         let (app, stars) = pointed(&[(true, 1.), (false, 50.)]);
 
         assert_eq!(points_at(&app, &stars), vec![false, true]);
     }
 
-    /// Between two in focus, the nearer is still the one pointed at
+    /// Between two admitted, the nearer is still the one pointed at
     ///
-    /// Focus decides between a dim star and a lit one, and depth goes on
-    /// deciding everything it decided before.
+    /// Being admitted decides between a dim star and a lit one, and depth
+    /// goes on deciding everything it decided before.
     #[test]
-    fn between_two_in_focus_the_nearer_is_pointed_at() {
+    fn between_two_admitted_the_nearer_is_pointed_at() {
         let (app, stars) = pointed(&[(false, 1.), (false, 50.)]);
 
         assert_eq!(points_at(&app, &stars), vec![true, false]);
@@ -466,7 +467,7 @@ mod tests {
 
     /// And between two dim ones, likewise
     ///
-    /// Nothing in focus to prefer, so the rule that was there before is the
+    /// Neither of them admitted, so the rule that decided it before is the
     /// whole of what is left.
     #[test]
     fn between_two_dim_ones_the_nearer_is_pointed_at() {

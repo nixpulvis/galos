@@ -50,7 +50,7 @@ pub fn spawn_route(
 
     // Asked before the line already drawn is taken away, so that a plot that
     // came back with nothing leaves the last one whole. Taken away first, a
-    // route that failed would clear the line and leave the focus naming it
+    // route that failed would clear the line and leave the filter naming it
     // standing in the bar, dimming the map down to a route with nothing drawn
     // on it.
     for entity in route_query.iter() {

@@ -6,7 +6,7 @@ use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
-    focus::{self, Focuses, Unfocused},
+    filter::{DimTo, Filtered, Filters},
     pointing::{
         DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
         UNFITTED_SCALE,
@@ -45,6 +45,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
+    app.add_systems(Update, redim.in_set(MapSet::Populate));
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -64,13 +65,13 @@ pub struct SystemMesh(pub Handle<Mesh>);
 /// Two sets of the same colours rather than one recoloured per star, because
 /// the colour lives on a shared asset. A star moves between the sets by
 /// swapping which handle it points at, which repaints only that star, and the
-/// two sets are built once, since how faintly to draw is one number rather
-/// than a setting.
+/// dim set is recoloured in place when [`DimTo`] moves, which is meant to
+/// repaint every dimmed star at once.
 #[derive(Resource)]
 pub struct SystemMaterials {
     /// One per colour, indexed as [`hue`] answers
     bright: Vec<Handle<StandardMaterial>>,
-    /// The same colours, at [`focus::DIMMED`] of full
+    /// The same colours, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
 }
 
@@ -319,7 +320,7 @@ pub fn spawn(
     galaxy: Res<Galaxy>,
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
-    focuses: Res<Focuses>,
+    filters: Res<Filters>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
     invisible: Res<InvisibleMaterial>,
@@ -346,7 +347,7 @@ pub fn spawn(
                 &galaxy,
                 grid,
                 &color_by,
-                &focuses,
+                &filters,
                 &mut commands,
                 &mesh,
                 &materials,
@@ -433,7 +434,7 @@ pub fn spawn(
 /// A row already on the map has its [`System`] replaced rather than being
 /// respawned, which [`update`] then acts on.
 ///
-/// The focuses are asked here rather than left to [`focus::mark`], so that a
+/// The filters are asked here rather than left to [`filter::mark`], so that a
 /// system arrives already marked and already drawn at the strength it should
 /// be. A mark applied by a command lands at the next sync point, by which
 /// time the star has been drawn once at full strength.
@@ -443,7 +444,7 @@ pub fn spawn_systems(
     galaxy: &Res<Galaxy>,
     grid: &Grid,
     color_by: &Res<ColorBy>,
-    focuses: &Res<Focuses>,
+    filters: &Res<Filters>,
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
@@ -477,10 +478,10 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            // Asked here as well as in `focus::mark`, since a mark applied
+            // Asked here as well as in `filter::mark`, since a mark applied
             // by a command lands at the next sync point and the star would
             // be drawn once at full strength before it arrived.
-            let excluded = !focuses.admit(&system);
+            let excluded = !filters.admit(&system);
             let drawn = star(&system, color_by, mesh, materials, excluded);
             let target = pointer_target(mesh, invisible);
             let mut spawned = commands.spawn((
@@ -495,28 +496,28 @@ pub fn spawn_systems(
                 ChildOf(galaxy.0),
             ));
             if excluded {
-                spawned.insert(Unfocused);
+                spawned.insert(Filtered);
             }
             spawned.with_child(drawn).with_child(target);
         }
     }
 }
 
-/// Carry a changed row, a changed colour scheme or a changed focus onto what
+/// Carry a changed row, a changed colour scheme or a changed filter onto what
 /// is drawn
 ///
 /// The two halves of a star are refreshed from different things. Its
 /// placement follows the row it was built from, and its material follows the
-/// row, [`ColorBy`] and whether the focuses exclude it, so the second is
+/// row, [`ColorBy`] and whether the filters exclude it, so the second is
 /// checked against the star each mesh hangs off rather than a copy of it.
 ///
 /// The material is decided afresh each frame and written only where it
 /// differs, as [`super::labels::tint_marked_names`] does, rather than being
 /// guarded by what has changed. A mark is applied by a command and so lands a
-/// frame after the focus that asked for it, which leaves nothing that both
+/// frame after the filter that asked for it, which leaves nothing that both
 /// runs after the mark and can still see what changed.
 fn update(
-    systems_query: Query<(Entity, Ref<System>, Has<Unfocused>)>,
+    systems_query: Query<(Entity, Ref<System>, Has<Filtered>)>,
     mut stars: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
         With<Star>,
@@ -535,13 +536,34 @@ fn update(
     }
 
     for (child_of, mut material) in &mut stars {
-        let Ok((_, system, unfocused)) = systems_query.get(child_of.parent())
+        let Ok((_, system, filtered)) = systems_query.get(child_of.parent())
         else {
             continue;
         };
-        let wanted = materials.get(hue(&system, &color_by), unfocused);
+        let wanted = materials.get(hue(&system, &color_by), filtered);
         if material.0 != wanted {
             material.0 = wanted;
+        }
+    }
+}
+
+/// Repaint the dimmed colours when the slider moves
+///
+/// The handles stay as they are, so nothing has to be told which material it
+/// is pointing at. Recolouring a shared asset repaints everything drawn in
+/// it, which here is every star the filters exclude, and is the point.
+fn redim(
+    dim: Res<DimTo>,
+    materials: Res<SystemMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+) {
+    if !dim.is_changed() {
+        return;
+    }
+
+    for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
+        if let Some(mut material) = assets.get_mut(handle) {
+            *material = star_material(hue.color(), dim.0);
         }
     }
 }
@@ -623,6 +645,7 @@ fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
 
 fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
+    dim: Res<DimTo>,
     mut commands: Commands,
 ) {
     let mut set = |strength: f32| {
@@ -632,10 +655,8 @@ fn init_materials(
             .collect()
     };
 
-    commands.insert_resource(SystemMaterials {
-        bright: set(1.),
-        dim: set(focus::DIMMED),
-    });
+    commands
+        .insert_resource(SystemMaterials { bright: set(1.), dim: set(dim.0) });
     commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
         base_color: Color::NONE,
         alpha_mode: AlphaMode::Blend,

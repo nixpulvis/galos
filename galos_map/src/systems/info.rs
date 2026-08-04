@@ -15,7 +15,7 @@ use crate::Db;
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::focus::{Focus, Focuses};
+use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::Selection;
 use crate::ui::Chose;
 use crate::ui::MARGIN;
@@ -33,7 +33,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<FactionNames>();
     app.add_systems(Update, refresh.in_set(MapSet::Present));
     app.add_systems(Update, name_factions.in_set(MapSet::Present));
-    app.add_systems(Update, fill_focuses.in_set(MapSet::Present));
+    app.add_systems(Update, fill_filters.in_set(MapSet::Present));
     // `ui::chrome` concludes at its end whether the pointer is busy with the
     // UI, from every window drawn in the pass so far. Drawn before it, these
     // are counted in the same frame they are shown rather than the next.
@@ -57,7 +57,7 @@ pub struct Panels {
     /// How tall the tallest panel drawn came out
     ///
     /// How far down the next one opens. The tallest rather than the last,
-    /// since a system's panel and a focus's are not the same height and a
+    /// since a system's panel and a filter's are not the same height and a
     /// step measured from the shorter would open the next panel on top of a
     /// taller one already standing.
     ///
@@ -93,13 +93,13 @@ struct Panel {
 enum Subject {
     /// One system, and everything the map knows about it
     System(System),
-    /// One focus, and the systems it admits
+    /// One filter, and the systems it admits
     ///
-    /// The systems are fetched once the panel is open, by [`fill_focuses`],
+    /// The systems are fetched once the panel is open, by [`fill_filters`],
     /// and are nothing at all until they arrive. They come from the database
     /// rather than from the map, since the point of the list is to say where
     /// a faction is, and the map holds only what the spyglass has reached.
-    Focus { focus: Focus, systems: Option<Vec<System>> },
+    Filter { filter: Filter, systems: Option<Vec<System>> },
 }
 
 impl Subject {
@@ -107,7 +107,7 @@ impl Subject {
     fn title(&self) -> &str {
         match self {
             Subject::System(system) => &system.name,
-            Subject::Focus { focus, .. } => focus.name(),
+            Subject::Filter { filter, .. } => filter.name(),
         }
     }
 
@@ -121,8 +121,8 @@ impl Subject {
             Subject::System(system) => {
                 egui::Id::new(("system-panel", system.address))
             }
-            Subject::Focus { focus, .. } => {
-                egui::Id::new(("focus-panel", focus))
+            Subject::Filter { filter, .. } => {
+                egui::Id::new(("filter-panel", filter))
             }
         }
     }
@@ -138,9 +138,9 @@ impl Panels {
         self.push(Subject::System(system));
     }
 
-    /// Open a panel listing what `focus` admits
-    pub fn open_focus(&mut self, focus: Focus) {
-        self.push(Subject::Focus { focus, systems: None });
+    /// Open a panel listing what `filter` admits
+    pub fn open_filter(&mut self, filter: Filter) {
+        self.push(Subject::Filter { filter, systems: None });
     }
 
     fn push(&mut self, subject: Subject) {
@@ -184,7 +184,7 @@ fn tile(slot: usize, down: usize, across: usize) -> (usize, usize) {
 /// What each faction the map has had to name is called
 ///
 /// A [`System`] carries the ids of the factions present in it, since that is
-/// what is asked of it in bulk: which of them a focus admits, over every
+/// what is asked of it in bulk: which of them a filter admits, over every
 /// system drawn, every frame. What they are called is asked for rarely and a
 /// panel at a time, so it is looked up when a panel wants it and kept.
 ///
@@ -219,9 +219,9 @@ fn name_factions(
         .iter()
         .filter_map(|panel| match &panel.subject {
             Subject::System(system) => Some(system),
-            // A focus panel lists systems by name and says nothing about
+            // A filter panel lists systems by name and says nothing about
             // whose they are.
-            Subject::Focus { .. } => None,
+            Subject::Filter { .. } => None,
         })
         .flat_map(|system| system.factions.iter().copied())
         .filter(|id| names.get(*id).is_none())
@@ -262,7 +262,7 @@ fn refresh(
     }
     for system in &changed {
         for panel in &mut panels.open {
-            // Only a panel about that one system. A focus's list came from
+            // Only a panel about that one system. A filter's list came from
             // the database rather than the map, and a row that changed under
             // the map says nothing about whether the list is still the right
             // list.
@@ -275,7 +275,7 @@ fn refresh(
     }
 }
 
-/// Fetch the systems a focus admits, once a panel has been opened for it
+/// Fetch the systems a filter admits, once a panel has been opened for it
 ///
 /// From the database rather than from the map. The list is there to say where
 /// a faction is, and the map holds only what the spyglass has dragged in,
@@ -289,21 +289,22 @@ fn refresh(
 /// largest faction on record, which stands in 314 systems, so opening one of
 /// those panels drops a couple of frames. Worth moving onto a task if it comes
 /// to be done often, and not worth the machinery while it is a click.
-fn fill_focuses(mut panels: ResMut<Panels>, db: Res<Db>) {
-    let unfilled: Vec<Focus> = panels
+fn fill_filters(mut panels: ResMut<Panels>, db: Res<Db>) {
+    let unfilled: Vec<Filter> = panels
         .open
         .iter()
         .filter_map(|panel| match &panel.subject {
-            Subject::Focus { focus, systems: None } => Some(focus.clone()),
+            Subject::Filter { filter, systems: None } => Some(filter.clone()),
             _ => None,
         })
         .collect();
 
-    for focus in unfilled {
-        let found = future::block_on(async { fetch(&db.0, &focus).await });
+    for filter in unfilled {
+        let found = future::block_on(async { fetch(&db.0, &filter).await });
         for panel in &mut panels.open {
-            if let Subject::Focus { focus: shown, systems } = &mut panel.subject
-                && *shown == focus
+            if let Subject::Filter { filter: shown, systems } =
+                &mut panel.subject
+                && *shown == filter
             {
                 *systems = Some(found.clone());
             }
@@ -311,29 +312,29 @@ fn fill_focuses(mut panels: ResMut<Panels>, db: Res<Db>) {
     }
 }
 
-/// What the map can draw of everything `focus` admits
+/// What the map can draw of everything `filter` admits
 ///
-/// Put in the focus's own order where it has one, and by name where it has
+/// Put in the filter's own order where it has one, and by name where it has
 /// not. What comes back is in no order at all, and which order a list holds
-/// is the focus's to say.
+/// is the filter's to say.
 ///
 /// Systems with no position on record are dropped. The map cannot draw one
 /// and cannot fly to one, so a line naming it would answer nothing.
 ///
-/// Which systems those are is the focus's own business. This is only what a
+/// Which systems those are is the filter's own business. This is only what a
 /// panel can do with them.
-async fn fetch(db: &galos_db::Database, focus: &Focus) -> Vec<System> {
-    let rows = focus.systems(db).await;
+async fn fetch(db: &galos_db::Database, filter: &Filter) -> Vec<System> {
+    let rows = filter.systems(db).await;
 
     let mut found: Vec<System> =
         rows.iter().filter_map(|row| System::try_from(row).ok()).collect();
 
-    // In the focus's own order where it has one, which for a route is the
+    // In the filter's own order where it has one, which for a route is the
     // order it is travelled. Where it has none, by name: what comes back is
     // in no order at all, and a list has to be in some order to hold still.
-    if focus.ordered() {
+    if filter.ordered() {
         found.sort_by_key(|system| {
-            focus.place_of(system.address).unwrap_or(usize::MAX)
+            filter.place_of(system.address).unwrap_or(usize::MAX)
         });
     } else {
         found.sort_unstable_by(|one, other| one.name.cmp(&other.name));
@@ -351,7 +352,7 @@ fn panels(
     mut panels: ResMut<Panels>,
     names: Res<FactionNames>,
     mut selection: ResMut<Selection>,
-    mut focuses: ResMut<Focuses>,
+    mut filters: ResMut<Filters>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
@@ -423,9 +424,9 @@ fn panels(
                 Subject::System(system) => {
                     described(ui, system, &names, &mut centered, &mut wanted)
                 }
-                Subject::Focus { focus, systems } => admitted(
+                Subject::Filter { filter, systems } => admitted(
                     ui,
-                    focus,
+                    filter,
                     systems.as_deref(),
                     center,
                     &mut picked,
@@ -464,8 +465,8 @@ fn panels(
     }
     // Already resolved, both halves of it having been read off a system the
     // map holds, so it goes straight in rather than round by `Wanted`.
-    if let Some(focus) = wanted {
-        focuses.add(focus);
+    if let Some(filter) = wanted {
+        filters.add(filter);
     }
 
     // Nothing while every panel is rolled up into its title bar, which is
@@ -486,7 +487,7 @@ fn described(
     system: &System,
     names: &FactionNames,
     centered: &mut Option<DVec3>,
-    wanted: &mut Option<Focus>,
+    wanted: &mut Option<Filter>,
 ) {
     egui::Grid::new(("system-fields", system.address)).num_columns(2).show(
         ui,
@@ -518,16 +519,16 @@ fn described(
     }
 }
 
-/// How many systems a focus's panel lists before it starts scrolling
+/// How many systems a filter's panel lists before it starts scrolling
 ///
 /// Enough to read a faction's holdings at a glance, and few enough that a
 /// panel does not run the height of the viewport and leave the tiling
 /// nowhere to put the next one.
 const LISTED: usize = 8;
 
-/// The systems a focus admits, and the one the user picks out of them
+/// The systems a filter admits, and the one the user picks out of them
 ///
-/// Every system the database has for the focus, not only the ones the map
+/// Every system the database has for the filter, not only the ones the map
 /// has fetched, since where a faction is, is most of what is being asked.
 ///
 /// Answered the way the map itself is: one click says which system is meant
@@ -535,7 +536,7 @@ const LISTED: usize = 8;
 /// system reached by its star are reached the same way.
 fn admitted(
     ui: &mut Ui,
-    focus: &Focus,
+    filter: &Filter,
     systems: Option<&[System]>,
     center: Option<DVec3>,
     picked: &mut Option<(System, bool)>,
@@ -565,7 +566,7 @@ fn admitted(
         })
         .collect();
 
-    // A focus with an order of its own is left in it. A route is travelled
+    // A filter with an order of its own is left in it. A route is travelled
     // from one end to the other, and a list of its systems put in any other
     // order is no longer a route, whatever it is sorted by.
     //
@@ -578,7 +579,7 @@ fn admitted(
     //
     // A stable sort, so that with no camera to measure from the order the
     // list arrived in is what is left.
-    if !focus.ordered() {
+    if !filter.ordered() {
         order.sort_by(|(_, one), (_, other)| match (one, other) {
             (Some(one), Some(other)) => one.total_cmp(other),
             _ => std::cmp::Ordering::Equal,
@@ -632,19 +633,19 @@ fn admitted(
 /// here, so it keeps its line. Naming them is one query behind the panel
 /// opening, and a list that grew a line a frame later would jump.
 ///
-/// Clicking one asks the map for it: the faction becomes a focus, and
+/// Clicking one asks the map for it: the faction becomes a filter, and
 /// everything it is absent from goes dim. A system's panel is where the user
 /// finds out who is here, and where else they are is the next question, so it
 /// is asked from the answer rather than typed out again in the bar.
 ///
 /// A faction still waiting on its name does not answer. What it is called is
-/// half of a focus, being what its row in the bar says it is, and a row
+/// half of a filter, being what its row in the bar says it is, and a row
 /// naming a faction as punctuation would say nothing about what had gone dim.
 fn factions(
     ui: &mut Ui,
     present: &[i32],
     names: &FactionNames,
-    wanted: &mut Option<Focus>,
+    wanted: &mut Option<Filter>,
 ) {
     if present.is_empty() {
         return;
@@ -662,7 +663,7 @@ fn factions(
         if let Some(name) = name
             && answer.clicked()
         {
-            *wanted = Some(Focus::Faction { id, name: name.to_owned() });
+            *wanted = Some(Filter::Faction { id, name: name.to_owned() });
         }
     }
 }
@@ -675,7 +676,7 @@ fn factions(
 /// the length of the list the moment its name arrived.
 ///
 /// The id rides along with the name because a line is a control: clicking one
-/// asks for a focus, and a focus tests a system against the id.
+/// asks for a filter, and a filter tests a system against the id.
 fn listed<'a>(
     present: &[i32],
     names: &'a FactionNames,
@@ -764,7 +765,7 @@ mod tests {
     /// text carrying no colour of its own. A placeholder answered by a
     /// placeholder reaches the tessellator, which panics, and takes every
     /// panel holding a list with it: the factions of a system, and the systems
-    /// of a focus.
+    /// of a filter.
     #[test]
     fn a_line_paints_in_a_colour() {
         painted(|ui| {
@@ -795,7 +796,7 @@ mod tests {
         });
     }
 
-    /// And a focus's list of systems, which carries a distance and a mark
+    /// And a filter's list of systems, which carries a distance and a mark
     #[test]
     fn a_system_list_paints_in_a_colour() {
         let systems = [system(1), system(2)];
@@ -817,7 +818,7 @@ mod tests {
     fn a_route_list_paints_in_a_colour() {
         let systems = [system(1), system(2)];
         let route =
-            Focus::Route { label: "A -> B".to_owned(), systems: vec![1, 2] };
+            Filter::Route { label: "A -> B".to_owned(), systems: vec![1, 2] };
         painted(|ui| {
             admitted(
                 ui,
@@ -831,9 +832,9 @@ mod tests {
         });
     }
 
-    /// A line carries the id its focus would be built from
+    /// A line carries the id its filter would be built from
     ///
-    /// Clicking a faction asks for it, and what a focus tests against is the
+    /// Clicking a faction asks for it, and what a filter tests against is the
     /// id, so the name alone would leave the line unable to say which faction
     /// it named.
     #[test]
@@ -852,7 +853,7 @@ mod tests {
     /// list as soon as its own arrived.
     ///
     /// It answers to nothing while it waits. A faction is asked for by name
-    /// as well as by id, and a focus row naming one as punctuation would say
+    /// as well as by id, and a filter row naming one as punctuation would say
     /// nothing about what had gone dim.
     #[test]
     fn a_faction_not_yet_named_takes_the_last_line() {
@@ -999,41 +1000,41 @@ mod tests {
         assert_eq!(panels.open.len(), 1);
     }
 
-    /// A faction focus, by id, called after it
-    fn faction(id: i32) -> Focus {
-        Focus::Faction { id, name: format!("Faction {id}") }
+    /// A faction filter, by id, called after it
+    fn faction(id: i32) -> Filter {
+        Filter::Faction { id, name: format!("Faction {id}") }
     }
 
-    /// A focus already being read about is not opened twice
+    /// A filter already being read about is not opened twice
     #[test]
-    fn one_focus_gets_one_panel() {
+    fn one_filter_gets_one_panel() {
         let mut panels = Panels::default();
-        panels.open_focus(faction(7));
-        panels.open_focus(faction(7));
+        panels.open_filter(faction(7));
+        panels.open_filter(faction(7));
 
         assert_eq!(panels.open.len(), 1);
     }
 
-    /// Two focuses get a panel each
+    /// Two filters get a panel each
     #[test]
-    fn each_focus_gets_its_own_panel() {
+    fn each_filter_gets_its_own_panel() {
         let mut panels = Panels::default();
-        panels.open_focus(faction(7));
-        panels.open_focus(faction(9));
+        panels.open_filter(faction(7));
+        panels.open_filter(faction(9));
 
         assert_eq!(panels.open.len(), 2);
     }
 
-    /// A focus and a system are never the same panel
+    /// A filter and a system are never the same panel
     ///
     /// They share the tiling and the window, so nothing but the identity
-    /// keeps a focus's panel from being taken for the panel of a system
+    /// keeps a filter's panel from being taken for the panel of a system
     /// that happened to open at the same time.
     #[test]
-    fn a_focus_and_a_system_are_different_panels() {
+    fn a_filter_and_a_system_are_different_panels() {
         let mut panels = Panels::default();
         panels.open_system(system(7));
-        panels.open_focus(faction(7));
+        panels.open_filter(faction(7));
 
         assert_eq!(panels.open.len(), 2);
     }

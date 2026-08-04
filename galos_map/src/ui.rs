@@ -7,8 +7,8 @@
 //!
 //! The bar leads with a search box, which is what it is asked for most, but it
 //! is not a search bar: three sections drop out of it, and search is one of
-//! them. Focuses are another and have nothing to say to the other two, so they
-//! keep their own state in [`FocusBar`] and are reached through that alone. A
+//! them. Filters are another and have nothing to say to the other two, so they
+//! keep their own state in [`FilterBar`] and are reached through that alone. A
 //! route is the third, and does read what the search box holds, since a route
 //! starts from the system named up there.
 
@@ -16,7 +16,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{Plot, SearchNote, SearchResults, Searched};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
-use crate::systems::focus::{Asked, Focus, Focuses, Wanted};
+use crate::systems::filter::{Asked, DimTo, Filter, Filters, Wanted};
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
@@ -109,7 +109,7 @@ const VALUE_WIDTH: f32 = 56.;
 ///
 /// The caller builds the box, since what clamps and how fast it drags is the
 /// slider's own business: the three the spyglass is offered at share one value
-/// and none of them may clamp it, where the one the focuses are dimmed by is
+/// and none of them may clamp it, where the one the filters are dimmed by is
 /// a percentage and clamps to it.
 fn value_box(ui: &mut Ui, value: egui::DragValue<'_>) -> Response {
     ui.add_sized(egui::vec2(VALUE_WIDTH, ui.spacing().interact_size.y), value)
@@ -224,8 +224,8 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
 ///
 /// The search box and the route's two fields. Together because the route
 /// reads what the search box holds, not merely because they are drawn near
-/// each other: the focuses are drawn between them and keep their own field in
-/// [`FocusBar`], having nothing to say to either.
+/// each other: the filters are drawn between them and keep their own field in
+/// [`FilterBar`], having nothing to say to either.
 #[derive(Default)]
 pub struct BarFields {
     /// The system named in the box the bar leads with
@@ -264,7 +264,7 @@ pub struct Knobs<'w> {
     despawner: MessageWriter<'w, Despawn>,
 }
 
-/// The whole of the bar's focus section
+/// The whole of the bar's filter section
 ///
 /// One parameter for the same reason [`Knobs`] is one: a system may take only
 /// sixteen. Grouped by what it is about rather than by where it is drawn,
@@ -276,24 +276,26 @@ pub struct Knobs<'w> {
 /// user is getting through, and only [`crate::systems::visibility`] knows
 /// which systems those are.
 #[derive(SystemParam)]
-pub struct FocusBar<'w, 's> {
-    /// The focuses themselves, which the rows are drawn from and changed in
+pub struct FilterBar<'w, 's> {
+    /// The filters themselves, which the rows are drawn from and changed in
     ///
     /// Named for what it holds rather than for its type, since this is
-    /// reached through a parameter that is already about focuses and
-    /// `focus.focuses` says the word twice and the thing once.
-    active: ResMut<'w, Focuses>,
+    /// reached through a parameter that is already about filters and
+    /// `filter.filters` says the word twice and the thing once.
+    active: ResMut<'w, Filters>,
     /// How much of the sky is getting through them
     in_reach: Res<'w, InReach>,
     /// What is typed into the field that asks for one
     ///
     /// Here rather than among the bar's other fields, so that nothing about a
-    /// focus is reachable through the search's state or the route's.
+    /// filter is reachable through the search's state or the route's.
     field: Local<'s, Option<String>>,
-    /// Where a focus the user has typed is sent to be looked up
+    /// Where a filter the user has typed is sent to be looked up
     wanted: MessageWriter<'w, Wanted>,
     /// What became of the last one asked for
     asked: ResMut<'w, Asked>,
+    /// How faintly what they exclude is drawn
+    dim: ResMut<'w, DimTo>,
 }
 
 pub fn chrome(
@@ -311,7 +313,7 @@ pub fn chrome(
     mut press: ResMut<PressAnswered>,
     mut panels: ResMut<Panels>,
     mut plot: ResMut<Plot>,
-    mut focus: FocusBar,
+    mut filter: FilterBar,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -376,6 +378,43 @@ pub fn chrome(
             ui.checkbox(&mut knobs.population_scale.0, "Scale w/ Population");
         }
 
+        // How the filters answer, rather than which they are: the filters
+        // themselves are asked for in the bar, and this is the one thing
+        // about them that is set once and left alone.
+        heading(ui, "Filters", true);
+        ui.label("Filtered Opacity (%)");
+        let mut showing = filter.dim.0 * 100.;
+        fill_width(ui);
+        let slider = ui
+            .horizontal(|ui| {
+                let rail = ui.add(
+                    egui::Slider::new(&mut showing, 0.0..=100.)
+                        .step_by(5.)
+                        .show_value(false),
+                );
+                let typed = value_box(
+                    ui,
+                    egui::DragValue::new(&mut showing)
+                        .range(0.0..=100.)
+                        .suffix("%"),
+                );
+                rail | typed
+            })
+            .inner;
+        // Only on a change, since writing every frame would mark the resource
+        // changed every frame and have every dimmed star repainted for
+        // nothing.
+        if slider.changed() {
+            filter.dim.0 = showing / 100.;
+        }
+        // Which is a filter in the plainer sense: this kind of system and
+        // none of the rest. Said because the rows in the bar go on saying
+        // how many are getting through, and a sky with nothing faint left in
+        // it gives no other sign of why.
+        if filter.dim.0 == 0. {
+            ui.label(egui::RichText::new("Not drawn at all").weak());
+        }
+
         // Last, and folded away. Everything above says what the map looks
         // like; these say how it goes about it, and are reached for once in a
         // session if at all.
@@ -406,7 +445,7 @@ pub fn chrome(
         orbit.single().map(|camera| camera.center).ok(),
         &mut panels,
         &mut plot,
-        &mut focus,
+        &mut filter,
     );
     if shut {
         press.0 = true;
@@ -529,7 +568,7 @@ fn main_bar(
     center: Option<DVec3>,
     panels: &mut Panels,
     plot: &mut Plot,
-    focus: &mut FocusBar,
+    filter: &mut FilterBar,
 ) -> bool {
     let style = ctx.global_style();
     let mut frame =
@@ -614,7 +653,7 @@ fn main_bar(
                     // One count for the whole column rather than one per
                     // kind of row. The rows are the same height and stand one
                     // after another, so letting go of a selection moves every
-                    // focus row up into a rectangle a selection row was drawn
+                    // filter row up into a rectangle a selection row was drawn
                     // in. Numbered apart, the two would put a fresh id at a
                     // rectangle that kept its place, which is what egui reads
                     // as a widget taking another's state.
@@ -625,7 +664,7 @@ fn main_bar(
                         center,
                         &mut went,
                         panels,
-                        &mut focus.active,
+                        &mut filter.active,
                         &mut place,
                     );
                     if let Some(position) = went {
@@ -636,18 +675,18 @@ fn main_bar(
                     }
                     // Drawn whether or not the form is out, as the selection
                     // is and for the same reason. A half lit sky with
-                    // nothing on screen to say why is the one thing a focus
+                    // nothing on screen to say why is the one thing a filter
                     // must not leave behind.
                     applied(
                         ui,
-                        &mut focus.active,
-                        &focus.in_reach,
+                        &mut filter.active,
+                        &filter.in_reach,
                         panels,
                         &mut place,
                     );
 
                     if search.expanded {
-                        taken |= focus_section(ui, focus);
+                        taken |= filter_section(ui, filter);
                         taken |= route_section(ui, search, searched, plot);
                     }
 
@@ -788,7 +827,7 @@ const OFFERED: usize = 5;
 /// click says which system is meant, a modifier held with it says as well as
 /// the rest, and a second click says to go there. Shared by every list of
 /// systems the map draws, so that reaching one through a search and reaching
-/// one through a focus are the same gesture rather than two to be learned.
+/// one through a filter are the same gesture rather than two to be learned.
 pub(crate) enum Chose {
     /// Pick the system out, as clicking a star does
     ///
@@ -961,7 +1000,7 @@ fn offered(
 /// question by covering up what it is about.
 ///
 /// The summary line above them is drawn only while more than one is picked
-/// out, and carries the control that turns the set into a focus. One system
+/// out, and carries the control that turns the set into a filter. One system
 /// picked out is the case the rows already read well, and a line saying "1
 /// system" over a row naming it says the same thing twice.
 /// `travelled` is where a row asked the camera to go, which the caller writes
@@ -972,7 +1011,7 @@ fn selected(
     center: Option<DVec3>,
     travelled: &mut Option<DVec3>,
     panels: &mut Panels,
-    focuses: &mut Focuses,
+    filters: &mut Filters,
     place: &mut usize,
 ) {
     if selection.is_empty() {
@@ -985,7 +1024,7 @@ fn selected(
     let mut chose = None;
 
     if selection.len() > 1 {
-        gathered(ui, selection, focuses);
+        gathered(ui, selection, filters);
     }
 
     let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
@@ -1129,15 +1168,15 @@ const SELECTED: usize = 5;
 
 /// Say how many are picked out, and offer to bring the map to bear on them
 ///
-/// The set is left alone once it has been focused on. The focus took a copy
+/// The set is left alone once it has been filtered on. The filter took a copy
 /// of the addresses, so letting go of the rings and the rows afterwards
-/// leaves those systems picked out, which is most of what the focus is for.
-fn gathered(ui: &mut Ui, selection: &Selection, focuses: &mut Focuses) {
+/// leaves those systems picked out, which is most of what the filter is for.
+fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) {
     let held = selection.len();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{held} systems")).weak());
-        if ui.button("Focus").clicked() {
-            focuses.add(Focus::Systems {
+        if ui.button("Filter").clicked() {
+            filters.add(Filter::Systems {
                 label: format!("{held} systems"),
                 systems: selection.addresses(),
             });
@@ -1261,14 +1300,14 @@ fn route_section(
     taken
 }
 
-/// Say which focuses are being applied, and how much is getting through
+/// Say which filters are being applied, and how much is getting through
 ///
-/// Drawn whether or not the form is out. A focus changes what the whole map
+/// Drawn whether or not the form is out. A filter changes what the whole map
 /// looks like and outlives the asking, so it has to be readable from the
 /// closed bar: a sky gone dim with nothing to say why is a map that looks
 /// broken.
 ///
-/// Each row is the control that turns its own focus off, so one can be
+/// Each row is the control that turns its own filter off, so one can be
 /// lifted to see what it was hiding and put back without being typed again.
 /// The mark at the end takes it away for good. Over two or more, [`whole_set`]
 /// stands above them and says both of those things about all of them at once.
@@ -1286,16 +1325,16 @@ fn route_section(
 /// to reach for to see more.
 fn applied(
     ui: &mut Ui,
-    focuses: &mut Focuses,
+    filters: &mut Filters,
     in_reach: &InReach,
     panels: &mut Panels,
     place: &mut usize,
 ) {
-    if focuses.is_empty() {
+    if filters.is_empty() {
         return;
     }
 
-    // Settled after the loop, since the rows are drawn from the same focuses
+    // Settled after the loop, since the rows are drawn from the same filters
     // they change.
     let mut toggling = None;
     let mut removing = None;
@@ -1304,9 +1343,9 @@ fn applied(
 
     // Above the rows it stands for, where a heading stands.
     let all =
-        (focuses.len() > 1).then(|| whole_set(ui, focuses, place)).flatten();
+        (filters.len() > 1).then(|| whole_set(ui, filters, place)).flatten();
 
-    for (index, active) in focuses.iter().enumerate() {
+    for (index, active) in filters.iter().enumerate() {
         let marks = lay_out_marks(ui);
 
         // Whatever the dot and the marks leave. Faction names run long, and
@@ -1317,7 +1356,7 @@ fn applied(
             - DOT
             - gap
             - marks_width(&marks, gap);
-        let text = egui::RichText::new(active.focus.name());
+        let text = egui::RichText::new(active.filter.name());
         let name = egui::WidgetText::from(if active.enabled {
             text.strong()
         } else {
@@ -1330,7 +1369,7 @@ fn applied(
             egui::TextStyle::Body,
         );
 
-        // By place in the bar rather than by which focus it names, counted
+        // By place in the bar rather than by which filter it names, counted
         // on from the selection's rows above. See [`row_of`].
         let of = ("bar-row", *place);
         *place += 1;
@@ -1349,8 +1388,8 @@ fn applied(
             );
         }
 
-        // Filled while the focus is being asked and hollow while it is not,
-        // so that a focus turned off still reads as one that is there.
+        // Filled while the filter is being asked and hollow while it is not,
+        // so that a filter turned off still reads as one that is there.
         let middle = rect.center().y;
         let mut x = rect.left() + ROW_PADDING;
         let dot = egui::pos2(x + DOT / 2., middle);
@@ -1381,7 +1420,7 @@ fn applied(
         if close.clicked() {
             removing = Some(index);
         } else if info.is_some_and(|info| info.clicked()) {
-            opening = Some(active.focus.clone());
+            opening = Some(active.filter.clone());
         } else if row.clicked() {
             toggling = Some(index);
         }
@@ -1399,59 +1438,59 @@ fn applied(
     }
 
     if let Some(index) = toggling {
-        focuses.toggle(index);
+        filters.toggle(index);
     }
     if let Some(index) = removing {
-        focuses.remove(index);
+        filters.remove(index);
     }
-    if let Some(focus) = opening {
-        panels.open_focus(focus);
+    if let Some(filter) = opening {
+        panels.open_filter(filter);
     }
     match all {
-        Some(Whole::Toggle) => focuses.toggle_all(),
-        Some(Whole::LetGo) => focuses.clear(),
+        Some(Whole::Toggle) => filters.toggle_all(),
+        Some(Whole::LetGo) => filters.clear(),
         None => {}
     }
 }
 
 /// What a click on the row standing for the whole set asked for
 enum Whole {
-    /// Turn every focus off, or every one back on
+    /// Turn every filter off, or every one back on
     Toggle,
     /// Take them all away
     LetGo,
 }
 
-/// One row standing for every focus under it, and what a click on it asked
+/// One row standing for every filter under it, and what a click on it asked
 ///
 /// The two gestures a row gives, said of all of them at once: the row turns
 /// them off and back on, and the mark at its end takes them away. Both are
-/// what a set wants and what a list of rows answers slowest, a focus at a
+/// what a set wants and what a list of rows answers slowest, a filter at a
 /// time being the only way to reach them otherwise.
 ///
 /// Drawn as a row rather than as a pair of buttons, so there is nothing new
 /// to read: the dot and the mark say for all of them what each row's own say
 /// for one, and they stand in the same two places.
 ///
-/// The dot is filled while any focus is on, since that is what the row
-/// undoes. Everything is picked out again by the same click that dimmed it,
+/// The dot is filled while any filter is on, since that is what the row
+/// undoes. The same click that put the rest of the sky away brings it back,
 /// so the state it shows is the state its own gesture is about.
 fn whole_set(
     ui: &mut Ui,
-    focuses: &Focuses,
+    filters: &Filters,
     place: &mut usize,
 ) -> Option<Whole> {
     let gap = ui.spacing().item_spacing.x;
     let marks = lay_out_close(ui);
-    let held = focuses.len();
-    let on = focuses.any_enabled();
+    let held = filters.len();
+    let on = filters.any_enabled();
 
     let room = ui.available_width()
         - ROW_PADDING * 2.
         - DOT
         - gap
         - marks_width(&marks, gap);
-    let text = egui::RichText::new(format!("{held} focuses"));
+    let text = egui::RichText::new(format!("{held} filters"));
     let name =
         egui::WidgetText::from(if on { text.strong() } else { text.weak() })
             .into_galley(
@@ -1517,44 +1556,44 @@ fn whole_set(
     asked
 }
 
-/// Ask for a focus by naming a faction
+/// Ask for a filter by naming a faction
 ///
 /// Answers whether its field has just taken focus. Above the route's section
 /// because what it adds shows up above it, in the rows under the search box,
 /// and a control should sit near what it does.
 ///
 /// The field empties once a faction has been asked for. What was typed is a
-/// row by then, and the field's next job is the next focus.
+/// row by then, and the field's next job is the next filter.
 ///
 /// What went wrong is said under the field that went wrong, as a route's
 /// trouble is said between its fields and its button. The note under the
 /// search input answers a name typed into the search input, and a faction
 /// read out up there would sit a long way from its question.
-fn focus_section(ui: &mut Ui, focus: &mut FocusBar) -> bool {
-    heading(ui, "Focus", true);
+fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
+    heading(ui, "Filters", true);
 
     // Emptied once what it asked for is standing in a row of its own, and not
     // before: a name is looked up a frame after it is asked for, so taking
     // the text away at the moment return is pressed takes it away from a name
     // that turns out not to resolve.
-    if focus.asked.answered() {
-        *focus.field = None;
-        *focus.asked = Asked::Nothing;
+    if filter.asked.answered() {
+        *filter.field = None;
+        *filter.asked = Asked::Nothing;
     }
 
-    let response = singleline(ui, &mut focus.field, "Faction Name", 0.);
+    let response = singleline(ui, &mut filter.field, "Faction Name", 0.);
     // The answer is about a name, so it is no answer at all once that name is
     // being typed over.
     if response.changed() {
-        *focus.asked = Asked::Nothing;
+        *filter.asked = Asked::Nothing;
     }
     if entered(&response, ui)
-        && let Some(name) = typed(&focus.field).map(str::to_owned)
+        && let Some(name) = typed(&filter.field).map(str::to_owned)
     {
-        focus.wanted.write(Wanted::Faction { name });
+        filter.wanted.write(Wanted::Faction { name });
     }
 
-    if let Asked::Trouble(trouble) = &*focus.asked {
+    if let Asked::Trouble(trouble) = &*filter.asked {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }
@@ -1591,21 +1630,21 @@ fn heading(ui: &mut Ui, name: &str, ruled: bool) {
 /// every row below is numbered by.
 ///
 /// What is spelled out is where the row sits in the bar's one column, counted
-/// across every kind of row in it, and not which system or focus it is about.
+/// across every kind of row in it, and not which system or filter it is about.
 /// A row here is clicked and hovered and nothing else, and that is all egui
 /// keeps against an id, so a place is the honest key: the pointer is over the
 /// third row, whichever row now stands there.
 ///
 /// Across the kinds and not within each, because the kinds share the column
 /// and are drawn to the same height. Letting go of one selected system moves
-/// every focus row up by exactly one row, so each lands in a rectangle a
+/// every filter row up by exactly one row, so each lands in a rectangle a
 /// selection row was drawn in. Numbered apart, the two would put a fresh id
 /// at a rectangle that kept its place, which is the very thing this is for.
 ///
 /// Keying a row on what it holds paints a red rectangle across the bar.
 /// Between one pass and the next egui looks for a rect that kept its place
 /// while everything in it changed identity, which is what a replaced selection
-/// and a dropped focus both are, and it cannot tell that apart from one
+/// and a dropped filter both are, and it cannot tell that apart from one
 /// widget taking another's state. It warns and paints the rect in red.
 ///
 /// `push_id` does not answer this either, and makes it worse: a child `Ui`
@@ -1809,7 +1848,7 @@ pub(crate) fn line(
 /// One system's line in a list, and what a click on it asked for
 ///
 /// Every list of systems the map draws is this line: the ones a search turned
-/// up and the ones a focus admits, so far. They are the same thing offered in
+/// up and the ones a filter admits, so far. They are the same thing offered in
 /// two places, and a change to how a system is picked out of a list belongs
 /// in one of them rather than in each.
 ///
@@ -2069,7 +2108,7 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
 mod tests {
     use super::*;
     use crate::search::tests::row;
-    use crate::systems::focus::Focus;
+    use crate::systems::filter::Filter;
     use crate::tests::{painted, words};
 
     /// A results list holding `names`, the last of them nowhere in particular
@@ -2083,7 +2122,7 @@ mod tests {
         results
     }
 
-    /// What the list says, drawn from `focus`
+    /// What the list says, drawn from `filter`
     fn listed(results: &SearchResults, center: Option<DVec3>) -> Vec<String> {
         words(|ui| {
             let mut selection = Selection::default();
@@ -2274,7 +2313,7 @@ mod tests {
 
         words(|ui| {
             let mut panels = Panels::default();
-            let mut focuses = Focuses::default();
+            let mut filters = Filters::default();
             let mut travelled = None;
             selected(
                 ui,
@@ -2282,7 +2321,7 @@ mod tests {
                 None,
                 &mut travelled,
                 &mut panels,
-                &mut focuses,
+                &mut filters,
                 &mut 0,
             );
         })
@@ -2301,27 +2340,27 @@ mod tests {
         assert!(said.contains(&"BARNARD".to_owned()), "{said:?}");
     }
 
-    /// Several picked out says how many, and offers to focus on them
+    /// Several picked out says how many, and offers to filter on them
     #[test]
-    fn a_gathered_selection_offers_to_focus_on_itself() {
+    fn a_gathered_selection_offers_to_filter_on_itself() {
         let said = selection_said(&["SOL", "BARNARD"]);
 
         assert!(said.contains(&"2 systems".to_owned()), "{said:?}");
-        assert!(said.contains(&"Focus".to_owned()), "{said:?}");
+        assert!(said.contains(&"Filter".to_owned()), "{said:?}");
     }
 
     /// One picked out says neither
     ///
     /// The row already names it, and a line saying "1 system" over a row
     /// naming that system says the same thing twice. There is nothing to
-    /// gather either, a focus over one system being the system itself.
+    /// gather either, a filter over one system being the system itself.
     #[test]
     fn one_selected_system_is_left_to_its_own_row() {
         let said = selection_said(&["SOL"]);
 
         assert!(said.contains(&"SOL".to_owned()), "{said:?}");
         assert!(!said.contains(&"1 systems".to_owned()), "{said:?}");
-        assert!(!said.contains(&"Focus".to_owned()), "{said:?}");
+        assert!(!said.contains(&"Filter".to_owned()), "{said:?}");
     }
 
     /// The selection rows each answer for themselves
@@ -2331,7 +2370,7 @@ mod tests {
 
         let said = crate::tests::complaints(|ui| {
             let mut panels = Panels::default();
-            let mut focuses = Focuses::default();
+            let mut filters = Filters::default();
             let mut travelled = None;
             selected(
                 ui,
@@ -2339,7 +2378,7 @@ mod tests {
                 None,
                 &mut travelled,
                 &mut panels,
-                &mut focuses,
+                &mut filters,
                 &mut 0,
             );
         });
@@ -2375,7 +2414,7 @@ mod tests {
         move |ui: &mut Ui| {
             let mut selection = holding(names);
             let mut panels = Panels::default();
-            let mut focuses = Focuses::default();
+            let mut filters = Filters::default();
             let mut travelled = None;
             selected(
                 ui,
@@ -2383,7 +2422,7 @@ mod tests {
                 None,
                 &mut travelled,
                 &mut panels,
-                &mut focuses,
+                &mut filters,
                 &mut 0,
             );
         }
@@ -2403,8 +2442,8 @@ mod tests {
             let mut note = SearchNote(None);
             let mut found = results(&["SOL", "SOLATI", "SOLLARO"], true);
             let mut selection = holding(&["SOL"]);
-            let mut focuses = Focuses::default();
-            focuses.add(Focus::Systems {
+            let mut filters = Filters::default();
+            filters.add(Filter::Systems {
                 label: "2 systems".to_owned(),
                 systems: vec![1, 2],
             });
@@ -2429,12 +2468,12 @@ mod tests {
                 None,
                 &mut travelled,
                 &mut panels,
-                &mut focuses,
+                &mut filters,
                 &mut place,
             );
             applied(
                 ui,
-                &mut focuses,
+                &mut filters,
                 &InReach { admitted: 1, total: 3 },
                 &mut panels,
                 &mut place,
@@ -2476,7 +2515,7 @@ mod tests {
     fn draw_bar<'a>(
         results: &'a [&'a str],
         selection: &'a [&'a str],
-        focuses: usize,
+        filters: usize,
     ) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
             let mut query = Some("SOL".to_owned());
@@ -2486,9 +2525,9 @@ mod tests {
                 found = results_of(results);
             }
             let mut held = holding(selection);
-            let mut applied_to = Focuses::default();
-            for id in 0..focuses {
-                applied_to.add(Focus::Faction {
+            let mut applied_to = Filters::default();
+            for id in 0..filters {
+                applied_to.add(Filter::Faction {
                     id: id as i32,
                     name: format!("Faction {id}"),
                 });
@@ -2541,12 +2580,12 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
     }
 
-    /// Nor does letting go of the selection hand its rows to the focuses
+    /// Nor does letting go of the selection hand its rows to the filters
     ///
     /// The two kinds of row are drawn one after the other in the one column,
-    /// so a focus row moves up into a rectangle a selection row was in.
+    /// so a filter row moves up into a rectangle a selection row was in.
     #[test]
-    fn letting_go_of_the_selection_does_not_change_the_focus_row_ids() {
+    fn letting_go_of_the_selection_does_not_change_the_filter_row_ids() {
         let said = crate::tests::between_passes(
             draw_bar(&[], &["SOL", "BARNARD"], 2),
             draw_bar(&[], &[], 2),
@@ -2558,12 +2597,12 @@ mod tests {
     /// Letting go of one of several hands no row's place to another kind
     ///
     /// The rows of both kinds are the same height and stand in the one
-    /// column, so dropping a selection row moves every focus row up by
+    /// column, so dropping a selection row moves every filter row up by
     /// exactly one row: each lands in a rectangle a selection row was drawn
     /// in. The summary line stays put through this, more than one system
     /// being held either way, so nothing else takes up the slack.
     #[test]
-    fn dropping_one_of_several_does_not_hand_its_place_to_a_focus() {
+    fn dropping_one_of_several_does_not_hand_its_place_to_a_filter() {
         let said = crate::tests::between_passes(
             draw_bar(&[], &["SOL", "BARNARD", "WOLF 359"], 2),
             draw_bar(&[], &["SOL", "BARNARD"], 2),
@@ -2630,12 +2669,12 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
     }
 
-    /// Drawn focus rows for `names`
-    fn draw_focuses<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
+    /// Drawn filter rows for `names`
+    fn draw_filters<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
-            let mut focuses = Focuses::default();
+            let mut filters = Filters::default();
             for name in names {
-                focuses.add(Focus::Faction {
+                filters.add(Filter::Faction {
                     id: name.len() as i32,
                     name: (*name).to_owned(),
                 });
@@ -2643,7 +2682,7 @@ mod tests {
             let mut panels = Panels::default();
             applied(
                 ui,
-                &mut focuses,
+                &mut filters,
                 &InReach { admitted: 1, total: 3 },
                 &mut panels,
                 &mut 0,
@@ -2651,31 +2690,31 @@ mod tests {
         }
     }
 
-    /// Dropping a focus is not read as a widget changing identity either
+    /// Dropping a filter is not read as a widget changing identity either
     ///
     /// The other half of what the bar does when a row goes: the rows below
     /// move up into the rectangle it left.
     #[test]
-    fn dropping_a_focus_is_not_an_id_change() {
+    fn dropping_a_filter_is_not_an_id_change() {
         let said = crate::tests::between_passes(
-            draw_focuses(&["Empire", "Federation", "Alliance"]),
-            draw_focuses(&["Empire", "Alliance"]),
+            draw_filters(&["Empire", "Federation", "Alliance"]),
+            draw_filters(&["Empire", "Alliance"]),
         );
 
         assert!(said.is_empty(), "{said:?}");
     }
 
-    /// Falling to one focus takes the row over the set with it
+    /// Falling to one filter takes the row over the set with it
     ///
     /// The row stands above the others, so losing it moves every remaining
     /// row up one place. Two rows go at once, which is the shape egui reads
     /// as a widget taking another's state if the ids do not follow the
     /// places.
     #[test]
-    fn dropping_to_one_focus_does_not_change_the_row_ids() {
+    fn dropping_to_one_filter_does_not_change_the_row_ids() {
         let said = crate::tests::between_passes(
-            draw_focuses(&["Empire", "Federation"]),
-            draw_focuses(&["Empire"]),
+            draw_filters(&["Empire", "Federation"]),
+            draw_filters(&["Empire"]),
         );
 
         assert!(said.is_empty(), "{said:?}");
@@ -2687,24 +2726,24 @@ mod tests {
     /// beneath it already does.
     #[test]
     fn the_set_is_summed_up_only_over_more_than_one() {
-        let mut focuses = Focuses::default();
-        focuses.add(Focus::Faction { id: 1, name: "Empire".into() });
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
         let mut panels = Panels::default();
         let alone = words(|ui| {
             applied(
                 ui,
-                &mut focuses,
+                &mut filters,
                 &InReach { admitted: 1, total: 3 },
                 &mut panels,
                 &mut 0,
             )
         });
 
-        focuses.add(Focus::Faction { id: 2, name: "Federation".into() });
+        filters.add(Filter::Faction { id: 2, name: "Federation".into() });
         let both = words(|ui| {
             applied(
                 ui,
-                &mut focuses,
+                &mut filters,
                 &InReach { admitted: 1, total: 3 },
                 &mut panels,
                 &mut 0,
@@ -2712,10 +2751,10 @@ mod tests {
         });
 
         assert!(
-            !alone.iter().any(|line| line.contains("focuses")),
+            !alone.iter().any(|line| line.contains("filters")),
             "{alone:?}"
         );
-        assert!(both.contains(&"2 focuses".to_owned()), "{both:?}");
+        assert!(both.contains(&"2 filters".to_owned()), "{both:?}");
     }
 
     /// A list whose items change is not read as a widget changing identity
@@ -3053,22 +3092,22 @@ mod tests {
         assert!((width - VALUE_WIDTH).abs() < SLACK);
     }
 
-    /// Egui says nothing about the ids the focus rows use
+    /// Egui says nothing about the ids the filter rows use
     #[test]
-    fn the_focus_rows_do_not_share_ids() {
+    fn the_filter_rows_do_not_share_ids() {
         use crate::tests::complaints;
 
-        let mut focuses = Focuses::default();
-        focuses.add(Focus::Faction { id: 1, name: "Alpha".into() });
-        focuses.add(Focus::Faction { id: 2, name: "Beta".into() });
-        focuses
-            .add(Focus::Route { label: "A -> B".into(), systems: vec![1, 2] });
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Alpha".into() });
+        filters.add(Filter::Faction { id: 2, name: "Beta".into() });
+        filters
+            .add(Filter::Route { label: "A -> B".into(), systems: vec![1, 2] });
         let mut panels = Panels::default();
 
         let said = complaints(|ui| {
             applied(
                 ui,
-                &mut focuses,
+                &mut filters,
                 &InReach { admitted: 1, total: 2 },
                 &mut panels,
                 &mut 0,
@@ -3082,7 +3121,7 @@ mod tests {
     ///
     /// The rows of the bar do not keep their places: a note comes and goes
     /// above them, the selection's row comes and goes with the selection, and
-    /// dropping one focus moves every row below it up. An id taken from the
+    /// dropping one filter moves every row below it up. An id taken from the
     /// draw order would hand the row that moved up whatever egui had been
     /// remembering against the one that left.
     #[test]
@@ -3091,11 +3130,11 @@ mod tests {
         let (mut first, mut moved, mut other) = (None, None, None);
 
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            first = Some(row_of(ui, 20., ("focus-row", 7)).1.id);
+            first = Some(row_of(ui, 20., ("filter-row", 7)).1.id);
             // Anything at all between them shifts what comes after.
             ui.label("a note that comes and goes");
-            moved = Some(row_of(ui, 20., ("focus-row", 7)).1.id);
-            other = Some(row_of(ui, 20., ("focus-row", 9)).1.id);
+            moved = Some(row_of(ui, 20., ("filter-row", 7)).1.id);
+            other = Some(row_of(ui, 20., ("filter-row", 9)).1.id);
         });
 
         assert_eq!(first, moved, "the same row moved and changed identity");
@@ -3112,16 +3151,18 @@ mod tests {
 
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let marks = lay_out_marks(ui);
-            first = Some(place_marks(ui, at, marks, ("focus-row", 7)).close.id);
+            first =
+                Some(place_marks(ui, at, marks, ("filter-row", 7)).close.id);
             ui.label("a note that comes and goes");
             let marks = lay_out_marks(ui);
-            moved = Some(place_marks(ui, at, marks, ("focus-row", 7)).close.id);
+            moved =
+                Some(place_marks(ui, at, marks, ("filter-row", 7)).close.id);
         });
 
         assert_eq!(first, moved);
     }
 
-    /// The focus rows come out in colours something can draw
+    /// The filter rows come out in colours something can draw
     ///
     /// Every galley here is laid out strong or weak, which resolves a colour,
     /// so the placeholder each is painted with is never reached. That holds
@@ -3131,17 +3172,17 @@ mod tests {
     /// Covers the marks as well, which the selection's row draws the same
     /// way.
     #[test]
-    fn the_focus_rows_paint_in_colours() {
-        let mut focuses = Focuses::default();
-        focuses.add(Focus::Faction { id: 1, name: "Zargon Front".into() });
-        focuses.add(Focus::Faction { id: 2, name: "Alliance".into() });
-        focuses.toggle(1);
+    fn the_filter_rows_paint_in_colours() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Zargon Front".into() });
+        filters.add(Filter::Faction { id: 2, name: "Alliance".into() });
+        filters.toggle(1);
         let mut panels = Panels::default();
 
         painted(|ui| {
             applied(
                 ui,
-                &mut focuses,
+                &mut filters,
                 &InReach { admitted: 3, total: 40 },
                 &mut panels,
                 &mut 0,

@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::focus::{self, Unfocused};
+use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{ShowNames, Star};
@@ -25,6 +25,7 @@ pub(crate) fn plugin(app: &mut App) {
         radius: DEFAULT_NAME_RADIUS,
     });
     app.add_systems(Startup, init_materials);
+    app.add_systems(Update, redim.in_set(MapSet::Present));
     app.add_systems(
         Update,
         (fit_name_boxes, tint_marked_names)
@@ -207,21 +208,21 @@ const SELECTED_WEIGHT: f32 = 1000.;
 /// Two ways to be passed over and two to be asked for regardless.
 ///
 /// A name is read or it is not; there is no faint reading of one. So a system
-/// the focuses exclude gives its name up rather than keeping it dimly: a sky
+/// the filters exclude gives its name up rather than keeping it dimly: a sky
 /// of faint names over dim stars has nothing legible in it, and what the
-/// focuses admit is what the user asked to be able to read. The toggle says
+/// filters admit is what the user asked to be able to read. The toggle says
 /// the same thing about every system at once.
 ///
 /// Being marked out beats both. Pointing at a system or picking it out is
 /// asking for it by name, which is the one thing a name is for, and neither
-/// the toggle nor a focus has any business refusing it.
+/// the toggle nor a filter has any business refusing it.
 fn worth_naming(
     shown: bool,
-    unfocused: bool,
+    filtered: bool,
     pointed_at: bool,
     selected: bool,
 ) -> bool {
-    pointed_at || selected || (shown && !unfocused)
+    pointed_at || selected || (shown && !filtered)
 }
 
 /// How far the center bonus reaches, in light years
@@ -314,9 +315,10 @@ pub(super) fn screen_position(
 /// colour lives on a shared asset: changing it would repaint every name at
 /// once. Swapping which handle a label points at repaints only that one.
 ///
-/// Two sets of the same three: full strength, and [`focus::DIMMED`] of it for
-/// a name whose system the focuses exclude. Both built once, since how faintly
-/// to draw is one number rather than a setting.
+/// Two sets of the same three: full strength, and whatever [`DimTo`] asks for
+/// a name whose system the filters exclude. The dim set is recoloured in
+/// place when that moves, which is the case where repainting every name at
+/// once is exactly what is wanted.
 #[derive(Resource)]
 pub struct LabelMaterials {
     bright: [Handle<StandardMaterial>; 3],
@@ -411,7 +413,7 @@ pub fn choose_names(
     radius: Res<NameRadius>,
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
-    systems: Query<(Entity, &System, &Visibility, Has<Unfocused>)>,
+    systems: Query<(Entity, &System, &Visibility, Has<Filtered>)>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
@@ -439,7 +441,7 @@ pub fn choose_names(
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system, visibility, unfocused)| {
+        .filter_map(|(entity, system, visibility, filtered)| {
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -463,7 +465,7 @@ pub fn choose_names(
             let selected =
                 selection.contains(entity) && *visibility != Visibility::Hidden;
 
-            if !worth_naming(show_names.0, unfocused, pointed_at, selected) {
+            if !worth_naming(show_names.0, filtered, pointed_at, selected) {
                 return None;
             }
 
@@ -761,6 +763,7 @@ pub fn leaders(
 pub fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    dim: Res<DimTo>,
     mut commands: Commands,
 ) {
     commands.insert_resource(NameBoxMesh(
@@ -770,7 +773,7 @@ pub fn init_materials(
 
     commands.insert_resource(LabelMaterials {
         bright: Tint::ALL.map(|tint| label(tint.color())),
-        dim: Tint::ALL.map(|tint| label(faded(tint.color(), focus::DIMMED))),
+        dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
         invisible: label(Srgba::NONE),
     });
 }
@@ -796,6 +799,26 @@ fn name_material(tint: Srgba) -> StandardMaterial {
 /// something standing further back.
 fn faded(tint: Srgba, strength: f32) -> Srgba {
     Srgba { alpha: tint.alpha * strength, ..tint }
+}
+
+/// Repaint the dimmed tints when the slider moves
+///
+/// The handles stay as they are, so no name has to be told which material it
+/// is pointing at.
+fn redim(
+    dim: Res<DimTo>,
+    materials: Res<LabelMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+) {
+    if !dim.is_changed() {
+        return;
+    }
+
+    for (handle, tint) in materials.dim.iter().zip(Tint::ALL) {
+        if let Some(mut material) = assets.get_mut(handle) {
+            *material = name_material(faded(tint.color(), dim.0));
+        }
+    }
 }
 
 /// Stretch each hit box over the name it stands behind
@@ -829,10 +852,10 @@ pub fn fit_name_boxes(
 ///
 /// A name dims with the system it belongs to, marked out or not. One rule
 /// with no exceptions, and a name that stayed bright over a dimmed star would
-/// read as the focus having let go of it.
+/// read as the filter having let go of it.
 pub fn tint_marked_names(
     systems: Query<
-        (Has<PointedAt>, Has<Selected>, Has<Unfocused>),
+        (Has<PointedAt>, Has<Selected>, Has<Filtered>),
         With<System>,
     >,
     materials: Res<LabelMaterials>,
@@ -842,7 +865,7 @@ pub fn tint_marked_names(
     >,
 ) {
     for (child_of, mut material) in &mut names {
-        let Ok((pointed_at, selected, unfocused)) =
+        let Ok((pointed_at, selected, filtered)) =
             systems.get(child_of.parent())
         else {
             continue;
@@ -855,7 +878,7 @@ pub fn tint_marked_names(
             Tint::Resting
         };
 
-        let wanted = materials.get(tint, unfocused);
+        let wanted = materials.get(tint, filtered);
         if material.0 != *wanted {
             material.0 = wanted.clone();
         }
@@ -891,12 +914,12 @@ mod tests {
         );
     }
 
-    /// A system the focuses exclude gives up its name
+    /// A system the filters exclude gives up its name
     ///
     /// A name is read or it is not, so one belonging to a dimmed star is not
     /// dimly readable, it is clutter over what the user asked to see.
     #[test]
-    fn an_unfocused_system_is_not_named() {
+    fn an_filtered_system_is_not_named() {
         assert!(!worth_naming(true, true, false, false));
     }
 
@@ -905,20 +928,20 @@ mod tests {
     /// Either is asking for the system by name, which is the one thing a
     /// name is for.
     #[test]
-    fn a_marked_system_is_named_through_a_focus() {
+    fn a_marked_system_is_named_through_a_filter() {
         assert!(worth_naming(true, true, true, false));
         assert!(worth_naming(true, true, false, true));
     }
 
     /// The names toggle bars one the same way, and yields the same way
     #[test]
-    fn the_names_toggle_bars_and_yields_as_a_focus_does() {
+    fn the_names_toggle_bars_and_yields_as_a_filter_does() {
         assert!(!worth_naming(false, false, false, false));
         assert!(worth_naming(false, false, true, false));
         assert!(worth_naming(false, false, false, true));
     }
 
-    /// A system the focuses admit is named when names are on, and not when off
+    /// A system the filters admit is named when names are on, and not when off
     #[test]
     fn an_admitted_system_follows_the_toggle() {
         assert!(worth_naming(true, false, false, false));
@@ -1020,7 +1043,7 @@ mod tests {
     /// Where the two names would overlap, one of them is dropped, and it
     /// should be the one that goes away by itself when the pointer moves.
     /// Measured with the selection as far out as a name is ever drawn and
-    /// the point on the focus, so nothing but the two claims decides it.
+    /// the point on the center, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
         let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
@@ -1045,13 +1068,13 @@ mod tests {
         assert_eq!(both, selected);
     }
 
-    /// The focus bonus falls away with distance from what is focused
+    /// The center bonus falls away with distance from what is centered
     ///
     /// Otherwise every system in the neighbourhood would inherit the claim
     /// of the one at the middle of it, and the sharp term would be doing
     /// the flat term's job.
     #[test]
-    fn the_focus_bonus_is_local_to_the_focus() {
+    fn the_center_bonus_is_local_to_the_center() {
         let bonus = |d: f32| CENTER_WEIGHT / (1. + (d / CENTER_REACH).powi(2));
 
         assert!(bonus(CENTER_REACH) < bonus(0.) * 0.6);
@@ -1110,21 +1133,21 @@ mod tests {
 
     /// Whatever the camera orbits sits exactly its own radius deep
     ///
-    /// `orbit_camera` places the eye at `focus + rotation * Z * radius`, so
+    /// `orbit_camera` places the eye at `center + rotation * Z * radius`, so
     /// this pins the helper to the convention the camera is written to. A
-    /// forward of `+Z` would put the focus behind the camera instead.
+    /// forward of `+Z` would put the center behind the camera instead.
     #[test]
     fn depth_agrees_with_where_the_camera_puts_its_eye() {
         let rotation = Quat::from_euler(EulerRot::YXZ, 0.9, -0.4, 0.);
-        let focus = DVec3::new(1234.5, -678.9, 4321.);
+        let center = DVec3::new(1234.5, -678.9, 4321.);
         let radius = 250f32;
-        let eye = focus + (rotation * Vec3::Z * radius).as_dvec3();
+        let eye = center + (rotation * Vec3::Z * radius).as_dvec3();
 
         let camera = OrbitCamera { eye, rotation, ..default() };
         assert!(
-            (depth(&camera, focus) - radius).abs() < 1e-2,
-            "the focus measured {} deep, not the {radius} the camera sits at",
-            depth(&camera, focus)
+            (depth(&camera, center) - radius).abs() < 1e-2,
+            "the center measured {} deep, not the {radius} the camera sits at",
+            depth(&camera, center)
         );
     }
 }

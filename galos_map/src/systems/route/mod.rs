@@ -1,7 +1,7 @@
 use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
-use crate::systems::focus::{Focus, Focuses};
+use crate::systems::filter::{Filter, Filters};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
@@ -16,7 +16,7 @@ pub fn plugin(app: &mut App) {
     // then works out.
     app.add_systems(
         Update,
-        (plotted, follow_focuses)
+        (plotted, follow_filters)
             .chain()
             .in_set(MapSet::Populate)
             .after(super::spawn::spawn),
@@ -58,7 +58,7 @@ fn plotted(
     mut plotted: MessageReader<Plotted>,
     mut camera: MessageWriter<MoveCamera>,
     mut spyglass: ResMut<Spyglass>,
-    mut focuses: ResMut<Focuses>,
+    mut filters: ResMut<Filters>,
 ) {
     for route in plotted.read() {
         camera.write(MoveCamera {
@@ -75,30 +75,32 @@ fn plotted(
         spyglass.radius =
             route.extent.clamp(Spyglass::OPENING, Spyglass::UNASKED);
 
-        focuses.replace(Focus::Route {
+        filters.replace(Filter::Route {
             label: route.label.clone(),
             systems: route.systems.clone(),
         });
     }
 }
 
-/// Take the line away when the focus naming it goes
+/// Take the line away when the filter naming it goes
 ///
-/// The line and the focus row are two halves of one answer: the row says
+/// The line and the filter row are two halves of one answer: the row says
 /// which route is being shown and the line shows it. Dropping the row is how
 /// the user says they are done with the route, so a line left drawn across
 /// the map afterwards is an answer to a question nobody is asking, and one
 /// with nothing left on screen to say what it is.
 ///
-/// Presence rather than whether it is being asked. A focus turned off is one
+/// Presence rather than whether it is being asked. A filter turned off is one
 /// the user means to come back to, and the route it names is still the route
 /// they plotted.
-fn follow_focuses(
-    focuses: Res<Focuses>,
+fn follow_filters(
+    filters: Res<Filters>,
     lines: Query<Entity, With<Route>>,
     mut commands: Commands,
 ) {
-    if focuses.iter().any(|active| matches!(active.focus, Focus::Route { .. }))
+    if filters
+        .iter()
+        .any(|active| matches!(active.filter, Filter::Route { .. }))
     {
         return;
     }
@@ -134,17 +136,20 @@ impl From<LineStrip> for Mesh {
 mod tests {
     use super::*;
 
-    /// A route focus over the systems at `addresses`
-    fn asking(addresses: &[i64]) -> Focus {
-        Focus::Route { label: "A -> B".to_owned(), systems: addresses.to_vec() }
+    /// A route filter over the systems at `addresses`
+    fn asking(addresses: &[i64]) -> Filter {
+        Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: addresses.to_vec(),
+        }
     }
 
-    /// A world holding nothing but the focuses and a drawn route
-    fn map(focuses: Focuses) -> (App, Entity) {
+    /// A world holding nothing but the filters and a drawn route
+    fn map(filters: Filters) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(focuses);
-        app.add_systems(Update, follow_focuses);
+        app.insert_resource(filters);
+        app.add_systems(Update, follow_filters);
         let line = app.world_mut().spawn(Route).id();
         (app, line)
     }
@@ -166,7 +171,7 @@ mod tests {
             disabled: false,
             lock_camera: false,
         });
-        app.init_resource::<Focuses>();
+        app.init_resource::<Filters>();
         app.add_systems(Update, plotted);
 
         app.world_mut().write_message(Plotted {
@@ -202,51 +207,51 @@ mod tests {
         assert_eq!(reach_for(5000.), Spyglass::UNASKED);
     }
 
-    /// The line stays while a route focus names it
+    /// The line stays while a route filter names it
     #[test]
     fn a_route_keeps_its_line() {
-        let mut focuses = Focuses::default();
-        focuses.replace(asking(&[1, 2]));
-        let (mut app, line) = map(focuses);
+        let mut filters = Filters::default();
+        filters.replace(asking(&[1, 2]));
+        let (mut app, line) = map(filters);
 
         app.update();
 
         assert!(drawn(&app, line));
     }
 
-    /// And goes when that focus is dropped
+    /// And goes when that filter is dropped
     #[test]
     fn dropping_a_route_takes_its_line() {
-        let mut focuses = Focuses::default();
-        focuses.replace(asking(&[1, 2]));
-        let (mut app, line) = map(focuses);
+        let mut filters = Filters::default();
+        filters.replace(asking(&[1, 2]));
+        let (mut app, line) = map(filters);
         app.update();
 
-        app.world_mut().resource_mut::<Focuses>().remove(0);
+        app.world_mut().resource_mut::<Filters>().remove(0);
         app.update();
 
         assert!(!drawn(&app, line));
     }
 
-    /// A focus turned off is one to come back to, and keeps its line
+    /// A filter turned off is one to come back to, and keeps its line
     #[test]
     fn a_route_turned_off_keeps_its_line() {
-        let mut focuses = Focuses::default();
-        focuses.replace(asking(&[1, 2]));
-        focuses.toggle(0);
-        let (mut app, line) = map(focuses);
+        let mut filters = Filters::default();
+        filters.replace(asking(&[1, 2]));
+        filters.toggle(0);
+        let (mut app, line) = map(filters);
 
         app.update();
 
         assert!(drawn(&app, line));
     }
 
-    /// Focuses of another kind say nothing about a route's line
+    /// Filters of another kind say nothing about a route's line
     #[test]
     fn a_faction_does_not_keep_a_line() {
-        let mut focuses = Focuses::default();
-        focuses.add(Focus::Faction { id: 7, name: "Some Lot".to_owned() });
-        let (mut app, line) = map(focuses);
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 7, name: "Some Lot".to_owned() });
+        let (mut app, line) = map(filters);
 
         app.update();
 
