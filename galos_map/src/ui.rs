@@ -239,118 +239,89 @@ pub fn chrome(
 
     // The pane first, since where it has reached is where the gear stands.
     let edge = settings_pane(ctx, settings.0, |ui| {
-        ui.label("Spyglass Radius");
-        ui.group(|ui| {
-            radius_sliders(ui, &mut knobs.spyglass.radius, 1.1e5);
-            ui.add_space(2.);
-            ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
-            ui.add_space(2.);
-            ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
-            ui.add_space(2.);
-            ui.collapsing("Advanced", |ui| {
-                ui.checkbox(&mut knobs.spyglass.fetch, "Fetch Systems");
-                if knobs.spyglass.fetch {
-                    ui.horizontal(|ui| poll_value(ui, &mut knobs.poll.0));
-                    ui.add_space(2.);
-                    ui.horizontal(|ui| {
-                        ui.label("Throttle (ms)");
-                        ui.add(egui::DragValue::new(&mut knobs.throttle.0));
-                    });
-                }
-                ui.add_space(2.);
-                if ui.button("Despawn Systems").clicked() {
-                    knobs.despawner.write(Despawn);
-                }
-                ui.add_space(2.);
-            });
-        });
+        heading(ui, "Spyglass", false);
+        radius_sliders(ui, &mut knobs.spyglass.radius, 1.1e5);
+        ui.add_space(FIELD_GAP);
+        ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
+        ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
 
-        ui.add_space(5.);
-
-        ui.group(|ui| {
-            ui.label("View:");
-            ui.radio_value(&mut *knobs.view, View::Systems, "Systems");
-            ui.radio_value(&mut *knobs.view, View::Stars, "Stars");
-            ui.separator();
-
-            match *knobs.view {
-                View::Systems => {
-                    ui.label("Color By:");
-                    ui.radio_value(
-                        &mut *knobs.color_by,
-                        ColorBy::Allegiance,
-                        "Allegiance",
-                    );
-                    ui.radio_value(
-                        &mut *knobs.color_by,
-                        ColorBy::Government,
-                        "Government",
-                    );
-                    ui.radio_value(
-                        &mut *knobs.color_by,
-                        ColorBy::Security,
-                        "Security",
-                    );
-                    ui.separator();
-                    ui.checkbox(
-                        &mut knobs.population_scale.0,
-                        "Scale w/ Population",
-                    );
-                }
-                View::Stars => {}
-            }
-
-            ui.separator();
-            // How the filters answer, rather than which they are: the
-            // filters themselves are asked for in the bar, and this is the
-            // one thing about them that is set once and left alone.
-            ui.label("Filtered Systems");
-            let mut showing = filter.dim.0 * 100.;
-            let slider = ui.add(
-                egui::Slider::new(&mut showing, 0.0..=100.)
-                    .suffix("%")
-                    .step_by(5.),
+        heading(ui, "View", true);
+        ui.radio_value(&mut *knobs.view, View::Systems, "Systems");
+        ui.radio_value(&mut *knobs.view, View::Stars, "Stars");
+        if *knobs.view == View::Systems {
+            ui.add_space(FIELD_GAP);
+            ui.label("Color By");
+            ui.radio_value(
+                &mut *knobs.color_by,
+                ColorBy::Allegiance,
+                "Allegiance",
             );
-            // Only on a change, since writing every frame would mark the
-            // resource changed every frame and have every dimmed star
-            // repainted for nothing.
-            if slider.changed() {
-                filter.dim.0 = showing / 100.;
-            }
-            if filter.dim.0 == 0. {
-                ui.label(
-                    egui::RichText::new("Not drawn, and not fetched").weak(),
-                );
-            }
-            ui.separator();
+            ui.radio_value(
+                &mut *knobs.color_by,
+                ColorBy::Government,
+                "Government",
+            );
+            ui.radio_value(&mut *knobs.color_by, ColorBy::Security, "Security");
+            ui.add_space(FIELD_GAP);
+            ui.checkbox(&mut knobs.population_scale.0, "Scale w/ Population");
+        }
 
-            ui.checkbox(&mut knobs.show_names.0, "Show System Names");
-            if knobs.show_names.0 {
-                ui.checkbox(
-                    &mut knobs.name_radius.follow_spyglass,
-                    "Names Follow Spyglass",
-                );
-                if !knobs.name_radius.follow_spyglass {
-                    // A name can only be drawn for a system that is drawn,
-                    // and the spyglass decides that. Overriding it draws
-                    // everything loaded, and then names may be asked for
-                    // beyond its reach.
-                    let ceiling = if knobs.spyglass.disabled {
-                        1.1e5
-                    } else {
-                        knobs.spyglass.radius
-                    };
-                    ui.label("Name Radius");
-                    ui.group(|ui| {
-                        radius_sliders(
-                            ui,
-                            &mut knobs.name_radius.radius,
-                            ceiling,
-                        )
-                    });
-                }
+        heading(ui, "Names", true);
+        ui.checkbox(&mut knobs.show_names.0, "Show System Names");
+        if knobs.show_names.0 {
+            ui.checkbox(
+                &mut knobs.name_radius.follow_spyglass,
+                "Names Follow Spyglass",
+            );
+            if !knobs.name_radius.follow_spyglass {
+                // A name can only be drawn for a system that is drawn, and
+                // the spyglass decides that. Overriding it draws everything
+                // loaded, and then names may be asked for beyond its reach.
+                let ceiling = if knobs.spyglass.disabled {
+                    1.1e5
+                } else {
+                    knobs.spyglass.radius
+                };
+                ui.add_space(FIELD_GAP);
+                radius_sliders(ui, &mut knobs.name_radius.radius, ceiling);
             }
-        });
+        }
+
+        // How the filters answer, rather than which they are: the filters
+        // themselves are asked for in the bar, and this is the one thing
+        // about them that is set once and left alone.
+        heading(ui, "Filters", true);
+        ui.label("Draw What Is Filtered Out At");
+        let mut showing = filter.dim.0 * 100.;
+        let slider = ui.add(
+            egui::Slider::new(&mut showing, 0.0..=100.).suffix("%").step_by(5.),
+        );
+        // Only on a change, since writing every frame would mark the resource
+        // changed every frame and have every dimmed star repainted for
+        // nothing.
+        if slider.changed() {
+            filter.dim.0 = showing / 100.;
+        }
+        if filter.dim.0 == 0. {
+            ui.label(egui::RichText::new("Not drawn, and not fetched").weak());
+        }
+
+        // Last, and folded away. Everything above says what the map looks
+        // like; these say how it goes about it, and are reached for once in a
+        // session if at all.
+        heading(ui, "Advanced", true);
+        ui.checkbox(&mut knobs.spyglass.fetch, "Fetch Systems");
+        if knobs.spyglass.fetch {
+            ui.horizontal(|ui| poll_value(ui, &mut knobs.poll.0));
+            ui.horizontal(|ui| {
+                ui.label("Throttle (ms)");
+                ui.add(egui::DragValue::new(&mut knobs.throttle.0));
+            });
+        }
+        ui.add_space(FIELD_GAP);
+        if ui.button("Despawn Systems").clicked() {
+            knobs.despawner.write(Despawn);
+        }
     });
 
     gear(ctx, edge, &mut settings.0);
@@ -742,7 +713,7 @@ fn route_section(
     searched: &mut MessageWriter<Searched>,
     plot: &mut Plot,
 ) -> bool {
-    heading(ui, "Route");
+    heading(ui, "Route", true);
     let mut taken = false;
 
     let end = singleline(ui, &mut search.route_end, "End System");
@@ -983,7 +954,7 @@ fn filter_section(
     wanted: &mut MessageWriter<Wanted>,
     note: &mut FilterNote,
 ) -> bool {
-    heading(ui, "Filters");
+    heading(ui, "Filters", true);
     let response = singleline(ui, &mut search.faction, "Faction Name");
     // The note answers a name, so it is no answer at all once that name is
     // being typed over.
@@ -1004,14 +975,21 @@ fn filter_section(
     response.gained_focus()
 }
 
-/// Open a section of the form
+/// Open a section, in the form or in the settings pane
 ///
 /// The rule is the break between one section and the next, and needs no
 /// run-up of its own: the row above it keeps as much room under itself as it
 /// keeps over, and a section gap on top of that would sit the row nearer the
 /// input than the section and read as belonging to neither.
-fn heading(ui: &mut Ui, name: &str) {
-    ui.separator();
+///
+/// `ruled` is how the first section of the pane goes without one. The top of
+/// the pane is already an edge, and a rule drawn against it reads as a
+/// section with nothing in it. Every section of the form is ruled, having the
+/// input and the selection's row above it.
+fn heading(ui: &mut Ui, name: &str, ruled: bool) {
+    if ruled {
+        ui.separator();
+    }
     ui.label(egui::RichText::new(name).strong());
     ui.add_space(FIELD_GAP);
 }
