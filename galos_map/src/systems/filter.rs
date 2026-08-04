@@ -25,7 +25,7 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
-    app.init_resource::<FilterNote>();
+    app.init_resource::<Asked>();
     app.add_message::<Wanted>();
     // Answering what the user asked for, so with the rest of that.
     app.add_systems(Update, resolve.in_set(MapSet::Search));
@@ -134,33 +134,61 @@ impl Wanted {
     }
 }
 
-/// What to tell the user about the last filter they asked for
+/// What became of the last filter asked for
 ///
-/// Its own line rather than [`crate::search::SearchNote`], which answers a
+/// Three states rather than an error or nothing, because the field that asked
+/// has to know the difference between not yet answered and answered well. It
+/// cannot know either at the moment it asks: a name is looked up against the
+/// database a frame later, so the field is still holding what was typed when
+/// the answer arrives.
+///
+/// Its own resource rather than [`crate::search::SearchNote`], which answers a
 /// name typed into the search input. Two unrelated answers sharing one line
 /// means each wipes the other: adding a faction would clear a note about a
 /// system that was never found, and the note about a faction would be read
 /// out under the box that has nothing to do with it.
-#[derive(Resource, Default)]
-pub struct FilterNote(pub Option<String>);
+#[derive(Resource, Default, Debug, PartialEq, Eq)]
+pub enum Asked {
+    /// Nothing has been asked for, or the answer has been acted on
+    #[default]
+    Nothing,
+    /// What was asked for is standing in a row of its own
+    Added,
+    /// Why there is nothing to stand there
+    Trouble(String),
+}
+
+impl Asked {
+    /// Whether the field that asked has done its job
+    ///
+    /// A filter that was added is a row on screen now, so what was typed to
+    /// ask for it has been answered and the field is free for the next one.
+    ///
+    /// A name that resolved to nothing is left where it was typed. It is
+    /// most likely nearly right, and clearing it makes the user type the
+    /// whole of it again to find out which part was wrong.
+    pub fn answered(&self) -> bool {
+        matches!(self, Asked::Added)
+    }
+}
 
 /// Turn what the user asked for into a filter, or say why not
 fn resolve(
     mut wanted: MessageReader<Wanted>,
     mut filters: ResMut<Filters>,
-    mut note: ResMut<FilterNote>,
+    mut answer: ResMut<Asked>,
     db: Res<Db>,
 ) {
     for asked in wanted.read() {
         // Waited on, as a search is. A name resolves against one indexed row
         // and this answers something the user just did.
         future::block_on(async {
-            note.0 = match asked.resolve(&db.0).await {
+            *answer = match asked.resolve(&db.0).await {
                 Ok(filter) => {
                     filters.add(filter);
-                    None
+                    Asked::Added
                 }
-                Err(why) => Some(why),
+                Err(why) => Asked::Trouble(why),
             };
         });
     }
@@ -320,6 +348,31 @@ mod tests {
         let mut system = system(address);
         system.factions = factions.to_vec();
         system
+    }
+
+    /// A filter that was added has answered the field that asked for it
+    #[test]
+    fn an_added_filter_frees_the_field() {
+        assert!(Asked::Added.answered());
+    }
+
+    /// A name that resolved to nothing has not
+    ///
+    /// The field goes on holding it, since it is most likely nearly right and
+    /// clearing it makes the user type the whole of it again to find out
+    /// which part was wrong.
+    #[test]
+    fn a_name_that_failed_leaves_the_field_alone() {
+        let trouble = Asked::Trouble("No faction named Zargon".to_owned());
+
+        assert!(!trouble.answered());
+    }
+
+    /// Nor has a question nobody has asked
+    #[test]
+    fn nothing_asked_frees_nothing() {
+        assert!(!Asked::default().answered());
+        assert_eq!(Asked::default(), Asked::Nothing);
     }
 
     /// With nothing asked, everything passes

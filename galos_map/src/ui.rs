@@ -16,7 +16,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{Plot, SearchNote, Searched};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
-use crate::systems::filter::{FilterNote, Filters, Wanted};
+use crate::systems::filter::{Asked, Filters, Wanted};
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
@@ -308,8 +308,8 @@ pub struct FilterBar<'w, 's> {
     field: Local<'s, Option<String>>,
     /// Where a filter the user has typed is sent to be looked up
     wanted: MessageWriter<'w, Wanted>,
-    /// What to say when one could not be
-    note: ResMut<'w, FilterNote>,
+    /// What became of the last one asked for
+    asked: ResMut<'w, Asked>,
 }
 
 pub fn chrome(
@@ -1030,19 +1030,29 @@ fn applied(
 /// read out up there would sit a long way from its question.
 fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     heading(ui, "Filters", true);
+
+    // Emptied once what it asked for is standing in a row of its own, and not
+    // before: a name is looked up a frame after it is asked for, so taking
+    // the text away at the moment return is pressed takes it away from a name
+    // that turns out not to resolve.
+    if filter.asked.answered() {
+        *filter.field = None;
+        *filter.asked = Asked::Nothing;
+    }
+
     let response = singleline(ui, &mut filter.field, "Faction Name");
-    // The note answers a name, so it is no answer at all once that name is
+    // The answer is about a name, so it is no answer at all once that name is
     // being typed over.
     if response.changed() {
-        filter.note.0 = None;
+        *filter.asked = Asked::Nothing;
     }
     if entered(&response, ui)
-        && let Some(name) = filter.field.take()
+        && let Some(name) = typed(&filter.field).map(str::to_owned)
     {
         filter.wanted.write(Wanted::Faction { name });
     }
 
-    if let Some(trouble) = &filter.note.0 {
+    if let Asked::Trouble(trouble) = &*filter.asked {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }
