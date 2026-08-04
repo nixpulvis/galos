@@ -49,17 +49,10 @@ const WIDTH: f32 = 230.;
 /// What the user has a panel open for
 ///
 /// A list rather than a map, since there are only ever a handful of them and
-/// what matters about the order is where the next one lands.
+/// what matters about the order is which places in the tiling are free.
 #[derive(Resource, Default)]
 pub struct Panels {
     open: Vec<Panel>,
-    /// How many panels have been opened, ever
-    ///
-    /// Which place in the tiling each one takes. Counting openings rather
-    /// than what is open now means a place is never handed on: a panel put
-    /// away and opened again comes back to the place it had, which egui has
-    /// been remembering for it all along.
-    opened: usize,
     /// How tall the tallest panel drawn came out
     ///
     /// How far down the next one opens. The tallest rather than the last,
@@ -79,8 +72,16 @@ pub struct Panels {
 struct Panel {
     /// What it is about
     subject: Subject,
-    /// Which place in the tiling it opened at
+    /// Which place in the tiling it stands in
     slot: usize,
+    /// Whether it has been drawn since it was opened
+    ///
+    /// A panel is put where the tiling says on the frame it opens, and left
+    /// wherever it is after that, so that dragging one somewhere holds. Egui
+    /// goes on remembering where a window was for the whole session, shut
+    /// windows included, so a panel opened a second time would otherwise come
+    /// back to the place it had rather than to the place it was just given.
+    placed: bool,
 }
 
 /// What a panel is about
@@ -145,8 +146,21 @@ impl Panels {
         if self.open.iter().any(|panel| panel.subject.id() == subject.id()) {
             return;
         }
-        self.open.push(Panel { subject, slot: self.opened });
-        self.opened += 1;
+        let slot = self.free();
+        self.open.push(Panel { subject, slot, placed: false });
+    }
+
+    /// The first place in the tiling nothing stands in
+    ///
+    /// So a panel shut hands its place on, and the next one opened lands in
+    /// the gap rather than below everything the user has already read and put
+    /// away.
+    fn free(&self) -> usize {
+        // One more place than there are panels open, so one of them is free
+        // however the rest are spread out.
+        (0..=self.open.len())
+            .find(|slot| self.open.iter().all(|panel| panel.slot != *slot))
+            .expect("more places than panels")
     }
 }
 
@@ -374,9 +388,14 @@ fn panels(
     let mut picked = None;
     let mut opening = None;
     let mut wanted = None;
-    for panel in &panels.open {
+    for panel in &mut panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
+        let at =
+            corner + egui::vec2(step.x * column as f32, step.y * row as f32);
+        // Set before the panel is read from, so that the two borrows of it
+        // do not overlap.
+        let placed = std::mem::replace(&mut panel.placed, true);
         let window = egui::Window::new(panel.subject.title())
             .id(panel.subject.id())
             .open(&mut showing)
@@ -387,28 +406,34 @@ fn panels(
             // there. The height is the window's own business: said here it
             // is imposed rather than defaulted, and a list asked to fit the
             // height of the last panel drawn shows three lines of eight.
-            .default_width(WIDTH)
-            .default_pos(
-                corner
-                    + egui::vec2(step.x * column as f32, step.y * row as f32),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(WIDTH);
-                match &panel.subject {
-                    Subject::System(system) => {
-                        described(ui, system, &names, &mut centred, &mut wanted)
-                    }
-                    Subject::Filter { filter, systems } => admitted(
-                        ui,
-                        filter,
-                        systems.as_deref(),
-                        focus,
-                        &mut picked,
-                        &mut opening,
-                        &mut centred,
-                    ),
+            .default_width(WIDTH);
+        // Put where the tiling says on the frame it opens, and asked nothing
+        // after that, so that a panel dragged somewhere stays there. A
+        // default would be answered by whatever egui remembers of the last
+        // time the same panel was open, which is a place some other panel may
+        // well be standing in now.
+        let window = if placed {
+            window.default_pos(at)
+        } else {
+            window.current_pos(at)
+        };
+        let window = window.show(ctx, |ui| {
+            ui.set_width(WIDTH);
+            match &panel.subject {
+                Subject::System(system) => {
+                    described(ui, system, &names, &mut centred, &mut wanted)
                 }
-            });
+                Subject::Filter { filter, systems } => admitted(
+                    ui,
+                    filter,
+                    systems.as_deref(),
+                    focus,
+                    &mut picked,
+                    &mut opening,
+                    &mut centred,
+                ),
+            }
+        });
 
         // Only a panel that drew what it holds. A window rolled up into its
         // title bar stands a line high, which is no height to place the next
@@ -1009,24 +1034,79 @@ mod tests {
         assert_eq!(slots, [0, 1]);
     }
 
-    /// Shutting a panel does not hand its place to the next one
+    /// Shut a panel and its place goes to the next one opened
     ///
-    /// Egui goes on remembering where a window was, so a panel opened again
-    /// comes back to the place it had. Handing that place to some other
-    /// panel in the meantime is how the two would end up on top of each
-    /// other.
+    /// Reading one system and then another is the common way to use these,
+    /// and a place kept for a panel that is gone leaves the second one
+    /// opening below a gap.
     #[test]
-    fn a_shut_panel_keeps_its_place() {
+    fn a_shut_panel_hands_its_place_on() {
+        let mut panels = Panels::default();
+        panels.open_system(system(1));
+        shut(&mut panels, system(1));
+        panels.open_system(system(2));
+
+        let slots: Vec<_> = panels.open.iter().map(|p| p.slot).collect();
+        assert_eq!(slots, [0]);
+    }
+
+    /// The place handed on is the first free one, not the last one shut
+    #[test]
+    fn a_panel_fills_the_first_gap() {
         let mut panels = Panels::default();
         panels.open_system(system(1));
         panels.open_system(system(2));
-        panels.open.retain(|panel| {
-            panel.subject.id() != Subject::System(system(2)).id()
-        });
         panels.open_system(system(3));
+        shut(&mut panels, system(2));
+        panels.open_system(system(4));
 
         let slots: Vec<_> = panels.open.iter().map(|p| p.slot).collect();
-        assert_eq!(slots, [0, 2]);
+        assert_eq!(slots, [0, 2, 1]);
+    }
+
+    /// No two panels stand in one place
+    ///
+    /// Whatever has been opened and shut in between. Two panels sharing a
+    /// place is two windows on top of each other, with the lower one only
+    /// findable by dragging the upper one off it.
+    #[test]
+    fn panels_do_not_share_a_place() {
+        let mut panels = Panels::default();
+        panels.open_system(system(1));
+        panels.open_system(system(2));
+        panels.open_system(system(3));
+        shut(&mut panels, system(1));
+        shut(&mut panels, system(3));
+        panels.open_system(system(4));
+        // The one shut first, opened again alongside what took its place.
+        panels.open_system(system(1));
+
+        let mut slots: Vec<_> = panels.open.iter().map(|p| p.slot).collect();
+        let held = slots.len();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots.len(), held);
+    }
+
+    /// A panel is put where the tiling says on the frame it opens
+    ///
+    /// Egui remembers where a window was for the whole session, shut windows
+    /// included. A panel opened a second time takes whatever place is free
+    /// then, and asking for that place as a default would leave egui
+    /// answering with the place it had before, which something else may be
+    /// standing in.
+    #[test]
+    fn a_panel_is_placed_when_it_opens() {
+        let mut panels = Panels::default();
+        panels.open_system(system(1));
+
+        assert!(!panels.open[0].placed);
+    }
+
+    /// Shut the panel about `system`, as clicking its cross does
+    fn shut(panels: &mut Panels, system: System) {
+        let shut = Subject::System(system).id();
+        panels.open.retain(|panel| panel.subject.id() != shut);
     }
 
     /// The first panel opens in the corner
