@@ -2,6 +2,7 @@ use super::System;
 use crate::{Database, Error};
 use elite_journal::prelude::*;
 use geozero::wkb;
+use std::collections::HashMap;
 
 impl System {
     pub async fn fetch(db: &Database, address: i64) -> Result<Self, Error> {
@@ -364,6 +365,26 @@ impl System {
             .collect())
     }
 
+    /// Every system within `range` of `center`, in light years
+    ///
+    /// The map's widest question, and the one asked over and over: the
+    /// spyglass puts it every time the camera settles somewhere new. What it
+    /// costs is set by how many systems come back, which at the far end of the
+    /// radius is most of the table.
+    ///
+    /// Who is present in each of them is asked separately, by
+    /// [`Self::system_factions`], and joined up here. Asked of every row in the
+    /// same query it is a subquery run once per system: over a hundred
+    /// thousand systems that is six parts in seven of the whole query, spent
+    /// discovering that all but three in a hundred of them have nobody on
+    /// record at all.
+    ///
+    /// Asked of the addresses that came back rather than of the region again.
+    /// `ST_3DDWithin` estimates its own rows so far under that a second query
+    /// naming the region is planned as a nested loop and takes an order of
+    /// magnitude longer than asking for the whole table. The addresses are in
+    /// hand by then and say the same thing without the planner having to
+    /// guess at it.
     pub async fn fetch_in_range_of_point(
         db: &Database,
         range: f64,
@@ -382,12 +403,7 @@ impl System {
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
                 updated_at,
-                updated_by,
-                COALESCE((
-                    SELECT array_agg(faction_id)
-                    FROM system_factions
-                    WHERE system_address = systems.address
-                ), ARRAY[]::integer[]) AS "factions!"
+                updated_by
             FROM systems
             WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
             "#,
@@ -399,9 +415,13 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
+        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
+        let mut present = Self::system_factions(db, &found).await?;
+
         Ok(rows
             .into_iter()
             .map(|row| System {
+                factions: present.remove(&row.address).unwrap_or_default(),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -413,11 +433,47 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
-                factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
             .collect())
+    }
+
+    /// Which factions are present in each of `addresses`, by address
+    ///
+    /// Kept to what was asked about, so the work grows with what is being
+    /// looked at rather than with the table. A handful of addresses is a
+    /// handful of index lookups; enough of them to be most of the sky is a
+    /// scan of `system_factions`, which is what asking about most of the sky
+    /// costs anyway.
+    ///
+    /// A row per membership rather than an array per system. Building the
+    /// arrays in the database carries five times fewer rows and takes five
+    /// times as long, the work being in the arrays rather than in the rows.
+    ///
+    /// Systems with nobody on record are simply absent, which is what the
+    /// caller reads as nobody.
+    async fn system_factions(
+        db: &Database,
+        addresses: &[i64],
+    ) -> Result<HashMap<i64, Vec<i32>>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT system_address, faction_id
+            FROM system_factions
+            WHERE system_address = ANY($1)
+            "#,
+            addresses,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        let mut present: HashMap<i64, Vec<i32>> = HashMap::new();
+        for row in rows {
+            present.entry(row.system_address).or_default().push(row.faction_id);
+        }
+
+        Ok(present)
     }
 
     /// The systems at any of `addresses`
