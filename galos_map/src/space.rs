@@ -1,7 +1,7 @@
 //! The high precision space the map is drawn in
 //!
 //! Star positions run to a hundred thousand light years from the galactic
-//! centre, and a single float carrying such a number has about a thousandth
+//! center, and a single float carrying such a number has about a thousandth
 //! of a light year left over for everything to its right. That is coarser
 //! than a whole star system is wide, so anything smaller than a system
 //! cannot be placed at all, and meshes drawn out on the rim jitter as the
@@ -11,7 +11,7 @@
 //! [`CellCoord`] naming a cell of a [`Grid`], and a [`Transform`] holding the
 //! remainder within that cell. The remainder never grows past half a cell, so
 //! the float carrying it never runs out of digits, however far from the
-//! centre the cell is. Rendering positions are then computed relative to
+//! center the cell is. Rendering positions are then computed relative to
 //! whichever entity holds [`FloatingOrigin`] — the camera — which keeps the
 //! error that is left too far away to see.
 use crate::systems::Spyglass;
@@ -37,7 +37,7 @@ const CELL_EDGE: f32 = 1.;
 
 /// How far past its cell an entity may drift before it is moved to the next
 ///
-/// Recentring the moment a cell edge is crossed would send anything sitting
+/// Recentering the moment a cell edge is crossed would send anything sitting
 /// on the boundary back and forth between two cells.
 const SWITCHING_THRESHOLD: f32 = 0.1;
 
@@ -79,7 +79,7 @@ mod tests {
     ///
     /// This is the whole reason for the grid. A body sits light seconds from
     /// its star, and a star sits tens of thousands of light years from the
-    /// galactic centre. Neither number is hard on its own. Holding both at
+    /// galactic center. Neither number is hard on its own. Holding both at
     /// once is what a single float cannot do.
     #[test]
     fn resolves_light_seconds_at_the_rim() {

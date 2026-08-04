@@ -15,6 +15,9 @@
 -- it to look up. Nothing to be done about that here, and little reason to:
 -- two letters match a third of the systems on record, so the reading is the
 -- cheap half of answering it.
+-- `articles` created this four years earlier and indexes its bodies through
+-- it, so this is asked for only to stand on its own should that table ever
+-- go. It is left behind on the way back down for the same reason.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE INDEX systems_name_trgm ON systems USING gin (name gin_trgm_ops);

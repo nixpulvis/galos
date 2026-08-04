@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::filter::{self, Filtered};
+use crate::systems::focus::{self, Unfocused};
 use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{ShowNames, Star};
@@ -170,17 +170,17 @@ const CROWDING: f32 = 0.35;
 
 /// How strongly being what the camera looks at argues for a name being shown
 ///
-/// In the same light years as everything else, so this is what the focused
-/// system's name is worth over one sitting at the camera itself. The best
-/// score is always kept, nothing having been placed yet to crowd it out, so
-/// a value above the span of the other terms makes the focused name certain
+/// In the same light years as everything else, so this is what the name of
+/// the system at the center is worth over one sitting at the camera itself.
+/// The best score is always kept, nothing having been placed yet to crowd it
+/// out, so a value above the span of the other terms makes that name certain
 /// rather than merely likely. They span a little over two hundred as they
 /// stand, which is why this sits where it does.
-const FOCUS_WEIGHT: f32 = 250.;
+const CENTER_WEIGHT: f32 = 250.;
 
 /// How strongly being pointed at argues for a name being shown
 ///
-/// Above [`FOCUS_WEIGHT`], so that a system under the pointer takes the top
+/// Above [`CENTER_WEIGHT`], so that a system under the pointer takes the top
 /// of the order from the one the camera was sent to. The best score is
 /// always kept, nothing having been placed yet to crowd it out, so the name
 /// of whatever is pointed at is certain to be drawn and anything that would
@@ -194,12 +194,12 @@ const POINTED_WEIGHT: f32 = 500.;
 /// to keep, and a point is wherever the pointer happens to be resting. Where
 /// the two names would overlap, the one that lasts holds its place.
 ///
-/// Far enough above it to clear [`FOCUS_WEIGHT`] as well, since a point may
-/// be sitting on the focus and drawing that bonus with it while the selection
-/// is out at a distance and paying for it. The margin left over is what that
-/// distance may be, which is [`DEFAULT_NAME_RADIUS`] over. Past there a point
-/// on the focus takes the top of the order back, as it already does from the
-/// focus itself at [`POINTED_WEIGHT`].
+/// Far enough above it to clear [`CENTER_WEIGHT`] as well, since a point may
+/// be sitting on the center and drawing that bonus with it while the
+/// selection is out at a distance and paying for it. The margin left over is
+/// what that distance may be, which is [`DEFAULT_NAME_RADIUS`] over. Past
+/// there a point on the center takes the top of the order back, as it already
+/// does from the center itself at [`POINTED_WEIGHT`].
 const SELECTED_WEIGHT: f32 = 1000.;
 
 /// Whether a system is asked for a name at all
@@ -207,28 +207,28 @@ const SELECTED_WEIGHT: f32 = 1000.;
 /// Two ways to be passed over and two to be asked for regardless.
 ///
 /// A name is read or it is not; there is no faint reading of one. So a system
-/// the filters exclude gives its name up rather than keeping it dimly: a sky
+/// the focuses exclude gives its name up rather than keeping it dimly: a sky
 /// of faint names over dim stars has nothing legible in it, and what the
-/// filters admit is what the user asked to be able to read. The toggle says
+/// focuses admit is what the user asked to be able to read. The toggle says
 /// the same thing about every system at once.
 ///
 /// Being marked out beats both. Pointing at a system or picking it out is
 /// asking for it by name, which is the one thing a name is for, and neither
-/// the toggle nor a filter has any business refusing it.
+/// the toggle nor a focus has any business refusing it.
 fn worth_naming(
     shown: bool,
-    filtered: bool,
+    unfocused: bool,
     pointed_at: bool,
     selected: bool,
 ) -> bool {
-    pointed_at || selected || (shown && !filtered)
+    pointed_at || selected || (shown && !unfocused)
 }
 
-/// How far the focus bonus reaches, in light years
+/// How far the center bonus reaches, in light years
 ///
 /// It falls to half at this distance. The point the camera orbits is usually
 /// a system exactly, so this only has to forgive one that is merely near it.
-const FOCUS_REACH: f32 = 2.;
+const CENTER_REACH: f32 = 2.;
 
 /// A system whose name has won a place on screen
 ///
@@ -247,7 +247,7 @@ pub struct Label;
 ///
 /// Depth into the view, which is not the same as the distance to the camera.
 /// A point at the corner of the screen is further from the eye than one at
-/// the centre at the same depth, so sizing by distance draws the corner one
+/// the center at the same depth, so sizing by distance draws the corner one
 /// larger. At the corner of a 16:9 viewport with a quarter-turn field of
 /// view, distance is about 1.31 times the depth.
 ///
@@ -314,8 +314,8 @@ pub(super) fn screen_position(
 /// colour lives on a shared asset: changing it would repaint every name at
 /// once. Swapping which handle a label points at repaints only that one.
 ///
-/// Two sets of the same three: full strength, and [`filter::DIMMED`] of it for
-/// a name whose system the filters exclude. Both built once, since how faintly
+/// Two sets of the same three: full strength, and [`focus::DIMMED`] of it for
+/// a name whose system the focuses exclude. Both built once, since how faintly
 /// to draw is one number rather than a setting.
 #[derive(Resource)]
 pub struct LabelMaterials {
@@ -411,7 +411,7 @@ pub fn choose_names(
     radius: Res<NameRadius>,
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
-    systems: Query<(Entity, &System, &Visibility, Has<Filtered>)>,
+    systems: Query<(Entity, &System, &Visibility, Has<Unfocused>)>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
@@ -439,7 +439,7 @@ pub fn choose_names(
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system, visibility, filtered)| {
+        .filter_map(|(entity, system, visibility, unfocused)| {
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -463,15 +463,15 @@ pub fn choose_names(
             let selected =
                 selection.contains(entity) && *visibility != Visibility::Hidden;
 
-            if !worth_naming(show_names.0, filtered, pointed_at, selected) {
+            if !worth_naming(show_names.0, unfocused, pointed_at, selected) {
                 return None;
             }
 
             let position = DVec3::from(system.position);
-            let from_focus = (position - orbit.focus).length() as f32;
+            let from_center = (position - orbit.center).length() as f32;
             // Further out than names were asked to reach, and not one of the
             // two the map is marking out.
-            if !pointed_at && !selected && from_focus > reach {
+            if !pointed_at && !selected && from_center > reach {
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;
@@ -480,7 +480,7 @@ pub fn choose_names(
             if screen.intersect(rect).is_empty() {
                 return None;
             }
-            let score = name_score(from_focus, pointed_at, selected);
+            let score = name_score(from_center, pointed_at, selected);
             Some((entity, rect, score))
         })
         .collect();
@@ -519,14 +519,15 @@ pub fn choose_names(
 ///
 /// Being marked out settles it outright, and being selected outranks being
 /// under the pointer. Failing either, one question: how far the system is
-/// from what the camera is pointed at.
-/// A sharp term picks out the focused system itself, and a flat one puts
-/// everything else in order of nearness to it. Strictly falling, so names
-/// are awarded nearest first and the closest system to the focus is always
-/// the first offered a place.
+/// from the center the camera orbits.
 ///
-/// Measured from the focus and not from the camera. Everything worth naming
-/// sits about one orbit radius from the eye, whichever side of the focus it
+/// A sharp term picks out the system at the center itself, and a flat one
+/// puts everything else in order of nearness to it. Strictly falling, so
+/// names are awarded nearest first and the closest system to the center is
+/// always the first offered a place.
+///
+/// Measured from the center and not from the camera. Everything worth naming
+/// sits about one orbit radius from the eye, whichever side of the center it
 /// is on, so a distance measured from there is near enough the same for all
 /// of them and separates nothing.
 ///
@@ -537,11 +538,11 @@ pub fn choose_names(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(from_focus: f32, pointed_at: bool, selected: bool) -> f32 {
-    let focused = FOCUS_WEIGHT / (1. + (from_focus / FOCUS_REACH).powi(2));
+fn name_score(from_center: f32, pointed_at: bool, selected: bool) -> f32 {
+    let centered = CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
     let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
     let picked = if selected { SELECTED_WEIGHT } else { 0. };
-    picked.max(pointed) + focused - from_focus
+    picked.max(pointed) + centered - from_center
 }
 
 /// The screen rectangle a system's name would occupy, with room around it
@@ -740,7 +741,7 @@ pub fn leaders(
         let length = from.distance(to);
         let Some(direction) = (to - from).try_normalize() else { continue };
 
-        // Measured out from the ring rather than from the centre, so that
+        // Measured out from the ring rather than from the center, so that
         // the air before the line matches the air after it.
         let gap = length * LEADER_GAP;
         let start = edge + gap;
@@ -769,7 +770,7 @@ pub fn init_materials(
 
     commands.insert_resource(LabelMaterials {
         bright: Tint::ALL.map(|tint| label(tint.color())),
-        dim: Tint::ALL.map(|tint| label(faded(tint.color(), filter::DIMMED))),
+        dim: Tint::ALL.map(|tint| label(faded(tint.color(), focus::DIMMED))),
         invisible: label(Srgba::NONE),
     });
 }
@@ -828,10 +829,10 @@ pub fn fit_name_boxes(
 ///
 /// A name dims with the system it belongs to, marked out or not. One rule
 /// with no exceptions, and a name that stayed bright over a dimmed star would
-/// read as the filter having let go of it.
+/// read as the focus having let go of it.
 pub fn tint_marked_names(
     systems: Query<
-        (Has<PointedAt>, Has<Selected>, Has<Filtered>),
+        (Has<PointedAt>, Has<Selected>, Has<Unfocused>),
         With<System>,
     >,
     materials: Res<LabelMaterials>,
@@ -841,7 +842,7 @@ pub fn tint_marked_names(
     >,
 ) {
     for (child_of, mut material) in &mut names {
-        let Ok((pointed_at, selected, filtered)) =
+        let Ok((pointed_at, selected, unfocused)) =
             systems.get(child_of.parent())
         else {
             continue;
@@ -854,7 +855,7 @@ pub fn tint_marked_names(
             Tint::Resting
         };
 
-        let wanted = materials.get(tint, filtered);
+        let wanted = materials.get(tint, unfocused);
         if material.0 != *wanted {
             material.0 = wanted.clone();
         }
@@ -890,12 +891,12 @@ mod tests {
         );
     }
 
-    /// A system the filters exclude gives up its name
+    /// A system the focuses exclude gives up its name
     ///
     /// A name is read or it is not, so one belonging to a dimmed star is not
     /// dimly readable, it is clutter over what the user asked to see.
     #[test]
-    fn a_filtered_system_is_not_named() {
+    fn an_unfocused_system_is_not_named() {
         assert!(!worth_naming(true, true, false, false));
     }
 
@@ -904,20 +905,20 @@ mod tests {
     /// Either is asking for the system by name, which is the one thing a
     /// name is for.
     #[test]
-    fn a_marked_system_is_named_through_a_filter() {
+    fn a_marked_system_is_named_through_a_focus() {
         assert!(worth_naming(true, true, true, false));
         assert!(worth_naming(true, true, false, true));
     }
 
     /// The names toggle bars one the same way, and yields the same way
     #[test]
-    fn the_names_toggle_bars_and_yields_as_a_filter_does() {
+    fn the_names_toggle_bars_and_yields_as_a_focus_does() {
         assert!(!worth_naming(false, false, false, false));
         assert!(worth_naming(false, false, true, false));
         assert!(worth_naming(false, false, false, true));
     }
 
-    /// A system the filters admit is named when names are on, and not when off
+    /// A system the focuses admit is named when names are on, and not when off
     #[test]
     fn an_admitted_system_follows_the_toggle() {
         assert!(worth_naming(true, false, false, false));
@@ -931,7 +932,7 @@ mod tests {
         assert!(worth_naming(false, true, false, true));
     }
 
-    /// Names are offered in order of nearness to what is focused
+    /// Names are offered in order of nearness to the center
     ///
     /// The score falls the whole way out, so the greedy pass takes the
     /// nearest system first and works outwards. Nothing further away can
@@ -998,19 +999,19 @@ mod tests {
     ///
     /// The best score is kept before anything has been placed, so the name
     /// under the pointer is always drawn, and whatever would have overlapped
-    /// it gives way. It has to beat the focused system to do that, which is
-    /// the only other claim strong enough to matter.
+    /// it gives way. It has to beat the system at the center to do that,
+    /// which is the only other claim strong enough to matter.
     #[test]
-    fn what_is_pointed_at_outranks_what_is_focused() {
+    fn what_is_pointed_at_outranks_what_is_centered() {
         // Pointed at, and as far out as a name is ever drawn.
         let pointed = name_score(DEFAULT_NAME_RADIUS, true, false);
 
-        // The focused system itself, which is otherwise the best there is.
-        let focused = name_score(0., false, false);
+        // The system at the center, which is otherwise the best there is.
+        let centered = name_score(0., false, false);
 
         assert!(
-            pointed > focused,
-            "pointed at scored {pointed}, behind the {focused} of the focus"
+            pointed > centered,
+            "pointed at scored {pointed}, behind the {centered} at the center"
         );
     }
 
@@ -1051,13 +1052,13 @@ mod tests {
     /// the flat term's job.
     #[test]
     fn the_focus_bonus_is_local_to_the_focus() {
-        let bonus = |d: f32| FOCUS_WEIGHT / (1. + (d / FOCUS_REACH).powi(2));
+        let bonus = |d: f32| CENTER_WEIGHT / (1. + (d / CENTER_REACH).powi(2));
 
-        assert!(bonus(FOCUS_REACH) < bonus(0.) * 0.6);
+        assert!(bonus(CENTER_REACH) < bonus(0.) * 0.6);
         assert!(
-            bonus(FOCUS_REACH * 10.) < FOCUS_WEIGHT * 0.05,
+            bonus(CENTER_REACH * 10.) < CENTER_WEIGHT * 0.05,
             "a system ten reaches out still held {} of the bonus",
-            bonus(FOCUS_REACH * 10.)
+            bonus(CENTER_REACH * 10.)
         );
     }
 

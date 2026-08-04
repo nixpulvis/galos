@@ -11,7 +11,7 @@ use galos_db::systems::System as DbSystem;
 /// its systems is furthest, which is what the camera has to take in to show
 /// the whole of it. The middle of the span rather than the average of the
 /// systems, since a route that crosses a crowded region and then a bare one
-/// would otherwise be centred on the crowd and hang off the screen at the far
+/// would otherwise be centered on the crowd and hang off the screen at the far
 /// end.
 ///
 /// Nothing for a route with nowhere to be. Systems with no position on record
@@ -50,7 +50,7 @@ pub fn spawn_route(
 
     // Asked before the line already drawn is taken away, so that a plot that
     // came back with nothing leaves the last one whole. Taken away first, a
-    // route that failed would clear the line and leave the filter naming it
+    // route that failed would clear the line and leave the focus naming it
     // standing in the bar, dimming the map down to a route with nothing drawn
     // on it.
     for entity in route_query.iter() {
@@ -59,7 +59,7 @@ pub fn spawn_route(
 
     // Mesh vertices are floats, with no cell to lean on, so a route drawn in
     // galactic coordinates would be quantised to whatever precision is left
-    // at that distance from the centre. Hanging the line off its own midpoint
+    // at that distance from the center. Hanging the line off its own midpoint
     // leaves the vertices holding only how far each end is from that, which
     // is at most the length of the route.
     let midpoint = points.iter().fold(DVec3::ZERO, |sum, p| sum + *p)
@@ -128,7 +128,7 @@ mod tests {
     /// The middle is of what the route spans, not of where its systems fall
     ///
     /// A route crowded at one end and bare at the other would otherwise be
-    /// centred on the crowd, leaving the far end off the screen.
+    /// centered on the crowd, leaving the far end off the screen.
     #[test]
     fn a_lopsided_route_is_framed_on_its_span() {
         let places = [

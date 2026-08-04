@@ -6,7 +6,7 @@ use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
-    filter::{self, Filtered, Filters},
+    focus::{self, Focuses, Unfocused},
     pointing::{
         DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
         UNFITTED_SCALE,
@@ -70,7 +70,7 @@ pub struct SystemMesh(pub Handle<Mesh>);
 pub struct SystemMaterials {
     /// One per colour, indexed as [`hue`] answers
     bright: Vec<Handle<StandardMaterial>>,
-    /// The same colours, at [`filter::DIMMED`] of full
+    /// The same colours, at [`focus::DIMMED`] of full
     dim: Vec<Handle<StandardMaterial>>,
 }
 
@@ -319,7 +319,7 @@ pub fn spawn(
     galaxy: Res<Galaxy>,
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
-    filters: Res<Filters>,
+    focuses: Res<Focuses>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
     invisible: Res<InvisibleMaterial>,
@@ -346,7 +346,7 @@ pub fn spawn(
                 &galaxy,
                 grid,
                 &color_by,
-                &filters,
+                &focuses,
                 &mut commands,
                 &mesh,
                 &materials,
@@ -433,7 +433,7 @@ pub fn spawn(
 /// A row already on the map has its [`System`] replaced rather than being
 /// respawned, which [`update`] then acts on.
 ///
-/// The filters are asked here rather than left to [`filter::mark`], so that a
+/// The focuses are asked here rather than left to [`focus::mark`], so that a
 /// system arrives already marked and already drawn at the strength it should
 /// be. A mark applied by a command lands at the next sync point, by which
 /// time the star has been drawn once at full strength.
@@ -443,7 +443,7 @@ pub fn spawn_systems(
     galaxy: &Res<Galaxy>,
     grid: &Grid,
     color_by: &Res<ColorBy>,
-    filters: &Res<Filters>,
+    focuses: &Res<Focuses>,
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
@@ -477,10 +477,10 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            // Asked here as well as in `filter::mark`, since a mark applied
+            // Asked here as well as in `focus::mark`, since a mark applied
             // by a command lands at the next sync point and the star would
             // be drawn once at full strength before it arrived.
-            let excluded = !filters.admit(&system);
+            let excluded = !focuses.admit(&system);
             let drawn = star(&system, color_by, mesh, materials, excluded);
             let target = pointer_target(mesh, invisible);
             let mut spawned = commands.spawn((
@@ -495,28 +495,28 @@ pub fn spawn_systems(
                 ChildOf(galaxy.0),
             ));
             if excluded {
-                spawned.insert(Filtered);
+                spawned.insert(Unfocused);
             }
             spawned.with_child(drawn).with_child(target);
         }
     }
 }
 
-/// Carry a changed row, a changed colour scheme or a changed filter onto what
+/// Carry a changed row, a changed colour scheme or a changed focus onto what
 /// is drawn
 ///
 /// The two halves of a star are refreshed from different things. Its
 /// placement follows the row it was built from, and its material follows the
-/// row, [`ColorBy`] and whether the filters exclude it, so the second is
+/// row, [`ColorBy`] and whether the focuses exclude it, so the second is
 /// checked against the star each mesh hangs off rather than a copy of it.
 ///
 /// The material is decided afresh each frame and written only where it
 /// differs, as [`super::labels::tint_marked_names`] does, rather than being
 /// guarded by what has changed. A mark is applied by a command and so lands a
-/// frame after the filter that asked for it, which leaves nothing that both
+/// frame after the focus that asked for it, which leaves nothing that both
 /// runs after the mark and can still see what changed.
 fn update(
-    systems_query: Query<(Entity, Ref<System>, Has<Filtered>)>,
+    systems_query: Query<(Entity, Ref<System>, Has<Unfocused>)>,
     mut stars: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
         With<Star>,
@@ -535,11 +535,11 @@ fn update(
     }
 
     for (child_of, mut material) in &mut stars {
-        let Ok((_, system, filtered)) = systems_query.get(child_of.parent())
+        let Ok((_, system, unfocused)) = systems_query.get(child_of.parent())
         else {
             continue;
         };
-        let wanted = materials.get(hue(&system, &color_by), filtered);
+        let wanted = materials.get(hue(&system, &color_by), unfocused);
         if material.0 != wanted {
             material.0 = wanted;
         }
@@ -634,7 +634,7 @@ fn init_materials(
 
     commands.insert_resource(SystemMaterials {
         bright: set(1.),
-        dim: set(filter::DIMMED),
+        dim: set(focus::DIMMED),
     });
     commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
         base_color: Color::NONE,

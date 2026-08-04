@@ -89,9 +89,9 @@ pub enum Plot {
 /// A collection of search messages for responding to the user's UI
 /// interactions.
 ///
-/// A filter is not one of these. Asking for a filter names something and the
+/// A focus is not one of these. Asking for a focus names something and the
 /// map neither goes there, fetches it, nor picks it out, so it is asked for
-/// by [`crate::systems::filter::Wanted`] instead.
+/// by [`crate::systems::focus::Wanted`] instead.
 #[derive(Message, Debug)]
 pub enum Searched {
     System { name: String },
@@ -142,9 +142,9 @@ pub fn searched(
     let near = camera
         .single()
         .map(|camera| Coordinate {
-            x: camera.focus.x,
-            y: camera.focus.y,
-            z: camera.focus.z,
+            x: camera.center.x,
+            y: camera.center.y,
+            z: camera.center.z,
         })
         .ok();
 

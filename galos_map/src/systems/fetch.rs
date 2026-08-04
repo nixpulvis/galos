@@ -71,20 +71,20 @@ impl FetchIndex {
     /// somewhere should bring stars promptly however slowly the map is set to
     /// refresh.
     ///
-    /// A region refreshes another when it has the same centre and reaches no
+    /// A region refreshes another when it has the same center and reaches no
     /// further. A larger radius takes in systems that were never asked for, so
     /// it is a new question standing in the same place.
     ///
     /// A question and a predicate rather than an ordering. Two regions about
-    /// different centres are each no answer to the other, which is a thing an
+    /// different centers are each no answer to the other, which is a thing an
     /// [`Ord`] cannot say: it would have to call one of them the greater, and
     /// whichever it called it would be wrong the other way round.
     fn refreshes(&self, last: &FetchIndex) -> bool {
         match (self, last) {
             (
-                FetchIndex::Region(centre, radius),
+                FetchIndex::Region(center, radius),
                 FetchIndex::Region(before, reached),
-            ) => centre == before && radius <= reached,
+            ) => center == before && radius <= reached,
             // Only the spyglass records what it last fetched, so a route is
             // never on either side of this. Somewhere new either way.
             _ => false,
@@ -176,7 +176,7 @@ fn fetch_spyglass(
     db: &Res<Db>,
 ) {
     let Ok(camera) = camera_query.single() else { return };
-    let center = camera.focus.as_ivec3();
+    let center = camera.center.as_ivec3();
     let index = FetchIndex::Region(center, spyglass.radius as i32);
     let now = time.last_update().unwrap_or(time.startup());
     if spyglass_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
@@ -224,9 +224,9 @@ pub fn spyglass_condition(
 mod tests {
     use super::*;
 
-    /// A region of `radius` about `centre` on the x axis
-    fn region(centre: i32, radius: i32) -> FetchIndex {
-        FetchIndex::Region(IVec3::new(centre, 0, 0), radius)
+    /// A region of `radius` about `center` on the x axis
+    fn region(center: i32, radius: i32) -> FetchIndex {
+        FetchIndex::Region(IVec3::new(center, 0, 0), radius)
     }
 
     /// The same region asked for again is a refresh

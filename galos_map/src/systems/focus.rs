@@ -1,8 +1,10 @@
-//! Narrowing the map down to what the user is looking for
+//! Picking the map out against the rest of the sky
 //!
-//! A filter is a question asked of every system, and several are asked at
-//! once: a system passes when all of them admit it. What fails is not taken
-//! off the map, it is drawn faintly, so a faction is read against the space
+//! A focus is a question asked of every system, and several are asked at
+//! once: a system is in focus when any one of them admits it. Each adds to
+//! what is picked out rather than cutting into it, every focus being
+//! something the user asked to see. What none of them admits is not taken off
+//! the map, it is drawn faintly, so a faction is read against the space
 //! around it rather than against an empty sky.
 //!
 //! This is a layer over the map rather than a mode. The spyglass goes on
@@ -24,7 +26,7 @@ use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<Filters>();
+    app.init_resource::<Focuses>();
     app.init_resource::<Asked>();
     app.add_message::<Wanted>();
     // Answering what the user asked for, so with the rest of that.
@@ -40,17 +42,17 @@ pub fn plugin(app: &mut App) {
 
 /// One question asked of every system
 ///
-/// The id is what a system is tested against and the name is what the filter
+/// The id is what a system is tested against and the name is what the focus
 /// row says it is. Both are settled when the faction is picked out of a list,
 /// so neither has to be looked up again.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Filter {
+pub enum Focus {
     /// Systems the named faction is present in
     Faction { id: i32, name: String },
     /// The systems a plotted route runs through
     ///
     /// Unlike a faction, this is nothing a system knows about itself. A route
-    /// is worked out rather than recorded, so the filter carries the answer it
+    /// is worked out rather than recorded, so the focus carries the answer it
     /// came back with: the addresses it runs through, in the order they are
     /// travelled.
     ///
@@ -67,23 +69,21 @@ pub enum Filter {
     /// The systems the user picked out by hand
     ///
     /// A copy of what was selected rather than a reading of the selection as
-    /// it stands. Taking a copy is what makes the filter worth having: the
-    /// rings and the rows can be let go of and the sky stays narrowed to the
-    /// systems that were gathered.
+    /// it stands. Taking a copy is what makes the focus worth having: the
+    /// rings and the rows can be let go of and those systems stay picked out
+    /// against the rest.
     ///
     /// `label` says how many, a hand-picked set having no name of its own.
     Systems { label: String, systems: Vec<i64> },
 }
 
-impl Filter {
-    /// Whether this filter admits `system`
+impl Focus {
+    /// Whether this focus admits `system`
     fn admits(&self, system: &System) -> bool {
         match self {
-            Filter::Faction { id, .. } => system.factions.contains(id),
-            Filter::Route { systems, .. } => systems.contains(&system.address),
-            Filter::Systems { systems, .. } => {
-                systems.contains(&system.address)
-            }
+            Focus::Faction { id, .. } => system.factions.contains(id),
+            Focus::Route { systems, .. } => systems.contains(&system.address),
+            Focus::Systems { systems, .. } => systems.contains(&system.address),
         }
     }
 
@@ -94,62 +94,60 @@ impl Filter {
     /// faction's are a set, with nothing in them to say which comes first, so
     /// whoever lists those may put them in whatever order suits the reader.
     pub fn ordered(&self) -> bool {
-        matches!(self, Filter::Route { .. })
+        matches!(self, Focus::Route { .. })
     }
 
     /// Where the system at `address` falls in what this admits
     ///
-    /// Nothing for a filter with no order of its own, and nothing for a
+    /// Nothing for a focus with no order of its own, and nothing for a
     /// system it does not admit at all.
     pub fn place_of(&self, address: i64) -> Option<usize> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
-            Filter::Route { systems, .. } => {
+            Focus::Faction { .. } | Focus::Systems { .. } => None,
+            Focus::Route { systems, .. } => {
                 systems.iter().position(|on| *on == address)
             }
         }
     }
 
-    /// What the filter is asking for, as a row can say it
+    /// What the focus is asking for, as a row can say it
     pub fn name(&self) -> &str {
         match self {
-            Filter::Faction { name, .. } => name,
-            Filter::Route { label, .. } | Filter::Systems { label, .. } => {
-                label
-            }
+            Focus::Faction { name, .. } => name,
+            Focus::Route { label, .. } | Focus::Systems { label, .. } => label,
         }
     }
 
-    /// Every system this filter admits, as far as the database knows
+    /// Every system this focus admits, as far as the database knows
     ///
-    /// What a filter's panel lists. Asked of the database rather than of the
+    /// What a focus's panel lists. Asked of the database rather than of the
     /// map, since where a faction is, is most of what is being asked, and the
     /// map holds only what the spyglass has dragged in.
     ///
     /// Here rather than beside the panel that draws it, so that a kind of
-    /// filter is one arm of each of these rather than something to be traced
+    /// focus is one arm of each of these rather than something to be traced
     /// through the modules that happen to use it.
     pub async fn systems(&self, db: &Database) -> Vec<DbSystem> {
         match self {
-            Filter::Faction { name, .. } => {
+            Focus::Faction { name, .. } => {
                 DbSystem::fetch_faction(db, name).await.unwrap_or_default()
             }
-            Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
+            Focus::Route { systems, .. } | Focus::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
             }
         }
     }
 }
 
-/// A filter the user has asked for, before it is known to exist
+/// A focus the user has asked for, before it is known to exist
 ///
-/// What is typed is a name and what a filter tests against is an id, so
+/// What is typed is a name and what a focus tests against is an id, so
 /// something has to look one up for the other. That is a database question,
 /// asked here rather than in the bar, which draws during egui's own pass and
 /// has no business waiting on anything.
 ///
 /// Its own message rather than a [`crate::search::Searched`]: asking for a
-/// filter is not searching. The map goes nowhere, fetches nothing in
+/// focus is not searching. The map goes nowhere, fetches nothing in
 /// particular, and picks nothing out.
 #[derive(Message, Debug)]
 pub enum Wanted {
@@ -158,12 +156,12 @@ pub enum Wanted {
 }
 
 impl Wanted {
-    /// The filter this asks for, or why there is none
-    async fn resolve(&self, db: &Database) -> Result<Filter, String> {
+    /// The focus this asks for, or why there is none
+    async fn resolve(&self, db: &Database) -> Result<Focus, String> {
         match self {
             Wanted::Faction { name } => {
                 match DbFaction::fetch_by_name(db, name).await {
-                    Ok(faction) => Ok(Filter::Faction {
+                    Ok(faction) => Ok(Focus::Faction {
                         id: faction.id,
                         name: faction.name,
                     }),
@@ -174,7 +172,7 @@ impl Wanted {
     }
 }
 
-/// What became of the last filter asked for
+/// What became of the last focus asked for
 ///
 /// Three states rather than an error or nothing, because the field that asked
 /// has to know the difference between not yet answered and answered well. It
@@ -201,7 +199,7 @@ pub enum Asked {
 impl Asked {
     /// Whether the field that asked has done its job
     ///
-    /// A filter that was added is a row on screen now, so what was typed to
+    /// A focus that was added is a row on screen now, so what was typed to
     /// ask for it has been answered and the field is free for the next one.
     ///
     /// A name that resolved to nothing is left where it was typed. It is
@@ -212,10 +210,10 @@ impl Asked {
     }
 }
 
-/// Turn what the user asked for into a filter, or say why not
+/// Turn what the user asked for into a focus, or say why not
 fn resolve(
     mut wanted: MessageReader<Wanted>,
-    mut filters: ResMut<Filters>,
+    mut focuses: ResMut<Focuses>,
     mut answer: ResMut<Asked>,
     db: Res<Db>,
 ) {
@@ -224,8 +222,8 @@ fn resolve(
         // and this answers something the user just did.
         future::block_on(async {
             *answer = match asked.resolve(&db.0).await {
-                Ok(filter) => {
-                    filters.add(filter);
+                Ok(focus) => {
+                    focuses.add(focus);
                     Asked::Added
                 }
                 Err(why) => Asked::Trouble(why),
@@ -234,71 +232,80 @@ fn resolve(
     }
 }
 
-/// A filter, and whether it is being applied
+/// A focus, and whether it is being applied
 ///
 /// Off without being taken away, so that one can be lifted to see what it was
 /// hiding and put back without being typed in again.
 #[derive(Debug, Clone)]
 pub struct Active {
-    pub filter: Filter,
+    pub focus: Focus,
     pub enabled: bool,
 }
 
-/// Every filter the user has added
+/// Every focus the user has added
 #[derive(Resource, Default)]
-pub struct Filters(Vec<Active>);
+pub struct Focuses(Vec<Active>);
 
-impl Filters {
-    /// Whether every enabled filter admits `system`
+impl Focuses {
+    /// Whether any enabled focus admits `system`
     ///
-    /// All of them, so filters narrow as they are added. A system passing
-    /// some but not others is not what any of them was asking for.
+    /// Any of them, so each one adds to what is shown rather than cutting
+    /// into it. Every focus is something the user asked to see, and a second
+    /// ask is a second thing wanted, not a condition on the first: asking for
+    /// a faction and then for a route means both, where taking the systems
+    /// they share would usually mean nothing at all, the two rarely
+    /// overlapping.
+    ///
+    /// Nothing asked for admits everything. A map with no focus on it is a
+    /// map showing the sky rather than an empty one.
     pub fn admit(&self, system: &System) -> bool {
-        self.0
-            .iter()
-            .filter(|active| active.enabled)
-            .all(|active| active.filter.admits(system))
+        let mut asked =
+            self.0.iter().filter(|active| active.enabled).peekable();
+        if asked.peek().is_none() {
+            return true;
+        }
+        asked.any(|active| active.focus.admits(system))
     }
 
-    /// Add `filter`, unless it is already being asked
+    /// Add `focus`, unless it is already being asked
     ///
-    /// Asking the same thing twice narrows nothing and leaves two rows that
-    /// have to be turned off one at a time.
-    pub fn add(&mut self, filter: Filter) {
-        if self.0.iter().any(|active| active.filter == filter) {
+    /// Asking the same thing twice picks out nothing further and leaves two
+    /// rows that have to be turned off one at a time.
+    pub fn add(&mut self, focus: Focus) {
+        if self.0.iter().any(|active| active.focus == focus) {
             return;
         }
-        self.0.push(Active { filter, enabled: true });
+        self.0.push(Active { focus, enabled: true });
     }
 
-    /// Add `filter` in place of whatever else of its kind is being asked
+    /// Add `focus` in place of whatever else of its kind is being asked
     ///
     /// For a kind there can only be one of. The map draws one route at a
-    /// time, replacing the line as each is plotted, so a second route filter
-    /// standing beside the first would ask about a line that is no longer
-    /// there and narrow the map to nothing between them.
+    /// time, replacing the line as each is plotted, so a second route focus
+    /// standing beside the first would go on picking out the systems of a
+    /// route whose line was rubbed out when the next one was plotted.
     ///
     /// Factions do not go through here. Several of them at once is the whole
-    /// point of a filter being a filter.
-    pub fn replace(&mut self, filter: Filter) {
-        let kind = std::mem::discriminant(&filter);
-        self.0.retain(|active| std::mem::discriminant(&active.filter) != kind);
-        self.0.push(Active { filter, enabled: true });
+    /// point of a focus being a focus.
+    pub fn replace(&mut self, focus: Focus) {
+        let kind = std::mem::discriminant(&focus);
+        self.0.retain(|active| std::mem::discriminant(&active.focus) != kind);
+        self.0.push(Active { focus, enabled: true });
     }
 
-    /// Stop asking the filter at `index`
+    /// Stop asking the focus at `index`
     pub fn remove(&mut self, index: usize) {
         if index < self.0.len() {
             self.0.remove(index);
         }
     }
 
-    /// The filters in the order they were added
+    /// The focuses in the order they were added
     pub fn iter(&self) -> impl Iterator<Item = &Active> {
         self.0.iter()
     }
 
-    /// Turn the filter at `index` on or off
+    /// Turn the focus at `index` on or off
     pub fn toggle(&mut self, index: usize) {
         if let Some(active) = self.0.get_mut(index) {
             active.enabled = !active.enabled;
@@ -306,18 +313,19 @@ impl Filters {
     }
 }
 
-/// A system no enabled filter admits
+/// A system no enabled focus admits
 ///
-/// The verdict is one bit because filters are ANDed, so it is carried by a
-/// marker, and how faintly to draw is [`DIMMED`], the same for all of them. Written when the
-/// filters change or a system does, rather than worked out afresh by each of
-/// the things that draws from it.
+/// The verdict is one bit, whichever of them admitted it and however many
+/// did, so it is carried by a marker, and how faintly to draw is [`DIMMED`],
+/// the same for all of them. Written when the focuses change or a system
+/// does, rather than worked out afresh by each of the things that draws from
+/// it.
 #[derive(Component)]
-pub struct Filtered;
+pub struct Unfocused;
 
-/// How brightly a system the filters exclude is drawn
+/// How brightly a system no focus admits is drawn
 ///
-/// A fraction of what it would be drawn at unfiltered. Faint enough to read as
+/// A fraction of what it would be drawn at in focus. Faint enough to read as
 /// background rather than as something picked out, and bright enough to still
 /// be read, which is the whole point of dimming rather than hiding: the space
 /// around a faction stays legible.
@@ -335,38 +343,38 @@ pub const DIMMED: f32 = 0.15;
 ///
 /// For what is painted straight rather than through a material: the two rings
 /// are gizmos, and a gizmo takes its colour at the call.
-pub fn dim(color: Srgba, filtered: bool) -> Srgba {
-    if filtered {
+pub fn dim(color: Srgba, unfocused: bool) -> Srgba {
+    if unfocused {
         Srgba { alpha: color.alpha * DIMMED, ..color }
     } else {
         color
     }
 }
 
-/// Keep the mark on whichever systems the filters exclude
+/// Keep the mark on whichever systems the focuses exclude
 ///
 /// Only where something has changed. This runs over every system on the map,
-/// and the filters are usually quiet, so the common case is a walk that
+/// and the focuses are usually quiet, so the common case is a walk that
 /// writes nothing.
 fn mark(
-    filters: Res<Filters>,
-    systems: Query<(Entity, Ref<System>, Has<Filtered>)>,
+    focuses: Res<Focuses>,
+    systems: Query<(Entity, Ref<System>, Has<Unfocused>)>,
     mut commands: Commands,
 ) {
-    let filters_changed = filters.is_changed();
+    let focuses_changed = focuses.is_changed();
     for (entity, system, marked) in &systems {
         // A row that has changed may have changed its factions, so it is
-        // asked again even while the filters stand still.
-        if !filters_changed && !system.is_changed() {
+        // asked again even while the focuses stand still.
+        if !focuses_changed && !system.is_changed() {
             continue;
         }
 
-        match (filters.admit(&system), marked) {
+        match (focuses.admit(&system), marked) {
             (false, false) => {
-                commands.entity(entity).insert(Filtered);
+                commands.entity(entity).insert(Unfocused);
             }
             (true, true) => {
-                commands.entity(entity).remove::<Filtered>();
+                commands.entity(entity).remove::<Unfocused>();
             }
             _ => {}
         }
@@ -378,9 +386,9 @@ mod tests {
     use super::*;
     use crate::systems::tests::system;
 
-    /// A faction filter, by id, called after it
-    fn faction(id: i32) -> Filter {
-        Filter::Faction { id, name: format!("Faction {id}") }
+    /// A faction focus, by id, called after it
+    fn faction(id: i32) -> Focus {
+        Focus::Faction { id, name: format!("Faction {id}") }
     }
 
     /// A system belonging to each of `factions`
@@ -390,9 +398,9 @@ mod tests {
         system
     }
 
-    /// A filter that was added has answered the field that asked for it
+    /// A focus that was added has answered the field that asked for it
     #[test]
-    fn an_added_filter_frees_the_field() {
+    fn an_added_focus_frees_the_field() {
         assert!(Asked::Added.answered());
     }
 
@@ -417,64 +425,67 @@ mod tests {
 
     /// With nothing asked, everything passes
     #[test]
-    fn no_filter_admits_everything() {
-        let filters = Filters::default();
-        assert!(filters.admit(&member(1, &[])));
-        assert!(filters.admit(&member(2, &[7])));
+    fn no_focus_admits_everything() {
+        let focuses = Focuses::default();
+        assert!(focuses.admit(&member(1, &[])));
+        assert!(focuses.admit(&member(2, &[7])));
     }
 
-    /// A faction filter admits the systems that faction is in
+    /// A faction focus admits the systems that faction is in
     #[test]
-    fn a_faction_filter_admits_its_members() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
+    fn a_faction_focus_admits_its_members() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(filters.admit(&member(2, &[3, 7])));
-        assert!(!filters.admit(&member(3, &[3])));
-        assert!(!filters.admit(&member(4, &[])));
+        assert!(focuses.admit(&member(1, &[7])));
+        assert!(focuses.admit(&member(2, &[3, 7])));
+        assert!(!focuses.admit(&member(3, &[3])));
+        assert!(!focuses.admit(&member(4, &[])));
     }
 
-    /// Two filters admit what passes both
+    /// Two focuses admit what passes either
     ///
-    /// Which is what a stack of rows reads as, and what makes adding one
-    /// narrow the map rather than widen it.
+    /// Each row is something the user asked to see, so a second row shows a
+    /// second thing rather than cutting into the first. Two factions asked
+    /// for together and ANDed would answer with the systems both are present
+    /// in, which is usually none of them.
     #[test]
-    fn filters_narrow_each_other() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(faction(9));
+    fn focuses_add_to_each_other() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(9));
 
-        assert!(filters.admit(&member(1, &[7, 9])));
-        assert!(!filters.admit(&member(2, &[7])));
-        assert!(!filters.admit(&member(3, &[9])));
+        assert!(focuses.admit(&member(1, &[7, 9])));
+        assert!(focuses.admit(&member(2, &[7])));
+        assert!(focuses.admit(&member(3, &[9])));
+        assert!(!focuses.admit(&member(4, &[3])));
     }
 
-    /// A filter turned off asks nothing
+    /// A focus turned off asks nothing
     #[test]
-    fn a_disabled_filter_admits_everything() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.toggle(0);
+    fn a_disabled_focus_admits_everything() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.toggle(0);
 
-        assert!(filters.admit(&member(1, &[])));
+        assert!(focuses.admit(&member(1, &[])));
     }
 
     /// One of two turned off leaves the other asking
     #[test]
-    fn disabling_one_filter_leaves_the_rest() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(faction(9));
-        filters.toggle(1);
+    fn disabling_one_focus_leaves_the_rest() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(9));
+        focuses.toggle(1);
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(!filters.admit(&member(2, &[9])));
+        assert!(focuses.admit(&member(1, &[7])));
+        assert!(!focuses.admit(&member(2, &[9])));
     }
 
     /// A hand-picked set holding the systems at `addresses`
-    fn gathered(addresses: &[i64]) -> Filter {
-        Filter::Systems {
+    fn gathered(addresses: &[i64]) -> Focus {
+        Focus::Systems {
             label: format!("{} systems", addresses.len()),
             systems: addresses.to_vec(),
         }
@@ -483,12 +494,12 @@ mod tests {
     /// A hand-picked set admits the systems that were picked
     #[test]
     fn a_gathered_set_admits_what_was_picked() {
-        let mut filters = Filters::default();
-        filters.add(gathered(&[7, 3]));
+        let mut focuses = Focuses::default();
+        focuses.add(gathered(&[7, 3]));
 
-        assert!(filters.admit(&member(3, &[])));
-        assert!(filters.admit(&member(7, &[])));
-        assert!(!filters.admit(&member(9, &[])));
+        assert!(focuses.admit(&member(3, &[])));
+        assert!(focuses.admit(&member(7, &[])));
+        assert!(!focuses.admit(&member(9, &[])));
     }
 
     /// And has no order for a panel to list it in
@@ -503,25 +514,22 @@ mod tests {
     }
 
     /// A route between the systems at `addresses`
-    fn route(addresses: &[i64]) -> Filter {
-        Filter::Route {
-            label: "A -> B".to_owned(),
-            systems: addresses.to_vec(),
-        }
+    fn route(addresses: &[i64]) -> Focus {
+        Focus::Route { label: "A -> B".to_owned(), systems: addresses.to_vec() }
     }
 
-    /// A route filter admits the systems it runs through
+    /// A route focus admits the systems it runs through
     ///
     /// Nothing a system knows about itself, unlike a faction: a route is
-    /// worked out, so the filter carries the answer it came back with.
+    /// worked out, so the focus carries the answer it came back with.
     #[test]
-    fn a_route_filter_admits_what_it_runs_through() {
-        let mut filters = Filters::default();
-        filters.add(route(&[7, 3, 9]));
+    fn a_route_focus_admits_what_it_runs_through() {
+        let mut focuses = Focuses::default();
+        focuses.add(route(&[7, 3, 9]));
 
-        assert!(filters.admit(&member(3, &[])));
-        assert!(filters.admit(&member(9, &[])));
-        assert!(!filters.admit(&member(4, &[])));
+        assert!(focuses.admit(&member(3, &[])));
+        assert!(focuses.admit(&member(9, &[])));
+        assert!(!focuses.admit(&member(4, &[])));
     }
 
     /// However the addresses are ordered, the answer is the same
@@ -530,9 +538,9 @@ mod tests {
     /// what its panel lists it in, and says nothing about who is on it.
     #[test]
     fn a_route_admits_the_same_whatever_order_it_came_in() {
-        let mut forwards = Filters::default();
+        let mut forwards = Focuses::default();
         forwards.add(route(&[1, 5, 9]));
-        let mut backwards = Filters::default();
+        let mut backwards = Focuses::default();
         backwards.add(route(&[9, 5, 1]));
 
         for address in [1, 5, 9, 2, 7] {
@@ -568,59 +576,65 @@ mod tests {
 
     /// A second route takes the place of the first
     ///
-    /// One route is drawn at a time, so two route filters would ask about a
+    /// One route is drawn at a time, so two route focuses would ask about a
     /// line that is no longer there and narrow the map to whatever the two
     /// happened to share.
     #[test]
     fn a_route_replaces_the_route_before_it() {
-        let mut filters = Filters::default();
-        filters.replace(route(&[1, 2]));
-        filters.replace(route(&[8, 9]));
+        let mut focuses = Focuses::default();
+        focuses.replace(route(&[1, 2]));
+        focuses.replace(route(&[8, 9]));
 
-        assert_eq!(filters.iter().count(), 1);
-        assert!(filters.admit(&member(9, &[])));
-        assert!(!filters.admit(&member(1, &[])));
+        assert_eq!(focuses.iter().count(), 1);
+        assert!(focuses.admit(&member(9, &[])));
+        assert!(!focuses.admit(&member(1, &[])));
     }
 
     /// And leaves the factions where they are
     ///
-    /// Several factions at once is the whole point of a filter being a
-    /// filter, so only the kind that replaces itself does.
+    /// Several factions at once is the whole point of a focus being a
+    /// focus, so only the kind that replaces itself does.
     #[test]
     fn a_route_leaves_the_factions_alone() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(faction(9));
-        filters.replace(route(&[1, 2]));
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(9));
+        focuses.replace(route(&[1, 2]));
 
-        assert_eq!(filters.iter().count(), 3);
+        assert_eq!(focuses.iter().count(), 3);
     }
 
-    /// A route narrows the factions rather than replacing them
+    /// A route stands beside the factions rather than cutting into them
+    ///
+    /// Both were asked for, and a route through a faction's space rarely
+    /// keeps to it. Taking only what the two share would answer a plotted
+    /// route with the handful of its systems that faction happens to hold.
     #[test]
     fn a_route_and_a_faction_ask_together() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.replace(route(&[1, 2]));
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.replace(route(&[1, 2]));
 
         let mut on_both = member(1, &[7]);
         on_both.factions = vec![7];
-        assert!(filters.admit(&on_both));
-        // On the route, but not the faction's.
-        assert!(!filters.admit(&member(2, &[])));
-        // The faction's, but not on the route.
-        assert!(!filters.admit(&member(5, &[7])));
+        assert!(focuses.admit(&on_both));
+        // On the route, though the faction is nowhere near it.
+        assert!(focuses.admit(&member(2, &[])));
+        // The faction's, though the route runs elsewhere.
+        assert!(focuses.admit(&member(5, &[7])));
+        // Neither, so neither asked for it.
+        assert!(!focuses.admit(&member(6, &[3])));
     }
 
-    /// Two filters that differ are told apart, and equal ones are not
+    /// Two focuses that differ are told apart, and equal ones are not
     ///
-    /// The bar keys each row on its filter rather than on where the row sits,
+    /// The bar keys each row on its focus rather than on where the row sits,
     /// so that dropping one does not hand its identity, and whatever egui was
     /// remembering against it, to the row that moves up into its place. That
-    /// rests on this: two filters that are not the same must not hash the
+    /// rests on this: two focuses that are not the same must not hash the
     /// same, and one that is must.
     #[test]
-    fn filters_are_told_apart_by_what_they_ask() {
+    fn focuses_are_told_apart_by_what_they_ask() {
         use std::collections::HashSet;
 
         let asked = [faction(7), faction(9), route(&[1, 2]), route(&[3, 4])];
@@ -631,97 +645,97 @@ mod tests {
         assert_eq!(same.len(), 1);
     }
 
-    /// The same filter added twice is asked once
+    /// The same focus added twice is asked once
     ///
     /// Two rows saying the same thing narrow nothing and have to be turned
     /// off one at a time.
     #[test]
-    fn the_same_filter_is_not_added_twice() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(faction(7));
+    fn the_same_focus_is_not_added_twice() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(7));
 
-        assert_eq!(filters.iter().count(), 1);
+        assert_eq!(focuses.iter().count(), 1);
     }
 
-    /// Removing a filter stops it being asked
+    /// Removing a focus stops it being asked
     #[test]
-    fn a_removed_filter_asks_nothing() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.remove(0);
+    fn a_removed_focus_asks_nothing() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.remove(0);
 
-        assert!(filters.admit(&member(1, &[])));
+        assert!(focuses.admit(&member(1, &[])));
     }
 
-    /// A world with nothing in it but the filters and the mark
+    /// A world with nothing in it but the focuses and the mark
     fn map() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Filters>();
+        app.init_resource::<Focuses>();
         app.add_systems(Update, mark);
         app
     }
 
-    /// The mark lands on what the filters exclude
+    /// The mark lands on what the focuses exclude
     #[test]
     fn the_mark_lands_on_what_is_excluded() {
         let mut app = map();
         let inside = app.world_mut().spawn(member(1, &[7])).id();
         let outside = app.world_mut().spawn(member(2, &[3])).id();
 
-        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.world_mut().resource_mut::<Focuses>().add(faction(7));
         app.update();
 
-        assert!(!app.world().entity(inside).contains::<Filtered>());
-        assert!(app.world().entity(outside).contains::<Filtered>());
+        assert!(!app.world().entity(inside).contains::<Unfocused>());
+        assert!(app.world().entity(outside).contains::<Unfocused>());
     }
 
-    /// Dropping a filter takes the mark off what it excluded
+    /// Dropping a focus takes the mark off what it excluded
     #[test]
-    fn the_mark_goes_when_the_filter_does() {
+    fn the_mark_goes_when_the_focus_does() {
         let mut app = map();
         let outside = app.world_mut().spawn(member(1, &[3])).id();
 
-        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.world_mut().resource_mut::<Focuses>().add(faction(7));
         app.update();
-        app.world_mut().resource_mut::<Filters>().remove(0);
+        app.world_mut().resource_mut::<Focuses>().remove(0);
         app.update();
 
-        assert!(!app.world().entity(outside).contains::<Filtered>());
+        assert!(!app.world().entity(outside).contains::<Unfocused>());
     }
 
-    /// A row that changes underneath a filter is asked again
+    /// A row that changes underneath a focus is asked again
     ///
     /// A fetch replaces the row of a system already on the map, and the
-    /// factions in it are what the filter reads. Without this the mark would
+    /// factions in it are what the focus reads. Without this the mark would
     /// go on answering for the row the system arrived with.
     #[test]
     fn a_changed_row_is_asked_again() {
         let mut app = map();
         let joining = app.world_mut().spawn(member(1, &[3])).id();
 
-        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.world_mut().resource_mut::<Focuses>().add(faction(7));
         app.update();
-        assert!(app.world().entity(joining).contains::<Filtered>());
+        assert!(app.world().entity(joining).contains::<Unfocused>());
 
         app.world_mut().entity_mut(joining).insert(member(1, &[3, 7]));
         app.update();
 
-        assert!(!app.world().entity(joining).contains::<Filtered>());
+        assert!(!app.world().entity(joining).contains::<Unfocused>());
     }
 
-    /// A system arriving under a standing filter is marked
+    /// A system arriving under a standing focus is marked
     #[test]
     fn a_system_arriving_is_asked() {
         let mut app = map();
 
-        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.world_mut().resource_mut::<Focuses>().add(faction(7));
         app.update();
 
         let outside = app.world_mut().spawn(member(1, &[3])).id();
         app.update();
 
-        assert!(app.world().entity(outside).contains::<Filtered>());
+        assert!(app.world().entity(outside).contains::<Unfocused>());
     }
 }

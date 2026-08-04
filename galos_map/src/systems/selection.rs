@@ -7,7 +7,7 @@
 //!
 //! Several are held at once, in the order they were picked. A plain click
 //! picks one out in place of the rest and ctrl-click gathers them up, so a
-//! handful can be marked out together and handed to a filter, which is what
+//! handful can be marked out together and handed to a focus, which is what
 //! makes the set worth holding rather than only the last one clicked.
 //!
 //! What is selected is held as values rather than as entities. A system
@@ -27,7 +27,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::filter::{self, Filtered};
+use crate::systems::focus::{self, Unfocused};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
 };
@@ -156,10 +156,10 @@ impl Selection {
 
     /// Every system picked out, by address, in the order it was picked
     ///
-    /// What a filter over the selection is built from. Addresses rather than
-    /// rows, since that is all a filter tests against, and because a filter
+    /// What a focus over the selection is built from. Addresses rather than
+    /// rows, since that is all a focus tests against, and because a focus
     /// holding its own copy is what lets the selection be let go of while the
-    /// filter stands.
+    /// focus stands.
     pub fn addresses(&self) -> Vec<i64> {
         self.0.iter().map(|system| system.address).collect()
     }
@@ -300,21 +300,21 @@ fn clear_when_nothing_is_clicked(
 /// A system the spyglass has hidden is skipped, since a ring around a star
 /// that is not drawn is a ring around nothing.
 ///
-/// A ring dims with the star it is drawn around. A selection the filters
+/// A ring dims with the star it is drawn around. A selection the focuses
 /// exclude stays selected, and a full strength ring around a faint star would
-/// read as the filter having let go of it.
+/// read as the focus having let go of it.
 fn ring(
     mut gizmos: Gizmos,
     camera: Query<&OrbitCamera>,
     selected: Query<
-        (&GlobalTransform, &Visibility, &Children, Has<Filtered>),
+        (&GlobalTransform, &Visibility, &Children, Has<Unfocused>),
         (With<System>, With<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
-    for (system, visibility, children, filtered) in &selected {
+    for (system, visibility, children, unfocused) in &selected {
         if *visibility == Visibility::Hidden {
             continue;
         }
@@ -331,7 +331,7 @@ fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            filter::dim(SELECTION, filtered),
+            focus::dim(SELECTION, unfocused),
         );
     }
 }
@@ -588,7 +588,7 @@ mod tests {
 
     /// The selection says where what is picked out is
     ///
-    /// Which is all the control that centres the camera on it can ask: a
+    /// Which is all the control that centers the camera on it can ask: a
     /// `System`'s fields are private to this module and its neighbours, and
     /// that control is drawn with the rest of the UI.
     #[test]

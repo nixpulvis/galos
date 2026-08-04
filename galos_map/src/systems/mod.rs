@@ -27,7 +27,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(pointing::plugin);
     app.add_plugins(route::plugin);
     app.add_plugins(selection::plugin);
-    app.add_plugins(filter::plugin);
+    app.add_plugins(focus::plugin);
     app.add_plugins(info::plugin);
 
     app.init_resource::<InReach>();
@@ -66,9 +66,9 @@ pub struct System {
     secondary_economy: Option<Economy>,
     /// The factions present in the system, by id
     ///
-    /// What [`filter`] asks a system about, so ids rather than names: the
+    /// What [`focus`] asks a system about, so ids rather than names: the
     /// question is put to every system drawn, every frame, and an integer
-    /// compare is what that wants. A filter naming a faction has resolved it
+    /// compare is what that wants. A focus naming a faction has resolved it
     /// to an id already, since it was picked from a list.
     factions: Vec<i32>,
     updated_at: DateTime<Utc>,
@@ -76,7 +76,7 @@ pub struct System {
 
 pub mod despawn;
 pub mod fetch;
-pub mod filter;
+pub mod focus;
 pub mod info;
 pub mod labels;
 pub mod pointing;
@@ -135,7 +135,7 @@ impl Spyglass {
     pub const UNASKED: f32 = 200.;
 }
 
-/// How much of the sky is in reach, and how much of that the filters admit
+/// How much of the sky is in reach, and how much of that the focuses admit
 ///
 /// Tallied by [`visibility`], which has already settled both for every system
 /// on the map, so what is said is the answer the map acted on rather than a
@@ -147,7 +147,7 @@ impl Spyglass {
 pub struct InReach {
     /// Systems the spyglass reaches
     pub total: usize,
-    /// How many of those the filters admit
+    /// How many of those the focuses admit
     pub admitted: usize,
 }
 
@@ -157,10 +157,10 @@ pub struct InReach {
 /// system. Two systems each writing a `Visibility` would take turns undoing
 /// each other.
 ///
-/// The filters do not decide it. What they exclude is drawn faintly rather
-/// than taken away, which is [`filter`]'s whole point: a faction read against
+/// The focuses do not decide it. What they exclude is drawn faintly rather
+/// than taken away, which is [`focus`]'s whole point: a faction read against
 /// the space around it. So the spyglass alone says what is drawn, and the
-/// filters are counted here only because this is where the answer is settled
+/// focuses are counted here only because this is where the answer is settled
 /// for every system at once.
 ///
 /// Runs over every star every frame, so it writes only where the answer
@@ -168,7 +168,7 @@ pub struct InReach {
 /// changed each frame, and each star drags its name along with it.
 pub fn visibility(
     camera: Query<&OrbitCamera>,
-    mut systems: Query<(&System, &mut Visibility, Has<filter::Filtered>)>,
+    mut systems: Query<(&System, &mut Visibility, Has<focus::Unfocused>)>,
     spyglass: Res<Spyglass>,
     mut in_reach: ResMut<InReach>,
 ) {
@@ -178,16 +178,16 @@ pub fn visibility(
         None
     } else {
         let Ok(camera) = camera.single() else { return };
-        Some((camera.focus, spyglass.radius as f64))
+        Some((camera.center, spyglass.radius as f64))
     };
     let mut tally = InReach::default();
-    for (system, mut visibility, filtered) in &mut systems {
+    for (system, mut visibility, unfocused) in &mut systems {
         let within = reach.is_none_or(|(focus, radius)| {
             focus.distance(DVec3::from(system.position)) <= radius
         });
         if within {
             tally.total += 1;
-            if !filtered {
+            if !unfocused {
                 tally.admitted += 1;
             }
         }
@@ -318,16 +318,16 @@ pub(crate) mod tests {
         assert!(drawn(&app, far));
     }
 
-    /// A filtered system is still drawn, so long as it is being dimmed
+    /// An unfocused system is still drawn, so long as it is being dimmed
     ///
-    /// Which is the whole of why filters dim rather than hide: a faction is
+    /// Which is the whole of why focuses dim rather than hide: a faction is
     /// read against the space around it.
     #[test]
-    fn a_filtered_system_is_drawn_to_be_dimmed() {
+    fn an_unfocused_system_is_drawn_to_be_dimmed() {
         let mut app = map(10., false);
         let excluded = app
             .world_mut()
-            .spawn((at(1, 5.), Visibility::default(), filter::Filtered))
+            .spawn((at(1, 5.), Visibility::default(), focus::Unfocused))
             .id();
 
         app.update();
@@ -357,16 +357,16 @@ pub(crate) mod tests {
         assert_eq!(counted(&app), (2, 2));
     }
 
-    /// A filter takes systems out of the count without taking them out of
+    /// A focus takes systems out of the count without taking them out of
     /// reach
     #[test]
-    fn the_tally_says_how_many_a_filter_admits() {
+    fn the_tally_says_how_many_a_focus_admits() {
         let mut app = map(10., false);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((
             at(2, 5.),
             Visibility::default(),
-            filter::Filtered,
+            focus::Unfocused,
         ));
 
         app.update();
@@ -377,7 +377,7 @@ pub(crate) mod tests {
     /// The tally counts the excluded, which are drawn along with the rest
     ///
     /// A count over what is drawn would come to the same number twice and say
-    /// nothing at all, since what a filter excludes is dimmed rather than
+    /// nothing at all, since what a focus excludes is dimmed rather than
     /// taken away. What is asked of it is how much of the sky is getting
     /// through, which only the marks answer.
     #[test]
@@ -387,12 +387,12 @@ pub(crate) mod tests {
         app.world_mut().spawn((
             at(2, 5.),
             Visibility::default(),
-            filter::Filtered,
+            focus::Unfocused,
         ));
         app.world_mut().spawn((
             at(3, 5.),
             Visibility::default(),
-            filter::Filtered,
+            focus::Unfocused,
         ));
 
         app.update();
@@ -400,13 +400,13 @@ pub(crate) mod tests {
         assert_eq!(counted(&app), (1, 3));
     }
 
-    /// The spyglass still hides what it cannot reach, filter or no filter
+    /// The spyglass still hides what it cannot reach, focus or no focus
     #[test]
-    fn a_filtered_system_out_of_reach_stays_hidden() {
+    fn an_unfocused_system_out_of_reach_stays_hidden() {
         let mut app = map(10., false);
         let far = app
             .world_mut()
-            .spawn((at(1, 50.), Visibility::default(), filter::Filtered))
+            .spawn((at(1, 50.), Visibility::default(), focus::Unfocused))
             .id();
 
         app.update();
