@@ -20,7 +20,8 @@ use crate::Db;
 use crate::schedule::MapSet;
 use crate::systems::System;
 use bevy::prelude::*;
-use bevy::tasks::futures_lite::future;
+use bevy::tasks::futures_lite::future::poll_once;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_db::Database;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
@@ -29,6 +30,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
     app.init_resource::<DimTo>();
     app.init_resource::<Asked>();
+    app.init_resource::<Resolving>();
     app.add_message::<Wanted>();
     // Answering what the user asked for, so with the rest of that.
     app.add_systems(Update, resolve.in_set(MapSet::Search));
@@ -154,7 +156,7 @@ impl Filter {
 /// Its own message rather than a [`crate::search::Searched`]: asking for a
 /// filter is not searching. The map goes nowhere, fetches nothing in
 /// particular, and picks nothing out.
-#[derive(Message, Debug)]
+#[derive(Message, Debug, Clone)]
 pub enum Wanted {
     /// Systems a faction of this name is present in
     Faction { name: String },
@@ -215,25 +217,44 @@ impl Asked {
     }
 }
 
+/// The name being looked up, if one is
+///
+/// One at a time: the field asks for one name and holds what was typed until
+/// it is answered, so a second ask is the user having changed their mind
+/// rather than a second question.
+#[derive(Resource, Default)]
+struct Resolving(Option<Task<Result<Filter, String>>>);
+
 /// Turn what the user asked for into a filter, or say why not
+///
+/// Asked of the database off the main thread. A faction is looked up by name
+/// and the name is matched however it was typed, which the index on the
+/// factions cannot answer, so this is a walk of every faction on record. Done
+/// in the frame, that is the map stopping for it.
 fn resolve(
     mut wanted: MessageReader<Wanted>,
+    mut resolving: ResMut<Resolving>,
     mut filters: ResMut<Filters>,
     mut answer: ResMut<Asked>,
     db: Res<Db>,
 ) {
+    let pool = AsyncComputeTaskPool::get();
+
     for asked in wanted.read() {
-        // Waited on, as a search is. A name resolves against one indexed row
-        // and this answers something the user just did.
-        future::block_on(async {
-            *answer = match asked.resolve(&db.0).await {
-                Ok(filter) => {
-                    filters.add(filter);
-                    Asked::Added
-                }
-                Err(why) => Asked::Trouble(why),
-            };
-        });
+        let db = db.0.clone();
+        let asked = asked.clone();
+        resolving.0 = Some(pool.spawn(async move { asked.resolve(&db).await }));
+    }
+
+    if let Some(mut task) = resolving.0.take() {
+        match block_on(poll_once(&mut task)) {
+            Some(Ok(filter)) => {
+                filters.add(filter);
+                *answer = Asked::Added;
+            }
+            Some(Err(why)) => *answer = Asked::Trouble(why),
+            None => resolving.0 = Some(task),
+        }
     }
 }
 

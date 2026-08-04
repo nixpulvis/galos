@@ -2,7 +2,8 @@ use crate::Db;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use bevy::prelude::*;
-use bevy::tasks::futures_lite::future;
+use bevy::tasks::futures_lite::future::poll_once;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use elite_journal::system::Coordinate;
 use galos_db::Database;
 use galos_db::systems::System as DbSystem;
@@ -12,6 +13,8 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<SearchNote>();
     app.init_resource::<SearchResults>();
     app.init_resource::<Plot>();
+    app.init_resource::<Searching>();
+    app.init_resource::<Locating>();
     app.add_systems(Update, searched.in_set(MapSet::Search));
 }
 
@@ -131,8 +134,38 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
 /// The search is measured from where the camera is looking, so that a common
 /// fragment answers with the systems in front of the user rather than with
 /// whichever ones the database reached first.
-pub fn searched(
+/// The search under way, and the name it is about
+///
+/// One at a time. A name typed over the last one replaces the question rather
+/// than racing it: two answers landing would leave whichever finished last on
+/// screen, which is not the one the user is waiting on.
+///
+/// Waited for off the main thread, unlike the name that started it. A search
+/// for a letter or two matches most of the systems on record and is sorted
+/// before it is cut to [`RESULTS`], which is a third of a second against the
+/// database here. Waited for in the frame, that is a third of a second of a
+/// map that does not move.
+#[derive(Resource, Default)]
+struct Searching(Option<(String, Task<Vec<DbSystem>>)>);
+
+/// The pair of names a route is being worked out between, while they are
+/// being looked up
+///
+/// One at a time for the reason a search is, and asked apart from the route
+/// itself, which `systems::fetch` has already sent off. This settles only
+/// which of the two ends the user got wrong.
+#[derive(Resource, Default)]
+struct Locating(Option<Task<Plot>>);
+
+/// Answer what the user asked for
+///
+/// Asked of the database off the main thread and read back here when it
+/// lands, so that a search the database takes its time over is a list that
+/// arrives late rather than a map that stops.
+fn searched(
     mut search_events: MessageReader<Searched>,
+    mut searching: ResMut<Searching>,
+    mut locating: ResMut<Locating>,
     mut note: ResMut<SearchNote>,
     mut results: ResMut<SearchResults>,
     mut plot: ResMut<Plot>,
@@ -147,45 +180,77 @@ pub fn searched(
             z: camera.center.z,
         })
         .ok();
+    let pool = AsyncComputeTaskPool::get();
 
     for event in search_events.read() {
         match event {
             Searched::System { name, .. } => {
-                future::block_on(async {
-                    let found =
-                        DbSystem::search_by_name(&db.0, name, near, RESULTS)
+                let db = db.0.clone();
+                let asked = name.clone();
+                let about = name.clone();
+                searching.0 = Some((
+                    about,
+                    pool.spawn(async move {
+                        DbSystem::search_by_name(&db, &asked, near, RESULTS)
                             .await
-                            .unwrap_or_default();
-
-                    // Whatever was on offer answered the last name asked
-                    // about, and this is a new one. What is picked out is
-                    // left alone: it was picked out by a click rather than
-                    // by the search before it, and a search is not a reason
-                    // to let go of it.
-                    results.clear();
-                    note.0 = if found.is_empty() {
-                        Some(format!("No system named {name}"))
-                    } else {
-                        results.set(found);
-                        None
-                    };
-                });
+                            .unwrap_or_default()
+                    }),
+                ));
             }
             // A route needs both ends. Say which one is the problem rather
             // than drawing nothing and leaving the user to guess.
             Searched::Route { start, end, .. } => {
-                future::block_on(async {
-                    *plot = match locate(&db.0, start)
-                        .await
-                        .and(locate(&db.0, end).await)
+                let db = db.0.clone();
+                let (start, end) = (start.clone(), end.clone());
+                locating.0 = Some(pool.spawn(async move {
+                    match locate(&db, &start).await.and(locate(&db, &end).await)
                     {
                         Ok(_) => Plot::Working,
                         Err(why) => Plot::Trouble(why),
-                    };
-                });
+                    }
+                }));
             }
         };
     }
+
+    if let Some((name, mut task)) = searching.0.take() {
+        match block_on(poll_once(&mut task)) {
+            Some(found) => answered(&name, found, &mut note, &mut results),
+            None => searching.0 = Some((name, task)),
+        }
+    }
+
+    if let Some(mut task) = locating.0.take() {
+        match block_on(poll_once(&mut task)) {
+            Some(answer) => *plot = answer,
+            None => locating.0 = Some(task),
+        }
+    }
+}
+
+/// Put what came back for `name` on screen
+///
+/// Whatever was on offer answered the last name asked about, and this is a
+/// new one, so it goes whether or not anything came back to replace it. What
+/// is picked out is left alone: it was picked out by a click rather than by
+/// the search before it, and a search is not a reason to let go of it.
+///
+/// A name that found nothing is said in the note rather than left as an empty
+/// list. Nothing on screen is what the map looks like before anything has
+/// been asked, and the two have to be told apart.
+fn answered(
+    name: &str,
+    found: Vec<DbSystem>,
+    note: &mut SearchNote,
+    results: &mut SearchResults,
+) {
+    results.clear();
+    note.0 = if found.is_empty() {
+        Some(format!("No system named {name}"))
+    } else {
+        results.set(found);
+        None
+    };
 }
 
 #[cfg(test)]
@@ -208,5 +273,50 @@ pub(crate) mod tests {
             updated_at: chrono::DateTime::UNIX_EPOCH,
             updated_by: String::new(),
         }
+    }
+
+    /// A name that found nothing is said, rather than left as an empty list
+    #[test]
+    fn a_name_that_found_nothing_is_said() {
+        let mut note = SearchNote(None);
+        let mut results = SearchResults::default();
+
+        answered("NOWHERE", Vec::new(), &mut note, &mut results);
+
+        assert_eq!(note.0.as_deref(), Some("No system named NOWHERE"));
+        assert!(results.is_empty());
+    }
+
+    /// What was found is offered, and nothing is said about it
+    #[test]
+    fn what_was_found_is_offered() {
+        let mut note = SearchNote(Some("No system named SOL".to_owned()));
+        let mut results = SearchResults::default();
+
+        answered(
+            "SOL",
+            vec![row("SOL"), row("SOLATI")],
+            &mut note,
+            &mut results,
+        );
+
+        assert_eq!(note.0, None);
+        assert_eq!(results.iter().count(), 2);
+    }
+
+    /// The last answer goes whether or not this one replaces it
+    ///
+    /// Both halves of it: the list and the note answered a name that is no
+    /// longer the name being asked about.
+    #[test]
+    fn a_fresh_answer_takes_the_last_one_away() {
+        let mut note = SearchNote(None);
+        let mut results = SearchResults::default();
+        answered("SOL", vec![row("SOL")], &mut note, &mut results);
+
+        answered("NOWHERE", Vec::new(), &mut note, &mut results);
+
+        assert!(results.is_empty());
+        assert_eq!(note.0.as_deref(), Some("No system named NOWHERE"));
     }
 }
