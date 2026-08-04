@@ -321,6 +321,65 @@ impl System {
             .collect())
     }
 
+    /// The systems at any of `addresses`
+    ///
+    /// One query for a set of them, since what asks is holding a list it
+    /// already knows and wants all of it filled in at once.
+    ///
+    /// Addresses that match nothing are simply absent from the answer, and
+    /// the order is the database's rather than the one asked in.
+    pub async fn fetch_many(
+        db: &Database,
+        addresses: &[i64],
+    ) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                address,
+                name,
+                position AS "position!: Option<wkb::Decode<Coordinate>>",
+                population,
+                security as "security: Security",
+                government as "government: Government",
+                allegiance as "allegiance: Allegiance",
+                primary_economy as "primary_economy: Economy",
+                secondary_economy as "secondary_economy: Economy",
+                updated_at,
+                updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
+            FROM systems
+            WHERE address = ANY($1)
+            "#,
+            addresses,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
+                address: row.address,
+                name: row.name,
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                primary_economy: row.primary_economy,
+                secondary_economy: row.secondary_economy,
+                factions: row.factions,
+                updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
+            })
+            .collect())
+    }
+
     pub async fn fetch_faction(
         db: &Database,
         faction: &str,

@@ -25,6 +25,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
     app.add_plugins(pointing::plugin);
+    app.add_plugins(route::plugin);
     app.add_plugins(selection::plugin);
     app.add_plugins(filter::plugin);
     app.add_plugins(info::plugin);

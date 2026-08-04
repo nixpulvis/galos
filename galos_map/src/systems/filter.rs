@@ -47,6 +47,18 @@ pub fn plugin(app: &mut App) {
 pub enum Filter {
     /// Systems the named faction is present in
     Faction { id: i32, name: String },
+    /// The systems a plotted route runs through
+    ///
+    /// Unlike a faction, this is nothing a system knows about itself. A route
+    /// is worked out rather than recorded, so the filter carries the answer:
+    /// the addresses it came back with, sorted, so that asking whether a
+    /// system is on it is a search rather than a walk. The sky it is asked
+    /// about runs to thousands and a route to tens.
+    ///
+    /// `label` is what its row says, settled when the route landed, since it
+    /// names the two ends as the database spells them rather than as they
+    /// were typed.
+    Route { label: String, systems: Vec<i64> },
 }
 
 impl Filter {
@@ -54,6 +66,9 @@ impl Filter {
     fn admits(&self, system: &System) -> bool {
         match self {
             Filter::Faction { id, .. } => system.factions.contains(id),
+            Filter::Route { systems, .. } => {
+                systems.binary_search(&system.address).is_ok()
+            }
         }
     }
 
@@ -61,6 +76,7 @@ impl Filter {
     pub fn name(&self) -> &str {
         match self {
             Filter::Faction { name, .. } => name,
+            Filter::Route { label, .. } => label,
         }
     }
 
@@ -77,6 +93,9 @@ impl Filter {
         match self {
             Filter::Faction { name, .. } => {
                 DbSystem::fetch_faction(db, name).await.unwrap_or_default()
+            }
+            Filter::Route { systems, .. } => {
+                DbSystem::fetch_many(db, systems).await.unwrap_or_default()
             }
         }
     }
@@ -181,6 +200,21 @@ impl Filters {
         if self.0.iter().any(|active| active.filter == filter) {
             return;
         }
+        self.0.push(Active { filter, enabled: true });
+    }
+
+    /// Add `filter` in place of whatever else of its kind is being asked
+    ///
+    /// For a kind there can only be one of. The map draws one route at a
+    /// time, replacing the line as each is plotted, so a second route filter
+    /// standing beside the first would ask about a line that is no longer
+    /// there and narrow the map to nothing between them.
+    ///
+    /// Factions do not go through here. Several of them at once is the whole
+    /// point of a filter being a filter.
+    pub fn replace(&mut self, filter: Filter) {
+        let kind = std::mem::discriminant(&filter);
+        self.0.retain(|active| std::mem::discriminant(&active.filter) != kind);
         self.0.push(Active { filter, enabled: true });
     }
 
@@ -343,6 +377,90 @@ mod tests {
 
         assert!(filters.admit(&member(1, &[7])));
         assert!(!filters.admit(&member(2, &[9])));
+    }
+
+    /// A route between the systems at `addresses`
+    fn route(addresses: &[i64]) -> Filter {
+        let mut systems = addresses.to_vec();
+        systems.sort_unstable();
+        Filter::Route { label: "A -> B".to_owned(), systems }
+    }
+
+    /// A route filter admits the systems it runs through
+    ///
+    /// Nothing a system knows about itself, unlike a faction: a route is
+    /// worked out, so the filter carries the answer it came back with.
+    #[test]
+    fn a_route_filter_admits_what_it_runs_through() {
+        let mut filters = Filters::default();
+        filters.add(route(&[7, 3, 9]));
+
+        assert!(filters.admit(&member(3, &[])));
+        assert!(filters.admit(&member(9, &[])));
+        assert!(!filters.admit(&member(4, &[])));
+    }
+
+    /// However the addresses arrived, the answer is the same
+    ///
+    /// They are searched rather than walked, which needs them sorted, and
+    /// nothing about where a route came from says they will be.
+    #[test]
+    fn a_route_admits_the_same_whatever_order_it_came_in() {
+        let mut forwards = Filters::default();
+        forwards.add(route(&[1, 5, 9]));
+        let mut backwards = Filters::default();
+        backwards.add(route(&[9, 5, 1]));
+
+        for address in [1, 5, 9, 2, 7] {
+            let system = member(address, &[]);
+            assert_eq!(forwards.admit(&system), backwards.admit(&system));
+        }
+    }
+
+    /// A second route takes the place of the first
+    ///
+    /// One route is drawn at a time, so two route filters would ask about a
+    /// line that is no longer there and narrow the map to whatever the two
+    /// happened to share.
+    #[test]
+    fn a_route_replaces_the_route_before_it() {
+        let mut filters = Filters::default();
+        filters.replace(route(&[1, 2]));
+        filters.replace(route(&[8, 9]));
+
+        assert_eq!(filters.iter().count(), 1);
+        assert!(filters.admit(&member(9, &[])));
+        assert!(!filters.admit(&member(1, &[])));
+    }
+
+    /// And leaves the factions where they are
+    ///
+    /// Several factions at once is the whole point of a filter being a
+    /// filter, so only the kind that replaces itself does.
+    #[test]
+    fn a_route_leaves_the_factions_alone() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+        filters.replace(route(&[1, 2]));
+
+        assert_eq!(filters.iter().count(), 3);
+    }
+
+    /// A route narrows the factions rather than replacing them
+    #[test]
+    fn a_route_and_a_faction_ask_together() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.replace(route(&[1, 2]));
+
+        let mut on_both = member(1, &[7]);
+        on_both.factions = vec![7];
+        assert!(filters.admit(&on_both));
+        // On the route, but not the faction's.
+        assert!(!filters.admit(&member(2, &[])));
+        // The faction's, but not on the route.
+        assert!(!filters.admit(&member(5, &[7])));
     }
 
     /// The same filter added twice is asked once

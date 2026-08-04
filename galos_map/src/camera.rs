@@ -182,6 +182,47 @@ fn eased_position(value: DVec3, target: DVec3, fraction: f64) -> DVec3 {
 #[derive(Message, Debug)]
 pub struct MoveCamera {
     pub position: Option<DVec3>,
+    /// How much to take in around it, in light years
+    ///
+    /// What is asked for is the thing to be seen, not how far back to stand
+    /// to see it: how far back depends on the field of view and on the shape
+    /// of the window, and the camera is what knows both.
+    ///
+    /// Nothing leaves the zoom where the user left it, which is what a move
+    /// that only says where to look should do.
+    pub framing: Option<f32>,
+}
+
+/// The half angle a camera sees across when nothing says otherwise
+///
+/// Half of Bevy's own default field of view, which is vertical.
+const DEFAULT_HALF_FOV: f32 = std::f32::consts::PI / 8.;
+
+/// How much room is left around something framed, as a fraction of its size
+///
+/// A route drawn corner to corner of the viewport reads as one that did not
+/// quite fit.
+const FRAMING_MARGIN: f32 = 1.15;
+
+/// How far back to stand to take in `extent` light years about what is looked
+/// at
+///
+/// The narrower of the two angles the camera sees across, since that is the
+/// one that clips. Bevy's field of view is the vertical one, so a window
+/// wider than it is tall has room to spare at the sides and a narrow one has
+/// none, and fitting whichever is tighter keeps the whole of it on screen
+/// either way.
+fn stand_back(extent: f32, projection: Option<&Projection>) -> f32 {
+    let half = match projection {
+        Some(Projection::Perspective(lens)) => {
+            let vertical = lens.fov / 2.;
+            let across = (vertical.tan() * lens.aspect_ratio).atan();
+            vertical.min(across)
+        }
+        _ => DEFAULT_HALF_FOV,
+    };
+
+    (extent * FRAMING_MARGIN / half.sin()).clamp(MIN_RADIUS, MAX_RADIUS)
 }
 
 /// A camera that orbits a point in the galaxy
@@ -286,17 +327,29 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
 /// curve from wherever the camera has reached.
 pub fn move_camera(
     mut query: Query<&mut OrbitCamera>,
+    lens: Query<&Projection>,
     mut camera_events: MessageReader<MoveCamera>,
 ) {
     for event in camera_events.read() {
+        let Ok(mut camera) = query.single_mut() else { continue };
+
         if let Some(position) = event.position {
-            let Ok(mut camera) = query.single_mut() else { continue };
             let from = camera.focus;
             let distance = (position - from).length();
             let duration = travel_duration(distance);
             camera.target_focus = position;
             camera.travel =
                 Some(Travel { from, to: position, elapsed: 0., duration });
+        }
+
+        // The target rather than the radius itself, so pulling back happens
+        // at the same rate a scroll does and the two cannot fight.
+        //
+        // Nothing comes of this while the camera is locked to the spyglass,
+        // which writes the same field every frame from the spyglass's own
+        // reach. That is what locking it means.
+        if let Some(extent) = event.framing {
+            camera.target_radius = stand_back(extent, lens.single().ok());
         }
     }
 }
@@ -607,5 +660,80 @@ mod tests {
     fn snap_tolerance_scales_with_the_target() {
         assert_eq!(snap(1e5 - 1e-5, 1e5), 1e5);
         assert_ne!(snap(1. - 1e-5, 1.), 1.);
+    }
+
+    /// A camera `wide` by `high`, seeing across Bevy's own default angle
+    fn lens(wide: f32, high: f32) -> Projection {
+        Projection::Perspective(PerspectiveProjection {
+            aspect_ratio: wide / high,
+            ..default()
+        })
+    }
+
+    /// Whether `extent` about the middle lands inside what is seen
+    ///
+    /// The half angle a distance of `back` subtends at the camera, against
+    /// the half angle the camera sees across. Worked out from the geometry
+    /// rather than from the same expression under test.
+    fn fits(extent: f32, back: f32, half_angle: f32) -> bool {
+        (extent / back).asin() <= half_angle
+    }
+
+    /// Standing back holds what it was asked to hold
+    ///
+    /// A wide window, where the vertical angle is the tighter of the two and
+    /// so the one that decides it.
+    #[test]
+    fn standing_back_holds_a_wide_window() {
+        let back = stand_back(50., Some(&lens(1280., 720.)));
+
+        assert!(fits(50., back, DEFAULT_HALF_FOV));
+    }
+
+    /// And holds it in a window taller than it is wide
+    ///
+    /// There the sides are the tighter, and fitting only the vertical would
+    /// cut the ends off whatever was framed.
+    #[test]
+    fn standing_back_holds_a_tall_window() {
+        let tall = lens(400., 1200.);
+        let back = stand_back(50., Some(&tall));
+
+        let Projection::Perspective(ref lens) = tall else { unreachable!() };
+        let across = ((lens.fov / 2.).tan() * lens.aspect_ratio).atan();
+        assert!(across < lens.fov / 2., "the sides are meant to be tighter");
+        assert!(fits(50., back, across));
+    }
+
+    /// A tall window is stood back from further than a wide one
+    #[test]
+    fn a_tall_window_asks_for_more_room() {
+        let wide = stand_back(50., Some(&lens(1280., 720.)));
+        let tall = stand_back(50., Some(&lens(400., 1200.)));
+
+        assert!(tall > wide);
+    }
+
+    /// With no camera to ask, the default angle answers
+    #[test]
+    fn standing_back_without_a_camera_holds_it_too() {
+        let back = stand_back(50., None);
+
+        assert!(fits(50., back, DEFAULT_HALF_FOV));
+    }
+
+    /// Twice as much to hold is twice as far to stand
+    #[test]
+    fn standing_back_follows_what_is_held() {
+        let near = stand_back(10., None);
+        let far = stand_back(20., None);
+
+        assert!((far - near * 2.).abs() < 1e-3);
+    }
+
+    /// Nothing to hold is still somewhere the camera may stand
+    #[test]
+    fn holding_nothing_is_still_a_distance() {
+        assert!(stand_back(0., None) >= MIN_RADIUS);
     }
 }

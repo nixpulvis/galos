@@ -412,7 +412,7 @@ fn panels(
     }
 
     if let Some(position) = centred {
-        camera.write(MoveCamera { position: Some(position) });
+        camera.write(MoveCamera { position: Some(position), framing: None });
     }
     // Picking a system out of a list says which one is meant, as clicking a
     // star does. Where the camera goes is asked for separately, from the row

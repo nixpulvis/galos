@@ -752,7 +752,10 @@ fn selected(
             panels.open_system(system.clone());
         }
     } else if row.clicked() {
-        camera.write(MoveCamera { position: selection.position() });
+        camera.write(MoveCamera {
+            position: selection.position(),
+            framing: None,
+        });
     }
     row.on_hover_cursor(egui::CursorIcon::PointingHand);
 }

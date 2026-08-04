@@ -11,8 +11,8 @@ use crate::systems::{
         DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
         UNFITTED_SCALE,
     },
-    route::Route,
-    route::spawn::spawn_route,
+    route::spawn::{framing, spawn_route},
+    route::{self, Plotted, Route},
     selection::Selection,
     system_to_vec,
 };
@@ -265,8 +265,10 @@ fn fly_on_double_click(
     let Ok(system) = pointed_at.single() else { return };
 
     if last.doubled(system.address, time.elapsed_secs()) {
-        camera
-            .write(MoveCamera { position: Some(DVec3::from(system.position)) });
+        camera.write(MoveCamera {
+            position: Some(DVec3::from(system.position)),
+            framing: None,
+        });
     }
 }
 
@@ -308,7 +310,7 @@ pub fn spawn(
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
-    mut move_camera_events: MessageWriter<MoveCamera>,
+    mut plotted: MessageWriter<route::Plotted>,
     mut tasks: ResMut<FetchTasks>,
     mut plot: ResMut<Plot>,
 ) {
@@ -336,16 +338,34 @@ pub fn spawn(
                 fetched_at,
             );
 
+            // Said rather than acted on. What a route does to the map is
+            // `route::plotted`'s business; this is the one place its systems
+            // are in hand, so it is the one place that can say what they are.
             if let FetchIndex::Route(..) = index
-                && let Some(position) =
-                    new_systems.first().and_then(system_to_vec)
+                && let (Some(first), Some(last)) =
+                    (new_systems.first(), new_systems.last())
+                && new_systems.len() >= 2
             {
-                move_camera_events.write(MoveCamera { position: Some(position) });
+                let places: Vec<_> =
+                    new_systems.iter().filter_map(system_to_vec).collect();
+                if let Some((middle, extent)) = framing(&places) {
+                    let mut systems: Vec<i64> = new_systems
+                        .iter()
+                        .map(|system| system.address)
+                        .collect();
+                    // Sorted, since what asks is asking whether a system is
+                    // among them rather than which one comes next.
+                    systems.sort_unstable();
+                    plotted.write(Plotted {
+                        label: format!("{} -> {}", first.name, last.name),
+                        systems,
+                        middle,
+                        extent,
+                    });
+                }
             }
 
             match index {
-                // TODO: Refactor into it's own system by spawning a new
-                // Route component.
                 FetchIndex::Route(start, end, range) => {
                     // A route is a line between systems, so one system is
                     // no route. Coming back with nothing is how the
