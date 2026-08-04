@@ -28,7 +28,11 @@ use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
-use std::{collections::HashMap, ops::Deref, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+    time::Instant,
+};
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(MeshPickingPlugin);
@@ -334,28 +338,16 @@ pub fn spawn(
 ) {
     let Ok(grid) = grids.single() else { return };
 
+    // Every row that arrived this frame, and when the last of them was asked
+    // for. Put together first and handed over once, for the reason given at
+    // [`one_per_system`].
+    let mut arrived: Vec<DbSystem> = Vec::new();
+    let mut arrived_at = time.startup();
+
     tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(new_systems) = status {
-            // TODO: Pass FetchIndex along. I'd like to have index.marker() or
-            // similar so I can mark entities with some info about where they
-            // were fetched from.
-            spawn_systems(
-                &new_systems,
-                &systems_query,
-                &galaxy,
-                grid,
-                &color_by,
-                &filters,
-                &mut commands,
-                &mesh,
-                &materials,
-                &invisible,
-                &time,
-                fetched_at,
-            );
-
             // Said rather than acted on. What a route does to the map is
             // `route::plotted`'s business; this is the one place its systems
             // are in hand, so it is the one place that can say what they are.
@@ -417,11 +409,55 @@ pub fn spawn(
                 }
                 _ => {}
             }
+
+            // TODO: Pass FetchIndex along. I'd like to have index.marker() or
+            // similar so I can mark entities with some info about where they
+            // were fetched from.
+            //
+            arrived_at = arrived_at.max(*fetched_at);
+            arrived.extend(new_systems);
         }
         retain
     });
 
+    let arrived = one_per_system(arrived);
+    if !arrived.is_empty() {
+        spawn_systems(
+            &arrived,
+            &systems_query,
+            &galaxy,
+            grid,
+            &color_by,
+            &filters,
+            &mut commands,
+            &mesh,
+            &materials,
+            &invisible,
+            &time,
+            &arrived_at,
+        );
+    }
+
     // TODO(#43): despawn stuff...
+}
+
+/// The rows that arrived, with each system named once
+///
+/// [`spawn_systems`] finds what is already on the map by asking the world, and
+/// the world does not yet hold what a command spawned a moment ago: commands
+/// wait for the next sync point. So two answers arriving in one frame about
+/// one system would each find nothing there and each spawn it, leaving two
+/// stars on top of each other for as long as the map holds them, which is for
+/// good. The map fetches by region and by name at once, and a system searched
+/// for and flown to is exactly the system the region around it is bringing in,
+/// so the two answers are not rare.
+///
+/// Whichever answer came first is the one kept. Two of them in one frame are
+/// one system as two queries a few milliseconds apart saw it, which is the
+/// same system.
+fn one_per_system(arrived: Vec<DbSystem>) -> Vec<DbSystem> {
+    let mut named = HashSet::with_capacity(arrived.len());
+    arrived.into_iter().filter(|system| named.insert(system.address)).collect()
 }
 
 /// Create or refresh the entities for each row fetched
@@ -740,6 +776,68 @@ impl TryFrom<&DbSystem> for System {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row for the system at `address`, with nothing else on record
+    fn row(address: i64) -> DbSystem {
+        DbSystem {
+            address,
+            name: format!("System {address}"),
+            position: None,
+            population: 0,
+            security: None,
+            government: None,
+            allegiance: None,
+            primary_economy: None,
+            secondary_economy: None,
+            factions: Vec::new(),
+            updated_at: chrono::DateTime::UNIX_EPOCH,
+            updated_by: String::new(),
+        }
+    }
+
+    /// Which systems a set of rows is about, in order
+    fn about(rows: &[DbSystem]) -> Vec<i64> {
+        rows.iter().map(|system| system.address).collect()
+    }
+
+    /// Two answers about one system leave one row for it
+    ///
+    /// Which is what keeps two stars from being spawned on top of each other.
+    /// The map cannot see what it spawned a moment ago, so it has to be told
+    /// about a system once.
+    #[test]
+    fn a_system_answered_for_twice_is_named_once() {
+        let arrived = vec![row(1), row(2), row(1)];
+
+        assert_eq!(about(&one_per_system(arrived)), vec![1, 2]);
+    }
+
+    /// The answer that came first is the one kept
+    #[test]
+    fn the_first_answer_about_a_system_is_the_one_kept() {
+        let mut second = row(1);
+        second.name = "Renamed".to_owned();
+        let arrived = vec![row(1), second];
+
+        let kept = one_per_system(arrived);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "System 1");
+    }
+
+    /// Rows about different systems are all kept, in the order they arrived
+    #[test]
+    fn every_system_answered_for_once_is_kept() {
+        let arrived = vec![row(3), row(1), row(2)];
+
+        assert_eq!(about(&one_per_system(arrived)), vec![3, 1, 2]);
+    }
+
+    /// Nothing arriving is nothing to spawn
+    #[test]
+    fn nothing_arriving_names_nothing() {
+        assert!(one_per_system(Vec::new()).is_empty());
+    }
 
     /// One click on its own opens nothing
     #[test]
