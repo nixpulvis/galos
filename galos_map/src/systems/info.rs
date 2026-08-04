@@ -494,7 +494,7 @@ fn described(
         |ui| {
             let [x, y, z] = system.position;
             field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
-            field(ui, "Population", thousands(system.population));
+            field(ui, "Population", crate::ui::thousands(system.population));
             field(ui, "Allegiance", named(&system.allegiance));
             field(ui, "Government", named(&system.government));
             field(ui, "Security", named(&system.security));
@@ -706,22 +706,6 @@ fn named<T: Display>(value: &Option<T>) -> String {
         Some(value) => value.to_string(),
         None => "Unknown".into(),
     }
-}
-
-/// A count with its digits grouped in threes
-///
-/// Populations run to eleven digits, which is a length rather than a number
-/// until it is broken up.
-fn thousands(count: u64) -> String {
-    let digits = count.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (place, digit) in digits.char_indices() {
-        if place > 0 && (digits.len() - place).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
 }
 
 #[cfg(test)]
@@ -1037,52 +1021,6 @@ mod tests {
         panels.open_filter(faction(7));
 
         assert_eq!(panels.open.len(), 2);
-    }
-
-    /// A number short enough to read is left as it is
-    ///
-    /// Including the empty systems, of which there are far more than
-    /// inhabited ones, so this is the common answer rather than an edge.
-    #[test]
-    fn small_populations_are_left_alone() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(7), "7");
-        assert_eq!(thousands(999), "999");
-    }
-
-    /// Longer ones are broken into threes from the right
-    ///
-    /// From the right, so that the leading group is whatever is left over
-    /// rather than the number being padded to fit.
-    #[test]
-    fn long_populations_are_grouped_from_the_right() {
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(22_780), "22,780");
-        assert_eq!(thousands(999_999), "999,999");
-        assert_eq!(thousands(1_000_000), "1,000,000");
-    }
-
-    /// The largest populations on record still read
-    ///
-    /// The most populous systems run to eleven digits, which is the length
-    /// this is here for.
-    #[test]
-    fn the_largest_populations_are_grouped() {
-        assert_eq!(thousands(22_780_919_531), "22,780,919,531");
-    }
-
-    /// A separator never leads or trails
-    ///
-    /// The grouping is decided per digit from how many follow it, so a count
-    /// whose length is a multiple of three is where a stray leading comma
-    /// would show up.
-    #[test]
-    fn grouping_never_leads_or_trails() {
-        for count in [1u64, 100, 1_000, 100_000, 1_000_000] {
-            let grouped = thousands(count);
-            assert!(!grouped.starts_with(','), "{grouped} leads with one");
-            assert!(!grouped.ends_with(','), "{grouped} trails one");
-        }
     }
 
     /// What the database does not say is said to be unknown

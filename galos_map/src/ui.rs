@@ -1184,6 +1184,22 @@ fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) {
     });
 }
 
+/// A count with its digits grouped in threes
+///
+/// A population runs to eleven digits and a count of the sky to six, and
+/// either is a length rather than a number until it is broken up.
+pub(crate) fn thousands(count: u64) -> String {
+    let digits = count.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (place, digit) in digits.char_indices() {
+        if place > 0 && (digits.len() - place).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
 /// What a field holds, if it holds anything
 ///
 /// A field clicked into and not yet typed in holds an empty string, which is
@@ -1431,7 +1447,9 @@ fn applied(
     if total > 0 {
         ui.label(
             egui::RichText::new(format!(
-                "{admitted} of {total} within spyglass"
+                "{} of the {} within spyglass",
+                thousands(admitted as u64),
+                thousands(total as u64)
             ))
             .weak(),
         );
@@ -3363,6 +3381,53 @@ mod tests {
                 button(false),
             ],
             ..Default::default()
+        }
+    }
+
+    /// A number short enough to read is left as it is
+    ///
+    /// Which is most of what is handed over: the systems with nobody living
+    /// in them far outnumber the inhabited ones, and a sky with a handful in
+    /// reach is a handful.
+    #[test]
+    fn small_counts_are_left_alone() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(7), "7");
+        assert_eq!(thousands(999), "999");
+    }
+
+    /// Longer ones are broken into threes from the right
+    ///
+    /// From the right, so that the leading group is whatever is left over
+    /// rather than the number being padded to fit.
+    #[test]
+    fn long_counts_are_grouped_from_the_right() {
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(22_780), "22,780");
+        assert_eq!(thousands(999_999), "999,999");
+        assert_eq!(thousands(1_000_000), "1,000,000");
+    }
+
+    /// The largest counts on record still read
+    ///
+    /// The most populous systems run to eleven digits, which is the longest
+    /// this is ever handed.
+    #[test]
+    fn the_largest_counts_are_grouped() {
+        assert_eq!(thousands(22_780_919_531), "22,780,919,531");
+    }
+
+    /// A separator never leads or trails
+    ///
+    /// The grouping is decided per digit from how many follow it, so a count
+    /// whose length is a multiple of three is where a stray leading comma
+    /// would show up.
+    #[test]
+    fn grouping_never_leads_or_trails() {
+        for count in [1u64, 100, 1_000, 100_000, 1_000_000] {
+            let grouped = thousands(count);
+            assert!(!grouped.starts_with(','), "{grouped} leads with one");
+            assert!(!grouped.ends_with(','), "{grouped} trails one");
         }
     }
 
