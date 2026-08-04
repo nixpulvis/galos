@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT address\n            FROM systems\n            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)\n              AND address = ANY($5)\n            UNION\n            SELECT systems.address\n            FROM systems\n            JOIN system_factions\n              ON system_factions.system_address = systems.address\n            WHERE system_factions.faction_id = ANY($6)\n              AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Int8Array",
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3146c531bdb0e3619d594d7506e7104c7fcf07581a5888e3ae635286ffeab812"
+}
