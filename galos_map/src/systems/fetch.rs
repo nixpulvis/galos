@@ -264,6 +264,19 @@ fn unspawned(selected: &[i64], spawned: &HashSet<i64>) -> Vec<i64> {
         .collect()
 }
 
+/// Whether the spyglass should ask for `index` now
+///
+/// One region query at a time. The throttle says how long to wait since the
+/// last one was *started*, which is no answer at all when a region takes
+/// longer to come back than the throttle waits: flying while zoomed out asks
+/// again every throttle, and a query over most of the galaxy takes a second
+/// or two, so a handful of them end up on the wire at once, each one a copy
+/// of most of the table and each one crowding the rest.
+///
+/// Waited on rather than replaced, unlike a route. The regions asked for
+/// while the camera moves are each a real answer about where it was, and
+/// dropping the one under way for the next would leave nothing arriving at
+/// all until the camera stopped.
 pub fn spyglass_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
@@ -272,6 +285,10 @@ pub fn spyglass_condition(
     throttle: &Res<Throttle>,
     poll: &Res<Poll>,
 ) -> bool {
+    if region_asked(tasks.fetched.keys()) {
+        return false;
+    }
+
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
         if index.refreshes(last_fetched) {
             poll.0.map_or(false, |wait| {
@@ -281,6 +298,15 @@ pub fn spyglass_condition(
             last_fetched_at.0 + Duration::from_millis(throttle.0) < now
         }
     })
+}
+
+/// Whether a region is among the queries already on the wire
+///
+/// Only a region. A route and a set of named systems are each asked for once
+/// by something the user just did, and neither is the map asking again for
+/// most of what it already holds.
+fn region_asked<'a>(mut asked: impl Iterator<Item = &'a FetchIndex>) -> bool {
+    asked.any(|index| matches!(index, FetchIndex::Region(..)))
 }
 
 #[cfg(test)]
@@ -295,6 +321,40 @@ mod tests {
     /// The map holding a star for each of `addresses`
     fn on_the_map(addresses: &[i64]) -> HashSet<i64> {
         addresses.iter().copied().collect()
+    }
+
+    /// A region already on the wire is one the spyglass waits for
+    ///
+    /// The throttle measures from where the last query was sent rather than
+    /// from where it came back, so a region that takes longer to answer than
+    /// the throttle waits would otherwise be asked again over the top of
+    /// itself, and again, while the camera moves.
+    #[test]
+    fn a_region_under_way_is_waited_for() {
+        assert!(region_asked([region(0, 10)].iter()));
+    }
+
+    /// Nothing under way is nothing to wait for
+    #[test]
+    fn no_query_under_way_is_no_reason_to_wait() {
+        assert!(!region_asked([].iter()));
+    }
+
+    /// A route does not hold the spyglass up
+    ///
+    /// It is asked for once by something the user just did, and it is not the
+    /// map asking again for most of what it already holds.
+    #[test]
+    fn a_route_under_way_does_not_hold_the_spyglass_up() {
+        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
+
+        assert!(!region_asked([route].iter()));
+    }
+
+    /// Nor does a system that was picked out
+    #[test]
+    fn a_picked_system_does_not_hold_the_spyglass_up() {
+        assert!(!region_asked([FetchIndex::Systems(vec![7])].iter()));
     }
 
     /// A system picked out with no star on the map is asked for
