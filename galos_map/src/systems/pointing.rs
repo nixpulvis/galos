@@ -164,7 +164,13 @@ impl PointedAt {
 /// the pointer is what the eye says is being pointed at, whatever happens to
 /// lie nearer the camera behind it. Between stars the nearest wins, as it
 /// would if they blocked each other.
-pub fn point_at(
+///
+/// Reachable across [`super`], since what is drawn for a system is ordered
+/// after it: a ring, a tint and a selection all answer what this decides, and
+/// reading it a frame late is a mark trailing the pointer. No further than
+/// that, though, which is as far as [`DragDistance`] goes and as far as
+/// anything asks.
+pub(super) fn point_at(
     hovered: Res<HoverMap>,
     time: Res<Time<Real>>,
     buttons: Res<ButtonInput<MouseButton>>,
