@@ -1471,12 +1471,17 @@ fn applied(
 /// is more sky behind it that can also be seen, faintly, and only then is the
 /// larger number worth putting beside it:
 ///
-/// - Nothing asked of the map, so the two are the same number: `324 within
+/// - Nothing asked of the map, so the two are the same number: `324 in
 ///   spyglass`
-/// - Filters, and what they exclude drawn faintly behind: `8 of the 324 within
+/// - Filters, and what they exclude drawn faintly behind: `8 of 324 in
 ///   spyglass`
-/// - Filters, and what they exclude drawn not at all: `8 within spyglass`,
-///   the rest being neither on screen nor fetched
+/// - Filters, and what they exclude drawn not at all: `8 in spyglass`, the
+///   rest being neither on screen nor fetched
+///
+/// Said in as few words as it can be. The bar is [`BAR_WIDTH`] wide and the
+/// numbers are what grow: the sky runs to millions of systems, and a line
+/// that has to wrap to hold two of them is a line that moves the rows under
+/// it about as the user flies.
 fn reaching(ui: &mut Ui, in_reach: &InReach, dimming: bool) {
     let InReach { admitted, total } = *in_reach;
     if total == 0 {
@@ -1485,12 +1490,12 @@ fn reaching(ui: &mut Ui, in_reach: &InReach, dimming: bool) {
 
     let said = if dimming {
         format!(
-            "{} of the {} within spyglass",
+            "{} of {} in spyglass",
             thousands(admitted as u64),
             thousands(total as u64)
         )
     } else {
-        format!("{} within spyglass", thousands(admitted as u64))
+        format!("{} in spyglass", thousands(admitted as u64))
     };
     ui.label(egui::RichText::new(said).weak());
 }
@@ -3175,7 +3180,7 @@ mod tests {
             reaching(ui, &InReach { admitted: 324, total: 324 }, false)
         });
 
-        assert!(said.contains(&"324 within spyglass".to_owned()), "{said:?}");
+        assert!(said.contains(&"324 in spyglass".to_owned()), "{said:?}");
     }
 
     /// With something excluded and drawn faintly, both numbers are said
@@ -3188,10 +3193,7 @@ mod tests {
             reaching(ui, &InReach { admitted: 8, total: 324 }, true)
         });
 
-        assert!(
-            said.contains(&"8 of the 324 within spyglass".to_owned()),
-            "{said:?}"
-        );
+        assert!(said.contains(&"8 of 324 in spyglass".to_owned()), "{said:?}");
     }
 
     /// With it not drawn at all, only what can be seen is said
@@ -3205,8 +3207,43 @@ mod tests {
             reaching(ui, &InReach { admitted: 8, total: 324 }, false)
         });
 
-        assert!(said.contains(&"8 within spyglass".to_owned()), "{said:?}");
+        assert!(said.contains(&"8 in spyglass".to_owned()), "{said:?}");
         assert!(!said.iter().any(|line| line.contains("324")), "{said:?}");
+    }
+
+    /// The count fits the bar at the size the sky is heading for
+    ///
+    /// Both numbers grow with what has been synced, and the line has to hold
+    /// them on one row: wrapped, it is a line that moves the rows under it
+    /// about as the user flies. Seven digits either side comes to 198 of the
+    /// 220 the bar is wide, so millions of systems fit and hundreds of
+    /// millions do not.
+    #[test]
+    fn the_count_fits_the_bar_at_millions() {
+        let ctx = egui::Context::default();
+        let said = format!(
+            "{} of {} in spyglass",
+            thousands(1_234_567),
+            thousands(7_654_321)
+        );
+
+        let mut width = 0.;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            width = egui::WidgetText::from(egui::RichText::new(&said).weak())
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .x;
+        });
+
+        assert!(
+            width <= BAR_WIDTH,
+            "{said:?} wants {width}px of the {BAR_WIDTH} there are"
+        );
     }
 
     /// An empty sky says nothing rather than saying it is empty
