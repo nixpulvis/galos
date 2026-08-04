@@ -15,7 +15,7 @@ use crate::Db;
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::filter::Filter;
+use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::Selection;
 use crate::ui::MARGIN;
 use bevy::math::DVec3;
@@ -326,6 +326,7 @@ fn panels(
     mut panels: ResMut<Panels>,
     names: Res<FactionNames>,
     mut selection: ResMut<Selection>,
+    mut filters: ResMut<Filters>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
@@ -361,6 +362,7 @@ fn panels(
     let mut centred = None;
     let mut picked = None;
     let mut opening = None;
+    let mut wanted = None;
     for panel in &panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
@@ -383,7 +385,7 @@ fn panels(
                 ui.set_width(WIDTH);
                 match &panel.subject {
                     Subject::System(system) => {
-                        described(ui, system, &names, &mut centred)
+                        described(ui, system, &names, &mut centred, &mut wanted)
                     }
                     Subject::Filter { systems, .. } => admitted(
                         ui,
@@ -423,6 +425,11 @@ fn panels(
     if let Some(system) = opening {
         panels.open_system(system);
     }
+    // Already resolved, both halves of it having been read off a system the
+    // map holds, so it goes straight in rather than round by `Wanted`.
+    if let Some(filter) = wanted {
+        filters.add(filter);
+    }
 
     // Nothing while every panel is rolled up into its title bar, which is
     // not a height to place the next one by.
@@ -442,6 +449,7 @@ fn described(
     system: &System,
     names: &FactionNames,
     centred: &mut Option<DVec3>,
+    wanted: &mut Option<Filter>,
 ) {
     egui::Grid::new(("system-fields", system.address)).num_columns(2).show(
         ui,
@@ -462,7 +470,7 @@ fn described(
         },
     );
 
-    factions(ui, &system.factions, names);
+    factions(ui, &system.factions, names, wanted);
 
     // Its own system rather than whatever is selected, since several panels
     // stand open at once and each one is about the system named in its title
@@ -521,9 +529,7 @@ fn admitted(
         return;
     }
 
-    ui.label(
-        egui::RichText::new(format!("{} systems", systems.len())).weak(),
-    );
+    ui.label(egui::RichText::new(format!("{} systems", systems.len())).weak());
     ui.add_space(MARGIN);
 
     let line = ui.text_style_height(&egui::TextStyle::Body)
@@ -562,34 +568,84 @@ fn admitted(
     });
 }
 
-/// How far a line in a filter's list holds its name off its own edge
+/// How far a line in a list holds its text off its own edge
 const LINE_PADDING: f32 = 3.;
 
-/// One system's line in a filter's list, and what it was asked for
+/// One full width line of a list, and the pointer's answer to it
 ///
 /// The whole line answers rather than the letters on it, so that a short name
-/// is as easy to hit as a long one and the list reads as a column of controls
+/// is as easy to hit as a long one and a list reads as a column of controls
 /// rather than as text that happens to be clickable. Laid out and painted for
 /// the reason the rows in the bar are: a label is a widget in its own right,
 /// and one inside a row that also answers leaves the two bidding for the
 /// pointer.
 ///
-/// The mark at the end says what is known about the system without picking it
-/// out, which is how a list is read through: several systems can be opened
-/// and compared while the selection stays wherever the user left it. It is
-/// the same mark the rows in the bar carry, and opens the same panel.
-fn line_for(
+/// `reserved` is room kept clear at the right hand end, which the caller
+/// paints into itself. The rect handed back is the whole line, so it knows
+/// where that room ended up.
+///
+/// A line that is not a `control` is laid out the same and answers to nothing:
+/// it neither lights under the pointer nor takes the hand cursor, so a list
+/// holding one keeps its shape without offering something that cannot be had.
+fn line(
     ui: &mut Ui,
-    system: &System,
-    away: Option<f64>,
-) -> Option<Picked> {
+    text: egui::RichText,
+    reserved: f32,
+    control: bool,
+) -> (egui::Rect, egui::Response) {
+    let room = ui.available_width() - LINE_PADDING * 2. - reserved;
+    let text = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room.max(0.),
+        egui::TextStyle::Body,
+    );
+
+    let height = text.size().y;
+    let (rect, answer) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height + LINE_PADDING * 2.),
+        if control { egui::Sense::click() } else { egui::Sense::empty() },
+    );
+
+    if control && (answer.hovered() || answer.has_focus()) {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    ui.painter().galley(
+        egui::pos2(rect.left() + LINE_PADDING, rect.center().y - height / 2.),
+        text,
+        // A real colour, since a line is laid out from whatever the caller
+        // hands over and that is usually plain text. Plain text carries no
+        // colour of its own, so it comes out of layout as a placeholder for
+        // this to answer, and a placeholder answered by a placeholder reaches
+        // the tessellator, which panics rather than guess.
+        ui.visuals().text_color(),
+    );
+
+    if control {
+        (rect, answer.on_hover_cursor(egui::CursorIcon::PointingHand))
+    } else {
+        (rect, answer)
+    }
+}
+
+/// One system's line in a filter's list, and what it was asked for
+///
+/// A [`line`] with the distance and a mark kept at its end. The mark says what
+/// is known about the system without picking it out, which is how a list is
+/// read through: several systems can be opened and compared while the
+/// selection stays wherever the user left it. It is the same mark the rows in
+/// the bar carry, and opens the same panel.
+fn line_for(ui: &mut Ui, system: &System, away: Option<f64>) -> Option<Picked> {
     let gap = ui.spacing().item_spacing.x;
     // Laid out in nothing, so that the colour can be chosen once the pointer
     // has been asked about, which cannot happen until the line has been
     // placed.
     let mark = egui::WidgetText::from(
-        egui::RichText::new(crate::ui::INFO)
-            .color(egui::Color32::PLACEHOLDER),
+        egui::RichText::new(crate::ui::INFO).color(egui::Color32::PLACEHOLDER),
     )
     .into_galley(
         ui,
@@ -612,39 +668,12 @@ fn line_for(
         )
     });
 
-    let room = ui.available_width()
-        - LINE_PADDING * 2.
-        - mark.size().x
-        - gap
-        - away.as_ref().map_or(0., |away| away.size().x + gap);
-    let name = egui::WidgetText::from(system.name.as_str()).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        room.max(0.),
-        egui::TextStyle::Body,
-    );
-
-    let (rect, row) = ui.allocate_exact_size(
-        egui::vec2(
-            ui.available_width(),
-            name.size().y.max(mark.size().y) + LINE_PADDING * 2.,
-        ),
-        egui::Sense::click(),
-    );
-
-    if row.hovered() || row.has_focus() {
-        ui.painter().rect_filled(
-            rect,
-            ui.visuals().widgets.hovered.corner_radius,
-            ui.visuals().widgets.hovered.weak_bg_fill,
-        );
-    }
+    let reserved = mark.size().x
+        + gap
+        + away.as_ref().map_or(0., |away| away.size().x + gap);
+    let (rect, row) =
+        line(ui, egui::RichText::new(system.name.as_str()), reserved, true);
     let middle = rect.center().y;
-    ui.painter().galley(
-        egui::pos2(rect.left() + LINE_PADDING, middle - name.size().y / 2.),
-        name,
-        ui.visuals().text_color(),
-    );
 
     // Asked about after the line, so that it is the one answering where the
     // two overlap. Under it the line would have to work out what it was not
@@ -702,7 +731,6 @@ fn line_for(
     } else {
         None
     };
-    row.on_hover_cursor(egui::CursorIcon::PointingHand);
     describing.on_hover_cursor(egui::CursorIcon::PointingHand);
     asked
 }
@@ -722,15 +750,39 @@ fn line_for(
 /// A faction whose name has not arrived yet is still one of the factions
 /// here, so it keeps its line. Naming them is one query behind the panel
 /// opening, and a list that grew a line a frame later would jump.
-fn factions(ui: &mut Ui, present: &[i32], names: &FactionNames) {
+///
+/// Clicking one asks the map for it: the faction becomes a filter, and
+/// everything it is absent from goes dim. A system's panel is where the user
+/// finds out who is here, and where else they are is the next question, so it
+/// is asked from the answer rather than typed out again in the bar.
+///
+/// A faction still waiting on its name does not answer. What it is called is
+/// half of a filter, being what its row in the bar says it is, and a row
+/// naming a faction as punctuation would say nothing about what had gone dim.
+fn factions(
+    ui: &mut Ui,
+    present: &[i32],
+    names: &FactionNames,
+    wanted: &mut Option<Filter>,
+) {
     if present.is_empty() {
         return;
     }
 
     ui.add_space(MARGIN);
     ui.label(egui::RichText::new("Factions").strong());
-    for name in listed(present, names) {
-        ui.label(name);
+    for (id, name) in listed(present, names) {
+        let text = match name {
+            Some(name) => egui::RichText::new(name),
+            None => egui::RichText::new(UNNAMED).weak(),
+        };
+        let (_, answer) = line(ui, text, 0., name.is_some());
+
+        if let Some(name) = name
+            && answer.clicked()
+        {
+            *wanted = Some(Filter::Faction { id, name: name.to_owned() });
+        }
     }
 }
 
@@ -740,11 +792,17 @@ fn factions(ui: &mut Ui, present: &[i32], names: &FactionNames) {
 /// held at the end. Sorting the placeholder in with the names would put it
 /// above all of them, since it is punctuation, and the line would then jump
 /// the length of the list the moment its name arrived.
-fn listed<'a>(present: &[i32], names: &'a FactionNames) -> Vec<&'a str> {
-    let mut listed: Vec<Option<&str>> =
-        present.iter().map(|id| names.get(*id)).collect();
-    listed.sort_unstable_by_key(|name| (name.is_none(), *name));
-    listed.into_iter().map(|name| name.unwrap_or(UNNAMED)).collect()
+///
+/// The id rides along with the name because a line is a control: clicking one
+/// asks for a filter, and a filter tests a system against the id.
+fn listed<'a>(
+    present: &[i32],
+    names: &'a FactionNames,
+) -> Vec<(i32, Option<&'a str>)> {
+    let mut listed: Vec<(i32, Option<&str>)> =
+        present.iter().map(|id| (*id, names.get(*id))).collect();
+    listed.sort_unstable_by_key(|(id, name)| (name.is_none(), *name, *id));
+    listed
 }
 
 /// A faction the map has yet to hear the name of
@@ -788,6 +846,7 @@ fn thousands(count: u64) -> String {
 mod tests {
     use super::*;
     use crate::systems::tests::system;
+    use crate::tests::painted;
     use elite_journal::Allegiance;
 
     /// A registry naming each of `known`
@@ -811,15 +870,71 @@ mod tests {
     #[test]
     fn factions_are_listed_by_name() {
         let names = known(&[(1, "Zargon Front"), (2, "Alliance of Sol")]);
+        let wanted =
+            vec![(2, Some("Alliance of Sol")), (1, Some("Zargon Front"))];
 
-        assert_eq!(
-            listed(&[1, 2], &names),
-            vec!["Alliance of Sol", "Zargon Front"]
-        );
-        assert_eq!(
-            listed(&[2, 1], &names),
-            vec!["Alliance of Sol", "Zargon Front"]
-        );
+        assert_eq!(listed(&[1, 2], &names), wanted);
+        assert_eq!(listed(&[2, 1], &names), wanted);
+    }
+
+    /// A line comes out in a colour something can draw
+    ///
+    /// A line is laid out from whatever it is handed, which is usually plain
+    /// text carrying no colour of its own. A placeholder answered by a
+    /// placeholder reaches the tessellator, which panics, and takes every
+    /// panel holding a list with it: the factions of a system, and the systems
+    /// of a filter.
+    #[test]
+    fn a_line_paints_in_a_colour() {
+        painted(|ui| {
+            line(ui, egui::RichText::new("Alliance of Sol"), 0., true);
+        });
+    }
+
+    /// So does one with room kept at its end
+    #[test]
+    fn a_line_with_room_reserved_paints_in_a_colour() {
+        painted(|ui| {
+            line(ui, egui::RichText::new("Sol"), 20., true);
+        });
+    }
+
+    /// And so does a whole faction list, marks and placeholders included
+    #[test]
+    fn a_faction_list_paints_in_a_colour() {
+        let names = known(&[(1, "Alliance of Sol")]);
+        painted(|ui| {
+            // One named and one still waiting, so both arms are drawn.
+            factions(ui, &[1, 2], &names, &mut None);
+        });
+    }
+
+    /// And a filter's list of systems, which carries a distance and a mark
+    #[test]
+    fn a_system_list_paints_in_a_colour() {
+        let systems = [system(1), system(2)];
+        painted(|ui| {
+            admitted(
+                ui,
+                Some(&systems),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+    }
+
+    /// A line carries the id its filter would be built from
+    ///
+    /// Clicking a faction asks for it, and what a filter tests against is the
+    /// id, so the name alone would leave the line unable to say which faction
+    /// it named.
+    #[test]
+    fn a_listed_faction_carries_its_id() {
+        let names = known(&[(7, "Alliance of Sol")]);
+
+        assert_eq!(listed(&[7], &names), vec![(7, Some("Alliance of Sol"))]);
     }
 
     /// A faction whose name has not arrived keeps its line, at the end
@@ -829,12 +944,17 @@ mod tests {
     /// end rather than sorted in, since the placeholder is punctuation and
     /// would otherwise sit above every name and then jump the length of the
     /// list as soon as its own arrived.
+    ///
+    /// It answers to nothing while it waits. A faction is asked for by name
+    /// as well as by id, and a filter row naming one as punctuation would say
+    /// nothing about what had gone dim.
     #[test]
     fn a_faction_not_yet_named_takes_the_last_line() {
         let names = known(&[(1, "Alliance of Sol")]);
+        let wanted = vec![(1, Some("Alliance of Sol")), (2, None)];
 
-        assert_eq!(listed(&[1, 2], &names), vec!["Alliance of Sol", UNNAMED]);
-        assert_eq!(listed(&[2, 1], &names), vec!["Alliance of Sol", UNNAMED]);
+        assert_eq!(listed(&[1, 2], &names), wanted);
+        assert_eq!(listed(&[2, 1], &names), wanted);
     }
 
     /// Each panel takes the place after the last one opened
@@ -859,7 +979,9 @@ mod tests {
         let mut panels = Panels::default();
         panels.open_system(system(1));
         panels.open_system(system(2));
-        panels.open.retain(|panel| panel.subject.id() != Subject::System(system(2)).id());
+        panels.open.retain(|panel| {
+            panel.subject.id() != Subject::System(system(2)).id()
+        });
         panels.open_system(system(3));
 
         let slots: Vec<_> = panels.open.iter().map(|p| p.slot).collect();

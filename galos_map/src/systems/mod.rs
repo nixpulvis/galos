@@ -248,8 +248,10 @@ pub(crate) mod tests {
     #[test]
     fn the_spyglass_decides_what_is_drawn() {
         let mut app = map(10., false, 0.2);
-        let near = app.world_mut().spawn((at(1, 5.), Visibility::default())).id();
-        let far = app.world_mut().spawn((at(2, 50.), Visibility::default())).id();
+        let near =
+            app.world_mut().spawn((at(1, 5.), Visibility::default())).id();
+        let far =
+            app.world_mut().spawn((at(2, 50.), Visibility::default())).id();
 
         app.update();
 
@@ -261,7 +263,8 @@ pub(crate) mod tests {
     #[test]
     fn an_overridden_spyglass_reaches_everything() {
         let mut app = map(10., true, 0.2);
-        let far = app.world_mut().spawn((at(1, 5e4), Visibility::default())).id();
+        let far =
+            app.world_mut().spawn((at(1, 5e4), Visibility::default())).id();
 
         app.update();
 
@@ -333,8 +336,11 @@ pub(crate) mod tests {
     fn the_tally_says_how_many_a_filter_admits() {
         let mut app = map(10., false, 0.2);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
-        app.world_mut()
-            .spawn((at(2, 5.), Visibility::default(), filter::Filtered));
+        app.world_mut().spawn((
+            at(2, 5.),
+            Visibility::default(),
+            filter::Filtered,
+        ));
 
         app.update();
 
@@ -351,10 +357,16 @@ pub(crate) mod tests {
     fn the_tally_holds_up_when_nothing_excluded_is_drawn() {
         let mut app = map(10., false, 0.);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
-        app.world_mut()
-            .spawn((at(2, 5.), Visibility::default(), filter::Filtered));
-        app.world_mut()
-            .spawn((at(3, 5.), Visibility::default(), filter::Filtered));
+        app.world_mut().spawn((
+            at(2, 5.),
+            Visibility::default(),
+            filter::Filtered,
+        ));
+        app.world_mut().spawn((
+            at(3, 5.),
+            Visibility::default(),
+            filter::Filtered,
+        ));
 
         app.update();
 

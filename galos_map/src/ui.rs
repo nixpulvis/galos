@@ -11,11 +11,11 @@ use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{DimTo, FilterNote, Filters, Wanted};
 use crate::systems::info::Panels;
-use crate::systems::{InReach, Spyglass};
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{SELECTION, Selection};
 use crate::systems::spawn::{ColorBy, ShowNames};
+use crate::systems::{InReach, Spyglass};
 use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -86,6 +86,43 @@ const PADDING: i8 = 6;
 /// How far one field of a form stands from the next
 const FIELD_GAP: f32 = 4.;
 
+/// How much of a slider's row the number beside it is given
+///
+/// The rail takes everything but this, so the boxes line up down the pane and
+/// the last of them ends where the pane does. Enough for the widest number a
+/// slider here reaches: the spyglass runs to 110,000 light years.
+const VALUE_WIDTH: f32 = 56.;
+
+/// Hold a slider's value in a box of its own
+///
+/// A slider left to draw its own value sizes that box to the number in it, so
+/// a column of them comes out ragged and none reaches the edge of the pane.
+/// Drawn separately, every box is the same width and they line up.
+///
+/// The caller builds the box, since what clamps and how fast it drags is the
+/// slider's own business: the three the spyglass is offered at share one value
+/// and none of them may clamp it, where the one the filters are dimmed by is
+/// a percentage and clamps to it.
+fn value_box(ui: &mut Ui, value: egui::DragValue<'_>) -> Response {
+    ui.add_sized(egui::vec2(VALUE_WIDTH, ui.spacing().interact_size.y), value)
+}
+
+/// Size the next slider to the room it stands in
+///
+/// Egui draws a rail at [`egui::style::Spacing::slider_width`] and not at
+/// whatever room it has, so a slider left alone is an island of the same
+/// hundred pixels wherever it is put. Asked here rather than once for the
+/// whole pane, so that a slider indented under a checkbox fills what is left
+/// of its line rather than running out past it.
+///
+/// What the rail leaves is the box holding the value and the gap between the
+/// two, so the row ends flush with whatever it is standing in.
+fn fill_width(ui: &mut Ui) {
+    let gap = ui.spacing().item_spacing.x;
+    ui.spacing_mut().slider_width =
+        (ui.available_width() - VALUE_WIDTH - gap).max(0.);
+}
+
 /// How wide the dot standing for the selection is drawn
 const DOT: f32 = 7.;
 
@@ -124,44 +161,72 @@ const SELECTION_DOT: egui::Color32 = egui::Color32::from_rgb(
     (SELECTION.blue * 255.) as u8,
 );
 
-/// The scales a radius is offered at, and how finely each one steps
+/// The shortest radius worth offering, in light years
 ///
-/// Width of the galaxy is 105,700 Ly.
-const RADIUS_SCALES: [(f32, f32, f64, f64); 3] =
-    [(1., 50., 0.1, 0.2), (10., 500., 1., 0.2), (10., 1.1e5, 10., 0.5)];
+/// Stars stand far enough apart that a shorter reach than this shows the
+/// system at the middle of it and nothing else, so every setting under it
+/// draws the same picture and none of them is worth dragging to.
+///
+/// Measured over a sample of inhabited systems, counting what stands within
+/// reach of each: at 1, 2, 3 and 5 light years the middling answer is one
+/// system, which is the one being stood on. It first rises at 8, reaches 4 by
+/// 10, and 19 by 20.
+const RADIUS_FLOOR: f32 = 5.;
 
-/// Offer one radius at each scale it might be wanted at
+/// The longest, in light years
 ///
-/// A single slider over five orders of magnitude has no purchase near the
-/// bottom, where a light year is a real distance, and no reach at the top.
-/// Three ranges over the same number give both, and whichever is at hand is
-/// the one that suits the value at the time.
+/// The galaxy is 105,700 across, so this reaches the whole of it.
+const RADIUS_CEILING: f32 = 1.1e5;
+
+/// How much of the value a drag on the box beside a radius is worth
 ///
-/// None of them clamps, since the narrowest would otherwise drag the value
-/// back down every frame it was drawn. `ceiling` clamps instead, once, after
-/// all three have had their say, and a range past it is not offered at all.
-fn radius_sliders(ui: &mut Ui, radius: &mut f32, ceiling: f32) {
-    let mut reached = 0.;
-    for (low, high, step, speed) in RADIUS_SCALES {
-        let high = high.min(ceiling);
-        // Each scale has to reach further than the last to earn a slider.
-        // Under a low ceiling they clamp to the same number, and a second
-        // slider over a range already offered says nothing the first did
-        // not.
-        if low >= high || high <= reached {
-            continue;
-        }
-        reached = high;
-        ui.label(format!("{low} - {high} Ly"));
+/// A fraction of the number itself rather than a distance, since a radius runs
+/// over four decades and a drag has one speed: half a percent per pixel moves
+/// 5 to 6 as readily as 50,000 to 100,000, where a fixed speed does one or the
+/// other and not both.
+///
+/// Far finer than the rail beside it, which is the point of having both. A
+/// logarithmic rail spends those four decades over its own width, which comes
+/// to about seven percent of the value for every pixel of it, so the rail
+/// reaches anywhere and settles on nothing. This is the instrument for
+/// settling, and it is worth roughly a tenth of what the rail is.
+const RADIUS_DRAG: f32 = 0.005;
+
+/// Offer a radius over the whole range it may take
+///
+/// One rail, logarithmic, since the range runs over five orders of magnitude
+/// and a linear one would spend nearly all of itself between ten thousand
+/// light years and a hundred thousand, which is a distance nobody sets, while
+/// leaving no purchase at all down where a single light year is a real
+/// distance. A logarithmic rail gives every decade the same room.
+///
+/// Exactness is the box's business, not the rail's. A pixel near the top of
+/// the rail is worth hundreds of light years however it is scaled, so a number
+/// that has to be exact is typed rather than dragged to.
+///
+/// `ceiling` is as far as this one may reach, which for names is however far
+/// the spyglass reaches. The rail clamps to it, so a radius set wide and then
+/// hemmed in comes back to what is on offer.
+fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
+    let ceiling = ceiling.clamp(RADIUS_FLOOR, RADIUS_CEILING);
+    // Read before the rail borrows it, and the reason it is read at all.
+    let speed = (*radius * RADIUS_DRAG).max(f32::EPSILON) as f64;
+    fill_width(ui);
+
+    ui.horizontal(|ui| {
         ui.add(
-            egui::Slider::new(radius, low..=high)
-                .clamping(egui::SliderClamping::Never)
+            egui::Slider::new(radius, RADIUS_FLOOR..=ceiling)
                 .logarithmic(true)
-                .step_by(step)
-                .drag_value_speed(speed),
+                .show_value(false),
         );
-    }
-    *radius = radius.clamp(RADIUS_SCALES[0].0, ceiling);
+        value_box(
+            ui,
+            egui::DragValue::new(radius)
+                .range(RADIUS_FLOOR..=ceiling)
+                .speed(speed),
+        );
+    })
+    .response
 }
 
 /// What the user has typed into the search bar, and how much of it is shown
@@ -240,12 +305,44 @@ pub fn chrome(
     // The pane first, since where it has reached is where the gear stands.
     let edge = settings_pane(ctx, settings.0, |ui| {
         heading(ui, "Spyglass", false);
-        radius_sliders(ui, &mut knobs.spyglass.radius, 1.1e5);
+        ui.label("Radius (Ly)");
+        radius_slider(ui, &mut knobs.spyglass.radius, RADIUS_CEILING);
         ui.add_space(FIELD_GAP);
         ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
         ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
 
         heading(ui, "View", true);
+        // Whether a system is named is a choice about what the map draws, the
+        // same as which colour a star comes out and how large it is, so it
+        // stands with those rather than alone.
+        ui.checkbox(&mut knobs.show_names.0, "Show System Names");
+        if knobs.show_names.0 {
+            // Indented under what turns them on, since neither means anything
+            // without it. The rule egui draws down the side of an indent says
+            // as much, and says it without a heading standing over nothing
+            // whenever the box is unchecked.
+            ui.indent("names", |ui| {
+                ui.checkbox(
+                    &mut knobs.name_radius.follow_spyglass,
+                    "Names Follow Spyglass",
+                );
+                if !knobs.name_radius.follow_spyglass {
+                    // A name can only be drawn for a system that is drawn,
+                    // and the spyglass decides that. Overriding it draws
+                    // everything loaded, and then names may be asked for
+                    // beyond its reach.
+                    let ceiling = if knobs.spyglass.disabled {
+                        RADIUS_CEILING
+                    } else {
+                        knobs.spyglass.radius
+                    };
+                    ui.label("Name Radius (Ly)");
+                    radius_slider(ui, &mut knobs.name_radius.radius, ceiling);
+                }
+            });
+        }
+
+        ui.add_space(FIELD_GAP);
         ui.radio_value(&mut *knobs.view, View::Systems, "Systems");
         ui.radio_value(&mut *knobs.view, View::Stars, "Stars");
         if *knobs.view == View::Systems {
@@ -266,36 +363,29 @@ pub fn chrome(
             ui.checkbox(&mut knobs.population_scale.0, "Scale w/ Population");
         }
 
-        heading(ui, "Names", true);
-        ui.checkbox(&mut knobs.show_names.0, "Show System Names");
-        if knobs.show_names.0 {
-            ui.checkbox(
-                &mut knobs.name_radius.follow_spyglass,
-                "Names Follow Spyglass",
-            );
-            if !knobs.name_radius.follow_spyglass {
-                // A name can only be drawn for a system that is drawn, and
-                // the spyglass decides that. Overriding it draws everything
-                // loaded, and then names may be asked for beyond its reach.
-                let ceiling = if knobs.spyglass.disabled {
-                    1.1e5
-                } else {
-                    knobs.spyglass.radius
-                };
-                ui.add_space(FIELD_GAP);
-                radius_sliders(ui, &mut knobs.name_radius.radius, ceiling);
-            }
-        }
-
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
         // about them that is set once and left alone.
         heading(ui, "Filters", true);
         ui.label("Draw What Is Filtered Out At");
         let mut showing = filter.dim.0 * 100.;
-        let slider = ui.add(
-            egui::Slider::new(&mut showing, 0.0..=100.).suffix("%").step_by(5.),
-        );
+        fill_width(ui);
+        let slider = ui
+            .horizontal(|ui| {
+                let rail = ui.add(
+                    egui::Slider::new(&mut showing, 0.0..=100.)
+                        .step_by(5.)
+                        .show_value(false),
+                );
+                let typed = value_box(
+                    ui,
+                    egui::DragValue::new(&mut showing)
+                        .range(0.0..=100.)
+                        .suffix("%"),
+                );
+                rail | typed
+            })
+            .inner;
         // Only on a change, since writing every frame would mark the resource
         // changed every frame and have every dimmed star repainted for
         // nothing.
@@ -390,6 +480,11 @@ fn settings_pane(
             frame.show(ui, |ui| {
                 ui.set_width(PANE_WIDTH - margins.x);
                 ui.set_height(height - margins.y);
+                // The bar stands beside what it scrolls rather than over it,
+                // so that the width asked for below is the width there is.
+                // Floated, it would be drawn across the right hand end of
+                // every slider in the pane.
+                ui.spacing_mut().scroll.floating = false;
                 egui::ScrollArea::vertical().show(ui, contents);
             });
         })
@@ -1021,8 +1116,7 @@ fn lay_out_marks(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
             // pointer has been asked about, which cannot happen until the row
             // has been placed.
             egui::WidgetText::from(
-                egui::RichText::new(*glyph)
-                    .color(egui::Color32::PLACEHOLDER),
+                egui::RichText::new(*glyph).color(egui::Color32::PLACEHOLDER),
             )
             .into_galley(
                 ui,
@@ -1210,14 +1304,237 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
     }
 
     if let Some(val) = opt {
-        ui.label("(Hz)");
-        ui.add(egui::DragValue::new(val).range(0.0..=60.).speed(0.01));
+        ui.label("Every");
+        ui.add(
+            egui::DragValue::new(val).range(0.0..=60.).speed(0.01).suffix(" s"),
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::filter::Filter;
+    use crate::tests::painted;
+
+    /// A slider row drawn in the pane, as it comes out
+    ///
+    /// The row it filled, the room it was given, and how wide the box holding
+    /// the value came out. Drawn the way the pane draws one rather than
+    /// measured off the style, since what is asked for and what is taken are
+    /// different questions and only the second is on screen.
+    ///
+    /// The pane slides in rather than appearing, and `animate_bool` wants time
+    /// to pass before it is all the way out, so nothing is drawn inside it on
+    /// the first frame. Hence the run of them, with the clock moving.
+    struct Row {
+        used: f32,
+        room: f32,
+    }
+
+    /// Draw a real radius slider in a pane `width` wide, indented or not
+    fn slider_row(width: f32, indented: bool) -> Row {
+        let ctx = egui::Context::default();
+        let mut row = Row { used: 0., room: 0. };
+        let mut radius = 10_f32;
+        for frame in 0..10 {
+            let input = egui::RawInput {
+                time: Some(frame as f64 * 0.1),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 600.),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                settings_pane(ui.ctx(), true, |ui| {
+                    let mut draw = |ui: &mut Ui| {
+                        row.room = ui.available_width();
+                        row.used =
+                            radius_slider(ui, &mut radius, RADIUS_CEILING)
+                                .rect
+                                .width();
+                    };
+                    if indented {
+                        ui.indent("test", draw);
+                    } else {
+                        draw(ui);
+                    }
+                });
+            });
+        }
+        row
+    }
+
+    /// What a radius comes out at, having been offered up to `ceiling`
+    fn drawn_radius(start: f32, ceiling: f32) -> f32 {
+        let ctx = egui::Context::default();
+        let mut radius = start;
+        for frame in 0..10 {
+            let input = egui::RawInput {
+                time: Some(frame as f64 * 0.1),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280., 600.),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                settings_pane(ui.ctx(), true, |ui| {
+                    radius_slider(ui, &mut radius, ceiling);
+                });
+            });
+        }
+        radius
+    }
+
+    /// A radius is held inside what it is offered
+    ///
+    /// The ceiling moves: names reach no further than the spyglass does, so
+    /// one set wide and then hemmed in has to come back to what is on offer
+    /// rather than go on saying a distance the map will not draw to.
+    #[test]
+    fn a_radius_is_held_within_what_is_offered() {
+        assert_eq!(drawn_radius(5e4, 100.), 100.);
+        assert_eq!(drawn_radius(0.01, 100.), RADIUS_FLOOR);
+    }
+
+    /// How much of the value one pixel of a `rail` pixels wide is worth
+    ///
+    /// The rail is logarithmic over the whole range, so a pixel is a fixed
+    /// multiple of whatever the value is rather than a fixed distance. This
+    /// is that multiple, less the one, so it reads as the fraction the drag
+    /// speed is also given as.
+    fn rail_precision(rail: f32) -> f32 {
+        let decades = (RADIUS_CEILING / RADIUS_FLOOR).log10();
+        10_f32.powf(decades / rail) - 1.
+    }
+
+    /// The box beside a radius is finer than the rail
+    ///
+    /// Which is the whole reason for having both. The rail crosses four
+    /// decades in the width of the pane and so reaches anywhere and settles
+    /// on nothing; the box is what settles. A box no finer than the rail is
+    /// a second way to do the same coarse thing.
+    #[test]
+    fn the_radius_box_is_finer_than_its_rail() {
+        // What the row came to, less the box at its end and the gap before it.
+        let gap = egui::style::Spacing::default().item_spacing.x;
+        let rail =
+            rail_precision(slider_row(1280., false).used - VALUE_WIDTH - gap);
+
+        assert!(
+            RADIUS_DRAG * 5. < rail,
+            "a drag worth {RADIUS_DRAG} of the value against a rail worth \
+             {rail} of it is no finer to speak of"
+        );
+    }
+
+    /// A ceiling at the floor is still a radius
+    ///
+    /// Names reach no further than the spyglass, so a spyglass wound all the
+    /// way in leaves them a range with no room in it at all. A logarithmic
+    /// rail divides by the span it is given.
+    #[test]
+    fn a_range_with_no_room_in_it_still_draws() {
+        assert_eq!(drawn_radius(RADIUS_FLOOR, RADIUS_FLOOR), RADIUS_FLOOR);
+    }
+
+    /// And inside the galaxy, whatever ceiling it is handed
+    ///
+    /// The one the names are given is the spyglass's own radius, which is a
+    /// number the user may type.
+    #[test]
+    fn a_radius_reaches_no_further_than_the_galaxy() {
+        assert_eq!(drawn_radius(5e6, 5e6), RADIUS_CEILING);
+    }
+
+    /// How far a measured width may sit from the one asked for
+    ///
+    /// Egui rounds a rectangle to whole pixels, so two of them that agree can
+    /// still differ by a fraction of one.
+    const SLACK: f32 = 1.;
+
+    /// A slider row fills the pane it is drawn in
+    ///
+    /// Egui sizes a rail from the style rather than from the room it is given,
+    /// and sizes the box beside it to the number in it, so left alone a row
+    /// is an island of the same hundred pixels and a ragged box, ending
+    /// wherever that happens to leave it.
+    #[test]
+    fn a_slider_row_fills_the_pane() {
+        for width in [1280., 400.] {
+            let row = slider_row(width, false);
+
+            assert!(
+                (row.used - row.room).abs() < SLACK,
+                "in a pane {width} wide a row of {} filled {} of it",
+                row.used,
+                row.room
+            );
+        }
+    }
+
+    /// And fills an indent, which is narrower than the pane
+    ///
+    /// The name radius hangs under the checkbox that turns names on, so it is
+    /// drawn a step in from the edge. Sized once for the pane it would run out
+    /// past the end of its own line by exactly that step.
+    #[test]
+    fn a_slider_row_fills_an_indent() {
+        let indented = slider_row(1280., true);
+        let plain = slider_row(1280., false);
+
+        assert!(
+            indented.room < plain.room,
+            "an indent of {} is no narrower than the {} around it",
+            indented.room,
+            plain.room
+        );
+        assert!(
+            (indented.used - indented.room).abs() < SLACK,
+            "a row of {} filled {} of the indent",
+            indented.used,
+            indented.room
+        );
+    }
+
+    /// The box holding the value is the width kept for it
+    ///
+    /// Every one of them the same, so that a column of sliders ends in a
+    /// column of numbers rather than in a ragged edge.
+    #[test]
+    fn the_value_box_is_the_width_kept_for_it() {
+        let ctx = egui::Context::default();
+        let mut value = 10_f32;
+        let mut width = 0.;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            width =
+                value_box(ui, egui::DragValue::new(&mut value)).rect.width();
+        });
+
+        assert!((width - VALUE_WIDTH).abs() < SLACK);
+    }
+
+    /// The filter rows come out in colours something can draw
+    ///
+    /// Every galley here is laid out strong or weak, which resolves a colour,
+    /// so the placeholder each is painted with is never reached. That holds
+    /// by how the rows happen to be styled and nothing else, and one plain
+    /// piece of text would take the whole bar down.
+    ///
+    /// Covers the marks as well, which the selection's row draws the same
+    /// way.
+    #[test]
+    fn the_filter_rows_paint_in_colours() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Zargon Front".into() });
+        filters.add(Filter::Faction { id: 2, name: "Alliance".into() });
+        filters.toggle(1);
+        let mut panels = Panels::default();
+
+        painted(|ui| applied(ui, &mut filters, (3, 40), &mut panels));
+    }
 
     /// A field clicked into and left alone holds nothing
     ///
