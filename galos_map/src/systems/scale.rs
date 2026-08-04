@@ -27,6 +27,13 @@ use bevy::prelude::*;
 pub fn plugin(app: &mut App) {
     app.insert_resource(View::Systems);
     app.insert_resource(ScalePopulation(false));
+    app.init_resource::<SystemsStats>();
+    // Reads what the fetch spawned and the despawn took away, so it belongs
+    // after both, and answers `size_by_distance`, so it belongs before that.
+    app.add_systems(
+        Update,
+        recount.in_set(MapSet::Present).before(size_by_distance),
+    );
     // One view is drawn at a time, so these two never run in the same frame.
     // The scheduler cannot see that from the run conditions alone.
     app.add_systems(
@@ -55,6 +62,55 @@ pub enum View {
 
 #[derive(Resource, Debug)]
 pub struct ScalePopulation(pub bool);
+
+/// What the systems on the map add up to
+///
+/// Figures drawn from every system at once, which is more than anything
+/// wanting one should have to walk to find out. Held so that they are worked
+/// out when the systems behind them move, rather than once per frame
+/// regardless.
+///
+/// Over every system loaded, not the ones the spyglass reaches. That narrower
+/// question is [`super::InReach`]'s, and it is asked and answered afresh every
+/// frame because the camera moving changes the answer without anything on the
+/// map having moved at all.
+#[derive(Resource, Debug, Default)]
+pub struct SystemsStats {
+    /// What the average system is populated by
+    pub population_mean: f64,
+}
+
+/// Keep the stats answering to what is on the map
+///
+/// Three things move them, and they are not all visible the same way. A row
+/// arriving and a row being written over both mark a [`System`] changed,
+/// which covers the two ways [`super::spawn::spawn_systems`] admits one: a
+/// system fetched again has its row inserted over the old one rather than
+/// being respawned, and what it carries is free to differ. A system leaving
+/// the map takes its component with it, so there is nothing left to mark and
+/// it has to be asked after separately.
+pub fn recount(
+    systems: Query<&System>,
+    touched: Query<(), Changed<System>>,
+    mut gone: RemovedComponents<System>,
+    mut stats: ResMut<SystemsStats>,
+) {
+    // Both asked before either is acted on. Removals are read through a
+    // cursor, and one left unread is one held over to be answered again on
+    // the next frame that recounts.
+    let any_gone = gone.read().count() > 0;
+    let any_touched = !touched.is_empty();
+    if !any_gone && !any_touched {
+        return;
+    }
+
+    let (total, count) = systems
+        .iter()
+        .fold((0., 0.), |(t, n), s| (t + s.population as f64, n + 1.));
+    // An empty map has no average to give. Dividing to find one anyway
+    // yields a NaN, and every star sized against it draws at no size at all.
+    stats.population_mean = if count > 0. { total / count } else { 0. };
+}
 
 /// How strongly population pulls a system's size around
 ///
@@ -96,22 +152,13 @@ fn population_factor(population: u64, average: f64) -> f32 {
 /// is.
 pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
+    stats: Res<SystemsStats>,
     camera: Query<&OrbitCamera>,
     systems: Query<&System>,
     mut stars: Query<(&mut Transform, &ChildOf), With<Star>>,
 ) {
     if !stars.is_empty() {
         let Ok(eye) = camera.single().map(|c| c.eye) else { return };
-        let pop_avg = if scale_population.0 {
-            // TODO(#45): This is *very* slow and should be precomputed when
-            // the set of systems changes.
-            let (total, count) = systems
-                .iter()
-                .fold((0., 0.), |(t, n), s| (t + s.population as f64, n + 1.));
-            total / count
-        } else {
-            0.
-        };
 
         // The goal is to avoid fading out any stars, but scale them as the
         // camera moves further away from them.
@@ -121,7 +168,8 @@ pub fn size_by_distance(
             let dist = eye.distance(DVec3::from(system.position)) as f32;
             let mut scale = 4e-4 * dist + 8.5e-2;
             if scale_population.0 {
-                scale *= population_factor(system.population, pop_avg);
+                scale *=
+                    population_factor(system.population, stats.population_mean);
             }
             star_transform.scale = Vec3::splat(scale);
         }
@@ -137,5 +185,120 @@ pub fn size_uniformly(mut stars: Query<&mut Transform, With<Star>>) {
     // transparent when they are too far away.
     for mut star_transform in stars.iter_mut() {
         star_transform.scale = Vec3::splat(1e-2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::systems::tests::system;
+
+    /// A world that keeps the stats current, and nothing else
+    fn map() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<SystemsStats>();
+        app.add_systems(Update, recount);
+        app
+    }
+
+    /// A system with `population` living in it
+    fn populated(address: i64, population: u64) -> System {
+        let mut system = system(address);
+        system.population = population;
+        system
+    }
+
+    /// What the map currently takes the average population to be
+    fn mean(app: &App) -> f64 {
+        app.world().resource::<SystemsStats>().population_mean
+    }
+
+    /// A system written over carries the average with it
+    ///
+    /// The case a count of the systems on the map cannot see, and the reason
+    /// the recount is asked for by what has changed rather than by how many
+    /// there are. A row fetched again is inserted over the one already there
+    /// rather than respawned, so nothing arrives and nothing leaves, and the
+    /// population it carries is free to differ from the one it replaces.
+    #[test]
+    fn a_system_written_over_moves_the_average() {
+        let mut app = map();
+        let entity = app.world_mut().spawn(populated(1, 100)).id();
+        app.world_mut().spawn(populated(2, 300));
+        app.update();
+        assert_eq!(mean(&app), 200.);
+
+        app.world_mut().entity_mut(entity).insert(populated(1, 700));
+        app.update();
+        assert_eq!(
+            mean(&app),
+            500.,
+            "kept the population of a row that had been replaced"
+        );
+    }
+
+    /// A system arriving moves the average
+    #[test]
+    fn a_system_arriving_moves_the_average() {
+        let mut app = map();
+        app.world_mut().spawn(populated(1, 100));
+        app.update();
+        assert_eq!(mean(&app), 100.);
+
+        app.world_mut().spawn(populated(2, 300));
+        app.update();
+        assert_eq!(mean(&app), 200.);
+    }
+
+    /// A system leaving moves the average
+    ///
+    /// Leaving takes the component with it, so there is nothing left to mark
+    /// as changed and this is the one of the three that has to be asked
+    /// after separately.
+    #[test]
+    fn a_system_leaving_moves_the_average() {
+        let mut app = map();
+        let entity = app.world_mut().spawn(populated(1, 100)).id();
+        app.world_mut().spawn(populated(2, 300));
+        app.update();
+        assert_eq!(mean(&app), 200.);
+
+        app.world_mut().entity_mut(entity).despawn();
+        app.update();
+        assert_eq!(mean(&app), 300., "kept a system that had gone");
+    }
+
+    /// A frame that moves nothing leaves the average where it stands
+    ///
+    /// This is what holding the average is for. The systems it averages are
+    /// walked when they move, and not on the frames in between.
+    #[test]
+    fn a_resting_frame_leaves_the_average_alone() {
+        let mut app = map();
+        app.world_mut().spawn(populated(1, 100));
+        app.update();
+
+        // Set to something the map does not add up to, so that only a
+        // recount would put it back.
+        app.world_mut().resource_mut::<SystemsStats>().population_mean = 42.;
+        app.update();
+        assert_eq!(mean(&app), 42., "recounted a map that had not moved");
+    }
+
+    /// An empty map has no average rather than a NaN
+    ///
+    /// Every star's size is multiplied by a factor worked out from this, so
+    /// a NaN here would spread to the size of every star drawn.
+    #[test]
+    fn an_emptied_map_has_no_average() {
+        let mut app = map();
+        let entity = app.world_mut().spawn(populated(1, 100)).id();
+        app.update();
+        assert_eq!(mean(&app), 100.);
+
+        app.world_mut().entity_mut(entity).despawn();
+        app.update();
+        assert_eq!(mean(&app), 0., "averaged an empty map to a NaN");
     }
 }
