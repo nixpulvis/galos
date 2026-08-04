@@ -830,7 +830,10 @@ pub fn fit_name_boxes(
 /// with no exceptions, and a name that stayed bright over a dimmed star would
 /// read as the filter having let go of it.
 pub fn tint_marked_names(
-    systems: Query<(Has<PointedAt>, Has<Selected>, Has<Filtered>), With<System>>,
+    systems: Query<
+        (Has<PointedAt>, Has<Selected>, Has<Filtered>),
+        With<System>,
+    >,
     materials: Res<LabelMaterials>,
     mut names: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),

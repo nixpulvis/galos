@@ -463,6 +463,25 @@ mod tests {
         assert!(!filters.admit(&member(5, &[7])));
     }
 
+    /// Two filters that differ are told apart, and equal ones are not
+    ///
+    /// The bar keys each row on its filter rather than on where the row sits,
+    /// so that dropping one does not hand its identity, and whatever egui was
+    /// remembering against it, to the row that moves up into its place. That
+    /// rests on this: two filters that are not the same must not hash the
+    /// same, and one that is must.
+    #[test]
+    fn filters_are_told_apart_by_what_they_ask() {
+        use std::collections::HashSet;
+
+        let asked = [faction(7), faction(9), route(&[1, 2]), route(&[3, 4])];
+        let distinct: HashSet<_> = asked.iter().collect();
+        assert_eq!(distinct.len(), asked.len());
+
+        let same: HashSet<_> = [faction(7), faction(7)].into_iter().collect();
+        assert_eq!(same.len(), 1);
+    }
+
     /// The same filter added twice is asked once
     ///
     /// Two rows saying the same thing narrow nothing and have to be turned
