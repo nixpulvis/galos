@@ -1713,14 +1713,12 @@ fn place_marks(
         // Lit for the pointer resting on it and for the keyboard reaching it
         // alike. A stop that shows nothing when it is reached reads as the
         // focus having gone missing.
+        //
+        // The glyph brightens and nothing is painted behind it. The row it
+        // sits in lights up under the pointer already, and a second rectangle
+        // inside that one reads as a button dropped into a row rather than as
+        // part of it.
         let lit = response.hovered() || response.has_focus();
-        if lit {
-            ui.painter().rect_filled(
-                at,
-                ui.visuals().widgets.hovered.corner_radius,
-                ui.visuals().widgets.hovered.weak_bg_fill,
-            );
-        }
         let height = galley.size().y;
         ui.painter().galley(
             egui::pos2(at.left(), middle - height / 2.),
@@ -1881,14 +1879,10 @@ pub(crate) fn system_line(
             ui.id().with(("describe", salt)),
             egui::Sense::click(),
         );
+        // Brightened alone, as the marks in the bar are. The line beneath it
+        // already lights up under the pointer, and a rectangle inside that
+        // one reads as a button dropped into the line.
         let lit = answer.hovered() || answer.has_focus();
-        if lit {
-            ui.painter().rect_filled(
-                at,
-                ui.visuals().widgets.hovered.corner_radius,
-                ui.visuals().widgets.hovered.weak_bg_fill,
-            );
-        }
         let height = mark.size().y;
         ui.painter().galley(
             egui::pos2(at.left(), middle - height / 2.),
@@ -3143,6 +3137,97 @@ mod tests {
                 &mut 0,
             )
         });
+    }
+
+    /// What `contents` painted with the pointer resting at `at`
+    ///
+    /// Two passes, since egui works out what the pointer is over from where
+    /// the widgets were the pass before. The second is the one read.
+    fn under_pointer(
+        at: egui::Pos2,
+        mut contents: impl FnMut(&mut Ui),
+    ) -> Vec<egui::Shape> {
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            events: vec![egui::Event::PointerMoved(at)],
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input(), |ui| contents(ui));
+        let output = ctx.run_ui(input(), |ui| contents(ui));
+
+        output.shapes.into_iter().map(|clipped| clipped.shape).collect()
+    }
+
+    /// Every filled rectangle among `shapes`, however deeply nested
+    fn rectangles(shapes: &[egui::Shape]) -> Vec<egui::Rect> {
+        fn walk(shape: &egui::Shape, into: &mut Vec<egui::Rect>) {
+            match shape {
+                egui::Shape::Rect(rect) => into.push(rect.rect),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut found = Vec::new();
+        for shape in shapes {
+            walk(shape, &mut found);
+        }
+        found
+    }
+
+    /// The colour each piece of text among `shapes` was painted in
+    fn colours(shapes: &[egui::Shape]) -> Vec<egui::Color32> {
+        fn walk(shape: &egui::Shape, into: &mut Vec<egui::Color32>) {
+            match shape {
+                egui::Shape::Text(text) => into.push(text.fallback_color),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut found = Vec::new();
+        for shape in shapes {
+            walk(shape, &mut found);
+        }
+        found
+    }
+
+    /// A mark under the pointer brightens and paints nothing behind itself
+    ///
+    /// The row a mark sits in lights up under the pointer already, so a
+    /// rectangle drawn inside that one reads as a button dropped into the
+    /// row rather than as part of it.
+    #[test]
+    fn a_mark_lights_without_a_background() {
+        let row = egui::Rect::from_min_size(
+            egui::pos2(0., 0.),
+            egui::vec2(200., 20.),
+        );
+        // Just inside the close mark, which stands outermost.
+        let on_the_mark =
+            egui::pos2(row.right() - ROW_PADDING - 1., row.center().y);
+
+        let painted = under_pointer(on_the_mark, |ui| {
+            let marks = lay_out_marks(ui);
+            place_marks(ui, row, marks, "row");
+        });
+
+        // The mark answered the pointer, which is what leaves the assertion
+        // below with something to say.
+        assert!(
+            colours(&painted)
+                .contains(&egui::Visuals::default().strong_text_color()),
+            "nothing lit up, so nothing was under the pointer"
+        );
+        assert_eq!(rectangles(&painted), Vec::new(), "a mark painted a box");
     }
 
     /// A field clicked into and left alone holds nothing
