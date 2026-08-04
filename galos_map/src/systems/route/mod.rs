@@ -16,7 +16,10 @@ pub fn plugin(app: &mut App) {
     // then works out.
     app.add_systems(
         Update,
-        plotted.in_set(MapSet::Populate).after(super::spawn::spawn),
+        (plotted, follow_filters)
+            .chain()
+            .in_set(MapSet::Populate)
+            .after(super::spawn::spawn),
     );
 }
 
@@ -74,6 +77,34 @@ fn plotted(
     }
 }
 
+/// Take the line away when the filter naming it goes
+///
+/// The line and the filter row are two halves of one answer: the row says
+/// which route is being shown and the line shows it. Dropping the row is how
+/// the user says they are done with the route, so a line left drawn across
+/// the map afterwards is an answer to a question nobody is asking, and one
+/// with nothing left on screen to say what it is.
+///
+/// Presence rather than whether it is being asked. A filter turned off is one
+/// the user means to come back to, and the route it names is still the route
+/// they plotted.
+fn follow_filters(
+    filters: Res<Filters>,
+    lines: Query<Entity, With<Route>>,
+    mut commands: Commands,
+) {
+    if filters
+        .iter()
+        .any(|active| matches!(active.filter, Filter::Route { .. }))
+    {
+        return;
+    }
+
+    for line in &lines {
+        commands.entity(line).despawn();
+    }
+}
+
 /// The least a route may pull the spyglass in to
 ///
 /// A route between two neighbours spans a few light years, and a spyglass
@@ -100,5 +131,84 @@ impl From<LineStrip> for Mesh {
         )
         // Add the point positions as an attribute
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A route filter over the systems at `addresses`
+    fn asking(addresses: &[i64]) -> Filter {
+        Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: addresses.to_vec(),
+        }
+    }
+
+    /// A world holding nothing but the filters and a drawn route
+    fn map(filters: Filters) -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(filters);
+        app.add_systems(Update, follow_filters);
+        let line = app.world_mut().spawn(Route).id();
+        (app, line)
+    }
+
+    /// Whether the line is still drawn
+    fn drawn(app: &App, line: Entity) -> bool {
+        app.world().get_entity(line).is_ok()
+    }
+
+    /// The line stays while a route filter names it
+    #[test]
+    fn a_route_keeps_its_line() {
+        let mut filters = Filters::default();
+        filters.replace(asking(&[1, 2]));
+        let (mut app, line) = map(filters);
+
+        app.update();
+
+        assert!(drawn(&app, line));
+    }
+
+    /// And goes when that filter is dropped
+    #[test]
+    fn dropping_a_route_takes_its_line() {
+        let mut filters = Filters::default();
+        filters.replace(asking(&[1, 2]));
+        let (mut app, line) = map(filters);
+        app.update();
+
+        app.world_mut().resource_mut::<Filters>().remove(0);
+        app.update();
+
+        assert!(!drawn(&app, line));
+    }
+
+    /// A filter turned off is one to come back to, and keeps its line
+    #[test]
+    fn a_route_turned_off_keeps_its_line() {
+        let mut filters = Filters::default();
+        filters.replace(asking(&[1, 2]));
+        filters.toggle(0);
+        let (mut app, line) = map(filters);
+
+        app.update();
+
+        assert!(drawn(&app, line));
+    }
+
+    /// Filters of another kind say nothing about a route's line
+    #[test]
+    fn a_faction_does_not_keep_a_line() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 7, name: "Some Lot".to_owned() });
+        let (mut app, line) = map(filters);
+
+        app.update();
+
+        assert!(!drawn(&app, line));
     }
 }
