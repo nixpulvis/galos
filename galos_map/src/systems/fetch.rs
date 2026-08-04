@@ -52,7 +52,6 @@ pub enum FetchIndex {
     // System<String>
     Region(IVec3, i32),
     // View<Frustum>,
-    Faction(String),
     Route(String, String, String),
 }
 
@@ -70,7 +69,6 @@ impl Ord for FetchIndex {
                     Ordering::Greater
                 }
             }
-            (Faction(sn), Faction(on)) => sn.cmp(on),
             (Route(ss, se, sr), Route(os, oe, or)) => {
                 ss.cmp(os).then(se.cmp(oe)).then(sr.cmp(or))
             }
@@ -95,7 +93,6 @@ impl fmt::Debug for FetchIndex {
                 "<({},{},{}),{}>",
                 center.x, center.y, center.z, radius
             ),
-            Faction(name) => write!(f, "<{}>", name),
             Route(start, end, range) => {
                 write!(f, "<{}-{}>{}>", start, end, range)
             }
@@ -144,15 +141,6 @@ pub fn fetch(
             // to a part of empty space. Setting AlwaysFetch(true) will
             // populate it.
             Searched::System { .. } => {}
-            Searched::Faction { name } => {
-                fetch_faction(
-                    name.into(),
-                    &mut tasks,
-                    &time,
-                    &mut last_fetched_at,
-                    &db,
-                );
-            }
             Searched::Route { start, end, range } => {
                 fetch_route(
                     start.into(),
@@ -202,25 +190,6 @@ fn fetch_spyglass(
         tasks.last_fetched = Some(index);
         **last_fetched_at = LastFetchedAt(now);
     }
-}
-
-fn fetch_faction(
-    name: String,
-    tasks: &mut ResMut<FetchTasks>,
-    time: &Res<Time<Real>>,
-    last_fetched_at: &mut ResMut<LastFetchedAt>,
-    db: &Res<Db>,
-) {
-    let index = FetchIndex::Faction(name.clone());
-    let now = time.last_update().unwrap_or(time.startup());
-    let task_pool = AsyncComputeTaskPool::get();
-    let db = db.0.clone();
-    let task = task_pool.spawn(async move {
-        DbSystem::fetch_faction(&db, &name).await.unwrap_or_default()
-    });
-    tasks.fetched.insert(index.clone(), (task, now));
-    tasks.last_fetched = Some(index);
-    **last_fetched_at = LastFetchedAt(now);
 }
 
 pub fn spyglass_condition(

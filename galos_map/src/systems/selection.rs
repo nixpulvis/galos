@@ -22,6 +22,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
 };
@@ -204,18 +205,23 @@ fn clear_when_nothing_is_clicked(
 ///
 /// A system the spyglass has hidden is skipped, since a ring around a star
 /// that is not drawn is a ring around nothing.
+///
+/// A ring dims with the star it is drawn around. A selection the filters
+/// exclude stays selected, and a full strength ring around a faint star would
+/// read as the filter having let go of it.
 fn ring(
     mut gizmos: Gizmos,
     camera: Query<&OrbitCamera>,
     selected: Query<
-        (&GlobalTransform, &Visibility, &Children),
+        (&GlobalTransform, &Visibility, &Children, Has<Filtered>),
         (With<System>, With<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
+    dim: Res<DimTo>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
-    for (system, visibility, children) in &selected {
+    for (system, visibility, children, filtered) in &selected {
         if *visibility == Visibility::Hidden {
             continue;
         }
@@ -232,7 +238,7 @@ fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            SELECTION,
+            dim.against(SELECTION, filtered),
         );
     }
 }
@@ -240,23 +246,7 @@ fn ring(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::DateTime;
-
-    /// A system with nothing on record but the address that names it
-    fn system(address: i64) -> System {
-        System {
-            address,
-            name: format!("Test {address}"),
-            position: [0., 0., 0.],
-            population: 0,
-            allegiance: None,
-            government: None,
-            security: None,
-            primary_economy: None,
-            secondary_economy: None,
-            updated_at: DateTime::UNIX_EPOCH,
-        }
-    }
+    use crate::systems::tests::system;
 
     /// A world with nothing in it but the selection and the mark
     fn map() -> App {

@@ -23,7 +23,12 @@ impl System {
                     primary_economy as "primary_economy: Economy",
                     secondary_economy as "secondary_economy: Economy",
                     updated_at,
-                    updated_by
+                    updated_by,
+                    COALESCE((
+                        SELECT array_agg(faction_id)
+                        FROM system_factions
+                        WHERE system_address = systems.address
+                    ), ARRAY[]::integer[]) AS "factions!"
                 FROM systems
                 WHERE ST_3DDWithin(position, $1, $2);
                 "#,
@@ -48,6 +53,7 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
+                factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                updated_at,\n                updated_by\n            FROM systems\n            WHERE address = $1\n            ",
+  "query": "\n            SELECT\n                systems.address,\n                systems.name,\n                systems.position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                systems.population,\n                systems.security as \"security: Security\",\n                systems.government as \"government: Government\",\n                systems.allegiance as \"allegiance: Allegiance\",\n                systems.primary_economy as \"primary_economy: Economy\",\n                systems.secondary_economy as \"secondary_economy: Economy\",\n                systems.updated_at,\n                systems.updated_by,\n                COALESCE((\n                    SELECT array_agg(faction_id)\n                    FROM system_factions\n                    WHERE system_address = systems.address\n                ), ARRAY[]::integer[]) AS \"factions!\"\n            FROM systems\n            JOIN system_factions ON system_factions.system_address = systems.address\n            JOIN factions ON factions.id = system_factions.faction_id\n            WHERE factions.name ILIKE $1\n            ",
   "describe": {
     "columns": [
       {
@@ -153,11 +153,16 @@
         "ordinal": 10,
         "name": "updated_by",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "factions!",
+        "type_info": "Int4Array"
       }
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Text"
       ]
     },
     "nullable": [
@@ -171,8 +176,9 @@
       true,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "424c44ee0d72c1a53c461d4c4e0417f67a16b43b512851a9def4048e4b72faab"
+  "hash": "40558cddc20ad6b58d3294177b6907854dcdc19570f3d13c78a920f61ef585f7"
 }

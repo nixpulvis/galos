@@ -15,10 +15,17 @@ pub struct System {
     pub primary_economy: Option<Economy>,
     pub secondary_economy: Option<Economy>,
 
+    /// The factions present in the system, by id
+    ///
+    /// Ids rather than rows, since this is what a system is asked about in
+    /// bulk: which of them a filter admits, over every system drawn, every
+    /// frame. What a faction is called is its own row and is looked up once,
+    /// by whoever is naming it.
+    pub factions: Vec<i32>,
+
     // TODO: Find an elegent way to represent this.
     // & = foreign key = belongs_to
     // pub controlling_faction: &Faction,
-    // pub factions: Vec<Faction>
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
 }

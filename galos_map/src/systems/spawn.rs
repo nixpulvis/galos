@@ -6,6 +6,7 @@ use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
+    filter::{DimTo, Filtered, Filters},
     pointing::{
         DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
         UNFITTED_SCALE,
@@ -44,6 +45,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
+    app.add_systems(Update, redim.in_set(MapSet::Populate));
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -58,8 +60,94 @@ pub fn plugin(app: &mut App) {
 #[derive(Resource)]
 pub struct SystemMesh(pub Handle<Mesh>);
 
+/// What a star is drawn in, at full strength and dimmed
+///
+/// Two sets of the same colours rather than one recoloured per star, because
+/// the colour lives on a shared asset. A star moves between the sets by
+/// swapping which handle it points at, which repaints only that star, and the
+/// dim set is recoloured in place when [`DimTo`] moves, which is meant to
+/// repaint every dimmed star at once.
 #[derive(Resource)]
-pub struct SystemMaterials(pub Vec<Handle<StandardMaterial>>);
+pub struct SystemMaterials {
+    /// One per colour, indexed as [`hue`] answers
+    bright: Vec<Handle<StandardMaterial>>,
+    /// The same colours, at whatever [`DimTo`] is asking
+    dim: Vec<Handle<StandardMaterial>>,
+}
+
+impl SystemMaterials {
+    /// The handle for `hue`, at the strength `dimmed` asks for
+    fn get(&self, hue: Hue, dimmed: bool) -> Handle<StandardMaterial> {
+        let set = if dimmed { &self.dim } else { &self.bright };
+        set[hue as usize].clone()
+    }
+}
+
+/// The colours a star may be drawn in
+///
+/// Named rather than numbered, so that a scheme below says which colour it
+/// means. The two material sets are laid out in [`Hue::ALL`] order and
+/// indexed by the hue itself, so there is one list of colours rather than a
+/// list and a set of numbers agreeing with it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Hue {
+    Green,
+    Cyan,
+    Red,
+    Orange,
+    Yellow,
+    Blue,
+    Magenta,
+    Grey,
+}
+
+impl Hue {
+    /// Every hue, in the order the material sets hold them
+    const ALL: [Hue; 8] = [
+        Hue::Green,
+        Hue::Cyan,
+        Hue::Red,
+        Hue::Orange,
+        Hue::Yellow,
+        Hue::Blue,
+        Hue::Magenta,
+        Hue::Grey,
+    ];
+
+    /// What the hue is painted in
+    ///
+    /// Alpha is part of it: a star is drawn as a translucent ball with a glow
+    /// over it, and the grey a system with nothing on record comes out is
+    /// fainter than the rest so that an unknown system does not read as a
+    /// finding.
+    const fn color(self) -> Color {
+        match self {
+            Hue::Green => Color::srgba(0., 1., 0., 0.4),
+            Hue::Cyan => Color::srgba(0., 1., 1., 0.4),
+            Hue::Red => Color::srgba(1., 0., 0., 0.4),
+            Hue::Orange => Color::srgba(1., 0.5, 0., 0.4),
+            Hue::Yellow => Color::srgba(1., 1., 0., 0.4),
+            Hue::Blue => Color::srgba(0., 0., 1., 0.4),
+            Hue::Magenta => Color::srgba(1., 0., 1., 0.4),
+            Hue::Grey => Color::srgba(0.15, 0.15, 0.15, 0.3),
+        }
+    }
+}
+
+/// How a star is painted in `color`, at `strength` of full
+///
+/// Both the fill and the glow are scaled, since a star drawn dim but glowing
+/// as brightly as the rest reads as no dimmer at all: the glow is most of
+/// what is seen of a star at any distance.
+fn star_material(color: Color, strength: f32) -> StandardMaterial {
+    let faded = color.with_alpha(color.alpha() * strength);
+    StandardMaterial {
+        base_color: faded,
+        alpha_mode: AlphaMode::Blend,
+        emissive: LinearRgba::from(color.with_alpha(1.)) * 10. * strength,
+        ..default()
+    }
+}
 
 /// A material that draws nothing, for what only has to be hit
 #[derive(Resource)]
@@ -213,6 +301,7 @@ pub fn spawn(
     galaxy: Res<Galaxy>,
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
+    filters: Res<Filters>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
     invisible: Res<InvisibleMaterial>,
@@ -239,6 +328,7 @@ pub fn spawn(
                 &galaxy,
                 grid,
                 &color_by,
+                &filters,
                 &mut commands,
                 &mesh,
                 &materials,
@@ -247,16 +337,11 @@ pub fn spawn(
                 fetched_at,
             );
 
-            match index {
-                FetchIndex::Faction(..) | FetchIndex::Route(..) => {
-                    if let Some(position) =
-                        new_systems.first().and_then(system_to_vec)
-                    {
-                        move_camera_events
-                            .write(MoveCamera { position: Some(position) });
-                    }
-                }
-                _ => {}
+            if let FetchIndex::Route(..) = index
+                && let Some(position) =
+                    new_systems.first().and_then(system_to_vec)
+            {
+                move_camera_events.write(MoveCamera { position: Some(position) });
             }
 
             match index {
@@ -312,12 +397,18 @@ pub fn spawn(
 ///
 /// A row already on the map has its [`System`] replaced rather than being
 /// respawned, which [`update`] then acts on.
+///
+/// The filters are asked here rather than left to [`filter::mark`], so that a
+/// system arrives already marked and already drawn at the strength it should
+/// be. A mark applied by a command lands at the next sync point, by which
+/// time the star has been drawn once at full strength.
 pub fn spawn_systems(
     db_systems: &[DbSystem],
     systems: &Query<(Entity, &System)>,
     galaxy: &Res<Galaxy>,
     grid: &Grid,
     color_by: &Res<ColorBy>,
+    filters: &Res<Filters>,
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
@@ -351,35 +442,50 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            let drawn = star(&system, color_by, mesh, materials);
+            // Asked here as well as in `filter::mark`, since a mark applied
+            // by a command lands at the next sync point and the star would
+            // be drawn once at full strength before it arrived.
+            let excluded = !filters.admit(&system);
+            let drawn = star(&system, color_by, mesh, materials, excluded);
             let target = pointer_target(mesh, invisible);
-            commands
-                .spawn((
-                    placement(&system, grid),
-                    system,
-                    // The star is what is shown or hidden; the mesh and any
-                    // labels inherit that from it.
-                    Visibility::default(),
-                    // A star outside the galaxy's grid is not placed by it,
-                    // and would be drawn wherever its bare transform happened
-                    // to put it rather than where the cell says.
-                    ChildOf(galaxy.0),
-                ))
-                .with_child(drawn)
-                .with_child(target);
+            let mut spawned = commands.spawn((
+                placement(&system, grid),
+                system,
+                // The star is what is shown or hidden; the mesh and any
+                // labels inherit that from it.
+                Visibility::default(),
+                // A star outside the galaxy's grid is not placed by it,
+                // and would be drawn wherever its bare transform happened
+                // to put it rather than where the cell says.
+                ChildOf(galaxy.0),
+            ));
+            if excluded {
+                spawned.insert(Filtered);
+            }
+            spawned.with_child(drawn).with_child(target);
         }
     }
 }
 
-/// Carry a changed row, or a changed colour scheme, onto what is drawn
+/// Carry a changed row, a changed colour scheme or a changed filter onto what
+/// is drawn
 ///
 /// The two halves of a star are refreshed from different things. Its
-/// placement follows the row it was built from, and its material follows
-/// both the row and [`ColorBy`], so the second is checked against the star
-/// each mesh hangs off rather than a copy of it.
+/// placement follows the row it was built from, and its material follows the
+/// row, [`ColorBy`] and whether the filters exclude it, so the second is
+/// checked against the star each mesh hangs off rather than a copy of it.
+///
+/// The material is decided afresh each frame and written only where it
+/// differs, as [`super::labels::tint_marked_names`] does, rather than being
+/// guarded by what has changed. A mark is applied by a command and so lands a
+/// frame after the filter that asked for it, which leaves nothing that both
+/// runs after the mark and can still see what changed.
 fn update(
-    systems_query: Query<(Entity, Ref<System>)>,
-    stars: Query<(Entity, &ChildOf), With<Star>>,
+    systems_query: Query<(Entity, Ref<System>, Has<Filtered>)>,
+    mut stars: Query<
+        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
+        With<Star>,
+    >,
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
     materials: Res<SystemMaterials>,
@@ -387,21 +493,41 @@ fn update(
 ) {
     let Ok(grid) = grids.single() else { return };
 
-    for (entity, system) in &systems_query {
+    for (entity, system, _) in &systems_query {
         if system.is_changed() {
             commands.entity(entity).insert(placement(&system, grid));
         }
     }
 
-    for (entity, child_of) in &stars {
-        let Ok((_, system)) = systems_query.get(child_of.parent()) else {
+    for (child_of, mut material) in &mut stars {
+        let Ok((_, system, filtered)) = systems_query.get(child_of.parent())
+        else {
             continue;
         };
-        if system.is_changed() || color_by.is_changed() {
-            let idx = color_idx(&system, &color_by);
-            commands
-                .entity(entity)
-                .insert(MeshMaterial3d(materials.0[idx].clone()));
+        let wanted = materials.get(hue(&system, &color_by), filtered);
+        if material.0 != wanted {
+            material.0 = wanted;
+        }
+    }
+}
+
+/// Repaint the dimmed colours when the slider moves
+///
+/// The handles stay as they are, so nothing has to be told which material it
+/// is pointing at. Recolouring a shared asset repaints everything drawn in
+/// it, which here is every star the filters exclude, and is the point.
+fn redim(
+    dim: Res<DimTo>,
+    materials: Res<SystemMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+) {
+    if !dim.is_changed() {
+        return;
+    }
+
+    for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
+        if let Some(mut material) = assets.get_mut(handle) {
+            *material = star_material(hue.color(), dim.0);
         }
     }
 }
@@ -450,28 +576,29 @@ fn pointer_target(
 /// Sits at the system's own position with an identity transform, since there
 /// is nothing yet to tell one star of a system from another. [`super::scale`]
 /// writes a size onto it each frame, and picking hits land here rather than
-/// on the system, so [`focus_camera_on_click`] reads through to the parent.
+/// on the system, so [`fly_on_double_click`] reads through to the parent.
 fn star(
     system: &System,
     color_by: &Res<ColorBy>,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
+    dimmed: bool,
 ) -> impl Bundle {
     (
         Star,
         Mesh3d(mesh.0.clone()),
-        MeshMaterial3d(materials.0[color_idx(system, color_by)].clone()),
+        MeshMaterial3d(materials.get(hue(system, color_by), dimmed)),
         Transform::default(),
         NotShadowCaster,
     )
 }
 
-/// Which of the [`SystemMaterials`] a star is drawn in
-fn color_idx(system: &System, color_by: &Res<ColorBy>) -> usize {
+/// Which colour a star is drawn in
+fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     match color_by.deref() {
-        ColorBy::Allegiance => allegiance_color_idx(system),
-        ColorBy::Government => government_color_idx(system),
-        ColorBy::Security => security_color_idx(system),
+        ColorBy::Allegiance => allegiance_hue(system),
+        ColorBy::Government => government_hue(system),
+        ColorBy::Security => security_hue(system),
     }
 }
 
@@ -482,32 +609,20 @@ fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
 
 fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
+    dim: Res<DimTo>,
     mut commands: Commands,
 ) {
-    let colors = vec![
-        Color::srgba(0., 1., 0., 0.4),       // Green
-        Color::srgba(0., 1., 1., 0.4),       // Cyan
-        Color::srgba(1., 0., 0., 0.4),       // Red
-        Color::srgba(1., 0.5, 0., 0.4),      // Orange
-        Color::srgba(1., 1., 0., 0.4),       // Yellow
-        Color::srgba(0., 0., 1., 0.4),       // Blue
-        Color::srgba(1., 0., 1., 0.4),       // Magenta
-        Color::srgba(0.15, 0.15, 0.15, 0.3), // Grey
-    ];
+    let mut set = |strength: f32| {
+        Hue::ALL
+            .into_iter()
+            .map(|hue| assets.add(star_material(hue.color(), strength)))
+            .collect()
+    };
 
-    let handles = colors
-        .into_iter()
-        .map(|color| {
-            assets.add(StandardMaterial {
-                base_color: color,
-                alpha_mode: AlphaMode::Blend,
-                emissive: LinearRgba::from(color.with_alpha(1.0)) * 10.,
-                ..default()
-            })
-        })
-        .collect();
-
-    commands.insert_resource(SystemMaterials(handles));
+    commands.insert_resource(SystemMaterials {
+        bright: set(1.),
+        dim: set(dim.0),
+    });
     commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
         base_color: Color::NONE,
         alpha_mode: AlphaMode::Blend,
@@ -516,47 +631,47 @@ fn init_materials(
     })));
 }
 
-fn allegiance_color_idx(system: &System) -> usize {
+fn allegiance_hue(system: &System) -> Hue {
     match system.allegiance {
-        Some(Allegiance::Alliance) => 0,         // Green
-        Some(Allegiance::Empire) => 1,           // Cyan
-        Some(Allegiance::Federation) => 2,       // Red
-        Some(Allegiance::PilotsFederation) => 3, // Orange
-        Some(Allegiance::PlayerPilots) => 4,     // Yellow
-        Some(Allegiance::Independent) => 4,      // Yellow
-        Some(Allegiance::Guardian) => 5,         // Blue
-        Some(Allegiance::Thargoid) => 6,         // Magenta
-        Some(Allegiance::None) | None => 7,      // Grey
+        Some(Allegiance::Alliance) => Hue::Green,
+        Some(Allegiance::Empire) => Hue::Cyan,
+        Some(Allegiance::Federation) => Hue::Red,
+        Some(Allegiance::PilotsFederation) => Hue::Orange,
+        Some(Allegiance::PlayerPilots) => Hue::Yellow,
+        Some(Allegiance::Independent) => Hue::Yellow,
+        Some(Allegiance::Guardian) => Hue::Blue,
+        Some(Allegiance::Thargoid) => Hue::Magenta,
+        Some(Allegiance::None) | None => Hue::Grey,
     }
 }
 
-fn government_color_idx(system: &System) -> usize {
+fn government_hue(system: &System) -> Hue {
     match system.government {
-        Some(Government::Anarchy) => 4,      // Yellow
-        Some(Government::Carrier) => 0,      // Green
-        Some(Government::Communism) => 2,    // Red
-        Some(Government::Confederacy) => 2,  // Red
-        Some(Government::Cooperative) => 3,  // Orange
-        Some(Government::Corporate) => 1,    // Cyan
-        Some(Government::Democracy) => 5,    // Blue
-        Some(Government::Dictatorship) => 2, // Red
-        Some(Government::Engineer) => 6,     // Magenta
-        Some(Government::Feudal) => 2,       // Red
-        Some(Government::Patronage) => 2,    // Red
-        Some(Government::Prison) => 2,       // Red
-        Some(Government::PrisonColony) => 2, // Red
-        Some(Government::Theocracy) => 5,    // Blue
-        Some(Government::None) | None => 7,  // Grey
+        Some(Government::Anarchy) => Hue::Yellow,
+        Some(Government::Carrier) => Hue::Green,
+        Some(Government::Communism) => Hue::Red,
+        Some(Government::Confederacy) => Hue::Red,
+        Some(Government::Cooperative) => Hue::Orange,
+        Some(Government::Corporate) => Hue::Cyan,
+        Some(Government::Democracy) => Hue::Blue,
+        Some(Government::Dictatorship) => Hue::Red,
+        Some(Government::Engineer) => Hue::Magenta,
+        Some(Government::Feudal) => Hue::Red,
+        Some(Government::Patronage) => Hue::Red,
+        Some(Government::Prison) => Hue::Red,
+        Some(Government::PrisonColony) => Hue::Red,
+        Some(Government::Theocracy) => Hue::Blue,
+        Some(Government::None) | None => Hue::Grey,
     }
 }
 
-fn security_color_idx(system: &System) -> usize {
+fn security_hue(system: &System) -> Hue {
     match system.security {
-        Some(Security::High) => 5,        // Blue
-        Some(Security::Medium) => 1,      // Cyan
-        Some(Security::Low) => 0,         // Green
-        Some(Security::Anarchy) => 2,     // Red
-        Some(Security::None) | None => 7, // Grey
+        Some(Security::High) => Hue::Blue,
+        Some(Security::Medium) => Hue::Cyan,
+        Some(Security::Low) => Hue::Green,
+        Some(Security::Anarchy) => Hue::Red,
+        Some(Security::None) | None => Hue::Grey,
     }
 }
 
@@ -582,6 +697,7 @@ impl TryFrom<&DbSystem> for System {
             security: system.security,
             primary_economy: system.primary_economy,
             secondary_economy: system.secondary_economy,
+            factions: system.factions.clone(),
             updated_at: system.updated_at,
         })
     }

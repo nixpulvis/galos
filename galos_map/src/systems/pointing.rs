@@ -8,6 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Star;
@@ -302,14 +303,15 @@ pub fn ring(
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (&GlobalTransform, &Children),
+        (&GlobalTransform, &Children, Has<Filtered>),
         (With<System>, With<PointedAt>, Without<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
+    dim: Res<DimTo>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
-    for (system, children) in &pointed_at {
+    for (system, children, filtered) in &pointed_at {
         // Drawn at whatever the target was fitted to, so the ring is the
         // outline of the very thing the pointer is tested against.
         let Some(radius) = children
@@ -324,7 +326,7 @@ pub fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            INDICATOR,
+            dim.against(INDICATOR, filtered),
         );
     }
 }

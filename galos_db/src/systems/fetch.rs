@@ -18,7 +18,12 @@ impl System {
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
                 updated_at,
-                updated_by
+                updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
             FROM systems
             WHERE address = $1
             "#,
@@ -39,6 +44,7 @@ impl System {
             allegiance: row.allegiance,
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
+            factions: row.factions,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })
@@ -62,7 +68,12 @@ impl System {
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
                 updated_at,
-                updated_by
+                updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
             FROM systems
             WHERE name = $1
             "#,
@@ -83,6 +94,7 @@ impl System {
             allegiance: row.allegiance,
             primary_economy: row.primary_economy,
             secondary_economy: row.secondary_economy,
+            factions: row.factions,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })
@@ -105,7 +117,12 @@ impl System {
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
                 updated_at,
-                updated_by
+                updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
             FROM systems
             WHERE name ILIKE $1
             ORDER BY name
@@ -129,6 +146,7 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
+                factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -153,7 +171,12 @@ impl System {
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
                 s1.updated_at,
-                s1.updated_by
+                s1.updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = s1.address
+                ), ARRAY[]::integer[]) AS "factions!"
             FROM systems s1
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name = $1
@@ -179,6 +202,7 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
+                factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -203,7 +227,12 @@ impl System {
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
                 s1.updated_at,
-                s1.updated_by
+                s1.updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = s1.address
+                ), ARRAY[]::integer[]) AS "factions!"
             FROM systems s1
             FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
             WHERE s2.name ILIKE $1
@@ -229,6 +258,7 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
+                factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -253,7 +283,12 @@ impl System {
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
                 updated_at,
-                updated_by
+                updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
             FROM systems
             WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
             "#,
@@ -279,6 +314,7 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
+                factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -302,7 +338,12 @@ impl System {
                 systems.primary_economy as "primary_economy: Economy",
                 systems.secondary_economy as "secondary_economy: Economy",
                 systems.updated_at,
-                systems.updated_by
+                systems.updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
             FROM systems
             JOIN system_factions ON system_factions.system_address = systems.address
             JOIN factions ON factions.id = system_factions.faction_id
@@ -327,6 +368,7 @@ impl System {
                 allegiance: row.allegiance,
                 primary_economy: row.primary_economy,
                 secondary_economy: row.secondary_economy,
+                factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })

@@ -1,5 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{ShowNames, Star};
@@ -24,6 +25,7 @@ pub(crate) fn plugin(app: &mut App) {
         radius: DEFAULT_NAME_RADIUS,
     });
     app.add_systems(Startup, init_materials);
+    app.add_systems(Update, redim.in_set(MapSet::Present));
     app.add_systems(
         Update,
         (fit_name_boxes, tint_marked_names)
@@ -201,6 +203,18 @@ const POINTED_WEIGHT: f32 = 500.;
 /// focus itself at [`POINTED_WEIGHT`].
 const SELECTED_WEIGHT: f32 = 1000.;
 
+/// How much being excluded by the filters argues against a name
+///
+/// A penalty rather than a bar, so a dim name still appears where there is
+/// room for it. What the filters exclude is context, and context is worth
+/// reading when it costs nothing; it is only worth less than what was asked
+/// for. Above the span of every term a system can earn without being marked
+/// out, so that a name the filters admit always outranks one they do not,
+/// however far off it is.
+///
+/// Charged only against a system with no mark of its own. See [`name_score`].
+const FILTERED_PENALTY: f32 = 2000.;
+
 /// How far the focus bonus reaches, in light years
 ///
 /// It falls to half at this distance. The point the camera orbits is usually
@@ -285,18 +299,59 @@ pub(super) fn screen_position(
     Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
 }
 
-/// What a name is drawn in, resting and pointed at
+/// What a name may be drawn in
 ///
-/// Two materials rather than one recoloured, because the colour lives on a
-/// shared asset: changing it would repaint every name at once. Swapping which
-/// handle a label points at repaints only that one.
+/// A material per colour rather than one recoloured per name, because the
+/// colour lives on a shared asset: changing it would repaint every name at
+/// once. Swapping which handle a label points at repaints only that one.
+///
+/// Two sets of the same three: full strength, and whatever [`DimTo`] asks for
+/// a name whose system the filters exclude. The dim set is recoloured in
+/// place when that moves, which is the case where repainting every name at
+/// once is exactly what is wanted.
 #[derive(Resource)]
 pub struct LabelMaterials {
-    resting: Handle<StandardMaterial>,
-    pointed_at: Handle<StandardMaterial>,
-    selected: Handle<StandardMaterial>,
+    bright: [Handle<StandardMaterial>; 3],
+    dim: [Handle<StandardMaterial>; 3],
     /// Drawn for a [`NameBox`], and drawing nothing
     invisible: Handle<StandardMaterial>,
+}
+
+/// Which colour a name is drawn in, given what its system is
+///
+/// Named rather than numbered, for the reason [`super::spawn::Hue`] is: the
+/// two sets are laid out in [`Tint::ALL`] order and indexed by the tint.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Tint {
+    Resting,
+    PointedAt,
+    Selected,
+}
+
+impl Tint {
+    /// Every tint, in the order the sets hold them
+    const ALL: [Tint; 3] = [Tint::Resting, Tint::PointedAt, Tint::Selected];
+
+    /// What a name of this tint comes out
+    ///
+    /// A name comes out the colour of the ring drawn around its star, so that
+    /// a system marked out is one thing in two places rather than two answers
+    /// that have to be matched up.
+    const fn color(self) -> Srgba {
+        match self {
+            Tint::Resting => Srgba::WHITE,
+            Tint::PointedAt => INDICATOR,
+            Tint::Selected => SELECTION,
+        }
+    }
+}
+
+impl LabelMaterials {
+    /// The handle for `tint`, at the strength `dimmed` asks for
+    fn get(&self, tint: Tint, dimmed: bool) -> &Handle<StandardMaterial> {
+        let set = if dimmed { &self.dim } else { &self.bright };
+        &set[tint as usize]
+    }
 }
 
 /// The unit rectangle every [`NameBox`] is stretched from
@@ -348,7 +403,7 @@ pub fn choose_names(
     radius: Res<NameRadius>,
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
-    systems: Query<(Entity, &System, &Visibility)>,
+    systems: Query<(Entity, &System, &Visibility, Has<Filtered>)>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
@@ -376,7 +431,7 @@ pub fn choose_names(
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system, visibility)| {
+        .filter_map(|(entity, system, visibility, filtered)| {
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -419,7 +474,7 @@ pub fn choose_names(
             if screen.intersect(rect).is_empty() {
                 return None;
             }
-            let score = name_score(from_focus, pointed_at, selected);
+            let score = name_score(from_focus, pointed_at, selected, filtered);
             Some((entity, rect, score))
         })
         .collect();
@@ -476,12 +531,24 @@ pub fn choose_names(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(from_focus: f32, pointed_at: bool, selected: bool) -> f32 {
+fn name_score(
+    from_focus: f32,
+    pointed_at: bool,
+    selected: bool,
+    filtered: bool,
+) -> f32 {
     let focused = FOCUS_WEIGHT / (1. + (from_focus / FOCUS_REACH).powi(2));
     let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
     let picked = if selected { SELECTED_WEIGHT } else { 0. };
+    // Not against a system that is marked out. Pointing at one or selecting
+    // it is asking for it by name, and that already overrides the names
+    // toggle and the name radius; a filter is no different. A selection the
+    // filters exclude goes dim and stays selected, and a mark that says
+    // which star without saying which system is half an answer.
+    let excluded =
+        if filtered && !pointed_at && !selected { FILTERED_PENALTY } else { 0. };
 
-    picked.max(pointed) + focused - from_focus
+    picked.max(pointed) + focused - from_focus - excluded
 }
 
 /// The screen rectangle a system's name would occupy, with room around it
@@ -553,7 +620,9 @@ pub fn respawn(
                     ..default()
                 },
                 Mesh3d::default(),
-                MeshMaterial3d(materials.resting.clone()),
+                // Whatever the system is; `tint_marked_names` runs after
+                // this and settles it before the name is drawn.
+                MeshMaterial3d(materials.get(Tint::Resting, false).clone()),
                 // Placed by `face_camera` before the first draw.
                 Transform::default(),
             ))
@@ -698,29 +767,62 @@ pub fn leaders(
 pub fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    dim: Res<DimTo>,
     mut commands: Commands,
 ) {
     commands.insert_resource(NameBoxMesh(
         meshes.add(Mesh::from(Rectangle::new(1., 1.))),
     ));
-    // The glyphs are drawn white and unlit, so a material's base colour
-    // multiplies straight through them and is what a name comes out.
-    let mut label = |tint: Srgba| {
-        assets.add(StandardMaterial {
-            base_color: tint.into(),
-            base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            ..default()
-        })
-    };
+    let mut label = |tint: Srgba| assets.add(name_material(tint));
 
     commands.insert_resource(LabelMaterials {
-        resting: label(Srgba::WHITE),
-        pointed_at: label(INDICATOR),
-        selected: label(SELECTION),
+        bright: Tint::ALL.map(|tint| label(tint.color())),
+        dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
         invisible: label(Srgba::NONE),
     });
+}
+
+/// How a name is painted in `tint`
+///
+/// The glyphs are drawn white and unlit, so a material's base colour
+/// multiplies straight through them and is what a name comes out.
+fn name_material(tint: Srgba) -> StandardMaterial {
+    StandardMaterial {
+        base_color: tint.into(),
+        base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    }
+}
+
+/// `tint` at `strength` of full
+///
+/// The colour is left alone and the alpha carries it, since a name dimmed by
+/// darkening would go black against the sky and read as a hole rather than as
+/// something standing further back.
+fn faded(tint: Srgba, strength: f32) -> Srgba {
+    Srgba { alpha: tint.alpha * strength, ..tint }
+}
+
+/// Repaint the dimmed tints when the slider moves
+///
+/// The handles stay as they are, so no name has to be told which material it
+/// is pointing at.
+fn redim(
+    dim: Res<DimTo>,
+    materials: Res<LabelMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+) {
+    if !dim.is_changed() {
+        return;
+    }
+
+    for (handle, tint) in materials.dim.iter().zip(Tint::ALL) {
+        if let Some(mut material) = assets.get_mut(handle) {
+            *material = name_material(faded(tint.color(), dim.0));
+        }
+    }
 }
 
 /// Stretch each hit box over the name it stands behind
@@ -744,18 +846,19 @@ pub fn fit_name_boxes(
     }
 }
 
-/// Tint a name while its system is marked out
+/// Tint a name for what its system is
 ///
 /// Keyed on the system rather than on the name, so that pointing at a star
 /// lights its name as well, and both go out together.
 ///
-/// A name comes out the colour of the ring drawn around its star, so that a
-/// system marked out is one thing in two places rather than two answers that
-/// have to be matched up. Selection wins where both apply, as it does for the
-/// ring: the pointer will move on, and the selection is what was asked for.
+/// Selection wins over pointing where both apply, as it does for the ring:
+/// the pointer will move on, and the selection is what was asked for.
+///
+/// A name dims with the system it belongs to, marked out or not. One rule
+/// with no exceptions, and a name that stayed bright over a dimmed star would
+/// read as the filter having let go of it.
 pub fn tint_marked_names(
-    pointed_at: Query<(), With<PointedAt>>,
-    selected: Query<(), With<Selected>>,
+    systems: Query<(Has<PointedAt>, Has<Selected>, Has<Filtered>), With<System>>,
     materials: Res<LabelMaterials>,
     mut names: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
@@ -763,14 +866,20 @@ pub fn tint_marked_names(
     >,
 ) {
     for (child_of, mut material) in &mut names {
-        let system = child_of.parent();
-        let wanted = if selected.contains(system) {
-            &materials.selected
-        } else if pointed_at.contains(system) {
-            &materials.pointed_at
-        } else {
-            &materials.resting
+        let Ok((pointed_at, selected, filtered)) =
+            systems.get(child_of.parent())
+        else {
+            continue;
         };
+        let tint = if selected {
+            Tint::Selected
+        } else if pointed_at {
+            Tint::PointedAt
+        } else {
+            Tint::Resting
+        };
+
+        let wanted = materials.get(tint, filtered);
         if material.0 != *wanted {
             material.0 = wanted.clone();
         }
@@ -814,10 +923,11 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(0., false, false);
+        let mut nearer = name_score(0., false, false, false);
         for step in 1..=1000 {
             let further = name_score(
                 step as f32 * DEFAULT_NAME_RADIUS / 1000.,
+                false,
                 false,
                 false,
             );
@@ -878,10 +988,10 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_focused() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(DEFAULT_NAME_RADIUS, true, false);
+        let pointed = name_score(DEFAULT_NAME_RADIUS, true, false, false);
 
         // The focused system itself, which is otherwise the best there is.
-        let focused = name_score(0., false, false);
+        let focused = name_score(0., false, false, false);
 
         assert!(
             pointed > focused,
@@ -897,12 +1007,58 @@ mod tests {
     /// the point on the focus, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
-        let pointed = name_score(0., true, false);
+        let selected = name_score(DEFAULT_NAME_RADIUS, false, true, false);
+        let pointed = name_score(0., true, false, false);
 
         assert!(
             selected > pointed,
             "selected scored {selected}, behind the {pointed} of a point"
+        );
+    }
+
+    /// A name the filters admit outranks one they do not
+    ///
+    /// Measured with the excluded system on the focus, which is the best
+    /// claim an unmarked system can have, and the admitted one as far out as
+    /// a name is ever drawn. Nothing but the filter decides it.
+    #[test]
+    fn what_is_admitted_outranks_what_is_filtered() {
+        let admitted = name_score(DEFAULT_NAME_RADIUS, false, false, false);
+        let excluded = name_score(0., false, false, true);
+
+        assert!(
+            admitted > excluded,
+            "an admitted name scored {admitted}, behind the {excluded} of \
+             one the filters exclude"
+        );
+    }
+
+    /// An excluded name still ranks against the other excluded ones
+    ///
+    /// The penalty is a penalty rather than a bar: what the filters exclude
+    /// is context, and context is worth reading where there is room for it.
+    /// So the near ones are still offered first.
+    #[test]
+    fn filtered_names_are_still_ordered_among_themselves() {
+        let near = name_score(1., false, false, true);
+        let far = name_score(DEFAULT_NAME_RADIUS, false, false, true);
+
+        assert!(near > far);
+    }
+
+    /// A selected system keeps its name even where a filter excludes it
+    ///
+    /// It stays selected while the filters dim it, and the whole point of a
+    /// selection is that it stays marked out.
+    #[test]
+    fn a_selection_holds_its_name_through_a_filter() {
+        let selected = name_score(DEFAULT_NAME_RADIUS, false, true, true);
+        let resting = name_score(0., false, false, false);
+
+        assert!(
+            selected > resting,
+            "a filtered selection scored {selected}, behind the {resting} \
+             of an ordinary name"
         );
     }
 
@@ -913,8 +1069,8 @@ mod tests {
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
-        let both = name_score(DEFAULT_NAME_RADIUS, true, true);
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
+        let both = name_score(DEFAULT_NAME_RADIUS, true, true, false);
+        let selected = name_score(DEFAULT_NAME_RADIUS, false, true, false);
 
         assert_eq!(both, selected);
     }

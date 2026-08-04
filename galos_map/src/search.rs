@@ -1,8 +1,7 @@
 use crate::Db;
 use crate::schedule::MapSet;
-use crate::systems::despawn::Despawn;
+use crate::systems::System;
 use crate::systems::selection::Selection;
-use crate::systems::{Spyglass, System};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use galos_db::Database;
@@ -43,10 +42,13 @@ pub enum Plot {
 
 /// A collection of search messages for responding to the user's UI
 /// interactions.
+///
+/// A filter is not one of these. Asking for a filter names something and the
+/// map neither goes there, fetches it, nor picks it out, so it is asked for
+/// by [`crate::systems::filter::Wanted`] instead.
 #[derive(Message, Debug)]
 pub enum Searched {
     System { name: String },
-    Faction { name: String },
     Route { start: String, end: String, range: String },
 }
 
@@ -72,12 +74,10 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
 /// - On [`Searched::System`] the named system is picked out, and the camera
 /// is left where it is. Naming a system is asking which one it is, not
 /// asking to be taken there, and the map has a control of its own for that.
-/// - On [`Searched::Faction`] we disable the spyglass's fetch and send
-/// a [`Despawn`] message for all systems.
+/// - On [`Searched::Route`] both ends are resolved, and which of them could
+/// not be is what the form is told.
 pub fn searched(
     mut search_events: MessageReader<Searched>,
-    mut despawner: MessageWriter<Despawn>,
-    mut spyglass: ResMut<Spyglass>,
     mut note: ResMut<SearchNote>,
     mut plot: ResMut<Plot>,
     mut selection: ResMut<Selection>,
@@ -113,10 +113,6 @@ pub fn searched(
                         Err(why) => Plot::Trouble(why),
                     };
                 });
-            }
-            Searched::Faction { .. } => {
-                spyglass.fetch = false;
-                despawner.write(Despawn);
             }
         };
     }

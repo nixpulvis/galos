@@ -7,10 +7,11 @@
 
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{Plot, SearchNote, Searched};
-use crate::systems::Spyglass;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
+use crate::systems::filter::{DimTo, FilterNote, Filters, Wanted};
 use crate::systems::info::Panels;
+use crate::systems::{InReach, Spyglass};
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{SELECTION, Selection};
@@ -94,8 +95,14 @@ const DOT: f32 = 7.;
 /// the whole line towers over the word it is next to.
 const SPINNER: f32 = 0.75;
 
-/// The mark on the control that opens what is known about the selection
-const INFO: &str = "ℹ";
+/// The mark on the control that opens a panel about what a row names
+///
+/// Read by [`crate::systems::info`] as well, so that a line in a list opens
+/// what it names by the same mark a row in the bar does.
+pub(crate) const INFO: &str = "ℹ";
+
+/// The mark on the control that lets go of what a row names
+const CLOSE: &str = "x";
 
 /// How far the selection's row stands from what is around it
 ///
@@ -196,6 +203,22 @@ pub struct Knobs<'w> {
     despawner: MessageWriter<'w, Despawn>,
 }
 
+/// Everything the filters are drawn from
+///
+/// One parameter for the same reason [`Knobs`] is one: a system may take only
+/// sixteen. The count comes from [`InReach`] rather than being taken over the
+/// systems here, since what the bar has to say is how much of the sky in
+/// front of the user is getting through, and only [`crate::systems::visibility`]
+/// knows which systems those are.
+#[derive(SystemParam)]
+pub struct FilterBar<'w> {
+    filters: ResMut<'w, Filters>,
+    dim: ResMut<'w, DimTo>,
+    in_reach: Res<'w, InReach>,
+    wanted: MessageWriter<'w, Wanted>,
+    note: ResMut<'w, FilterNote>,
+}
+
 pub fn chrome(
     mut contexts: EguiContexts,
     mut knobs: Knobs,
@@ -204,12 +227,13 @@ pub fn chrome(
     mut over_ui: ResMut<PointerOverUi>,
     mut settings: ResMut<SettingsOpen>,
     mut search: Local<SearchFields>,
-    selection: Res<Selection>,
+    mut selection: ResMut<Selection>,
     mut camera: MessageWriter<MoveCamera>,
     orbit: Query<&OrbitCamera>,
     mut press: ResMut<PressAnswered>,
     mut panels: ResMut<Panels>,
     mut plot: ResMut<Plot>,
+    mut filter: FilterBar,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -276,6 +300,30 @@ pub fn chrome(
                 View::Stars => {}
             }
 
+            ui.separator();
+            // How the filters answer, rather than which they are: the
+            // filters themselves are asked for in the bar, and this is the
+            // one thing about them that is set once and left alone.
+            ui.label("Filtered Systems");
+            let mut showing = filter.dim.0 * 100.;
+            let slider = ui.add(
+                egui::Slider::new(&mut showing, 0.0..=100.)
+                    .suffix("%")
+                    .step_by(5.),
+            );
+            // Only on a change, since writing every frame would mark the
+            // resource changed every frame and have every dimmed star
+            // repainted for nothing.
+            if slider.changed() {
+                filter.dim.0 = showing / 100.;
+            }
+            if filter.dim.0 == 0. {
+                ui.label(
+                    egui::RichText::new("Not drawn, and not fetched").weak(),
+                );
+            }
+            ui.separator();
+
             ui.checkbox(&mut knobs.show_names.0, "Show System Names");
             if knobs.show_names.0 {
                 ui.checkbox(
@@ -311,11 +359,12 @@ pub fn chrome(
         &mut search,
         &mut searched,
         &mut search_note,
-        &selection,
+        &mut selection,
         &mut camera,
         orbit.single().map(|camera| camera.focus).ok(),
         &mut panels,
         &mut plot,
+        &mut filter,
     );
     if shut {
         press.0 = true;
@@ -427,11 +476,12 @@ fn search_bar(
     search: &mut SearchFields,
     searched: &mut MessageWriter<Searched>,
     note: &mut SearchNote,
-    selection: &Selection,
+    selection: &mut Selection,
     camera: &mut MessageWriter<MoveCamera>,
     focus: Option<DVec3>,
     panels: &mut Panels,
     plot: &mut Plot,
+    filter: &mut FilterBar,
 ) -> bool {
     let style = ctx.global_style();
     let mut frame =
@@ -483,10 +533,25 @@ fn search_bar(
                         ui.colored_label(egui::Color32::LIGHT_RED, note);
                     }
                     selected(ui, selection, focus, camera, panels);
+                    // Drawn whether or not the form is out, as the selection
+                    // is and for the same reason. A half lit sky with
+                    // nothing on screen to say why is the one thing a filter
+                    // must not leave behind.
+                    applied(
+                        ui,
+                        &mut filter.filters,
+                        (filter.in_reach.admitted, filter.in_reach.total),
+                        panels,
+                    );
 
                     if search.expanded {
+                        taken |= filter_section(
+                            ui,
+                            search,
+                            &mut filter.wanted,
+                            &mut filter.note,
+                        );
                         taken |= route_section(ui, search, searched, plot);
-                        taken |= faction_section(ui, search, searched);
                     }
 
                     taken
@@ -545,7 +610,7 @@ fn search_bar(
 /// drawn.
 fn selected(
     ui: &mut Ui,
-    selection: &Selection,
+    selection: &mut Selection,
     focus: Option<DVec3>,
     camera: &mut MessageWriter<MoveCamera>,
     panels: &mut Panels,
@@ -570,20 +635,9 @@ fn selected(
         )
     });
 
-    // Laid out in nothing, so that the colour it comes out in can be chosen
-    // once the pointer has been asked about, which cannot happen until the
-    // row it sits in has been placed.
-    let icon = egui::WidgetText::from(
-        egui::RichText::new(INFO).color(egui::Color32::PLACEHOLDER),
-    )
-    .into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Body,
-    );
+    let marks = lay_out_marks(ui);
 
-    // Whatever the dot, the distance and the mark leave the name. System
+    // Whatever the dot, the distance and the marks leave the name. System
     // names run to "Col 285 Sector XY-Z b12-34", and one laid out against no
     // bound at all is painted straight out past the edge of the bar.
     let gap = ui.spacing().item_spacing.x;
@@ -591,8 +645,7 @@ fn selected(
         - ROW_PADDING * 2.
         - DOT
         - gap
-        - icon.size().x
-        - gap
+        - marks_width(&marks, gap)
         - away.as_ref().map_or(0., |away| away.size().x + gap);
     let name = egui::WidgetText::from(egui::RichText::new(name).strong())
         .into_galley(
@@ -640,46 +693,18 @@ fn selected(
         x += size.x + gap;
     }
 
-    // Asked for after the row, so that it is the one answering where the two
-    // overlap. Under it the row would have to work out what it was not being
-    // clicked on.
-    let mark = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - ROW_PADDING - icon.size().x, rect.top()),
-        egui::pos2(rect.right() - ROW_PADDING, rect.bottom()),
-    );
-    let opening =
-        ui.interact(mark, ui.id().with("open-info"), egui::Sense::click());
-    // Lit for the pointer resting on it and for the keyboard reaching it
-    // alike. It stands in the tab order between the row and the route
-    // fields, and a stop that shows nothing when it is reached reads as the
-    // focus having gone missing.
-    let lit = opening.hovered() || opening.has_focus();
-    if lit {
-        ui.painter().rect_filled(
-            mark,
-            ui.visuals().widgets.hovered.corner_radius,
-            ui.visuals().widgets.hovered.weak_bg_fill,
-        );
-    }
-    ui.painter().galley(
-        egui::pos2(mark.left(), middle - icon.size().y / 2.),
-        icon,
-        if lit {
-            ui.visuals().strong_text_color()
-        } else {
-            ui.visuals().weak_text_color()
-        },
-    );
+    let Marks { info, close } = place_marks(ui, rect, marks, "selection");
 
-    if opening.clicked() {
+    if close.clicked() {
+        selection.clear();
+    } else if info.clicked() {
         if let Some(system) = selection.system() {
-            panels.open(system.clone());
+            panels.open_system(system.clone());
         }
     } else if row.clicked() {
         camera.write(MoveCamera { position: selection.position() });
     }
     row.on_hover_cursor(egui::CursorIcon::PointingHand);
-    opening.on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
 /// What a field holds, if it holds anything
@@ -798,25 +823,184 @@ fn route_section(
     taken
 }
 
-/// Ask after a faction by name
+/// Say which filters are being applied, and how much is getting through
 ///
-/// Answers whether its field has just taken focus. Its own section rather
-/// than a
-/// field on the end of the route's, since a faction has nothing to do with
-/// either end of a route and searching for one clears the system search.
-fn faction_section(
+/// Drawn whether or not the form is out. A filter changes what the whole map
+/// looks like and outlives the asking, so it has to be readable from the
+/// closed bar: a sky gone dim with nothing to say why is a map that looks
+/// broken.
+///
+/// Each row is the control that turns its own filter off, so one can be
+/// lifted to see what it was hiding and put back without being typed again.
+/// The mark at the end takes it away for good.
+///
+/// Laid out and painted rather than assembled from widgets, as the selection
+/// row is and for the same reason. A checkbox and a button under one row are
+/// three things bidding for the pointer, and it flickers between being a
+/// control and not as the pointer crosses them.
+///
+/// The count is of the whole set rather than one per row, since what the user
+/// is looking at is the sky as all of them leave it. It counts what is within
+/// the spyglass rather than what has been loaded, which is what the user is
+/// looking at rather than everywhere the camera has been. Said in the
+/// spyglass's own name, since that is the control that decides it and the one
+/// to reach for to see more.
+fn applied(
+    ui: &mut Ui,
+    filters: &mut Filters,
+    counted: (usize, usize),
+    panels: &mut Panels,
+) {
+    if filters.iter().next().is_none() {
+        return;
+    }
+
+    // Settled after the loop, since the rows are drawn from the same filters
+    // they change.
+    let mut toggling = None;
+    let mut removing = None;
+    let mut opening = None;
+    let gap = ui.spacing().item_spacing.x;
+
+    for (index, active) in filters.iter().enumerate() {
+        let marks = lay_out_marks(ui);
+
+        // Whatever the dot and the marks leave. Faction names run long, and
+        // one laid out against no bound is painted out past the edge of the
+        // bar.
+        let room = ui.available_width()
+            - ROW_PADDING * 2.
+            - DOT
+            - gap
+            - marks_width(&marks, gap);
+        let text = egui::RichText::new(active.filter.name());
+        let name = egui::WidgetText::from(if active.enabled {
+            text.strong()
+        } else {
+            text.weak()
+        })
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            room.max(0.),
+            egui::TextStyle::Body,
+        );
+
+        let (outer, row) = ui.allocate_exact_size(
+            egui::vec2(
+                ui.available_width(),
+                name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
+            ),
+            egui::Sense::click(),
+        );
+        let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
+
+        if row.hovered() || row.has_focus() {
+            ui.painter().rect_filled(
+                rect,
+                ui.visuals().widgets.hovered.corner_radius,
+                ui.visuals().widgets.hovered.weak_bg_fill,
+            );
+        }
+
+        // Filled while the filter is being asked and hollow while it is not,
+        // so that a filter turned off still reads as one that is there.
+        let middle = rect.center().y;
+        let mut x = rect.left() + ROW_PADDING;
+        let dot = egui::pos2(x + DOT / 2., middle);
+        if active.enabled {
+            ui.painter().circle_filled(
+                dot,
+                DOT / 2.,
+                ui.visuals().strong_text_color(),
+            );
+        } else {
+            ui.painter().circle_stroke(
+                dot,
+                DOT / 2.,
+                egui::Stroke::new(1_f32, ui.visuals().weak_text_color()),
+            );
+        }
+        x += DOT + gap;
+        // The galley carries the colour it was laid out in, so there is
+        // nothing for a fallback to answer for.
+        ui.painter().galley(
+            egui::pos2(x, middle - name.size().y / 2.),
+            name,
+            egui::Color32::PLACEHOLDER,
+        );
+
+        let Marks { info, close } =
+            place_marks(ui, rect, marks, ("filter", index));
+
+        if close.clicked() {
+            removing = Some(index);
+        } else if info.clicked() {
+            opening = Some(active.filter.clone());
+        } else if row.clicked() {
+            toggling = Some(index);
+        }
+        row.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+
+    let (admitted, total) = counted;
+    if total > 0 {
+        ui.label(
+            egui::RichText::new(format!(
+                "{admitted} of {total} within spyglass"
+            ))
+            .weak(),
+        );
+    }
+
+    if let Some(index) = toggling {
+        filters.toggle(index);
+    }
+    if let Some(index) = removing {
+        filters.remove(index);
+    }
+    if let Some(filter) = opening {
+        panels.open_filter(filter);
+    }
+}
+
+/// Ask for a filter by naming a faction
+///
+/// Answers whether its field has just taken focus. Above the route's section
+/// because what it adds shows up above it, in the rows under the search box,
+/// and a control should sit near what it does.
+///
+/// The field empties once a faction has been asked for. What was typed is a
+/// row by then, and the field's next job is the next filter.
+///
+/// What went wrong is said under the field that went wrong, as a route's
+/// trouble is said between its fields and its button. The note under the
+/// search input answers a name typed into the search input, and a faction
+/// read out up there would sit a long way from its question.
+fn filter_section(
     ui: &mut Ui,
     search: &mut SearchFields,
-    searched: &mut MessageWriter<Searched>,
+    wanted: &mut MessageWriter<Wanted>,
+    note: &mut FilterNote,
 ) -> bool {
-    heading(ui, "Faction");
+    heading(ui, "Filters");
     let response = singleline(ui, &mut search.faction, "Faction Name");
-    if entered(&response, ui) {
-        search.system = None;
-        if let Some(name) = search.faction.clone() {
-            searched.write(Searched::Faction { name });
-        }
+    // The note answers a name, so it is no answer at all once that name is
+    // being typed over.
+    if response.changed() {
+        note.0 = None;
     }
+    if entered(&response, ui)
+        && let Some(name) = search.faction.take()
+    {
+        wanted.write(Wanted::Faction { name });
+    }
+
+    if let Some(trouble) = &note.0 {
+        ui.add_space(FIELD_GAP);
+        ui.colored_label(egui::Color32::LIGHT_RED, trouble);
+    }
+
     response.gained_focus()
 }
 
@@ -830,6 +1014,144 @@ fn heading(ui: &mut Ui, name: &str) {
     ui.separator();
     ui.label(egui::RichText::new(name).strong());
     ui.add_space(FIELD_GAP);
+}
+
+/// The two marks a row in the bar ends with
+///
+/// Info opens a panel about whatever the row names, and close lets go of it.
+/// Close stands outermost, where a window's own close button stands, so that
+/// the gesture is in the same place wherever it is offered.
+struct Marks {
+    info: Response,
+    close: Response,
+}
+
+/// The glyphs those marks are drawn with, outermost first
+const MARKS: [&str; 2] = [CLOSE, INFO];
+
+/// Lay the marks out without placing them
+///
+/// A row needs their width before it can be allocated, since what is left is
+/// the room its name has, and it cannot be painted into before it exists. So
+/// they are measured here and placed by [`place_marks`] once there is a row
+/// to place them in.
+fn lay_out_marks(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
+    MARKS
+        .iter()
+        .map(|glyph| {
+            // Laid out in nothing, so that the colour can be chosen once the
+            // pointer has been asked about, which cannot happen until the row
+            // has been placed.
+            egui::WidgetText::from(
+                egui::RichText::new(*glyph)
+                    .color(egui::Color32::PLACEHOLDER),
+            )
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            )
+        })
+        .collect()
+}
+
+/// How much room the marks take at the end of a row, gaps included
+fn marks_width(marks: &[std::sync::Arc<egui::Galley>], gap: f32) -> f32 {
+    marks.iter().map(|mark| mark.size().x + gap).sum()
+}
+
+/// Paint the marks into the right hand end of `rect` and answer for each
+///
+/// Asked about after the row they sit in, so that they are the ones answering
+/// where they overlap it. Under it the row would have to work out what it was
+/// not being clicked on.
+fn place_marks(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    marks: Vec<std::sync::Arc<egui::Galley>>,
+    tag: impl std::hash::Hash,
+) -> Marks {
+    let middle = rect.center().y;
+    let gap = ui.spacing().item_spacing.x;
+    let mut right = rect.right() - ROW_PADDING;
+    let mut answers = Vec::new();
+
+    for (which, galley) in marks.into_iter().enumerate() {
+        let width = galley.size().x;
+        let at = egui::Rect::from_min_max(
+            egui::pos2(right - width, rect.top()),
+            egui::pos2(right, rect.bottom()),
+        );
+        let response = ui.interact(
+            at,
+            ui.id().with((&tag, "row-mark", which)),
+            egui::Sense::click(),
+        );
+        // Lit for the pointer resting on it and for the keyboard reaching it
+        // alike. A stop that shows nothing when it is reached reads as the
+        // focus having gone missing.
+        let lit = response.hovered() || response.has_focus();
+        if lit {
+            ui.painter().rect_filled(
+                at,
+                ui.visuals().widgets.hovered.corner_radius,
+                ui.visuals().widgets.hovered.weak_bg_fill,
+            );
+        }
+        let height = galley.size().y;
+        ui.painter().galley(
+            egui::pos2(at.left(), middle - height / 2.),
+            galley,
+            if lit {
+                ui.visuals().strong_text_color()
+            } else {
+                ui.visuals().weak_text_color()
+            },
+        );
+
+        right = at.left() - gap;
+        answers.push(response.on_hover_cursor(egui::CursorIcon::PointingHand));
+    }
+
+    let mut answers = answers.into_iter();
+    // In `MARKS` order, which is close first.
+    let close = answers.next().expect("a close mark");
+    let info = answers.next().expect("an info mark");
+    Marks { info, close }
+}
+
+/// A scrolling list whose bar stands beside its contents rather than over them
+///
+/// Egui floats a scroll bar over the top right corner of what it is
+/// scrolling. That reads well over a paragraph and not at all over a list
+/// whose lines carry a control at that end: the bar and the mark are drawn on
+/// the same few pixels, and whichever the pointer lands on is a coin toss.
+///
+/// A bar that is laid out is taken out of the room its contents are given, so
+/// a line ends where the bar begins and the two never meet. It costs the
+/// width of the bar, and only while there is more to scroll to: egui shows
+/// one when it is needed and takes no room when it is not.
+///
+/// Grows to `height` and no further, and no taller than what is in it, so a
+/// list of three lines is three lines rather than one with room going spare.
+pub(crate) fn scrolling<R>(
+    ui: &mut Ui,
+    height: f32,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    // In a scope of its own, since a style set on a `Ui` is set on the rest
+    // of that `Ui`, and this is asked for by the list rather than by whatever
+    // follows it.
+    ui.scope(|ui| {
+        ui.spacing_mut().scroll.floating = false;
+        egui::ScrollArea::vertical()
+            .max_height(height)
+            .auto_shrink([false, true])
+            .show(ui, contents)
+            .inner
+    })
+    .inner
 }
 
 /// Whether the user has just finished with a field by pressing return

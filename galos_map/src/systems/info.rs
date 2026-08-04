@@ -11,19 +11,28 @@
 //! selection does: a system flown away from is despawned, and a panel opened
 //! for it has no reason to go with it.
 
-use crate::camera::MoveCamera;
+use crate::Db;
+use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::filter::Filter;
+use crate::systems::selection::Selection;
 use crate::ui::MARGIN;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy::tasks::futures_lite::future;
 use bevy_egui::egui::Ui;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use galos_db::factions::Faction as DbFaction;
+use std::collections::HashMap;
 use std::fmt::Display;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Panels>();
+    app.init_resource::<FactionNames>();
     app.add_systems(Update, refresh.in_set(MapSet::Present));
+    app.add_systems(Update, name_factions.in_set(MapSet::Present));
+    app.add_systems(Update, fill_filters.in_set(MapSet::Present));
     // `ui::chrome` concludes at its end whether the pointer is busy with the
     // UI, from every window drawn in the pass so far. Drawn before it, these
     // are counted in the same frame they are shown rather than the next.
@@ -37,7 +46,7 @@ pub fn plugin(app: &mut App) {
 /// the next.
 const WIDTH: f32 = 230.;
 
-/// The systems the user has a panel open for
+/// What the user has a panel open for
 ///
 /// A list rather than a map, since there are only ever a handful of them and
 /// what matters about the order is where the next one lands.
@@ -51,45 +60,93 @@ pub struct Panels {
     /// away and opened again comes back to the place it had, which egui has
     /// been remembering for it all along.
     opened: usize,
-    /// How tall a panel came out, from the last one drawn
+    /// How tall the tallest panel drawn came out
     ///
-    /// Every panel says the same eight things, so one measurement stands for
-    /// all of them. Measured rather than guessed because it decides where
-    /// the next one opens, and a guess one line short would have them
-    /// overlap, which is the whole of what the tiling is for.
+    /// How far down the next one opens. The tallest rather than the last,
+    /// since a system's panel and a filter's are not the same height and a
+    /// step measured from the shorter would open the next panel on top of a
+    /// taller one already standing.
     ///
-    /// Nothing until one has been drawn, which leaves the first panel of a
-    /// session laid out as taking no room. It still opens where it asked
-    /// to, since egui only moves a window to bring it back inside the
-    /// viewport.
+    /// Measured rather than guessed because a guess one line short is exactly
+    /// the overlap the tiling is for. Nothing until a panel has been drawn,
+    /// which leaves the first of a session laid out as taking no room. It
+    /// still opens where it asked to, since egui only moves a window to bring
+    /// it back inside the viewport.
     height: f32,
 }
 
 /// One open panel
 struct Panel {
-    /// The row it is drawn from
-    system: System,
+    /// What it is about
+    subject: Subject,
     /// Which place in the tiling it opened at
     slot: usize,
 }
 
+/// What a panel is about
+///
+/// Two kinds, sharing the tiling and the window because they are the same
+/// gesture answered: the mark on a row in the bar, opening the long form of
+/// what that row names.
+enum Subject {
+    /// One system, and everything the map knows about it
+    System(System),
+    /// One filter, and the systems it admits
+    ///
+    /// The systems are fetched once the panel is open, by [`fill_filters`],
+    /// and are nothing at all until they arrive. They come from the database
+    /// rather than from the map, since the point of the list is to say where
+    /// a faction is, and the map holds only what the spyglass has reached.
+    Filter { filter: Filter, systems: Option<Vec<System>> },
+}
+
+impl Subject {
+    /// What the panel is titled
+    fn title(&self) -> &str {
+        match self {
+            Subject::System(system) => &system.name,
+            Subject::Filter { filter, .. } => filter.name(),
+        }
+    }
+
+    /// The identity egui remembers a panel's place by
+    ///
+    /// Not the title. A system's row is replaced by every fetch that covers
+    /// it, so a window named for the row would forget where it was dragged
+    /// to; what makes two panels the same panel is what they are about.
+    fn id(&self) -> egui::Id {
+        match self {
+            Subject::System(system) => {
+                egui::Id::new(("system-panel", system.address))
+            }
+            Subject::Filter { filter, .. } => {
+                egui::Id::new(("filter-panel", filter))
+            }
+        }
+    }
+}
+
 impl Panels {
-    /// Open a panel for `system`
+    /// Open a panel describing `system`
     ///
     /// A system already being read about is left where it is rather than
     /// opened a second time, since two windows describing one system are two
     /// copies of one answer.
-    pub fn open(&mut self, system: System) {
-        if self.showing(system.address) {
-            return;
-        }
-        self.open.push(Panel { system, slot: self.opened });
-        self.opened += 1;
+    pub fn open_system(&mut self, system: System) {
+        self.push(Subject::System(system));
     }
 
-    /// Whether a panel is open for the system at `address`
-    fn showing(&self, address: i64) -> bool {
-        self.open.iter().any(|panel| panel.system.address == address)
+    /// Open a panel listing what `filter` admits
+    pub fn open_filter(&mut self, filter: Filter) {
+        self.push(Subject::Filter { filter, systems: None });
+    }
+
+    fn push(&mut self, subject: Subject) {
+        if self.open.iter().any(|panel| panel.subject.id() == subject.id()) {
+            return;
+        }
+        self.open.push(Panel { subject, slot: self.opened });
+        self.opened += 1;
     }
 }
 
@@ -109,6 +166,70 @@ fn tile(slot: usize, down: usize, across: usize) -> (usize, usize) {
     (slot % down, slot / down)
 }
 
+/// What each faction the map has had to name is called
+///
+/// A [`System`] carries the ids of the factions present in it, since that is
+/// what is asked of it in bulk: which of them a filter admits, over every
+/// system drawn, every frame. What they are called is asked for rarely and a
+/// panel at a time, so it is looked up when a panel wants it and kept.
+///
+/// Kept for the session. A faction's name does not change, and there are only
+/// as many of them here as the user has opened panels for.
+#[derive(Resource, Default)]
+pub struct FactionNames(HashMap<i32, String>);
+
+impl FactionNames {
+    /// What the faction with `id` is called, if it has been looked up
+    pub fn get(&self, id: i32) -> Option<&str> {
+        self.0.get(&id).map(String::as_str)
+    }
+}
+
+/// Look up the names of any factions an open panel cannot name yet
+///
+/// One query for everything unnamed across every open panel, and none at all
+/// once they are named, which is every frame but the one after a panel opens.
+///
+/// Asked for and waited on, as a search is. This is the answer to something
+/// the user just did, it is a primary key lookup over a handful of ids, and a
+/// panel that filled itself in a moment later would be a panel that looked
+/// broken when it opened.
+fn name_factions(
+    mut names: ResMut<FactionNames>,
+    panels: Res<Panels>,
+    db: Res<Db>,
+) {
+    let wanted: Vec<i32> = panels
+        .open
+        .iter()
+        .filter_map(|panel| match &panel.subject {
+            Subject::System(system) => Some(system),
+            // A filter panel lists systems by name and says nothing about
+            // whose they are.
+            Subject::Filter { .. } => None,
+        })
+        .flat_map(|system| system.factions.iter().copied())
+        .filter(|id| names.get(*id).is_none())
+        .collect();
+    if wanted.is_empty() {
+        return;
+    }
+
+    future::block_on(async {
+        match DbFaction::fetch_many(&db.0, &wanted).await {
+            Ok(factions) => {
+                for faction in factions {
+                    names.0.insert(faction.id, faction.name);
+                }
+            }
+            // Nothing to be done about it, and nothing to say to the user
+            // about a name they did not ask for. The panel says the faction
+            // is there and leaves it unnamed.
+            Err(why) => debug!("could not name factions: {why}"),
+        }
+    });
+}
+
 /// Keep each panel on whatever the map last heard about its system
 ///
 /// A panel is drawn from the row it was opened with, and a fetch replaces
@@ -126,11 +247,73 @@ fn refresh(
     }
     for system in &changed {
         for panel in &mut panels.open {
-            if panel.system.address == system.address {
-                panel.system = system.clone();
+            // Only a panel about that one system. A filter's list came from
+            // the database rather than the map, and a row that changed under
+            // the map says nothing about whether the list is still the right
+            // list.
+            if let Subject::System(shown) = &mut panel.subject
+                && shown.address == system.address
+            {
+                *shown = system.clone();
             }
         }
     }
+}
+
+/// Fetch the systems a filter admits, once a panel has been opened for it
+///
+/// From the database rather than from the map. The list is there to say where
+/// a faction is, and the map holds only what the spyglass has dragged in,
+/// which is mostly wherever the user has already been.
+///
+/// Asked for and waited on, as a search is: this answers something the user
+/// just did, and a panel that filled itself in some frames later would look
+/// broken when it opened.
+///
+/// It is the heaviest thing the map waits on. Measured at 44ms for the
+/// largest faction on record, which stands in 314 systems, so opening one of
+/// those panels drops a couple of frames. Worth moving onto a task if it comes
+/// to be done often, and not worth the machinery while it is a click.
+fn fill_filters(mut panels: ResMut<Panels>, db: Res<Db>) {
+    let unfilled: Vec<Filter> = panels
+        .open
+        .iter()
+        .filter_map(|panel| match &panel.subject {
+            Subject::Filter { filter, systems: None } => Some(filter.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for filter in unfilled {
+        let found = future::block_on(async { fetch(&db.0, &filter).await });
+        for panel in &mut panels.open {
+            if let Subject::Filter { filter: shown, systems } =
+                &mut panel.subject
+                && *shown == filter
+            {
+                *systems = Some(found.clone());
+            }
+        }
+    }
+}
+
+/// What the map can draw of everything `filter` admits
+///
+/// Sorted by name, which is the order the list falls back on when there is no
+/// camera to measure from. What comes back is in no order at all.
+///
+/// Systems with no position on record are dropped. The map cannot draw one
+/// and cannot fly to one, so a line naming it would answer nothing.
+///
+/// Which systems those are is the filter's own business. This is only what a
+/// panel can do with them.
+async fn fetch(db: &galos_db::Database, filter: &Filter) -> Vec<System> {
+    let rows = filter.systems(db).await;
+
+    let mut found: Vec<System> =
+        rows.iter().filter_map(|row| System::try_from(row).ok()).collect();
+    found.sort_unstable_by(|one, other| one.name.cmp(&other.name));
+    found
 }
 
 /// Tell the user what is known about the systems they have opened
@@ -141,12 +324,18 @@ fn refresh(
 fn panels(
     mut contexts: EguiContexts,
     mut panels: ResMut<Panels>,
+    names: Res<FactionNames>,
+    mut selection: ResMut<Selection>,
+    orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
     if panels.open.is_empty() {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
+    // Where the camera is looking, which is the distance the spyglass and
+    // the selection's own row are measured in.
+    let focus = orbit.single().map(|camera| camera.focus).ok();
     // The top right corner, clear of the settings pane and the search bar,
     // which stand against the left edge and the top middle. Measured from
     // the window's full width rather than the width of what is written in
@@ -169,62 +358,41 @@ fn panels(
 
     let mut shut = Vec::new();
     let mut tallest: f32 = 0.;
+    let mut centred = None;
+    let mut picked = None;
+    let mut opening = None;
     for panel in &panels.open {
-        let system = &panel.system;
         let mut showing = true;
-        let mut centred = None;
         let (row, column) = tile(panel.slot, down, across);
-        // Named for the system but identified by its address, which does not
-        // change with the row it was fetched in, so a window keeps the place
-        // the user dragged it to across a refresh.
-        let window = egui::Window::new(system.name.as_str())
-            .id(egui::Id::new(("system-panel", system.address)))
+        let window = egui::Window::new(panel.subject.title())
+            .id(panel.subject.id())
             .open(&mut showing)
             .resizable(false)
-            // Left unsaid this is `Style::default_area_size`, 600 wide,
-            // which will not fit where a panel is asked to be placed.
-            .default_size(egui::vec2(WIDTH, panels.height))
+            // The width alone. Left unsaid it is `Style::default_area_size`,
+            // 600, which will not fit where a panel is asked to be placed, so
+            // egui slides the window somewhere it does and remembers it
+            // there. The height is the window's own business: said here it
+            // is imposed rather than defaulted, and a list asked to fit the
+            // height of the last panel drawn shows three lines of eight.
+            .default_width(WIDTH)
             .default_pos(
                 corner
                     + egui::vec2(step.x * column as f32, step.y * row as f32),
             )
             .show(ctx, |ui| {
                 ui.set_width(WIDTH);
-                egui::Grid::new(("system-fields", system.address))
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        let [x, y, z] = system.position;
-                        field(
-                            ui,
-                            "Position",
-                            format!("{x:.2}, {y:.2}, {z:.2}"),
-                        );
-                        field(ui, "Population", thousands(system.population));
-                        field(ui, "Allegiance", named(&system.allegiance));
-                        field(ui, "Government", named(&system.government));
-                        field(ui, "Security", named(&system.security));
-                        field(ui, "Economy", named(&system.primary_economy));
-                        field(
-                            ui,
-                            "Secondary",
-                            named(&system.secondary_economy),
-                        );
-                        field(
-                            ui,
-                            "Updated",
-                            system
-                                .updated_at
-                                .format("%Y-%m-%d %H:%M UTC")
-                                .to_string(),
-                        );
-                    });
-
-                // Its own system rather than whatever is selected, since
-                // several panels stand open at once and each one is about
-                // the system named in its title bar.
-                ui.add_space(MARGIN);
-                if ui.button("Center Camera").clicked() {
-                    centred = Some(DVec3::from(system.position));
+                match &panel.subject {
+                    Subject::System(system) => {
+                        described(ui, system, &names, &mut centred)
+                    }
+                    Subject::Filter { systems, .. } => admitted(
+                        ui,
+                        systems.as_deref(),
+                        focus,
+                        &mut picked,
+                        &mut opening,
+                        &mut centred,
+                    ),
                 }
             });
 
@@ -236,12 +404,24 @@ fn panels(
         {
             tallest = tallest.max(window.response.rect.height());
         }
-        if let Some(position) = centred {
-            camera.write(MoveCamera { position: Some(position) });
-        }
         if !showing {
-            shut.push(system.address);
+            shut.push(panel.subject.id());
         }
+    }
+
+    if let Some(position) = centred {
+        camera.write(MoveCamera { position: Some(position) });
+    }
+    // Picking a system out of a list says which one is meant, as clicking a
+    // star does. Where the camera goes is asked for separately, from the row
+    // in the bar that names what is picked out.
+    if let Some(system) = picked {
+        selection.set(system);
+    }
+    // Opened after the loop, since a panel asked for from inside one is a
+    // panel pushed onto the list being walked.
+    if let Some(system) = opening {
+        panels.open_system(system);
     }
 
     // Nothing while every panel is rolled up into its title bar, which is
@@ -250,11 +430,325 @@ fn panels(
         panels.height = tallest;
     }
     if !shut.is_empty() {
-        panels.open.retain(|panel| !shut.contains(&panel.system.address));
+        panels.open.retain(|panel| !shut.contains(&panel.subject.id()));
     }
 
     Ok(())
 }
+
+/// Everything the map knows about one system
+fn described(
+    ui: &mut Ui,
+    system: &System,
+    names: &FactionNames,
+    centred: &mut Option<DVec3>,
+) {
+    egui::Grid::new(("system-fields", system.address)).num_columns(2).show(
+        ui,
+        |ui| {
+            let [x, y, z] = system.position;
+            field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
+            field(ui, "Population", thousands(system.population));
+            field(ui, "Allegiance", named(&system.allegiance));
+            field(ui, "Government", named(&system.government));
+            field(ui, "Security", named(&system.security));
+            field(ui, "Economy", named(&system.primary_economy));
+            field(ui, "Secondary", named(&system.secondary_economy));
+            field(
+                ui,
+                "Updated",
+                system.updated_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+            );
+        },
+    );
+
+    factions(ui, &system.factions, names);
+
+    // Its own system rather than whatever is selected, since several panels
+    // stand open at once and each one is about the system named in its title
+    // bar.
+    ui.add_space(MARGIN);
+    if ui.button("Center Camera").clicked() {
+        *centred = Some(DVec3::from(system.position));
+    }
+}
+
+/// How many systems a filter's panel lists before it starts scrolling
+///
+/// Enough to read a faction's holdings at a glance, and few enough that a
+/// panel does not run the height of the viewport and leave the tiling
+/// nowhere to put the next one.
+const LISTED: usize = 8;
+
+/// What a click on a line in a filter's list asked for
+///
+/// One click says which system is meant and a second says to go there, which
+/// is what a click and a double click mean out on the map. The list answers
+/// them the same way, so the two places a system can be reached from are one
+/// gesture rather than two to be learned.
+enum Picked {
+    /// Pick the system out, as clicking a star does
+    Select,
+    /// Send the camera to it, as double clicking a star does
+    Travel,
+    /// Say what is known about it, and leave the selection alone
+    Describe,
+}
+
+/// The systems a filter admits, and the one the user picks out of them
+///
+/// Every system the database has for the filter, not only the ones the map
+/// has fetched, since where a faction is, is most of what is being asked.
+///
+/// Answered the way the map itself is: one click says which system is meant
+/// and a second says to go there, so a system reached through a list and a
+/// system reached by its star are reached the same way.
+fn admitted(
+    ui: &mut Ui,
+    systems: Option<&[System]>,
+    focus: Option<DVec3>,
+    picked: &mut Option<System>,
+    described: &mut Option<System>,
+    centred: &mut Option<DVec3>,
+) {
+    let Some(systems) = systems else {
+        ui.label(egui::RichText::new("Looking...").weak());
+        return;
+    };
+
+    if systems.is_empty() {
+        ui.label(egui::RichText::new("No systems on record").weak());
+        return;
+    }
+
+    ui.label(
+        egui::RichText::new(format!("{} systems", systems.len())).weak(),
+    );
+    ui.add_space(MARGIN);
+
+    let line = ui.text_style_height(&egui::TextStyle::Body)
+        + LINE_PADDING * 2.
+        + ui.spacing().item_spacing.y;
+    // Nearest first, from where the camera is looking, which is the distance
+    // the whole map is measured in. Ordered afresh each frame rather than
+    // once when the list arrived, so that it goes on answering which of these
+    // is near me as the user flies. That does mean the list reorders under
+    // them while the camera is moving; it holds still the moment it stops,
+    // and the camera only moves when it is asked to.
+    let mut order: Vec<(&System, Option<f64>)> = systems
+        .iter()
+        .map(|system| {
+            (system, focus.map(|at| at.distance(DVec3::from(system.position))))
+        })
+        .collect();
+    // A stable sort, so that with no camera to measure from the name order
+    // the list arrived in is what is left.
+    order.sort_by(|(_, one), (_, other)| match (one, other) {
+        (Some(one), Some(other)) => one.total_cmp(other),
+        _ => std::cmp::Ordering::Equal,
+    });
+
+    crate::ui::scrolling(ui, line * LISTED as f32, |ui| {
+        for (system, away) in order {
+            match line_for(ui, system, away) {
+                Some(Picked::Select) => *picked = Some(system.clone()),
+                Some(Picked::Travel) => {
+                    *centred = Some(DVec3::from(system.position))
+                }
+                Some(Picked::Describe) => *described = Some(system.clone()),
+                None => {}
+            }
+        }
+    });
+}
+
+/// How far a line in a filter's list holds its name off its own edge
+const LINE_PADDING: f32 = 3.;
+
+/// One system's line in a filter's list, and what it was asked for
+///
+/// The whole line answers rather than the letters on it, so that a short name
+/// is as easy to hit as a long one and the list reads as a column of controls
+/// rather than as text that happens to be clickable. Laid out and painted for
+/// the reason the rows in the bar are: a label is a widget in its own right,
+/// and one inside a row that also answers leaves the two bidding for the
+/// pointer.
+///
+/// The mark at the end says what is known about the system without picking it
+/// out, which is how a list is read through: several systems can be opened
+/// and compared while the selection stays wherever the user left it. It is
+/// the same mark the rows in the bar carry, and opens the same panel.
+fn line_for(
+    ui: &mut Ui,
+    system: &System,
+    away: Option<f64>,
+) -> Option<Picked> {
+    let gap = ui.spacing().item_spacing.x;
+    // Laid out in nothing, so that the colour can be chosen once the pointer
+    // has been asked about, which cannot happen until the line has been
+    // placed.
+    let mark = egui::WidgetText::from(
+        egui::RichText::new(crate::ui::INFO)
+            .color(egui::Color32::PLACEHOLDER),
+    )
+    .into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+
+    // Said as well as sorted by. A list in an order nobody can see reads as
+    // an order nobody chose.
+    let away = away.map(|away| {
+        egui::WidgetText::from(
+            egui::RichText::new(format!("{away:.1} Ly")).weak(),
+        )
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+    });
+
+    let room = ui.available_width()
+        - LINE_PADDING * 2.
+        - mark.size().x
+        - gap
+        - away.as_ref().map_or(0., |away| away.size().x + gap);
+    let name = egui::WidgetText::from(system.name.as_str()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room.max(0.),
+        egui::TextStyle::Body,
+    );
+
+    let (rect, row) = ui.allocate_exact_size(
+        egui::vec2(
+            ui.available_width(),
+            name.size().y.max(mark.size().y) + LINE_PADDING * 2.,
+        ),
+        egui::Sense::click(),
+    );
+
+    if row.hovered() || row.has_focus() {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    let middle = rect.center().y;
+    ui.painter().galley(
+        egui::pos2(rect.left() + LINE_PADDING, middle - name.size().y / 2.),
+        name,
+        ui.visuals().text_color(),
+    );
+
+    // Asked about after the line, so that it is the one answering where the
+    // two overlap. Under it the line would have to work out what it was not
+    // being clicked on.
+    let at = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - LINE_PADDING - mark.size().x, rect.top()),
+        egui::pos2(rect.right() - LINE_PADDING, rect.bottom()),
+    );
+
+    // Between the name and the mark, right against the mark, so that the
+    // distances line up down the list rather than following the names.
+    if let Some(away) = away {
+        let size = away.size();
+        ui.painter().galley(
+            egui::pos2(at.left() - gap - size.x, middle - size.y / 2.),
+            away,
+            egui::Color32::PLACEHOLDER,
+        );
+    }
+
+    let describing = ui.interact(
+        at,
+        ui.id().with(("describe", system.address)),
+        egui::Sense::click(),
+    );
+    let lit = describing.hovered() || describing.has_focus();
+    if lit {
+        ui.painter().rect_filled(
+            at,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    let height = mark.size().y;
+    ui.painter().galley(
+        egui::pos2(at.left(), middle - height / 2.),
+        mark,
+        if lit {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        },
+    );
+
+    // The double first. Egui answers the first click of a pair as a click
+    // and the second as a double, so a line double clicked has already been
+    // picked out by the time this is asked, which is what the first click of
+    // the pair was for.
+    let asked = if describing.clicked() {
+        Some(Picked::Describe)
+    } else if row.double_clicked() {
+        Some(Picked::Travel)
+    } else if row.clicked() {
+        Some(Picked::Select)
+    } else {
+        None
+    };
+    row.on_hover_cursor(egui::CursorIcon::PointingHand);
+    describing.on_hover_cursor(egui::CursorIcon::PointingHand);
+    asked
+}
+
+/// Every faction present in the system, one to a line
+///
+/// A list under a heading rather than rows in the grid above, because a
+/// system holds as many factions as it holds and their names run long. Set
+/// against the grid's two columns each would wrap into a paragraph, and the
+/// column widths the rest of the panel is laid out in would be decided by
+/// whichever faction happened to have the longest name.
+///
+/// Sorted by name, so that the order holds still. What comes back from the
+/// database is in no order at all, and a fetch that replaced the row would
+/// otherwise shuffle the list under whoever was reading it.
+///
+/// A faction whose name has not arrived yet is still one of the factions
+/// here, so it keeps its line. Naming them is one query behind the panel
+/// opening, and a list that grew a line a frame later would jump.
+fn factions(ui: &mut Ui, present: &[i32], names: &FactionNames) {
+    if present.is_empty() {
+        return;
+    }
+
+    ui.add_space(MARGIN);
+    ui.label(egui::RichText::new("Factions").strong());
+    for name in listed(present, names) {
+        ui.label(name);
+    }
+}
+
+/// The factions of a system as their lines read, in order
+///
+/// Named first and among themselves by name, with whatever is still unnamed
+/// held at the end. Sorting the placeholder in with the names would put it
+/// above all of them, since it is punctuation, and the line would then jump
+/// the length of the list the moment its name arrived.
+fn listed<'a>(present: &[i32], names: &'a FactionNames) -> Vec<&'a str> {
+    let mut listed: Vec<Option<&str>> =
+        present.iter().map(|id| names.get(*id)).collect();
+    listed.sort_unstable_by_key(|name| (name.is_none(), *name));
+    listed.into_iter().map(|name| name.unwrap_or(UNNAMED)).collect()
+}
+
+/// A faction the map has yet to hear the name of
+const UNNAMED: &str = "...";
 
 /// One named thing the database knows about a system
 fn field(ui: &mut Ui, name: &str, value: String) {
@@ -293,31 +787,62 @@ fn thousands(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::DateTime;
+    use crate::systems::tests::system;
     use elite_journal::Allegiance;
 
-    /// A system with nothing on record but the address that names it
-    fn system(address: i64) -> System {
-        System {
-            address,
-            name: format!("Test {address}"),
-            position: [0., 0., 0.],
-            population: 0,
-            allegiance: None,
-            government: None,
-            security: None,
-            primary_economy: None,
-            secondary_economy: None,
-            updated_at: DateTime::UNIX_EPOCH,
-        }
+    /// A registry naming each of `known`
+    fn known(known: &[(i32, &str)]) -> FactionNames {
+        FactionNames(
+            known.iter().map(|(id, name)| (*id, name.to_string())).collect(),
+        )
+    }
+
+    /// A system with no factions lists none
+    #[test]
+    fn a_system_with_no_factions_lists_nothing() {
+        assert!(listed(&[], &known(&[])).is_empty());
+    }
+
+    /// The list reads in name order, whatever order the ids came in
+    ///
+    /// What the database returns is in no order at all, and a fetch that
+    /// replaced the row would otherwise shuffle the list under whoever was
+    /// reading it.
+    #[test]
+    fn factions_are_listed_by_name() {
+        let names = known(&[(1, "Zargon Front"), (2, "Alliance of Sol")]);
+
+        assert_eq!(
+            listed(&[1, 2], &names),
+            vec!["Alliance of Sol", "Zargon Front"]
+        );
+        assert_eq!(
+            listed(&[2, 1], &names),
+            vec!["Alliance of Sol", "Zargon Front"]
+        );
+    }
+
+    /// A faction whose name has not arrived keeps its line, at the end
+    ///
+    /// Naming them is one query behind the panel opening, and a list that
+    /// grew a line a frame later would jump under the reader. Held at the
+    /// end rather than sorted in, since the placeholder is punctuation and
+    /// would otherwise sit above every name and then jump the length of the
+    /// list as soon as its own arrived.
+    #[test]
+    fn a_faction_not_yet_named_takes_the_last_line() {
+        let names = known(&[(1, "Alliance of Sol")]);
+
+        assert_eq!(listed(&[1, 2], &names), vec!["Alliance of Sol", UNNAMED]);
+        assert_eq!(listed(&[2, 1], &names), vec!["Alliance of Sol", UNNAMED]);
     }
 
     /// Each panel takes the place after the last one opened
     #[test]
     fn panels_take_one_place_after_another() {
         let mut panels = Panels::default();
-        panels.open(system(1));
-        panels.open(system(2));
+        panels.open_system(system(1));
+        panels.open_system(system(2));
 
         let slots: Vec<_> = panels.open.iter().map(|p| p.slot).collect();
         assert_eq!(slots, [0, 1]);
@@ -332,10 +857,10 @@ mod tests {
     #[test]
     fn a_shut_panel_keeps_its_place() {
         let mut panels = Panels::default();
-        panels.open(system(1));
-        panels.open(system(2));
-        panels.open.retain(|panel| panel.system.address != 2);
-        panels.open(system(3));
+        panels.open_system(system(1));
+        panels.open_system(system(2));
+        panels.open.retain(|panel| panel.subject.id() != Subject::System(system(2)).id());
+        panels.open_system(system(3));
 
         let slots: Vec<_> = panels.open.iter().map(|p| p.slot).collect();
         assert_eq!(slots, [0, 2]);
@@ -385,10 +910,49 @@ mod tests {
     #[test]
     fn one_system_gets_one_panel() {
         let mut panels = Panels::default();
-        panels.open(system(1));
-        panels.open(system(1));
+        panels.open_system(system(1));
+        panels.open_system(system(1));
 
         assert_eq!(panels.open.len(), 1);
+    }
+
+    /// A faction filter, by id, called after it
+    fn faction(id: i32) -> Filter {
+        Filter::Faction { id, name: format!("Faction {id}") }
+    }
+
+    /// A filter already being read about is not opened twice
+    #[test]
+    fn one_filter_gets_one_panel() {
+        let mut panels = Panels::default();
+        panels.open_filter(faction(7));
+        panels.open_filter(faction(7));
+
+        assert_eq!(panels.open.len(), 1);
+    }
+
+    /// Two filters get a panel each
+    #[test]
+    fn each_filter_gets_its_own_panel() {
+        let mut panels = Panels::default();
+        panels.open_filter(faction(7));
+        panels.open_filter(faction(9));
+
+        assert_eq!(panels.open.len(), 2);
+    }
+
+    /// A filter and a system are never the same panel
+    ///
+    /// They share the tiling and the window, so nothing but the identity
+    /// keeps a filter's panel from being taken for the panel of a system
+    /// that happened to open at the same time.
+    #[test]
+    fn a_filter_and_a_system_are_different_panels() {
+        let mut panels = Panels::default();
+        panels.open_system(system(7));
+        panels.open_filter(faction(7));
+
+        assert_eq!(panels.open.len(), 2);
     }
 
     /// A number short enough to read is left as it is

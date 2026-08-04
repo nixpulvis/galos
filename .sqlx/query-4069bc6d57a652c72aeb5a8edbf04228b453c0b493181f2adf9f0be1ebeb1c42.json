@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                systems.address,\n                systems.name,\n                systems.position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                systems.population,\n                systems.security as \"security: Security\",\n                systems.government as \"government: Government\",\n                systems.allegiance as \"allegiance: Allegiance\",\n                systems.primary_economy as \"primary_economy: Economy\",\n                systems.secondary_economy as \"secondary_economy: Economy\",\n                systems.updated_at,\n                systems.updated_by\n            FROM systems\n            JOIN system_factions ON system_factions.system_address = systems.address\n            JOIN factions ON factions.id = system_factions.faction_id\n            WHERE factions.name ILIKE $1\n            ",
+  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                updated_at,\n                updated_by,\n                COALESCE((\n                    SELECT array_agg(faction_id)\n                    FROM system_factions\n                    WHERE system_address = systems.address\n                ), ARRAY[]::integer[]) AS \"factions!\"\n            FROM systems\n            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)\n            ",
   "describe": {
     "columns": [
       {
@@ -153,11 +153,19 @@
         "ordinal": 10,
         "name": "updated_by",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "factions!",
+        "type_info": "Int4Array"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8"
       ]
     },
     "nullable": [
@@ -171,8 +179,9 @@
       true,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "ee8c588dbb247bc9514acba685d817624f5368a7065ea2cb068c922d5f7349f8"
+  "hash": "4069bc6d57a652c72aeb5a8edbf04228b453c0b493181f2adf9f0be1ebeb1c42"
 }
