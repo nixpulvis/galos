@@ -311,6 +311,43 @@ impl Focuses {
             active.enabled = !active.enabled;
         }
     }
+
+    /// How many focuses are being held, turned on or not
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether none is held at all, which is a map showing the whole sky
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether any focus is turned on
+    ///
+    /// Which is whether the map is picking anything out. With every focus
+    /// off the sky is drawn whole, as it is with none of them held at all.
+    pub fn any_enabled(&self) -> bool {
+        self.0.iter().any(|active| active.enabled)
+    }
+
+    /// Turn every focus off, or every one back on
+    ///
+    /// Off while any of them is on, since that is the question the control
+    /// answers: show me the sky as it is, and then put back what I was
+    /// looking at. All of them come back rather than the ones that were on
+    /// before, so the two clicks are one gesture and its undo rather than a
+    /// state to be remembered.
+    pub fn toggle_all(&mut self) {
+        let on = self.any_enabled();
+        for active in &mut self.0 {
+            active.enabled = !on;
+        }
+    }
+
+    /// Stop asking every focus
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// A system no enabled focus admits
@@ -469,6 +506,71 @@ mod tests {
         focuses.toggle(0);
 
         assert!(focuses.admit(&member(1, &[])));
+    }
+
+    /// Turning them all off shows the sky whole, and holds on to every focus
+    ///
+    /// Which is the point of the row: lift the whole set to see what it was
+    /// dimming, without having to type any of it in again.
+    #[test]
+    fn turning_them_all_off_admits_everything() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(9));
+
+        focuses.toggle_all();
+
+        assert!(!focuses.any_enabled());
+        assert_eq!(focuses.len(), 2);
+        assert!(focuses.admit(&member(1, &[3])));
+    }
+
+    /// And the same gesture puts every one of them back
+    ///
+    /// All of them rather than the ones that were on before, so the second
+    /// click undoes the first rather than restoring a state nobody chose.
+    #[test]
+    fn turning_them_all_on_asks_every_one() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(9));
+        focuses.toggle(1);
+
+        focuses.toggle_all();
+        focuses.toggle_all();
+
+        assert!(focuses.admit(&member(1, &[7])));
+        assert!(focuses.admit(&member(2, &[9])));
+        assert!(!focuses.admit(&member(3, &[3])));
+    }
+
+    /// One left on is enough for the set to read as asking
+    ///
+    /// So the row turns the rest off with it rather than turning the one
+    /// that is off back on, which would take two clicks to reach the sky.
+    #[test]
+    fn one_left_on_turns_them_all_off() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(9));
+        focuses.toggle(1);
+
+        focuses.toggle_all();
+
+        assert!(!focuses.any_enabled());
+    }
+
+    /// Clearing them takes every focus away
+    #[test]
+    fn clearing_leaves_nothing_held() {
+        let mut focuses = Focuses::default();
+        focuses.add(faction(7));
+        focuses.add(faction(9));
+
+        focuses.clear();
+
+        assert_eq!(focuses.len(), 0);
+        assert!(focuses.admit(&member(1, &[3])));
     }
 
     /// One of two turned off leaves the other asking

@@ -1081,7 +1081,7 @@ fn selected(
 
             if close.clicked() {
                 chose = Some((index, Held::LetGo));
-            } else if info.clicked() {
+            } else if info.is_some_and(|info| info.clicked()) {
                 chose = Some((index, Held::Describe));
             } else if row.clicked() {
                 chose = Some((index, Held::Travel));
@@ -1270,7 +1270,8 @@ fn route_section(
 ///
 /// Each row is the control that turns its own focus off, so one can be
 /// lifted to see what it was hiding and put back without being typed again.
-/// The mark at the end takes it away for good.
+/// The mark at the end takes it away for good. Over two or more, [`whole_set`]
+/// stands above them and says both of those things about all of them at once.
 ///
 /// Laid out and painted rather than assembled from widgets, as the selection
 /// row is and for the same reason. A checkbox and a button under one row are
@@ -1290,7 +1291,7 @@ fn applied(
     panels: &mut Panels,
     place: &mut usize,
 ) {
-    if focuses.iter().next().is_none() {
+    if focuses.is_empty() {
         return;
     }
 
@@ -1300,6 +1301,10 @@ fn applied(
     let mut removing = None;
     let mut opening = None;
     let gap = ui.spacing().item_spacing.x;
+
+    // Above the rows it stands for, where a heading stands.
+    let all =
+        (focuses.len() > 1).then(|| whole_set(ui, focuses, place)).flatten();
 
     for (index, active) in focuses.iter().enumerate() {
         let marks = lay_out_marks(ui);
@@ -1375,7 +1380,7 @@ fn applied(
 
         if close.clicked() {
             removing = Some(index);
-        } else if info.clicked() {
+        } else if info.is_some_and(|info| info.clicked()) {
             opening = Some(active.focus.clone());
         } else if row.clicked() {
             toggling = Some(index);
@@ -1402,6 +1407,114 @@ fn applied(
     if let Some(focus) = opening {
         panels.open_focus(focus);
     }
+    match all {
+        Some(Whole::Toggle) => focuses.toggle_all(),
+        Some(Whole::LetGo) => focuses.clear(),
+        None => {}
+    }
+}
+
+/// What a click on the row standing for the whole set asked for
+enum Whole {
+    /// Turn every focus off, or every one back on
+    Toggle,
+    /// Take them all away
+    LetGo,
+}
+
+/// One row standing for every focus under it, and what a click on it asked
+///
+/// The two gestures a row gives, said of all of them at once: the row turns
+/// them off and back on, and the mark at its end takes them away. Both are
+/// what a set wants and what a list of rows answers slowest, a focus at a
+/// time being the only way to reach them otherwise.
+///
+/// Drawn as a row rather than as a pair of buttons, so there is nothing new
+/// to read: the dot and the mark say for all of them what each row's own say
+/// for one, and they stand in the same two places.
+///
+/// The dot is filled while any focus is on, since that is what the row
+/// undoes. Everything is picked out again by the same click that dimmed it,
+/// so the state it shows is the state its own gesture is about.
+fn whole_set(
+    ui: &mut Ui,
+    focuses: &Focuses,
+    place: &mut usize,
+) -> Option<Whole> {
+    let gap = ui.spacing().item_spacing.x;
+    let marks = lay_out_close(ui);
+    let held = focuses.len();
+    let on = focuses.any_enabled();
+
+    let room = ui.available_width()
+        - ROW_PADDING * 2.
+        - DOT
+        - gap
+        - marks_width(&marks, gap);
+    let text = egui::RichText::new(format!("{held} focuses"));
+    let name =
+        egui::WidgetText::from(if on { text.strong() } else { text.weak() })
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                room.max(0.),
+                egui::TextStyle::Body,
+            );
+
+    // By place in the bar, as the rows below it are keyed. See [`row_of`].
+    let of = ("bar-row", *place);
+    *place += 1;
+    let (outer, row) = row_of(
+        ui,
+        name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
+        of,
+    );
+    let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
+
+    if row.hovered() || row.has_focus() {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+
+    let middle = rect.center().y;
+    let mut x = rect.left() + ROW_PADDING;
+    let dot = egui::pos2(x + DOT / 2., middle);
+    if on {
+        ui.painter().circle_filled(
+            dot,
+            DOT / 2.,
+            ui.visuals().strong_text_color(),
+        );
+    } else {
+        ui.painter().circle_stroke(
+            dot,
+            DOT / 2.,
+            egui::Stroke::new(1_f32, ui.visuals().weak_text_color()),
+        );
+    }
+    x += DOT + gap;
+    // The galley carries the colour it was laid out in, so there is nothing
+    // for a fallback to answer for.
+    ui.painter().galley(
+        egui::pos2(x, middle - name.size().y / 2.),
+        name,
+        egui::Color32::PLACEHOLDER,
+    );
+
+    let Marks { close, .. } = place_marks(ui, rect, marks, of);
+
+    let asked = if close.clicked() {
+        Some(Whole::LetGo)
+    } else if row.clicked() {
+        Some(Whole::Toggle)
+    } else {
+        None
+    };
+    row.on_hover_cursor(egui::CursorIcon::PointingHand);
+    asked
 }
 
 /// Ask for a focus by naming a faction
@@ -1519,7 +1632,8 @@ fn row_of(
 /// Close stands outermost, where a window's own close button stands, so that
 /// the gesture is in the same place wherever it is offered.
 struct Marks {
-    info: Response,
+    /// Nothing where the row names nothing a panel could describe
+    info: Option<Response>,
     close: Response,
 }
 
@@ -1533,7 +1647,19 @@ const MARKS: [&str; 2] = [CLOSE, INFO];
 /// they are measured here and placed by [`place_marks`] once there is a row
 /// to place them in.
 fn lay_out_marks(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
-    MARKS
+    lay_out(ui, &MARKS)
+}
+
+/// The close mark alone, for a row with nothing to describe
+///
+/// Close is outermost, so a row that ends here ends where every other row
+/// ends and the column of marks reads straight down.
+fn lay_out_close(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
+    lay_out(ui, &MARKS[..1])
+}
+
+fn lay_out(ui: &Ui, glyphs: &[&str]) -> Vec<std::sync::Arc<egui::Galley>> {
+    glyphs
         .iter()
         .map(|glyph| {
             // Laid out in nothing, so that the colour can be chosen once the
@@ -1611,9 +1737,10 @@ fn place_marks(
     }
 
     let mut answers = answers.into_iter();
-    // In `MARKS` order, which is close first.
+    // In `MARKS` order, which is close first. A row laid out with the close
+    // mark alone ends there.
     let close = answers.next().expect("a close mark");
-    let info = answers.next().expect("an info mark");
+    let info = answers.next();
     Marks { info, close }
 }
 
@@ -2532,6 +2659,59 @@ mod tests {
         );
 
         assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// Falling to one focus takes the row over the set with it
+    ///
+    /// The row stands above the others, so losing it moves every remaining
+    /// row up one place. Two rows go at once, which is the shape egui reads
+    /// as a widget taking another's state if the ids do not follow the
+    /// places.
+    #[test]
+    fn dropping_to_one_focus_does_not_change_the_row_ids() {
+        let said = crate::tests::between_passes(
+            draw_focuses(&["Empire", "Federation"]),
+            draw_focuses(&["Empire"]),
+        );
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// The row over the set says how many are held, and is drawn over two
+    ///
+    /// Not over one, where it would be a second control for what the row
+    /// beneath it already does.
+    #[test]
+    fn the_set_is_summed_up_only_over_more_than_one() {
+        let mut focuses = Focuses::default();
+        focuses.add(Focus::Faction { id: 1, name: "Empire".into() });
+        let mut panels = Panels::default();
+        let alone = words(|ui| {
+            applied(
+                ui,
+                &mut focuses,
+                &InReach { admitted: 1, total: 3 },
+                &mut panels,
+                &mut 0,
+            )
+        });
+
+        focuses.add(Focus::Faction { id: 2, name: "Federation".into() });
+        let both = words(|ui| {
+            applied(
+                ui,
+                &mut focuses,
+                &InReach { admitted: 1, total: 3 },
+                &mut panels,
+                &mut 0,
+            )
+        });
+
+        assert!(
+            !alone.iter().any(|line| line.contains("focuses")),
+            "{alone:?}"
+        );
+        assert!(both.contains(&"2 focuses".to_owned()), "{both:?}");
     }
 
     /// A list whose items change is not read as a widget changing identity
