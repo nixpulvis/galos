@@ -1,9 +1,16 @@
 //! The chrome standing between the user and the map
 //!
-//! A search bar centred at the top, a gear in the corner, and the settings
-//! pane that gear slides out from the left edge. What is known about the
-//! system the user picked out is drawn by [`crate::systems::selection`],
-//! which owns the fields it reads.
+//! A bar centred at the top, a gear in the corner, and the settings pane that
+//! gear slides out from the left edge. What is known about the system the user
+//! picked out is drawn by [`crate::systems::selection`], which owns the fields
+//! it reads.
+//!
+//! The bar leads with a search box, which is what it is asked for most, but it
+//! is not a search bar: three sections drop out of it, and search is one of
+//! them. Filters are another and have nothing to say to the other two, so they
+//! keep their own state in [`FilterBar`] and are reached through that alone. A
+//! route is the third, and does read what the search box holds, since a route
+//! starts from the system named up there.
 
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{Plot, SearchNote, Searched};
@@ -52,7 +59,7 @@ pub struct SettingsOpen(bool);
 
 /// Whether the press under way has already been answered by the UI
 ///
-/// Shutting the search form is done by pressing somewhere off it, and the
+/// Shutting the bar's form is done by pressing somewhere off it, and the
 /// map has no business answering that press as well: letting go of a
 /// selection because the press that closed a form happened to land on empty
 /// sky is one gesture doing two things.
@@ -67,7 +74,7 @@ pub struct PressAnswered(pub bool);
 /// How wide the settings pane stands when it is out
 const PANE_WIDTH: f32 = 240.;
 
-/// How wide the search bar stands, unfolded or not
+/// How wide the bar stands, unfolded or not
 const BAR_WIDTH: f32 = 220.;
 
 /// How tall the gear is drawn
@@ -80,7 +87,7 @@ const GEAR_SIZE: f32 = 18.;
 /// left.
 pub(crate) const MARGIN: f32 = 8.;
 
-/// How far the search bar's contents stand from the pane behind them
+/// How far the bar's contents stand from the pane behind them
 const PADDING: i8 = 6;
 
 /// How far one field of a form stands from the next
@@ -229,21 +236,26 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
     .response
 }
 
-/// What the user has typed into the search bar, and how much of it is shown
+/// What the user has typed into the bar, and how much of it is out
 ///
-/// One form, so one piece of state. Held together rather than as five
-/// separate locals because a system param is a scarce thing and these are
-/// only ever read and cleared as a group.
+/// The search box and the route's two fields. Together because the route
+/// reads what the search box holds, not merely because they are drawn near
+/// each other: the filters are drawn between them and keep their own field in
+/// [`FilterBar`], having nothing to say to either.
 #[derive(Default)]
-pub struct SearchFields {
+pub struct BarFields {
+    /// The system named in the box the bar leads with
+    ///
+    /// Read by the route as well as by the search, since a route starts from
+    /// whatever system is named up there. That is the one thing two of the
+    /// bar's sections share, and it is shared on purpose.
     system: Option<String>,
     route_end: Option<String>,
     route_range: Option<String>,
-    faction: Option<String>,
     /// Whether the rest of the form is out below the input
     ///
     /// Turned on when a field takes focus and off when a press lands off the
-    /// form, both of which [`search_bar`] settles at the end of a frame from
+    /// form, both of which [`main_bar`] settles at the end of a frame from
     /// what it has just drawn. So this is one frame behind, which is as
     /// close as an immediate mode UI gets: a field cannot report that it has
     /// been clicked until it has been drawn, and whether to draw it is the
@@ -268,15 +280,19 @@ pub struct Knobs<'w> {
     despawner: MessageWriter<'w, Despawn>,
 }
 
-/// Everything the filters are drawn from
+/// The whole of the bar's filter section
 ///
 /// One parameter for the same reason [`Knobs`] is one: a system may take only
-/// sixteen. The count comes from [`InReach`] rather than being taken over the
-/// systems here, since what the bar has to say is how much of the sky in
-/// front of the user is getting through, and only [`crate::systems::visibility`]
-/// knows which systems those are.
+/// sixteen. Grouped by what it is about rather than by where it is drawn,
+/// since the bar's three sections have little to say to each other and this
+/// way none of them can reach into another's state by accident.
+///
+/// The count comes from [`InReach`] rather than being taken over the systems
+/// here, since what the bar has to say is how much of the sky in front of the
+/// user is getting through, and only [`crate::systems::visibility`] knows
+/// which systems those are.
 #[derive(SystemParam)]
-pub struct FilterBar<'w> {
+pub struct FilterBar<'w, 's> {
     /// The filters themselves, which the rows are drawn from and changed in
     ///
     /// Named for what it holds rather than for its type, since this is
@@ -285,6 +301,11 @@ pub struct FilterBar<'w> {
     active: ResMut<'w, Filters>,
     /// How much of the sky is getting through them
     in_reach: Res<'w, InReach>,
+    /// What is typed into the field that asks for one
+    ///
+    /// Here rather than among the bar's other fields, so that nothing about a
+    /// filter is reachable through the search's state or the route's.
+    field: Local<'s, Option<String>>,
     /// Where a filter the user has typed is sent to be looked up
     wanted: MessageWriter<'w, Wanted>,
     /// What to say when one could not be
@@ -298,7 +319,7 @@ pub fn chrome(
     mut search_note: ResMut<SearchNote>,
     mut over_ui: ResMut<PointerOverUi>,
     mut settings: ResMut<SettingsOpen>,
-    mut search: Local<SearchFields>,
+    mut search: Local<BarFields>,
     mut selection: ResMut<Selection>,
     mut camera: MessageWriter<MoveCamera>,
     orbit: Query<&OrbitCamera>,
@@ -389,7 +410,7 @@ pub fn chrome(
     });
 
     gear(ctx, edge, &mut settings.0);
-    let shut = search_bar(
+    let shut = main_bar(
         ctx,
         &mut search,
         &mut searched,
@@ -511,9 +532,9 @@ fn gear(ctx: &Context, left: f32, open: &mut bool) {
 ///
 /// The note is not part of what drops down. It answers the name in the input,
 /// and is worth reading whether or not the rest is out.
-fn search_bar(
+fn main_bar(
     ctx: &Context,
-    search: &mut SearchFields,
+    search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
     note: &mut SearchNote,
     selection: &mut Selection,
@@ -536,7 +557,7 @@ fn search_bar(
             .shadow(egui::Shadow::NONE);
     }
 
-    let bar = egui::Area::new(egui::Id::new("search-bar"))
+    let bar = egui::Area::new(egui::Id::new("main-bar"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0., MARGIN))
         .show(ctx, |ui| {
@@ -558,11 +579,10 @@ fn search_bar(
                     // fields of a form, and a form that went off and asked
                     // the database something on the way past would be
                     // answering a question nobody had finished asking.
-                    if entered(&response, ui) {
-                        search.faction = None;
-                        if let Some(name) = search.system.clone() {
-                            searched.write(Searched::System { name });
-                        }
+                    if entered(&response, ui)
+                        && let Some(name) = search.system.clone()
+                    {
+                        searched.write(Searched::System { name });
                     }
 
                     // Both, and in this order: the note answers the query
@@ -580,12 +600,7 @@ fn search_bar(
                     applied(ui, &mut filter.active, &filter.in_reach, panels);
 
                     if search.expanded {
-                        taken |= filter_section(
-                            ui,
-                            search,
-                            &mut filter.wanted,
-                            &mut filter.note,
-                        );
+                        taken |= filter_section(ui, filter);
                         taken |= route_section(ui, search, searched, plot);
                     }
 
@@ -773,7 +788,7 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
 /// up there would sit a long way from its question.
 fn route_section(
     ui: &mut Ui,
-    search: &mut SearchFields,
+    search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
     plot: &mut Plot,
 ) -> bool {
@@ -1012,26 +1027,21 @@ fn applied(
 /// trouble is said between its fields and its button. The note under the
 /// search input answers a name typed into the search input, and a faction
 /// read out up there would sit a long way from its question.
-fn filter_section(
-    ui: &mut Ui,
-    search: &mut SearchFields,
-    wanted: &mut MessageWriter<Wanted>,
-    note: &mut FilterNote,
-) -> bool {
+fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     heading(ui, "Filters", true);
-    let response = singleline(ui, &mut search.faction, "Faction Name");
+    let response = singleline(ui, &mut filter.field, "Faction Name");
     // The note answers a name, so it is no answer at all once that name is
     // being typed over.
     if response.changed() {
-        note.0 = None;
+        filter.note.0 = None;
     }
     if entered(&response, ui)
-        && let Some(name) = search.faction.take()
+        && let Some(name) = filter.field.take()
     {
-        wanted.write(Wanted::Faction { name });
+        filter.wanted.write(Wanted::Faction { name });
     }
 
-    if let Some(trouble) = &note.0 {
+    if let Some(trouble) = &filter.note.0 {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }

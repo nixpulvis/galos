@@ -80,7 +80,7 @@ impl Selection {
     /// What is picked out is called, if anything is
     ///
     /// Alongside [`Self::position`] and there for the same reason: the
-    /// search bar says what it is holding, and a [`System`]'s fields are
+    /// bar says what it is holding, and a [`System`]'s fields are
     /// private to [`super`].
     pub fn name(&self) -> Option<&str> {
         self.0.as_ref().map(|system| system.name.as_str())
@@ -169,7 +169,7 @@ fn follow_selection(
 /// business rather than the UI's. What is left is a click on empty sky.
 ///
 /// A press the UI has already spent is the UI's own business too, even
-/// though it landed on the map. Shutting the search form is done by pressing
+/// though it landed on the map. Shutting the bar's form is done by pressing
 /// off it, and that press closing a form and letting go of a selection would
 /// be one gesture doing two things.
 fn clear_when_nothing_is_clicked(

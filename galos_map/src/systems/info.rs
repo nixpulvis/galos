@@ -337,7 +337,7 @@ fn panels(
     // Where the camera is looking, which is the distance the spyglass and
     // the selection's own row are measured in.
     let focus = orbit.single().map(|camera| camera.focus).ok();
-    // The top right corner, clear of the settings pane and the search bar,
+    // The top right corner, clear of the settings pane and the bar,
     // which stand against the left edge and the top middle. Measured from
     // the window's full width rather than the width of what is written in
     // it, so that its right edge stands off the viewport by the margin
