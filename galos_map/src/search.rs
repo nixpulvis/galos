@@ -1,8 +1,6 @@
 use crate::Db;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::System;
-use crate::systems::selection::Selection;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use elite_journal::system::Coordinate;
@@ -54,8 +52,9 @@ impl SearchResults {
     /// Put the list away
     ///
     /// What a search turned up answers the name it was asked about, so it is
-    /// no answer at all once that name is being typed over or once one of
-    /// them has been picked out.
+    /// no answer at all once that name is being typed over. Picking one of
+    /// them out does not put the list away: choosing is what it is for, and
+    /// several may be chosen from the one list.
     pub fn clear(&mut self) {
         self.0.clear();
     }
@@ -115,42 +114,17 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
     }
 }
 
-/// Where in `found` the system `query` spells out in full sits
-///
-/// A name typed whole is a question with one answer, so it is answered rather
-/// than offered: a list headed by the very thing asked for makes the user
-/// pick it twice. Anything short of the whole name is a question about which
-/// system is meant, and the list is what answers that.
-///
-/// Case does not count. Names are held uppercase and nobody types them that
-/// way.
-fn named_outright(query: &str, found: &[DbSystem]) -> Option<usize> {
-    let query = query.trim();
-    found.iter().position(|system| system.name.eq_ignore_ascii_case(query))
-}
-
-/// Pick `system` out, or say why it cannot be
-///
-/// The map has nothing to mark until the system is fetched, but the row the
-/// name resolved against says everything a panel would.
-fn pick_out(system: &DbSystem, selection: &mut Selection) -> Option<String> {
-    match System::try_from(system) {
-        Ok(system) => {
-            selection.set(system);
-            None
-        }
-        Err(_) => Some(format!("{} has no position on record", system.name)),
-    }
-}
-
 /// Answer what the user asked for
 ///
 /// A system for responding to [`Searched`] messages.
-/// - On [`Searched::System`] the systems that might be meant are looked up.
-/// A name given in full is picked out on the spot; anything less is left as a
-/// list for the user to choose from. Either way the camera is left where it
-/// is. Naming a system is asking which one it is, not asking to be taken
-/// there, and the map has a control of its own for that.
+/// - On [`Searched::System`] the systems that might be meant are looked up and
+/// left as a list for the user to choose from. Nothing is picked out by the
+/// search itself, however exactly the name was typed: a search says which
+/// systems are on record under that name and a click says which of them is
+/// meant. Keeping the two apart is what lets a set be gathered across
+/// searches, since a search that picked something out would let go of
+/// everything gathered before it. The camera is left where it is for the same
+/// reason, and the map has a control of its own for going there.
 /// - On [`Searched::Route`] both ends are resolved, and which of them could
 /// not be is what the form is told.
 ///
@@ -162,7 +136,6 @@ pub fn searched(
     mut note: ResMut<SearchNote>,
     mut results: ResMut<SearchResults>,
     mut plot: ResMut<Plot>,
-    mut selection: ResMut<Selection>,
     camera: Query<&OrbitCamera>,
     db: Res<Db>,
 ) {
@@ -185,17 +158,16 @@ pub fn searched(
                             .unwrap_or_default();
 
                     // Whatever was on offer answered the last name asked
-                    // about, and this is a new one.
+                    // about, and this is a new one. What is picked out is
+                    // left alone: it was picked out by a click rather than
+                    // by the search before it, and a search is not a reason
+                    // to let go of it.
                     results.clear();
-                    note.0 = match named_outright(name, &found) {
-                        Some(at) => pick_out(&found[at], &mut selection),
-                        None if found.is_empty() => {
-                            Some(format!("No system named {name}"))
-                        }
-                        None => {
-                            results.set(found);
-                            None
-                        }
+                    note.0 = if found.is_empty() {
+                        Some(format!("No system named {name}"))
+                    } else {
+                        results.set(found);
+                        None
                     };
                 });
             }
@@ -236,49 +208,5 @@ pub(crate) mod tests {
             updated_at: chrono::DateTime::UNIX_EPOCH,
             updated_by: String::new(),
         }
-    }
-
-    /// A name given in full is the system it names
-    #[test]
-    fn a_whole_name_answers_itself() {
-        let found = [row("SOLATI"), row("SOL"), row("SOLLARO")];
-
-        assert_eq!(named_outright("SOL", &found), Some(1));
-    }
-
-    /// However it was typed, since names are held in one case and typed in
-    /// another
-    #[test]
-    fn a_whole_name_is_answered_whatever_case_it_is_in() {
-        let found = [row("SOL")];
-
-        assert_eq!(named_outright("sol", &found), Some(0));
-        assert_eq!(named_outright("Sol", &found), Some(0));
-    }
-
-    /// Room around a name is not part of it
-    #[test]
-    fn a_whole_name_is_answered_through_the_space_around_it() {
-        let found = [row("SOL")];
-
-        assert_eq!(named_outright("  sol ", &found), Some(0));
-    }
-
-    /// Part of a name is a question about which system, not an answer
-    ///
-    /// Which is the whole of what the list is for: `sol` is the start of five
-    /// names, and picking the first of them out would be the map deciding
-    /// something the user was in the middle of asking.
-    #[test]
-    fn part_of_a_name_answers_nothing() {
-        let found = [row("SOLATI"), row("SOLLARO")];
-
-        assert_eq!(named_outright("SOL", &found), None);
-    }
-
-    /// Nothing found is nothing named
-    #[test]
-    fn nothing_found_names_nothing() {
-        assert_eq!(named_outright("SOL", &[]), None);
     }
 }

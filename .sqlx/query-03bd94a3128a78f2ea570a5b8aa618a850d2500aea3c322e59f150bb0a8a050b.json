@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                updated_at,\n                updated_by,\n                COALESCE((\n                    SELECT array_agg(faction_id)\n                    FROM system_factions\n                    WHERE system_address = systems.address\n                ), ARRAY[]::integer[]) AS \"factions!\"\n            FROM systems\n            -- $1 decides which rows match and $2 decides which of those come\n            -- first: held anywhere in the name to match, held at the start of\n            -- it to lead. Two patterns because they answer two questions, and\n            -- the second is asked in SQL rather than after the rows arrive\n            -- because ordering is what the LIMIT cuts against.\n            WHERE name ILIKE $1\n            ORDER BY\n                (name ILIKE $2) DESC,\n                position <<->> $3::geometry NULLS LAST,\n                name\n            LIMIT $4\n            ",
+  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                updated_at,\n                updated_by,\n                COALESCE((\n                    SELECT array_agg(faction_id)\n                    FROM system_factions\n                    WHERE system_address = systems.address\n                ), ARRAY[]::integer[]) AS \"factions!\"\n            FROM systems\n            -- $1 decides which rows match and $2 and $3 decide which of those\n            -- come first: held anywhere in the name to match, the whole of the\n            -- name to lead, held at the start of it to come next. Three\n            -- patterns because they answer three questions, and the last two\n            -- are asked in SQL rather than after the rows arrive because\n            -- ordering is what the LIMIT cuts against.\n            WHERE name ILIKE $1\n            ORDER BY\n                (name ILIKE $2) DESC,\n                (name ILIKE $3) DESC,\n                position <<->> $4::geometry NULLS LAST,\n                name\n            LIMIT $5\n            ",
   "describe": {
     "columns": [
       {
@@ -164,6 +164,7 @@
       "Left": [
         "Text",
         "Text",
+        "Text",
         {
           "Custom": {
             "name": "geometry",
@@ -188,5 +189,5 @@
       null
     ]
   },
-  "hash": "ddd660051d206b6ff7541aebd41f7f736056627beb1683a3d0971c1a0ea7097e"
+  "hash": "03bd94a3128a78f2ea570a5b8aa618a850d2500aea3c322e59f150bb0a8a050b"
 }

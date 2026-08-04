@@ -823,10 +823,13 @@ fn took(
 
 /// The systems the last search turned up, for the user to choose between
 ///
-/// A name given in full is picked out on the spot and leaves nothing to
-/// choose, so this stands where the note would: the answer to which of these
-/// did you mean. The two never appear together, one being what the other is
-/// not.
+/// Every search is answered here, whether the user typed part of a name or the
+/// whole of one. A name spelled out in full leads the list rather than being
+/// picked out on its own: the search says which systems are on record under
+/// that name and the click says which of them is meant, and a search that
+/// picked something out would let go of whatever had been gathered before it.
+/// This stands where the note would, the two never appearing together, since a
+/// search either found something to offer or found nothing to say.
 ///
 /// The list is left standing once something is picked out of it. Choosing is
 /// most of what it is for, and a list that puts itself away as soon as it is
@@ -836,9 +839,9 @@ fn took(
 /// A line answers the gestures a star answers. A plain click picks that system
 /// out in place of the rest, a click with ctrl, command or shift held gathers
 /// it up alongside them and lets go of one already held, and a double click
-/// sends the camera there. One search turning up several candidates is where a
-/// handful of systems most often comes from, so the list is where gathering
-/// them has to work.
+/// sends the camera there. Gathering reaches across searches: the list goes
+/// when the next name is typed and what was picked out of it stays, so a set
+/// can be built a name at a time.
 ///
 /// A system with no position on record is listed and cannot be picked. Three
 /// quarters of the systems on record are in that state, and knowing one exists

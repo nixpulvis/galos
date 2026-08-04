@@ -165,13 +165,17 @@ impl System {
     /// [`System::fetch_like_name`], which takes a pattern whole from whoever
     /// wrote it.
     ///
-    /// Ordered so that the `limit` keeps the rows worth keeping. Names that
-    /// start with the query first, since someone typing `sol` means Sol before
-    /// they mean Nasolituw. Then nearest to `near`, which is where the user is
-    /// looking: a common fragment matches tens of thousands of systems and the
-    /// ones they mean are the ones in front of them. Systems with no position
-    /// on record sort last of all, having no distance to be near by and
-    /// nowhere to be flown to.
+    /// Ordered so that the `limit` keeps the rows worth keeping. The name
+    /// spelled out in full first, so that a user who typed the whole of one is
+    /// answered with it wherever it happens to lie; ordering rather than a
+    /// lookup of its own, since the `LIMIT` cuts what the order has already
+    /// settled and the top of that order is a place nothing can crowd it out
+    /// of. Then names that start with the query, since someone typing `sol`
+    /// means Sol before they mean Nasolituw. Then nearest to `near`, which is
+    /// where the user is looking: a common fragment matches tens of thousands
+    /// of systems and the ones they mean are the ones in front of them.
+    /// Systems with no position on record sort last of all, having no distance
+    /// to be near by and nowhere to be flown to.
     ///
     /// Bounded because it has to be. A query of a letter or two matches most
     /// of the systems on record, `%a%` reaching 180,000 of the 284,000 held
@@ -204,19 +208,22 @@ impl System {
                     WHERE system_address = systems.address
                 ), ARRAY[]::integer[]) AS "factions!"
             FROM systems
-            -- $1 decides which rows match and $2 decides which of those come
-            -- first: held anywhere in the name to match, held at the start of
-            -- it to lead. Two patterns because they answer two questions, and
-            -- the second is asked in SQL rather than after the rows arrive
-            -- because ordering is what the LIMIT cuts against.
+            -- $1 decides which rows match and $2 and $3 decide which of those
+            -- come first: held anywhere in the name to match, the whole of the
+            -- name to lead, held at the start of it to come next. Three
+            -- patterns because they answer three questions, and the last two
+            -- are asked in SQL rather than after the rows arrive because
+            -- ordering is what the LIMIT cuts against.
             WHERE name ILIKE $1
             ORDER BY
                 (name ILIKE $2) DESC,
-                position <<->> $3::geometry NULLS LAST,
+                (name ILIKE $3) DESC,
+                position <<->> $4::geometry NULLS LAST,
                 name
-            LIMIT $4
+            LIMIT $5
             "#,
             format!("%{query}%"),
+            query,
             format!("{query}%"),
             near.map(wkb::Encode) as _,
             limit
