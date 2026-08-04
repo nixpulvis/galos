@@ -202,17 +202,27 @@ const POINTED_WEIGHT: f32 = 500.;
 /// focus itself at [`POINTED_WEIGHT`].
 const SELECTED_WEIGHT: f32 = 1000.;
 
-/// How much being excluded by the filters argues against a name
+/// Whether a system is asked for a name at all
 ///
-/// A penalty rather than a bar, so a dim name still appears where there is
-/// room for it. What the filters exclude is context, and context is worth
-/// reading when it costs nothing; it is only worth less than what was asked
-/// for. Above the span of every term a system can earn without being marked
-/// out, so that a name the filters admit always outranks one they do not,
-/// however far off it is.
+/// Two ways to be passed over and two to be asked for regardless.
 ///
-/// Charged only against a system with no mark of its own. See [`name_score`].
-const FILTERED_PENALTY: f32 = 2000.;
+/// A name is read or it is not; there is no faint reading of one. So a system
+/// the filters exclude gives its name up rather than keeping it dimly: a sky
+/// of faint names over dim stars has nothing legible in it, and what the
+/// filters admit is what the user asked to be able to read. The toggle says
+/// the same thing about every system at once.
+///
+/// Being marked out beats both. Pointing at a system or picking it out is
+/// asking for it by name, which is the one thing a name is for, and neither
+/// the toggle nor a filter has any business refusing it.
+fn worth_naming(
+    shown: bool,
+    filtered: bool,
+    pointed_at: bool,
+    selected: bool,
+) -> bool {
+    pointed_at || selected || (shown && !filtered)
+}
 
 /// How far the focus bonus reaches, in light years
 ///
@@ -453,9 +463,7 @@ pub fn choose_names(
             let selected =
                 selection.contains(entity) && *visibility != Visibility::Hidden;
 
-            // Names turned off leaves the ones marked out the only ones
-            // being asked for.
-            if !show_names.0 && !pointed_at && !selected {
+            if !worth_naming(show_names.0, filtered, pointed_at, selected) {
                 return None;
             }
 
@@ -472,7 +480,7 @@ pub fn choose_names(
             if screen.intersect(rect).is_empty() {
                 return None;
             }
-            let score = name_score(from_focus, pointed_at, selected, filtered);
+            let score = name_score(from_focus, pointed_at, selected);
             Some((entity, rect, score))
         })
         .collect();
@@ -529,24 +537,11 @@ pub fn choose_names(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(
-    from_focus: f32,
-    pointed_at: bool,
-    selected: bool,
-    filtered: bool,
-) -> f32 {
+fn name_score(from_focus: f32, pointed_at: bool, selected: bool) -> f32 {
     let focused = FOCUS_WEIGHT / (1. + (from_focus / FOCUS_REACH).powi(2));
     let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
     let picked = if selected { SELECTED_WEIGHT } else { 0. };
-    // Not against a system that is marked out. Pointing at one or selecting
-    // it is asking for it by name, and that already overrides the names
-    // toggle and the name radius; a filter is no different. A selection the
-    // filters exclude goes dim and stays selected, and a mark that says
-    // which star without saying which system is half an answer.
-    let excluded =
-        if filtered && !pointed_at && !selected { FILTERED_PENALTY } else { 0. };
-
-    picked.max(pointed) + focused - from_focus - excluded
+    picked.max(pointed) + focused - from_focus
 }
 
 /// The screen rectangle a system's name would occupy, with room around it
@@ -892,6 +887,47 @@ mod tests {
         );
     }
 
+    /// A system the filters exclude gives up its name
+    ///
+    /// A name is read or it is not, so one belonging to a dimmed star is not
+    /// dimly readable, it is clutter over what the user asked to see.
+    #[test]
+    fn a_filtered_system_is_not_named() {
+        assert!(!worth_naming(true, true, false, false));
+    }
+
+    /// And keeps it while it is pointed at or picked out
+    ///
+    /// Either is asking for the system by name, which is the one thing a
+    /// name is for.
+    #[test]
+    fn a_marked_system_is_named_through_a_filter() {
+        assert!(worth_naming(true, true, true, false));
+        assert!(worth_naming(true, true, false, true));
+    }
+
+    /// The names toggle bars one the same way, and yields the same way
+    #[test]
+    fn the_names_toggle_bars_and_yields_as_a_filter_does() {
+        assert!(!worth_naming(false, false, false, false));
+        assert!(worth_naming(false, false, true, false));
+        assert!(worth_naming(false, false, false, true));
+    }
+
+    /// A system the filters admit is named when names are on, and not when off
+    #[test]
+    fn an_admitted_system_follows_the_toggle() {
+        assert!(worth_naming(true, false, false, false));
+        assert!(!worth_naming(false, false, false, false));
+    }
+
+    /// Marked out beats both at once
+    #[test]
+    fn a_marked_system_is_named_with_everything_against_it() {
+        assert!(worth_naming(false, true, true, false));
+        assert!(worth_naming(false, true, false, true));
+    }
+
     /// Names are offered in order of nearness to what is focused
     ///
     /// The score falls the whole way out, so the greedy pass takes the
@@ -900,11 +936,10 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(0., false, false, false);
+        let mut nearer = name_score(0., false, false);
         for step in 1..=1000 {
             let further = name_score(
                 step as f32 * DEFAULT_NAME_RADIUS / 1000.,
-                false,
                 false,
                 false,
             );
@@ -965,10 +1000,10 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_focused() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(DEFAULT_NAME_RADIUS, true, false, false);
+        let pointed = name_score(DEFAULT_NAME_RADIUS, true, false);
 
         // The focused system itself, which is otherwise the best there is.
-        let focused = name_score(0., false, false, false);
+        let focused = name_score(0., false, false);
 
         assert!(
             pointed > focused,
@@ -984,58 +1019,12 @@ mod tests {
     /// the point on the focus, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true, false);
-        let pointed = name_score(0., true, false, false);
+        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
+        let pointed = name_score(0., true, false);
 
         assert!(
             selected > pointed,
             "selected scored {selected}, behind the {pointed} of a point"
-        );
-    }
-
-    /// A name the filters admit outranks one they do not
-    ///
-    /// Measured with the excluded system on the focus, which is the best
-    /// claim an unmarked system can have, and the admitted one as far out as
-    /// a name is ever drawn. Nothing but the filter decides it.
-    #[test]
-    fn what_is_admitted_outranks_what_is_filtered() {
-        let admitted = name_score(DEFAULT_NAME_RADIUS, false, false, false);
-        let excluded = name_score(0., false, false, true);
-
-        assert!(
-            admitted > excluded,
-            "an admitted name scored {admitted}, behind the {excluded} of \
-             one the filters exclude"
-        );
-    }
-
-    /// An excluded name still ranks against the other excluded ones
-    ///
-    /// The penalty is a penalty rather than a bar: what the filters exclude
-    /// is context, and context is worth reading where there is room for it.
-    /// So the near ones are still offered first.
-    #[test]
-    fn filtered_names_are_still_ordered_among_themselves() {
-        let near = name_score(1., false, false, true);
-        let far = name_score(DEFAULT_NAME_RADIUS, false, false, true);
-
-        assert!(near > far);
-    }
-
-    /// A selected system keeps its name even where a filter excludes it
-    ///
-    /// It stays selected while the filters dim it, and the whole point of a
-    /// selection is that it stays marked out.
-    #[test]
-    fn a_selection_holds_its_name_through_a_filter() {
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true, true);
-        let resting = name_score(0., false, false, false);
-
-        assert!(
-            selected > resting,
-            "a filtered selection scored {selected}, behind the {resting} \
-             of an ordinary name"
         );
     }
 
@@ -1046,8 +1035,8 @@ mod tests {
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
-        let both = name_score(DEFAULT_NAME_RADIUS, true, true, false);
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true, false);
+        let both = name_score(DEFAULT_NAME_RADIUS, true, true);
+        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
 
         assert_eq!(both, selected);
     }
