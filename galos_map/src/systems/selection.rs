@@ -26,11 +26,11 @@
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::System;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
 };
+use crate::systems::{Spyglass, System};
 use crate::ui::{PointerOverUi, PressAnswered};
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -306,17 +306,24 @@ fn clear_when_nothing_is_clicked(
 fn ring(
     mut gizmos: Gizmos,
     camera: Query<&OrbitCamera>,
+    spyglass: Res<Spyglass>,
     selected: Query<
-        (&GlobalTransform, &Visibility, &Children, Has<Filtered>),
-        (With<System>, With<Selected>),
+        (&System, &GlobalTransform, &Children, Has<Filtered>),
+        With<Selected>,
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
     dim: Res<DimTo>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
-    for (system, visibility, children, filtered) in &selected {
-        if *visibility == Visibility::Hidden {
+    for (system, at, children, filtered) in &selected {
+        // Reach rather than whether the star is drawn. The two part company
+        // where the filters draw what they exclude at nothing, and this ring
+        // answers the wrong one of them: the spyglass says where the user is
+        // looking, and a ring outside it is a ring off the edge of that. What
+        // the filters say is about the sky rather than about the handful of
+        // systems the user picked out by hand.
+        if !spyglass.reaches(camera.center, DVec3::from(system.position)) {
             continue;
         }
 
@@ -330,10 +337,28 @@ fn ring(
         };
 
         gizmos.circle(
-            Isometry3d::new(system.translation(), camera.rotation),
+            Isometry3d::new(at.translation(), camera.rotation),
             radius,
-            dim.against(SELECTION, filtered),
+            ringed(&dim, filtered),
         );
+    }
+}
+
+/// What colour a selected system's ring is drawn in
+///
+/// It dims with the star it is drawn around, so that a selection the filters
+/// exclude does not read as one they have let go of.
+///
+/// Where that star is not drawn at all there is nothing to dim with, and a
+/// mark faded to nothing is no mark. So the ring stands at full strength and
+/// says where the system is with nothing drawn inside it, which is the whole
+/// of what is left to say: the filters have taken the sky away and the user
+/// has picked this one out of it regardless.
+fn ringed(dim: &DimTo, filtered: bool) -> Srgba {
+    if filtered && dim.0 == 0. {
+        SELECTION
+    } else {
+        dim.against(SELECTION, filtered)
     }
 }
 
@@ -538,6 +563,35 @@ mod tests {
         app.update();
 
         assert!(app.world().entity(one).contains::<Selected>());
+    }
+
+    /// A ring dims with the star it is drawn around
+    ///
+    /// So that a selection the filters exclude does not read as one they have
+    /// let go of.
+    #[test]
+    fn a_ring_dims_with_its_star() {
+        let faint = ringed(&DimTo(0.15), true);
+
+        assert!(faint.alpha < SELECTION.alpha);
+        assert_eq!(ringed(&DimTo(0.15), false), SELECTION);
+    }
+
+    /// And stands at full strength where there is no star to dim with
+    ///
+    /// At an opacity of nothing the star is not drawn, so a ring dimmed to
+    /// match it would be no ring, and the one thing left to say is where the
+    /// system the user picked out is.
+    #[test]
+    fn a_ring_with_no_star_stands_at_full_strength() {
+        assert_eq!(ringed(&DimTo(0.), true), SELECTION);
+    }
+
+    /// What is not excluded is never dimmed, whatever the opacity
+    #[test]
+    fn a_ring_around_an_admitted_system_is_never_dimmed() {
+        assert_eq!(ringed(&DimTo(0.), false), SELECTION);
+        assert_eq!(ringed(&DimTo(1.), false), SELECTION);
     }
 
     /// A settled selection is not written to as the frames go by

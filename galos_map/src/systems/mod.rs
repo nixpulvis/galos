@@ -135,6 +135,23 @@ impl Spyglass {
     pub const UNASKED: f32 = 200.;
 }
 
+impl Spyglass {
+    /// Whether the spyglass reaches `position`, from a camera centered on
+    /// `center`
+    ///
+    /// Everything loaded where it has been overridden, that being what
+    /// overriding it means.
+    ///
+    /// Asked by whatever has to tell the two reasons a system is not drawn
+    /// apart. Out of reach is the map saying it is not looking there;
+    /// excluded by a filter is the user saying they are not interested, and
+    /// what is drawn for a system they picked out by hand answers only the
+    /// first.
+    pub fn reaches(&self, center: DVec3, position: DVec3) -> bool {
+        self.disabled || center.distance(position) <= self.radius as f64
+    }
+}
+
 /// How much of the sky is in reach, and how much of that the filters admit
 ///
 /// Tallied by [`visibility`], which has already settled both for every system
@@ -175,21 +192,13 @@ pub fn visibility(
     dim: Res<filter::DimTo>,
     mut in_reach: ResMut<InReach>,
 ) {
-    // How far the spyglass reaches, or nothing at all when it has been
-    // overridden and everything loaded is drawn.
-    let reach = if spyglass.disabled {
-        None
-    } else {
-        let Ok(camera) = camera.single() else { return };
-        Some((camera.center, spyglass.radius as f64))
-    };
+    let Ok(camera) = camera.single() else { return };
     let excluded_are_drawn = dim.0 > 0.;
 
     let mut tally = InReach::default();
     for (system, mut visibility, filtered) in &mut systems {
-        let within = reach.is_none_or(|(center, radius)| {
-            center.distance(DVec3::from(system.position)) <= radius
-        });
+        let within =
+            spyglass.reaches(camera.center, DVec3::from(system.position));
         if within {
             tally.total += 1;
             if !filtered {
@@ -295,6 +304,35 @@ pub(crate) mod tests {
     fn drawn(app: &App, entity: Entity) -> bool {
         *app.world().entity(entity).get::<Visibility>().unwrap()
             != Visibility::Hidden
+    }
+
+    /// The spyglass reaches what is inside its radius and no further
+    #[test]
+    fn the_spyglass_reaches_what_is_within_it() {
+        let spyglass = Spyglass {
+            radius: 10.,
+            fetch: false,
+            disabled: false,
+            lock_camera: false,
+        };
+        let center = DVec3::ZERO;
+
+        assert!(spyglass.reaches(center, DVec3::new(5., 0., 0.)));
+        assert!(spyglass.reaches(center, DVec3::new(10., 0., 0.)));
+        assert!(!spyglass.reaches(center, DVec3::new(11., 0., 0.)));
+    }
+
+    /// Overridden, it reaches everything loaded however far off
+    #[test]
+    fn an_overridden_spyglass_reaches_whatever_is_loaded() {
+        let spyglass = Spyglass {
+            radius: 10.,
+            fetch: false,
+            disabled: true,
+            lock_camera: false,
+        };
+
+        assert!(spyglass.reaches(DVec3::ZERO, DVec3::new(5e4, 0., 0.)));
     }
 
     /// The spyglass draws what it reaches and hides the rest
