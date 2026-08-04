@@ -299,8 +299,9 @@ fn fill_filters(mut panels: ResMut<Panels>, db: Res<Db>) {
 
 /// What the map can draw of everything `filter` admits
 ///
-/// Sorted by name, which is the order the list falls back on when there is no
-/// camera to measure from. What comes back is in no order at all.
+/// Put in the filter's own order where it has one, and by name where it has
+/// not. What comes back is in no order at all, and which order a list holds
+/// is the filter's to say.
 ///
 /// Systems with no position on record are dropped. The map cannot draw one
 /// and cannot fly to one, so a line naming it would answer nothing.
@@ -312,7 +313,17 @@ async fn fetch(db: &galos_db::Database, filter: &Filter) -> Vec<System> {
 
     let mut found: Vec<System> =
         rows.iter().filter_map(|row| System::try_from(row).ok()).collect();
-    found.sort_unstable_by(|one, other| one.name.cmp(&other.name));
+
+    // In the filter's own order where it has one, which for a route is the
+    // order it is travelled. Where it has none, by name: what comes back is
+    // in no order at all, and a list has to be in some order to hold still.
+    if filter.ordered() {
+        found.sort_by_key(|system| {
+            filter.place_of(system.address).unwrap_or(usize::MAX)
+        });
+    } else {
+        found.sort_unstable_by(|one, other| one.name.cmp(&other.name));
+    }
     found
 }
 
@@ -387,8 +398,9 @@ fn panels(
                     Subject::System(system) => {
                         described(ui, system, &names, &mut centred, &mut wanted)
                     }
-                    Subject::Filter { systems, .. } => admitted(
+                    Subject::Filter { filter, systems } => admitted(
                         ui,
+                        filter,
                         systems.as_deref(),
                         focus,
                         &mut picked,
@@ -513,6 +525,7 @@ enum Picked {
 /// system reached by its star are reached the same way.
 fn admitted(
     ui: &mut Ui,
+    filter: &Filter,
     systems: Option<&[System]>,
     focus: Option<DVec3>,
     picked: &mut Option<System>,
@@ -535,24 +548,32 @@ fn admitted(
     let line = ui.text_style_height(&egui::TextStyle::Body)
         + LINE_PADDING * 2.
         + ui.spacing().item_spacing.y;
-    // Nearest first, from where the camera is looking, which is the distance
-    // the whole map is measured in. Ordered afresh each frame rather than
-    // once when the list arrived, so that it goes on answering which of these
-    // is near me as the user flies. That does mean the list reorders under
-    // them while the camera is moving; it holds still the moment it stops,
-    // and the camera only moves when it is asked to.
     let mut order: Vec<(&System, Option<f64>)> = systems
         .iter()
         .map(|system| {
             (system, focus.map(|at| at.distance(DVec3::from(system.position))))
         })
         .collect();
-    // A stable sort, so that with no camera to measure from the name order
-    // the list arrived in is what is left.
-    order.sort_by(|(_, one), (_, other)| match (one, other) {
-        (Some(one), Some(other)) => one.total_cmp(other),
-        _ => std::cmp::Ordering::Equal,
-    });
+
+    // A filter with an order of its own is left in it. A route is travelled
+    // from one end to the other, and a list of its systems put in any other
+    // order is no longer a route, whatever it is sorted by.
+    //
+    // Where there is no such order, nearest first, from where the camera is
+    // looking, which is the distance the whole map is measured in. Ordered
+    // afresh each frame rather than once when the list arrived, so it goes on
+    // answering which of these is near me as the user flies. That does mean
+    // it reorders while the camera is moving; it holds still the moment it
+    // stops, and the camera only moves when it is asked to.
+    //
+    // A stable sort, so that with no camera to measure from the order the
+    // list arrived in is what is left.
+    if !filter.ordered() {
+        order.sort_by(|(_, one), (_, other)| match (one, other) {
+            (Some(one), Some(other)) => one.total_cmp(other),
+            _ => std::cmp::Ordering::Equal,
+        });
+    }
 
     crate::ui::scrolling(ui, line * LISTED as f32, |ui| {
         for (system, away) in order {
@@ -916,6 +937,26 @@ mod tests {
         painted(|ui| {
             admitted(
                 ui,
+                &faction(7),
+                Some(&systems),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+    }
+
+    /// So does one a route lists in the order it is travelled
+    #[test]
+    fn a_route_list_paints_in_a_colour() {
+        let systems = [system(1), system(2)];
+        let route =
+            Filter::Route { label: "A -> B".to_owned(), systems: vec![1, 2] };
+        painted(|ui| {
+            admitted(
+                ui,
+                &route,
                 Some(&systems),
                 Some(DVec3::ZERO),
                 &mut None,

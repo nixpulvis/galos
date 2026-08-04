@@ -37,10 +37,6 @@ pub fn spawn_route(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
 ) {
-    for entity in route_query.iter() {
-        commands.entity(entity).despawn();
-    }
-
     // A strip needs two ends to join. A search that found nothing comes back
     // empty, and handing the renderer a mesh with no vertices leaves its slab
     // allocator referring to something that was never allocated:
@@ -50,6 +46,15 @@ pub fn spawn_route(
     let points: Vec<DVec3> = systems.iter().filter_map(system_to_vec).collect();
     if points.len() < 2 {
         return;
+    }
+
+    // Asked before the line already drawn is taken away, so that a plot that
+    // came back with nothing leaves the last one whole. Taken away first, a
+    // route that failed would clear the line and leave the filter naming it
+    // standing in the bar, dimming the map down to a route with nothing drawn
+    // on it.
+    for entity in route_query.iter() {
+        commands.entity(entity).despawn();
     }
 
     // Mesh vertices are floats, with no cell to lean on, so a route drawn in

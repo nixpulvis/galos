@@ -13,7 +13,7 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Spyglass {
-        radius: 10.,
+        radius: Spyglass::OPENING,
         fetch: true,
         disabled: false,
         lock_camera: false,
@@ -92,6 +92,47 @@ pub struct Spyglass {
     pub radius: f32,
     pub disabled: bool,
     pub lock_camera: bool,
+}
+
+impl Spyglass {
+    /// How far the map reaches when it opens
+    ///
+    /// Also the least anything sets it to without being asked. A route
+    /// between two neighbours spans a few light years, and a reach drawn in
+    /// that far shows the two ends and nothing around them.
+    pub const OPENING: f32 = 10.;
+
+    /// The shortest reach worth offering, in light years
+    ///
+    /// Stars stand far enough apart that a shorter one shows the system at
+    /// the middle of it and nothing else, so every setting under it draws the
+    /// same picture.
+    ///
+    /// Measured over a sample of inhabited systems, counting what stands
+    /// within reach of each: at 1, 2, 3 and 5 light years the middling answer
+    /// is one system, which is the one being stood on. It first rises at 8,
+    /// reaches 4 by 10, and 19 by 20.
+    pub const FLOOR: f32 = 5.;
+
+    /// The longest, in light years
+    ///
+    /// The galaxy is 105,700 across, so this reaches the whole of it. Only
+    /// ever asked for by hand: everything it takes in is fetched and drawn,
+    /// and at this reach that is every system on record.
+    pub const CEILING: f32 = 1.1e5;
+
+    /// The furthest the map reaches without being asked to
+    ///
+    /// What a route may pull it out to. Everything the spyglass takes in is
+    /// fetched and spawned, so a reach set from the length of whatever was
+    /// plotted is a query nobody asked the size of: measured against the
+    /// systems on record, 200 light years takes in about fourteen thousand,
+    /// 500 about twenty five, and 1000 about thirty two.
+    ///
+    /// Past this a route is drawn as a line with stars about the middle of it
+    /// and none out at the ends, which is a poorer picture than the one asked
+    /// for and a far better one than a map that has stopped answering.
+    pub const UNASKED: f32 = 200.;
 }
 
 /// How much of the sky is in reach, and how much of that the filters admit

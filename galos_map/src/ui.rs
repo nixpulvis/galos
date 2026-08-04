@@ -168,23 +168,6 @@ const SELECTION_DOT: egui::Color32 = egui::Color32::from_rgb(
     (SELECTION.blue * 255.) as u8,
 );
 
-/// The shortest radius worth offering, in light years
-///
-/// Stars stand far enough apart that a shorter reach than this shows the
-/// system at the middle of it and nothing else, so every setting under it
-/// draws the same picture and none of them is worth dragging to.
-///
-/// Measured over a sample of inhabited systems, counting what stands within
-/// reach of each: at 1, 2, 3 and 5 light years the middling answer is one
-/// system, which is the one being stood on. It first rises at 8, reaches 4 by
-/// 10, and 19 by 20.
-const RADIUS_FLOOR: f32 = 5.;
-
-/// The longest, in light years
-///
-/// The galaxy is 105,700 across, so this reaches the whole of it.
-const RADIUS_CEILING: f32 = 1.1e5;
-
 /// How much of the value a drag on the box beside a radius is worth
 ///
 /// A fraction of the number itself rather than a distance, since a radius runs
@@ -215,21 +198,21 @@ const RADIUS_DRAG: f32 = 0.005;
 /// the spyglass reaches. The rail clamps to it, so a radius set wide and then
 /// hemmed in comes back to what is on offer.
 fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
-    let ceiling = ceiling.clamp(RADIUS_FLOOR, RADIUS_CEILING);
+    let ceiling = ceiling.clamp(Spyglass::FLOOR, Spyglass::CEILING);
     // Read before the rail borrows it, and the reason it is read at all.
     let speed = (*radius * RADIUS_DRAG).max(f32::EPSILON) as f64;
     fill_width(ui);
 
     ui.horizontal(|ui| {
         ui.add(
-            egui::Slider::new(radius, RADIUS_FLOOR..=ceiling)
+            egui::Slider::new(radius, Spyglass::FLOOR..=ceiling)
                 .logarithmic(true)
                 .show_value(false),
         );
         value_box(
             ui,
             egui::DragValue::new(radius)
-                .range(RADIUS_FLOOR..=ceiling)
+                .range(Spyglass::FLOOR..=ceiling)
                 .speed(speed),
         );
     })
@@ -334,7 +317,7 @@ pub fn chrome(
     let edge = settings_pane(ctx, settings.0, |ui| {
         heading(ui, "Spyglass", false);
         ui.label("Radius (Ly)");
-        radius_slider(ui, &mut knobs.spyglass.radius, RADIUS_CEILING);
+        radius_slider(ui, &mut knobs.spyglass.radius, Spyglass::CEILING);
         ui.add_space(FIELD_GAP);
         ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
         ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
@@ -360,7 +343,7 @@ pub fn chrome(
                     // everything loaded, and then names may be asked for
                     // beyond its reach.
                     let ceiling = if knobs.spyglass.disabled {
-                        RADIUS_CEILING
+                        Spyglass::CEILING
                     } else {
                         knobs.spyglass.radius
                     };
@@ -1368,7 +1351,7 @@ mod tests {
                     let mut draw = |ui: &mut Ui| {
                         row.room = ui.available_width();
                         row.used =
-                            radius_slider(ui, &mut radius, RADIUS_CEILING)
+                            radius_slider(ui, &mut radius, Spyglass::CEILING)
                                 .rect
                                 .width();
                     };
@@ -1413,7 +1396,7 @@ mod tests {
     #[test]
     fn a_radius_is_held_within_what_is_offered() {
         assert_eq!(drawn_radius(5e4, 100.), 100.);
-        assert_eq!(drawn_radius(0.01, 100.), RADIUS_FLOOR);
+        assert_eq!(drawn_radius(0.01, 100.), Spyglass::FLOOR);
     }
 
     /// How much of the value one pixel of a `rail` pixels wide is worth
@@ -1423,7 +1406,7 @@ mod tests {
     /// is that multiple, less the one, so it reads as the fraction the drag
     /// speed is also given as.
     fn rail_precision(rail: f32) -> f32 {
-        let decades = (RADIUS_CEILING / RADIUS_FLOOR).log10();
+        let decades = (Spyglass::CEILING / Spyglass::FLOOR).log10();
         10_f32.powf(decades / rail) - 1.
     }
 
@@ -1454,7 +1437,10 @@ mod tests {
     /// rail divides by the span it is given.
     #[test]
     fn a_range_with_no_room_in_it_still_draws() {
-        assert_eq!(drawn_radius(RADIUS_FLOOR, RADIUS_FLOOR), RADIUS_FLOOR);
+        assert_eq!(
+            drawn_radius(Spyglass::FLOOR, Spyglass::FLOOR),
+            Spyglass::FLOOR
+        );
     }
 
     /// And inside the galaxy, whatever ceiling it is handed
@@ -1463,7 +1449,7 @@ mod tests {
     /// number the user may type.
     #[test]
     fn a_radius_reaches_no_further_than_the_galaxy() {
-        assert_eq!(drawn_radius(5e6, 5e6), RADIUS_CEILING);
+        assert_eq!(drawn_radius(5e6, 5e6), Spyglass::CEILING);
     }
 
     /// How far a measured width may sit from the one asked for
@@ -1531,6 +1517,30 @@ mod tests {
         });
 
         assert!((width - VALUE_WIDTH).abs() < SLACK);
+    }
+
+    /// Egui says nothing about the ids the filter rows use
+    #[test]
+    fn the_filter_rows_do_not_share_ids() {
+        use crate::tests::complaints;
+
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Alpha".into() });
+        filters.add(Filter::Faction { id: 2, name: "Beta".into() });
+        filters
+            .add(Filter::Route { label: "A -> B".into(), systems: vec![1, 2] });
+        let mut panels = Panels::default();
+
+        let said = complaints(|ui| {
+            applied(
+                ui,
+                &mut filters,
+                &InReach { admitted: 1, total: 2 },
+                &mut panels,
+            )
+        });
+
+        assert!(said.is_empty(), "{said:?}");
     }
 
     /// A row is keyed on what it is about, not on where it was drawn

@@ -36,7 +36,7 @@ pub struct Route;
 pub struct Plotted {
     /// The two ends, as the database spells them
     pub label: String,
-    /// Every system it runs through, by address, sorted
+    /// Every system it runs through, by address, in the order travelled
     pub systems: Vec<i64>,
     /// The middle of what it spans
     pub middle: DVec3,
@@ -68,7 +68,12 @@ fn plotted(
 
         // Measured from the middle, which is where the camera is going, so
         // what the spyglass holds is what the camera is about to see.
-        spyglass.radius = route.extent.max(MIN_REACH);
+        //
+        // Held inside what the map will reach unasked. Everything the
+        // spyglass takes in is fetched and spawned, and a route long enough
+        // would otherwise set a reach nobody asked the size of.
+        spyglass.radius =
+            route.extent.clamp(Spyglass::OPENING, Spyglass::UNASKED);
 
         filters.replace(Filter::Route {
             label: route.label.clone(),
@@ -104,13 +109,6 @@ fn follow_filters(
         commands.entity(line).despawn();
     }
 }
-
-/// The least a route may pull the spyglass in to
-///
-/// A route between two neighbours spans a few light years, and a spyglass
-/// drawn in that far shows the two ends and nothing around them. The map is
-/// left with at least the reach it opens with.
-const MIN_REACH: f32 = 10.;
 
 pub mod fetch;
 pub mod spawn;
@@ -159,6 +157,54 @@ mod tests {
     /// Whether the line is still drawn
     fn drawn(app: &App, line: Entity) -> bool {
         app.world().get_entity(line).is_ok()
+    }
+
+    /// What reach a route of `extent` light years pulls the spyglass out to
+    fn reach_for(extent: f32) -> f32 {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<Plotted>();
+        app.add_message::<MoveCamera>();
+        app.insert_resource(Spyglass {
+            fetch: true,
+            radius: Spyglass::OPENING,
+            disabled: false,
+            lock_camera: false,
+        });
+        app.init_resource::<Filters>();
+        app.add_systems(Update, plotted);
+
+        app.world_mut().write_message(Plotted {
+            label: "A -> B".to_owned(),
+            systems: vec![1, 2],
+            middle: DVec3::ZERO,
+            extent,
+        });
+        app.update();
+
+        app.world().resource::<Spyglass>().radius
+    }
+
+    /// A route reaches as far as it is long
+    #[test]
+    fn a_route_reaches_its_own_length() {
+        assert_eq!(reach_for(60.), 60.);
+    }
+
+    /// A short one still leaves the map something to see around it
+    #[test]
+    fn a_short_route_leaves_room_around_it() {
+        assert_eq!(reach_for(2.), Spyglass::OPENING);
+    }
+
+    /// A long one is held to what the map will reach unasked
+    ///
+    /// Everything the spyglass takes in is fetched and spawned, so a reach
+    /// set from the length of whatever was plotted is a query nobody asked
+    /// the size of.
+    #[test]
+    fn a_long_route_does_not_reach_as_far_as_it_likes() {
+        assert_eq!(reach_for(5000.), Spyglass::UNASKED);
     }
 
     /// The line stays while a route filter names it

@@ -50,10 +50,15 @@ pub enum Filter {
     /// The systems a plotted route runs through
     ///
     /// Unlike a faction, this is nothing a system knows about itself. A route
-    /// is worked out rather than recorded, so the filter carries the answer:
-    /// the addresses it came back with, sorted, so that asking whether a
-    /// system is on it is a search rather than a walk. The sky it is asked
-    /// about runs to thousands and a route to tens.
+    /// is worked out rather than recorded, so the filter carries the answer it
+    /// came back with: the addresses it runs through, in the order they are
+    /// travelled.
+    ///
+    /// That order is the whole of what a route is, so it is what is kept.
+    /// Holding them sorted instead would make asking whether a system is on
+    /// the route a search rather than a walk, and would lose the sequence in
+    /// exchange: a route is tens of systems long, so the walk costs little,
+    /// and nothing else could put them back in order afterwards.
     ///
     /// `label` is what its row says, settled when the route landed, since it
     /// names the two ends as the database spells them rather than as they
@@ -66,8 +71,29 @@ impl Filter {
     fn admits(&self, system: &System) -> bool {
         match self {
             Filter::Faction { id, .. } => system.factions.contains(id),
+            Filter::Route { systems, .. } => systems.contains(&system.address),
+        }
+    }
+
+    /// Whether what it admits has an order of its own
+    ///
+    /// A route is travelled from one end to the other, so its systems are a
+    /// sequence and reading them in any other order loses what they are. A
+    /// faction's are a set, with nothing in them to say which comes first, so
+    /// whoever lists those may put them in whatever order suits the reader.
+    pub fn ordered(&self) -> bool {
+        matches!(self, Filter::Route { .. })
+    }
+
+    /// Where the system at `address` falls in what this admits
+    ///
+    /// Nothing for a filter with no order of its own, and nothing for a
+    /// system it does not admit at all.
+    pub fn place_of(&self, address: i64) -> Option<usize> {
+        match self {
+            Filter::Faction { .. } => None,
             Filter::Route { systems, .. } => {
-                systems.binary_search(&system.address).is_ok()
+                systems.iter().position(|on| *on == address)
             }
         }
     }
@@ -434,9 +460,10 @@ mod tests {
 
     /// A route between the systems at `addresses`
     fn route(addresses: &[i64]) -> Filter {
-        let mut systems = addresses.to_vec();
-        systems.sort_unstable();
-        Filter::Route { label: "A -> B".to_owned(), systems }
+        Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: addresses.to_vec(),
+        }
     }
 
     /// A route filter admits the systems it runs through
@@ -453,10 +480,10 @@ mod tests {
         assert!(!filters.admit(&member(4, &[])));
     }
 
-    /// However the addresses arrived, the answer is the same
+    /// However the addresses are ordered, the answer is the same
     ///
-    /// They are searched rather than walked, which needs them sorted, and
-    /// nothing about where a route came from says they will be.
+    /// The order a route is kept in is the order it is travelled, which is
+    /// what its panel lists it in, and says nothing about who is on it.
     #[test]
     fn a_route_admits_the_same_whatever_order_it_came_in() {
         let mut forwards = Filters::default();
@@ -468,6 +495,31 @@ mod tests {
             let system = member(address, &[]);
             assert_eq!(forwards.admit(&system), backwards.admit(&system));
         }
+    }
+
+    /// A route says where each of its systems falls along it
+    ///
+    /// Which is what its panel lists them in. The order a route is travelled
+    /// is the whole of what a route is.
+    #[test]
+    fn a_route_knows_the_order_it_is_travelled() {
+        let asked = route(&[9, 3, 7]);
+
+        assert_eq!(asked.place_of(9), Some(0));
+        assert_eq!(asked.place_of(3), Some(1));
+        assert_eq!(asked.place_of(7), Some(2));
+        assert_eq!(asked.place_of(4), None);
+    }
+
+    /// A route has an order and a faction has none
+    ///
+    /// A faction's systems are a set, with nothing in them to say which comes
+    /// first, so whoever lists those may order them to suit the reader.
+    #[test]
+    fn only_a_route_carries_an_order() {
+        assert!(route(&[1, 2]).ordered());
+        assert!(!faction(7).ordered());
+        assert_eq!(faction(7).place_of(1), None);
     }
 
     /// A second route takes the place of the first

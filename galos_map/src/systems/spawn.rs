@@ -349,13 +349,12 @@ pub fn spawn(
                 let places: Vec<_> =
                     new_systems.iter().filter_map(system_to_vec).collect();
                 if let Some((middle, extent)) = framing(&places) {
-                    let mut systems: Vec<i64> = new_systems
+                    // In the order they are travelled, which is the order
+                    // the route came back in and the order its panel lists.
+                    let systems = new_systems
                         .iter()
                         .map(|system| system.address)
                         .collect();
-                    // Sorted, since what asks is asking whether a system is
-                    // among them rather than which one comes next.
-                    systems.sort_unstable();
                     plotted.write(Plotted {
                         label: format!("{} -> {}", first.name, last.name),
                         systems,
