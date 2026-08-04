@@ -372,12 +372,28 @@ impl System {
     /// costs is set by how many systems come back, which at the far end of the
     /// radius is most of the table.
     ///
-    /// Who is present in each of them is asked separately, by
-    /// [`Self::system_factions`], and joined up here. Asked of every row in the
-    /// same query it is a subquery run once per system: over a hundred
+    /// `admitting` narrows it to what the map is going to draw, as a list of
+    /// factions and a list of addresses. A system is admitted by standing in
+    /// either, since each thing the user has asked to see adds to what is
+    /// shown rather than cutting into it. Nothing narrows it to nothing: the
+    /// whole region, which is what the map asks for when it is drawing the
+    /// whole sky.
+    ///
+    /// Narrowed, it is asked in two halves: which systems are admitted, and
+    /// then what is known about those. The second half is [`Self::fetch_many`]
+    /// unchanged, which is what turns addresses into systems everywhere else,
+    /// so what a system is made of is written out once however it was reached.
+    /// The extra round trip is affordable for exactly the reason the narrowing
+    /// is worth doing: what comes back is the handful being drawn rather than
+    /// the hundred thousand around them.
+    ///
+    /// Who is present in each system is asked separately, by
+    /// [`Self::system_factions`], and joined up here. Asked of every row in
+    /// the same query it is a subquery run once per system: over a hundred
     /// thousand systems that is six parts in seven of the whole query, spent
-    /// discovering that all but three in a hundred of them have nobody on
-    /// record at all.
+    /// discovering that all but three systems in a hundred have nobody on
+    /// record at all. Narrowed there are few enough rows for `fetch_many` to
+    /// go on asking it the cheap way.
     ///
     /// Asked of the addresses that came back rather than of the region again.
     /// `ST_3DDWithin` estimates its own rows so far under that a second query
@@ -389,7 +405,15 @@ impl System {
         db: &Database,
         range: f64,
         center: [f64; 3],
+        admitting: Option<(&[i32], &[i64])>,
     ) -> Result<Vec<Self>, Error> {
+        if let Some((factions, addresses)) = admitting {
+            let admitted =
+                Self::admitted_in_range(db, range, center, factions, addresses)
+                    .await?;
+            return Self::fetch_many(db, &admitted).await;
+        }
+
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -437,6 +461,54 @@ impl System {
                 updated_by: row.updated_by,
             })
             .collect())
+    }
+
+    /// Which systems within `range` of `center` are admitted, by address
+    ///
+    /// Admitted by standing at one of `addresses`, or by having one of
+    /// `factions` present in it.
+    ///
+    /// The two are named apart and put together, rather than being one
+    /// `WHERE` with an `OR` down the middle. An `OR` leaves the planner
+    /// nothing to drive from but the region, so it walks every system in range
+    /// asking who is in it, and takes longer than fetching the lot. Apart, the
+    /// faction half drives from `system_factions` and reaches its systems by
+    /// their addresses.
+    ///
+    /// Put together on addresses, which is the one column that says which
+    /// system a row is about, so a system admitted twice is named once.
+    async fn admitted_in_range(
+        db: &Database,
+        range: f64,
+        center: [f64; 3],
+        factions: &[i32],
+        addresses: &[i64],
+    ) -> Result<Vec<i64>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT address
+            FROM systems
+            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND address = ANY($5)
+            UNION
+            SELECT systems.address
+            FROM systems
+            JOIN system_factions
+              ON system_factions.system_address = systems.address
+            WHERE system_factions.faction_id = ANY($6)
+              AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+            "#,
+            range,
+            center[0],
+            center[1],
+            center[2],
+            addresses,
+            factions,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows.into_iter().filter_map(|row| row.address).collect())
     }
 
     /// Which factions are present in each of `addresses`, by address

@@ -677,10 +677,14 @@ fn main_bar(
                     // is and for the same reason. A half lit sky with
                     // nothing on screen to say why is the one thing a filter
                     // must not leave behind.
+                    // Nothing to say about how much is getting through
+                    // where what is excluded is not drawn at all.
+                    let getting_through =
+                        (filter.dim.0 > 0.).then_some(&*filter.in_reach);
                     applied(
                         ui,
                         &mut filter.active,
-                        &filter.in_reach,
+                        getting_through,
                         panels,
                         &mut place,
                     );
@@ -1339,10 +1343,17 @@ fn route_section(
 /// looking at rather than everywhere the camera has been. Said in the
 /// spyglass's own name, since that is the control that decides it and the one
 /// to reach for to see more.
+///
+/// Nothing at all where what is excluded is not drawn: the caller hands over
+/// no count. How much of the sky is getting through is a question about a sky
+/// that is there to get through, and where the filters take their systems off
+/// the map it is neither asked for nor fetched. The sky the user is looking
+/// at is the whole of what the map is drawing, and saying it is one of a
+/// hundred thousand describes a place they cannot see.
 fn applied(
     ui: &mut Ui,
     filters: &mut Filters,
-    in_reach: &InReach,
+    in_reach: Option<&InReach>,
     panels: &mut Panels,
     place: &mut usize,
 ) {
@@ -1443,13 +1454,14 @@ fn applied(
         row.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 
-    let InReach { admitted, total } = *in_reach;
-    if total > 0 {
+    if let Some(InReach { admitted, total }) = in_reach
+        && *total > 0
+    {
         ui.label(
             egui::RichText::new(format!(
                 "{} of the {} within spyglass",
-                thousands(admitted as u64),
-                thousands(total as u64)
+                thousands(*admitted as u64),
+                thousands(*total as u64)
             ))
             .weak(),
         );
@@ -2492,7 +2504,7 @@ mod tests {
             applied(
                 ui,
                 &mut filters,
-                &InReach { admitted: 1, total: 3 },
+                Some(&InReach { admitted: 1, total: 3 }),
                 &mut panels,
                 &mut place,
             );
@@ -2577,7 +2589,7 @@ mod tests {
             applied(
                 ui,
                 &mut applied_to,
-                &InReach { admitted: 1, total: 3 },
+                Some(&InReach { admitted: 1, total: 3 }),
                 &mut panels,
                 &mut place,
             );
@@ -2701,7 +2713,7 @@ mod tests {
             applied(
                 ui,
                 &mut filters,
-                &InReach { admitted: 1, total: 3 },
+                Some(&InReach { admitted: 1, total: 3 }),
                 &mut panels,
                 &mut 0,
             );
@@ -2751,7 +2763,7 @@ mod tests {
             applied(
                 ui,
                 &mut filters,
-                &InReach { admitted: 1, total: 3 },
+                Some(&InReach { admitted: 1, total: 3 }),
                 &mut panels,
                 &mut 0,
             )
@@ -2762,7 +2774,7 @@ mod tests {
             applied(
                 ui,
                 &mut filters,
-                &InReach { admitted: 1, total: 3 },
+                Some(&InReach { admitted: 1, total: 3 }),
                 &mut panels,
                 &mut 0,
             )
@@ -3126,7 +3138,7 @@ mod tests {
             applied(
                 ui,
                 &mut filters,
-                &InReach { admitted: 1, total: 2 },
+                Some(&InReach { admitted: 1, total: 2 }),
                 &mut panels,
                 &mut 0,
             )
@@ -3180,6 +3192,40 @@ mod tests {
         assert_eq!(first, moved);
     }
 
+    /// Nothing is said about how much is getting through where nothing is
+    /// dimmed
+    ///
+    /// At an opacity of nothing the excluded systems are neither drawn nor
+    /// fetched, so a count of them describes a sky the user cannot see and a
+    /// number the map has not got.
+    #[test]
+    fn the_count_is_held_back_where_nothing_is_dimmed() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+        let mut panels = Panels::default();
+
+        let dimming = words(|ui| {
+            applied(
+                ui,
+                &mut filters,
+                Some(&InReach { admitted: 1, total: 3 }),
+                &mut panels,
+                &mut 0,
+            )
+        });
+        let hiding =
+            words(|ui| applied(ui, &mut filters, None, &mut panels, &mut 0));
+
+        assert!(
+            dimming.iter().any(|line| line.contains("within spyglass")),
+            "{dimming:?}"
+        );
+        assert!(
+            !hiding.iter().any(|line| line.contains("within spyglass")),
+            "{hiding:?}"
+        );
+    }
+
     /// The filter rows come out in colours something can draw
     ///
     /// Every galley here is laid out strong or weak, which resolves a colour,
@@ -3201,7 +3247,7 @@ mod tests {
             applied(
                 ui,
                 &mut filters,
-                &InReach { admitted: 3, total: 40 },
+                Some(&InReach { admitted: 3, total: 40 }),
                 &mut panels,
                 &mut 0,
             )

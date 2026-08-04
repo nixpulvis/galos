@@ -353,6 +353,51 @@ impl Filters {
     pub fn clear(&mut self) {
         self.0.clear();
     }
+
+    /// What the filters admit, as a query can ask it
+    ///
+    /// Every enabled filter says either which faction it wants or which
+    /// systems by name, so all of them together are two lists. That is the
+    /// whole of what a query has to be told, and it is told once however many
+    /// filters there are.
+    ///
+    /// Nothing where they admit everything, which is where none of them is
+    /// turned on. A query narrowed by two empty lists answers with nothing at
+    /// all, where what is meant is the whole sky.
+    pub fn admitting(&self) -> Option<Admitting> {
+        let mut admitting = Admitting::default();
+        let mut asked = false;
+
+        for active in self.0.iter().filter(|active| active.enabled) {
+            asked = true;
+            match &active.filter {
+                Filter::Faction { id, .. } => admitting.factions.push(*id),
+                Filter::Route { systems, .. }
+                | Filter::Systems { systems, .. } => {
+                    admitting.systems.extend(systems.iter().copied())
+                }
+            }
+        }
+
+        asked.then_some(admitting)
+    }
+}
+
+/// What a set of filters admits, said as two lists
+///
+/// Which is as much as the database is told. A faction is a membership to be
+/// looked up and a route or a hand-picked set is its addresses outright, and
+/// a system is admitted by standing in either list.
+///
+/// Part of what a region is asked for, so two regions about the same place
+/// admitting different things are different questions. Hence [`Eq`] and
+/// [`Hash`]: what tells those questions apart is these lists.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct Admitting {
+    /// The factions asked for, by id
+    pub factions: Vec<i32>,
+    /// The systems asked for outright, by address
+    pub systems: Vec<i64>,
 }
 
 /// A system no enabled filter admits
@@ -591,6 +636,66 @@ mod tests {
 
         assert_eq!(filters.len(), 0);
         assert!(filters.admit(&member(1, &[3])));
+    }
+
+    /// What the filters admit is two lists a query can be handed
+    #[test]
+    fn a_faction_filter_admits_by_id() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let admitting = filters.admitting().expect("something asked for");
+
+        assert_eq!(admitting.factions, vec![7]);
+        assert!(admitting.systems.is_empty());
+    }
+
+    /// A hand-picked set says its systems outright
+    #[test]
+    fn a_gathered_filter_admits_by_address() {
+        let mut filters = Filters::default();
+        filters.add(gathered(&[1, 2, 3]));
+
+        let admitting = filters.admitting().expect("something asked for");
+
+        assert_eq!(admitting.systems, vec![1, 2, 3]);
+        assert!(admitting.factions.is_empty());
+    }
+
+    /// Several of them are gathered into the two lists between them
+    ///
+    /// Each adds to what is admitted, so the lists are what all of them want
+    /// rather than what they have in common.
+    #[test]
+    fn several_filters_admit_between_them() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+        filters.add(gathered(&[1, 2]));
+
+        let admitting = filters.admitting().expect("something asked for");
+
+        assert_eq!(admitting.factions, vec![7, 9]);
+        assert_eq!(admitting.systems, vec![1, 2]);
+    }
+
+    /// A filter turned off asks for nothing, and is not asked for
+    #[test]
+    fn a_disabled_filter_admits_nothing_in_particular() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.toggle(0);
+
+        assert_eq!(filters.admitting(), None);
+    }
+
+    /// Nothing held admits the whole sky rather than none of it
+    ///
+    /// A query narrowed by two empty lists comes back with nothing, where
+    /// what is meant is everything, so there is nothing to narrow it by.
+    #[test]
+    fn no_filters_admit_everything() {
+        assert_eq!(Filters::default().admitting(), None);
     }
 
     /// One of two turned off leaves the other asking
