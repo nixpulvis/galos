@@ -668,105 +668,96 @@ fn selected(
     // Owned, so that the borrow on the selection ends before the row asks to
     // let go of it.
     let Some(name) = selection.name().map(str::to_owned) else { return };
-    // Keyed on what the row is rather than on where it falls. The note about
-    // a name that resolved to nothing comes and goes directly above it, and
-    // egui hands out an id per widget from its place in the order, so without
-    // this the row and its marks change identity whenever that note appears.
-    ui.push_id("selection", |ui| {
-        let away = selection
-            .position()
-            .zip(focus)
-            .map(|(at, focus)| format!("{:.1} Ly away", focus.distance(at)));
+    let away = selection
+        .position()
+        .zip(focus)
+        .map(|(at, focus)| format!("{:.1} Ly away", focus.distance(at)));
 
-        // Laid out and painted rather than assembled from labels. A label is a
-        // widget in its own right, and two of them under one clickable row leave
-        // three widgets bidding for the pointer: the row answers over the gaps
-        // and the labels answer over the words, so it flickers between being a
-        // control and not as the pointer crosses them.
-        let away = away.map(|line| {
-            egui::WidgetText::from(egui::RichText::new(line).weak())
-                .into_galley(
-                    ui,
-                    Some(egui::TextWrapMode::Extend),
-                    f32::INFINITY,
-                    egui::TextStyle::Body,
-                )
-        });
-
-        let marks = lay_out_marks(ui);
-
-        // Whatever the dot, the distance and the marks leave the name. System
-        // names run to "Col 285 Sector XY-Z b12-34", and one laid out against no
-        // bound at all is painted straight out past the edge of the bar.
-        let gap = ui.spacing().item_spacing.x;
-        let room = ui.available_width()
-            - ROW_PADDING * 2.
-            - DOT
-            - gap
-            - marks_width(&marks, gap)
-            - away.as_ref().map_or(0., |away| away.size().x + gap);
-        let name = egui::WidgetText::from(egui::RichText::new(name).strong())
-            .into_galley(
-                ui,
-                Some(egui::TextWrapMode::Truncate),
-                room.max(0.),
-                egui::TextStyle::Body,
-            );
-        let (outer, row) = ui.allocate_exact_size(
-            // The width the rest of the form is laid out in, so that the row
-            // lines up with the fields above and below it rather than being
-            // measured against anything of its own.
-            egui::vec2(
-                ui.available_width(),
-                name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
-            ),
-            egui::Sense::click(),
-        );
-        let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
-
-        if row.hovered() || row.has_focus() {
-            ui.painter().rect_filled(
-                rect,
-                ui.visuals().widgets.hovered.corner_radius,
-                ui.visuals().widgets.hovered.weak_bg_fill,
-            );
-        }
-        let middle = rect.center().y;
-        let mut x = rect.left() + ROW_PADDING;
-        ui.painter().circle_filled(
-            egui::pos2(x + DOT / 2., middle),
-            DOT / 2.,
-            SELECTION_DOT,
-        );
-        x += DOT + gap;
-        for galley in [Some(name), away].into_iter().flatten() {
-            let size = galley.size();
-            // The galleys carry the colours they were laid out in, so there is
-            // nothing for a fallback to answer for.
-            ui.painter().galley(
-                egui::pos2(x, middle - size.y / 2.),
-                galley,
-                egui::Color32::PLACEHOLDER,
-            );
-            x += size.x + gap;
-        }
-
-        let Marks { info, close } = place_marks(ui, rect, marks);
-
-        if close.clicked() {
-            selection.clear();
-        } else if info.clicked() {
-            if let Some(system) = selection.system() {
-                panels.open_system(system.clone());
-            }
-        } else if row.clicked() {
-            camera.write(MoveCamera {
-                position: selection.position(),
-                framing: None,
-            });
-        }
-        row.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Laid out and painted rather than assembled from labels. A label is a
+    // widget in its own right, and two of them under one clickable row leave
+    // three widgets bidding for the pointer: the row answers over the gaps
+    // and the labels answer over the words, so it flickers between being a
+    // control and not as the pointer crosses them.
+    let away = away.map(|line| {
+        egui::WidgetText::from(egui::RichText::new(line).weak()).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
     });
+
+    let marks = lay_out_marks(ui);
+
+    // Whatever the dot, the distance and the marks leave the name. System
+    // names run to "Col 285 Sector XY-Z b12-34", and one laid out against no
+    // bound at all is painted straight out past the edge of the bar.
+    let gap = ui.spacing().item_spacing.x;
+    let room = ui.available_width()
+        - ROW_PADDING * 2.
+        - DOT
+        - gap
+        - marks_width(&marks, gap)
+        - away.as_ref().map_or(0., |away| away.size().x + gap);
+    let name = egui::WidgetText::from(egui::RichText::new(name).strong())
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            room.max(0.),
+            egui::TextStyle::Body,
+        );
+    let (outer, row) = row_of(
+        ui,
+        // The width the rest of the form is laid out in, so that the row
+        // lines up with the fields above and below it rather than being
+        // measured against anything of its own.
+        name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
+        "selection-row",
+    );
+    let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
+
+    if row.hovered() || row.has_focus() {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    let middle = rect.center().y;
+    let mut x = rect.left() + ROW_PADDING;
+    ui.painter().circle_filled(
+        egui::pos2(x + DOT / 2., middle),
+        DOT / 2.,
+        SELECTION_DOT,
+    );
+    x += DOT + gap;
+    for galley in [Some(name), away].into_iter().flatten() {
+        let size = galley.size();
+        // The galleys carry the colours they were laid out in, so there is
+        // nothing for a fallback to answer for.
+        ui.painter().galley(
+            egui::pos2(x, middle - size.y / 2.),
+            galley,
+            egui::Color32::PLACEHOLDER,
+        );
+        x += size.x + gap;
+    }
+
+    let Marks { info, close } = place_marks(ui, rect, marks, "selection-row");
+
+    if close.clicked() {
+        selection.clear();
+    } else if info.clicked() {
+        if let Some(system) = selection.system() {
+            panels.open_system(system.clone());
+        }
+    } else if row.clicked() {
+        camera.write(MoveCamera {
+            position: selection.position(),
+            framing: None,
+        });
+    }
+    row.on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
 /// What a field holds, if it holds anything
@@ -925,91 +916,82 @@ fn applied(
     let gap = ui.spacing().item_spacing.x;
 
     for (index, active) in filters.iter().enumerate() {
-        // Keyed on the filter rather than on where its row sits. Egui hands
-        // out an id per widget from its place in the order, so dropping one
-        // filter would hand its id, and whatever egui was remembering
-        // against it, to the row that moved up into its place: the focus
-        // would land on the wrong row, and a mark would answer for a filter
-        // the user had just taken away.
-        ui.push_id(&active.filter, |ui| {
-            let marks = lay_out_marks(ui);
+        let marks = lay_out_marks(ui);
 
-            // Whatever the dot and the marks leave. Faction names run long, and
-            // one laid out against no bound is painted out past the edge of the
-            // bar.
-            let room = ui.available_width()
-                - ROW_PADDING * 2.
-                - DOT
-                - gap
-                - marks_width(&marks, gap);
-            let text = egui::RichText::new(active.filter.name());
-            let name = egui::WidgetText::from(if active.enabled {
-                text.strong()
-            } else {
-                text.weak()
-            })
-            .into_galley(
-                ui,
-                Some(egui::TextWrapMode::Truncate),
-                room.max(0.),
-                egui::TextStyle::Body,
+        // Whatever the dot and the marks leave. Faction names run long, and
+        // one laid out against no bound is painted out past the edge of the
+        // bar.
+        let room = ui.available_width()
+            - ROW_PADDING * 2.
+            - DOT
+            - gap
+            - marks_width(&marks, gap);
+        let text = egui::RichText::new(active.filter.name());
+        let name = egui::WidgetText::from(if active.enabled {
+            text.strong()
+        } else {
+            text.weak()
+        })
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            room.max(0.),
+            egui::TextStyle::Body,
+        );
+
+        let (outer, row) = row_of(
+            ui,
+            name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
+            ("filter-row", &active.filter),
+        );
+        let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
+
+        if row.hovered() || row.has_focus() {
+            ui.painter().rect_filled(
+                rect,
+                ui.visuals().widgets.hovered.corner_radius,
+                ui.visuals().widgets.hovered.weak_bg_fill,
             );
+        }
 
-            let (outer, row) = ui.allocate_exact_size(
-                egui::vec2(
-                    ui.available_width(),
-                    name.size().y.max(DOT) + (ROW_PADDING + ROW_MARGIN) * 2.,
-                ),
-                egui::Sense::click(),
+        // Filled while the filter is being asked and hollow while it is not,
+        // so that a filter turned off still reads as one that is there.
+        let middle = rect.center().y;
+        let mut x = rect.left() + ROW_PADDING;
+        let dot = egui::pos2(x + DOT / 2., middle);
+        if active.enabled {
+            ui.painter().circle_filled(
+                dot,
+                DOT / 2.,
+                ui.visuals().strong_text_color(),
             );
-            let rect = outer.shrink2(egui::vec2(0., ROW_MARGIN));
-
-            if row.hovered() || row.has_focus() {
-                ui.painter().rect_filled(
-                    rect,
-                    ui.visuals().widgets.hovered.corner_radius,
-                    ui.visuals().widgets.hovered.weak_bg_fill,
-                );
-            }
-
-            // Filled while the filter is being asked and hollow while it is not,
-            // so that a filter turned off still reads as one that is there.
-            let middle = rect.center().y;
-            let mut x = rect.left() + ROW_PADDING;
-            let dot = egui::pos2(x + DOT / 2., middle);
-            if active.enabled {
-                ui.painter().circle_filled(
-                    dot,
-                    DOT / 2.,
-                    ui.visuals().strong_text_color(),
-                );
-            } else {
-                ui.painter().circle_stroke(
-                    dot,
-                    DOT / 2.,
-                    egui::Stroke::new(1_f32, ui.visuals().weak_text_color()),
-                );
-            }
-            x += DOT + gap;
-            // The galley carries the colour it was laid out in, so there is
-            // nothing for a fallback to answer for.
-            ui.painter().galley(
-                egui::pos2(x, middle - name.size().y / 2.),
-                name,
-                egui::Color32::PLACEHOLDER,
+        } else {
+            ui.painter().circle_stroke(
+                dot,
+                DOT / 2.,
+                egui::Stroke::new(1_f32, ui.visuals().weak_text_color()),
             );
+        }
+        x += DOT + gap;
+        // The galley carries the colour it was laid out in, so there is
+        // nothing for a fallback to answer for.
+        ui.painter().galley(
+            egui::pos2(x, middle - name.size().y / 2.),
+            name,
+            egui::Color32::PLACEHOLDER,
+        );
 
-            let Marks { info, close } = place_marks(ui, rect, marks);
+        let Marks { info, close } =
+            place_marks(ui, rect, marks, ("filter-row", &active.filter));
 
-            if close.clicked() {
-                removing = Some(index);
-            } else if info.clicked() {
-                opening = Some(active.filter.clone());
-            } else if row.clicked() {
-                toggling = Some(index);
-            }
-            row.on_hover_cursor(egui::CursorIcon::PointingHand);
-        });
+        if close.clicked() {
+            removing = Some(index);
+        } else if info.clicked() {
+            opening = Some(active.filter.clone());
+        } else if row.clicked() {
+            toggling = Some(index);
+        }
+        row.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 
     let InReach { admitted, total } = *in_reach;
@@ -1087,6 +1069,33 @@ fn heading(ui: &mut Ui, name: &str, ruled: bool) {
     ui.add_space(FIELD_GAP);
 }
 
+/// Take a row's worth of the bar, and answer for it under an id of its own
+///
+/// Every id in these rows is spelled out rather than taken from the order they
+/// were drawn in. Egui hands out an id per widget from its place in that
+/// order, and the rows of the bar do not keep their places: the note about a
+/// name that resolved to nothing comes and goes above them, the selection's
+/// row comes and goes with the selection, and dropping one filter moves every
+/// row below it up. Any of those hands a row's id, and whatever egui was
+/// remembering against it, to whatever slid into its place.
+///
+/// `push_id` does not answer this. A child `Ui` is keyed on its salt and on
+/// the parent's running count of children, so it moves with the rest.
+///
+/// The space is taken without a widget of its own, since the row is what
+/// answers for it and two things at one rect is what the ordering was
+/// complaining of in the first place.
+fn row_of(
+    ui: &mut Ui,
+    height: f32,
+    of: impl std::hash::Hash,
+) -> (egui::Rect, Response) {
+    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), height));
+    let row = ui.interact(rect, ui.id().with(of), egui::Sense::click());
+
+    (rect, row)
+}
+
 /// The two marks a row in the bar ends with
 ///
 /// Info opens a panel about whatever the row names, and close lets go of it.
@@ -1140,6 +1149,7 @@ fn place_marks(
     ui: &mut Ui,
     rect: egui::Rect,
     marks: Vec<std::sync::Arc<egui::Galley>>,
+    of: impl std::hash::Hash,
 ) -> Marks {
     let middle = rect.center().y;
     let gap = ui.spacing().item_spacing.x;
@@ -1154,7 +1164,7 @@ fn place_marks(
         );
         let response = ui.interact(
             at,
-            ui.id().with(("row-mark", which)),
+            ui.id().with((&of, "row-mark", which)),
             egui::Sense::click(),
         );
         // Lit for the pointer resting on it and for the keyboard reaching it
@@ -1511,6 +1521,51 @@ mod tests {
         });
 
         assert!((width - VALUE_WIDTH).abs() < SLACK);
+    }
+
+    /// A row is keyed on what it is about, not on where it was drawn
+    ///
+    /// The rows of the bar do not keep their places: a note comes and goes
+    /// above them, the selection's row comes and goes with the selection, and
+    /// dropping one filter moves every row below it up. An id taken from the
+    /// draw order would hand the row that moved up whatever egui had been
+    /// remembering against the one that left.
+    #[test]
+    fn a_row_is_keyed_on_what_it_is_about() {
+        let ctx = egui::Context::default();
+        let (mut first, mut moved, mut other) = (None, None, None);
+
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            first = Some(row_of(ui, 20., ("filter-row", 7)).1.id);
+            // Anything at all between them shifts what comes after.
+            ui.label("a note that comes and goes");
+            moved = Some(row_of(ui, 20., ("filter-row", 7)).1.id);
+            other = Some(row_of(ui, 20., ("filter-row", 9)).1.id);
+        });
+
+        assert_eq!(first, moved, "the same row moved and changed identity");
+        assert_ne!(first, other, "two rows share one identity");
+    }
+
+    /// And so are the marks it ends with
+    #[test]
+    fn the_marks_are_keyed_on_the_row_they_end() {
+        let ctx = egui::Context::default();
+        let (mut first, mut moved) = (None, None);
+        let at =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(80., 20.));
+
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let marks = lay_out_marks(ui);
+            first =
+                Some(place_marks(ui, at, marks, ("filter-row", 7)).close.id);
+            ui.label("a note that comes and goes");
+            let marks = lay_out_marks(ui);
+            moved =
+                Some(place_marks(ui, at, marks, ("filter-row", 7)).close.id);
+        });
+
+        assert_eq!(first, moved);
     }
 
     /// The filter rows come out in colours something can draw
