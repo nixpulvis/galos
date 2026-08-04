@@ -677,17 +677,13 @@ fn main_bar(
                     // is and for the same reason. A half lit sky with
                     // nothing on screen to say why is the one thing a filter
                     // must not leave behind.
-                    // Nothing to say about how much is getting through
-                    // where what is excluded is not drawn at all.
-                    let getting_through =
-                        (filter.dim.0 > 0.).then_some(&*filter.in_reach);
-                    applied(
-                        ui,
-                        &mut filter.active,
-                        getting_through,
-                        panels,
-                        &mut place,
-                    );
+                    applied(ui, &mut filter.active, panels, &mut place);
+                    // Two numbers only where there is a sky behind what is
+                    // picked out and the user can see it: something has to be
+                    // excluded, and what is excluded has to be drawn.
+                    let dimming =
+                        filter.active.any_enabled() && filter.dim.0 > 0.;
+                    reaching(ui, &filter.in_reach, dimming);
 
                     if search.expanded {
                         taken |= filter_section(ui, filter);
@@ -1337,23 +1333,11 @@ fn route_section(
 /// three things bidding for the pointer, and it flickers between being a
 /// control and not as the pointer crosses them.
 ///
-/// The count is of the whole set rather than one per row, since what the user
-/// is looking at is the sky as all of them leave it. It counts what is within
-/// the spyglass rather than what has been loaded, which is what the user is
-/// looking at rather than everywhere the camera has been. Said in the
-/// spyglass's own name, since that is the control that decides it and the one
-/// to reach for to see more.
-///
-/// Nothing at all where what is excluded is not drawn: the caller hands over
-/// no count. How much of the sky is getting through is a question about a sky
-/// that is there to get through, and where the filters take their systems off
-/// the map it is neither asked for nor fetched. The sky the user is looking
-/// at is the whole of what the map is drawing, and saying it is one of a
-/// hundred thousand describes a place they cannot see.
+/// How much of the sky is getting through them is said by [`reaching`], which
+/// stands under these and is drawn whether or not any of them is.
 fn applied(
     ui: &mut Ui,
     filters: &mut Filters,
-    in_reach: Option<&InReach>,
     panels: &mut Panels,
     place: &mut usize,
 ) {
@@ -1454,19 +1438,6 @@ fn applied(
         row.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 
-    if let Some(InReach { admitted, total }) = in_reach
-        && *total > 0
-    {
-        ui.label(
-            egui::RichText::new(format!(
-                "{} of the {} within spyglass",
-                thousands(*admitted as u64),
-                thousands(*total as u64)
-            ))
-            .weak(),
-        );
-    }
-
     if let Some(index) = toggling {
         filters.toggle(index);
     }
@@ -1481,6 +1452,47 @@ fn applied(
         Some(Whole::LetGo) => filters.clear(),
         None => {}
     }
+}
+
+/// Say how much of the sky is in reach, and how much of it is getting through
+///
+/// Under the filter rows, and drawn whether or not there are any. What the
+/// spyglass reaches is worth knowing before anything has been asked of it: it
+/// is the one number that says whether the map is showing a handful of systems
+/// or a hundred thousand, and the control that decides it is the one to reach
+/// for either way. Said in the spyglass's own name for that reason.
+///
+/// Counted from [`InReach`], which is tallied where visibility is settled for
+/// every system at once, so what is said is the answer the map acted on. Within
+/// the spyglass rather than loaded: what it has dragged in from wherever the
+/// camera has been is not what the user is looking at.
+///
+/// The leading number is always what can be seen. `dimming` says whether there
+/// is more sky behind it that can also be seen, faintly, and only then is the
+/// larger number worth putting beside it:
+///
+/// - Nothing asked of the map, so the two are the same number: `324 within
+///   spyglass`
+/// - Filters, and what they exclude drawn faintly behind: `8 of the 324 within
+///   spyglass`
+/// - Filters, and what they exclude drawn not at all: `8 within spyglass`,
+///   the rest being neither on screen nor fetched
+fn reaching(ui: &mut Ui, in_reach: &InReach, dimming: bool) {
+    let InReach { admitted, total } = *in_reach;
+    if total == 0 {
+        return;
+    }
+
+    let said = if dimming {
+        format!(
+            "{} of the {} within spyglass",
+            thousands(admitted as u64),
+            thousands(total as u64)
+        )
+    } else {
+        format!("{} within spyglass", thousands(admitted as u64))
+    };
+    ui.label(egui::RichText::new(said).weak());
 }
 
 /// What a click on the row standing for the whole set asked for
@@ -2501,13 +2513,7 @@ mod tests {
                 &mut filters,
                 &mut place,
             );
-            applied(
-                ui,
-                &mut filters,
-                Some(&InReach { admitted: 1, total: 3 }),
-                &mut panels,
-                &mut place,
-            );
+            applied(ui, &mut filters, &mut panels, &mut place);
         });
 
         assert!(said.is_empty(), "{said:?}");
@@ -2586,13 +2592,7 @@ mod tests {
                 &mut applied_to,
                 &mut place,
             );
-            applied(
-                ui,
-                &mut applied_to,
-                Some(&InReach { admitted: 1, total: 3 }),
-                &mut panels,
-                &mut place,
-            );
+            applied(ui, &mut applied_to, &mut panels, &mut place);
         }
     }
 
@@ -2710,13 +2710,7 @@ mod tests {
                 });
             }
             let mut panels = Panels::default();
-            applied(
-                ui,
-                &mut filters,
-                Some(&InReach { admitted: 1, total: 3 }),
-                &mut panels,
-                &mut 0,
-            );
+            applied(ui, &mut filters, &mut panels, &mut 0);
         }
     }
 
@@ -2759,26 +2753,10 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(Filter::Faction { id: 1, name: "Empire".into() });
         let mut panels = Panels::default();
-        let alone = words(|ui| {
-            applied(
-                ui,
-                &mut filters,
-                Some(&InReach { admitted: 1, total: 3 }),
-                &mut panels,
-                &mut 0,
-            )
-        });
+        let alone = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
 
         filters.add(Filter::Faction { id: 2, name: "Federation".into() });
-        let both = words(|ui| {
-            applied(
-                ui,
-                &mut filters,
-                Some(&InReach { admitted: 1, total: 3 }),
-                &mut panels,
-                &mut 0,
-            )
-        });
+        let both = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
 
         assert!(
             !alone.iter().any(|line| line.contains("filters")),
@@ -3134,15 +3112,8 @@ mod tests {
             .add(Filter::Route { label: "A -> B".into(), systems: vec![1, 2] });
         let mut panels = Panels::default();
 
-        let said = complaints(|ui| {
-            applied(
-                ui,
-                &mut filters,
-                Some(&InReach { admitted: 1, total: 2 }),
-                &mut panels,
-                &mut 0,
-            )
-        });
+        let said =
+            complaints(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
 
         assert!(said.is_empty(), "{said:?}");
     }
@@ -3192,38 +3163,62 @@ mod tests {
         assert_eq!(first, moved);
     }
 
-    /// Nothing is said about how much is getting through where nothing is
-    /// dimmed
+    /// What the spyglass reaches is said with nothing asked of the map
     ///
-    /// At an opacity of nothing the excluded systems are neither drawn nor
-    /// fetched, so a count of them describes a sky the user cannot see and a
-    /// number the map has not got.
+    /// One number, since with nothing excluded the two are the same number
+    /// and saying it twice says nothing. Worth saying at all because it is
+    /// what tells the user whether they are looking at a handful of systems
+    /// or a hundred thousand.
     #[test]
-    fn the_count_is_held_back_where_nothing_is_dimmed() {
-        let mut filters = Filters::default();
-        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
-        let mut panels = Panels::default();
-
-        let dimming = words(|ui| {
-            applied(
-                ui,
-                &mut filters,
-                Some(&InReach { admitted: 1, total: 3 }),
-                &mut panels,
-                &mut 0,
-            )
+    fn the_reach_alone_is_one_number() {
+        let said = words(|ui| {
+            reaching(ui, &InReach { admitted: 324, total: 324 }, false)
         });
-        let hiding =
-            words(|ui| applied(ui, &mut filters, None, &mut panels, &mut 0));
+
+        assert!(said.contains(&"324 within spyglass".to_owned()), "{said:?}");
+    }
+
+    /// With something excluded and drawn faintly, both numbers are said
+    ///
+    /// The sky behind what is picked out is on screen, so how much of it
+    /// there is answers what the user can see.
+    #[test]
+    fn what_is_dimmed_is_counted_behind_what_is_not() {
+        let said = words(|ui| {
+            reaching(ui, &InReach { admitted: 8, total: 324 }, true)
+        });
 
         assert!(
-            dimming.iter().any(|line| line.contains("within spyglass")),
-            "{dimming:?}"
+            said.contains(&"8 of the 324 within spyglass".to_owned()),
+            "{said:?}"
         );
-        assert!(
-            !hiding.iter().any(|line| line.contains("within spyglass")),
-            "{hiding:?}"
-        );
+    }
+
+    /// With it not drawn at all, only what can be seen is said
+    ///
+    /// The excluded systems are neither on screen nor fetched, so the larger
+    /// number describes a place the user cannot see and a sky the map has not
+    /// got.
+    #[test]
+    fn what_is_not_drawn_is_not_counted() {
+        let said = words(|ui| {
+            reaching(ui, &InReach { admitted: 8, total: 324 }, false)
+        });
+
+        assert!(said.contains(&"8 within spyglass".to_owned()), "{said:?}");
+        assert!(!said.iter().any(|line| line.contains("324")), "{said:?}");
+    }
+
+    /// An empty sky says nothing rather than saying it is empty
+    ///
+    /// Which is the map before its first fetch lands, where a nought would
+    /// read as an answer rather than as nothing having been asked yet.
+    #[test]
+    fn an_empty_reach_says_nothing() {
+        let said =
+            words(|ui| reaching(ui, &InReach { admitted: 0, total: 0 }, false));
+
+        assert!(!said.iter().any(|line| line.contains("spyglass")), "{said:?}");
     }
 
     /// The filter rows come out in colours something can draw
@@ -3243,15 +3238,7 @@ mod tests {
         filters.toggle(1);
         let mut panels = Panels::default();
 
-        painted(|ui| {
-            applied(
-                ui,
-                &mut filters,
-                Some(&InReach { admitted: 3, total: 40 }),
-                &mut panels,
-                &mut 0,
-            )
-        });
+        painted(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
     }
 
     /// What `contents` painted with the pointer resting at `at`
