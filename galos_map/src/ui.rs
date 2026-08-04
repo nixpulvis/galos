@@ -464,15 +464,11 @@ fn search_bar(
                     if response.changed() {
                         note.0 = None;
                     }
-                    // Tab as well as return. A route starts from whatever
-                    // is picked out and nothing is picked out until a name
-                    // has been asked for, so tabbing on from a name typed
-                    // here is how a route is begun. Not so of the faction
-                    // field below, where the same would empty the map on
-                    // the way past.
-                    let tabbed = response.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Tab));
-                    if entered(&response, ui) || tabbed {
+                    // Return and nothing else. Tab moves between the
+                    // fields of a form, and a form that went off and asked
+                    // the database something on the way past would be
+                    // answering a question nobody had finished asking.
+                    if entered(&response, ui) {
                         search.faction = None;
                         if let Some(name) = search.system.clone() {
                             searched.write(Searched::System { name });
@@ -489,9 +485,7 @@ fn search_bar(
                     selected(ui, selection, focus, camera, panels);
 
                     if search.expanded {
-                        taken |= route_section(
-                            ui, search, searched, selection, plot,
-                        );
+                        taken |= route_section(ui, search, searched, plot);
                         taken |= faction_section(ui, search, searched);
                     }
 
@@ -707,11 +701,11 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
 
 /// Ask where a route ends and what it may be flown in
 ///
-/// Answers whether a field of it has just taken focus. A route runs from
-/// whatever is picked out, since that is the one system the map is holding,
-/// and not from the search box, which holds a query and will one day answer
-/// with a list. So the section is greyed until something is picked out,
-/// rather than appearing and disappearing under the pointer.
+/// Answers whether a field of it has just taken focus. A route runs from the
+/// name in the search box above, which is where a system is named, and it
+/// runs from it as typed: a name has to be searched for to be picked out,
+/// and asking a question to reach the question you wanted is no way to fill
+/// in a form.
 ///
 /// How it is getting on is said between the fields and the button, where
 /// what it is about is on either side of it. The note under the search input
@@ -721,23 +715,20 @@ fn route_section(
     ui: &mut Ui,
     search: &mut SearchFields,
     searched: &mut MessageWriter<Searched>,
-    selection: &Selection,
     plot: &mut Plot,
 ) -> bool {
     heading(ui, "Route");
-    let start = selection.name();
     let mut taken = false;
 
-    // Live whether or not a system is picked out. What waits on a start is
-    // the button, since only it needs one, and fields that come and go with
-    // the selection cannot be tabbed into on the way from naming a system to
-    // asking where to go from it: they are still disabled on the frame the
-    // tab lands, the selection being a frame behind the name that set it.
     let end = singleline(ui, &mut search.route_end, "End System");
     taken |= end.gained_focus();
     ui.add_space(FIELD_GAP);
     let range = singleline(ui, &mut search.route_range, "Jump Range (Ly)");
     taken |= range.gained_focus();
+    // Return in either field asks for the route, as pressing the button
+    // does. They are the last two things a route waits on, and a form with
+    // one thing left to do should not have to be reached for.
+    let submitted = entered(&end, ui) || entered(&range, ui);
     // What came back of the last route asked for answers the fields as they
     // were then, so it goes as soon as they are not. Work still under way is
     // not an answer to anything yet, and stays.
@@ -745,21 +736,23 @@ fn route_section(
         *plot = Plot::Nothing;
     }
 
-    // One line, for what the route still wants or for how the last one is
-    // getting on. Only ever a route that was asked for: a field being typed
-    // into is not an attempt at anything, and a form that answers back
-    // before it has been submitted is a form scolding whoever fills it in.
-    if start.is_none() {
-        ui.add_space(FIELD_GAP);
-        ui.label(egui::RichText::new("Pick out a system to route from").weak());
-    } else if let Plot::Trouble(trouble) = &*plot {
+    // How the last route asked for is getting on. Only ever a route that
+    // was asked for: a field being typed into is not an attempt at
+    // anything, and a form that answers back before it has been submitted
+    // is a form scolding whoever fills it in.
+    if let Plot::Trouble(trouble) = &*plot {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }
 
     ui.add_space(FIELD_GAP);
-    let asked =
-        start.zip(typed(&search.route_end)).zip(typed(&search.route_range));
+    // The name in the search box, as it stands. A route starts from the
+    // system named up there, and naming it is enough: waiting for it to
+    // have been searched for would have the user ask a question they did
+    // not want the answer to before they could ask the one they did.
+    let asked = typed(&search.system)
+        .zip(typed(&search.route_end))
+        .zip(typed(&search.route_range));
     // Egui lays a button's contents out as atoms, and a custom atom is a
     // slot of a given size that hands its rect back to be painted into. So
     // the spinner takes a place in the row beside the label rather than
@@ -783,7 +776,7 @@ fn route_section(
         egui::Spinner::new().paint_at(ui, turning);
     }
 
-    if button.response.clicked()
+    if (button.response.clicked() || submitted)
         && let Some(((start, end), range)) = asked
     {
         *plot = match jump_range(range) {
