@@ -47,6 +47,53 @@ pub fn plugin(app: &mut App) {
 /// the next.
 const WIDTH: f32 = 230.;
 
+/// The window a panel stands in, put where the tiling says
+///
+/// `at` is where its right hand top corner goes, that being the corner the
+/// tiling works from: panels stand against the right edge of the viewport, and
+/// a window is at least as wide as its title bar needs, so where its left edge
+/// falls is not known until it has been drawn.
+///
+/// `placed` is [`Panel::placed`]: a panel is put where the tiling says on the
+/// frame it opens, and asked for `at` as a default after that, so that one
+/// dragged somewhere stays where it was dragged.
+fn framed<'open>(
+    title: &str,
+    id: egui::Id,
+    at: egui::Pos2,
+    placed: bool,
+    showing: &'open mut bool,
+) -> egui::Window<'open> {
+    let window = egui::Window::new(title.to_owned())
+        .id(id)
+        .open(showing)
+        .resizable(false)
+        .pivot(egui::Align2::RIGHT_TOP)
+        // The width alone. Left unsaid it is `Style::default_area_size`, 600,
+        // which will not fit where a panel is asked to be placed, so egui
+        // slides the window somewhere it does and remembers it there. The
+        // height is the window's own business: said here it is imposed rather
+        // than defaulted, and a list asked to fit the height of the last panel
+        // drawn shows three lines of eight.
+        .default_width(WIDTH);
+
+    if placed { window.default_pos(at) } else { window.current_pos(at) }
+}
+
+/// Lay a panel's contents out over the whole of the window
+///
+/// [`WIDTH`] is what a panel asks for, and a window is at least as wide as its
+/// title bar needs. A route is titled with the names of both its ends, which
+/// is wider, and egui hands the extra room to the contents to use or leave.
+///
+/// They take it. A line in a list is a control the width of the list, so a
+/// list laid out to [`WIDTH`] inside a wider window stops short of the frame
+/// and leaves a band of empty panel down the right hand side, which reads as
+/// a margin nobody chose.
+fn spread(ui: &mut Ui) {
+    ui.set_min_width(WIDTH);
+}
+
 /// What the user has a panel open for
 ///
 /// A list rather than a map, since there are only ever a handful of them and
@@ -67,6 +114,17 @@ pub struct Panels {
     /// still opens where it asked to, since egui only moves a window to bring
     /// it back inside the viewport.
     height: f32,
+    /// How wide the widest panel drawn came out
+    ///
+    /// How far across the next column of them opens, and the widest for the
+    /// reason the height is the tallest. A panel is at least [`WIDTH`] and as
+    /// much wider as its title bar needs, which for a route is the names of
+    /// both its ends, so a column stepped by what a panel asks for would open
+    /// the next one over the top of a wide one already standing.
+    ///
+    /// Only the columns. Where a panel opens down the edge does not depend on
+    /// this, panels being placed by the corner they are tiled against.
+    width: f32,
 }
 
 /// One open panel
@@ -363,28 +421,31 @@ fn panels(
     // Where the camera is looking, which is the distance the spyglass and
     // the selection's own row are measured in.
     let center = orbit.single().map(|camera| camera.center).ok();
-    // The top right corner, clear of the settings pane and the bar,
-    // which stand against the left edge and the top middle. Measured from
-    // the window's full width rather than the width of what is written in
-    // it, so that its right edge stands off the viewport by the margin
-    // instead of its text doing so.
+    // The top right corner, clear of the settings pane and the bar, which
+    // stand against the left edge and the top of it. The corner itself, since
+    // a panel is placed by its own right hand top rather than by its left: a
+    // window is as wide as its title bar needs, and a place worked out from a
+    // width guessed for it is a place a wider panel overhangs the viewport
+    // from, to be pushed back inside without the margin it was given.
     //
     // Only where a panel opens: the windows are movable, so where they end
     // up is the user's business.
     let room = ctx.content_rect();
-    let width =
-        WIDTH + egui::Frame::window(&ctx.global_style()).total_margin().sum().x;
-    let corner = room.right_top() + egui::vec2(-width - MARGIN, MARGIN);
+    let corner = room.right_top() + egui::vec2(-MARGIN, MARGIN);
 
     // A panel and the gap under it, and how many of those the viewport holds
     // each way. Worked out afresh every frame, since the window it is all
     // measured against is the user's to resize.
+    let width = panels.width.max(
+        WIDTH + egui::Frame::window(&ctx.global_style()).total_margin().sum().x,
+    );
     let step = egui::vec2(-(width + MARGIN), panels.height + MARGIN);
     let down = ((room.height() - MARGIN) / step.y).floor().max(1.) as usize;
     let across = ((room.width() - MARGIN) / -step.x).floor().max(1.) as usize;
 
     let mut shut = Vec::new();
     let mut tallest: f32 = 0.;
+    let mut widest: f32 = 0.;
     let mut centered = None;
     let mut picked = None;
     let mut opening = None;
@@ -397,29 +458,15 @@ fn panels(
         // Set before the panel is read from, so that the two borrows of it
         // do not overlap.
         let placed = std::mem::replace(&mut panel.placed, true);
-        let window = egui::Window::new(panel.subject.title())
-            .id(panel.subject.id())
-            .open(&mut showing)
-            .resizable(false)
-            // The width alone. Left unsaid it is `Style::default_area_size`,
-            // 600, which will not fit where a panel is asked to be placed, so
-            // egui slides the window somewhere it does and remembers it
-            // there. The height is the window's own business: said here it
-            // is imposed rather than defaulted, and a list asked to fit the
-            // height of the last panel drawn shows three lines of eight.
-            .default_width(WIDTH);
-        // Put where the tiling says on the frame it opens, and asked nothing
-        // after that, so that a panel dragged somewhere stays there. A
-        // default would be answered by whatever egui remembers of the last
-        // time the same panel was open, which is a place some other panel may
-        // well be standing in now.
-        let window = if placed {
-            window.default_pos(at)
-        } else {
-            window.current_pos(at)
-        };
+        let window = framed(
+            panel.subject.title(),
+            panel.subject.id(),
+            at,
+            placed,
+            &mut showing,
+        );
         let window = window.show(ctx, |ui| {
-            ui.set_width(WIDTH);
+            spread(ui);
             match &panel.subject {
                 Subject::System(system) => {
                     described(ui, system, &names, &mut centered, &mut wanted)
@@ -438,11 +485,14 @@ fn panels(
 
         // Only a panel that drew what it holds. A window rolled up into its
         // title bar stands a line high, which is no height to place the next
-        // panel by.
-        if let Some(window) = window
-            && window.inner.is_some()
-        {
-            tallest = tallest.max(window.response.rect.height());
+        // panel by. Its width is what it always was, the title bar being the
+        // one part of it that is drawn either way, so that is taken from any
+        // panel that was shown at all.
+        if let Some(window) = window {
+            widest = widest.max(window.response.rect.width());
+            if window.inner.is_some() {
+                tallest = tallest.max(window.response.rect.height());
+            }
         }
         if !showing {
             shut.push(panel.subject.id());
@@ -473,6 +523,9 @@ fn panels(
     // not a height to place the next one by.
     if tallest > 0. {
         panels.height = tallest;
+    }
+    if widest > 0. {
+        panels.width = widest;
     }
     if !shut.is_empty() {
         panels.open.retain(|panel| !shut.contains(&panel.subject.id()));
@@ -847,6 +900,99 @@ mod tests {
                 &mut None,
             );
         });
+    }
+
+    /// The rectangle a panel titled `title` came out in, opened at `at`
+    ///
+    /// The window as the panels draw it, `contents` being whatever the test
+    /// wants to ask of the room inside it.
+    fn shown(
+        title: &str,
+        at: egui::Pos2,
+        contents: impl FnMut(&mut Ui),
+    ) -> egui::Rect {
+        let mut contents = contents;
+        let ctx = egui::Context::default();
+        let mut rect = egui::Rect::ZERO;
+
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut showing = true;
+            let panel = framed(
+                title,
+                egui::Id::new("test-panel"),
+                at,
+                false,
+                &mut showing,
+            );
+            if let Some(panel) = panel.show(ui.ctx(), &mut contents) {
+                rect = panel.response.rect;
+            }
+        });
+
+        rect
+    }
+
+    /// How wide a panel titled `title` lays its contents out, and how much
+    /// room it had
+    ///
+    /// What is being asked is what the contents make of the width the title
+    /// left them.
+    fn laid_out(title: &str) -> (f32, f32) {
+        let mut taken = 0.;
+        let rect = shown(title, egui::Pos2::ZERO, |ui| {
+            spread(ui);
+            taken = ui.available_width();
+        });
+        let margins =
+            egui::Frame::window(&egui::Context::default().global_style())
+                .total_margin()
+                .sum()
+                .x;
+
+        (taken, rect.width() - margins)
+    }
+
+    /// A panel's contents are laid out across the whole of its window
+    ///
+    /// A window is at least as wide as its title bar, and a route is titled
+    /// with the names of both its ends. Contents laid out to the width a
+    /// panel asks for would leave a band of empty panel down the right hand
+    /// side of one, which reads as a margin nobody chose.
+    #[test]
+    fn a_long_title_widens_what_stands_under_it() {
+        let (taken, had) = laid_out("SIGMA DRACONIS -> MINISTRY");
+
+        assert!(had > WIDTH, "{had} is no wider than the {WIDTH} asked for");
+        assert_eq!(taken, had);
+    }
+
+    /// A title that fits leaves the panel the width it asked for
+    #[test]
+    fn a_short_title_leaves_the_width_alone() {
+        assert_eq!(laid_out("SOL"), (WIDTH, WIDTH));
+    }
+
+    /// A panel opens with its right hand top corner where it was put
+    ///
+    /// Which is what standing off the edge of the viewport by the margin
+    /// comes to. Placed by its left edge instead, a panel wider than the
+    /// width it was given would reach past that edge, and egui would push it
+    /// back inside with nothing between it and the corner.
+    ///
+    /// Both titles, since what a panel is called is what widens it and the
+    /// corner is not to move with the words in the title bar.
+    #[test]
+    fn a_panel_opens_at_the_corner_it_is_given() {
+        let at = egui::pos2(400., 30.);
+
+        for title in ["SOL", "SIGMA DRACONIS -> MINISTRY"] {
+            let rect = shown(title, at, |ui| {
+                spread(ui);
+                ui.label("5 systems");
+            });
+
+            assert_eq!(rect.right_top(), at, "{title}");
+        }
     }
 
     /// A system at `place`, otherwise as bare as [`system`]
