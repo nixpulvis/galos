@@ -399,11 +399,24 @@ pub fn chrome(
     // The pane first, since where it has reached is where the gear stands.
     let edge = settings_pane(ctx, settings.0, |ui| {
         heading(ui, "Spyglass", false);
-        ui.label("Radius (Ly)");
-        radius_slider(ui, &mut knobs.spyglass.radius, Spyglass::CEILING);
+        ui.checkbox(&mut knobs.spyglass.follow_camera, "Follow Camera");
         ui.add_space(FIELD_GAP);
-        ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
-        ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
+        ui.label("Radius (Ly)");
+        // Shown either way, since the reach is what the bar's count is
+        // counting within and a number left off the pane is one the user has
+        // nowhere to read. Greyed while the camera sets it: dragging it would
+        // be overwritten on the next frame, and a control that springs back is
+        // worse than one that says it is not yours to move.
+        ui.add_enabled_ui(!knobs.spyglass.follow_camera, |ui| {
+            radius_slider(ui, &mut knobs.spyglass.radius, Spyglass::CEILING);
+        });
+        // The camera cannot both be told where to stand and be asked where it
+        // is standing, so the one that reads the camera hides the one that
+        // writes it.
+        if !knobs.spyglass.follow_camera {
+            ui.add_space(FIELD_GAP);
+            ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
+        }
 
         heading(ui, "View", true);
         // Whether a system is named is a choice about what the map draws, the
@@ -498,6 +511,13 @@ pub fn chrome(
         // like; these say how it goes about it, and are reached for once in a
         // session if at all.
         heading(ui, "Advanced", true);
+        // Draw everything loaded, reach or no reach. Down here because what
+        // it shows is whatever the map happens to have fetched, which is a
+        // record of where the camera has been rather than a picture of
+        // anything, and because with the reach following the camera there is
+        // less call to reach past it.
+        ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
+        ui.add_space(FIELD_GAP);
         ui.checkbox(&mut knobs.spyglass.fetch, "Fetch Systems");
         if knobs.spyglass.fetch {
             ui.horizontal(|ui| poll_value(ui, &mut knobs.poll.0));

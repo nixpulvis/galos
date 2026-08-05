@@ -346,6 +346,7 @@ mod tests {
             radius: Spyglass::OPENING,
             disabled: false,
             lock_camera: false,
+            follow_camera: false,
         });
         app.init_resource::<Filters>();
         app.init_resource::<Selected>();
@@ -366,6 +367,7 @@ mod tests {
             radius: held.radius,
             disabled: held.disabled,
             lock_camera: held.lock_camera,
+            follow_camera: held.follow_camera,
         }
     }
 
@@ -610,6 +612,7 @@ mod tests {
             radius: Spyglass::OPENING,
             disabled: false,
             lock_camera: false,
+            follow_camera: false,
         });
         app.insert_resource(Selected(Some(asking(&[1, 2]))));
         app.add_systems(Update, plotted);
