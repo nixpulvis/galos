@@ -1,9 +1,9 @@
 //! The chrome standing between the user and the map
 //!
-//! A bar centered at the top, a gear in the corner, and the settings pane that
-//! gear slides out from the left edge. What is known about the system the user
-//! picked out is drawn by [`crate::systems::selection`], which owns the fields
-//! it reads.
+//! A gear in the top left corner, the bar beside it, and the settings pane
+//! that gear slides out from the left edge. What is known about the system the
+//! user picked out is drawn by [`crate::systems::selection`], which owns the
+//! fields it reads.
 //!
 //! The bar leads with a search box, which is what it is asked for most, but it
 //! is not a search bar: three sections drop out of it, and search is one of
@@ -436,9 +436,11 @@ pub fn chrome(
         }
     });
 
-    gear(ctx, edge, &mut settings.0);
+    // The gear next, since where it ends is where the bar begins.
+    let beside = gear(ctx, edge, &mut settings.0);
     let shut = main_bar(
         ctx,
+        beside,
         // Whether the search box's answer is late enough to say so. Settled
         // where the clock is, which is the system that put the question; the
         // bar draws during egui's own pass and has no clock of its own.
@@ -525,9 +527,11 @@ fn settings_pane(
 /// Bare, so that what stands in the corner is a gear rather than a box with a
 /// gear in it. It rides the pane's edge at `left`, since a handle the pane
 /// slides over is a handle the user cannot reach.
-fn gear(ctx: &Context, left: f32, open: &mut bool) {
+///
+/// Answers where its right hand edge falls, which is where the bar stands.
+fn gear(ctx: &Context, left: f32, open: &mut bool) -> f32 {
     let style = ctx.global_style();
-    let clicked = egui::Area::new(egui::Id::new("settings-gear"))
+    let area = egui::Area::new(egui::Id::new("settings-gear"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
         .show(ctx, |ui| {
@@ -536,20 +540,22 @@ fn gear(ctx: &Context, left: f32, open: &mut bool) {
                 gear = gear.color(style.visuals.strong_text_color());
             }
             ui.add(egui::Button::new(gear).frame(false)).clicked()
-        })
-        .inner;
+        });
+    let clicked = area.inner;
 
     if clicked {
         *open = !*open;
     }
+
+    area.response.rect.right()
 }
 
 /// Ask for a system, and for whatever else the user unfolds
 ///
-/// One field at the top of the viewport, centered, since it is the one
-/// question the map is asked over and over. Focusing it brings a pane up
-/// behind it and drops the rest of the form out below, and a press landing
-/// off the form puts it away again.
+/// One field at the top of the viewport, since it is the one question the map
+/// is asked over and over. Focusing it brings a pane up behind it and drops
+/// the rest of the form out below, and a press landing off the form puts it
+/// away again.
 ///
 /// It keeps its box while the bar is at rest, so that what stands at the top
 /// of the viewport reads as somewhere to type rather than as a word painted
@@ -559,13 +565,16 @@ fn gear(ctx: &Context, left: f32, open: &mut bool) {
 /// rest, rather than a frame left out and put back. Nothing shifts as it
 /// comes up, because nothing about the layout has changed.
 ///
-/// Centered rather than set against an edge, so that it holds still while the
-/// settings pane slides in and out beside it.
+/// It stands beside the gear at `left` and rides the settings pane's edge as
+/// the gear does, so that the whole of the chrome is gathered into one corner.
+/// Down the middle it would stand over the sky the spyglass fills, which is
+/// drawn about the middle of the viewport and is what the map is for.
 ///
 /// The note is not part of what drops down. It answers the name in the input,
 /// and is worth reading whether or not the rest is out.
 fn main_bar(
     ctx: &Context,
+    left: f32,
     asking: bool,
     search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
@@ -593,7 +602,7 @@ fn main_bar(
 
     let bar = egui::Area::new(egui::Id::new("main-bar"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0., MARGIN))
+        .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
         .show(ctx, |ui| {
             frame
                 .show(ui, |ui| {
