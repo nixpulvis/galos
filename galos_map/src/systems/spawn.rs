@@ -165,20 +165,24 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
-/// A star, drawn inside the [`System`] that holds it
+/// A whole system, drawn as one thing
 ///
-/// A system is a place and a star is a thing in it. Only one is drawn per
-/// system today, but a system can have several, and they will differ in
-/// where they sit and how large they are.
+/// From far enough away nothing in a system can be told apart from anything
+/// else in it, so what is drawn is a single sphere standing for the lot. Up
+/// close the same sphere is the edge of what the system takes up, and its
+/// contents are drawn inside it.
+///
+/// Not a star. A system is a place, a star is a thing in it, and there may be
+/// several; those are read from the `stars` table and drawn within this.
 ///
 /// [`super::scale`] writes a size onto this entity rather than onto the
-/// system, because a star is drawn far larger than it is so as to stay
-/// visible from light years away. Scale is inherited, so anything sharing an
-/// entity with a star would be stretched by the same exaggeration; keeping
-/// stars on children of their own leaves the system's transform meaning what
-/// it says, and lets labels and, later, bodies sit at their true size.
+/// system, because a shell is drawn far larger than the system is so as to
+/// stay visible from light years away. Scale is inherited, so anything sharing
+/// an entity with it would be stretched by the same exaggeration; keeping the
+/// shell on a child of its own leaves the system's transform meaning what it
+/// says, and lets labels and bodies sit at their true size.
 #[derive(Component)]
-pub struct Star;
+pub struct Shell;
 
 /// Pick out a clicked star system
 ///
@@ -409,7 +413,7 @@ pub fn spawn(
 /// Create or refresh the entities for each row fetched
 ///
 /// A [`System`] carries the database row and the grid placement, and is what
-/// the rest of the map addresses. What is drawn hangs off it: a [`Star`]
+/// the rest of the map addresses. What is drawn hangs off it: a [`Shell`]
 /// today, and labels alongside. Nothing there inherits a size, so each is
 /// drawn at whatever size suits it.
 ///
@@ -502,7 +506,7 @@ fn update(
     systems_query: Query<(Entity, Ref<System>, Has<Filtered>)>,
     mut stars: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
-        With<Star>,
+        With<Shell>,
     >,
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
@@ -529,18 +533,24 @@ fn update(
     }
 }
 
-/// Where a star sits, as the galaxy's grid wants it
+/// Where a system sits, as the galaxy's grid wants it
 ///
 /// Split into the cell the position falls in and how far into that cell it
 /// sits. The cell is an integer, so it stays exact however far out the system
 /// is, and the transform left over is small enough to be carried without
 /// losing anything.
 ///
-/// The scale is left alone. This is the star's own transform, and everything
-/// hung off it is placed relative to a light year meaning a light year.
+/// A [`System`] holds its position in light years, which is what the database
+/// records and what every distance the map states is measured in. The grid is
+/// laid out in metres, so this is where the two meet — one of only two such
+/// places, the other being the camera's own cell.
+///
+/// The scale is left alone. This is the system's own transform, and everything
+/// hung off it is placed relative to a metre meaning a metre.
 fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
-    let (cell, translation) =
-        grid.translation_to_grid(DVec3::from(system.position));
+    let (cell, translation) = grid.translation_to_grid(crate::space::metres(
+        DVec3::from(system.position),
+    ));
 
     (cell, Transform::from_translation(translation))
 }
@@ -582,7 +592,7 @@ fn star(
     dimmed: bool,
 ) -> impl Bundle {
     (
-        Star,
+        Shell,
         Mesh3d(mesh.0.clone()),
         MeshMaterial3d(materials.get(hue(system, color_by), dimmed)),
         Transform::default(),

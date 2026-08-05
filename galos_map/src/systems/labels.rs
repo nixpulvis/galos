@@ -3,7 +3,7 @@ use crate::schedule::MapSet;
 use crate::systems::filter::{self, Filtered};
 use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
 use crate::systems::selection::{SELECTION, Selected};
-use crate::systems::spawn::{ShowNames, Star};
+use crate::systems::spawn::{Shell, ShowNames};
 use crate::systems::{Spyglass, System};
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::ecs::entity::EntityHashSet;
@@ -70,12 +70,15 @@ pub(crate) fn plugin(app: &mut App) {
 /// World size of a label at unit scale
 const SIZE: f32 = 64.;
 
-/// Depth floor for the label size, in light years
+/// Depth floor for the label size, in metres
 ///
 /// Size is proportional to depth, so a system level with the camera would
 /// draw at nothing and one just behind it at a negative size, which is
 /// mirrored. Anything this close is inside the near plane regardless.
-const MIN_DEPTH: f32 = 0.1;
+///
+/// A metre. What it guards against is the sign, not any particular distance,
+/// and the camera cannot be pulled nearer than this to what it looks at.
+const MIN_DEPTH: f32 = 1.;
 
 /// How far a name is drawn from what the camera looks at, to begin with
 ///
@@ -243,13 +246,19 @@ pub struct Named;
 #[derive(Component)]
 pub struct Label;
 
-/// How far in front of the camera a point is, in light years
+/// How far in front of the camera a point is, in metres
 ///
 /// Depth into the view, which is not the same as the distance to the camera.
 /// A point at the corner of the screen is further from the eye than one at
 /// the centre at the same depth, so sizing by distance draws the corner one
 /// larger. At the corner of a 16:9 viewport with a quarter-turn field of
 /// view, distance is about 1.31 times the depth.
+///
+/// In metres although `point` is given in light years, because every caller
+/// wants it in order to work out a size to draw something at, and what is
+/// drawn is measured in metres. [`screen_position`] takes the same projection
+/// on its own rather than through this, since a place on screen is a ratio of
+/// two lengths and does not care which unit either is in.
 ///
 /// Both ends come from [`OrbitCamera`], which publishes an absolute position
 /// and a rotation during `Update`. The camera's `GlobalTransform` answers
@@ -258,7 +267,7 @@ pub struct Label;
 /// galaxy. Negative behind the camera.
 pub(super) fn depth(camera: &OrbitCamera, point: DVec3) -> f32 {
     let forward = (camera.rotation * Vec3::NEG_Z).as_dvec3();
-    (point - camera.eye).dot(forward) as f32
+    crate::space::metres(point - camera.eye).dot(forward) as f32
 }
 
 /// How much world one logical pixel covers, at a given depth
@@ -699,7 +708,7 @@ pub fn leaders(
         (&GlobalTransform, &Children, Has<PointedAt>, Has<Selected>),
         With<System>,
     >,
-    stars: Query<&GlobalTransform, With<Star>>,
+    stars: Query<&GlobalTransform, With<Shell>>,
 ) {
     for (label, drawn, child_of) in &labels {
         if !drawn.get() {
@@ -880,9 +889,11 @@ mod tests {
         let camera = camera(Quat::IDENTITY);
         let ahead = DVec3::new(0., 0., -100.);
         let corner = DVec3::new(80., 45., -100.);
+        // A hundred light years, in the metres depth answers in.
+        let hundred = (100. * crate::space::LIGHT_YEAR) as f32;
 
-        assert!((depth(&camera, ahead) - 100.).abs() < 1e-3);
-        assert!((depth(&camera, corner) - 100.).abs() < 1e-3);
+        assert!((depth(&camera, ahead) - hundred).abs() < hundred * 1e-5);
+        assert!((depth(&camera, corner) - hundred).abs() < hundred * 1e-5);
         assert!(
             corner.length() > 130.,
             "the corner point is only {} away, too close to tell the two apart",
@@ -1120,9 +1131,12 @@ mod tests {
         let eye = focus + (rotation * Vec3::Z * radius).as_dvec3();
 
         let camera = OrbitCamera { eye, rotation, ..default() };
+        // The radius is a distance the camera is set up in, which is light
+        // years; the depth comes back in the metres it is drawn in.
+        let expected = (radius as f64 * crate::space::LIGHT_YEAR) as f32;
         assert!(
-            (depth(&camera, focus) - radius).abs() < 1e-2,
-            "the focus measured {} deep, not the {radius} the camera sits at",
+            (depth(&camera, focus) - expected).abs() < expected * 1e-5,
+            "the focus measured {} deep, not the {expected} the camera sits at",
             depth(&camera, focus)
         );
     }

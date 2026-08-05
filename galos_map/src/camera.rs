@@ -53,19 +53,19 @@ const ZOOM_RATE: f32 = 0.15;
 /// Pixels of scroll that count as one line, for pointers that report them
 const PIXELS_PER_LINE: f32 = 16.;
 
-/// How near and how far the camera may be pulled from what it looks at
+/// How near and how far the camera may be pulled from what it looks at, in
+/// light years
 ///
-/// The far end is past the width of the galaxy, so the whole map fits. The
-/// near end is inside a planet: a light year is about `9.5e15` metres, so this
-/// is some ninety five kilometres, against the six thousand of an Earth. A
-/// body has to be approachable, and the floor should be what stops the camera
-/// rather than what a body happens to be the size of.
+/// The far end is past the width of the galaxy, so the whole map fits. The near
+/// end is a metre, which is not a distance anything is drawn at so much as a
+/// floor that never comes up: what stops the camera should be the thing it is
+/// looking at, not a number.
 ///
 /// The near end was `1e-6` while a system was drawn as one exaggerated sphere.
 /// That is some thirty light seconds, which is a sensible place to stand to
 /// look at a system whole and nowhere near close enough to look at anything in
 /// it: an Earth seen from there is four hundredths of a degree across.
-const MIN_RADIUS: f32 = 1e-11;
+const MIN_RADIUS: f32 = (1. / crate::space::LIGHT_YEAR) as f32;
 const MAX_RADIUS: f32 = 1e6;
 
 /// How near the near plane sits, as a fraction of the orbit radius
@@ -77,12 +77,12 @@ const MAX_RADIUS: f32 = 1e6;
 /// ten-thousandth of the way there is close enough to be behind the viewer.
 ///
 /// This is why nothing inside a system could be drawn before. Bevy's default
-/// near plane is `0.1`, and a world unit here is a light year, so everything
+/// near plane is `0.1`, and a world unit was a light year then, so everything
 /// within a tenth of a light year of the camera was clipped away — which is
 /// every star at its true size and every body without exception.
 const NEAR_FRACTION: f32 = 1e-4;
 
-/// How far the frustum reaches, in light years
+/// How far the frustum reaches, in metres
 ///
 /// Only culling depends on it. The projection is an infinite reversed one, so
 /// the matrix never reads it, but the frustum built alongside is given it as a
@@ -91,9 +91,11 @@ const NEAR_FRACTION: f32 = 1e-4;
 /// Past anything the map can put in front of the camera: the furthest the
 /// camera may stand off what it looks at, plus the furthest the spyglass may
 /// reach around it, and half again for room. Bevy's own default is `1000.`,
-/// which is a thousand light years, and leaves all but the nearest hundredth
-/// of the galaxy off the screen the moment the spyglass is opened wide.
-const SIGHT: f32 = (MAX_RADIUS + Spyglass::CEILING) * 1.5;
+/// which is a thousand *metres*, and would leave the map showing nothing at
+/// all.
+const SIGHT: f32 = ((MAX_RADIUS + Spyglass::CEILING) as f64
+    * 1.5
+    * crate::space::LIGHT_YEAR) as f32;
 
 /// How close to its target a value must be before it is pinned there
 ///
@@ -499,7 +501,11 @@ pub fn orbit_camera(
     orbit.rotation = rotation;
     orbit.eye = eye;
 
-    let (eye_cell, eye_translation) = grid.translation_to_grid(eye);
+    // The whole orbit above is worked out in light years, which is what the
+    // map measures in and what everything asking the camera where it is
+    // expects. Only here does it become the metres the grid is laid out in.
+    let (eye_cell, eye_translation) =
+        grid.translation_to_grid(crate::space::metres(eye));
     cell.set_if_neq(eye_cell);
     transform.translation = eye_translation;
     transform.rotation = rotation;
@@ -523,7 +529,11 @@ pub fn orbit_camera(
 /// clipping meant for portals and mirrors.
 pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
     let Ok((orbit, mut projection)) = cameras.single_mut() else { return };
-    let near = orbit.radius * NEAR_FRACTION;
+    // The radius is a distance the map talks in and the planes are distances
+    // it draws in, so this is one of the two places a light year is spoken to
+    // metres. The other is where the camera's own cell is worked out.
+    let near =
+        (orbit.radius as f64 * crate::space::LIGHT_YEAR) as f32 * NEAR_FRACTION;
 
     // Asked before it is reached for, since reaching for it is what says it
     // has changed. Only the two planes are touched: bevy writes the aspect
@@ -827,8 +837,7 @@ mod tests {
     /// The two planes the camera came out seeing between
     fn planes(app: &mut App) -> (f32, f32) {
         let mut lenses = app.world_mut().query::<&Projection>();
-        let Projection::Perspective(lens) =
-            lenses.single(app.world()).unwrap()
+        let Projection::Perspective(lens) = lenses.single(app.world()).unwrap()
         else {
             panic!("the camera was given a perspective projection")
         };
@@ -858,9 +867,12 @@ mod tests {
     fn the_near_plane_never_reaches_what_is_looked_at() {
         for radius in [MIN_RADIUS, 1e-8, 1., 1e4, MAX_RADIUS] {
             let (near, _) = planes(&mut looking(radius));
+            // The radius is set in light years and the plane comes back in
+            // the metres the map draws in.
+            let back = (radius as f64 * crate::space::LIGHT_YEAR) as f32;
             assert!(
-                near < radius / 100.,
-                "standing {radius} back, the plane sat at {near}"
+                near < back / 100.,
+                "standing {back}m back, the plane sat at {near}"
             );
         }
     }
@@ -868,19 +880,21 @@ mod tests {
     /// Zoomed in as close as the map allows, a body is still in front of the
     /// plane rather than behind it
     ///
-    /// A light year is about `9.5e15` metres, so an Earth's radius is some
-    /// `6.7e-10` of one. Nothing about the near plane may put that out of
-    /// reach, and the default `0.1` put every one of them out of reach.
+    /// Nothing about the near plane may put an Earth out of reach, and bevy's
+    /// default of `0.1` put every one of them out of reach: a world unit was a
+    /// light year then, so the plane stood a tenth of one from the camera and
+    /// clipped away everything a system is made of.
     #[test]
     fn zooming_in_close_still_leaves_something_in_front_of_the_camera() {
-        const EARTH_RADIUS: f32 = 6.7e-10;
+        /// Metres, which is what the map is drawn in
+        const EARTH_RADIUS: f32 = 6.371e6;
 
         let (near, _) = planes(&mut looking(MIN_RADIUS));
         assert!(near > 0., "the plane collapsed onto the camera");
         assert!(near.is_normal(), "the plane sat at {near}, a subnormal");
         assert!(
             near < EARTH_RADIUS,
-            "the plane sat at {near}, past a body {EARTH_RADIUS} across"
+            "the plane sat at {near}m, past a body {EARTH_RADIUS}m across"
         );
     }
 
