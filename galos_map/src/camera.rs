@@ -1,6 +1,6 @@
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
-use crate::ui::PointerOverUi;
+use crate::ui::{Gesture, PointerOverUi};
 use bevy::camera::Hdr;
 use bevy::input::mouse::{
     AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit,
@@ -388,10 +388,10 @@ pub fn move_camera(
 /// cell and a remainder at the very end, so the arithmetic never has to know
 /// about grids and the camera never lands between two cells.
 pub fn orbit_camera(
-    buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     over_ui: Res<PointerOverUi>,
+    gesture: Gesture,
     time: Res<Time<Real>>,
     spyglass: Res<Spyglass>,
     grids: Query<&Grid, With<BigSpace>>,
@@ -403,16 +403,18 @@ pub fn orbit_camera(
     };
 
     // A drag that started on a slider is the user talking to the settings
-    // window, not to the map behind it.
-    if !over_ui.0 {
-        if buttons.pressed(MouseButton::Left) {
+    // window, not to the map behind it, and goes on being that wherever the
+    // pointer is dragged to. So the whole drag answers to whose press began
+    // it rather than to what the pointer is over from one frame to the next.
+    if gesture.dragging_map() {
+        if gesture.pressed(MouseButton::Left) {
             let rate = ORBIT_RATE * orbit.orbit_sensitivity;
             orbit.target_yaw -= motion.delta.x * rate;
             orbit.target_pitch = (orbit.target_pitch - motion.delta.y * rate)
                 .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         }
 
-        if buttons.pressed(MouseButton::Right) {
+        if gesture.pressed(MouseButton::Right) {
             let rate = PAN_RATE * orbit.pan_sensitivity * orbit.radius;
             let across = orbit.rotation * Vec3::X * -motion.delta.x * rate;
             let up = orbit.rotation * Vec3::Y * motion.delta.y * rate;
@@ -423,22 +425,26 @@ pub fn orbit_camera(
             }
             orbit.target_center += (across + up).as_dvec3();
         }
+    }
 
-        let lines = match scroll.unit {
-            MouseScrollUnit::Line => scroll.delta.y,
-            MouseScrollUnit::Pixel => scroll.delta.y / PIXELS_PER_LINE,
-        };
-        // Held to the spyglass, the camera has nowhere of its own to stand
-        // and a scroll has nothing to say about where it goes. Taking one
-        // anyway moves it for a frame, until `zoom_with_spyglass` writes the
-        // reach back over it, which reads as a zoom that keeps snapping back.
-        // The reach is what to move, and the radius on the settings pane is
-        // where it is moved.
-        if lines != 0. && !spyglass.locks_camera() {
-            let zoom = -lines * ZOOM_RATE * orbit.zoom_sensitivity;
-            orbit.target_radius = (orbit.target_radius * zoom.exp())
-                .clamp(MIN_RADIUS, MAX_RADIUS);
-        }
+    // A scroll belongs to no press, so there is no owner to ask and what the
+    // pointer is over now is the whole of the question. Which is what
+    // [`PointerOverUi`] answers, a frame late and no worse for it: a wheel
+    // turned over a pane that was not there last frame is a wheel turned at
+    // something the user has only just opened.
+    let lines = match scroll.unit {
+        MouseScrollUnit::Line => scroll.delta.y,
+        MouseScrollUnit::Pixel => scroll.delta.y / PIXELS_PER_LINE,
+    };
+    // Held to the spyglass, the camera has nowhere of its own to stand and a
+    // scroll has nothing to say about where it goes. Taking one anyway moves
+    // it for a frame, until `zoom_with_spyglass` writes the reach back over
+    // it, which reads as a zoom that keeps snapping back. The reach is what to
+    // move, and the radius on the settings pane is where it is moved.
+    if lines != 0. && !over_ui.0 && !spyglass.locks_camera() {
+        let zoom = -lines * ZOOM_RATE * orbit.zoom_sensitivity;
+        orbit.target_radius =
+            (orbit.target_radius * zoom.exp()).clamp(MIN_RADIUS, MAX_RADIUS);
     }
 
     // Approach whatever was asked for, rather than jumping to it. A search
@@ -503,6 +509,8 @@ pub fn orbit_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::pointing::PRIMARY;
+    use crate::ui::Grasp;
     use bevy::input::mouse::AccumulatedMouseScroll;
 
     /// A world holding a grid, a camera `back` light years out, and one
@@ -516,6 +524,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(spyglass);
         app.insert_resource(PointerOverUi(false));
+        app.init_resource::<Grasp>();
         app.init_resource::<ButtonInput<MouseButton>>();
         app.init_resource::<AccumulatedMouseMotion>();
         app.insert_resource(AccumulatedMouseScroll {
@@ -550,6 +559,77 @@ mod tests {
             lock_camera,
             follow_camera,
         }
+    }
+
+    /// A world where the left button is down and being dragged across the map
+    ///
+    /// `owner` is whose the press was, as the UI settled it at the end of the
+    /// frame the button went down in.
+    fn dragging(owner: bool) -> App {
+        let mut app = scrolled(100., spyglass(false, false));
+        app.insert_resource(AccumulatedMouseScroll::default());
+        app.insert_resource(AccumulatedMouseMotion {
+            delta: Vec2::new(20., 0.),
+        });
+
+        let world = app.world_mut();
+        world.resource_mut::<ButtonInput<MouseButton>>().press(PRIMARY);
+        let buttons = world.resource::<ButtonInput<MouseButton>>().clone();
+        world.resource_mut::<Grasp>().settle(&buttons, owner);
+        app
+    }
+
+    /// Which way the camera is turned to
+    fn facing(app: &mut App) -> f32 {
+        app.world_mut()
+            .query::<&OrbitCamera>()
+            .single(app.world())
+            .unwrap()
+            .target_yaw
+    }
+
+    /// A drag the map owns turns it
+    #[test]
+    fn dragging_the_map_orbits_it() {
+        let mut app = dragging(false);
+
+        app.update();
+
+        assert!(facing(&mut app) != 0., "the map did not turn");
+    }
+
+    /// A drag that began on a control does not
+    ///
+    /// The whole drag belongs to whatever the press landed on, so a pointer
+    /// pulled off a slider and across the sky goes on talking to the slider.
+    #[test]
+    fn dragging_off_a_control_does_not_orbit_the_map() {
+        let mut app = dragging(true);
+
+        app.update();
+
+        assert_eq!(facing(&mut app), 0.);
+    }
+
+    /// Nor does one nobody has settled yet
+    ///
+    /// The first frame of a drag, the UI not having spoken. A frame of a map
+    /// that has not started turning, against a frame of one that turns under
+    /// a press meant for a slider.
+    #[test]
+    fn an_unsettled_drag_does_not_orbit_the_map() {
+        let mut app = scrolled(100., spyglass(false, false));
+        app.insert_resource(AccumulatedMouseScroll::default());
+        app.insert_resource(AccumulatedMouseMotion {
+            delta: Vec2::new(20., 0.),
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(PRIMARY);
+
+        app.update();
+
+        assert_eq!(facing(&mut app), 0.);
     }
 
     /// Scrolling pulls the camera back

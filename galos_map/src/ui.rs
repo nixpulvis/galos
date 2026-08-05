@@ -21,6 +21,7 @@ use crate::systems::filter::{
 };
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
+use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{SELECTION, Selection};
 use crate::systems::spawn::{ColorBy, ShowNames};
@@ -36,7 +37,7 @@ use galos_db::systems::System as DbSystem;
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
     app.init_resource::<SettingsOpen>();
-    app.init_resource::<PressAnswered>();
+    app.init_resource::<Grasp>();
     app.init_resource::<BarFields>();
     // The lettering leads, being what everything after it is drawn in.
     app.add_systems(EguiPrimaryContextPass, (lettering, chrome).chain());
@@ -101,14 +102,18 @@ pub(crate) fn styled(style: &mut egui::Style) {
 
 /// Whether the pointer is busy with the UI
 ///
-/// The camera and the UI both want the same drags, and only the UI knows
-/// which ones are its own. It answers here rather than the camera guessing
-/// from window rectangles it would have to be told about.
+/// Only the UI knows which of a window's pixels are its own, so it answers
+/// here rather than the map guessing from rectangles it would have to be told
+/// about.
 ///
-/// Egui lays out during its own pass, so this is what the last frame's
-/// layout concluded. A press landing on a control the same frame it appears
-/// therefore reaches the map as well, which no control the map has is
-/// arranged to do.
+/// Where the pointer is now, which is the question a wheel asks: a scroll
+/// belongs to no press and so has no owner to be asked about. What a press
+/// belongs to is [`Grasp`], and everything weighing a click or a drag asks
+/// that instead.
+///
+/// Egui lays out during its own pass, so this is what the last frame's layout
+/// concluded. A wheel turned over a pane that was not there last frame turns
+/// the map as well, which is a pane the user has only just opened.
 #[derive(Resource, Default)]
 pub struct PointerOverUi(pub bool);
 
@@ -120,17 +125,149 @@ pub struct PointerOverUi(pub bool);
 #[derive(Resource, Default)]
 pub struct SettingsOpen(bool);
 
-/// Whether the press under way has already been answered by the UI
+/// Whose a press is
 ///
-/// Shutting the bar's form is done by pressing somewhere off it, and the
-/// map has no business answering that press as well: letting go of a
-/// selection because the press that closed a form happened to land on empty
-/// sky is one gesture doing two things.
+/// Decided once, when the button goes down, and held until it comes up. The
+/// pointer is doing one thing at a time and the thing it is doing belongs to
+/// somebody: a drag that began on a slider is the slider's for as long as it
+/// lasts, wherever the pointer wanders, and a press that shut the bar's form
+/// is the form's even though it landed on the sky.
+/// Never named outside this module. What the rest of the map asks is whose a
+/// press is, and every answer to that is a `bool` on [`Grasp`] or [`Gesture`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Owner {
+    /// The pointer was over a control, or the press was spent on one
+    Ui,
+    /// The map's to answer
+    Map,
+}
+
+/// Who the press under way belongs to
 ///
-/// Set when the form is shut and held until the button comes up, since the
-/// map weighs a click on its release and the form weighs it on its press.
+/// Egui draws from `PostUpdate`, after every system that answers a click, so
+/// what the UI made of a press is a frame behind whoever asks. Settling it
+/// once at the press rather than asking afresh at the release is what makes
+/// the lateness harmless: a release is a frame after its own press at worst,
+/// by which time this has been written.
+///
+/// Reached through [`Gesture`] rather than read directly, that being where the
+/// one case this cannot answer straight away is handled.
 #[derive(Resource, Default)]
-pub struct PressAnswered(pub bool);
+pub struct Grasp {
+    /// Whose the press under way is, while a button is down
+    held: Option<Owner>,
+    /// Whose a press was that came up in the same frame it went down
+    ///
+    /// A frame long enough to hold a whole click puts the map's reading of it
+    /// before the UI's, so whose it was is news that has to keep until the
+    /// next frame. Standing for one frame and no longer.
+    ///
+    /// A second whole click in that next frame takes its place and the first
+    /// goes unanswered. Two entire clicks inside two frames is a frame rate
+    /// with troubles this cannot help with.
+    held_over: Option<Owner>,
+}
+
+impl Grasp {
+    /// Every button the map answers to
+    ///
+    /// One owner for the pointer rather than one per button. The pointer is
+    /// doing one thing, and a press landing while another is already down is
+    /// part of whatever that was.
+    const BUTTONS: [MouseButton; 3] =
+        [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
+
+    /// Settle who the pointer belongs to, the UI having now spoken
+    ///
+    /// `wanted` is whether the UI took this press: the pointer was over a
+    /// control, or the press was spent shutting something. Called at the end
+    /// of the UI's own pass, that being the first moment either is known.
+    ///
+    /// Wants reaching every frame. Nothing else clears an owner, so a frame
+    /// that draws no UI at all leaves the last press held, and a press held
+    /// after the button came up reads as a drag of the map that never ends
+    /// and as a click on every release after it. [`crate::ui::chrome`] gives
+    /// up before here when there is no egui context to draw into, which is a
+    /// map with no window rather than a map with a stuck pointer, so this is
+    /// left as the simpler arrangement of the two. Should it ever be seen,
+    /// the fix is to settle from a system of its own, reading what the UI
+    /// wanted out of a resource rather than off the end of drawing.
+    pub fn settle(&mut self, buttons: &ButtonInput<MouseButton>, wanted: bool) {
+        // Last frame's, which has now been read by everything that reads it.
+        self.held_over = None;
+
+        let began = buttons.any_just_pressed(Self::BUTTONS);
+        if began && self.held.is_none() {
+            self.held = Some(if wanted { Owner::Ui } else { Owner::Map });
+        }
+
+        if !buttons.any_pressed(Self::BUTTONS) {
+            if began && buttons.just_released(PRIMARY) {
+                self.held_over = self.held;
+            }
+            self.held = None;
+        }
+    }
+
+    /// Whether the press under way is the UI's
+    ///
+    /// The question for whoever cannot wait to be told. A press nobody owns
+    /// yet answers no: picking reports a click before the UI has settled
+    /// whose the press was, and a star that cannot be picked out on a slow
+    /// map would be a worse answer than one picked out during a gesture the
+    /// UI turned out to want.
+    pub fn taken_by_ui(&self) -> bool {
+        self.held == Some(Owner::Ui)
+    }
+}
+
+/// What the pointer has just done, and whether it was the map's to answer
+///
+/// The one question every system weighing a click asks, so that none of them
+/// works out an answer of its own from the button and where the pointer was.
+/// Both halves are needed together: the button says what happened this frame
+/// and [`Grasp`] says whose it was.
+#[derive(SystemParam)]
+pub struct Gesture<'w> {
+    buttons: Res<'w, ButtonInput<MouseButton>>,
+    grasp: Res<'w, Grasp>,
+}
+
+impl Gesture<'_> {
+    /// Whether the map is being dragged
+    ///
+    /// False for the first frame of a drag, the UI not having said whose it
+    /// is until the end of that frame. A frame of a map that has not started
+    /// turning yet, against a frame of one that turns under a press meant for
+    /// a slider.
+    pub fn dragging_map(&self) -> bool {
+        self.grasp.held == Some(Owner::Map)
+    }
+
+    /// Whether `button` is down
+    ///
+    /// Which of them is being dragged with, once [`Self::dragging_map`] has
+    /// said the drag is the map's at all. Offered here so that asking takes
+    /// one thing rather than a system holding its own copy of the input
+    /// beside this, which would be two readings of the same buttons sitting
+    /// where they could be told apart.
+    pub fn pressed(&self, button: MouseButton) -> bool {
+        self.buttons.pressed(button)
+    }
+
+    /// Whether a click the map owns has just finished
+    ///
+    /// On the release, where the press landed in an earlier frame and the
+    /// owner is already standing. A frame holding the whole click answers a
+    /// frame later, through [`Grasp::held_over`], which is the one place that
+    /// wait is spelled out.
+    pub fn on_map(&self) -> bool {
+        if self.buttons.just_released(PRIMARY) {
+            return self.grasp.held == Some(Owner::Map);
+        }
+        self.grasp.held_over == Some(Owner::Map)
+    }
+}
 
 // TODO: Form validation.
 
@@ -390,10 +527,14 @@ pub fn chrome(
     mut selection: ResMut<Selection>,
     mut camera: MessageWriter<MoveCamera>,
     orbit: Query<&OrbitCamera>,
-    mut press: ResMut<PressAnswered>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut grasp: ResMut<Grasp>,
     mut panels: ResMut<Panels>,
     mut filter: FilterBar,
 ) -> Result {
+    // Giving up here takes [`Grasp::settle`] at the end with it, and nothing
+    // else settles a press. See what that says about the frame it is missed
+    // on.
     let ctx = contexts.ctx_mut()?;
 
     // The pane first, since where it has reached is where the gear stands.
@@ -566,13 +707,16 @@ pub fn chrome(
         &mut filter,
     );
     gear(ctx, edge, middle, &mut settings.0);
-    if shut {
-        press.0 = true;
-    }
 
     // `egui_wants_pointer_input` covers a drag that began on a control and
     // has since been pulled off it, which being over one does not.
     over_ui.0 = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
+
+    // Whose the press is, now that the UI has drawn and knows what it wanted
+    // of it. A press spent shutting the form counts as the UI's even where it
+    // landed on the sky, that being what shutting a form by pressing off it
+    // means.
+    grasp.settle(&buttons, over_ui.0 || shut);
 
     Ok(())
 }

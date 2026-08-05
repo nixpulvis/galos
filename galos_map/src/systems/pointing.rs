@@ -88,7 +88,7 @@ pub(super) const UNFITTED_SCALE: f32 = 1e-6;
 /// it by where it sits, so the two names are put together here. What a press
 /// selects and what a press clears are then the same button by construction
 /// rather than by two files happening to agree.
-pub(super) const PRIMARY: MouseButton = MouseButton::Left;
+pub const PRIMARY: MouseButton = MouseButton::Left;
 
 /// How far a pointer may travel while pressed before it is dragging
 ///
