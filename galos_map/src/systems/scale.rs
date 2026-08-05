@@ -1,7 +1,7 @@
-//! How large a system's stars are drawn
+//! How large a system is drawn
 //!
-//! Two sizings, one per [`View`]. Neither is a real size: a star drawn at its
-//! own scale is invisible from the next system over, so what is drawn is
+//! Two sizings, one per [`View`]. Neither is a real size: a system drawn at
+//! its own scale is invisible from the next one over, so what is drawn is
 //! whatever keeps it on screen and tells the viewer something.
 //!
 //! # Where this is going
@@ -20,7 +20,7 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
-use super::spawn::Star;
+use super::spawn::Shell;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 
@@ -140,51 +140,67 @@ fn population_factor(population: u64, average: f64) -> f32 {
         .clamp(POP_MIN, POP_MAX)
 }
 
-/// Draw each star large enough to be seen from where the camera is
+/// How large a system is drawn from far off, in radians
 ///
-/// The size goes on the [`Star`], not on the [`System`] holding it, so that
+/// The angle a shell holds on screen while nothing else decides its size, so a
+/// system stands out at about the same size wherever it is. Whether a system is
+/// drawn at all is a question about how bright it is rather than how large, and
+/// is not asked here.
+const ANGULAR: f32 = 4e-4;
+
+/// The least a shell is drawn at, in metres
+///
+/// Standing in for the size of the system, which is not known until its bodies
+/// have been read. Once they have, this gives way to what they say — the
+/// expression is the same either way, an angle plus a size, and only the size
+/// is a guess.
+const FLOOR: f32 = (8.5e-2 * crate::space::LIGHT_YEAR) as f32;
+
+/// Draw each system large enough to be seen from where the camera is
+///
+/// The size goes on the [`Shell`], not on the [`System`] holding it, so that
 /// labels and anything else hanging off the system keep their own size.
 ///
 /// Distance is measured between two absolute galactic positions, the
 /// camera's [`OrbitCamera::eye`] and the system's. A system's `Transform`
 /// holds only the remainder left over from its grid cell, and its
 /// `GlobalTransform` is written after this runs, so neither answers where it
-/// is.
+/// is. Both are in light years, and what is written is a size in metres, so
+/// the two meet here.
 pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
     camera: Query<&OrbitCamera>,
     systems: Query<&System>,
-    mut stars: Query<(&mut Transform, &ChildOf), With<Star>>,
+    mut shells: Query<(&mut Transform, &ChildOf), With<Shell>>,
 ) {
-    if !stars.is_empty() {
+    if !shells.is_empty() {
         let Ok(eye) = camera.single().map(|c| c.eye) else { return };
 
-        // The goal is to avoid fading out any stars, but scale them as the
-        // camera moves further away from them.
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut star_transform, child_of) in stars.iter_mut() {
+        for (mut shell, child_of) in shells.iter_mut() {
             let Ok(system) = systems.get(child_of.parent()) else { continue };
-            let dist = eye.distance(DVec3::from(system.position)) as f32;
-            let mut scale = 4e-4 * dist + 8.5e-2;
+            let away = crate::space::metres(eye - DVec3::from(system.position))
+                .length() as f32;
+            let mut scale = ANGULAR * away + FLOOR;
             if scale_population.0 {
                 scale *=
                     population_factor(system.population, stats.population_mean);
             }
-            star_transform.scale = Vec3::splat(scale);
+            shell.scale = Vec3::splat(scale);
         }
     }
 }
 
-/// Draw every star the same size, whatever the camera is doing
+/// Draw every system the same size, whatever the camera is doing
 ///
 /// This view is a picture of where things are rather than of how far away
 /// they are, so nothing here reads the camera.
-pub fn size_uniformly(mut stars: Query<&mut Transform, With<Star>>) {
+pub fn size_uniformly(mut shells: Query<&mut Transform, With<Shell>>) {
     // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
     // transparent when they are too far away.
-    for mut star_transform in stars.iter_mut() {
-        star_transform.scale = Vec3::splat(1e-2);
+    for mut shell in shells.iter_mut() {
+        shell.scale = Vec3::splat((1e-2 * crate::space::LIGHT_YEAR) as f32);
     }
 }
 
