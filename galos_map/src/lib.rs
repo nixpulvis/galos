@@ -20,6 +20,17 @@ pub struct Db(pub Database);
 pub(crate) mod tests {
     use bevy_egui::egui;
 
+    /// A context lettered as the map letters its own
+    ///
+    /// What is drawn here is measured, and how wide a word comes out is the
+    /// font's answer. A test weighing a line against the room there is for it
+    /// in a face the map does not use is a test about some other map.
+    pub(crate) fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(crate::ui::monospaced);
+        ctx
+    }
+
     /// Draw `contents` into a bare context and tessellate what it made
     ///
     /// Laying a widget out is not the half of it that goes wrong. Egui defers
@@ -31,7 +42,7 @@ pub(crate) mod tests {
     /// Shared by the chrome and the panels, which paint their rows the same
     /// way and can go wrong in it the same way.
     pub(crate) fn painted(mut contents: impl FnMut(&mut egui::Ui)) {
-        let ctx = egui::Context::default();
+        let ctx = context();
         let output = ctx.run_ui(egui::RawInput::default(), |ui| contents(ui));
         ctx.tessellate(output.shapes, output.pixels_per_point);
     }
@@ -44,7 +55,7 @@ pub(crate) mod tests {
     pub(crate) fn words(
         mut contents: impl FnMut(&mut egui::Ui),
     ) -> Vec<String> {
-        let ctx = egui::Context::default();
+        let ctx = context();
         let output = ctx.run_ui(egui::RawInput::default(), |ui| contents(ui));
 
         fn text_of(shape: &egui::Shape, into: &mut Vec<String>) {
@@ -110,7 +121,7 @@ pub(crate) mod tests {
         let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
         HEARD.lock().unwrap().clear();
 
-        let ctx = egui::Context::default();
+        let ctx = context();
         for pass in
             [Box::new(first) as Box<dyn FnMut(&mut egui::Ui)>, Box::new(second)]
         {

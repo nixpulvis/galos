@@ -40,8 +40,47 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<PressAnswered>();
     app.init_resource::<BarFields>();
     // Before the bar is drawn, so that a route landing this frame is a form
-    // already folded away by the time anything is painted.
-    app.add_systems(EguiPrimaryContextPass, (folded, chrome).chain());
+    // already folded away by the time anything is painted. The lettering
+    // leads, being what everything after it is drawn in.
+    app.add_systems(
+        EguiPrimaryContextPass,
+        (lettering, folded, chrome).chain(),
+    );
+}
+
+/// Set every style the chrome is drawn in
+///
+/// Once. A style set on the context is the style it keeps, and a font asked
+/// for every frame is a font asked for sixty times a second to no end.
+pub(crate) fn lettering(
+    mut contexts: EguiContexts,
+    mut set: Local<bool>,
+) -> Result {
+    if *set {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+    ctx.all_styles_mut(monospaced);
+    *set = true;
+
+    Ok(())
+}
+
+/// Letter `style` in one width throughout
+///
+/// The map is read in names and numbers standing in columns: how far off each
+/// system is, how long each jump of a route is, how much of the sky is getting
+/// through the filters. Set proportionally those columns are ragged, digits
+/// being narrower than the letters beside them.
+///
+/// And what a route is called is one system, an arrow, and another. The hyphen
+/// and the angle of an ASCII arrow are drawn to a width apiece in a monospaced
+/// face and meet as an arrow; set proportionally the hyphen is short and low
+/// and the two read as punctuation that happened to land side by side.
+pub(crate) fn monospaced(style: &mut egui::Style) {
+    for (_, font) in style.text_styles.iter_mut() {
+        font.family = egui::FontFamily::Monospace;
+    }
 }
 
 /// Whether the pointer is busy with the UI
@@ -83,7 +122,12 @@ pub struct PressAnswered(pub bool);
 const PANE_WIDTH: f32 = 240.;
 
 /// How wide the bar stands, unfolded or not
-const BAR_WIDTH: f32 = 220.;
+///
+/// Wide enough for the longest line it draws without a name in it, which is
+/// the count of what the spyglass holds at millions of systems. Everything is
+/// lettered in one width, so what a line wants is the number of characters in
+/// it and nothing else.
+const BAR_WIDTH: f32 = 270.;
 
 /// How tall the gear is drawn
 const GEAR_SIZE: f32 = 18.;
@@ -3010,6 +3054,21 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
     }
 
+    /// Every style the chrome is drawn in is lettered the same
+    ///
+    /// Egui keeps a font per text style, and one left proportional is one
+    /// heading or one button standing among columns that no longer line up
+    /// with it.
+    #[test]
+    fn the_chrome_is_lettered_in_one_width() {
+        let mut style = egui::Style::default();
+        monospaced(&mut style);
+
+        for (kind, font) in &style.text_styles {
+            assert_eq!(font.family, egui::FontFamily::Monospace, "{kind:?}");
+        }
+    }
+
     /// The gear hangs about the height it is given
     ///
     /// Which is where the bar's search box came out, so that the handle and
@@ -3475,7 +3534,7 @@ mod tests {
 
     /// Draw a real radius slider in a pane `width` wide, indented or not
     fn slider_row(width: f32, indented: bool) -> Row {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let mut row = Row { used: 0., room: 0. };
         let mut radius = 10_f32;
         for frame in 0..10 {
@@ -3509,7 +3568,7 @@ mod tests {
 
     /// What a radius comes out at, having been offered up to `ceiling`
     fn drawn_radius(start: f32, ceiling: f32) -> f32 {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let mut radius = start;
         for frame in 0..10 {
             let input = egui::RawInput {
@@ -3649,7 +3708,7 @@ mod tests {
     /// column of numbers rather than in a ragged edge.
     #[test]
     fn the_value_box_is_the_width_kept_for_it() {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let mut value = 10_f32;
         let mut width = 0.;
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -3687,7 +3746,7 @@ mod tests {
     /// remembering against the one that left.
     #[test]
     fn a_row_is_keyed_on_what_it_is_about() {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let (mut first, mut moved, mut other) = (None, None, None);
 
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -3705,7 +3764,7 @@ mod tests {
     /// And so are the marks it ends with
     #[test]
     fn the_marks_are_keyed_on_the_row_they_end() {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let (mut first, mut moved) = (None, None);
         let at =
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(80., 20.));
@@ -3770,12 +3829,12 @@ mod tests {
     ///
     /// Both numbers grow with what has been synced, and the line has to hold
     /// them on one row: wrapped, it is a line that moves the rows under it
-    /// about as the user flies. Seven digits either side comes to 198 of the
-    /// 220 the bar is wide, so millions of systems fit and hundreds of
-    /// millions do not.
+    /// about as the user flies. Seven digits either side comes to 266 of the
+    /// 270 the bar is wide, so millions of systems fit and tens of millions
+    /// do not.
     #[test]
     fn the_count_fits_the_bar_at_millions() {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let said = format!(
             "{} of {} in spyglass",
             thousands(1_234_567),
@@ -3841,7 +3900,7 @@ mod tests {
         at: egui::Pos2,
         mut contents: impl FnMut(&mut Ui),
     ) -> Vec<egui::Shape> {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let input = || egui::RawInput {
             events: vec![egui::Event::PointerMoved(at)],
             ..Default::default()
@@ -3962,7 +4021,7 @@ mod tests {
     /// Clicked into rather than focused by hand, since where the caret lands
     /// is what settles which of the two the field is drawing.
     fn field_clicked_into() -> (Vec<String>, Vec<String>, Option<String>) {
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let mut value: Option<String> = None;
 
         let fields = |input, value: &mut Option<String>| {

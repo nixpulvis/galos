@@ -37,7 +37,10 @@ pub fn plugin(app: &mut App) {
     // `ui::chrome` concludes at its end whether the pointer is busy with the
     // UI, from every window drawn in the pass so far. Drawn before it, these
     // are counted in the same frame they are shown rather than the next.
-    app.add_systems(EguiPrimaryContextPass, panels.before(crate::ui::chrome));
+    app.add_systems(
+        EguiPrimaryContextPass,
+        panels.after(crate::ui::lettering).before(crate::ui::chrome),
+    );
 }
 
 /// How wide a panel stands
@@ -912,7 +915,7 @@ mod tests {
         contents: impl FnMut(&mut Ui),
     ) -> egui::Rect {
         let mut contents = contents;
-        let ctx = egui::Context::default();
+        let ctx = crate::tests::context();
         let mut rect = egui::Rect::ZERO;
 
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -944,7 +947,7 @@ mod tests {
             taken = ui.available_width();
         });
         let margins =
-            egui::Frame::window(&egui::Context::default().global_style())
+            egui::Frame::window(&crate::tests::context().global_style())
                 .total_margin()
                 .sum()
                 .x;
