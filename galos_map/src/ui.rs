@@ -1225,10 +1225,10 @@ fn selected(
     let mut rows = |ui: &mut Ui| {
         for index in 0..selection.len() {
             let Some(name) = selection.name(index) else { continue };
-            let away =
-                selection.position(index).zip(center).map(|(at, center)| {
-                    format!("{:.1} Ly away", center.distance(at))
-                });
+            let away = selection
+                .position(index)
+                .zip(center)
+                .map(|(at, center)| format!("{:.1} Ly", center.distance(at)));
 
             // Laid out and painted rather than assembled from labels. A label
             // is a widget in its own right, and two of them under one
@@ -2848,6 +2848,32 @@ mod tests {
         assert!(said.contains(&"SOL".to_owned()), "{said:?}");
         assert!(said.contains(&"ALPHA CENTAURI".to_owned()), "{said:?}");
         assert!(said.contains(&"BARNARD".to_owned()), "{said:?}");
+    }
+
+    /// A row says how far off its system is, in as few words as that takes
+    ///
+    /// The number and the unit and nothing else. The rows of every other list
+    /// the map draws end the same way, and what stands at the end of a row is
+    /// read as the distance whether or not a word says so, so a word saying so
+    /// is a word taking room from the name beside it.
+    #[test]
+    fn a_selection_row_says_how_far_off_its_system_is() {
+        let mut selection = Selection::default();
+        selection.toggle(crate::systems::tests::at(1, 12.));
+
+        let said = words(|ui| {
+            selected(
+                ui,
+                &mut selection,
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut Panels::default(),
+                &mut Filters::default(),
+                &mut 0,
+            );
+        });
+
+        assert!(said.contains(&"12.0 Ly".to_owned()), "{said:?}");
     }
 
     /// Several picked out says how many, and offers to filter on them
