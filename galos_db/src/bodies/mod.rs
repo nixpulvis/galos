@@ -1,7 +1,9 @@
 //! A body within a star system
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, PartialEq)]
+/// Clone because the map carries one into a component and into whatever
+/// panel is describing it, and a body outlives the query it came back in.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Body {
     pub system_address: i64,
     pub id: i16,
