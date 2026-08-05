@@ -1,0 +1,17 @@
+-- `system_factions` is indexed twice over the same two columns.
+--
+-- The table declares `PRIMARY KEY (system_address, faction_id)`, which
+-- Postgres backs with a unique b-tree of its own, `system_factions_pkey`.
+-- `system_factions_join` is a second unique b-tree over those same columns in
+-- the same order, so it answers every lookup the primary key already answers
+-- and nothing besides. Both are written on every insert and every update of
+-- either column, and both are held in cache competing for the same pages.
+-- Against the 52,861 rows on record the day this was written the two came to
+-- 2352 kB apiece.
+--
+-- The primary key is the one to keep. All four foreign keys pointing at
+-- `(system_address, faction_id)`, two from `conflicts` and one each from
+-- `system_faction_influences` and `system_faction_states`, are backed by it,
+-- and a primary key cannot be dropped without dropping the constraint that
+-- names the row.
+DROP INDEX system_factions_join;
