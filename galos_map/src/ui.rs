@@ -13,11 +13,14 @@
 //! starts from the system named up there.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::search::{EndResults, Plot, SearchNote, SearchResults, Searched};
+use crate::search::{
+    EndResults, Plot, SearchNote, SearchResults, Searched, Searching,
+    SearchingEnd,
+};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
-    Asked, DimTo, FactionResults, Filter, Filters, Wanted,
+    Asked, DimTo, FactionResults, Filter, Filters, Resolving, Wanted,
 };
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
@@ -299,6 +302,8 @@ pub struct FilterBar<'w, 's> {
     asked: ResMut<'w, Asked>,
     /// The factions the last name typed might have meant
     found: ResMut<'w, FactionResults>,
+    /// Whether the name typed into it is still being looked up
+    asking: Res<'w, Resolving>,
     /// How faintly what they exclude is drawn
     dim: ResMut<'w, DimTo>,
 }
@@ -306,10 +311,7 @@ pub struct FilterBar<'w, 's> {
 pub fn chrome(
     mut contexts: EguiContexts,
     mut knobs: Knobs,
-    mut searched: MessageWriter<Searched>,
-    mut search_note: ResMut<SearchNote>,
-    mut search_results: ResMut<SearchResults>,
-    mut end_results: ResMut<EndResults>,
+    mut bar: SearchBar,
     mut over_ui: ResMut<PointerOverUi>,
     mut settings: ResMut<SettingsOpen>,
     mut search: Local<BarFields>,
@@ -318,7 +320,6 @@ pub fn chrome(
     orbit: Query<&OrbitCamera>,
     mut press: ResMut<PressAnswered>,
     mut panels: ResMut<Panels>,
-    mut plot: ResMut<Plot>,
     mut filter: FilterBar,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -440,18 +441,21 @@ pub fn chrome(
     });
 
     gear(ctx, edge, &mut settings.0);
+    let asking =
+        Waiting { search: bar.asking.waiting(), end: bar.asking_end.waiting() };
     let shut = main_bar(
         ctx,
+        asking,
         &mut search,
-        &mut searched,
-        &mut search_note,
-        &mut search_results,
-        &mut end_results,
+        &mut bar.searched,
+        &mut bar.note,
+        &mut bar.results,
+        &mut bar.ends,
         &mut selection,
         &mut camera,
         orbit.single().map(|camera| camera.center).ok(),
         &mut panels,
-        &mut plot,
+        &mut bar.plot,
         &mut filter,
     );
     if shut {
@@ -566,6 +570,7 @@ fn gear(ctx: &Context, left: f32, open: &mut bool) {
 /// and is worth reading whether or not the rest is out.
 fn main_bar(
     ctx: &Context,
+    asking: Waiting,
     search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
     note: &mut SearchNote,
@@ -602,8 +607,13 @@ fn main_bar(
                     ui.set_width(BAR_WIDTH);
                     let mut taken = false;
 
-                    let (response, cleared) =
-                        search_box(ui, &mut search.system, note, results);
+                    let (response, cleared) = search_box(
+                        ui,
+                        &mut search.system,
+                        note,
+                        results,
+                        asking.search,
+                    );
                     taken |= response.gained_focus();
                     // Both answer a name, so neither is any answer at all
                     // once that name is being typed over. The mark has
@@ -697,7 +707,8 @@ fn main_bar(
                     if search.expanded {
                         taken |= filter_section(ui, filter);
                         taken |= route_section(
-                            ui, search, searched, ends, center, panels, plot,
+                            ui, search, searched, ends, asking.end, center,
+                            panels, plot,
                         );
                     }
 
@@ -735,6 +746,42 @@ fn main_bar(
     shut
 }
 
+/// The whole of the bar's searching
+///
+/// What was asked, what came back, and whether an answer is late. Gathered as
+/// the filters are: the bar is drawn by one system, a system may take sixteen
+/// things, and the bar asks about more than sixteen.
+#[derive(SystemParam)]
+pub struct SearchBar<'w> {
+    /// Where a name typed into a field is sent to be looked up
+    searched: MessageWriter<'w, Searched>,
+    /// What to say about a name that found nothing
+    note: ResMut<'w, SearchNote>,
+    /// The systems the search box found
+    results: ResMut<'w, SearchResults>,
+    /// The systems the route's end field found
+    ends: ResMut<'w, EndResults>,
+    /// What the search box has out
+    asking: Res<'w, Searching>,
+    /// What the route's end field has out
+    asking_end: Res<'w, SearchingEnd>,
+    /// How the route last asked for is getting on
+    plot: ResMut<'w, Plot>,
+}
+
+/// Which of the bar's questions have been out long enough to say so
+///
+/// Read once and handed down rather than asked field by field. Whether an
+/// answer is late is settled where the clock is, which is the systems that
+/// put the questions; the bar draws during egui's own pass and has no clock
+/// of its own to measure against.
+struct Waiting {
+    /// What the search box asked
+    search: bool,
+    /// What the route's end field asked
+    end: bool,
+}
+
 /// The search box, and the mark that empties it
 ///
 /// The mark stands inside the box at its right hand end, and only while there
@@ -752,6 +799,7 @@ fn search_box(
     value: &mut Option<String>,
     note: &mut SearchNote,
     results: &mut SearchResults,
+    waiting: bool,
 ) -> (Response, bool) {
     // Laid out first, since the room it wants is room the field cannot have.
     // In nothing, so the colour can be chosen once the pointer has been asked
@@ -771,7 +819,7 @@ fn search_box(
 
     let gap = ui.spacing().item_spacing.x;
     let reserved = mark.as_ref().map_or(0., |mark| mark.size().x + gap);
-    let response = singleline(ui, value, "Search", reserved);
+    let response = singleline(ui, value, "Search", reserved, waiting);
 
     let Some(mark) = mark else { return (response, false) };
     let rect = response.rect;
@@ -1289,6 +1337,7 @@ fn route_section(
     search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
     ends: &mut EndResults,
+    waiting: bool,
     center: Option<DVec3>,
     panels: &mut Panels,
     plot: &mut Plot,
@@ -1296,7 +1345,7 @@ fn route_section(
     heading(ui, "Route", true);
     let mut taken = false;
 
-    let end = singleline(ui, &mut search.route_end, "End System", 0.);
+    let end = singleline(ui, &mut search.route_end, "End System", 0., waiting);
     taken |= end.gained_focus();
     // Return asks which systems the name might mean, as it does in the search
     // box above. A route runs between two systems and a name part way through
@@ -1334,7 +1383,10 @@ fn route_section(
         }
     }
     ui.add_space(FIELD_GAP);
-    let range = singleline(ui, &mut search.route_range, "Jump Range (Ly)", 0.);
+    // The range is typed rather than looked up, so it never waits on
+    // anything.
+    let range =
+        singleline(ui, &mut search.route_range, "Jump Range (Ly)", 0., false);
     taken |= range.gained_focus();
     // Return in the range asks for the route, as pressing the button does. It
     // is the last thing a route waits on, and a form with one thing left to
@@ -1713,7 +1765,13 @@ fn whole_set(
 fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     heading(ui, "Filters", true);
 
-    let response = singleline(ui, &mut filter.field, "Faction Name", 0.);
+    let response = singleline(
+        ui,
+        &mut filter.field,
+        "Faction Name",
+        0.,
+        filter.asking.waiting(),
+    );
     // Both answer a name, so neither is any answer at all once that name is
     // being typed over.
     if response.changed() {
@@ -2230,6 +2288,7 @@ fn singleline(
     value: &mut Option<String>,
     placeholer: &str,
     reserved: f32,
+    waiting: bool,
 ) -> Response {
     // Named rather than left to the running count, so that whether the field
     // is being typed into can be asked before it is drawn. What it draws
@@ -2252,8 +2311,17 @@ fn singleline(
     } else {
         value.clone().unwrap_or_default()
     };
+    // Room for the spinner, inside whatever the caller has already kept for
+    // itself, so the two stand side by side rather than one over the other.
+    let turning = if waiting {
+        ui.text_style_height(&egui::TextStyle::Body) * SPINNER
+    } else {
+        0.
+    };
+    let gap = ui.spacing().item_spacing.x;
+    let kept = reserved + if waiting { turning + gap } else { 0. };
     let margin = egui::Margin {
-        right: FIELD_PADDING.right + reserved as i8,
+        right: FIELD_PADDING.right + kept as i8,
         ..FIELD_PADDING
     };
 
@@ -2278,6 +2346,23 @@ fn singleline(
     // typed, so a field showing them holds nothing whatever is in the box.
     if !wanting {
         *value = Some(text);
+    }
+
+    // Inside the field's own right hand end, where the room was kept, and
+    // clear of whatever the caller keeps room for out beyond it. A question
+    // is answered under the field it was typed into, so where it is coming
+    // from is said in the field itself rather than off in a corner.
+    if waiting {
+        let rect = response.rect;
+        let at = egui::Rect::from_center_size(
+            egui::pos2(
+                rect.right() - FIELD_PADDING.right as f32 - reserved + gap / 2.
+                    - turning / 2.,
+                rect.center().y,
+            ),
+            egui::Vec2::splat(turning),
+        );
+        egui::Spinner::new().paint_at(ui, at);
     }
 
     response
@@ -2738,7 +2823,7 @@ mod tests {
             // One count for the whole column, as the bar keeps.
             let mut place = 0;
 
-            search_box(ui, &mut query, &mut note, &mut offers);
+            search_box(ui, &mut query, &mut note, &mut offers, false);
             found(
                 ui,
                 &offers,
@@ -2818,7 +2903,7 @@ mod tests {
             // One count for the whole column, as the bar keeps.
             let mut place = 0;
 
-            search_box(ui, &mut query, &mut note, &mut offers);
+            search_box(ui, &mut query, &mut note, &mut offers, false);
             found(
                 ui,
                 &offers,
@@ -3043,7 +3128,7 @@ mod tests {
             let mut value = query.map(str::to_owned);
             let mut note = SearchNote::default();
             let mut results = results_of(results);
-            search_box(ui, &mut value, &mut note, &mut results);
+            search_box(ui, &mut value, &mut note, &mut results, false);
         })
     }
 
@@ -3624,7 +3709,7 @@ mod tests {
         let mut value = Some(String::new());
 
         let said = words(|ui| {
-            singleline(ui, &mut value, "Search", 0.);
+            singleline(ui, &mut value, "Search", 0., false);
         });
 
         assert!(said.contains(&"Search".to_owned()), "{said:?}");
@@ -3636,7 +3721,7 @@ mod tests {
         let mut value = Some("SOL".to_owned());
 
         let said = words(|ui| {
-            singleline(ui, &mut value, "Search", 0.);
+            singleline(ui, &mut value, "Search", 0., false);
         });
 
         assert!(said.contains(&"SOL".to_owned()), "{said:?}");
@@ -3655,7 +3740,7 @@ mod tests {
         let fields = |input, value: &mut Option<String>| {
             let mut at = egui::Rect::NOTHING;
             let output = ctx.run_ui(input, |ui| {
-                at = singleline(ui, value, "Search", 0.).rect;
+                at = singleline(ui, value, "Search", 0., false).rect;
             });
             let mut said = Vec::new();
             for shape in &output.shapes {

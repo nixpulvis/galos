@@ -7,6 +7,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use elite_journal::system::Coordinate;
 use galos_db::Database;
 use galos_db::systems::System as DbSystem;
+use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
     app.add_message::<Searched>();
@@ -134,31 +135,80 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
     }
 }
 
-/// The search under way, and the name it is about
+/// How long an answer may be coming before the field says it is waiting
 ///
-/// One at a time. A name typed over the last one replaces the question rather
-/// than racing it: two answers landing would leave whichever finished last on
-/// screen, which is not the one the user is waiting on.
+/// Under this a search reads as instant, and a spinner that came and went
+/// inside a twentieth of a second would be a flicker rather than an answer:
+/// most searches land in a millisecond or two. Over it the user is waiting on
+/// the database, and a field that says nothing while they wait is a field
+/// that looks like it did not hear.
+const PATIENCE: Duration = Duration::from_millis(50);
+
+/// A question the bar has put to the database, and how long it has been out
+///
+/// One at a time, whichever field is asking. A name typed over the last one
+/// replaces the question rather than racing it: two answers landing would
+/// leave whichever finished last on screen, and that is not the one being
+/// waited on.
+///
+/// `A` is whatever the answer will have to be read against, which is usually
+/// the name that was asked about.
 ///
 /// Waited for off the main thread, unlike the name that started it. A search
 /// for a letter or two matches most of the systems on record and is sorted
 /// before it is cut to [`RESULTS`], which is a third of a second against the
 /// database here. Waited for in the frame, that is a third of a second of a
 /// map that does not move.
-#[derive(Resource, Default)]
-struct Searching(Option<(String, Task<Vec<DbSystem>>)>);
+#[derive(Resource)]
+pub struct Asking<A, T> {
+    out: Option<(A, Instant, Task<T>)>,
+    waiting: bool,
+}
 
-/// The search the route's end field has out
-///
-/// Its own, so that asking about one field does not take the answer out from
-/// under the other. Both are the same question put to the database and the two
-/// answers belong to different fields.
-///
-/// Without the name that started it, unlike [`Searching`]. Nothing is said
-/// where nothing was found: the field is being filled in rather than answered,
-/// and an empty list under it says as much.
-#[derive(Resource, Default)]
-struct SearchingEnd(Option<Task<Vec<DbSystem>>>);
+impl<A, T> Default for Asking<A, T> {
+    fn default() -> Self {
+        Asking { out: None, waiting: false }
+    }
+}
+
+impl<A, T> Asking<A, T> {
+    /// Put `task` to the database, in place of whatever was already out
+    pub(crate) fn ask(&mut self, about: A, now: Instant, task: Task<T>) {
+        self.out = Some((about, now, task));
+    }
+
+    /// What came back, if it has, and what it is about
+    ///
+    /// Also settles whether the field should say it is waiting, this being
+    /// where both the clock and the question are in hand.
+    pub(crate) fn answered(&mut self, now: Instant) -> Option<(A, T)> {
+        let Some((about, since, mut task)) = self.out.take() else {
+            self.waiting = false;
+            return None;
+        };
+
+        match block_on(poll_once(&mut task)) {
+            Some(answer) => {
+                self.waiting = false;
+                Some((about, answer))
+            }
+            None => {
+                self.waiting = now.duration_since(since) >= PATIENCE;
+                self.out = Some((about, since, task));
+                None
+            }
+        }
+    }
+
+    /// Whether the answer has been long enough coming to say so
+    ///
+    /// What the spinner in the field is drawn from. Read rather than worked
+    /// out where it is drawn, since the bar draws during egui's own pass and
+    /// has no clock of its own to hand.
+    pub fn waiting(&self) -> bool {
+        self.waiting
+    }
+}
 
 /// The systems the route's end field last found, for the bar to draw
 ///
@@ -180,14 +230,30 @@ impl EndResults {
     }
 }
 
+/// What the search box has out, and the name it is about
+///
+/// The name is what its note is written against, a search that found nothing
+/// having to say which name found it.
+pub type Searching = Asking<String, Vec<DbSystem>>;
+
+/// What the route's end field has out
+///
+/// Its own, so that asking about one field does not take the answer out from
+/// under the other. Both are the same question put to the database and the two
+/// answers belong to different fields.
+///
+/// About nothing in particular, unlike [`Searching`]. Nothing is said where
+/// nothing was found: the field is being filled in rather than answered, and
+/// an empty list under it says as much.
+pub type SearchingEnd = Asking<(), Vec<DbSystem>>;
+
 /// The pair of names a route is being worked out between, while they are
 /// being looked up
 ///
 /// One at a time for the reason a search is, and asked apart from the route
 /// itself, which `systems::fetch` has already sent off. This settles only
 /// which of the two ends the user got wrong.
-#[derive(Resource, Default)]
-struct Locating(Option<Task<Plot>>);
+type Locating = Asking<(), Plot>;
 
 /// Answer what the user asked for
 ///
@@ -221,9 +287,11 @@ fn searched(
     mut results: ResMut<SearchResults>,
     mut ends: ResMut<EndResults>,
     mut plot: ResMut<Plot>,
+    time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     db: Res<Db>,
 ) {
+    let now = time.last_update().unwrap_or(time.startup());
     let near = camera
         .single()
         .map(|camera| Coordinate {
@@ -239,60 +307,61 @@ fn searched(
             Searched::System { name, .. } => {
                 let db = db.0.clone();
                 let asked = name.clone();
-                let about = name.clone();
-                searching.0 = Some((
-                    about,
+                searching.ask(
+                    name.clone(),
+                    now,
                     pool.spawn(async move {
                         DbSystem::search_by_name(&db, &asked, near, RESULTS)
                             .await
                             .unwrap_or_default()
                     }),
-                ));
+                );
             }
             Searched::EndSystem { name } => {
                 let db = db.0.clone();
                 let asked = name.clone();
-                searching_end.0 = Some(pool.spawn(async move {
-                    DbSystem::search_by_name(&db, &asked, near, RESULTS)
-                        .await
-                        .unwrap_or_default()
-                }));
+                searching_end.ask(
+                    (),
+                    now,
+                    pool.spawn(async move {
+                        DbSystem::search_by_name(&db, &asked, near, RESULTS)
+                            .await
+                            .unwrap_or_default()
+                    }),
+                );
             }
             // A route needs both ends. Say which one is the problem rather
             // than drawing nothing and leaving the user to guess.
             Searched::Route { start, end, .. } => {
                 let db = db.0.clone();
                 let (start, end) = (start.clone(), end.clone());
-                locating.0 = Some(pool.spawn(async move {
-                    match locate(&db, &start).await.and(locate(&db, &end).await)
-                    {
-                        Ok(_) => Plot::Working,
-                        Err(why) => Plot::Trouble(why),
-                    }
-                }));
+                locating.ask(
+                    (),
+                    now,
+                    pool.spawn(async move {
+                        match locate(&db, &start)
+                            .await
+                            .and(locate(&db, &end).await)
+                        {
+                            Ok(_) => Plot::Working,
+                            Err(why) => Plot::Trouble(why),
+                        }
+                    }),
+                );
             }
         };
     }
 
-    if let Some((name, mut task)) = searching.0.take() {
-        match block_on(poll_once(&mut task)) {
-            Some(found) => answered(&name, found, &mut note, &mut results),
-            None => searching.0 = Some((name, task)),
-        }
+    if let Some((name, found)) = searching.answered(now) {
+        answered(&name, found, &mut note, &mut results);
     }
 
-    if let Some(mut task) = searching_end.0.take() {
-        match block_on(poll_once(&mut task)) {
-            Some(found) => ends.0 = found,
-            None => searching_end.0 = Some(task),
-        }
+    if let Some((_, found)) = searching_end.answered(now) {
+        ends.0 = found;
     }
 
-    if let Some(mut task) = locating.0.take() {
-        match block_on(poll_once(&mut task)) {
-            Some(answer) => *plot = answer,
-            None => locating.0 = Some(task),
-        }
+    if let Some((_, answer)) = locating.answered(now) {
+        *plot = answer;
     }
 }
 

@@ -18,10 +18,10 @@
 
 use crate::Db;
 use crate::schedule::MapSet;
+use crate::search::Asking;
 use crate::systems::System;
 use bevy::prelude::*;
-use bevy::tasks::futures_lite::future::poll_once;
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use bevy::tasks::AsyncComputeTaskPool;
 use galos_db::Database;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
@@ -194,8 +194,7 @@ const FACTIONS: i64 = 25;
 /// One at a time: the field asks about one name and holds what was typed
 /// until it is answered, so a second ask is the user having changed their
 /// mind rather than a second question.
-#[derive(Resource, Default)]
-struct Resolving(Option<(String, Task<Vec<DbFaction>>)>);
+pub type Resolving = Asking<String, Vec<DbFaction>>;
 
 /// The factions the last search found, for the bar to draw
 ///
@@ -238,37 +237,34 @@ fn resolve(
     mut resolving: ResMut<Resolving>,
     mut results: ResMut<FactionResults>,
     mut answer: ResMut<Asked>,
+    time: Res<Time<Real>>,
     db: Res<Db>,
 ) {
+    let now = time.last_update().unwrap_or(time.startup());
     let pool = AsyncComputeTaskPool::get();
 
     for asked in wanted.read() {
         let Wanted::Faction { name } = asked;
         let db = db.0.clone();
         let asked = name.clone();
-        let about = name.clone();
-        resolving.0 = Some((
-            about,
+        resolving.ask(
+            name.clone(),
+            now,
             pool.spawn(async move {
                 DbFaction::search_by_name(&db, &asked, FACTIONS)
                     .await
                     .unwrap_or_default()
             }),
-        ));
+        );
     }
 
-    if let Some((name, mut task)) = resolving.0.take() {
-        match block_on(poll_once(&mut task)) {
-            Some(found) => {
-                results.0 = found;
-                *answer = if results.is_empty() {
-                    Asked::Trouble(format!("No faction named {name}"))
-                } else {
-                    Asked::Nothing
-                };
-            }
-            None => resolving.0 = Some((name, task)),
-        }
+    if let Some((name, found)) = resolving.answered(now) {
+        results.0 = found;
+        *answer = if results.is_empty() {
+            Asked::Trouble(format!("No faction named {name}"))
+        } else {
+            Asked::Nothing
+        };
     }
 }
 
