@@ -11,7 +11,7 @@ use crate::systems::System;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
 use crate::systems::selection::Selected;
-use crate::systems::spawn::Star;
+use crate::systems::spawn::Shell;
 use bevy::math::DVec3;
 use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::PointerMap;
@@ -260,8 +260,8 @@ pub(super) fn point_at(
 pub fn size_targets(
     camera: Query<(&OrbitCamera, &Camera)>,
     systems: Query<(&System, &Children)>,
-    stars: Query<&Transform, With<Star>>,
-    mut targets: Query<&mut Transform, (With<PointerTarget>, Without<Star>)>,
+    stars: Query<&Transform, With<Shell>>,
+    mut targets: Query<&mut Transform, (With<PointerTarget>, Without<Shell>)>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
@@ -274,7 +274,9 @@ pub fn size_targets(
             .map(|star| star.scale.x)
             .fold(0., f32::max);
 
-        let into_view = depth(orbit, DVec3::from(system.position)).max(1e-3);
+        // A metre, which is as near as the camera may be pulled to anything.
+        // What the floor is for is the sign rather than the distance.
+        let into_view = depth(orbit, DVec3::from(system.position)).max(1.);
         let smallest = INDICATOR_MIN_RADIUS
             * world_per_pixel(cot_half_fov, viewport.y, into_view);
         let radius = (drawn * INDICATOR_MARGIN).max(smallest);

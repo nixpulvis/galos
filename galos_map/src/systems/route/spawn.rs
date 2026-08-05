@@ -87,10 +87,18 @@ pub fn spawn_route(
     // at that distance from the center. Hanging the line off its own midpoint
     // leaves the vertices holding only how far each end is from that, which
     // is at most the length of the route.
+    //
+    // In metres from here down, which is what the grid is laid out in and what
+    // a vertex is measured in. The systems arrive in light years, as every
+    // position the map states does.
     let midpoint = points.iter().fold(DVec3::ZERO, |sum, p| sum + *p)
         / points.len() as f64;
-    let (cell, translation) = grid.translation_to_grid(midpoint);
-    let points = points.iter().map(|p| (*p - midpoint).as_vec3()).collect();
+    let (cell, translation) =
+        grid.translation_to_grid(crate::space::metres(midpoint));
+    let points = points
+        .iter()
+        .map(|p| crate::space::metres(*p - midpoint).as_vec3())
+        .collect();
 
     commands.spawn((
         Mesh3d(meshes.add(LineStrip { points })),
