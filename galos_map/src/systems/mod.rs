@@ -279,12 +279,35 @@ pub fn zoom_with_spyglass(
     }
 }
 
-/// Reach as far as the camera can see
+/// How much of the view is left empty around the reach, in hundredths
+///
+/// The reach is a sphere about what the camera looks at, and stars stop at its
+/// surface. Reaching exactly as far as the camera sees stands that surface on
+/// the edge of the screen, so the last stars sit hard against the frame with
+/// the sky ending along it. Holding it inside the view leaves them short of
+/// the edge with empty space beyond, which is what the edge of a reach looks
+/// like rather than what the edge of a window looks like.
+///
+/// Unsigned, and taken off a hundred, so this can only ever bring the reach in
+/// from the edge of the view. A margin that would push it past the edge is a
+/// margin that does not compile.
+///
+/// Under thirteen, and not by accident. A camera stood back over a route takes
+/// in [`crate::camera::FRAMING_MARGIN`] more than the route, which is a
+/// thirteenth of the view left over, so a margin larger than that eats through
+/// the room the framing left and puts the ends of every plotted route outside
+/// the reach that was taken from the camera framing it.
+const FOLLOW_MARGIN: u32 = 10;
+
+/// Reach not quite as far as the camera can see
 ///
 /// [`zoom_with_spyglass`] read the other way. That one stands the camera back
 /// to take in the reach; this one takes the reach from where the camera is
 /// already standing, so scrolling out fetches and draws more of the sky and
 /// scrolling in narrows to what is being looked at.
+///
+/// Short of what the camera sees by [`FOLLOW_MARGIN`], so that the sky stops
+/// inside the window rather than along the edge of it.
 ///
 /// The target rather than the radius the camera has reached, so that the reach
 /// is settled the moment a scroll or a move asks for it and the systems are on
@@ -301,8 +324,13 @@ pub fn reach_with_camera(
     }
     let Ok(camera) = camera.single() else { return };
 
-    let reach = crate::camera::framed(camera.target_radius, lens.single().ok())
-        .clamp(Spyglass::FLOOR, Spyglass::UNASKED);
+    // The margin here rather than inside `framed`, which answers what the
+    // camera takes in and would be answering something else with room left
+    // over folded into it. How far short of that to stop is the spyglass's to
+    // say.
+    let seen = crate::camera::framed(camera.target_radius, lens.single().ok());
+    let inside = seen * (100 - FOLLOW_MARGIN) as f32 / 100.;
+    let reach = inside.clamp(Spyglass::FLOOR, Spyglass::UNASKED);
 
     // Only where it moved. Nothing watches this resource for changes today,
     // and writing the same number every frame is how that stops being true
@@ -653,6 +681,11 @@ pub(crate) mod tests {
         (reach, back)
     }
 
+    /// What the reach comes to at a camera `back` light years out
+    fn following(back: f32) -> f32 {
+        crate::camera::framed(back, None) * (100 - FOLLOW_MARGIN) as f32 / 100.
+    }
+
     /// Following the camera, the reach is what the camera can see
     #[test]
     fn the_reach_follows_what_the_camera_sees() {
@@ -661,11 +694,46 @@ pub(crate) mod tests {
         app.update();
 
         let (reach, _) = linkage(&mut app);
-        assert!(
-            (reach - crate::camera::framed(100., None)).abs() < 1e-3,
-            "reached {reach}"
-        );
+        assert!((reach - following(100.)).abs() < 1e-3, "reached {reach}");
         assert!(reach != Spyglass::OPENING, "left where it opened");
+    }
+
+    /// The reach stops inside the view rather than along the edge of it
+    ///
+    /// Stars stop at the surface of the reach, and a surface standing on the
+    /// edge of the screen is a sky that ends where the window does.
+    #[test]
+    fn the_reach_stops_short_of_what_the_camera_sees() {
+        let mut app = linked(100., false, true);
+
+        app.update();
+
+        let (reach, _) = linkage(&mut app);
+        let seen = crate::camera::framed(100., None);
+        assert!(reach < seen, "reached {reach} of the {seen} seen");
+    }
+
+    /// A route framed by the camera is still held whole by the reach
+    ///
+    /// Plotting a route stands the camera back over it, and with the reach
+    /// following the camera that framing is what sets the reach. The room the
+    /// framing leaves has to outlast the room [`FOLLOW_MARGIN`] takes, or the
+    /// ends of every route plotted would fall outside the reach that was taken
+    /// from the camera framing it.
+    #[test]
+    fn a_framed_route_is_held_by_the_reach_taken_from_it() {
+        for extent in [10., 50., 150.] {
+            let back = crate::camera::stand_back(extent, None);
+            let mut app = linked(back, false, true);
+
+            app.update();
+
+            let (reach, _) = linkage(&mut app);
+            assert!(
+                reach > extent,
+                "a route reaching {extent} left a reach of {reach}"
+            );
+        }
     }
 
     /// Scrolling out reaches further and scrolling in reaches less
@@ -738,10 +806,7 @@ pub(crate) mod tests {
 
         let (reach, back) = linkage(&mut app);
         assert_eq!(back, 100., "the camera was moved to {back}");
-        assert!(
-            (reach - crate::camera::framed(100., None)).abs() < 1e-3,
-            "reached {reach}"
-        );
+        assert!((reach - following(100.)).abs() < 1e-3, "reached {reach}");
     }
 
     /// Locked and not following, the camera goes where the reach says

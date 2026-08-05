@@ -228,7 +228,7 @@ fn half_angle(projection: Option<&Projection>) -> f32 {
 
 /// How far back to stand to take in `extent` light years about what is looked
 /// at
-fn stand_back(extent: f32, projection: Option<&Projection>) -> f32 {
+pub(crate) fn stand_back(extent: f32, projection: Option<&Projection>) -> f32 {
     let half = half_angle(projection);
     (extent * FRAMING_MARGIN / half.sin()).clamp(MIN_RADIUS, MAX_RADIUS)
 }
