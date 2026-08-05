@@ -69,7 +69,19 @@ pub enum Filter {
     /// `label` is what its row says, settled when the route landed, since it
     /// names the two ends as the database spells them rather than as they
     /// were typed.
-    Route { label: String, systems: Vec<i64> },
+    ///
+    /// `range` is how far the ship it was plotted for reaches in one jump, in
+    /// light years, as the user typed it. The two ends are what a route is
+    /// named for and they are not the whole of what it is: the same pair
+    /// plotted for a ship that reaches further is a different route through
+    /// different systems, and with nothing but the ends to go on the two are
+    /// one name over two answers. Kept as the text that was typed, being a
+    /// number the map only ever reads back out.
+    ///
+    /// What the ship can cross rather than what it does. The legs of the route
+    /// are shorter, each landing on whatever system lies within reach rather
+    /// than out at the limit of it.
+    Route { label: String, systems: Vec<i64>, range: String },
     /// The systems the user picked out by hand
     ///
     /// A copy of what was selected rather than a reading of the selection as
@@ -129,6 +141,21 @@ impl Filter {
         match self {
             Filter::Faction { .. } | Filter::Systems { .. } => None,
             Filter::Route { systems, .. } => systems.len().checked_sub(1),
+        }
+    }
+
+    /// How far the ship this was plotted for reaches, where one was named
+    ///
+    /// The one thing a route was asked for that its name does not say. A
+    /// faction and a hand-picked set are not plotted, so there is nothing to
+    /// ask them.
+    ///
+    /// Not how far it goes. That is a jump, and there is one of those between
+    /// each pair of systems the route runs through.
+    pub fn range(&self) -> Option<&str> {
+        match self {
+            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Route { range, .. } => Some(range),
         }
     }
 
@@ -795,6 +822,7 @@ mod tests {
         Filter::Route {
             label: "A -> B".to_owned(),
             systems: addresses.to_vec(),
+            range: "10".to_owned(),
         }
     }
 

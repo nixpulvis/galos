@@ -356,7 +356,11 @@ pub fn spawn(
             // Said rather than acted on. What a route does to the map is
             // `route::plotted`'s business; this is the one place its systems
             // are in hand, so it is the one place that can say what they are.
-            if let FetchIndex::Route(..) = index
+            // The range comes off the key the route was fetched under, that
+            // being where what was asked for is still written down. The rows
+            // that came back say which systems the ship passes through and
+            // nothing about how far it can jump between them.
+            if let FetchIndex::Route(_, _, range) = index
                 && let (Some(first), Some(last)) =
                     (new_systems.first(), new_systems.last())
                 && new_systems.len() >= 2
@@ -375,6 +379,7 @@ pub fn spawn(
                         systems,
                         middle,
                         extent,
+                        range: range.clone(),
                     });
                 }
             }

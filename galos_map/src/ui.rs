@@ -3315,6 +3315,7 @@ mod tests {
                 systems: vec![1, 2],
                 middle: DVec3::ZERO,
                 extent: 10.,
+                range: "10".to_owned(),
             });
         }
         app.update();
@@ -3629,6 +3630,7 @@ mod tests {
         filters.add(Filter::Route {
             label: "A -> B".to_owned(),
             systems: vec![1, 2, 3, 4, 5],
+            range: "10".to_owned(),
         });
         let mut panels = Panels::default();
 
@@ -3648,6 +3650,7 @@ mod tests {
         filters.add(Filter::Route {
             label: "SIGMA DRACONIS -> MINISTRY".to_owned(),
             systems: vec![1, 2, 3],
+            range: "10".to_owned(),
         });
         let mut panels = Panels::default();
 
@@ -3681,6 +3684,7 @@ mod tests {
         filters.add(Filter::Route {
             label: "A -> B".to_owned(),
             systems: vec![1, 2],
+            range: "10".to_owned(),
         });
         let mut panels = Panels::default();
 
@@ -4034,8 +4038,11 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(Filter::Faction { id: 1, name: "Alpha".into() });
         filters.add(Filter::Faction { id: 2, name: "Beta".into() });
-        filters
-            .add(Filter::Route { label: "A -> B".into(), systems: vec![1, 2] });
+        filters.add(Filter::Route {
+            label: "A -> B".into(),
+            systems: vec![1, 2],
+            range: "10".into(),
+        });
         let mut panels = Panels::default();
 
         let said =

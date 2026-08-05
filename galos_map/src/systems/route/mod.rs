@@ -42,6 +42,13 @@ pub struct Plotted {
     pub middle: DVec3,
     /// How far it reaches from there, in light years
     pub extent: f32,
+    /// How far the ship it was plotted for reaches in one jump, in light years
+    ///
+    /// Carried along rather than worked out from the legs. The longest jump a
+    /// route happens to take is not what was asked for: a route plotted for a
+    /// ship reaching 20 may never need more than 12, and it is what the user
+    /// asked that tells two plots between the same ends apart.
+    pub range: String,
 }
 
 /// Show a route that has just been plotted
@@ -83,6 +90,7 @@ fn plotted(
         filters.replace(Filter::Route {
             label: route.label.clone(),
             systems: route.systems.clone(),
+            range: route.range.clone(),
         });
     }
 }
@@ -146,6 +154,7 @@ mod tests {
         Filter::Route {
             label: "A -> B".to_owned(),
             systems: addresses.to_vec(),
+            range: "10".to_owned(),
         }
     }
 
@@ -184,6 +193,7 @@ mod tests {
             systems: vec![1, 2],
             middle,
             extent,
+            range: "10".to_owned(),
         });
         app.update();
 

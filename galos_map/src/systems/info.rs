@@ -624,6 +624,29 @@ fn described(
 /// nowhere to put the next one.
 const LISTED: usize = 8;
 
+/// What a filter's panel says it is showing, above the list of it
+///
+/// How many systems, and for a route the range it was plotted for as well. A
+/// panel is titled with what the filter is called, and a route is called after
+/// its two ends, so two plots between the same pair come up under the same
+/// name. What tells them apart is the range that was asked for, and how many
+/// systems that came to: a ship that reaches further crosses the same gap in
+/// fewer.
+///
+/// A range rather than a jump. It is how far the ship can go in one, which is
+/// what the route was worked out against; how far it actually goes is the
+/// distance on each line of the list below, and is usually less.
+///
+/// Said in the panel rather than in the title, which is cut to the room a
+/// window has and would lose it. The other filters are named for the whole of
+/// what they are and have nothing to add here.
+fn summary(filter: &Filter, held: usize) -> String {
+    match filter.range() {
+        Some(range) => format!("{held} systems, {range} Ly range"),
+        None => format!("{held} systems"),
+    }
+}
+
 /// The systems a filter admits, and the one the user picks out of them
 ///
 /// Every system the database has for the filter, not only the ones the map
@@ -655,7 +678,7 @@ fn admitted(
         return;
     }
 
-    ui.label(egui::RichText::new(format!("{} systems", systems.len())).weak());
+    ui.label(egui::RichText::new(summary(filter, systems.len())).weak());
     ui.add_space(MARGIN);
 
     let line = ui.text_style_height(&egui::TextStyle::Body)
@@ -932,8 +955,11 @@ mod tests {
     #[test]
     fn a_route_list_paints_in_a_colour() {
         let systems = [system(1), system(2)];
-        let route =
-            Filter::Route { label: "A -> B".to_owned(), systems: vec![1, 2] };
+        let route = Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: vec![1, 2],
+            range: "10".to_owned(),
+        };
         painted(|ui| {
             admitted(
                 ui,
@@ -1104,6 +1130,7 @@ mod tests {
         let route = Filter::Route {
             label: "A -> B".to_owned(),
             systems: (1..=places.len() as i64).collect(),
+            range: "10".to_owned(),
         };
 
         crate::tests::words(|ui| {
@@ -1159,6 +1186,92 @@ mod tests {
 
         assert!(said.contains(&"5.0 Ly".to_owned()), "{said:?}");
         assert!(said.contains(&"12.0 Ly".to_owned()), "{said:?}");
+    }
+
+    /// A route between `label`'s ends, plotted for a ship reaching `range`
+    fn plotted_for(label: &str, range: &str) -> Filter {
+        Filter::Route {
+            label: label.to_owned(),
+            systems: vec![1, 2],
+            range: range.to_owned(),
+        }
+    }
+
+    /// A route's panel says how far the ship it was plotted for reaches
+    ///
+    /// A panel is titled with what its filter is called and a route is called
+    /// after its two ends, so the range is the one thing on screen telling two
+    /// plots between the same pair apart.
+    ///
+    /// A range and not a jump. What the ship can cross in one is what the
+    /// route was worked out against; what it actually crosses is on the lines
+    /// below, and is usually less.
+    #[test]
+    fn a_route_panel_says_the_range_it_was_plotted_for() {
+        assert_eq!(
+            summary(&plotted_for("SOL -> BARNARD", "10"), 12),
+            "12 systems, 10 Ly range"
+        );
+    }
+
+    /// Two plots between the same ends are told apart by it
+    ///
+    /// Which is the whole of why it is said. Both panels are titled the same,
+    /// both list systems between the same two, and what the user asked for is
+    /// the difference between them.
+    #[test]
+    fn two_routes_between_the_same_ends_read_apart() {
+        let near = summary(&plotted_for("SOL -> BARNARD", "10"), 12);
+        let far = summary(&plotted_for("SOL -> BARNARD", "20"), 7);
+
+        assert_ne!(near, far);
+        assert!(near.contains("10 Ly"), "{near}");
+        assert!(far.contains("20 Ly"), "{far}");
+    }
+
+    /// A filter that was never plotted says how many and no more
+    ///
+    /// A faction and a hand-picked set were never asked a range, and a panel
+    /// that answered one for them would be answering for the user.
+    #[test]
+    fn a_filter_that_was_not_plotted_says_only_how_many() {
+        assert_eq!(summary(&faction(7), 12), "12 systems");
+        assert_eq!(
+            summary(
+                &Filter::Systems {
+                    label: "3 systems".to_owned(),
+                    systems: vec![1, 2, 3],
+                },
+                3
+            ),
+            "3 systems"
+        );
+    }
+
+    /// And the panel draws whatever the summary came to
+    ///
+    /// Read off what was painted, the line being a label the panel lays out
+    /// from what `summary` answered.
+    #[test]
+    fn the_panel_draws_the_summary() {
+        let systems = [placed(1, [0., 0., 0.]), placed(2, [3., 4., 0.])];
+
+        let said = crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &plotted_for("SOL -> BARNARD", "10"),
+                Some(&systems),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+
+        assert!(
+            said.contains(&"2 systems, 10 Ly range".to_owned()),
+            "{said:?}"
+        );
     }
 
     /// A line carries the id its filter would be built from
