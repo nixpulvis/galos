@@ -17,6 +17,7 @@ pub fn plugin(app: &mut App) {
         fetch: true,
         disabled: false,
         lock_camera: false,
+        follow_camera: true,
     });
 
     app.add_plugins(fetch::plugin);
@@ -34,9 +35,15 @@ pub fn plugin(app: &mut App) {
 
     // Both ask the camera for something, and `orbit_camera` then works out
     // where it lands, so both have to have spoken by the time it runs.
+    //
+    // The two spyglass systems are the same link read in either direction, so
+    // they are ordered rather than left to whichever Bevy picked: only one of
+    // them is reachable at a time through the settings, and an order spelled
+    // out is what keeps that from being the only thing holding them apart.
     app.add_systems(
         Update,
-        zoom_with_spyglass
+        (zoom_with_spyglass, reach_with_camera)
+            .chain()
             .in_set(MapSet::Camera)
             .after(crate::camera::move_camera)
             .before(crate::camera::orbit_camera),
@@ -91,7 +98,24 @@ pub struct Spyglass {
     pub fetch: bool,
     pub radius: f32,
     pub disabled: bool,
+    /// Zoom the camera to whatever the reach is set to
+    ///
+    /// Only meaningful while [`Spyglass::follow_camera`] is off. The two are
+    /// the same link read in opposite directions, and the camera cannot both
+    /// be told where to stand and be asked where it is standing.
     pub lock_camera: bool,
+    /// Reach as far as the camera can see, rather than as far as it is told
+    ///
+    /// On to begin with. What the camera is looking at is what the user is
+    /// asking about, so a reach taken from it is the map fetching and drawing
+    /// the view rather than a circle set beside it and kept in step by hand.
+    ///
+    /// Held inside [`Spyglass::UNASKED`], which is what asking without asking
+    /// means: scrolling out until the galaxy fits is one gesture, and it
+    /// would otherwise put every system on record on the map. The reach stops
+    /// growing there and the view goes on widening past it. Turning this off
+    /// is what reaches further, the radius then being set by hand.
+    pub follow_camera: bool,
 }
 
 impl Spyglass {
@@ -234,10 +258,43 @@ pub fn zoom_with_spyglass(
     spyglass: Res<Spyglass>,
     mut camera: Query<&mut OrbitCamera>,
 ) {
-    if spyglass.lock_camera {
+    if spyglass.lock_camera && !spyglass.follow_camera {
         if let Ok(mut camera) = camera.single_mut() {
             camera.target_radius = spyglass.radius * 3.;
         }
+    }
+}
+
+/// Reach as far as the camera can see
+///
+/// [`zoom_with_spyglass`] read the other way. That one stands the camera back
+/// to take in the reach; this one takes the reach from where the camera is
+/// already standing, so scrolling out fetches and draws more of the sky and
+/// scrolling in narrows to what is being looked at.
+///
+/// The target rather than the radius the camera has reached, so that the reach
+/// is settled the moment a scroll or a move asks for it and the systems are on
+/// their way while the camera is still travelling. Reading the radius instead
+/// would move the reach a little every frame of a zoom, and every step of it
+/// is a region to be fetched.
+pub fn reach_with_camera(
+    mut spyglass: ResMut<Spyglass>,
+    camera: Query<&OrbitCamera>,
+    lens: Query<&Projection>,
+) {
+    if !spyglass.follow_camera {
+        return;
+    }
+    let Ok(camera) = camera.single() else { return };
+
+    let reach = crate::camera::framed(camera.target_radius, lens.single().ok())
+        .clamp(Spyglass::FLOOR, Spyglass::UNASKED);
+
+    // Only where it moved. Nothing watches this resource for changes today,
+    // and writing the same number every frame is how that stops being true
+    // without anyone meaning it to.
+    if spyglass.radius != reach {
+        spyglass.radius = reach;
     }
 }
 
@@ -306,6 +363,7 @@ pub(crate) mod tests {
             disabled,
             fetch: false,
             lock_camera: false,
+            follow_camera: false,
         });
         app.insert_resource(filter::DimTo(dim));
         app.init_resource::<InReach>();
@@ -328,6 +386,7 @@ pub(crate) mod tests {
             fetch: false,
             disabled: false,
             lock_camera: false,
+            follow_camera: false,
         };
         let center = DVec3::ZERO;
 
@@ -344,6 +403,7 @@ pub(crate) mod tests {
             fetch: false,
             disabled: true,
             lock_camera: false,
+            follow_camera: false,
         };
 
         assert!(spyglass.reaches(DVec3::ZERO, DVec3::new(5e4, 0., 0.)));
@@ -538,5 +598,147 @@ pub(crate) mod tests {
         app.update();
 
         assert!(!drawn(&app, excluded));
+    }
+
+    /// A world holding a camera `back` light years out and the two systems
+    /// that read it
+    ///
+    /// No lens is spawned, so the default half angle answers, which is what a
+    /// window as wide as it is tall would give anyway.
+    fn linked(back: f32, lock_camera: bool, follow_camera: bool) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Spyglass {
+            radius: Spyglass::OPENING,
+            fetch: false,
+            disabled: false,
+            lock_camera,
+            follow_camera,
+        });
+        app.world_mut().spawn(OrbitCamera {
+            radius: back,
+            target_radius: back,
+            ..default()
+        });
+        app.add_systems(
+            Update,
+            (zoom_with_spyglass, reach_with_camera).chain(),
+        );
+        app
+    }
+
+    /// How far the spyglass reaches, and how far back the camera stands
+    fn linkage(app: &mut App) -> (f32, f32) {
+        let reach = app.world().resource::<Spyglass>().radius;
+        let back = app
+            .world_mut()
+            .query::<&OrbitCamera>()
+            .single(app.world())
+            .unwrap()
+            .target_radius;
+        (reach, back)
+    }
+
+    /// Following the camera, the reach is what the camera can see
+    #[test]
+    fn the_reach_follows_what_the_camera_sees() {
+        let mut app = linked(100., false, true);
+
+        app.update();
+
+        let (reach, _) = linkage(&mut app);
+        assert!(
+            (reach - crate::camera::framed(100., None)).abs() < 1e-3,
+            "reached {reach}"
+        );
+        assert!(reach != Spyglass::OPENING, "left where it opened");
+    }
+
+    /// Scrolling out reaches further and scrolling in reaches less
+    #[test]
+    fn the_reach_moves_with_the_camera() {
+        let mut app = linked(100., false, true);
+        app.update();
+        let (near, _) = linkage(&mut app);
+
+        app.world_mut()
+            .query::<&mut OrbitCamera>()
+            .single_mut(app.world_mut())
+            .unwrap()
+            .target_radius = 400.;
+        app.update();
+        let (far, _) = linkage(&mut app);
+
+        assert!(far > near, "reached {far} from further out than {near}");
+    }
+
+    /// However far the camera is pulled back, the reach stops where the map
+    /// stops asking unbidden
+    ///
+    /// Scrolling out until the galaxy fits is one gesture, and everything the
+    /// spyglass takes in is fetched and spawned. See [`Spyglass::UNASKED`].
+    #[test]
+    fn the_reach_stops_where_nobody_asked_for_more() {
+        let mut app = linked(Spyglass::CEILING, false, true);
+
+        app.update();
+
+        let (reach, _) = linkage(&mut app);
+        assert_eq!(reach, Spyglass::UNASKED);
+    }
+
+    /// And never falls under the shortest reach worth offering
+    #[test]
+    fn the_reach_stops_where_it_would_show_one_system() {
+        let mut app = linked(1e-3, false, true);
+
+        app.update();
+
+        let (reach, _) = linkage(&mut app);
+        assert_eq!(reach, Spyglass::FLOOR);
+    }
+
+    /// Not following, the reach is left where it was set
+    #[test]
+    fn a_reach_set_by_hand_is_left_alone() {
+        let mut app = linked(100., false, false);
+
+        app.update();
+
+        let (reach, _) = linkage(&mut app);
+        assert_eq!(reach, Spyglass::OPENING);
+    }
+
+    /// Locking the camera does nothing while the camera is what sets the
+    /// reach
+    ///
+    /// The two are the same link read in opposite directions. Were both in
+    /// force the camera would be told to stand where the reach says while the
+    /// reach was being taken from where it stands, and which of them the map
+    /// ended up obeying would come down to the order they ran in.
+    #[test]
+    fn the_camera_is_not_locked_to_a_reach_it_is_setting() {
+        let mut app = linked(100., true, true);
+
+        app.update();
+
+        let (reach, back) = linkage(&mut app);
+        assert_eq!(back, 100., "the camera was moved to {back}");
+        assert!(
+            (reach - crate::camera::framed(100., None)).abs() < 1e-3,
+            "reached {reach}"
+        );
+    }
+
+    /// Locked and not following, the camera goes where the reach says
+    #[test]
+    fn a_locked_camera_still_follows_the_reach() {
+        let mut app = linked(100., true, false);
+
+        app.update();
+
+        let (reach, back) = linkage(&mut app);
+        assert_eq!(reach, Spyglass::OPENING);
+        assert_eq!(back, Spyglass::OPENING * 3.);
     }
 }

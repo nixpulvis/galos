@@ -982,7 +982,13 @@ mod tests {
 
     /// A spyglass of a given reach, in force unless said otherwise
     fn spyglass(radius: f32, disabled: bool) -> Spyglass {
-        Spyglass { fetch: true, radius, disabled, lock_camera: false }
+        Spyglass {
+            fetch: true,
+            radius,
+            disabled,
+            lock_camera: false,
+            follow_camera: false,
+        }
     }
 
     /// Names reach no further than the spyglass shows

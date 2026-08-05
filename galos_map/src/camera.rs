@@ -209,25 +209,48 @@ const DEFAULT_HALF_FOV: f32 = std::f32::consts::PI / 8.;
 /// the reach, where an `f32` rounding decides whether they are drawn at all.
 pub(crate) const FRAMING_MARGIN: f32 = 1.15;
 
-/// How far back to stand to take in `extent` light years about what is looked
-/// at
+/// The narrower of the two half angles the camera sees across
 ///
-/// The narrower of the two angles the camera sees across, since that is the
-/// one that clips. Bevy's field of view is the vertical one, so a window
-/// wider than it is tall has room to spare at the sides and a narrow one has
-/// none, and fitting whichever is tighter keeps the whole of it on screen
-/// either way.
-fn stand_back(extent: f32, projection: Option<&Projection>) -> f32 {
-    let half = match projection {
+/// The narrower one is what clips. Bevy's field of view is the vertical one,
+/// so a window wider than it is tall has room to spare at the sides and a
+/// narrow one has none, and fitting whichever is tighter keeps the whole of
+/// what is framed on screen either way.
+fn half_angle(projection: Option<&Projection>) -> f32 {
+    match projection {
         Some(Projection::Perspective(lens)) => {
             let vertical = lens.fov / 2.;
             let across = (vertical.tan() * lens.aspect_ratio).atan();
             vertical.min(across)
         }
         _ => DEFAULT_HALF_FOV,
-    };
+    }
+}
 
+/// How far back to stand to take in `extent` light years about what is looked
+/// at
+fn stand_back(extent: f32, projection: Option<&Projection>) -> f32 {
+    let half = half_angle(projection);
     (extent * FRAMING_MARGIN / half.sin()).clamp(MIN_RADIUS, MAX_RADIUS)
+}
+
+/// How far about what it looks at a camera `radius` back takes in, in light
+/// years
+///
+/// Out to the edge of the view rather than to the edge of what was framed in
+/// it, so this is [`stand_back`] undone without its margin. That margin is
+/// room left around something being shown, and there is nothing being shown
+/// here: the question is how much sky is on screen, and the answer runs to
+/// where the screen ends.
+///
+/// So a camera stood back over an extent takes in `FRAMING_MARGIN` times it,
+/// which is the reach [`crate::systems::route`] sets by hand when it frames a
+/// route. A route the spyglass reached only to the ends of would have them
+/// sitting on the rim, in or out by however an `f32` rounded.
+///
+/// What the spyglass reaches by when it follows the camera.
+pub(crate) fn framed(radius: f32, projection: Option<&Projection>) -> f32 {
+    let half = half_angle(projection);
+    radius * half.sin()
 }
 
 /// A camera that orbits a point in the galaxy
@@ -740,5 +763,56 @@ mod tests {
     #[test]
     fn holding_nothing_is_still_a_distance() {
         assert!(stand_back(0., None) >= MIN_RADIUS);
+    }
+
+    /// What a camera framing an extent takes in is that extent and the room
+    /// left around it
+    ///
+    /// The spyglass reads the two in opposite directions, one to stand the
+    /// camera back over a route and the other to take its reach from where
+    /// the camera is standing. Standing back leaves [`FRAMING_MARGIN`] of
+    /// room and the reach runs to the edge of the view, so the reach comes
+    /// out at exactly the one `route::plotted` sets by hand, whatever the
+    /// window is shaped like.
+    #[test]
+    fn what_is_framed_is_held_with_room_around_it() {
+        for shape in [None, Some(lens(1280., 720.)), Some(lens(400., 1200.))] {
+            for extent in [5., 50., 1e3, 1e4] {
+                let back = stand_back(extent, shape.as_ref());
+                let out = framed(back, shape.as_ref());
+                let want = extent * FRAMING_MARGIN;
+
+                assert!(
+                    (out - want).abs() < want * 1e-4,
+                    "framed {extent} from {back} back and took in {out}, \
+                     wanted {want}"
+                );
+            }
+        }
+    }
+
+    /// What is framed is inside what is taken in, with room to spare
+    ///
+    /// The reach is what decides whether the ends of a route are drawn, so
+    /// the ends have to fall inside it rather than on it.
+    #[test]
+    fn what_is_framed_is_inside_what_is_taken_in() {
+        let extent = 50.;
+        let back = stand_back(extent, None);
+
+        assert!(framed(back, None) > extent);
+    }
+
+    /// A tall window takes in less from the same place
+    ///
+    /// The reciprocal of [`a_tall_window_asks_for_more_room`]: the sides are
+    /// what clips there, so from a distance that holds an extent in a wide
+    /// window, a tall one holds less than that.
+    #[test]
+    fn a_tall_window_takes_in_less() {
+        let wide = framed(1e3, Some(&lens(1280., 720.)));
+        let tall = framed(1e3, Some(&lens(400., 1200.)));
+
+        assert!(tall < wide, "took in {tall} against {wide}");
     }
 }
