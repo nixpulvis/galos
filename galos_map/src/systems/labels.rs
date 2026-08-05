@@ -919,7 +919,7 @@ mod tests {
     /// A name is read or it is not, so one belonging to a dimmed star is not
     /// dimly readable, it is clutter over what the user asked to see.
     #[test]
-    fn an_filtered_system_is_not_named() {
+    fn a_filtered_system_is_not_named() {
         assert!(!worth_naming(true, true, false, false));
     }
 
