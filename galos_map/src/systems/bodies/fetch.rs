@@ -51,10 +51,10 @@ const HOLD_WITHIN: f32 = 7.;
 /// left behind while its rows are still coming back should not land them on
 /// the map a moment later.
 #[derive(Resource, Default)]
-struct Asking(Option<(i64, Task<Answer>)>);
+pub(super) struct Asking(Option<(i64, Task<Answer>)>);
 
 /// What the database had about one system
-struct Answer {
+pub(super) struct Answer {
     stars: Vec<DbStar>,
     bodies: Vec<DbBody>,
 }
@@ -130,7 +130,10 @@ fn choose(
 }
 
 /// Take in whatever has come back
-fn collect(mut contents: ResMut<Contents>, mut asking: ResMut<Asking>) {
+pub(super) fn collect(
+    mut contents: ResMut<Contents>,
+    mut asking: ResMut<Asking>,
+) {
     let Some((address, task)) = asking.0.as_mut() else { return };
     let Some(answer) = block_on(future::poll_once(task)) else { return };
     let address = *address;

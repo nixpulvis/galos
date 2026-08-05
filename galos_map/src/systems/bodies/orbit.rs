@@ -208,6 +208,18 @@ impl Orbits {
         self.0.insert(id, (parent, orbit));
     }
 
+    /// The path `id` traces about whatever it goes round, as `steps` points
+    ///
+    /// Relative to its parent rather than to the system, so a moon's line is
+    /// the small circle it makes about its planet and belongs wherever the
+    /// planet is. Nothing for something that does not go round anything, which
+    /// is what a system's primary comes back as.
+    pub fn path(&self, id: i16, steps: usize) -> Option<Vec<DVec3>> {
+        let (_, orbit) = self.0.get(&id)?;
+        let path = orbit.path(steps);
+        (!path.is_empty()).then_some(path)
+    }
+
     /// Where `id` sits within its system, in metres from the centre
     ///
     /// Each step of the way up adds where that thing stands about its own
