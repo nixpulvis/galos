@@ -352,6 +352,29 @@ corrections small in both directions rather than biased into one.
 **Only the far tail moves visibly**, roughly doubling. Which the dissolve covers,
 given the rule below.
 
+### The drawn size chases the target rather than being it
+
+`shell(extent, distance)` is the **target**. What is drawn is held on the
+`Shell` component and approaches it, by `camera.rs:144`'s `approach`, which is
+already frame-rate independent and tested. The size and the transparency are
+then two animations tuned together, which is what the transparency wanted
+anyway.
+
+It covers every extent change rather than the ones that were predicted: the far
+tail's step at the load range, a system rescanned wider than it was, a query
+that came back late. And it takes the pressure off the load range — five light
+years becomes a preference rather than a requirement.
+
+The pure sweeps below test the target; one more covers the chase.
+
+An edge worth having checked rather than discovered: mid-chase the drawn shell
+can be smaller than the true extent, which would put bodies outside their own
+shell. It cannot bite, because bodies are spawned at the spawn range and the
+chase settles long before that. The only way to reach it is an extent that
+changes *after* spawning, and there the rule below holds: the camera is deep
+inside, `d / shell` stays tiny throughout, and the shell is clear the whole time
+it moves.
+
 ### Opacity answers `d / shell`, and nothing else
 
 Not time since loading, not an absolute distance. Keyed on where the camera is
