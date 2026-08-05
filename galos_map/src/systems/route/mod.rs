@@ -1,4 +1,4 @@
-use crate::camera::MoveCamera;
+use crate::camera::{FRAMING_MARGIN, MoveCamera};
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
 use crate::systems::filter::{Filter, Filters};
@@ -67,13 +67,18 @@ fn plotted(
         });
 
         // Measured from the middle, which is where the camera is going, so
-        // what the spyglass holds is what the camera is about to see.
+        // what the spyglass holds is what the camera is about to see. The
+        // same room around it that the camera is stood back to leave, since a
+        // reach set to the route's own extent puts the two ends exactly on
+        // the rim of it: the extent is the distance to the furthest of them,
+        // and whether that counts as reaching them comes down to which way an
+        // `f32` rounded.
         //
         // Held inside what the map will reach unasked. Everything the
         // spyglass takes in is fetched and spawned, and a route long enough
         // would otherwise set a reach nobody asked the size of.
-        spyglass.radius =
-            route.extent.clamp(Spyglass::OPENING, Spyglass::UNASKED);
+        spyglass.radius = (route.extent * FRAMING_MARGIN)
+            .clamp(Spyglass::OPENING, Spyglass::UNASKED);
 
         filters.replace(Filter::Route {
             label: route.label.clone(),
@@ -159,8 +164,8 @@ mod tests {
         app.world().get_entity(line).is_ok()
     }
 
-    /// What reach a route of `extent` light years pulls the spyglass out to
-    fn reach_for(extent: f32) -> f32 {
+    /// The spyglass a route centered on `middle` and reaching `extent` leaves
+    fn spyglass_for(middle: DVec3, extent: f32) -> Spyglass {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_message::<Plotted>();
@@ -177,18 +182,55 @@ mod tests {
         app.world_mut().write_message(Plotted {
             label: "A -> B".to_owned(),
             systems: vec![1, 2],
-            middle: DVec3::ZERO,
+            middle,
             extent,
         });
         app.update();
 
-        app.world().resource::<Spyglass>().radius
+        let held = app.world().resource::<Spyglass>();
+        Spyglass {
+            fetch: held.fetch,
+            radius: held.radius,
+            disabled: held.disabled,
+            lock_camera: held.lock_camera,
+        }
     }
 
-    /// A route reaches as far as it is long
+    /// What reach a route of `extent` light years pulls the spyglass out to
+    fn reach_for(extent: f32) -> f32 {
+        spyglass_for(DVec3::ZERO, extent).radius
+    }
+
+    /// A route reaches past its own ends rather than up to them
     #[test]
-    fn a_route_reaches_its_own_length() {
-        assert_eq!(reach_for(60.), 60.);
+    fn a_route_reaches_past_its_own_ends() {
+        assert!(reach_for(60.) > 60., "{}", reach_for(60.));
+    }
+
+    /// So the systems at those ends are drawn
+    ///
+    /// The extent is the distance from the middle to the furthest of them,
+    /// worked out in `f64` and kept as an `f32`. A reach set to exactly that
+    /// puts those systems on its rim, where whether they are drawn comes down
+    /// to which way the one cast rounded. These coordinates are a case where
+    /// it rounds down, so the ends fall outside a reach of their own length.
+    #[test]
+    fn the_systems_at_a_route_s_ends_are_within_reach() {
+        let places = [
+            DVec3::ZERO,
+            DVec3::new(26.03, 8.676666666666668, 3.718571428571429),
+        ];
+        let (middle, extent) = spawn::framing(&places).unwrap();
+        assert!(
+            middle.distance(places[1]) > extent as f64,
+            "these coordinates no longer round the way the test is about",
+        );
+
+        let spyglass = spyglass_for(middle, extent);
+
+        for place in places {
+            assert!(spyglass.reaches(middle, place), "{place} is out of reach");
+        }
     }
 
     /// A short one still leaves the map something to see around it

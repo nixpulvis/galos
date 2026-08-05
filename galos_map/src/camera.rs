@@ -202,7 +202,12 @@ const DEFAULT_HALF_FOV: f32 = std::f32::consts::PI / 8.;
 ///
 /// A route drawn corner to corner of the viewport reads as one that did not
 /// quite fit.
-const FRAMING_MARGIN: f32 = 1.15;
+///
+/// Read by whatever sets the reach to match a framing, so that the map draws
+/// out to the edge of what the camera was stood back to show. Something framed
+/// exactly to its own size is a thing whose furthest points sit on the rim of
+/// the reach, where an `f32` rounding decides whether they are drawn at all.
+pub(crate) const FRAMING_MARGIN: f32 = 1.15;
 
 /// How far back to stand to take in `extent` light years about what is looked
 /// at
