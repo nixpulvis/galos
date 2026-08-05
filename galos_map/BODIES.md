@@ -321,7 +321,8 @@ anything added:
 - **`ANGULAR` becomes load-bearing.** At `4e-4` it is about `0.023°`, half a
   pixel at 1080p, and with the floor gone it is the only thing keeping a distant
   system on screen; bloom is carrying it today. Expect to raise it once it can
-  be seen.
+  be seen — and settle it against a sky of millions rather than against one
+  star, since what it really sets is how a crowd of overlapping shells reads.
 
 It answers four things:
 
@@ -417,14 +418,34 @@ vertices scaled to `1.7e6` m, is good to about 0.1 m — the mesh becomes the
 limit before the grid does, which is the argument for chunked terrain when
 surfaces arrive rather than for finer cells.
 
-**Where the fetch distance has to sit.** The handover is at `extent / ANGULAR`,
-which is `0.079` ly for a compact system and `1.19` ly for Sol — so a few light
-years covers both with room. It does not cover everything: a system with bodies
-out at 700,000 light seconds hands over at 55 ly, far outside any sane fetch
-distance. Those take their true size when their contents land rather than at the
-handover, and grow in one step. Honest — a system is drawn at the size that
-keeps it visible until the map has asked what size it is — but it is a visible
-pop on the largest systems, and worth looking at before deciding it is fine.
+**Where the fetch distance has to sit.** The handover is at `extent / ANGULAR` —
+a *camera distance*, not a size. It is `0.079` ly for a compact system and
+`1.19` ly for Sol, so a few light years covers both with room.
+
+It does not cover the tail. A system with bodies at 700,000 light seconds hands
+over when the camera is 55 ly off, and Alpha Centauri, whose reach runs to about
+a fifth of a light year, at some 500. Those are far outside any sane fetch
+distance, so they take their true size when their contents land rather than at
+the handover, and grow in one step — from `0.002` to `0.022` ly for the first of
+those, a tenfold jump that is a quarter of a degree on screen. Honest enough, a
+system being drawn at the size that keeps it visible until the map has asked what
+size it really is, but worth watching before it is called fine.
+
+**Shells at their true size cannot overlap.** The widest is about a fifth of a
+light year against a spacing of four or more, twenty times clear, and the
+ordinary ones are clear by thousands. Overlap belongs entirely to the angular
+term, and is unbounded: at 50,000 ly every shell is drawn 20 ly across against
+that same four, so millions of them interpenetrate. That is what makes the
+galaxy read as a glow rather than as points, and it is the current behaviour
+rather than anything introduced here.
+
+But it says the angular term is doing a point sprite's work with geometry. The
+two ends of the map want different machinery — additive sprites carrying
+brightness far off, a real sphere at a real size near to — rather than one law
+stretched over both. That is where `stars.absolute_magnitude` and
+`stars.luminosity` finally pay: a star too faint to contribute is not drawn at
+all, instead of being a sphere too small to see. Left for its own change, and
+the thing to test first, since it decides how a sky of millions reads.
 
 ---
 
