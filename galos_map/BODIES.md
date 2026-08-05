@@ -431,6 +431,56 @@ those, a tenfold jump that is a quarter of a degree on screen. Honest enough, a
 system being drawn at the size that keeps it visible until the map has asked what
 size it really is, but worth watching before it is called fine.
 
+### A system's size is learned too late — open, and to be tested first
+
+The shell's size wants `extent`, and `extent` comes out of the database, so
+between a system appearing and its contents landing the map is drawing something
+whose size it does not know. Where the handover falls further out than the fetch,
+the shell has been drawn too small for the whole approach and jumps to the truth
+the moment the answer arrives. Nothing is wrong afterwards; it is the arriving
+that shows.
+
+**Test before building anything.** `ANGULAR` is the leverage: the distance the
+fetch must reach is `extent / ANGULAR`, so raising it shrinks the problem in
+proportion. At `4e-4` a system reaching 700,000 light seconds wants 55 ly; at
+`4e-3` it wants 5.5, which is about where the fetch would sit anyway. Since
+`ANGULAR` has to be settled by eye regardless — it is what holds a distant system
+on screen, and what decides how a crowd of them reads — that experiment may
+answer this one for nothing. Do it first.
+
+If something is still wanted after that, three things, cheapest first, and each
+useful without the others:
+
+1. **Ease the size rather than assigning it.** Hold what is drawn and approach
+   the answer over a few hundred milliseconds. `camera.rs:144`'s `approach` is
+   exactly this and is already frame-rate independent and tested. It does not
+   make the size right any sooner — it stops the wrongness from being a flinch,
+   and it covers everything, including a system whose extent changes later
+   because more of it has been scanned since.
+2. **Learn the extents early and cheaply, without the bodies.** One aggregate —
+   `max(semi_major_axis)` grouped by `system_address` over the addresses the
+   spyglass already holds — answers a float per system rather than every row of
+   every one. Batched on the `FetchTasks` model, cached by address for the
+   session since a system's reach does not change. That removes the cause rather
+   than the symptom, and it scales to the outliers, which no fetch distance can.
+3. **Store it on the `systems` row.** The same number, kept rather than derived.
+   `DbSystem` is already fetched for everything in the spyglass, so the shell
+   would never be drawn at a size it had to guess at, at any distance. Costs a
+   migration, a backfill over `bodies`, and a line in the sync path — worth it
+   once, not worth it on suspicion. Adjacent to issue #69.
+
+**And a question underneath all three: what should `extent` mean?** Taken as the
+outermost body it is set by whatever is furthest, which is what makes the tail so
+long — a system with everything inside a few thousand light seconds and one thing
+at 700,000 gets a shell two hundred times wider than where it actually lives, and
+what there is to see is a speck at the middle of it. A high percentile instead of
+a maximum would frame what is there, and would collapse the range of extents so
+far that the handover falls inside any sensible fetch for almost every system.
+
+It trades away containment: those few far bodies would be drawn outside their own
+shell. Whether that is wrong or simply honest is a question about what the shell
+is *for*, and it should be looked at rather than assumed.
+
 **Shells at their true size cannot overlap.** The widest is about a fifth of a
 light year against a spacing of four or more, twenty times clear, and the
 ordinary ones are clear by thousands. Overlap belongs entirely to the angular
