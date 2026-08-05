@@ -9,14 +9,11 @@
 //! is not a search bar: three sections drop out of it, and search is one of
 //! them. Filters are another and have nothing to say to the other two, so they
 //! keep their own state in [`FilterBar`] and are reached through that alone. A
-//! route is the third, and does read what the search box holds, since a route
-//! starts from the system named up there.
+//! route is the third, and asks only what it may be flown in: which systems it
+//! runs between is what is picked out on the map.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::search::{
-    EndResults, Plot, SearchNote, SearchResults, Searched, Searching,
-    SearchingEnd,
-};
+use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
@@ -228,19 +225,18 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
 
 /// What the user has typed into the bar, and how much of it is out
 ///
-/// The search box and the route's two fields. Together because the route
-/// reads what the search box holds, not merely because they are drawn near
-/// each other: the filters are drawn between them and keep their own field in
-/// [`FilterBar`], having nothing to say to either.
+/// The search box and the route's jump range, which are the fields the bar
+/// itself owns. The filters are drawn between them and keep their own in
+/// [`FilterBar`], so that nothing about a filter is reachable from here.
 #[derive(Default)]
 pub struct BarFields {
     /// The system named in the box the bar leads with
-    ///
-    /// Read by the route as well as by the search, since a route starts from
-    /// whatever system is named up there. That is the one thing two of the
-    /// bar's sections share, and it is shared on purpose.
     system: Option<String>,
-    route_end: Option<String>,
+    /// How far the ship a route is plotted for jumps
+    ///
+    /// The one thing about a route that is typed. Which systems it runs
+    /// between is picked out on the map, and a range is a fact about a ship
+    /// with nothing on the map to point at.
     route_range: Option<String>,
     /// Whether the rest of the form is out below the input
     ///
@@ -441,16 +437,16 @@ pub fn chrome(
     });
 
     gear(ctx, edge, &mut settings.0);
-    let asking =
-        Waiting { search: bar.asking.waiting(), end: bar.asking_end.waiting() };
     let shut = main_bar(
         ctx,
-        asking,
+        // Whether the search box's answer is late enough to say so. Settled
+        // where the clock is, which is the system that put the question; the
+        // bar draws during egui's own pass and has no clock of its own.
+        bar.asking.waiting(),
         &mut search,
         &mut bar.searched,
         &mut bar.note,
         &mut bar.results,
-        &mut bar.ends,
         &mut selection,
         &mut camera,
         orbit.single().map(|camera| camera.center).ok(),
@@ -570,12 +566,11 @@ fn gear(ctx: &Context, left: f32, open: &mut bool) {
 /// and is worth reading whether or not the rest is out.
 fn main_bar(
     ctx: &Context,
-    asking: Waiting,
+    asking: bool,
     search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
     note: &mut SearchNote,
     results: &mut SearchResults,
-    ends: &mut EndResults,
     selection: &mut Selection,
     camera: &mut MessageWriter<MoveCamera>,
     center: Option<DVec3>,
@@ -612,7 +607,7 @@ fn main_bar(
                         &mut search.system,
                         note,
                         results,
-                        asking.search,
+                        asking,
                     );
                     taken |= response.gained_focus();
                     // Both answer a name, so neither is any answer at all
@@ -677,7 +672,7 @@ fn main_bar(
                     // rectangle that kept its place, which is what egui reads
                     // as a widget taking another's state.
                     let mut place = 0;
-                    selected(
+                    let routing = selected(
                         ui,
                         selection,
                         center,
@@ -704,11 +699,15 @@ fn main_bar(
                         filter.active.any_enabled() && filter.dim.0 > 0.;
                     reaching(ui, &filter.in_reach, dimming);
 
+                    // Asking for a route out of the summary line is what opens
+                    // the form, in the same pass, so that the section it asked
+                    // for is under the control that asked the moment it is
+                    // clicked rather than a frame later.
+                    search.expanded |= routing;
                     if search.expanded {
                         taken |= filter_section(ui, filter);
                         taken |= route_section(
-                            ui, search, searched, ends, asking.end, center,
-                            panels, plot,
+                            ui, search, selection, searched, plot, routing,
                         );
                     }
 
@@ -759,27 +758,10 @@ pub struct SearchBar<'w> {
     note: ResMut<'w, SearchNote>,
     /// The systems the search box found
     results: ResMut<'w, SearchResults>,
-    /// The systems the route's end field found
-    ends: ResMut<'w, EndResults>,
     /// What the search box has out
     asking: Res<'w, Searching>,
-    /// What the route's end field has out
-    asking_end: Res<'w, SearchingEnd>,
     /// How the route last asked for is getting on
     plot: ResMut<'w, Plot>,
-}
-
-/// Which of the bar's questions have been out long enough to say so
-///
-/// Read once and handed down rather than asked field by field. Whether an
-/// answer is late is settled where the clock is, which is the systems that
-/// put the questions; the bar draws during egui's own pass and has no clock
-/// of its own to measure against.
-struct Waiting {
-    /// What the search box asked
-    search: bool,
-    /// What the route's end field asked
-    end: bool,
 }
 
 /// The search box, and the mark that empties it
@@ -1012,10 +994,10 @@ fn found(
 
 /// A list of systems, and what a click asked of one of them
 ///
-/// Every list of systems the map draws is this: the ones a search found, and
-/// the ones offered for a field to be filled from. What a click means is the
-/// caller's, since that is the only part that differs between them, and the
-/// lines themselves are [`system_line`] so that a system is read the same way
+/// Every list of systems the map offers to be chosen from is this, the search
+/// results among them. What a click means is the caller's, since that is the
+/// only part that differs between one list and another, and the lines
+/// themselves are [`system_line`] so that a system is read the same way
 /// wherever it is listed.
 ///
 /// Scrolls past [`OFFERED`], which is a screenful of the bar rather than of
@@ -1103,11 +1085,15 @@ pub(crate) fn system_list<'a>(
 /// question by covering up what it is about.
 ///
 /// The summary line above them is drawn only while more than one is picked
-/// out, and carries the control that turns the set into a filter. One system
-/// picked out is the case the rows already read well, and a line saying "1
-/// system" over a row naming it says the same thing twice.
+/// out, and carries [`gathered`]'s controls. One system picked out is the case
+/// the rows already read well, and a line saying "1 system" over a row naming
+/// it says the same thing twice.
 /// `travelled` is where a row asked the camera to go, which the caller writes
 /// rather than this, as [`found`] does and for the same reason.
+///
+/// Answers whether a route between what is picked out was asked for, which is
+/// [`gathered`]'s to say and the caller's to act on: the form that answers it
+/// is drawn further down the bar.
 fn selected(
     ui: &mut Ui,
     selection: &mut Selection,
@@ -1116,9 +1102,9 @@ fn selected(
     panels: &mut Panels,
     filters: &mut Filters,
     place: &mut usize,
-) {
+) -> bool {
     if selection.is_empty() {
-        return;
+        return false;
     }
 
     let gap = ui.spacing().item_spacing.x;
@@ -1126,9 +1112,7 @@ fn selected(
     // asks to change.
     let mut chose = None;
 
-    if selection.len() > 1 {
-        gathered(ui, selection, filters);
-    }
+    let routing = selection.len() > 1 && gathered(ui, selection, filters);
 
     let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
         + (ROW_PADDING + ROW_MARGIN) * 2.
@@ -1241,16 +1225,19 @@ fn selected(
         rows(ui);
     }
 
-    let Some((index, chose)) = chose else { return };
-    match chose {
-        Held::Travel => *travelled = selection.position(index),
-        Held::Describe => {
-            if let Some(system) = selection.system(index) {
-                panels.open_system(system.clone());
+    if let Some((index, chose)) = chose {
+        match chose {
+            Held::Travel => *travelled = selection.position(index),
+            Held::Describe => {
+                if let Some(system) = selection.system(index) {
+                    panels.open_system(system.clone());
+                }
             }
+            Held::LetGo => selection.remove(index),
         }
-        Held::LetGo => selection.remove(index),
     }
+
+    routing
 }
 
 /// What a click on a selected system's row asked for
@@ -1274,8 +1261,19 @@ const SELECTED: usize = 5;
 /// The set is left alone once it has been filtered on. The filter took a copy
 /// of the addresses, so letting go of the rings and the rows afterwards
 /// leaves those systems picked out, which is most of what the filter is for.
-fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) {
+///
+/// Answers whether a route between them was asked for. Only two of them can be
+/// routed between, so only two of them carry the control, and it appears the
+/// moment the second is picked. That is what there is to find: a set gathered
+/// out on the map says here what can be done with it, rather than leaving the
+/// user to guess that the form dropping out of the search box has a section
+/// about the systems they have already picked.
+///
+/// It reaches the form rather than plotting, since a route still wants a jump
+/// range and there is nowhere here to say one.
+fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) -> bool {
     let held = selection.len();
+    let mut routing = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{held} systems")).weak());
         if ui.button("Filter").clicked() {
@@ -1284,7 +1282,11 @@ fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) {
                 systems: selection.addresses(),
             });
         }
+        if ends_of(selection).is_ok() {
+            routing = ui.button("Route").clicked();
+        }
     });
+    routing
 }
 
 /// A count with its digits grouped in threes
@@ -1320,83 +1322,84 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
     }
 }
 
-/// Ask where a route ends and what it may be flown in
+/// The two systems a route runs between, or why it has no pair to run between
 ///
-/// Answers whether a field of it has just taken focus. A route runs from the
-/// name in the search box above, which is where a system is named, and it
-/// runs from it as typed: a name has to be searched for to be picked out,
-/// and asking a question to reach the question you wanted is no way to fill
-/// in a form.
+/// What is picked out on the map, in the order it was picked, rather than
+/// names typed into fields of the form. Picking a system out is already how
+/// the user says which one they mean, to the panel that describes it and to
+/// the filter built from it, so a route with fields of its own would be
+/// asking twice about systems the map is holding for them.
 ///
-/// How it is getting on is said between the fields and the button, where
+/// Two of them. A longer set is a route running through every system in it,
+/// leg by leg, and that is a different plot from this one rather than this one
+/// done several times.
+// TODO: Plot through the whole selection, leg by leg in the order it was
+// picked, instead of refusing every set but the pair.
+fn ends_of(selection: &Selection) -> Result<(&str, &str), &'static str> {
+    match (selection.name(0), selection.name(1), selection.len()) {
+        (Some(start), Some(end), 2) => Ok((start, end)),
+        (_, _, 0) => Err("Pick out two systems to plot between"),
+        (_, _, 0..=2) => Err("Pick out a second system to plot to"),
+        _ => Err("A route runs between two systems for now"),
+    }
+}
+
+/// Ask what a route may be flown in, and say where it would run
+///
+/// Answers whether its field has just taken focus. Which systems a route runs
+/// between is what is picked out on the map, which [`ends_of`] settles, so the
+/// only thing left to ask is the jump range.
+///
+/// How it is getting on is said between the field and the button, where
 /// what it is about is on either side of it. The note under the search input
 /// answers a name typed into the search input, and a route's answer read out
 /// up there would sit a long way from its question.
+///
+/// `asked_for` is the control up in the selection's summary line having just
+/// been pressed, which is how a user who has picked two systems out on the map
+/// reaches this. The range takes the caret, that being the one thing left to
+/// say, so the gesture reads as one move rather than as a section appearing
+/// somewhere for the user to go and find.
 fn route_section(
     ui: &mut Ui,
     search: &mut BarFields,
+    selection: &Selection,
     searched: &mut MessageWriter<Searched>,
-    ends: &mut EndResults,
-    waiting: bool,
-    center: Option<DVec3>,
-    panels: &mut Panels,
     plot: &mut Plot,
+    asked_for: bool,
 ) -> bool {
     heading(ui, "Route", true);
     let mut taken = false;
 
-    let end = singleline(ui, &mut search.route_end, "End System", 0., waiting);
-    taken |= end.gained_focus();
-    // Return asks which systems the name might mean, as it does in the search
-    // box above. A route runs between two systems and a name part way through
-    // being typed names several, so the field offers them and a click fills
-    // itself in with the one that was meant.
-    if entered(&end, ui)
-        && let Some(name) = typed(&search.route_end).map(str::to_owned)
-    {
-        searched.write(Searched::EndSystem { name });
-    }
-    // The list answers the name in the field, so it is no answer at all once
-    // that name is being typed over.
-    if end.changed() {
-        ends.clear();
-    }
-    if let Some((system, chose)) = system_list(ui, ends.iter(), center, "end") {
-        match chose {
-            // Filled in and nothing more. The route still wants a jump range,
-            // and plotting is the button's to ask for. A double click fills it
-            // too rather than flying anywhere: the first click of the pair has
-            // already put the name in, and a field being filled in is no
-            // reason to move the map.
-            Chose::Select { .. } | Chose::Travel => {
-                search.route_end = Some(system.name.clone());
-                ends.clear();
-            }
-            // The mark opens a panel, as it does in every other list. Choosing
-            // between two systems to plot to is exactly when what is known
-            // about them is worth reading, and it leaves the field alone.
-            Chose::Describe => {
-                if let Ok(system) = crate::systems::System::try_from(system) {
-                    panels.open_system(system);
-                }
-            }
-        }
-    }
+    // Which two systems it runs between. Said rather than asked for, since
+    // what answers it is a gesture out on the map, and a form with nothing on
+    // it about the ends is a form that plots between systems it never names.
+    let ends = ends_of(selection);
+    match ends {
+        Ok((start, end)) => ui.label(format!("{start} -> {end}")),
+        // Weakly. Nothing has gone wrong: the user is part way through
+        // asking, and a form in red before it has been filled in is a form
+        // scolding whoever fills it in.
+        Err(why) => ui.label(egui::RichText::new(why).weak()),
+    };
     ui.add_space(FIELD_GAP);
+
     // The range is typed rather than looked up, so it never waits on
     // anything.
     let range =
         singleline(ui, &mut search.route_range, "Jump Range (Ly)", 0., false);
+    if asked_for {
+        range.request_focus();
+    }
     taken |= range.gained_focus();
     // Return in the range asks for the route, as pressing the button does. It
-    // is the last thing a route waits on, and a form with one thing left to
-    // do should not have to be reached for. The end system's own return is
-    // spoken for, being what asks which system it means.
+    // is the one thing a route waits on, and a form with one thing left to do
+    // should not have to be reached for.
     let submitted = entered(&range, ui);
-    // What came back of the last route asked for answers the fields as they
-    // were then, so it goes as soon as they are not. Work still under way is
-    // not an answer to anything yet, and stays.
-    if (end.changed() || range.changed()) && matches!(*plot, Plot::Trouble(_)) {
+    // What came back of the last route asked for answers the field as it was
+    // then, so it goes as soon as it is not. Work still under way is not an
+    // answer to anything yet, and stays.
+    if range.changed() && matches!(*plot, Plot::Trouble(_)) {
         *plot = Plot::Nothing;
     }
 
@@ -1410,13 +1413,10 @@ fn route_section(
     }
 
     ui.add_space(FIELD_GAP);
-    // The name in the search box, as it stands. A route starts from the
-    // system named up there, and naming it is enough: waiting for it to
-    // have been searched for would have the user ask a question they did
-    // not want the answer to before they could ask the one they did.
-    let asked = typed(&search.system)
-        .zip(typed(&search.route_end))
-        .zip(typed(&search.route_range));
+    // The two things a route is made of: which systems it runs between, and
+    // what it may be flown in. The button is dead until both are in hand,
+    // since a plot missing one of them is nothing to ask the database about.
+    let asked = ends.ok().zip(typed(&search.route_range));
     // Egui lays a button's contents out as atoms, and a custom atom is a
     // slot of a given size that hands its rect back to be painted into. So
     // the spinner takes a place in the row beside the label rather than
@@ -2527,8 +2527,8 @@ mod tests {
     ///
     /// Egui works a scroll area's id out from where it sits unless it is
     /// told, and says so in red over the map when two land on the same one.
-    /// The bar draws three at once: what a search found, the factions a name
-    /// might mean, and the systems a route's end might be.
+    /// The bar draws two at once: what a search found, and the factions a
+    /// name typed into the filter's field might mean.
     #[test]
     fn the_lists_do_not_share_a_scroll_area() {
         let systems = results(&["SOL", "SOLATI"], true);
@@ -2547,7 +2547,6 @@ mod tests {
                 &mut travelled,
                 &mut described,
             );
-            system_list(ui, systems.iter(), None, "end");
             faction_list(ui, factions.iter());
         });
 
@@ -2563,7 +2562,7 @@ mod tests {
         let nothing = SearchResults::default();
 
         let systems = words(|ui| {
-            system_list(ui, nothing.iter(), None, "end");
+            system_list(ui, nothing.iter(), None, "result");
         });
         let factions = words(|ui| {
             faction_list(ui, [].iter());
@@ -2745,27 +2744,62 @@ mod tests {
         assert!(!said.contains(&"Filter".to_owned()), "{said:?}");
     }
 
+    /// Two picked out are offered a route between them
+    ///
+    /// This is where the feature is found. A user who gathers two systems out
+    /// on the map has said everything a route needs but the jump range, and
+    /// nothing else on screen would tell them the form dropping out of the
+    /// search box has a section about the pair they are already holding.
+    #[test]
+    fn two_selected_systems_are_offered_a_route() {
+        let said = selection_said(&["SOL", "BARNARD"]);
+
+        assert!(said.contains(&"Route".to_owned()), "{said:?}");
+    }
+
+    /// Any other number is not, there being no route it could ask for
+    ///
+    /// A control that leads to a form refusing what it just asked for is
+    /// worse than no control: it says the map can do something it cannot.
+    #[test]
+    fn a_set_that_cannot_be_routed_is_offered_no_route() {
+        let alone = selection_said(&["SOL"]);
+        let several = selection_said(&["SOL", "BARNARD", "WOLF 359"]);
+
+        assert!(!alone.contains(&"Route".to_owned()), "{alone:?}");
+        assert!(!several.contains(&"Route".to_owned()), "{several:?}");
+        // The rest of the line stands, so it is the route alone that goes.
+        assert!(several.contains(&"Filter".to_owned()), "{several:?}");
+    }
+
     /// The selection rows each answer for themselves
+    ///
+    /// Both over a pair and over a longer set, since a pair carries a control
+    /// the longer set does not and two controls in the one summary line are
+    /// two more things to collide.
     #[test]
     fn the_selection_rows_do_not_share_ids() {
-        let mut selection = holding(&["SOL", "BARNARD", "WOLF 359"]);
+        for names in [&["SOL", "BARNARD"][..], &["SOL", "BARNARD", "WOLF 359"]]
+        {
+            let mut selection = holding(names);
 
-        let said = crate::tests::complaints(|ui| {
-            let mut panels = Panels::default();
-            let mut filters = Filters::default();
-            let mut travelled = None;
-            selected(
-                ui,
-                &mut selection,
-                None,
-                &mut travelled,
-                &mut panels,
-                &mut filters,
-                &mut 0,
-            );
-        });
+            let said = crate::tests::complaints(|ui| {
+                let mut panels = Panels::default();
+                let mut filters = Filters::default();
+                let mut travelled = None;
+                selected(
+                    ui,
+                    &mut selection,
+                    None,
+                    &mut travelled,
+                    &mut panels,
+                    &mut filters,
+                    &mut 0,
+                );
+            });
 
-        assert!(said.is_empty(), "{said:?}");
+            assert!(said.is_empty(), "{names:?}: {said:?}");
+        }
     }
 
     /// Nothing picked out draws no rows at all
@@ -3905,5 +3939,70 @@ mod tests {
     fn a_range_of_nothing_or_less_is_refused() {
         assert!(jump_range("0").is_err());
         assert!(jump_range("-5").is_err());
+    }
+
+    /// A route runs between the two systems picked out on the map
+    #[test]
+    fn a_route_runs_between_what_is_picked_out() {
+        assert_eq!(
+            ends_of(&holding(&["SOL", "SOLATI"])),
+            Ok(("SOL", "SOLATI"))
+        );
+    }
+
+    /// In the order they were picked, the first of them being where it starts
+    ///
+    /// The two are told apart by nothing but that order, so a set read out in
+    /// any other one plots the route backwards half the time.
+    #[test]
+    fn the_first_picked_is_where_a_route_starts() {
+        assert_eq!(
+            ends_of(&holding(&["SOLATI", "SOL"])),
+            Ok(("SOLATI", "SOL"))
+        );
+    }
+
+    /// With nothing picked out there are no ends to run between
+    #[test]
+    fn a_route_with_nothing_picked_out_has_no_ends() {
+        assert!(ends_of(&Selection::default()).is_err());
+    }
+
+    /// Nor with one, which is an end and no route
+    #[test]
+    fn a_route_out_of_one_system_is_refused() {
+        assert!(ends_of(&holding(&["SOL"])).is_err());
+    }
+
+    /// A longer set is a route through all of it, which is not the plot on
+    /// offer
+    ///
+    /// Refused rather than answered with the first two. Plotting between two
+    /// of several picked out would draw a line the user did not ask for and
+    /// say nothing about the rest.
+    #[test]
+    fn a_route_out_of_a_longer_set_is_refused() {
+        assert!(ends_of(&holding(&["SOL", "SOLATI", "SOLLARO"])).is_err());
+    }
+
+    /// Each of those says something of its own
+    ///
+    /// They are read out of the one line, so two of them saying the same
+    /// thing would be a form that answers having picked nothing, having picked
+    /// one, and having picked too many all alike.
+    #[test]
+    fn the_reasons_are_told_apart() {
+        let (none, one, several) = (
+            Selection::default(),
+            holding(&["SOL"]),
+            holding(&["SOL", "SOLATI", "SOLLARO"]),
+        );
+        let said = [ends_of(&none), ends_of(&one), ends_of(&several)];
+
+        for (at, one) in said.iter().enumerate() {
+            for other in &said[at + 1..] {
+                assert_ne!(one, other);
+            }
+        }
     }
 }

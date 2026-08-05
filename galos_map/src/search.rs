@@ -15,8 +15,6 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<SearchResults>();
     app.init_resource::<Plot>();
     app.init_resource::<Searching>();
-    app.init_resource::<SearchingEnd>();
-    app.init_resource::<EndResults>();
     app.init_resource::<Locating>();
     app.add_systems(Update, searched.in_set(MapSet::Search));
 }
@@ -100,33 +98,15 @@ pub enum Plot {
 /// by [`crate::systems::filter::Wanted`] instead.
 #[derive(Message, Debug)]
 pub enum Searched {
-    System {
-        name: String,
-    },
-    /// Systems the route's end might be, for that field to be filled from
-    ///
-    /// The same question as [`Searched::System`] and a different answer, kept
-    /// apart because the two fields are asked about at once and each holds
-    /// what it was told. A name in the search box is what the map is about; a
-    /// name in the route's field is one end of a route not yet plotted.
-    EndSystem {
-        name: String,
-    },
-    Route {
-        start: String,
-        end: String,
-        range: String,
-    },
+    System { name: String },
+    Route { start: String, end: String, range: String },
 }
 
-/// The row for a named system the map can go to, or why it cannot
+/// The row for a named system a route may run to, or why it may not
 ///
-/// Both a plain system search and either end of a route need this same
-/// answer, and both need to say the same thing when they cannot get it.
-///
-/// The whole row rather than only where it is, since a search is also how a
-/// system comes to be selected and the panel describing it has nothing else
-/// to read: the map does not fetch the system until the camera arrives.
+/// Both ends go through this before a route is drawn between them, so that a
+/// plot which comes back with nothing says which end it could not have rather
+/// than leaving the user to guess.
 async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
     match DbSystem::fetch_by_name(db, name).await {
         Ok(system) if system.position.is_some() => Ok(system),
@@ -210,42 +190,11 @@ impl<A, T> Asking<A, T> {
     }
 }
 
-/// The systems the route's end field last found, for the bar to draw
-///
-/// Answers that field alone, and is put away as soon as one of them is chosen
-/// into it: what it is for is filling in a name, and once the name is in there
-/// the list has said everything it had to say.
-#[derive(Resource, Default)]
-pub struct EndResults(Vec<DbSystem>);
-
-impl EndResults {
-    /// What was found, best first
-    pub fn iter(&self) -> impl Iterator<Item = &DbSystem> {
-        self.0.iter()
-    }
-
-    /// Stop offering whatever was found
-    pub fn clear(&mut self) {
-        self.0.clear();
-    }
-}
-
 /// What the search box has out, and the name it is about
 ///
 /// The name is what its note is written against, a search that found nothing
 /// having to say which name found it.
 pub type Searching = Asking<String, Vec<DbSystem>>;
-
-/// What the route's end field has out
-///
-/// Its own, so that asking about one field does not take the answer out from
-/// under the other. Both are the same question put to the database and the two
-/// answers belong to different fields.
-///
-/// About nothing in particular, unlike [`Searching`]. Nothing is said where
-/// nothing was found: the field is being filled in rather than answered, and
-/// an empty list under it says as much.
-pub type SearchingEnd = Asking<(), Vec<DbSystem>>;
 
 /// The pair of names a route is being worked out between, while they are
 /// being looked up
@@ -266,8 +215,6 @@ type Locating = Asking<(), Plot>;
 /// searches, since a search that picked something out would let go of
 /// everything gathered before it. The camera is left where it is for the same
 /// reason, and the map has a control of its own for going there.
-/// - On [`Searched::EndSystem`] the same, answered into a list of its own,
-/// which the route's field is filled in from.
 /// - On [`Searched::Route`] both ends are resolved, and which of them could
 /// not be is what the form is told.
 ///
@@ -281,11 +228,9 @@ type Locating = Asking<(), Plot>;
 fn searched(
     mut search_events: MessageReader<Searched>,
     mut searching: ResMut<Searching>,
-    mut searching_end: ResMut<SearchingEnd>,
     mut locating: ResMut<Locating>,
     mut note: ResMut<SearchNote>,
     mut results: ResMut<SearchResults>,
-    mut ends: ResMut<EndResults>,
     mut plot: ResMut<Plot>,
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
@@ -309,19 +254,6 @@ fn searched(
                 let asked = name.clone();
                 searching.ask(
                     name.clone(),
-                    now,
-                    pool.spawn(async move {
-                        DbSystem::search_by_name(&db, &asked, near, RESULTS)
-                            .await
-                            .unwrap_or_default()
-                    }),
-                );
-            }
-            Searched::EndSystem { name } => {
-                let db = db.0.clone();
-                let asked = name.clone();
-                searching_end.ask(
-                    (),
                     now,
                     pool.spawn(async move {
                         DbSystem::search_by_name(&db, &asked, near, RESULTS)
@@ -354,10 +286,6 @@ fn searched(
 
     if let Some((name, found)) = searching.answered(now) {
         answered(&name, found, &mut note, &mut results);
-    }
-
-    if let Some((_, found)) = searching_end.answered(now) {
-        ends.0 = found;
     }
 
     if let Some((_, answer)) = locating.answered(now) {
