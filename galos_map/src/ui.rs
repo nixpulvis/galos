@@ -1723,6 +1723,11 @@ fn route_section(
 /// The mark at the end takes it away for good. Over two or more, [`whole_set`]
 /// stands above them and says both of those things about all of them at once.
 ///
+/// Drawn in sections, one to a [`Section`], each with its own count standing
+/// over it. A route is a line across the map and a faction is a way of reading
+/// the sky, and a column that ran the two together said "3 filters" over a
+/// heap of both and gave the user nowhere to turn all of one kind off.
+///
 /// Laid out and painted rather than assembled from widgets, as the selection
 /// row is and for the same reason. A checkbox and a button under one row are
 /// three things bidding for the pointer, and it flickers between being a
@@ -1740,18 +1745,140 @@ fn applied(
         return;
     }
 
-    // Settled after the loop, since the rows are drawn from the same filters
-    // they change.
+    // Settled after the sections are drawn, since the rows are drawn from the
+    // same filters they change.
     let mut toggling = None;
     let mut removing = None;
     let mut opening = None;
+    let mut whole = None;
+
+    for section in Section::ALL {
+        let rows = section.rows(filters);
+        if rows.is_empty() {
+            continue;
+        }
+
+        // Above the rows it stands for, where a heading stands, and over two
+        // or more of them: one row already says everything a count of one
+        // could, and the control over it would do what that row's own does.
+        if rows.len() > 1
+            && let Some(asked) = whole_set(
+                ui,
+                &section.said(rows.len()),
+                section.on(filters),
+                place,
+            )
+        {
+            whole = Some((asked, rows.clone()));
+        }
+
+        section_rows(
+            ui,
+            filters,
+            &rows,
+            place,
+            &mut toggling,
+            &mut removing,
+            &mut opening,
+        );
+    }
+
+    if let Some(index) = toggling {
+        filters.toggle(index);
+    }
+    if let Some(index) = removing {
+        filters.remove(index);
+    }
+    if let Some(filter) = opening {
+        panels.open_filter(filter);
+    }
+    match whole {
+        Some((Whole::Toggle, rows)) => filters.toggle_all(&rows),
+        Some((Whole::LetGo, rows)) => filters.clear(&rows),
+        None => {}
+    }
+}
+
+/// Which group of the bar's filter rows a filter stands in
+///
+/// Routes apart from the rest. A route is a line drawn across the map between
+/// two systems the user named, and a faction or a hand-picked set is a way of
+/// reading the sky it is drawn over. They are worth different questions: how
+/// many routes am I comparing, and how much of the sky am I picking out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    /// Factions and hand-picked sets, which pick the sky out
+    Filters,
+    /// Routes, which are drawn over it
+    Routes,
+}
+
+impl Section {
+    /// Every section, in the order the bar draws them
+    ///
+    /// The sky before what is drawn over it, which is the order the map is
+    /// built up in and the order the two read in.
+    const ALL: [Section; 2] = [Section::Filters, Section::Routes];
+
+    /// Whether this section holds `filter`
+    fn holds(&self, filter: &Filter) -> bool {
+        filter.is_route() == (*self == Section::Routes)
+    }
+
+    /// Which places in `filters` this section's rows stand at
+    ///
+    /// Places rather than the filters themselves, since what the row over them
+    /// asks for is a change to those filters and an index is what says which.
+    fn rows(&self, filters: &Filters) -> Vec<usize> {
+        filters
+            .iter()
+            .enumerate()
+            .filter(|(_, active)| self.holds(&active.filter))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Whether any filter in this section is turned on
+    fn on(&self, filters: &Filters) -> bool {
+        self.rows(filters)
+            .iter()
+            .filter_map(|index| filters.get(*index))
+            .any(|active| active.enabled)
+    }
+
+    /// What a row standing over `held` of them says
+    fn said(&self, held: usize) -> String {
+        match self {
+            Section::Filters => format!("{held} filters"),
+            Section::Routes => {
+                if held == 1 {
+                    "1 route".to_owned()
+                } else {
+                    format!("{held} routes")
+                }
+            }
+        }
+    }
+}
+
+/// Draw a row for each filter at `rows`, and say what a click asked of one
+///
+/// Split out from [`applied`] because the sections draw the same row and only
+/// the count above them differs.
+#[allow(clippy::too_many_arguments)]
+fn section_rows(
+    ui: &mut Ui,
+    filters: &Filters,
+    rows: &[usize],
+    place: &mut usize,
+    toggling: &mut Option<usize>,
+    removing: &mut Option<usize>,
+    opening: &mut Option<Filter>,
+) {
     let gap = ui.spacing().item_spacing.x;
 
-    // Above the rows it stands for, where a heading stands.
-    let all =
-        (filters.len() > 1).then(|| whole_set(ui, filters, place)).flatten();
-
-    for (index, active) in filters.iter().enumerate() {
+    for index in rows.iter().copied() {
+        let Some(active) = filters.get(index) else { continue };
         // What a route says at its end, where a selection row says how far
         // off its system is. Nothing on the others: a faction's name says all
         // there is to say, and a set says how many it holds in its own name.
@@ -1854,28 +1981,13 @@ fn applied(
         let Marks { info, close } = place_marks(ui, rect, marks, of);
 
         if close.clicked() {
-            removing = Some(index);
+            *removing = Some(index);
         } else if info.is_some_and(|info| info.clicked()) {
-            opening = Some(active.filter.clone());
+            *opening = Some(active.filter.clone());
         } else if row.clicked() {
-            toggling = Some(index);
+            *toggling = Some(index);
         }
         row.on_hover_cursor(egui::CursorIcon::PointingHand);
-    }
-
-    if let Some(index) = toggling {
-        filters.toggle(index);
-    }
-    if let Some(index) = removing {
-        filters.remove(index);
-    }
-    if let Some(filter) = opening {
-        panels.open_filter(filter);
-    }
-    match all {
-        Some(Whole::Toggle) => filters.toggle_all(),
-        Some(Whole::LetGo) => filters.clear(),
-        None => {}
     }
 }
 
@@ -1944,25 +2056,29 @@ enum Whole {
 /// to read: the dot and the mark say for all of them what each row's own say
 /// for one, and they stand in the same two places.
 ///
-/// The dot is filled while any filter is on, since that is what the row
-/// undoes. The same click that put the rest of the sky away brings it back,
-/// so the state it shows is the state its own gesture is about.
+/// The dot is filled while `on`, which says whether any filter under it is
+/// being asked, since that is what the row undoes. The same click that put the
+/// rest of the sky away brings it back, so the state it shows is the state its
+/// own gesture is about.
+///
+/// `said` is what it is standing over, which the section works out: the bar
+/// draws its filters in groups and each has one of these of its own, so this
+/// is handed what to say rather than counting a whole set it is not about.
 fn whole_set(
     ui: &mut Ui,
-    filters: &Filters,
+    said: &str,
+    on: bool,
     place: &mut usize,
 ) -> Option<Whole> {
     let gap = ui.spacing().item_spacing.x;
     let marks = lay_out_close(ui);
-    let held = filters.len();
-    let on = filters.any_enabled();
 
     let room = ui.available_width()
         - ROW_PADDING * 2.
         - DOT
         - gap
         - marks_width(&marks, gap);
-    let text = egui::RichText::new(format!("{held} filters"));
+    let text = egui::RichText::new(said);
     let name =
         egui::WidgetText::from(if on { text.strong() } else { text.weak() })
             .into_galley(
@@ -3507,6 +3623,43 @@ mod tests {
         }
     }
 
+    /// Drawn filter rows for a faction and `routes` routes
+    fn draw_sections<'a>(routes: usize) -> impl FnMut(&mut Ui) + 'a {
+        move |ui: &mut Ui| {
+            let mut filters = Filters::default();
+            filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+            for held in 0..routes {
+                filters
+                    .add(a_route(&(0..=held as i64 + 1).collect::<Vec<_>>()));
+            }
+            let mut panels = Panels::default();
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        }
+    }
+
+    /// A section growing a count of its own does not hand a row its place
+    ///
+    /// The second route stands a "2 routes" row over them, which lands in the
+    /// rectangle the first route's row was drawn in and moves that row down.
+    /// The places are counted across the whole column, so the rectangle keeps
+    /// its id and what stands there changes underneath it.
+    #[test]
+    fn a_section_gaining_its_count_does_not_change_the_row_ids() {
+        let said =
+            crate::tests::between_passes(draw_sections(1), draw_sections(2));
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// And losing it does not either
+    #[test]
+    fn a_section_losing_its_count_does_not_change_the_row_ids() {
+        let said =
+            crate::tests::between_passes(draw_sections(2), draw_sections(1));
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
     /// Dropping a filter is not read as a widget changing identity either
     ///
     /// The other half of what the bar does when a row goes: the rows below
@@ -3556,6 +3709,122 @@ mod tests {
             "{alone:?}"
         );
         assert!(both.contains(&"2 filters".to_owned()), "{both:?}");
+    }
+
+    /// A route between the systems at `addresses`
+    fn a_route(addresses: &[i64]) -> Filter {
+        Filter::Route {
+            label: format!("A -> B{}", addresses.len()),
+            systems: addresses.to_vec(),
+            range: "10".to_owned(),
+        }
+    }
+
+    /// The routes are counted apart from the rest of the filters
+    ///
+    /// A route is a line drawn across the map and a faction is a way of
+    /// reading the sky it is drawn over, so a single count over both said
+    /// "3 filters" about a heap of two different things.
+    #[test]
+    fn the_routes_are_counted_apart_from_the_filters() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+        filters.add(Filter::Faction { id: 2, name: "Federation".into() });
+        filters.add(a_route(&[1, 2]));
+        filters.add(a_route(&[1, 2, 3]));
+        let mut panels = Panels::default();
+
+        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+
+        assert!(said.contains(&"2 filters".to_owned()), "{said:?}");
+        assert!(said.contains(&"2 routes".to_owned()), "{said:?}");
+        assert!(!said.contains(&"4 filters".to_owned()), "{said:?}");
+    }
+
+    /// One route on its own is not counted, as one filter is not
+    ///
+    /// Its own row already says everything a count of one could, and the
+    /// control over it would do what that row's own does.
+    #[test]
+    fn a_single_route_is_left_to_its_own_row() {
+        let mut filters = Filters::default();
+        filters.add(a_route(&[1, 2]));
+        let mut panels = Panels::default();
+
+        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+
+        assert!(!said.iter().any(|line| line.contains("route")), "{said:?}");
+    }
+
+    /// A section with nothing in it says nothing
+    ///
+    /// Routes alone are routes alone, with no empty count for the filters
+    /// standing over them.
+    #[test]
+    fn a_section_with_nothing_in_it_is_not_drawn() {
+        let mut filters = Filters::default();
+        filters.add(a_route(&[1, 2]));
+        filters.add(a_route(&[1, 2, 3]));
+        let mut panels = Panels::default();
+
+        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+
+        assert!(said.contains(&"2 routes".to_owned()), "{said:?}");
+        assert!(!said.iter().any(|line| line.contains("filters")), "{said:?}");
+    }
+
+    /// The routes stand under the rest, whatever order they were asked in
+    ///
+    /// The sky before what is drawn over it. A route plotted between two
+    /// factions being asked for would otherwise sit up among them.
+    #[test]
+    fn the_routes_stand_under_the_rest() {
+        let mut filters = Filters::default();
+        filters.add(a_route(&[1, 2]));
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+        let mut panels = Panels::default();
+
+        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+
+        let faction = said.iter().position(|line| line == "Empire");
+        let route = said.iter().position(|line| line.contains(ARROW));
+        assert!(faction < route, "{said:?}");
+    }
+
+    /// The two counts each answer for their own section
+    ///
+    /// Turning the routes off is no reason to turn the factions off with
+    /// them, which is the whole point of the two rows being two rows.
+    #[test]
+    fn a_section_count_turns_off_its_own_section() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+        filters.add(Filter::Faction { id: 2, name: "Federation".into() });
+        filters.add(a_route(&[1, 2]));
+        filters.add(a_route(&[1, 2, 3]));
+
+        filters.toggle_all(&Section::Routes.rows(&filters));
+
+        assert!(Section::Filters.on(&filters), "the filters went off too");
+        assert!(!Section::Routes.on(&filters), "the routes are still asked");
+    }
+
+    /// And takes away its own section
+    #[test]
+    fn a_section_count_takes_away_its_own_section() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+        filters.add(a_route(&[1, 2]));
+        filters.add(a_route(&[1, 2, 3]));
+
+        filters.clear(&Section::Routes.rows(&filters));
+
+        assert_eq!(filters.len(), 1);
+        assert!(Section::Routes.rows(&filters).is_empty());
+        assert_eq!(
+            filters.get(0).map(|held| held.filter.name()),
+            Some("Empire")
+        );
     }
 
     /// A route's row says how many jumps it is, and the rest say nothing

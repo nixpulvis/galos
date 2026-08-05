@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn every_route_turned_off_leaves_none_active() {
         let mut filters = holding(&[asking(&[1, 2]), asking(&[8, 9])]);
-        filters.toggle_all();
+        filters.toggle_all(&[0, 1]);
 
         assert_eq!(active(&filters, &None), None);
     }

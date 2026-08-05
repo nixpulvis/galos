@@ -584,7 +584,7 @@ fn panels(
     // Only a route: the other filters have no line to put forward, and a
     // press on one of their panels says nothing about which route is which.
     if let Some(filter) = chosen
-        && filter.range().is_some()
+        && filter.is_route()
     {
         selected.0 = Some(filter);
     }

@@ -105,6 +105,16 @@ impl Filter {
         }
     }
 
+    /// Whether this is a route
+    ///
+    /// What the bar groups its rows by and what the map draws a line for. Its
+    /// own question rather than a reading of [`Self::ordered`] or of
+    /// [`Self::range`], which happen to answer the same today and are about
+    /// what a route is like rather than about what it is.
+    pub fn is_route(&self) -> bool {
+        matches!(self, Filter::Route { .. })
+    }
+
     /// Whether what it admits has an order of its own
     ///
     /// A route is travelled from one end to the other, so its systems are a
@@ -394,23 +404,44 @@ impl Filters {
         self.0.iter().any(|active| active.enabled)
     }
 
-    /// Turn every filter off, or every one back on
+    /// The filter standing in the `index`th place
+    pub fn get(&self, index: usize) -> Option<&Active> {
+        self.0.get(index)
+    }
+
+    /// Turn every filter at `rows` off, or every one back on
     ///
     /// Off while any of them is on, since that is the question the control
     /// answers: show me the sky as it is, and then put back what I was
     /// looking at. All of them come back rather than the ones that were on
     /// before, so the two clicks are one gesture and its undo rather than a
     /// state to be remembered.
-    pub fn toggle_all(&mut self) {
-        let on = self.any_enabled();
-        for active in &mut self.0 {
-            active.enabled = !on;
+    ///
+    /// Told which rows rather than taking the lot. The bar draws its filters
+    /// in sections and each has a row of its own standing over it, so what
+    /// this answers is one section's worth: turning the routes off is no
+    /// reason to turn the factions off with them.
+    pub fn toggle_all(&mut self, rows: &[usize]) {
+        let on = rows.iter().any(|index| {
+            self.0.get(*index).is_some_and(|active| active.enabled)
+        });
+        for index in rows {
+            if let Some(active) = self.0.get_mut(*index) {
+                active.enabled = !on;
+            }
         }
     }
 
-    /// Stop asking every filter
-    pub fn clear(&mut self) {
-        self.0.clear();
+    /// Stop asking every filter at `rows`
+    ///
+    /// Taken from the back, so that removing one does not move the next one
+    /// still to be removed out from under its own index.
+    pub fn clear(&mut self, rows: &[usize]) {
+        let mut rows = rows.to_vec();
+        rows.sort_unstable();
+        for index in rows.into_iter().rev() {
+            self.remove(index);
+        }
     }
 
     /// What the filters admit, as a query can ask it
@@ -626,7 +657,7 @@ mod tests {
         filters.add(faction(7));
         filters.add(faction(9));
 
-        filters.toggle_all();
+        filters.toggle_all(&[0, 1]);
 
         assert!(!filters.any_enabled());
         assert_eq!(filters.len(), 2);
@@ -644,8 +675,8 @@ mod tests {
         filters.add(faction(9));
         filters.toggle(1);
 
-        filters.toggle_all();
-        filters.toggle_all();
+        filters.toggle_all(&[0, 1]);
+        filters.toggle_all(&[0, 1]);
 
         assert!(filters.admit(&member(1, &[7])));
         assert!(filters.admit(&member(2, &[9])));
@@ -663,7 +694,7 @@ mod tests {
         filters.add(faction(9));
         filters.toggle(1);
 
-        filters.toggle_all();
+        filters.toggle_all(&[0, 1]);
 
         assert!(!filters.any_enabled());
     }
@@ -675,7 +706,7 @@ mod tests {
         filters.add(faction(7));
         filters.add(faction(9));
 
-        filters.clear();
+        filters.clear(&[0, 1]);
 
         assert_eq!(filters.len(), 0);
         assert!(filters.admit(&member(1, &[3])));
