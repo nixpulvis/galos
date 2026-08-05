@@ -1239,6 +1239,9 @@ fn selected(
     // Settled after the rows, since each is drawn from the same selection it
     // asks to change.
     let mut chose = None;
+    // Where the column had reached, which is where what these rows spend of
+    // it is counted from. See the end of this function.
+    let from = *place;
 
     let routing = selection.len() > 1 && gathered(ui, selection, filters);
 
@@ -1352,6 +1355,23 @@ fn selected(
     } else {
         rows(ui);
     }
+
+    // What the column spent on them, which is what the rows below it are
+    // numbered from, and which is not how many rows were drawn: past
+    // [`SELECTED`] they are drawn inside a scroll area of a fixed height, so
+    // the seventh system picked out moves nothing below it.
+    //
+    // The count has to move with the rows below rather than with the rows
+    // here, that being the whole of what it is for. Gathering another system
+    // while the list scrolls would otherwise put a fresh id at a filter row
+    // that kept its rectangle, which is what egui reads as one widget taking
+    // another's state: it says so out loud and paints the row red.
+    //
+    // The rows drawn inside the scroll area are numbered on past this and
+    // come to no harm by it. They are keyed within the scroll area's own
+    // `Ui`, so what they are numbered has nothing to say about anything
+    // drawn outside it.
+    *place = from + selection.len().min(SELECTED);
 
     if let Some((index, chose)) = chose {
         match chose {
@@ -3418,6 +3438,42 @@ mod tests {
         );
 
         assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// Gathering past what the bar holds hands no place to the filters
+    ///
+    /// The selection's rows scroll once there are more than [`SELECTED`] of
+    /// them, so from there the column stops growing however many are picked
+    /// out. The filter rows below keep the rectangles they had, and a count
+    /// that went on rising would put a fresh id at a rectangle that never
+    /// moved.
+    ///
+    /// Both ways round it, since a system is let go of from a scrolling list
+    /// as easily as it is added to one.
+    #[test]
+    fn gathering_past_the_bar_does_not_change_the_filter_row_ids() {
+        let held = [
+            "SOL",
+            "BARNARD",
+            "WOLF 359",
+            "LALANDE 21185",
+            "LUYTEN 726-8",
+            "ROSS 154",
+            "EPSILON ERIDANI",
+        ];
+        let fewer = &held[..held.len() - 1];
+
+        let gathered = crate::tests::between_passes(
+            draw_bar(&[], fewer, 2),
+            draw_bar(&[], &held, 2),
+        );
+        let let_go = crate::tests::between_passes(
+            draw_bar(&[], &held, 2),
+            draw_bar(&[], fewer, 2),
+        );
+
+        assert!(gathered.is_empty(), "{gathered:?}");
+        assert!(let_go.is_empty(), "{let_go:?}");
     }
 
     /// Letting go of one of several hands no row's place to another kind
