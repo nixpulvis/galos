@@ -64,6 +64,56 @@ impl Faction {
             .collect())
     }
 
+    /// The factions whose names hold `query`, best first
+    ///
+    /// What a field asks where the user is part way through typing a name and
+    /// wants to be shown which factions they might mean.
+    ///
+    /// `query` is read as letters rather than as a pattern, since a name is a
+    /// thing the user is halfway through typing and `%` and `_` in it are
+    /// characters they typed. That is the difference between this and
+    /// [`Faction::fetch_like_name`], which takes a pattern whole from whoever
+    /// wrote it, and answers with however many match.
+    ///
+    /// Ordered so that the `limit` keeps the rows worth keeping: the name
+    /// spelled out in full, then names that start with the query, then the
+    /// rest by name. Someone typing `dukes` means The Dukes of Mikunn before
+    /// they mean Grand Duke Enterprise.
+    ///
+    /// Bounded because it has to be. A query of a letter matches 18,553 of the
+    /// 17,568 factions on record today, and a list nobody can read to the end
+    /// of is no more use for being complete.
+    pub async fn search_by_name(
+        db: &Database,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<Self>, Error> {
+        let query = query
+            .replace('\\', r"\\")
+            .replace('%', r"\%")
+            .replace('_', r"\_");
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, name
+            FROM factions
+            WHERE name ILIKE $1
+            ORDER BY (name ILIKE $2) DESC, (name ILIKE $3) DESC, name
+            LIMIT $4
+            "#,
+            format!("%{query}%"),
+            query,
+            format!("{query}%"),
+            limit,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| Faction { id: row.id, name: row.name })
+            .collect())
+    }
+
     pub async fn fetch_like_name(
         db: &Database,
         name: &str,

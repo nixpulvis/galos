@@ -175,10 +175,12 @@ pub fn fetch(
 
     for event in search_events.read() {
         match event {
-            // A search offers what it found and picks out nothing, so
-            // there is nothing here to fetch yet. Whatever the user picks
-            // out of the offer is asked for by `fetch_selected`.
-            Searched::System { .. } => {}
+            // A search finds and picks out nothing, so there is nothing
+            // here to fetch yet. Whatever the user picks out of what it
+            // found is asked for by `fetch_selected`, and a name chosen into
+            // the route's field is not picked out at all until the route it
+            // is one end of is plotted.
+            Searched::System { .. } | Searched::EndSystem { .. } => {}
             Searched::Route { start, end, range } => {
                 fetch_route(
                     start.into(),

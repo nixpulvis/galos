@@ -31,6 +31,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<DimTo>();
     app.init_resource::<Asked>();
     app.init_resource::<Resolving>();
+    app.init_resource::<FactionResults>();
     app.add_message::<Wanted>();
     // Answering what the user asked for, so with the rest of that.
     app.add_systems(Update, resolve.in_set(MapSet::Search));
@@ -146,114 +147,127 @@ impl Filter {
     }
 }
 
-/// A filter the user has asked for, before it is known to exist
+/// A name the user has typed, to be looked up
 ///
-/// What is typed is a name and what a filter tests against is an id, so
-/// something has to look one up for the other. That is a database question,
-/// asked here rather than in the bar, which draws during egui's own pass and
-/// has no business waiting on anything.
+/// What is typed is part of a name and what a filter tests against is an id,
+/// so something has to find the one from the other. That is a database
+/// question, asked here rather than in the bar, which draws during egui's own
+/// pass and has no business waiting on anything.
 ///
 /// Its own message rather than a [`crate::search::Searched`]: asking for a
-/// filter is not searching. The map goes nowhere, fetches nothing in
+/// filter is not searching the map. It goes nowhere, fetches nothing in
 /// particular, and picks nothing out.
 #[derive(Message, Debug, Clone)]
 pub enum Wanted {
-    /// Systems a faction of this name is present in
+    /// Factions whose names hold this
     Faction { name: String },
 }
 
-impl Wanted {
-    /// The filter this asks for, or why there is none
-    async fn resolve(&self, db: &Database) -> Result<Filter, String> {
-        match self {
-            Wanted::Faction { name } => {
-                match DbFaction::fetch_by_name(db, name).await {
-                    Ok(faction) => Ok(Filter::Faction {
-                        id: faction.id,
-                        name: faction.name,
-                    }),
-                    Err(_) => Err(format!("No faction named {name}")),
-                }
-            }
-        }
-    }
-}
-
-/// What became of the last filter asked for
+/// What became of the last name the filter's field was asked about
 ///
-/// Three states rather than an error or nothing, because the field that asked
-/// has to know the difference between not yet answered and answered well. It
-/// cannot know either at the moment it asks: a name is looked up against the
-/// database a frame later, so the field is still holding what was typed when
-/// the answer arrives.
+/// What was found is a list rather than a state, so this says only what a
+/// list cannot: that a name matched nothing at all. Nothing on screen is what
+/// the bar looks like before anything has been asked, and the two have to be
+/// told apart.
 ///
 /// Its own resource rather than [`crate::search::SearchNote`], which answers a
 /// name typed into the search input. Two unrelated answers sharing one line
-/// means each wipes the other: adding a faction would clear a note about a
-/// system that was never found, and the note about a faction would be read
+/// means each wipes the other: asking about a faction would clear a note about
+/// a system that was never found, and the note about a faction would be read
 /// out under the box that has nothing to do with it.
 #[derive(Resource, Default, Debug, PartialEq, Eq)]
 pub enum Asked {
-    /// Nothing has been asked for, or the answer has been acted on
+    /// Nothing has been asked about, or what was found is standing in a list
     #[default]
     Nothing,
-    /// What was asked for is standing in a row of its own
-    Added,
-    /// Why there is nothing to stand there
+    /// Why there is no list
     Trouble(String),
 }
 
-impl Asked {
-    /// Whether the field that asked has done its job
-    ///
-    /// A filter that was added is a row on screen now, so what was typed to
-    /// ask for it has been answered and the field is free for the next one.
-    ///
-    /// A name that resolved to nothing is left where it was typed. It is
-    /// most likely nearly right, and clearing it makes the user type the
-    /// whole of it again to find out which part was wrong.
-    pub fn answered(&self) -> bool {
-        matches!(self, Asked::Added)
+/// How many factions a search answers with
+///
+/// A screenful of the bar, as a search for a system is answered with.
+const FACTIONS: i64 = 25;
+
+/// The search under way, if there is one
+///
+/// One at a time: the field asks about one name and holds what was typed
+/// until it is answered, so a second ask is the user having changed their
+/// mind rather than a second question.
+#[derive(Resource, Default)]
+struct Resolving(Option<(String, Task<Vec<DbFaction>>)>);
+
+/// The factions the last search found, for the bar to draw
+///
+/// Carrying the id as well as the name, which is what a filter tests against.
+/// A faction picked out of this list is a filter already, with nothing left to
+/// look up: the search asked the question the lookup would have asked.
+#[derive(Resource, Default)]
+pub struct FactionResults(Vec<DbFaction>);
+
+impl FactionResults {
+    /// What was found, best first
+    pub fn iter(&self) -> impl Iterator<Item = &DbFaction> {
+        self.0.iter()
+    }
+
+    /// Whether anything was found
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Stop offering whatever was found
+    pub fn clear(&mut self) {
+        self.0.clear();
     }
 }
 
-/// The name being looked up, if one is
+/// Look up the factions a typed name might mean
 ///
-/// One at a time: the field asks for one name and holds what was typed until
-/// it is answered, so a second ask is the user having changed their mind
-/// rather than a second question.
-#[derive(Resource, Default)]
-struct Resolving(Option<Task<Result<Filter, String>>>);
-
-/// Turn what the user asked for into a filter, or say why not
+/// Asked of the database off the main thread. A name is matched however it
+/// was typed, which the index on the factions cannot answer, so this is a walk
+/// of every faction on record. Done in the frame, that is the map stopping for
+/// it.
 ///
-/// Asked of the database off the main thread. A faction is looked up by name
-/// and the name is matched however it was typed, which the index on the
-/// factions cannot answer, so this is a walk of every faction on record. Done
-/// in the frame, that is the map stopping for it.
+/// The answer is a list rather than a filter. A name part way through being
+/// typed means whichever factions hold it, and which of those was meant is a
+/// question only the user can answer, so the list is offered and a click
+/// chooses, exactly as a search for a system is answered.
 fn resolve(
     mut wanted: MessageReader<Wanted>,
     mut resolving: ResMut<Resolving>,
-    mut filters: ResMut<Filters>,
+    mut results: ResMut<FactionResults>,
     mut answer: ResMut<Asked>,
     db: Res<Db>,
 ) {
     let pool = AsyncComputeTaskPool::get();
 
     for asked in wanted.read() {
+        let Wanted::Faction { name } = asked;
         let db = db.0.clone();
-        let asked = asked.clone();
-        resolving.0 = Some(pool.spawn(async move { asked.resolve(&db).await }));
+        let asked = name.clone();
+        let about = name.clone();
+        resolving.0 = Some((
+            about,
+            pool.spawn(async move {
+                DbFaction::search_by_name(&db, &asked, FACTIONS)
+                    .await
+                    .unwrap_or_default()
+            }),
+        ));
     }
 
-    if let Some(mut task) = resolving.0.take() {
+    if let Some((name, mut task)) = resolving.0.take() {
         match block_on(poll_once(&mut task)) {
-            Some(Ok(filter)) => {
-                filters.add(filter);
-                *answer = Asked::Added;
+            Some(found) => {
+                results.0 = found;
+                *answer = if results.is_empty() {
+                    Asked::Trouble(format!("No faction named {name}"))
+                } else {
+                    Asked::Nothing
+                };
             }
-            Some(Err(why)) => *answer = Asked::Trouble(why),
-            None => resolving.0 = Some(task),
+            None => resolving.0 = Some((name, task)),
         }
     }
 }
@@ -521,28 +535,12 @@ mod tests {
         system
     }
 
-    /// A filter that was added has answered the field that asked for it
-    #[test]
-    fn an_added_filter_frees_the_field() {
-        assert!(Asked::Added.answered());
-    }
-
-    /// A name that resolved to nothing has not
+    /// A question nobody has asked is answered by nothing at all
     ///
-    /// The field goes on holding it, since it is most likely nearly right and
-    /// clearing it makes the user type the whole of it again to find out
-    /// which part was wrong.
+    /// Which is what the bar looks like before a name has been typed, and
+    /// what it has to look like again once one has been.
     #[test]
-    fn a_name_that_failed_leaves_the_field_alone() {
-        let trouble = Asked::Trouble("No faction named Zargon".to_owned());
-
-        assert!(!trouble.answered());
-    }
-
-    /// Nor has a question nobody has asked
-    #[test]
-    fn nothing_asked_frees_nothing() {
-        assert!(!Asked::default().answered());
+    fn nothing_asked_says_nothing() {
         assert_eq!(Asked::default(), Asked::Nothing);
     }
 

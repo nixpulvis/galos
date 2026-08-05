@@ -14,6 +14,8 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<SearchResults>();
     app.init_resource::<Plot>();
     app.init_resource::<Searching>();
+    app.init_resource::<SearchingEnd>();
+    app.init_resource::<EndResults>();
     app.init_resource::<Locating>();
     app.add_systems(Update, searched.in_set(MapSet::Search));
 }
@@ -25,7 +27,7 @@ pub fn plugin(app: &mut App) {
 /// fragment. `%col%` matches better than a hundred thousand of them.
 const RESULTS: i64 = 25;
 
-/// What the last search turned up, for the bar to offer
+/// The systems the last search found, for the bar to draw
 ///
 /// The database's own rows rather than the map's [`System`]s. Roughly three
 /// quarters of the systems on record have no position, and those are worth
@@ -37,17 +39,17 @@ const RESULTS: i64 = 25;
 pub struct SearchResults(Vec<DbSystem>);
 
 impl SearchResults {
-    /// The systems on offer, best first
+    /// What was found, best first
     pub fn iter(&self) -> impl Iterator<Item = &DbSystem> {
         self.0.iter()
     }
 
-    /// Whether there is anything to offer
+    /// Whether anything was found
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// Offer `found` instead of whatever was on offer
+    /// Hold `found` in place of what the last search found
     pub fn set(&mut self, found: Vec<DbSystem>) {
         self.0 = found;
     }
@@ -97,8 +99,23 @@ pub enum Plot {
 /// by [`crate::systems::filter::Wanted`] instead.
 #[derive(Message, Debug)]
 pub enum Searched {
-    System { name: String },
-    Route { start: String, end: String, range: String },
+    System {
+        name: String,
+    },
+    /// Systems the route's end might be, for that field to be filled from
+    ///
+    /// The same question as [`Searched::System`] and a different answer, kept
+    /// apart because the two fields are asked about at once and each holds
+    /// what it was told. A name in the search box is what the map is about; a
+    /// name in the route's field is one end of a route not yet plotted.
+    EndSystem {
+        name: String,
+    },
+    Route {
+        start: String,
+        end: String,
+        range: String,
+    },
 }
 
 /// The row for a named system the map can go to, or why it cannot
@@ -117,23 +134,6 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
     }
 }
 
-/// Answer what the user asked for
-///
-/// A system for responding to [`Searched`] messages.
-/// - On [`Searched::System`] the systems that might be meant are looked up and
-/// left as a list for the user to choose from. Nothing is picked out by the
-/// search itself, however exactly the name was typed: a search says which
-/// systems are on record under that name and a click says which of them is
-/// meant. Keeping the two apart is what lets a set be gathered across
-/// searches, since a search that picked something out would let go of
-/// everything gathered before it. The camera is left where it is for the same
-/// reason, and the map has a control of its own for going there.
-/// - On [`Searched::Route`] both ends are resolved, and which of them could
-/// not be is what the form is told.
-///
-/// The search is measured from where the camera is looking, so that a common
-/// fragment answers with the systems in front of the user rather than with
-/// whichever ones the database reached first.
 /// The search under way, and the name it is about
 ///
 /// One at a time. A name typed over the last one replaces the question rather
@@ -148,6 +148,38 @@ async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
 #[derive(Resource, Default)]
 struct Searching(Option<(String, Task<Vec<DbSystem>>)>);
 
+/// The search the route's end field has out
+///
+/// Its own, so that asking about one field does not take the answer out from
+/// under the other. Both are the same question put to the database and the two
+/// answers belong to different fields.
+///
+/// Without the name that started it, unlike [`Searching`]. Nothing is said
+/// where nothing was found: the field is being filled in rather than answered,
+/// and an empty list under it says as much.
+#[derive(Resource, Default)]
+struct SearchingEnd(Option<Task<Vec<DbSystem>>>);
+
+/// The systems the route's end field last found, for the bar to draw
+///
+/// Answers that field alone, and is put away as soon as one of them is chosen
+/// into it: what it is for is filling in a name, and once the name is in there
+/// the list has said everything it had to say.
+#[derive(Resource, Default)]
+pub struct EndResults(Vec<DbSystem>);
+
+impl EndResults {
+    /// What was found, best first
+    pub fn iter(&self) -> impl Iterator<Item = &DbSystem> {
+        self.0.iter()
+    }
+
+    /// Stop offering whatever was found
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// The pair of names a route is being worked out between, while they are
 /// being looked up
 ///
@@ -159,15 +191,35 @@ struct Locating(Option<Task<Plot>>);
 
 /// Answer what the user asked for
 ///
-/// Asked of the database off the main thread and read back here when it
-/// lands, so that a search the database takes its time over is a list that
-/// arrives late rather than a map that stops.
+/// A system for responding to [`Searched`] messages.
+/// - On [`Searched::System`] the systems that might be meant are looked up and
+/// left as a list for the user to choose from. Nothing is picked out by the
+/// search itself, however exactly the name was typed: a search says which
+/// systems are on record under that name and a click says which of them is
+/// meant. Keeping the two apart is what lets a set be gathered across
+/// searches, since a search that picked something out would let go of
+/// everything gathered before it. The camera is left where it is for the same
+/// reason, and the map has a control of its own for going there.
+/// - On [`Searched::EndSystem`] the same, answered into a list of its own,
+/// which the route's field is filled in from.
+/// - On [`Searched::Route`] both ends are resolved, and which of them could
+/// not be is what the form is told.
+///
+/// Every one of them is asked of the database off the main thread and read
+/// back here when it lands, so that a search the database takes its time over
+/// is a list that arrives late rather than a map that stops.
+///
+/// The search is measured from where the camera is looking, so that a common
+/// fragment answers with the systems in front of the user rather than with
+/// whichever ones the database reached first.
 fn searched(
     mut search_events: MessageReader<Searched>,
     mut searching: ResMut<Searching>,
+    mut searching_end: ResMut<SearchingEnd>,
     mut locating: ResMut<Locating>,
     mut note: ResMut<SearchNote>,
     mut results: ResMut<SearchResults>,
+    mut ends: ResMut<EndResults>,
     mut plot: ResMut<Plot>,
     camera: Query<&OrbitCamera>,
     db: Res<Db>,
@@ -197,6 +249,15 @@ fn searched(
                     }),
                 ));
             }
+            Searched::EndSystem { name } => {
+                let db = db.0.clone();
+                let asked = name.clone();
+                searching_end.0 = Some(pool.spawn(async move {
+                    DbSystem::search_by_name(&db, &asked, near, RESULTS)
+                        .await
+                        .unwrap_or_default()
+                }));
+            }
             // A route needs both ends. Say which one is the problem rather
             // than drawing nothing and leaving the user to guess.
             Searched::Route { start, end, .. } => {
@@ -220,6 +281,13 @@ fn searched(
         }
     }
 
+    if let Some(mut task) = searching_end.0.take() {
+        match block_on(poll_once(&mut task)) {
+            Some(found) => ends.0 = found,
+            None => searching_end.0 = Some(task),
+        }
+    }
+
     if let Some(mut task) = locating.0.take() {
         match block_on(poll_once(&mut task)) {
             Some(answer) => *plot = answer,
@@ -230,7 +298,7 @@ fn searched(
 
 /// Put what came back for `name` on screen
 ///
-/// Whatever was on offer answered the last name asked about, and this is a
+/// Whatever is listed answered the last name asked about, and this is a
 /// new one, so it goes whether or not anything came back to replace it. What
 /// is picked out is left alone: it was picked out by a click rather than by
 /// the search before it, and a search is not a reason to let go of it.
@@ -287,9 +355,9 @@ pub(crate) mod tests {
         assert!(results.is_empty());
     }
 
-    /// What was found is offered, and nothing is said about it
+    /// What was found is listed, and nothing is said about it
     #[test]
-    fn what_was_found_is_offered() {
+    fn what_was_found_is_listed() {
         let mut note = SearchNote(Some("No system named SOL".to_owned()));
         let mut results = SearchResults::default();
 

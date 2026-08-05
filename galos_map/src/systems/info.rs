@@ -586,7 +586,9 @@ fn admitted(
         });
     }
 
-    crate::ui::scrolling(ui, line * LISTED as f32, |ui| {
+    // Named for the filter it lists, since a panel stands per filter and two
+    // of them open at once are two lists, each scrolled to its own place.
+    crate::ui::scrolling(ui, line * LISTED as f32, filter, |ui| {
         for (index, (system, away)) in order.into_iter().enumerate() {
             // Said as well as sorted by. A list in an order nobody can see
             // reads as an order nobody chose.

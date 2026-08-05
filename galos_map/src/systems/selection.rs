@@ -76,8 +76,8 @@ impl Selection {
     /// Pick `system` out, alongside the rest or in place of them
     ///
     /// What a click means, wherever the click landed. A star in the sky and
-    /// the line naming it in the search results are the same system offered
-    /// twice, so they are picked out by the one gesture and through the one
+    /// the line naming it in what a search found are the same system in two
+    /// places, so they are picked out by the one gesture and through the one
     /// call: `gathering` is whether the user held the modifier that means as
     /// well as rather than instead.
     pub fn pick(&mut self, system: System, gathering: bool) {

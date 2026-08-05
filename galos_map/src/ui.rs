@@ -13,10 +13,12 @@
 //! starts from the system named up there.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::search::{Plot, SearchNote, SearchResults, Searched};
+use crate::search::{EndResults, Plot, SearchNote, SearchResults, Searched};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
-use crate::systems::filter::{Asked, DimTo, Filter, Filters, Wanted};
+use crate::systems::filter::{
+    Asked, DimTo, FactionResults, Filter, Filters, Wanted,
+};
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::scale::{ScalePopulation, View};
@@ -28,6 +30,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
@@ -294,6 +297,8 @@ pub struct FilterBar<'w, 's> {
     wanted: MessageWriter<'w, Wanted>,
     /// What became of the last one asked for
     asked: ResMut<'w, Asked>,
+    /// The factions the last name typed might have meant
+    found: ResMut<'w, FactionResults>,
     /// How faintly what they exclude is drawn
     dim: ResMut<'w, DimTo>,
 }
@@ -304,6 +309,7 @@ pub fn chrome(
     mut searched: MessageWriter<Searched>,
     mut search_note: ResMut<SearchNote>,
     mut search_results: ResMut<SearchResults>,
+    mut end_results: ResMut<EndResults>,
     mut over_ui: ResMut<PointerOverUi>,
     mut settings: ResMut<SettingsOpen>,
     mut search: Local<BarFields>,
@@ -440,6 +446,7 @@ pub fn chrome(
         &mut searched,
         &mut search_note,
         &mut search_results,
+        &mut end_results,
         &mut selection,
         &mut camera,
         orbit.single().map(|camera| camera.center).ok(),
@@ -563,6 +570,7 @@ fn main_bar(
     searched: &mut MessageWriter<Searched>,
     note: &mut SearchNote,
     results: &mut SearchResults,
+    ends: &mut EndResults,
     selection: &mut Selection,
     camera: &mut MessageWriter<MoveCamera>,
     center: Option<DVec3>,
@@ -632,9 +640,10 @@ fn main_bar(
                     // in the status below.
                     let mut travelled = None;
                     let mut described = None;
-                    offered(
+                    found(
                         ui,
                         results,
+                        search.expanded,
                         center,
                         selection,
                         &mut travelled,
@@ -687,7 +696,9 @@ fn main_bar(
 
                     if search.expanded {
                         taken |= filter_section(ui, filter);
-                        taken |= route_section(ui, search, searched, plot);
+                        taken |= route_section(
+                            ui, search, searched, ends, center, panels, plot,
+                        );
                     }
 
                     taken
@@ -813,7 +824,7 @@ fn cleared(
     results.clear();
 }
 
-/// How many systems the bar offers at once before the list scrolls
+/// How many of what a search found the bar shows before the list scrolls
 ///
 /// A screenful of the bar rather than of the viewport. The list hangs under
 /// the input with the map behind it, and one long enough to reach the bottom
@@ -883,7 +894,7 @@ fn took(
     }
 }
 
-/// The systems the last search turned up, for the user to choose between
+/// The systems the last search found, for the user to choose between
 ///
 /// Every search is answered here, whether the user typed part of a name or the
 /// whole of one. A name spelled out in full leads the list rather than being
@@ -891,7 +902,7 @@ fn took(
 /// that name and the click says which of them is meant, and a search that
 /// picked something out would let go of whatever had been gathered before it.
 /// This stands where the note would, the two never appearing together, since a
-/// search either found something to offer or found nothing to say.
+/// search either found systems to list or found nothing and says so.
 ///
 /// The list is left standing once something is picked out of it. Choosing is
 /// most of what it is for, and a list that puts itself away as soon as it is
@@ -913,38 +924,87 @@ fn took(
 /// Each line carries the info mark the rows in the bar carry, opening what is
 /// known about that system without picking it out. That is how a list of
 /// candidates is read: several are opened and compared while the selection
-/// stays wherever the user left it, which is the whole point of having been
-/// offered a choice.
+/// stays wherever the user left it, which is the whole point of being handed
+/// several rather than one.
 ///
 /// `travelled` is where a line asked the camera to go and `described` is what
 /// a line asked to be written out, both of which the caller acts on rather
 /// than this: a message writer cannot be had outside a system, and a list that
 /// reports what it was asked for can be drawn in a test.
-fn offered(
+///
+/// `showing` is whether the form is out. The list is put away with it and not
+/// let go of: it answers a name the user is in the middle of asking about, and
+/// a list standing under a shut form is an answer to a question that is no
+/// longer on screen. What was found is kept, so opening the form again is
+/// where they left off rather than a search to do a second time.
+///
+/// Unlike the rows below it, which stand whether or not the form is out. A
+/// selection and a filter outlive the asking and go on saying what the map is
+/// doing; a list of candidates is the asking itself.
+fn found(
     ui: &mut Ui,
     results: &SearchResults,
+    showing: bool,
     center: Option<DVec3>,
     selection: &mut Selection,
     travelled: &mut Option<DVec3>,
     described: &mut Option<crate::systems::System>,
 ) {
-    if results.is_empty() {
+    if !showing || results.is_empty() {
         return;
     }
+
+    let Some((system, chose)) =
+        system_list(ui, results.iter(), center, "result")
+    else {
+        return;
+    };
+    took(chose, system, selection, travelled, described);
+}
+
+/// A list of systems, and what a click asked of one of them
+///
+/// Every list of systems the map draws is this: the ones a search found, and
+/// the ones offered for a field to be filled from. What a click means is the
+/// caller's, since that is the only part that differs between them, and the
+/// lines themselves are [`system_line`] so that a system is read the same way
+/// wherever it is listed.
+///
+/// Scrolls past [`OFFERED`], which is a screenful of the bar rather than of
+/// the viewport: the list hangs over the map and one long enough to reach the
+/// bottom of the viewport answers a question by covering up what it is about.
+///
+/// `center` is where distances are measured from, and nothing where the camera
+/// has yet to say. Where it is measured from is said in the same slot as why a
+/// system cannot be reached at all, so the column reads down either way.
+///
+/// `salt` keys one list's lines apart from another's. Within a list they are
+/// keyed by place rather than by which system a line is about, as the rows in
+/// the bar are keyed and for the reason given there: a fresh search leaves the
+/// lines where they were and makes every one of them about something else.
+pub(crate) fn system_list<'a>(
+    ui: &mut Ui,
+    systems: impl Iterator<Item = &'a DbSystem>,
+    center: Option<DVec3>,
+    salt: &str,
+) -> Option<(&'a DbSystem, Chose)> {
+    // Nothing found is nothing drawn, rather than an empty list taking a
+    // line's worth of room under the field that has yet to be asked.
+    let mut systems = systems.peekable();
+    systems.peek()?;
 
     let height = ui.text_style_height(&egui::TextStyle::Body)
         + LINE_PADDING * 2.
         + ui.spacing().item_spacing.y;
 
-    // Settled after the list is drawn, since picking one out is a change to
-    // what the lines are being drawn from.
+    // Settled after the list is drawn, since what a click asks for is usually
+    // a change to what the lines are being drawn from.
     let mut chose = None;
 
-    scrolling(ui, height * OFFERED as f32, |ui| {
-        for (index, system) in results.iter().enumerate() {
+    scrolling(ui, height * OFFERED as f32, salt, |ui| {
+        for (index, system) in systems.enumerate() {
             let at = crate::systems::system_to_vec(system);
             // Where it is if it can be reached, and why it cannot if not.
-            // The same slot either way, so the column reads down.
             let trailing = match (at, center) {
                 (Some(at), Some(center)) => {
                     Some(format!("{:.1} Ly", center.distance(at)))
@@ -952,16 +1012,12 @@ fn offered(
                 (Some(_), None) => None,
                 (None, _) => Some("no position".to_owned()),
             };
-            // Keyed by place rather than by which system the line is about,
-            // as the selection's rows are keyed and for the reason given
-            // there: a fresh search leaves the lines where they were and
-            // makes every one of them about something else.
             let asked = system_line(
                 ui,
                 &system.name,
                 trailing,
                 at.is_some(),
-                ("result", index),
+                (salt, index),
             );
             if let Some(asked) = asked {
                 chose = Some((system, asked));
@@ -969,8 +1025,7 @@ fn offered(
         }
     });
 
-    let Some((system, chose)) = chose else { return };
-    took(chose, system, selection, travelled, described);
+    chose
 }
 
 /// Say what is picked out, and how far off it is
@@ -1004,7 +1059,7 @@ fn offered(
 /// picked out is the case the rows already read well, and a line saying "1
 /// system" over a row naming it says the same thing twice.
 /// `travelled` is where a row asked the camera to go, which the caller writes
-/// rather than this, as [`offered`] does and for the same reason.
+/// rather than this, as [`found`] does and for the same reason.
 fn selected(
     ui: &mut Ui,
     selection: &mut Selection,
@@ -1133,7 +1188,7 @@ fn selected(
     // rows is a scroll area that never scrolls and takes a little room off
     // the end of every one of them for a bar that is not there.
     if selection.len() > SELECTED {
-        scrolling(ui, height * SELECTED as f32, &mut rows);
+        scrolling(ui, height * SELECTED as f32, "selection", &mut rows);
     } else {
         rows(ui);
     }
@@ -1233,6 +1288,9 @@ fn route_section(
     ui: &mut Ui,
     search: &mut BarFields,
     searched: &mut MessageWriter<Searched>,
+    ends: &mut EndResults,
+    center: Option<DVec3>,
+    panels: &mut Panels,
     plot: &mut Plot,
 ) -> bool {
     heading(ui, "Route", true);
@@ -1240,13 +1298,49 @@ fn route_section(
 
     let end = singleline(ui, &mut search.route_end, "End System", 0.);
     taken |= end.gained_focus();
+    // Return asks which systems the name might mean, as it does in the search
+    // box above. A route runs between two systems and a name part way through
+    // being typed names several, so the field offers them and a click fills
+    // itself in with the one that was meant.
+    if entered(&end, ui)
+        && let Some(name) = typed(&search.route_end).map(str::to_owned)
+    {
+        searched.write(Searched::EndSystem { name });
+    }
+    // The list answers the name in the field, so it is no answer at all once
+    // that name is being typed over.
+    if end.changed() {
+        ends.clear();
+    }
+    if let Some((system, chose)) = system_list(ui, ends.iter(), center, "end") {
+        match chose {
+            // Filled in and nothing more. The route still wants a jump range,
+            // and plotting is the button's to ask for. A double click fills it
+            // too rather than flying anywhere: the first click of the pair has
+            // already put the name in, and a field being filled in is no
+            // reason to move the map.
+            Chose::Select { .. } | Chose::Travel => {
+                search.route_end = Some(system.name.clone());
+                ends.clear();
+            }
+            // The mark opens a panel, as it does in every other list. Choosing
+            // between two systems to plot to is exactly when what is known
+            // about them is worth reading, and it leaves the field alone.
+            Chose::Describe => {
+                if let Ok(system) = crate::systems::System::try_from(system) {
+                    panels.open_system(system);
+                }
+            }
+        }
+    }
     ui.add_space(FIELD_GAP);
     let range = singleline(ui, &mut search.route_range, "Jump Range (Ly)", 0.);
     taken |= range.gained_focus();
-    // Return in either field asks for the route, as pressing the button
-    // does. They are the last two things a route waits on, and a form with
-    // one thing left to do should not have to be reached for.
-    let submitted = entered(&end, ui) || entered(&range, ui);
+    // Return in the range asks for the route, as pressing the button does. It
+    // is the last thing a route waits on, and a form with one thing left to
+    // do should not have to be reached for. The end system's own return is
+    // spoken for, being what asks which system it means.
+    let submitted = entered(&range, ui);
     // What came back of the last route asked for answers the fields as they
     // were then, so it goes as soon as they are not. Work still under way is
     // not an answer to anything yet, and stays.
@@ -1619,20 +1713,12 @@ fn whole_set(
 fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     heading(ui, "Filters", true);
 
-    // Emptied once what it asked for is standing in a row of its own, and not
-    // before: a name is looked up a frame after it is asked for, so taking
-    // the text away at the moment return is pressed takes it away from a name
-    // that turns out not to resolve.
-    if filter.asked.answered() {
-        *filter.field = None;
-        *filter.asked = Asked::Nothing;
-    }
-
     let response = singleline(ui, &mut filter.field, "Faction Name", 0.);
-    // The answer is about a name, so it is no answer at all once that name is
+    // Both answer a name, so neither is any answer at all once that name is
     // being typed over.
     if response.changed() {
         *filter.asked = Asked::Nothing;
+        filter.found.clear();
     }
     if entered(&response, ui)
         && let Some(name) = typed(&filter.field).map(str::to_owned)
@@ -1645,7 +1731,63 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }
 
+    // A click chooses, as it does in every other list the map draws. The
+    // search has already asked what the lookup would have asked, so the line
+    // carries the id a filter tests against and there is nothing left to look
+    // up: the faction goes straight into a row of its own.
+    //
+    // The field and the list go with it. What was typed is a row by now, and
+    // the field's next job is the next faction.
+    if let Some(faction) = faction_list(ui, filter.found.iter()) {
+        filter.active.add(Filter::Faction {
+            id: faction.id,
+            name: faction.name.clone(),
+        });
+        *filter.field = None;
+        filter.found.clear();
+    }
+
     response.gained_focus()
+}
+
+/// The factions a search found, and which of them was clicked
+///
+/// Names alone. A faction is a name and an id, the id is what a filter tests
+/// against rather than anything to read, and there is nothing else on record
+/// about one worth a column.
+///
+/// Not [`system_list`], which draws systems: a faction has nowhere to be, so
+/// there is no distance to say, nothing to fly to and no panel of its own to
+/// open. What the two share is the line they are drawn with.
+fn faction_list<'a>(
+    ui: &mut Ui,
+    factions: impl Iterator<Item = &'a DbFaction>,
+) -> Option<&'a DbFaction> {
+    // Nothing found is nothing drawn, as a list of systems is.
+    let mut factions = factions.peekable();
+    factions.peek()?;
+
+    let height = ui.text_style_height(&egui::TextStyle::Body)
+        + LINE_PADDING * 2.
+        + ui.spacing().item_spacing.y;
+    let mut chose = None;
+
+    scrolling(ui, height * OFFERED as f32, "factions", |ui| {
+        for faction in factions {
+            // Keyed by where it sits, which is what `line` allocates itself
+            // and what the lines of every other list are keyed by: a fresh
+            // search leaves them where they were and makes each about
+            // something else.
+            let (_, answer) =
+                line(ui, egui::RichText::new(faction.name.as_str()), 0., true);
+            if answer.clicked() {
+                chose = Some(faction);
+            }
+            answer.on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+    });
+
+    chose
 }
 
 /// Open a section, in the form or in the settings pane
@@ -1894,10 +2036,10 @@ pub(crate) fn line(
 
 /// One system's line in a list, and what a click on it asked for
 ///
-/// Every list of systems the map draws is this line: the ones a search turned
-/// up and the ones a filter admits, so far. They are the same thing offered in
-/// two places, and a change to how a system is picked out of a list belongs
-/// in one of them rather than in each.
+/// Every list of systems the map draws is this line: the ones a search found
+/// and the ones a filter admits, so far. They are the same thing in two
+/// places, and a change to how a system is picked out of a list belongs in one
+/// of them rather than in each.
 ///
 /// `trailing` is what stands at the right hand end, before the mark. Usually
 /// how far off the system is, and in the same slot whatever it says, so the
@@ -2029,6 +2171,7 @@ pub(crate) fn system_line(
 pub(crate) fn scrolling<R>(
     ui: &mut Ui,
     height: f32,
+    salt: impl std::hash::Hash,
     contents: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     // In a scope of its own, since a style set on a `Ui` is set on the rest
@@ -2037,6 +2180,13 @@ pub(crate) fn scrolling<R>(
     ui.scope(|ui| {
         ui.spacing_mut().scroll.floating = false;
         egui::ScrollArea::vertical()
+            // Named by the caller, since the bar holds several of these at
+            // once and a scroll area left to work its own id out from where it
+            // sits gets the same one as the next: egui says so out loud, in
+            // red, over the map. Each list is its own place to have scrolled
+            // to anyway, and where one has been scrolled to says nothing about
+            // the others.
+            .id_salt(salt)
             .max_height(height)
             .auto_shrink([false, true])
             .show(ui, contents)
@@ -2175,9 +2325,10 @@ mod tests {
             let mut selection = Selection::default();
             let mut travelled = None;
             let mut described = None;
-            offered(
+            found(
                 ui,
                 results,
+                true,
                 center,
                 &mut selection,
                 &mut travelled,
@@ -2236,6 +2387,92 @@ mod tests {
         let said = listed(&results(&["SOL", "SOLATI"], true), None);
 
         assert_eq!(said.iter().filter(|line| *line == INFO).count(), 2);
+    }
+
+    /// A shut form puts the list away without letting go of it
+    ///
+    /// It answers a name the user is in the middle of asking about, and a
+    /// list standing under a shut form is an answer to a question that is no
+    /// longer on screen. What was found is kept, so opening the form again is
+    /// where they left off rather than a search to do a second time.
+    #[test]
+    fn a_shut_form_puts_the_list_away_without_clearing_it() {
+        let held = results(&["SOL", "SOLATI"], true);
+
+        let out = listed(&held, None);
+        let away = words(|ui| {
+            let mut selection = Selection::default();
+            let mut travelled = None;
+            let mut described = None;
+            found(
+                ui,
+                &held,
+                false,
+                None,
+                &mut selection,
+                &mut travelled,
+                &mut described,
+            );
+        });
+
+        assert!(out.iter().any(|line| line == "SOL"), "{out:?}");
+        assert!(away.is_empty(), "{away:?}");
+        assert_eq!(held.iter().count(), 2, "the list let go of what it found");
+    }
+
+    /// A faction the search found, by id, called after it
+    fn faction_row(id: i32, name: &str) -> DbFaction {
+        DbFaction { id, name: name.to_owned() }
+    }
+
+    /// The lists drawn at once do not take each other's scroll area
+    ///
+    /// Egui works a scroll area's id out from where it sits unless it is
+    /// told, and says so in red over the map when two land on the same one.
+    /// The bar draws three at once: what a search found, the factions a name
+    /// might mean, and the systems a route's end might be.
+    #[test]
+    fn the_lists_do_not_share_a_scroll_area() {
+        let systems = results(&["SOL", "SOLATI"], true);
+        let factions = [faction_row(1, "The Dukes of Mikunn")];
+
+        let said = crate::tests::complaints(|ui| {
+            let mut selection = Selection::default();
+            let mut travelled = None;
+            let mut described = None;
+            found(
+                ui,
+                &systems,
+                true,
+                None,
+                &mut selection,
+                &mut travelled,
+                &mut described,
+            );
+            system_list(ui, systems.iter(), None, "end");
+            faction_list(ui, factions.iter());
+        });
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// A list with nothing in it takes no room at all
+    ///
+    /// A field that has yet to be asked has nothing to say under it, and an
+    /// empty scroll area under every field is a form with gaps in it.
+    #[test]
+    fn an_empty_list_draws_nothing() {
+        let nothing = SearchResults::default();
+
+        let systems = words(|ui| {
+            system_list(ui, nothing.iter(), None, "end");
+        });
+        let factions = words(|ui| {
+            faction_list(ui, [].iter());
+        });
+
+        assert!(systems.is_empty(), "{systems:?}");
+        assert!(factions.is_empty(), "{factions:?}");
     }
 
     /// A system with nowhere to be is offered no panel
@@ -2440,14 +2677,15 @@ mod tests {
     }
 
     /// Draw the results list holding `names`
-    fn draw_offered<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
+    fn draw_found<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
             let mut selection = Selection::default();
             let mut travelled = None;
             let mut described = None;
-            offered(
+            found(
                 ui,
                 &results(names, true),
+                true,
                 None,
                 &mut selection,
                 &mut travelled,
@@ -2487,7 +2725,7 @@ mod tests {
         let said = crate::tests::complaints(|ui| {
             let mut query = Some("SOL".to_owned());
             let mut note = SearchNote(None);
-            let mut found = results(&["SOL", "SOLATI", "SOLLARO"], true);
+            let mut offers = results(&["SOL", "SOLATI", "SOLLARO"], true);
             let mut selection = holding(&["SOL"]);
             let mut filters = Filters::default();
             filters.add(Filter::Systems {
@@ -2500,10 +2738,11 @@ mod tests {
             // One count for the whole column, as the bar keeps.
             let mut place = 0;
 
-            search_box(ui, &mut query, &mut note, &mut found);
-            offered(
+            search_box(ui, &mut query, &mut note, &mut offers);
+            found(
                 ui,
-                &found,
+                &offers,
+                true,
                 None,
                 &mut selection,
                 &mut travelled,
@@ -2561,9 +2800,9 @@ mod tests {
         move |ui: &mut Ui| {
             let mut query = Some("SOL".to_owned());
             let mut note = SearchNote(None);
-            let mut found = SearchResults::default();
+            let mut offers = SearchResults::default();
             if !results.is_empty() {
-                found = results_of(results);
+                offers = results_of(results);
             }
             let mut held = holding(selection);
             let mut applied_to = Filters::default();
@@ -2579,10 +2818,11 @@ mod tests {
             // One count for the whole column, as the bar keeps.
             let mut place = 0;
 
-            search_box(ui, &mut query, &mut note, &mut found);
-            offered(
+            search_box(ui, &mut query, &mut note, &mut offers);
+            found(
                 ui,
-                &found,
+                &offers,
+                true,
                 None,
                 &mut held,
                 &mut travelled,
@@ -2780,8 +3020,8 @@ mod tests {
     #[test]
     fn a_list_whose_items_change_is_not_an_id_change() {
         let results = crate::tests::between_passes(
-            draw_offered(&["SOL", "SOLATI"]),
-            draw_offered(&["BARNARD", "WOLF 359"]),
+            draw_found(&["SOL", "SOLATI"]),
+            draw_found(&["BARNARD", "WOLF 359"]),
         );
         let replaced = crate::tests::between_passes(
             draw_selected(&["SOL"]),
@@ -2872,9 +3112,10 @@ mod tests {
             let mut selection = Selection::default();
             let mut travelled = None;
             let mut described = None;
-            offered(
+            found(
                 ui,
                 &results(&["SOL", "NOWHERE"], false),
+                true,
                 Some(DVec3::ZERO),
                 &mut selection,
                 &mut travelled,
@@ -2890,9 +3131,10 @@ mod tests {
             let mut selection = Selection::default();
             let mut travelled = None;
             let mut described = None;
-            offered(
+            found(
                 ui,
                 &results(&["SOL", "SOLATI", "SOLLARO"], true),
+                true,
                 None,
                 &mut selection,
                 &mut travelled,
