@@ -1377,6 +1377,23 @@ fn ends_of(selection: &Selection) -> Result<(&str, &str), &'static str> {
     }
 }
 
+/// How far apart the two systems a route would run between are
+///
+/// In a straight line, which is as short as a route between them could be and
+/// is knowable before one is asked for. What comes back is longer: a route is
+/// flown in jumps, and each of them lands on a system rather than on a point
+/// along the line.
+///
+/// Only over a pair, since a pair is what [`ends_of`] answers with. A distance
+/// standing under a line saying there is no route to plot yet would be
+/// answering a question the form has just said it cannot take.
+fn apart(selection: &Selection) -> Option<f64> {
+    if selection.len() != 2 {
+        return None;
+    }
+    Some(selection.position(0)?.distance(selection.position(1)?))
+}
+
 /// Ask what a route may be flown in, and say where it would run
 ///
 /// Answers whether its field has just taken focus. Which systems a route runs
@@ -1415,6 +1432,13 @@ fn route_section(
         // scolding whoever fills it in.
         Err(why) => ui.label(egui::RichText::new(why).weak()),
     };
+    // And how far apart they are, which is the one thing about the plot the
+    // map can say before it is asked for. Under the names rather than at the
+    // end of them, since two long names and a number on one line wrap into a
+    // paragraph in a bar this wide.
+    if let Some(away) = apart(selection) {
+        ui.label(egui::RichText::new(format!("{away:.1} Ly apart")).weak());
+    }
     ui.add_space(FIELD_GAP);
 
     // The range is typed rather than looked up, so it never waits on
@@ -2803,6 +2827,36 @@ mod tests {
         assert!(!several.contains(&"Route".to_owned()), "{several:?}");
         // The rest of the line stands, so it is the route alone that goes.
         assert!(several.contains(&"Filter".to_owned()), "{several:?}");
+    }
+
+    /// A selection holding a system at each of `places`, on the x axis
+    fn strung_out(places: &[f64]) -> Selection {
+        let mut selection = Selection::default();
+        for (address, away) in places.iter().enumerate() {
+            selection.toggle(crate::systems::tests::at(address as i64, *away));
+        }
+        selection
+    }
+
+    /// The two ends of a route are said to be as far apart as they are
+    ///
+    /// The one thing about the plot that can be said before it is asked for,
+    /// and what says whether a ship could make the trip at all.
+    #[test]
+    fn two_systems_are_as_far_apart_as_they_stand() {
+        assert_eq!(apart(&strung_out(&[3., 15.])), Some(12.));
+    }
+
+    /// Any other number is not measured at all
+    ///
+    /// One is not a pair, and more than two is a route the form refuses. A
+    /// distance under a line saying so would answer a question the form has
+    /// just said it cannot take.
+    #[test]
+    fn a_set_that_cannot_be_routed_is_not_measured() {
+        assert_eq!(apart(&strung_out(&[])), None);
+        assert_eq!(apart(&strung_out(&[3.])), None);
+        assert_eq!(apart(&strung_out(&[3., 15., 20.])), None);
     }
 
     /// The selection rows each answer for themselves

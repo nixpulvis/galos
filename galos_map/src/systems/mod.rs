@@ -277,7 +277,11 @@ pub(crate) mod tests {
     }
 
     /// A system at `away` light years from the origin, on the x axis
-    fn at(address: i64, away: f64) -> System {
+    ///
+    /// Shared for the same reason [`named`] is: a position is set from in
+    /// here or not at all, and what is drawn about a system is tested from
+    /// wherever it is drawn.
+    pub(crate) fn at(address: i64, away: f64) -> System {
         let mut system = system(address);
         system.position = [away, 0., 0.];
         system
