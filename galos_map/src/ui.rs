@@ -60,13 +60,13 @@ pub(crate) fn lettering(
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
-    ctx.all_styles_mut(monospaced);
+    ctx.all_styles_mut(styled);
     *set = true;
 
     Ok(())
 }
 
-/// Letter `style` in one width throughout
+/// Set the chrome's lettering and the marks that stand in it
 ///
 /// The map is read in names and numbers standing in columns: how far off each
 /// system is, how long each jump of a route is, how much of the sky is getting
@@ -82,7 +82,13 @@ pub(crate) fn lettering(
 /// over what is unchanged. A monospaced face is wider than the proportional
 /// one it stands in for, and the chrome is read at a glance off the top of a
 /// map rather than paragraph by paragraph.
-pub(crate) fn monospaced(style: &mut egui::Style) {
+///
+/// The marks egui draws for itself are sized here as well: the fold arrow on a
+/// panel's title bar, the mark that shuts it, and the boxes in the settings
+/// pane. They are set for lettering a size larger than this, and a mark drawn
+/// to one scale beside words drawn to another reads as two pieces of chrome
+/// that came from different maps.
+pub(crate) fn styled(style: &mut egui::Style) {
     use egui::FontFamily::Monospace;
     use egui::{FontId, TextStyle};
 
@@ -94,6 +100,9 @@ pub(crate) fn monospaced(style: &mut egui::Style) {
         (TextStyle::Heading, FontId::new(17., Monospace)),
     ]
     .into();
+
+    style.spacing.icon_width = 12.;
+    style.spacing.icon_width_inner = 7.;
 }
 
 /// Whether the pointer is busy with the UI
@@ -3232,7 +3241,7 @@ mod tests {
     #[test]
     fn the_chrome_is_lettered_in_one_width() {
         let mut style = egui::Style::default();
-        monospaced(&mut style);
+        styled(&mut style);
 
         for (kind, font) in &style.text_styles {
             assert_eq!(font.family, egui::FontFamily::Monospace, "{kind:?}");

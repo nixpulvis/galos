@@ -56,7 +56,7 @@ const WIDTH: f32 = 230.;
 /// The rest of [`WIDTH`] is the title's. Measured rather than worked out, egui
 /// laying its own title bar out, and held down by
 /// `a_route_panel_is_no_wider_than_a_panel`.
-const TITLE_MARKS: f32 = 50.;
+const TITLE_MARKS: f32 = 46.;
 
 /// How much of a title a panel has room for, in characters
 ///
@@ -64,7 +64,26 @@ const TITLE_MARKS: f32 = 50.;
 /// called is what decides how wide it stands. Cut to this, a route's panel
 /// keeps the width every other panel has.
 fn titling(ctx: &Context) -> usize {
-    crate::ui::characters(ctx, egui::TextStyle::Heading, WIDTH - TITLE_MARKS)
+    crate::ui::characters(ctx, egui::TextStyle::Body, WIDTH - TITLE_MARKS)
+}
+
+/// What a panel is called, laid out across its title bar
+///
+/// Lettered as the panel's own contents are. A title set for a heading stands
+/// half again as tall as everything under it, which reads as a title bar
+/// borrowed from some other window rather than as the top of this one.
+///
+/// Cut to the room there is, and then filled out to it with the spaces the cut
+/// left over: egui centres a title between the marks either side of it, and a
+/// title that fills the bar has nothing left to centre, so it stands at the
+/// left where a name is read from.
+fn titled(ctx: &Context, title: &str) -> egui::RichText {
+    let room = titling(ctx);
+    let said = crate::ui::shortened(title, room);
+    let spare = room.saturating_sub(said.chars().count());
+
+    egui::RichText::new(format!("{said}{}", " ".repeat(spare)))
+        .text_style(egui::TextStyle::Body)
 }
 
 /// The window a panel stands in, put where the tiling says
@@ -89,7 +108,7 @@ fn framed<'open>(
     placed: bool,
     showing: &'open mut bool,
 ) -> egui::Window<'open> {
-    let window = egui::Window::new(crate::ui::shortened(title, titling(ctx)))
+    let window = egui::Window::new(titled(ctx, title))
         .id(id)
         .open(showing)
         .resizable(false)
@@ -982,14 +1001,16 @@ mod tests {
     /// A panel's contents are laid out across the whole of its window
     ///
     /// A window is at least as wide as its title bar, and a system is called
-    /// what it is called: `COL 285 SECTOR SC-K B22-2` is the name of a place
-    /// people go, and it is not cut down the way a route's two ends are.
-    /// Contents laid out to the width a panel asks for would leave a band of
-    /// empty panel down the right hand side of one, which reads as a margin
-    /// nobody chose.
+    /// what it is called: it is not cut down the way a route's two ends are,
+    /// so a long enough name is a wider panel. Contents laid out to the width
+    /// a panel asks for would leave a band of empty panel down the right hand
+    /// side of one, which reads as a margin nobody chose.
+    ///
+    /// Named at a length no lettering would fit, rather than at one that fits
+    /// today and not tomorrow.
     #[test]
     fn a_long_title_widens_what_stands_under_it() {
-        let (taken, had) = laid_out("COL 285 SECTOR SC-K B22-2");
+        let (taken, had) = laid_out(&"COL 285 SECTOR ".repeat(4));
 
         assert!(had > WIDTH, "{had} is no wider than the {WIDTH} asked for");
         assert_eq!(taken, had);
@@ -999,6 +1020,25 @@ mod tests {
     #[test]
     fn a_short_title_leaves_the_width_alone() {
         assert_eq!(laid_out("SOL"), (WIDTH, WIDTH));
+    }
+
+    /// A title fills the bar it stands in
+    ///
+    /// Which is what puts it at the left: egui centres a title between the
+    /// marks either side of it, and one that fills the bar has nothing left
+    /// to centre.
+    #[test]
+    fn a_title_fills_the_bar_it_stands_in() {
+        let ctx = crate::tests::context();
+        // Inside a pass, egui having no fonts to measure with before one.
+        let (mut said, mut room) = (String::new(), 0);
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            said = titled(ui.ctx(), "SOL").text().to_owned();
+            room = titling(ui.ctx());
+        });
+
+        assert!(said.starts_with("SOL"), "{said:?}");
+        assert_eq!(said.chars().count(), room);
     }
 
     /// A route's panel is no wider than a panel, however it is named

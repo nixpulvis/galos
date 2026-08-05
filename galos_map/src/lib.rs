@@ -27,7 +27,7 @@ pub(crate) mod tests {
     /// in a face the map does not use is a test about some other map.
     pub(crate) fn context() -> egui::Context {
         let ctx = egui::Context::default();
-        ctx.all_styles_mut(crate::ui::monospaced);
+        ctx.all_styles_mut(crate::ui::styled);
         ctx
     }
 
