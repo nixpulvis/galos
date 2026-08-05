@@ -110,11 +110,12 @@ pub struct Spyglass {
     /// asking about, so a reach taken from it is the map fetching and drawing
     /// the view rather than a circle set beside it and kept in step by hand.
     ///
-    /// Held inside [`Spyglass::UNASKED`], which is what asking without asking
-    /// means: scrolling out until the galaxy fits is one gesture, and it
-    /// would otherwise put every system on record on the map. The reach stops
-    /// growing there and the view goes on widening past it. Turning this off
-    /// is what reaches further, the radius then being set by hand.
+    /// It runs the whole way to [`Spyglass::CEILING`], which is the galaxy.
+    /// Scrolling out that far asks for every system on record, and asks for it
+    /// in one gesture, but a map that fetches less than it is showing is a map
+    /// with a circle of stars in the middle of an empty window, and a reach
+    /// that follows the view has said it will not do that. The fetch is
+    /// throttled and the wheel is where the user says when to stop.
     pub follow_camera: bool,
 }
 
@@ -330,7 +331,7 @@ pub fn reach_with_camera(
     // say.
     let seen = crate::camera::framed(camera.target_radius, lens.single().ok());
     let inside = seen * (100 - FOLLOW_MARGIN) as f32 / 100.;
-    let reach = inside.clamp(Spyglass::FLOOR, Spyglass::UNASKED);
+    let reach = inside.clamp(Spyglass::FLOOR, Spyglass::CEILING);
 
     // Only where it moved. Nothing watches this resource for changes today,
     // and writing the same number every frame is how that stops being true
@@ -754,19 +755,35 @@ pub(crate) mod tests {
         assert!(far > near, "reached {far} from further out than {near}");
     }
 
-    /// However far the camera is pulled back, the reach stops where the map
-    /// stops asking unbidden
+    /// Pulled back far enough, the reach takes in the whole galaxy
     ///
-    /// Scrolling out until the galaxy fits is one gesture, and everything the
-    /// spyglass takes in is fetched and spawned. See [`Spyglass::UNASKED`].
+    /// Nothing holds it in at what the map asks for unbidden. A view the
+    /// spyglass is not keeping up with is a window with a circle of stars in
+    /// the middle of it, which is the one thing a reach that follows the view
+    /// has undertaken not to show.
     #[test]
-    fn the_reach_stops_where_nobody_asked_for_more() {
+    fn the_reach_follows_the_camera_the_whole_way_out() {
         let mut app = linked(Spyglass::CEILING, false, true);
 
         app.update();
 
         let (reach, _) = linkage(&mut app);
-        assert_eq!(reach, Spyglass::UNASKED);
+        assert_eq!(reach, following(Spyglass::CEILING));
+        assert!(reach > Spyglass::UNASKED, "stopped at {reach}");
+    }
+
+    /// And no further than the whole galaxy
+    ///
+    /// The camera may stand further off than the galaxy is wide, and a reach
+    /// past that is a larger number asking for exactly the same systems.
+    #[test]
+    fn the_reach_stops_at_the_edge_of_the_galaxy() {
+        let mut app = linked(1e6, false, true);
+
+        app.update();
+
+        let (reach, _) = linkage(&mut app);
+        assert_eq!(reach, Spyglass::CEILING);
     }
 
     /// And never falls under the shortest reach worth offering
