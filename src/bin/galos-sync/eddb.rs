@@ -1,7 +1,10 @@
 use crate::Run;
 use async_std::task;
 use elite_journal::system::Coordinate;
-use galos_db::{systems::System, Database};
+use galos_db::{
+    systems::{Economies, System},
+    Database,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use structopt::StructOpt;
 
@@ -44,8 +47,7 @@ impl Run for Cli {
                             system.security,
                             system.government,
                             system.allegiance,
-                            system.primary_economy,
-                            None,
+                            Economies::new(system.primary_economy, None),
                             system.updated_at,
                             "EDDB dump",
                         )

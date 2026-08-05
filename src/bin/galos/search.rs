@@ -127,10 +127,10 @@ fn print_system(system: &System) {
     if let Some(allegiance) = system.allegiance {
         println!("\tallegiance: {:?}", allegiance);
     }
-    if let Some(primary_economy) = system.primary_economy {
-        print!("\teconomy: {:?}", primary_economy);
-        if let Some(secondary_economy) = system.secondary_economy {
-            print!("/{:?}", secondary_economy);
+    if let Some(economies) = system.economies {
+        print!("\teconomy: {:?}", economies.primary);
+        if let Some(secondary) = economies.secondary {
+            print!("/{:?}", secondary);
         }
         println!("");
     }

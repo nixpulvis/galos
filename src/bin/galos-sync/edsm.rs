@@ -1,7 +1,7 @@
 use crate::Run;
 use async_std::task;
 use chrono::offset::Utc;
-use galos_db::systems::System;
+use galos_db::systems::{Economies, System};
 use galos_db::Database;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
@@ -59,8 +59,10 @@ impl Cli {
                     system.information.security,
                     system.information.government,
                     system.information.allegiance,
-                    system.information.economy,
-                    system.information.second_economy,
+                    Economies::new(
+                        system.information.economy,
+                        system.information.second_economy,
+                    ),
                     Utc::now(),
                     updated_by,
                 )

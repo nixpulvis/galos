@@ -25,6 +25,7 @@ use bevy::tasks::futures_lite::future;
 use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_db::factions::Faction as DbFaction;
+use galos_db::systems::Economies;
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -621,8 +622,7 @@ fn described(
             field(ui, "Allegiance", named(&system.allegiance));
             field(ui, "Government", named(&system.government));
             field(ui, "Security", named(&system.security));
-            field(ui, "Economy", named(&system.primary_economy));
-            field(ui, "Secondary", named(&system.secondary_economy));
+            economies(ui, &system.economies);
             field(
                 ui,
                 "Updated",
@@ -876,6 +876,43 @@ fn field(ui: &mut Ui, name: &str, value: String) {
     ui.end_row();
 }
 
+/// How far a field written under a header sits in from the ones above it
+const NEST: f32 = 12.;
+
+/// One named thing, written under the header it belongs to
+fn under(ui: &mut Ui, name: &str, value: String) {
+    ui.horizontal(|ui| {
+        ui.add_space(NEST);
+        ui.label(name);
+    });
+    ui.label(value);
+    ui.end_row();
+}
+
+/// What a system trades in
+///
+/// Under a header, because the halves of an economy are named for their
+/// standing against each other: "Secondary" among the flat fields says what
+/// it is but not what it is secondary to.
+///
+/// A system with nothing on record is one line saying so. There is no primary
+/// to head the pair with, and two nested lines both reading `UNKNOWN` say the
+/// same thing at three times the length.
+fn economies(ui: &mut Ui, economies: &Option<Economies>) {
+    let Some(economies) = economies else {
+        field(ui, "Economy", UNKNOWN.into());
+        return;
+    };
+
+    ui.label(egui::RichText::new("Economy").strong());
+    ui.end_row();
+    under(ui, "Primary", economies.primary.to_string());
+    under(ui, "Secondary", named(&economies.secondary));
+}
+
+/// What the database has yet to say about a system
+const UNKNOWN: &str = "Unknown";
+
 /// What the database says, or that it says nothing
 ///
 /// Most of what is recorded about a system is optional, and a blank row
@@ -883,7 +920,7 @@ fn field(ui: &mut Ui, name: &str, value: String) {
 fn named<T: Display>(value: &Option<T>) -> String {
     match value {
         Some(value) => value.to_string(),
-        None => "Unknown".into(),
+        None => UNKNOWN.into(),
     }
 }
 
@@ -891,14 +928,69 @@ fn named<T: Display>(value: &Option<T>) -> String {
 mod tests {
     use super::*;
     use crate::systems::tests::system;
-    use crate::tests::painted;
+    use crate::tests::{painted, words};
     use elite_journal::Allegiance;
+    use elite_journal::system::Economy;
 
     /// A registry naming each of `known`
     fn known(known: &[(i32, &str)]) -> FactionNames {
         FactionNames(
             known.iter().map(|(id, name)| (*id, name.to_string())).collect(),
         )
+    }
+
+    /// What the economy of a system reads as, line by line
+    ///
+    /// In a grid, since that is where a panel writes its fields and what
+    /// [`under`] indents against.
+    fn economy(economies: Option<Economies>) -> Vec<String> {
+        words(|ui| {
+            egui::Grid::new("economies").num_columns(2).show(ui, |ui| {
+                super::economies(ui, &economies);
+            });
+        })
+    }
+
+    /// Both halves are written out, under a header naming what they are
+    #[test]
+    fn an_economy_reads_as_its_two_halves() {
+        let economies = Some(Economies {
+            primary: Economy::Agriculture,
+            secondary: Some(Economy::Extraction),
+        });
+
+        assert_eq!(
+            economy(economies),
+            vec![
+                "Economy",
+                "Primary",
+                "Agriculture",
+                "Secondary",
+                "Extraction"
+            ]
+        );
+    }
+
+    /// A system with only a primary is still asked about its secondary
+    ///
+    /// The header promises two lines, and dropping the one that is unknown
+    /// would read as a system whose secondary is something the panel is not
+    /// saying.
+    #[test]
+    fn an_economy_missing_its_secondary_says_so() {
+        let economies =
+            Some(Economies { primary: Economy::Agriculture, secondary: None });
+
+        assert_eq!(
+            economy(economies),
+            vec!["Economy", "Primary", "Agriculture", "Secondary", UNKNOWN]
+        );
+    }
+
+    /// A system with nothing on record says it in one line
+    #[test]
+    fn a_system_with_no_economy_says_so_once() {
+        assert_eq!(economy(None), vec!["Economy", UNKNOWN]);
     }
 
     /// A system with no factions lists none

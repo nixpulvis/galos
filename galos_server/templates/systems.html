@@ -24,10 +24,7 @@
         <td>{{ self::table_data(system.security) }}</td>
         <td>{{ self::table_data(system.government) }}</td>
         <td>{{ self::table_data(system.allegiance) }}</td>
-        <td>
-            {{ self::table_data(system.primary_economy) }},
-            {{ self::table_data(system.secondary_economy) }}
-        </td>
+        <td>{{ self::table_data(system.economies) }}</td>
         <td>{{ system.updated_at }}</td>
     </tr>
     {% endfor %}

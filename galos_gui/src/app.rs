@@ -111,8 +111,7 @@ impl epi::App for Galos {
                     table.push(vec!["security".into(),          format!("{:?}", system.security)]);
                     table.push(vec!["government".into(),        format!("{:?}", system.government)]);
                     table.push(vec!["allegiance".into(),        format!("{:?}", system.allegiance)]);
-                    table.push(vec!["primary_economy".into(),   format!("{:?}", system.primary_economy)]);
-                    table.push(vec!["secondary_economy".into(), format!("{:?}", system.secondary_economy)]);
+                    table.push(vec!["economies".into(),         format!("{:?}", system.economies)]);
                     table.push(vec!["updated_at".into(),        format!("{}", system.updated_at)]);
                 }
 

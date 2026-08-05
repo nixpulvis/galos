@@ -229,7 +229,6 @@ fn process_message(db: &Database, message: Message, user: String) {
                             None,
                             None,
                             None,
-                            None,
                             entry.timestamp,
                             &user,
                         )

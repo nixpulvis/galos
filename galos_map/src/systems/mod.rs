@@ -7,9 +7,9 @@ use elite_journal::{
     // TODO: Fix these imports, they should all be in system.
     Allegiance,
     Government,
-    system::{Economy, Security},
+    system::Security,
 };
-use galos_db::systems::System as DbSystem;
+use galos_db::systems::{Economies, System as DbSystem};
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Spyglass {
@@ -69,8 +69,7 @@ pub struct System {
     allegiance: Option<Allegiance>,
     government: Option<Government>,
     security: Option<Security>,
-    primary_economy: Option<Economy>,
-    secondary_economy: Option<Economy>,
+    economies: Option<Economies>,
     /// The factions present in the system, by id
     ///
     /// What [`filter`] asks a system about, so ids rather than names: the
@@ -379,8 +378,7 @@ pub(crate) mod tests {
             allegiance: None,
             government: None,
             security: None,
-            primary_economy: None,
-            secondary_economy: None,
+            economies: None,
             factions: vec![],
             updated_at: DateTime::UNIX_EPOCH,
         }

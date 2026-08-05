@@ -1,4 +1,4 @@
-use super::System;
+use super::{Economies, System};
 use crate::{escaped, Database, Error};
 use elite_journal::prelude::*;
 use geozero::wkb;
@@ -43,8 +43,10 @@ impl System {
             security: row.security,
             government: row.government,
             allegiance: row.allegiance,
-            primary_economy: row.primary_economy,
-            secondary_economy: row.secondary_economy,
+            economies: Economies::new(
+                row.primary_economy,
+                row.secondary_economy,
+            ),
             factions: row.factions,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
@@ -93,8 +95,10 @@ impl System {
             security: row.security,
             government: row.government,
             allegiance: row.allegiance,
-            primary_economy: row.primary_economy,
-            secondary_economy: row.secondary_economy,
+            economies: Economies::new(
+                row.primary_economy,
+                row.secondary_economy,
+            ),
             factions: row.factions,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
@@ -145,8 +149,10 @@ impl System {
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
-                primary_economy: row.primary_economy,
-                secondary_economy: row.secondary_economy,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
                 factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
@@ -249,8 +255,10 @@ impl System {
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
-                primary_economy: row.primary_economy,
-                secondary_economy: row.secondary_economy,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
                 factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
@@ -305,8 +313,10 @@ impl System {
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
-                primary_economy: row.primary_economy,
-                secondary_economy: row.secondary_economy,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
                 factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
@@ -361,8 +371,10 @@ impl System {
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
-                primary_economy: row.primary_economy,
-                secondary_economy: row.secondary_economy,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
                 factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
@@ -460,8 +472,10 @@ impl System {
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
-                primary_economy: row.primary_economy,
-                secondary_economy: row.secondary_economy,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -603,8 +617,10 @@ impl System {
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
-                primary_economy: row.primary_economy,
-                secondary_economy: row.secondary_economy,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
                 factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
@@ -657,8 +673,10 @@ impl System {
                 security: row.security,
                 government: row.government,
                 allegiance: row.allegiance,
-                primary_economy: row.primary_economy,
-                secondary_economy: row.secondary_economy,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
                 factions: row.factions,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,

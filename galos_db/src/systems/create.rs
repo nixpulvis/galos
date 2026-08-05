@@ -1,4 +1,4 @@
-use super::System;
+use super::{Economies, System};
 use crate::factions::{Conflict, Faction, SystemFaction};
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
@@ -16,8 +16,7 @@ impl System {
         security: Option<Security>,
         government: Option<Government>,
         allegiance: Option<Allegiance>,
-        primary_economy: Option<Economy>,
-        secondary_economy: Option<Economy>,
+        economies: Option<Economies>,
         updated_at: DateTime<Utc>,
         updated_by: &str,
     ) -> Result<(), Error> {
@@ -60,8 +59,8 @@ impl System {
             security as _,
             government as _,
             allegiance as _,
-            primary_economy as _,
-            secondary_economy as _,
+            economies.map(|economies| economies.primary) as _,
+            economies.and_then(|economies| economies.secondary) as _,
             updated_at.naive_utc(),
             updated_by
         )
@@ -150,6 +149,7 @@ impl System {
     ) -> Result<(), Error> {
         let position =
             system.pos.map(|p| Coordinate { x: p.x, y: p.y, z: p.z });
+        let economies = Economies::new(system.economy, system.second_economy);
         sqlx::query!(
             r#"
             INSERT INTO systems
@@ -184,8 +184,8 @@ impl System {
             system.security as _,
             system.government as _,
             system.allegiance as _,
-            system.economy as _,
-            system.second_economy as _,
+            economies.map(|economies| economies.primary) as _,
+            economies.and_then(|economies| economies.secondary) as _,
             timestamp.naive_utc(),
             user
         )
