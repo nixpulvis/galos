@@ -82,6 +82,25 @@ const MAX_RADIUS: f32 = 1e6;
 /// every star at its true size and every body without exception.
 const NEAR_FRACTION: f32 = 1e-4;
 
+/// How far out the near plane may be pushed, in metres
+///
+/// Picking asks the camera for a ray, and the ray is built by taking a point
+/// at the near plane and another at `near / f32::EPSILON`, some eight million
+/// times further out. Normalising the difference squares it, and a squared
+/// length overflows a float past `sqrt(f32::MAX)`, which is about `1.8e19`.
+/// The direction comes back infinite, no ray is made, and nothing on the map
+/// can be pointed at or clicked.
+///
+/// So the plane is held at a fifth of the largest that arithmetic survives,
+/// which leaves room for the corners of the view, where the ray is longer
+/// than it is down the middle.
+///
+/// Only ever makes the plane nearer, so nothing that was drawn stops being
+/// drawn. What it costs is depth precision at the far end of the zoom, and
+/// the projection is an infinite reversed one, which spends its precision
+/// near the camera and is the arrangement least troubled by a close plane.
+const NEAR_CEILING: f32 = 4e11;
+
 /// How far the frustum reaches, in metres
 ///
 /// Only culling depends on it. The projection is an infinite reversed one, so
@@ -559,6 +578,10 @@ pub fn orbit_camera(
 /// in the same session. No pair of fixed distances covers both, so the near
 /// plane follows the zoom and the far one is simply set past everything.
 ///
+/// The fraction gives out at the far end of the zoom, where it would put the
+/// plane further off than the ray picking builds from it can be carried in a
+/// float, so it is held at [`NEAR_CEILING`] from there on.
+///
 /// Runs after [`orbit_camera`], which settles the radius this is worked out
 /// from. Written only where it differs: a projection assigned every frame is a
 /// frustum recomputed every frame.
@@ -573,8 +596,11 @@ pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
     // The radius is a distance the map talks in and the planes are distances
     // it draws in, so this is one of the two places a light year is spoken to
     // metres. The other is where the camera's own cell is worked out.
-    let near =
-        (orbit.radius as f64 * crate::space::LIGHT_YEAR) as f32 * NEAR_FRACTION;
+    // Held short of [`NEAR_CEILING`], past which picking can build no ray at
+    // all and the whole map stops answering the pointer.
+    let near = ((orbit.radius as f64 * crate::space::LIGHT_YEAR) as f32
+        * NEAR_FRACTION)
+        .min(NEAR_CEILING);
 
     // Asked before it is reached for, since reaching for it is what says it
     // has changed. Only the two planes are touched: bevy writes the aspect
@@ -1101,15 +1127,48 @@ mod tests {
     ///
     /// The whole point of it. A plane fixed anywhere is in the wrong place at
     /// one end or the other of seventeen orders of magnitude.
+    ///
+    /// Read from inside [`NEAR_CEILING`], which is where the fraction is what
+    /// decides the plane; past it the ceiling does, and that is
+    /// [`the_near_plane_stops_where_a_ray_stops_being_buildable`].
     #[test]
     fn the_near_plane_follows_the_zoom() {
-        let (out, _) = planes(&mut looking(1e4));
+        let (out, _) = planes(&mut looking(1e-1));
         let (in_close, _) = planes(&mut looking(1e-8));
 
         assert!(
-            out > in_close * 1e10,
+            out > in_close * 1e6,
             "the plane sat at {out} out and {in_close} in close"
         );
+    }
+
+    /// A ray can still be built from the camera at every zoom
+    ///
+    /// Picking asks the camera for a ray, and it is made from a point at the
+    /// near plane and another at `near / f32::EPSILON`. Normalising the
+    /// difference squares its length, and a square past `f32::MAX` is an
+    /// infinity: the direction is refused, no ray comes back, and nothing on
+    /// the map can be pointed at or clicked.
+    ///
+    /// The whole map went unclickable this way once, and it went unnoticed
+    /// because a projection that draws correctly can still be one no ray can
+    /// be built from.
+    #[test]
+    fn the_near_plane_stops_where_a_ray_stops_being_buildable() {
+        for radius in [MIN_RADIUS, 1e-8, 1., 1e2, 1e4, MAX_RADIUS] {
+            let (near, _) = planes(&mut looking(radius));
+            let reach = Vec3::Z * (near / f32::EPSILON);
+
+            assert!(
+                reach.length_squared().is_finite(),
+                "standing {radius} ly back, a ray reaching {} overflows",
+                reach.z
+            );
+            assert!(
+                Dir3::new(reach).is_ok(),
+                "standing {radius} ly back, no ray could be pointed"
+            );
+        }
     }
 
     /// The near plane stays well short of what the camera is looking at
