@@ -87,18 +87,40 @@ pub(crate) mod tests {
     ///
     /// Two passes over one context, since a warning about what changed
     /// between them cannot be had from either alone.
+    ///
+    /// What is heard is kept per thread, and a test hears its own thread and
+    /// no other. A logger is installed once for the whole process and the
+    /// tests it hears run at the same time as the rest, so a warning from
+    /// somewhere else would otherwise be read as this pass having complained.
+    /// Egui logs from whichever thread called it, which is this one.
     pub(crate) fn between_passes(
         first: impl FnMut(&mut egui::Ui),
         second: impl FnMut(&mut egui::Ui),
     ) -> Vec<String> {
+        use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
+        use std::thread::{self, ThreadId};
 
-        /// What the logger has heard, and the lock that keeps two tests from
-        /// hearing each other. Tests share a process, and a logger may be
-        /// installed once in one.
-        static HEARD: Mutex<Vec<String>> = Mutex::new(Vec::new());
-        static LOCK: Mutex<()> = Mutex::new(());
+        /// What the logger has heard, by the thread that said it. Tests share
+        /// a process, and a logger may be installed once in one.
+        static HEARD: Mutex<Option<HashMap<ThreadId, Vec<String>>>> =
+            Mutex::new(None);
         static LOGGER: OnceLock<()> = OnceLock::new();
+
+        /// What `HEARD` has for `thread`, made if it has none
+        fn heard_by<R>(
+            thread: ThreadId,
+            act: impl FnOnce(&mut Vec<String>) -> R,
+        ) -> R {
+            // Poisoning says some other test panicked mid-pass, which is that
+            // test's news to break rather than this one's.
+            let mut heard =
+                HEARD.lock().unwrap_or_else(|held| held.into_inner());
+            act(heard
+                .get_or_insert_with(HashMap::new)
+                .entry(thread)
+                .or_default())
+        }
 
         struct Listener;
         impl log::Log for Listener {
@@ -107,7 +129,8 @@ pub(crate) mod tests {
             }
             fn log(&self, record: &log::Record) {
                 if record.level() <= log::Level::Warn {
-                    HEARD.lock().unwrap().push(record.args().to_string());
+                    let said = record.args().to_string();
+                    heard_by(thread::current().id(), |heard| heard.push(said));
                 }
             }
             fn flush(&self) {}
@@ -118,8 +141,8 @@ pub(crate) mod tests {
             log::set_max_level(log::LevelFilter::Warn);
         });
 
-        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
-        HEARD.lock().unwrap().clear();
+        let mine = thread::current().id();
+        heard_by(mine, Vec::clear);
 
         let ctx = context();
         for pass in
@@ -129,8 +152,7 @@ pub(crate) mod tests {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| pass(ui));
         }
 
-        let heard = HEARD.lock().unwrap().clone();
-        heard
+        heard_by(mine, std::mem::take)
     }
 
     /// What egui complained about in the margins while `contents` was drawn

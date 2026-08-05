@@ -729,6 +729,25 @@ mod tests {
         assert_eq!(Filters::default().admitting(), None);
     }
 
+    /// A filter that admits nothing asks for nothing, and means it
+    ///
+    /// Which is the one case the two empty lists are the right answer: a
+    /// filter is being asked and it admits no system, so a query that comes
+    /// back with nothing is what was asked for. It is told apart from nothing
+    /// being asked by which of the two it is, and not by what the lists hold.
+    ///
+    /// What holds this together is that [`Filters::admit`] says the same. The
+    /// map dims by that and fetches by this, so a filter the two disagreed
+    /// about would be a sky drawn from one answer and fetched from the other.
+    #[test]
+    fn a_filter_that_admits_nothing_narrows_to_nothing() {
+        let mut filters = Filters::default();
+        filters.add(route(&[]));
+
+        assert_eq!(filters.admitting(), Some(Admitting::default()));
+        assert!(!filters.admit(&member(1, &[7])));
+    }
+
     /// One of two turned off leaves the other asking
     #[test]
     fn disabling_one_filter_leaves_the_rest() {

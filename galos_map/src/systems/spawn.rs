@@ -341,6 +341,11 @@ pub fn spawn(
     // Every row that arrived this frame, and when the last of them was asked
     // for. Put together first and handed over once, for the reason given at
     // [`one_per_system`].
+    //
+    // One time for however many queries landed together, since what it is for
+    // is the line the spawn is logged under. Nothing is stamped with it and
+    // nothing measures how stale a row is by it, so the latest of them stands
+    // for the batch rather than each row having to carry its own.
     let mut arrived: Vec<DbSystem> = Vec::new();
     let mut arrived_at = time.startup();
 

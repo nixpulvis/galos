@@ -1,5 +1,5 @@
 use super::{Faction, SystemFaction};
-use crate::{Database, Error, escaped};
+use crate::{escaped, Database, Error};
 use elite_journal::{faction::State as JournalState, prelude::*};
 
 impl Faction {

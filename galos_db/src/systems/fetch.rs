@@ -1,5 +1,5 @@
 use super::System;
-use crate::{Database, Error, escaped};
+use crate::{escaped, Database, Error};
 use elite_journal::prelude::*;
 use geozero::wkb;
 use std::collections::HashMap;
@@ -388,7 +388,7 @@ impl System {
     /// the hundred thousand around them.
     ///
     /// Who is present in each system is asked separately, by
-    /// [`Self::system_factions`], and joined up here. Asked of every row in
+    /// `system_factions`, and joined up here. Asked of every row in
     /// the same query it is a subquery run once per system: over a hundred
     /// thousand systems that is six parts in seven of the whole query, spent
     /// discovering that all but three systems in a hundred have nobody on
