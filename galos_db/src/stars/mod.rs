@@ -1,7 +1,9 @@
-//! A body within a star system
+//! A star within a system
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, PartialEq)]
+/// Clone because the map carries one into a component and into whatever
+/// panel is describing it, and a star outlives the query it came back in.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Star {
     pub system_address: i64,
     pub id: i16,
@@ -37,4 +39,4 @@ pub struct Star {
 impl Eq for Star {}
 
 mod create;
-// mod fetch;
+mod fetch;

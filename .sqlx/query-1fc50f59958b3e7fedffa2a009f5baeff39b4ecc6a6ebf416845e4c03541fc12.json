@@ -1,0 +1,172 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT *\n            FROM stars\n            WHERE system_address = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "absolute_magnitude",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 7,
+        "name": "age_my",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "distance_from_arrival_ls",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 9,
+        "name": "luminosity",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "star_class",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "stellar_mass",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 12,
+        "name": "subclass",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 13,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 14,
+        "name": "axial_tilt",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 15,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 16,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 17,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 18,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 19,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 20,
+        "name": "radius",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 21,
+        "name": "rotation_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 22,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 23,
+        "name": "surface_temperature",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 24,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 25,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1fc50f59958b3e7fedffa2a009f5baeff39b4ecc6a6ebf416845e4c03541fc12"
+}
