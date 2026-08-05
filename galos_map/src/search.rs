@@ -79,7 +79,7 @@ pub struct SearchNote(pub Option<String>);
 /// that was asked for and does not exist, so without somewhere to say which
 /// is which, a plot still being worked out and one that failed look exactly
 /// alike: nothing happens either way.
-#[derive(Resource, Default, PartialEq, Eq)]
+#[derive(Resource, Default, Debug, PartialEq, Eq)]
 pub enum Plot {
     /// Nothing has been asked for, or what was asked for is drawn
     #[default]
@@ -201,8 +201,30 @@ pub type Searching = Asking<String, Vec<DbSystem>>;
 ///
 /// One at a time for the reason a search is, and asked apart from the route
 /// itself, which `systems::fetch` has already sent off. This settles only
-/// which of the two ends the user got wrong.
-type Locating = Asking<(), Plot>;
+/// which of the two ends the user got wrong, so what it answers with is that
+/// trouble or nothing at all.
+type Locating = Asking<(), Option<String>>;
+
+/// Say what a pair of names being looked up had to say about the plot
+///
+/// Only trouble. Whether a route is still being worked out is the route's own
+/// business: it is asked for in the same breath as this and comes back with a
+/// line drawn or with nothing, either of which is a later and better answer
+/// than that the two names were spelled right.
+///
+/// So a pair that resolved says nothing rather than saying the plot is still
+/// working. The two are raced, and there is no order to them: the names are
+/// two indexed lookups and the route is a search through the systems between
+/// them, so the names usually land first, but nothing holds them to it. Landing
+/// second and writing [`Plot::Working`] would take back the answer the route
+/// had already given, and nothing would put it right again, the only thing
+/// that clears `Working` being a route landing while it stands. That is a
+/// spinner that turns for the rest of the session over a route that is drawn.
+fn located(plot: &mut Plot, trouble: Option<String>) {
+    if let Some(why) = trouble {
+        *plot = Plot::Trouble(why);
+    }
+}
 
 /// Answer what the user asked for
 ///
@@ -271,12 +293,12 @@ fn searched(
                     (),
                     now,
                     pool.spawn(async move {
-                        match locate(&db, &start)
-                            .await
-                            .and(locate(&db, &end).await)
-                        {
-                            Ok(_) => Plot::Working,
-                            Err(why) => Plot::Trouble(why),
+                        // The one nearer the start of the form, and only it:
+                        // an end looked up after the one before it turned out
+                        // to be wrong is a lookup whose answer nothing reads.
+                        match locate(&db, &start).await {
+                            Err(why) => Some(why),
+                            Ok(_) => locate(&db, &end).await.err(),
                         }
                     }),
                 );
@@ -288,8 +310,8 @@ fn searched(
         answered(&name, found, &mut note, &mut results);
     }
 
-    if let Some((_, answer)) = locating.answered(now) {
-        *plot = answer;
+    if let Some((_, trouble)) = locating.answered(now) {
+        located(&mut plot, trouble);
     }
 }
 
@@ -367,6 +389,44 @@ pub(crate) mod tests {
 
         assert_eq!(note.0, None);
         assert_eq!(results.iter().count(), 2);
+    }
+
+    /// A name that could not be had is said
+    ///
+    /// Which is the whole of what looking the two ends up is for: a plot that
+    /// came back with nothing says only that, and this says which end it could
+    /// not have had.
+    #[test]
+    fn an_end_that_could_not_be_had_is_said() {
+        let mut plot = Plot::Working;
+
+        located(&mut plot, Some("No system named NOWHERE".to_owned()));
+
+        assert_eq!(plot, Plot::Trouble("No system named NOWHERE".to_owned()));
+    }
+
+    /// Both ends resolving leaves the plot as it stands
+    ///
+    /// The route is asked for in the same breath and is the better answer
+    /// wherever it has landed. Saying anything here would only ever say
+    /// something the route has already said better, or take back what it said.
+    #[test]
+    fn a_pair_that_resolved_says_nothing() {
+        let mut working = Plot::Working;
+        let mut drawn = Plot::Nothing;
+        let mut refused =
+            Plot::Trouble("No route from SOL to BARNARD at 10 Ly".to_owned());
+
+        located(&mut working, None);
+        located(&mut drawn, None);
+        located(&mut refused, None);
+
+        assert_eq!(working, Plot::Working);
+        assert_eq!(drawn, Plot::Nothing);
+        assert_eq!(
+            refused,
+            Plot::Trouble("No route from SOL to BARNARD at 10 Ly".to_owned())
+        );
     }
 
     /// The last answer goes whether or not this one replaces it
