@@ -870,8 +870,13 @@ fn listed<'a>(
 const UNNAMED: &str = "...";
 
 /// One named thing the database knows about a system
+///
+/// The name is written as brightly as a header, and the answer beside it in
+/// the ordinary text of the panel. A panel is read down its left hand column
+/// until the line wanted is found, and it is the names that column is made
+/// of.
 fn field(ui: &mut Ui, name: &str, value: String) {
-    ui.label(name);
+    ui.label(egui::RichText::new(name).strong());
     ui.label(value);
     ui.end_row();
 }
@@ -883,7 +888,7 @@ const NEST: f32 = 12.;
 fn under(ui: &mut Ui, name: &str, value: String) {
     ui.horizontal(|ui| {
         ui.add_space(NEST);
-        ui.label(name);
+        ui.label(egui::RichText::new(name).strong());
     });
     ui.label(value);
     ui.end_row();
@@ -928,7 +933,7 @@ fn named<T: Display>(value: &Option<T>) -> String {
 mod tests {
     use super::*;
     use crate::systems::tests::system;
-    use crate::tests::{painted, words};
+    use crate::tests::{context, painted, words};
     use elite_journal::Allegiance;
     use elite_journal::system::Economy;
 
@@ -937,6 +942,56 @@ mod tests {
         FactionNames(
             known.iter().map(|(id, name)| (*id, name.to_string())).collect(),
         )
+    }
+
+    /// The color each piece of text `contents` painted came out in
+    ///
+    /// Read back off the shapes for the reason [`crate::tests::words`] is:
+    /// a panel is read by what its lines say and how brightly they say it,
+    /// and the widget that wrote a line is gone by the time it is painted.
+    ///
+    /// A color asked for when the text was laid out is the one it keeps.
+    /// Text laid out without one carries a placeholder instead, and what
+    /// answers that is whatever the shape was painted with.
+    fn written(
+        mut contents: impl FnMut(&mut Ui),
+    ) -> Vec<(String, egui::Color32)> {
+        let ctx = context();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| contents(ui));
+
+        fn text_of(
+            shape: &egui::Shape,
+            into: &mut Vec<(String, egui::Color32)>,
+        ) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let asked = text
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map(|section| section.format.color)
+                        .filter(|color| *color != egui::Color32::PLACEHOLDER);
+                    let color = text
+                        .override_text_color
+                        .or(asked)
+                        .unwrap_or(text.fallback_color);
+                    into.push((text.galley.text().into(), color));
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        text_of(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut painted = Vec::new();
+        for shape in &output.shapes {
+            text_of(&shape.shape, &mut painted);
+        }
+        painted
     }
 
     /// What the economy of a system reads as, line by line
@@ -991,6 +1046,40 @@ mod tests {
     #[test]
     fn a_system_with_no_economy_says_so_once() {
         assert_eq!(economy(None), vec!["Economy", UNKNOWN]);
+    }
+
+    /// The names down the left of a panel are written as brightly as a header
+    ///
+    /// Nested or flat, a name is what the column is read down, and one in the
+    /// same color as the answers beside it leaves the two to be told apart
+    /// by which side of the panel they fell on.
+    #[test]
+    fn the_names_of_fields_read_as_brightly_as_a_header() {
+        let painted = written(|ui| {
+            egui::Grid::new("fields").num_columns(2).show(ui, |ui| {
+                field(ui, "Security", "Low".into());
+                economies(
+                    ui,
+                    &Some(Economies {
+                        primary: Economy::Military,
+                        secondary: None,
+                    }),
+                );
+            });
+        });
+
+        let color = |wanted: &str| {
+            painted
+                .iter()
+                .find(|(text, _)| text == wanted)
+                .unwrap_or_else(|| panic!("{wanted} was painted"))
+                .1
+        };
+
+        assert_eq!(color("Security"), color("Economy"));
+        assert_eq!(color("Primary"), color("Economy"));
+        assert_ne!(color("Low"), color("Economy"));
+        assert_ne!(color("Military"), color("Economy"));
     }
 
     /// A system with no factions lists none
