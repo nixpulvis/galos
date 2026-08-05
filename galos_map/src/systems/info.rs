@@ -56,7 +56,7 @@ const WIDTH: f32 = 230.;
 /// The rest of [`WIDTH`] is the title's. Measured rather than worked out, egui
 /// laying its own title bar out, and held down by
 /// `a_route_panel_is_no_wider_than_a_panel`.
-const TITLE_MARKS: f32 = 51.;
+const TITLE_MARKS: f32 = 50.;
 
 /// How much of a title a panel has room for, in characters
 ///

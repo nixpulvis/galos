@@ -77,10 +77,23 @@ pub(crate) fn lettering(
 /// and the angle of an ASCII arrow are drawn to a width apiece in a monospaced
 /// face and meet as an arrow; set proportionally the hyphen is short and low
 /// and the two read as punctuation that happened to land side by side.
+///
+/// A point smaller than egui letters them, each of them, so that what stands
+/// over what is unchanged. A monospaced face is wider than the proportional
+/// one it stands in for, and the chrome is read at a glance off the top of a
+/// map rather than paragraph by paragraph.
 pub(crate) fn monospaced(style: &mut egui::Style) {
-    for (_, font) in style.text_styles.iter_mut() {
-        font.family = egui::FontFamily::Monospace;
-    }
+    use egui::FontFamily::Monospace;
+    use egui::{FontId, TextStyle};
+
+    style.text_styles = [
+        (TextStyle::Small, FontId::new(8., Monospace)),
+        (TextStyle::Body, FontId::new(11.5, Monospace)),
+        (TextStyle::Button, FontId::new(11.5, Monospace)),
+        (TextStyle::Monospace, FontId::new(11., Monospace)),
+        (TextStyle::Heading, FontId::new(17., Monospace)),
+    ]
+    .into();
 }
 
 /// Whether the pointer is busy with the UI
@@ -124,10 +137,11 @@ const PANE_WIDTH: f32 = 240.;
 /// How wide the bar stands, unfolded or not
 ///
 /// Wide enough for the longest line it draws without a name in it, which is
-/// the count of what the spyglass holds at millions of systems. Everything is
-/// lettered in one width, so what a line wants is the number of characters in
-/// it and nothing else.
-const BAR_WIDTH: f32 = 270.;
+/// the count of what the spyglass holds at millions of systems, and wide
+/// enough past that to hold a system's name whole. Everything is lettered in
+/// one width, so what a line wants is the number of characters in it and
+/// nothing else.
+const BAR_WIDTH: f32 = 325.;
 
 /// How tall the gear is drawn
 const GEAR_SIZE: f32 = 18.;
@@ -3573,8 +3587,8 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = words(|ui| {
-            // Narrower than the bar, so that the name has to give.
-            ui.set_max_width(BAR_WIDTH);
+            // Too narrow for the name, whatever the bar is set to.
+            ui.set_max_width(200.);
             applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
@@ -3582,10 +3596,17 @@ mod tests {
             .iter()
             .find(|line| line.contains(ARROW))
             .unwrap_or_else(|| panic!("{said:?}"));
-        // Something gave, and it was not the end it runs to.
+        let (from, to) = name.split_once(ARROW).expect("a route");
+        // Something gave, and what is left of either end is that end: the
+        // start of the name it was cut from, rather than a stretch of the
+        // other one that happened to be nearer the middle.
         assert!(name.contains(CUT), "{name:?}");
-        assert!(name.starts_with("SIGMA"), "{name:?}");
-        assert!(name.ends_with("MINISTRY"), "{name:?}");
+        let (from, to) = (from.trim_end_matches(CUT), to.trim_end_matches(CUT));
+        assert!(
+            !from.is_empty() && "SIGMA DRACONIS".starts_with(from),
+            "{name:?}"
+        );
+        assert!(!to.is_empty() && "MINISTRY".starts_with(to), "{name:?}");
     }
 
     /// One jump is a hop rather than one hops
@@ -4123,9 +4144,9 @@ mod tests {
     ///
     /// Both numbers grow with what has been synced, and the line has to hold
     /// them on one row: wrapped, it is a line that moves the rows under it
-    /// about as the user flies. Seven digits either side comes to 266 of the
-    /// 270 the bar is wide, so millions of systems fit and tens of millions
-    /// do not.
+    /// about as the user flies. Seven digits either side comes to 235 of the
+    /// 325 the bar is wide, so the sky can grow well past millions of systems
+    /// before the line has nowhere left to grow into.
     #[test]
     fn the_count_fits_the_bar_at_millions() {
         let ctx = crate::tests::context();
