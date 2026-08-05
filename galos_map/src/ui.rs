@@ -1410,6 +1410,106 @@ pub(crate) fn thousands(count: u64) -> String {
     grouped
 }
 
+/// How a route is written: the two systems it runs between, in order
+pub(crate) const ARROW: &str = " -> ";
+
+/// What stands where a name was cut short
+///
+/// Two stops rather than an ellipsis, an ellipsis being one character that
+/// reads as three and a name being cut to make room in the first place.
+const CUT: &str = "..";
+
+/// Say a route in `room` characters, keeping both of its ends
+///
+/// A route is named for where it starts and where it ends, and either name is
+/// long on its own: `SIGMA DRACONIS -> MINISTRY` is twenty six characters.
+/// Cut from the right, as a widget cuts a line too long for it, what goes is
+/// the end the route was plotted to reach, and every route out of one system
+/// is then called the same thing.
+///
+/// So the room left over by the arrow is halved between them, and an end that
+/// does not want its half leaves the rest to the other. What is not a route
+/// is handed back whole, there being no second end to keep and whoever draws
+/// it having its own way of cutting a line that does not fit.
+///
+/// An odd character over goes to the name that leads, that being the one read
+/// first, and the two ends are otherwise given exactly as much as each other.
+///
+/// Counted in characters, which is a width now that everything is lettered in
+/// one.
+pub(crate) fn shortened(label: &str, room: usize) -> String {
+    let Some((start, end)) = label.split_once(ARROW) else {
+        return label.to_owned();
+    };
+    if label.chars().count() <= room {
+        return label.to_owned();
+    }
+
+    let names = room.saturating_sub(ARROW.chars().count());
+    // An end cut below a character and the mark saying it was cut is an end
+    // that says nothing, and two of those either side of an arrow say only
+    // that a route runs between two systems. Where it comes to that, what
+    // room there is goes to the name that leads.
+    if names < (CUT.chars().count() + 1) * 2 {
+        return clipped(label, room);
+    }
+
+    let (start_wants, end_wants) = (start.chars().count(), end.chars().count());
+    let half = names / 2;
+    let (start_gets, end_gets) = if start_wants <= half {
+        (start_wants, names - start_wants)
+    } else if end_wants <= half {
+        (names - end_wants, end_wants)
+    } else {
+        (names - half, half)
+    };
+
+    format!("{}{ARROW}{}", clipped(start, start_gets), clipped(end, end_gets))
+}
+
+/// Say `name` in `room` characters
+///
+/// Every character there is room for, cut wherever the room runs out. Backing
+/// up to the word before it would read better and say less: system names are
+/// told apart by their tails, `COL 285 SECTOR SC-K B22-2` from `COL 285 SECTOR
+/// XY-Z A1-0`, so a name cut back to `COL 285..` is a name that no longer says
+/// which one it is. A trailing space goes, being a character that says
+/// nothing.
+///
+/// What is left ends in [`CUT`], so a name that was cut says as much. Room
+/// enough for nothing but that mark is answered with as much of it as there
+/// is room for: a column of them is at least a column.
+fn clipped(name: &str, room: usize) -> String {
+    if name.chars().count() <= room {
+        return name.to_owned();
+    }
+    if room <= CUT.chars().count() {
+        return CUT.chars().take(room).collect();
+    }
+
+    let cut = room - CUT.chars().count();
+    let kept: String = name.chars().take(cut).collect();
+
+    format!("{}{CUT}", kept.trim_end())
+}
+
+/// How many characters of `kind` fit in `room` pixels
+///
+/// Exact, and exactly what [`shortened`] is measured in, everything being
+/// lettered in one width.
+pub(crate) fn characters(
+    ctx: &Context,
+    kind: egui::TextStyle,
+    room: f32,
+) -> usize {
+    let font = kind.resolve(&ctx.global_style());
+    let one = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'));
+    if one <= 0. {
+        return 0;
+    }
+    (room / one).floor().max(0.) as usize
+}
+
 /// What a field holds, if it holds anything
 ///
 /// A field clicked into and not yet typed in holds an empty string, which is
@@ -1661,7 +1761,14 @@ fn applied(
             - gap
             - marks_width(&marks, gap)
             - hops.as_ref().map_or(0., |hops| hops.size().x + gap);
-        let text = egui::RichText::new(active.filter.name());
+        // Cut here rather than left to the layout below, which cuts from the
+        // right hand end and would take the far end of a route with it.
+        // Egui's own truncation still stands behind this, for the names it
+        // has nothing to say about.
+        let text = egui::RichText::new(shortened(
+            active.filter.name(),
+            characters(ui.ctx(), egui::TextStyle::Body, room),
+        ));
         let name = egui::WidgetText::from(if active.enabled {
             text.strong()
         } else {
@@ -3451,6 +3558,36 @@ mod tests {
         assert!(said.contains(&"4 hops".to_owned()), "{said:?}");
     }
 
+    /// A route row too narrow for its name keeps both ends of it
+    ///
+    /// The row cuts what it draws to what the dot, the count and the marks
+    /// leave, and a route cut from the right hand end is a route that no
+    /// longer says where it goes.
+    #[test]
+    fn a_route_row_cut_down_still_says_where_it_goes() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Route {
+            label: "SIGMA DRACONIS -> MINISTRY".to_owned(),
+            systems: vec![1, 2, 3],
+        });
+        let mut panels = Panels::default();
+
+        let said = words(|ui| {
+            // Narrower than the bar, so that the name has to give.
+            ui.set_max_width(BAR_WIDTH);
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
+
+        let name = said
+            .iter()
+            .find(|line| line.contains(ARROW))
+            .unwrap_or_else(|| panic!("{said:?}"));
+        // Something gave, and it was not the end it runs to.
+        assert!(name.contains(CUT), "{name:?}");
+        assert!(name.starts_with("SIGMA"), "{name:?}");
+        assert!(name.ends_with("MINISTRY"), "{name:?}");
+    }
+
     /// One jump is a hop rather than one hops
     #[test]
     fn a_route_of_one_jump_says_it_in_the_singular() {
@@ -3907,6 +4044,79 @@ mod tests {
 
         assert!(said.contains(&"8 in spyglass".to_owned()), "{said:?}");
         assert!(!said.iter().any(|line| line.contains("324")), "{said:?}");
+    }
+
+    /// A route too long for the room keeps both of its ends
+    ///
+    /// Cut from the right, every route out of one system is called the same
+    /// thing, and what goes is the end it was plotted to reach.
+    #[test]
+    fn a_route_cut_down_still_says_where_it_goes() {
+        let said = shortened("SIGMA DRACONIS -> MINISTRY", 18);
+
+        assert_eq!(said, "SIGMA.. -> MINIS..");
+        assert_eq!(said.chars().count(), 18);
+    }
+
+    /// Two ends of the same length are cut to the same length
+    ///
+    /// Neither end is worth more than the other, so what one is given the
+    /// other is given. An odd character over goes to the name that leads,
+    /// that being the one read first.
+    #[test]
+    fn two_ends_of_a_size_are_cut_to_a_size() {
+        let both = shortened("COL 1232312312 -> COL 3211231231", 22);
+        assert_eq!(both, "COL 123.. -> COL 321..");
+
+        let odd = shortened("COL 1232312312 -> COL 3211231231", 21);
+        assert_eq!(odd, "COL 123.. -> COL 32..");
+    }
+
+    /// What fits is left alone, route or not
+    #[test]
+    fn what_fits_is_said_whole() {
+        assert_eq!(shortened("SOL -> WOLF 359", 20), "SOL -> WOLF 359");
+        assert_eq!(shortened("Alliance of Sol", 4), "Alliance of Sol");
+    }
+
+    /// An end that does not want its half leaves the rest to the other
+    ///
+    /// Half each is the fair share and not the useful one: a route from SOL
+    /// has room going spare at one end and a name being cut at the other.
+    #[test]
+    fn an_end_with_room_to_spare_gives_it_to_the_other() {
+        let said = shortened("SOL -> COL 285 SECTOR SC-K B22-2", 20);
+
+        assert_eq!(said, "SOL -> COL 285 SEC..");
+        assert_eq!(said.chars().count(), 20);
+    }
+
+    /// A name is cut where the room runs out, word or no word
+    ///
+    /// Systems are told apart by the tails of their names, so every character
+    /// there is room for is worth having. Backed up to the word before it,
+    /// `COL 285 SECTOR SC-K B22-2` and `COL 285 SECTOR XY-Z A1-0` are the same
+    /// row twice.
+    ///
+    /// A trailing space goes with the cut, being a character that says
+    /// nothing.
+    #[test]
+    fn a_name_is_cut_where_the_room_runs_out() {
+        assert_eq!(clipped("COL 285 SECTOR SC-K B22-2", 12), "COL 285 SE..");
+        assert_eq!(clipped("COL 285 SECTOR", 9), "COL 285..");
+        assert_eq!(clipped("SIGMA DRACONIS", 8), "SIGMA..");
+        assert_eq!(clipped("MINISTRY", 6), "MINI..");
+    }
+
+    /// Room for nothing but the mark is answered with the mark
+    ///
+    /// A row of them is at least a row, where a name cut to no characters at
+    /// all is a gap the reader has to work out the meaning of.
+    #[test]
+    fn a_name_with_no_room_is_all_mark() {
+        assert_eq!(clipped("MINISTRY", 2), "..");
+        assert_eq!(clipped("MINISTRY", 1), ".");
+        assert_eq!(clipped("MINISTRY", 0), "");
     }
 
     /// The count fits the bar at the size the sky is heading for

@@ -22,7 +22,7 @@ use crate::ui::MARGIN;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use bevy_egui::egui::Ui;
+use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_db::factions::Faction as DbFaction;
 use std::collections::HashMap;
@@ -50,6 +50,23 @@ pub fn plugin(app: &mut App) {
 /// the next.
 const WIDTH: f32 = 230.;
 
+/// What the title bar spends on the fold arrow, the close mark and the gaps
+/// around them
+///
+/// The rest of [`WIDTH`] is the title's. Measured rather than worked out, egui
+/// laying its own title bar out, and held down by
+/// `a_route_panel_is_no_wider_than_a_panel`.
+const TITLE_MARKS: f32 = 51.;
+
+/// How much of a title a panel has room for, in characters
+///
+/// A window is at least as wide as its title bar needs, so what a panel is
+/// called is what decides how wide it stands. Cut to this, a route's panel
+/// keeps the width every other panel has.
+fn titling(ctx: &Context) -> usize {
+    crate::ui::characters(ctx, egui::TextStyle::Heading, WIDTH - TITLE_MARKS)
+}
+
 /// The window a panel stands in, put where the tiling says
 ///
 /// `at` is where its right hand top corner goes, that being the corner the
@@ -60,14 +77,19 @@ const WIDTH: f32 = 230.;
 /// `placed` is [`Panel::placed`]: a panel is put where the tiling says on the
 /// frame it opens, and asked for `at` as a default after that, so that one
 /// dragged somewhere stays where it was dragged.
+///
+/// The title is cut to the room there is for it, both ends of a route kept.
+/// A panel as wide as its name is a panel the tiling cannot place and the
+/// user cannot read two of side by side.
 fn framed<'open>(
+    ctx: &Context,
     title: &str,
     id: egui::Id,
     at: egui::Pos2,
     placed: bool,
     showing: &'open mut bool,
 ) -> egui::Window<'open> {
-    let window = egui::Window::new(title.to_owned())
+    let window = egui::Window::new(crate::ui::shortened(title, titling(ctx)))
         .id(id)
         .open(showing)
         .resizable(false)
@@ -462,6 +484,7 @@ fn panels(
         // do not overlap.
         let placed = std::mem::replace(&mut panel.placed, true);
         let window = framed(
+            ctx,
             panel.subject.title(),
             panel.subject.id(),
             at,
@@ -921,6 +944,7 @@ mod tests {
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let mut showing = true;
             let panel = framed(
+                ui.ctx(),
                 title,
                 egui::Id::new("test-panel"),
                 at,
@@ -957,13 +981,15 @@ mod tests {
 
     /// A panel's contents are laid out across the whole of its window
     ///
-    /// A window is at least as wide as its title bar, and a route is titled
-    /// with the names of both its ends. Contents laid out to the width a
-    /// panel asks for would leave a band of empty panel down the right hand
-    /// side of one, which reads as a margin nobody chose.
+    /// A window is at least as wide as its title bar, and a system is called
+    /// what it is called: `COL 285 SECTOR SC-K B22-2` is the name of a place
+    /// people go, and it is not cut down the way a route's two ends are.
+    /// Contents laid out to the width a panel asks for would leave a band of
+    /// empty panel down the right hand side of one, which reads as a margin
+    /// nobody chose.
     #[test]
     fn a_long_title_widens_what_stands_under_it() {
-        let (taken, had) = laid_out("SIGMA DRACONIS -> MINISTRY");
+        let (taken, had) = laid_out("COL 285 SECTOR SC-K B22-2");
 
         assert!(had > WIDTH, "{had} is no wider than the {WIDTH} asked for");
         assert_eq!(taken, had);
@@ -973,6 +999,23 @@ mod tests {
     #[test]
     fn a_short_title_leaves_the_width_alone() {
         assert_eq!(laid_out("SOL"), (WIDTH, WIDTH));
+    }
+
+    /// A route's panel is no wider than a panel, however it is named
+    ///
+    /// Both ends of a route run long, and a window is as wide as its title
+    /// bar needs. Left whole, the title decides how wide the panel stands,
+    /// which is a panel the tiling cannot step by and the user cannot read
+    /// two of side by side.
+    ///
+    /// Which is also what holds [`TITLE_MARKS`] down. What the title bar
+    /// spends on the fold arrow and the close mark is measured off egui
+    /// rather than worked out, so this is where it is found to have drifted.
+    #[test]
+    fn a_route_panel_is_no_wider_than_a_panel() {
+        let (_, had) = laid_out("SIGMA DRACONIS -> MINISTRY");
+
+        assert_eq!(had, WIDTH);
     }
 
     /// A panel opens with its right hand top corner where it was put
