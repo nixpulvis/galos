@@ -1,11 +1,13 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::{Spyglass, route::fetch::fetch_route};
+use crate::systems::filter::{Admitting, DimTo, Filters};
+use crate::systems::selection::Selection;
+use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Db, search::Searched};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use galos_db::systems::System as DbSystem;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -16,7 +18,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();
 
-    app.add_systems(Update, fetch.in_set(MapSet::Fetch));
+    app.add_systems(Update, (fetch, fetch_selected).in_set(MapSet::Fetch));
 }
 
 /// How long the map waits before asking again for what it already has
@@ -57,9 +59,22 @@ impl Default for LastFetchedAt {
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub enum FetchIndex {
     // System<String>
-    Region(IVec3, i32),
+    /// Everywhere within a radius of a point, and what of it is wanted
+    ///
+    /// Nothing wanted in particular is the whole of what is there. Where the
+    /// filters have said what they admit, the region is asked for that alone,
+    /// which makes it a different question about the same place: adding or
+    /// dropping a filter is somewhere new rather than a refresh, and is
+    /// answered at the throttle rather than waiting out the poll.
+    Region(IVec3, i32, Option<Admitting>),
     // View<Frustum>,
     Route(String, String, String),
+    /// Named systems, by address
+    ///
+    /// What the map is asked for a row at a time rather than by where it is:
+    /// a system the user picked out of a list is one the map may never have
+    /// been near.
+    Systems(Vec<i64>),
 }
 
 impl FetchIndex {
@@ -71,22 +86,23 @@ impl FetchIndex {
     /// somewhere should bring stars promptly however slowly the map is set to
     /// refresh.
     ///
-    /// A region refreshes another when it has the same centre and reaches no
+    /// A region refreshes another when it has the same center and reaches no
     /// further. A larger radius takes in systems that were never asked for, so
     /// it is a new question standing in the same place.
     ///
     /// A question and a predicate rather than an ordering. Two regions about
-    /// different centres are each no answer to the other, which is a thing an
+    /// different centers are each no answer to the other, which is a thing an
     /// [`Ord`] cannot say: it would have to call one of them the greater, and
     /// whichever it called it would be wrong the other way round.
     fn refreshes(&self, last: &FetchIndex) -> bool {
         match (self, last) {
             (
-                FetchIndex::Region(centre, radius),
-                FetchIndex::Region(before, reached),
-            ) => centre == before && radius <= reached,
-            // Only the spyglass records what it last fetched, so a route is
-            // never on either side of this. Somewhere new either way.
+                FetchIndex::Region(center, radius, admitting),
+                FetchIndex::Region(before, reached, asked),
+            ) => center == before && radius <= reached && admitting == asked,
+            // Only the spyglass records what it last fetched, so neither a
+            // route nor a named system is ever on either side of this.
+            // Somewhere new either way.
             _ => false,
         }
     }
@@ -97,14 +113,26 @@ impl fmt::Debug for FetchIndex {
         use FetchIndex::*;
 
         match self {
-            Region(center, radius) => write!(
-                f,
-                "<({},{},{}),{}>",
-                center.x, center.y, center.z, radius
-            ),
+            Region(center, radius, admitting) => {
+                write!(
+                    f,
+                    "<({},{},{}),{}",
+                    center.x, center.y, center.z, radius
+                )?;
+                if let Some(admitting) = admitting {
+                    write!(
+                        f,
+                        " admitting {} factions and {} systems",
+                        admitting.factions.len(),
+                        admitting.systems.len()
+                    )?;
+                }
+                write!(f, ">")
+            }
             Route(start, end, range) => {
                 write!(f, "<{}-{}>{}>", start, end, range)
             }
+            Systems(addresses) => write!(f, "<{} named>", addresses.len()),
         }
     }
 }
@@ -122,6 +150,8 @@ pub fn fetch(
     mut search_events: MessageReader<Searched>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
+    filters: Res<Filters>,
+    dim: Res<DimTo>,
     time: Res<Time<Real>>,
     mut last_fetched_at: ResMut<LastFetchedAt>,
     throttle: Res<Throttle>,
@@ -133,6 +163,8 @@ pub fn fetch(
             &camera_query,
             &mut tasks,
             &mut spyglass,
+            &filters,
+            &dim,
             &time,
             &mut last_fetched_at,
             &throttle,
@@ -143,12 +175,9 @@ pub fn fetch(
 
     for event in search_events.read() {
         match event {
-            // TODO: Ensure at least the searched star is fetched. I don't do it
-            // again here because it was already fetched (syncronously) in
-            // `search`. That needs to be refactored anyway. So for now, if
-            // you search for a system with AlwaysFetch(false) it may take you
-            // to a part of empty space. Setting AlwaysFetch(true) will
-            // populate it.
+            // A search finds and picks out nothing, so there is nothing
+            // here to fetch yet. Whatever the user picks out of what it
+            // found is asked for by `fetch_selected`.
             Searched::System { .. } => {}
             Searched::Route { start, end, range } => {
                 fetch_route(
@@ -165,10 +194,17 @@ pub fn fetch(
     }
 }
 
+/// Ask for the region under the camera, or for what of it is admitted
+///
+/// Narrowed by the filters only where what they exclude is not drawn at all.
+/// Anywhere above that the excluded systems are wanted on screen to be dimmed,
+/// and what was never fetched cannot be drawn faintly.
 fn fetch_spyglass(
     camera_query: &Query<&OrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
+    filters: &Res<Filters>,
+    dim: &Res<DimTo>,
     time: &Res<Time<Real>>,
     last_fetched_at: &mut ResMut<LastFetchedAt>,
     throttle: &Res<Throttle>,
@@ -176,8 +212,10 @@ fn fetch_spyglass(
     db: &Res<Db>,
 ) {
     let Ok(camera) = camera_query.single() else { return };
-    let center = camera.focus.as_ivec3();
-    let index = FetchIndex::Region(center, spyglass.radius as i32);
+    let center = camera.center.as_ivec3();
+    let admitting = if dim.0 == 0. { filters.admitting() } else { None };
+    let index =
+        FetchIndex::Region(center, spyglass.radius as i32, admitting.clone());
     let now = time.last_update().unwrap_or(time.startup());
     if spyglass_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
         debug!(
@@ -191,7 +229,11 @@ fn fetch_spyglass(
         let radius = spyglass.radius;
         let task = task_pool.spawn(async move {
             let cent = [center.x as f64, center.y as f64, center.z as f64];
-            DbSystem::fetch_in_range_of_point(&db, radius.floor() as f64, cent)
+            let range = radius.floor() as f64;
+            let narrowed = admitting.as_ref().map(|admitting| {
+                (admitting.factions.as_slice(), admitting.systems.as_slice())
+            });
+            DbSystem::fetch_in_range_of_point(&db, range, cent, narrowed)
                 .await
                 .unwrap_or_default()
         });
@@ -201,6 +243,76 @@ fn fetch_spyglass(
     }
 }
 
+/// Ask for the systems that are picked out and have no star on the map
+///
+/// A system is picked out of what the database answered, which the map may
+/// never have been near: a name searched for and flown to is exactly that.
+/// Without this the camera arrives at empty space, and the ring and the name
+/// that mark a selection have nothing to hang on.
+///
+/// Whatever the spyglass is set to. Fetching by region is what the user turns
+/// off to stop the map filling itself in as they fly, and a system they
+/// picked out by hand is not the map filling itself in.
+///
+/// Only when the selection changes, which is what keeps a system the database
+/// cannot place from being asked for again every frame. Such a system never
+/// spawns, so what is missing would go on being missing.
+///
+/// The spyglass's own memory of where it last fetched is left alone. This
+/// asks for named rows rather than for somewhere, so it says nothing about
+/// whether the region under the camera is worth asking for again.
+fn fetch_selected(
+    selection: Res<Selection>,
+    systems: Query<&System>,
+    mut tasks: ResMut<FetchTasks>,
+    time: Res<Time<Real>>,
+    db: Res<Db>,
+) {
+    if !selection.is_changed() {
+        return;
+    }
+
+    let spawned = systems.iter().map(|system| system.address).collect();
+    let wanted = unspawned(&selection.addresses(), &spawned);
+    if wanted.is_empty() {
+        return;
+    }
+
+    let now = time.last_update().unwrap_or(time.startup());
+    let task_pool = AsyncComputeTaskPool::get();
+    let asking = wanted.clone();
+    let db = db.0.clone();
+    let task = task_pool.spawn(async move {
+        DbSystem::fetch_many(&db, &asking).await.unwrap_or_default()
+    });
+    tasks.fetched.insert(FetchIndex::Systems(wanted), (task, now));
+}
+
+/// Which of `selected` the map has no star for, by address
+///
+/// One query for all of them, so this answers a list rather than a verdict
+/// per system.
+fn unspawned(selected: &[i64], spawned: &HashSet<i64>) -> Vec<i64> {
+    selected
+        .iter()
+        .copied()
+        .filter(|address| !spawned.contains(address))
+        .collect()
+}
+
+/// Whether the spyglass should ask for `index` now
+///
+/// One region query at a time. The throttle says how long to wait since the
+/// last one was *started*, which is no answer at all when a region takes
+/// longer to come back than the throttle waits: flying while zoomed out asks
+/// again every throttle, and a query over most of the galaxy takes a second
+/// or two, so a handful of them end up on the wire at once, each one a copy
+/// of most of the table and each one crowding the rest.
+///
+/// Waited on rather than replaced, unlike a route. The regions asked for
+/// while the camera moves are each a real answer about where it was, and
+/// dropping the one under way for the next would leave nothing arriving at
+/// all until the camera stopped.
 pub fn spyglass_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
@@ -209,6 +321,10 @@ pub fn spyglass_condition(
     throttle: &Res<Throttle>,
     poll: &Res<Poll>,
 ) -> bool {
+    if region_asked(tasks.fetched.keys()) {
+        return false;
+    }
+
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
         if index.refreshes(last_fetched) {
             poll.0.map_or(false, |wait| {
@@ -220,13 +336,126 @@ pub fn spyglass_condition(
     })
 }
 
+/// Whether a region is among the queries already on the wire
+///
+/// Only a region. A route and a set of named systems are each asked for once
+/// by something the user just did, and neither is the map asking again for
+/// most of what it already holds.
+fn region_asked<'a>(mut asked: impl Iterator<Item = &'a FetchIndex>) -> bool {
+    asked.any(|index| matches!(index, FetchIndex::Region(..)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A region of `radius` about `centre` on the x axis
-    fn region(centre: i32, radius: i32) -> FetchIndex {
-        FetchIndex::Region(IVec3::new(centre, 0, 0), radius)
+    /// A region of `radius` about `center` on the x axis, asked for whole
+    fn region(center: i32, radius: i32) -> FetchIndex {
+        FetchIndex::Region(IVec3::new(center, 0, 0), radius, None)
+    }
+
+    /// The same region, narrowed to the faction at `id`
+    fn region_admitting(center: i32, radius: i32, id: i32) -> FetchIndex {
+        let admitting = Admitting { factions: vec![id], systems: Vec::new() };
+        FetchIndex::Region(IVec3::new(center, 0, 0), radius, Some(admitting))
+    }
+
+    /// The map holding a star for each of `addresses`
+    fn on_the_map(addresses: &[i64]) -> HashSet<i64> {
+        addresses.iter().copied().collect()
+    }
+
+    /// A region narrowed to a filter is a different question about the place
+    ///
+    /// Not a refresh of the region asked for whole, so it is answered at the
+    /// throttle rather than waiting out the poll. Adding a filter while the
+    /// excluded are not drawn changes what the map is asking for, and the
+    /// user is waiting on the answer.
+    #[test]
+    fn a_narrowed_region_does_not_refresh_the_whole_one() {
+        assert!(!region_admitting(0, 10, 7).refreshes(&region(0, 10)));
+        assert!(!region(0, 10).refreshes(&region_admitting(0, 10, 7)));
+    }
+
+    /// Nor does one narrowed to something else
+    #[test]
+    fn two_narrowings_are_two_questions() {
+        assert!(
+            !region_admitting(0, 10, 7).refreshes(&region_admitting(0, 10, 9))
+        );
+    }
+
+    /// The same narrowing about the same place is a refresh
+    #[test]
+    fn the_same_narrowed_region_refreshes() {
+        assert!(
+            region_admitting(0, 10, 7).refreshes(&region_admitting(0, 10, 7))
+        );
+    }
+
+    /// A region already on the wire is one the spyglass waits for
+    ///
+    /// The throttle measures from where the last query was sent rather than
+    /// from where it came back, so a region that takes longer to answer than
+    /// the throttle waits would otherwise be asked again over the top of
+    /// itself, and again, while the camera moves.
+    #[test]
+    fn a_region_under_way_is_waited_for() {
+        assert!(region_asked([region(0, 10)].iter()));
+    }
+
+    /// Nothing under way is nothing to wait for
+    #[test]
+    fn no_query_under_way_is_no_reason_to_wait() {
+        assert!(!region_asked([].iter()));
+    }
+
+    /// A route does not hold the spyglass up
+    ///
+    /// It is asked for once by something the user just did, and it is not the
+    /// map asking again for most of what it already holds.
+    #[test]
+    fn a_route_under_way_does_not_hold_the_spyglass_up() {
+        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
+
+        assert!(!region_asked([route].iter()));
+    }
+
+    /// Nor does a system that was picked out
+    #[test]
+    fn a_picked_system_does_not_hold_the_spyglass_up() {
+        assert!(!region_asked([FetchIndex::Systems(vec![7])].iter()));
+    }
+
+    /// A system picked out with no star on the map is asked for
+    ///
+    /// The case the whole thing is for: a name searched for, picked out of
+    /// what came back, and flown to, from a part of the sky the map has
+    /// never fetched.
+    #[test]
+    fn a_selection_the_map_has_not_reached_is_asked_for() {
+        assert_eq!(unspawned(&[7], &on_the_map(&[])), vec![7]);
+    }
+
+    /// One already on the map is not asked for again
+    #[test]
+    fn a_selection_already_drawn_is_left_alone() {
+        assert_eq!(unspawned(&[7], &on_the_map(&[7])), Vec::<i64>::new());
+    }
+
+    /// A set half on the map asks only for the half that is not
+    ///
+    /// One query for the lot rather than one each, and the order they were
+    /// picked in is what it goes out in.
+    #[test]
+    fn a_gathered_selection_asks_for_what_is_missing() {
+        assert_eq!(unspawned(&[7, 9, 11], &on_the_map(&[9])), vec![7, 11]);
+    }
+
+    /// Nothing picked out asks for nothing
+    #[test]
+    fn an_empty_selection_asks_for_nothing() {
+        assert_eq!(unspawned(&[], &on_the_map(&[7])), Vec::<i64>::new());
     }
 
     /// The same region asked for again is a refresh

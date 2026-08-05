@@ -57,7 +57,7 @@ const MAX_RADIUS: f32 = 1e6;
 
 /// How close to its target a value must be before it is pinned there
 ///
-/// Relative to the target's magnitude, since a focus ranges from a fraction
+/// Relative to the target's magnitude, since a center ranges from a fraction
 /// of a light year near Sol to a hundred thousand at the rim, and a radius
 /// spans nine orders of magnitude.
 const SNAP_TOLERANCE: f64 = 1e-9;
@@ -150,7 +150,7 @@ fn approach(smoothness: f32, dt: f32) -> f32 {
 /// [`approach`] covers a fraction of what remains each frame, so it
 /// converges on a target without reaching it. Pinning gives it an exact
 /// end, which lets the star fetch settle: its regions are keyed on the
-/// focus, and a focus that never stops moving keeps re-requesting them.
+/// center, and a center that never stops moving keeps re-requesting them.
 fn snap(value: f64, target: f64) -> f64 {
     if (target - value).abs() <= SNAP_TOLERANCE * target.abs().max(1.) {
         target
@@ -175,7 +175,7 @@ fn eased_position(value: DVec3, target: DVec3, fraction: f64) -> DVec3 {
 
 /// A message which triggers the movement of the camera
 ///
-/// Send the camera to be focused on `position`, in absolute galactic light
+/// Send the camera to be centered on `position`, in absolute galactic light
 /// years. Positions are `f64` because a `f32` cannot tell two points at the
 /// galactic rim apart any closer than a few thousand light seconds, which is
 /// most of the way across a star system.
@@ -202,7 +202,12 @@ const DEFAULT_HALF_FOV: f32 = std::f32::consts::PI / 8.;
 ///
 /// A route drawn corner to corner of the viewport reads as one that did not
 /// quite fit.
-const FRAMING_MARGIN: f32 = 1.15;
+///
+/// Read by whatever sets the reach to match a framing, so that the map draws
+/// out to the edge of what the camera was stood back to show. Something framed
+/// exactly to its own size is a thing whose furthest points sit on the rim of
+/// the reach, where an `f32` rounding decides whether they are drawn at all.
+pub(crate) const FRAMING_MARGIN: f32 = 1.15;
 
 /// How far back to stand to take in `extent` light years about what is looked
 /// at
@@ -228,29 +233,29 @@ fn stand_back(extent: f32, projection: Option<&Projection>) -> f32 {
 /// A camera that orbits a point in the galaxy
 ///
 /// Replaces `bevy_panorbit_camera`, which cannot be used here for two
-/// reasons. Its focus is a `Vec3`, so it cannot name a point out at the rim
+/// reasons. Its center is a `Vec3`, so it cannot name a point out at the rim
 /// any more precisely than a star system is wide. And it writes an absolute
 /// translation every frame, which is exactly what a floating origin asks you
-/// not to do: `big_space` would spend every frame recentring a camera that
+/// not to do: `big_space` would spend every frame recentering a camera that
 /// had already put itself back.
 ///
-/// The orbit is instead kept as a focus, a radius and two angles, which is
+/// The orbit is instead kept as a center, a radius and two angles, which is
 /// what the controls actually manipulate. The cell and transform are
 /// computed from those once per frame, so nothing is ever fought over.
 #[derive(Component)]
 pub struct OrbitCamera {
     /// Absolute galactic position the camera looks at, in light years
-    pub focus: DVec3,
-    /// Where the focus is heading, which it approaches smoothly
-    pub target_focus: DVec3,
+    pub center: DVec3,
+    /// Where the center is heading, which it approaches smoothly
+    pub target_center: DVec3,
     /// The move under way, if there is one
     ///
-    /// While set, the focus follows [`travelled`] between the move's two
+    /// While set, the center follows [`travelled`] between the move's two
     /// ends. Panning clears it.
     pub travel: Option<Travel>,
     /// Absolute galactic position of the camera itself, in light years
     ///
-    /// Derived from the focus and the orbit, and published here because
+    /// Derived from the center and the orbit, and published here because
     /// distances to stars are wanted by half the map. Reading it avoids
     /// having to undo the cell split to ask where the camera is.
     pub eye: DVec3,
@@ -277,8 +282,8 @@ pub struct OrbitCamera {
 impl Default for OrbitCamera {
     fn default() -> Self {
         OrbitCamera {
-            focus: DVec3::ZERO,
-            target_focus: DVec3::ZERO,
+            center: DVec3::ZERO,
+            target_center: DVec3::ZERO,
             travel: None,
             eye: DVec3::ZERO,
             rotation: Quat::IDENTITY,
@@ -322,7 +327,7 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
 
 /// Starts a move on each [`MoveCamera`] message
 ///
-/// Sets up a [`Travel`] from the camera's current focus to the requested
+/// Sets up a [`Travel`] from the camera's current center to the requested
 /// position. A message arriving mid-move replaces it, starting a fresh
 /// curve from wherever the camera has reached.
 pub fn move_camera(
@@ -334,10 +339,10 @@ pub fn move_camera(
         let Ok(mut camera) = query.single_mut() else { continue };
 
         if let Some(position) = event.position {
-            let from = camera.focus;
+            let from = camera.center;
             let distance = (position - from).length();
             let duration = travel_duration(distance);
-            camera.target_focus = position;
+            camera.target_center = position;
             camera.travel =
                 Some(Travel { from, to: position, elapsed: 0., duration });
         }
@@ -388,11 +393,11 @@ pub fn orbit_camera(
             let across = orbit.rotation * Vec3::X * -motion.delta.x * rate;
             let up = orbit.rotation * Vec3::Y * motion.delta.y * rate;
             // Dragging cancels a move in progress and takes the target from
-            // wherever it had reached, so the pointer has the focus alone.
+            // wherever it had reached, so the pointer has the center alone.
             if orbit.travel.take().is_some() {
-                orbit.target_focus = orbit.focus;
+                orbit.target_center = orbit.center;
             }
-            orbit.target_focus += (across + up).as_dvec3();
+            orbit.target_center += (across + up).as_dvec3();
         }
 
         let lines = match scroll.unit {
@@ -407,10 +412,10 @@ pub fn orbit_camera(
     }
 
     // Approach whatever was asked for, rather than jumping to it. A search
-    // can send the focus clear across the galaxy, and arriving instantly
+    // can send the center clear across the galaxy, and arriving instantly
     // leaves no sense of where the new system is in relation to the old.
     let dt = time.delta_secs();
-    let focus = match orbit.travel.as_mut() {
+    let center = match orbit.travel.as_mut() {
         // A commanded move knows both ends of its journey from the start, so
         // it can be eased away from one and into the other.
         Some(travel) => {
@@ -421,7 +426,7 @@ pub fn orbit_camera(
                 1.
             };
             let arrived = progress >= 1.;
-            let focus = if arrived {
+            let center = if arrived {
                 travel.to
             } else {
                 travel.from.lerp(travel.to, travelled(progress) as f64)
@@ -429,12 +434,12 @@ pub fn orbit_camera(
             if arrived {
                 orbit.travel = None;
             }
-            focus
+            center
         }
         // A drag moves the target a little at a time, and is followed.
         None => eased_position(
-            orbit.focus,
-            orbit.target_focus,
+            orbit.center,
+            orbit.target_center,
             approach(orbit.pan_smoothness, dt) as f64,
         ),
     };
@@ -450,9 +455,9 @@ pub fn orbit_camera(
     let pitch = eased(orbit.pitch, orbit.target_pitch, turn);
 
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
-    let eye = focus + (rotation * Vec3::Z * radius).as_dvec3();
+    let eye = center + (rotation * Vec3::Z * radius).as_dvec3();
 
-    orbit.focus = focus;
+    orbit.center = center;
     orbit.radius = radius;
     orbit.yaw = yaw;
     orbit.pitch = pitch;

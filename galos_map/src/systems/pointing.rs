@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::filter::{self, Filtered};
+use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Star;
@@ -162,8 +162,13 @@ impl PointedAt {
 ///
 /// A name wins over a star. Names are drawn over everything, so a name under
 /// the pointer is what the eye says is being pointed at, whatever happens to
-/// lie nearer the camera behind it. Between stars the nearest wins, as it
-/// would if they blocked each other.
+/// lie nearer the camera behind it.
+///
+/// Between stars, an admitted one wins, and only then the nearer of the two,
+/// as it would if they blocked each other. A filter says which systems the
+/// user is working with, and the rest are drawn faintly to be the space those
+/// are read against; letting that space take the pointer off an admitted
+/// system would have the background answer for the thing in front of it.
 ///
 /// Reachable across [`super`], since what is drawn for a system is ordered
 /// after it: a ring, a tint and a selection all answer what this decides, and
@@ -178,6 +183,7 @@ pub(super) fn point_at(
     boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
     targets: Query<&ChildOf, With<PointerTarget>>,
+    filtered: Query<(), With<Filtered>>,
     pointed_at: Query<Entity, With<PointedAt>>,
     mut commands: Commands,
 ) {
@@ -203,7 +209,12 @@ pub(super) fn point_at(
     }
 
     let mut named: Option<Entity> = None;
-    let mut nearest: Option<(Entity, f32)> = None;
+    // What is admitted, and only then what is nearest. A system the filters
+    // admit is what the user asked to be looking at, so one lying behind
+    // another they did not ask for is still the one they are pointing at:
+    // the dim star in front is the background the filter is read against, and
+    // background that answers the pointer is background in the way.
+    let mut nearest: Option<(Entity, bool, f32)> = None;
 
     for hits in hovered.values() {
         for (entity, hit) in hits.iter() {
@@ -212,14 +223,19 @@ pub(super) fn point_at(
                     named = Some(name.parent());
                 }
             } else if let Ok(target) = targets.get(*entity) {
-                if nearest.is_none_or(|(_, depth)| hit.depth < depth) {
-                    nearest = Some((target.parent(), hit.depth));
+                let system = target.parent();
+                let dim = filtered.contains(system);
+                let better = nearest.is_none_or(|(_, was_dim, depth)| {
+                    (dim, hit.depth) < (was_dim, depth)
+                });
+                if better {
+                    nearest = Some((system, dim, hit.depth));
                 }
             }
         }
     }
 
-    let wanted = named.or(nearest.map(|(system, _)| system));
+    let wanted = named.or(nearest.map(|(system, ..)| system));
     let mut already = false;
     for system in &pointed_at {
         if Some(system) == wanted {
@@ -313,6 +329,7 @@ pub fn ring(
         (With<System>, With<PointedAt>, Without<Selected>),
     >,
     targets: Query<&GlobalTransform, With<PointerTarget>>,
+    dim: Res<DimTo>,
 ) {
     let Ok(camera) = camera.single() else { return };
 
@@ -331,7 +348,7 @@ pub fn ring(
         gizmos.circle(
             Isometry3d::new(system.translation(), camera.rotation),
             radius,
-            filter::dim(INDICATOR, filtered),
+            dim.against(INDICATOR, filtered),
         );
     }
 }
@@ -339,6 +356,9 @@ pub fn ring(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::entity::EntityHashMap;
+    use bevy::picking::backend::HitData;
+    use bevy::picking::pointer::PointerId;
 
     /// Crossing a system does not count as pointing at it
     ///
@@ -367,5 +387,92 @@ mod tests {
 
         assert!(rested.settled(10. + DWELL * 1.1));
         assert!(rested.settled(10. + DWELL * 10.));
+    }
+
+    /// A map with `stars` under the pointer at once, each `(dim, depth)`
+    ///
+    /// Answers which system each of them stands for, in the order given.
+    /// Every star is a system carrying the child the pointer actually hits,
+    /// as the sky is built, and the hits are what a picking backend would
+    /// have reported for those children.
+    fn pointed(stars: &[(bool, f32)]) -> (App, Vec<Entity>) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.add_systems(Update, point_at);
+
+        let mut over = EntityHashMap::default();
+        let systems = stars
+            .iter()
+            .map(|(dim, depth)| {
+                let system = app.world_mut().spawn_empty().id();
+                if *dim {
+                    app.world_mut().entity_mut(system).insert(Filtered);
+                }
+                let target = app
+                    .world_mut()
+                    .spawn((PointerTarget, ChildOf(system)))
+                    .id();
+                over.insert(
+                    target,
+                    HitData {
+                        camera: Entity::PLACEHOLDER,
+                        depth: *depth,
+                        position: None,
+                        normal: None,
+                        extra: None,
+                    },
+                );
+                system
+            })
+            .collect();
+
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+        (app, systems)
+    }
+
+    /// Which of `stars` came out pointed at
+    fn points_at(app: &App, stars: &[Entity]) -> Vec<bool> {
+        stars
+            .iter()
+            .map(|star| app.world().entity(*star).contains::<PointedAt>())
+            .collect()
+    }
+
+    /// An admitted system is pointed at through a dim one nearer the camera
+    ///
+    /// The dim ones are the space a filter is read against. One of them
+    /// answering the pointer over an admitted system behind it would put the
+    /// background in the way of the thing it is there to set off.
+    #[test]
+    fn an_admitted_system_is_pointed_at_through_a_dim_one() {
+        let (app, stars) = pointed(&[(true, 1.), (false, 50.)]);
+
+        assert_eq!(points_at(&app, &stars), vec![false, true]);
+    }
+
+    /// Between two admitted, the nearer is still the one pointed at
+    ///
+    /// Being admitted decides between a dim star and a lit one, and depth
+    /// goes on deciding everything it decided before.
+    #[test]
+    fn between_two_admitted_the_nearer_is_pointed_at() {
+        let (app, stars) = pointed(&[(false, 1.), (false, 50.)]);
+
+        assert_eq!(points_at(&app, &stars), vec![true, false]);
+    }
+
+    /// And between two dim ones, likewise
+    ///
+    /// Neither of them admitted, so the rule that decided it before is the
+    /// whole of what is left.
+    #[test]
+    fn between_two_dim_ones_the_nearer_is_pointed_at() {
+        let (app, stars) = pointed(&[(true, 1.), (true, 50.)]);
+
+        assert_eq!(points_at(&app, &stars), vec![true, false]);
     }
 }

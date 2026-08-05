@@ -17,11 +17,12 @@ use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::Selection;
+use crate::ui::Chose;
 use crate::ui::MARGIN;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use bevy_egui::egui::Ui;
+use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_db::factions::Faction as DbFaction;
 use std::collections::HashMap;
@@ -36,7 +37,10 @@ pub fn plugin(app: &mut App) {
     // `ui::chrome` concludes at its end whether the pointer is busy with the
     // UI, from every window drawn in the pass so far. Drawn before it, these
     // are counted in the same frame they are shown rather than the next.
-    app.add_systems(EguiPrimaryContextPass, panels.before(crate::ui::chrome));
+    app.add_systems(
+        EguiPrimaryContextPass,
+        panels.after(crate::ui::lettering).before(crate::ui::chrome),
+    );
 }
 
 /// How wide a panel stands
@@ -45,6 +49,94 @@ pub fn plugin(app: &mut App) {
 /// answered with, so that the two columns do not shift from one system to
 /// the next.
 const WIDTH: f32 = 230.;
+
+/// What the title bar spends on the fold arrow, the close mark and the gaps
+/// around them
+///
+/// The rest of [`WIDTH`] is the title's. Measured rather than worked out, egui
+/// laying its own title bar out, and held down by
+/// `a_route_panel_is_no_wider_than_a_panel`.
+const TITLE_MARKS: f32 = 46.;
+
+/// How much of a title a panel has room for, in characters
+///
+/// A window is at least as wide as its title bar needs, so what a panel is
+/// called is what decides how wide it stands. Cut to this, a route's panel
+/// keeps the width every other panel has.
+fn titling(ctx: &Context) -> usize {
+    crate::ui::characters(ctx, egui::TextStyle::Body, WIDTH - TITLE_MARKS)
+}
+
+/// What a panel is called, laid out across its title bar
+///
+/// Lettered as the panel's own contents are. A title set for a heading stands
+/// half again as tall as everything under it, which reads as a title bar
+/// borrowed from some other window rather than as the top of this one.
+///
+/// Cut to the room there is, and then filled out to it with the spaces the cut
+/// left over: egui centres a title between the marks either side of it, and a
+/// title that fills the bar has nothing left to centre, so it stands at the
+/// left where a name is read from.
+fn titled(ctx: &Context, title: &str) -> egui::RichText {
+    let room = titling(ctx);
+    let said = crate::ui::shortened(title, room);
+    let spare = room.saturating_sub(said.chars().count());
+
+    egui::RichText::new(format!("{said}{}", " ".repeat(spare)))
+        .text_style(egui::TextStyle::Body)
+}
+
+/// The window a panel stands in, put where the tiling says
+///
+/// `at` is where its right hand top corner goes, that being the corner the
+/// tiling works from: panels stand against the right edge of the viewport, and
+/// a window is at least as wide as its title bar needs, so where its left edge
+/// falls is not known until it has been drawn.
+///
+/// `placed` is [`Panel::placed`]: a panel is put where the tiling says on the
+/// frame it opens, and asked for `at` as a default after that, so that one
+/// dragged somewhere stays where it was dragged.
+///
+/// The title is cut to the room there is for it, both ends of a route kept.
+/// A panel as wide as its name is a panel the tiling cannot place and the
+/// user cannot read two of side by side.
+fn framed<'open>(
+    ctx: &Context,
+    title: &str,
+    id: egui::Id,
+    at: egui::Pos2,
+    placed: bool,
+    showing: &'open mut bool,
+) -> egui::Window<'open> {
+    let window = egui::Window::new(titled(ctx, title))
+        .id(id)
+        .open(showing)
+        .resizable(false)
+        .pivot(egui::Align2::RIGHT_TOP)
+        // The width alone. Left unsaid it is `Style::default_area_size`, 600,
+        // which will not fit where a panel is asked to be placed, so egui
+        // slides the window somewhere it does and remembers it there. The
+        // height is the window's own business: said here it is imposed rather
+        // than defaulted, and a list asked to fit the height of the last panel
+        // drawn shows three lines of eight.
+        .default_width(WIDTH);
+
+    if placed { window.default_pos(at) } else { window.current_pos(at) }
+}
+
+/// Lay a panel's contents out over the whole of the window
+///
+/// [`WIDTH`] is what a panel asks for, and a window is at least as wide as its
+/// title bar needs. A route is titled with the names of both its ends, which
+/// is wider, and egui hands the extra room to the contents to use or leave.
+///
+/// They take it. A line in a list is a control the width of the list, so a
+/// list laid out to [`WIDTH`] inside a wider window stops short of the frame
+/// and leaves a band of empty panel down the right hand side, which reads as
+/// a margin nobody chose.
+fn spread(ui: &mut Ui) {
+    ui.set_min_width(WIDTH);
+}
 
 /// What the user has a panel open for
 ///
@@ -66,6 +158,17 @@ pub struct Panels {
     /// still opens where it asked to, since egui only moves a window to bring
     /// it back inside the viewport.
     height: f32,
+    /// How wide the widest panel drawn came out
+    ///
+    /// How far across the next column of them opens, and the widest for the
+    /// reason the height is the tallest. A panel is at least [`WIDTH`] and as
+    /// much wider as its title bar needs, which for a route is the names of
+    /// both its ends, so a column stepped by what a panel asks for would open
+    /// the next one over the top of a wide one already standing.
+    ///
+    /// Only the columns. Where a panel opens down the edge does not depend on
+    /// this, panels being placed by the corner they are tiled against.
+    width: f32,
 }
 
 /// One open panel
@@ -352,6 +455,7 @@ fn panels(
     names: Res<FactionNames>,
     mut selection: ResMut<Selection>,
     mut filters: ResMut<Filters>,
+    mut selected: ResMut<crate::systems::route::Selected>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
@@ -361,33 +465,40 @@ fn panels(
     let ctx = contexts.ctx_mut()?;
     // Where the camera is looking, which is the distance the spyglass and
     // the selection's own row are measured in.
-    let focus = orbit.single().map(|camera| camera.focus).ok();
-    // The top right corner, clear of the settings pane and the bar,
-    // which stand against the left edge and the top middle. Measured from
-    // the window's full width rather than the width of what is written in
-    // it, so that its right edge stands off the viewport by the margin
-    // instead of its text doing so.
+    let center = orbit.single().map(|camera| camera.center).ok();
+    // The top right corner, clear of the settings pane and the bar, which
+    // stand against the left edge and the top of it. The corner itself, since
+    // a panel is placed by its own right hand top rather than by its left: a
+    // window is as wide as its title bar needs, and a place worked out from a
+    // width guessed for it is a place a wider panel overhangs the viewport
+    // from, to be pushed back inside without the margin it was given.
     //
     // Only where a panel opens: the windows are movable, so where they end
     // up is the user's business.
     let room = ctx.content_rect();
-    let width =
-        WIDTH + egui::Frame::window(&ctx.global_style()).total_margin().sum().x;
-    let corner = room.right_top() + egui::vec2(-width - MARGIN, MARGIN);
+    let corner = room.right_top() + egui::vec2(-MARGIN, MARGIN);
 
     // A panel and the gap under it, and how many of those the viewport holds
     // each way. Worked out afresh every frame, since the window it is all
     // measured against is the user's to resize.
+    let width = panels.width.max(
+        WIDTH + egui::Frame::window(&ctx.global_style()).total_margin().sum().x,
+    );
     let step = egui::vec2(-(width + MARGIN), panels.height + MARGIN);
     let down = ((room.height() - MARGIN) / step.y).floor().max(1.) as usize;
     let across = ((room.width() - MARGIN) / -step.x).floor().max(1.) as usize;
 
     let mut shut = Vec::new();
     let mut tallest: f32 = 0.;
-    let mut centred = None;
+    let mut widest: f32 = 0.;
+    let mut centered = None;
     let mut picked = None;
     let mut opening = None;
     let mut wanted = None;
+    // Which panel the user pressed, if they pressed one. Asked once for the
+    // whole pass, since a press is one press however many windows are drawn.
+    let pressed = ctx.input(|input| input.pointer.any_pressed());
+    let mut chosen = None;
     for panel in &mut panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
@@ -396,66 +507,67 @@ fn panels(
         // Set before the panel is read from, so that the two borrows of it
         // do not overlap.
         let placed = std::mem::replace(&mut panel.placed, true);
-        let window = egui::Window::new(panel.subject.title())
-            .id(panel.subject.id())
-            .open(&mut showing)
-            .resizable(false)
-            // The width alone. Left unsaid it is `Style::default_area_size`,
-            // 600, which will not fit where a panel is asked to be placed, so
-            // egui slides the window somewhere it does and remembers it
-            // there. The height is the window's own business: said here it
-            // is imposed rather than defaulted, and a list asked to fit the
-            // height of the last panel drawn shows three lines of eight.
-            .default_width(WIDTH);
-        // Put where the tiling says on the frame it opens, and asked nothing
-        // after that, so that a panel dragged somewhere stays there. A
-        // default would be answered by whatever egui remembers of the last
-        // time the same panel was open, which is a place some other panel may
-        // well be standing in now.
-        let window = if placed {
-            window.default_pos(at)
-        } else {
-            window.current_pos(at)
-        };
+        let window = framed(
+            ctx,
+            panel.subject.title(),
+            panel.subject.id(),
+            at,
+            placed,
+            &mut showing,
+        );
         let window = window.show(ctx, |ui| {
-            ui.set_width(WIDTH);
+            spread(ui);
             match &panel.subject {
                 Subject::System(system) => {
-                    described(ui, system, &names, &mut centred, &mut wanted)
+                    described(ui, system, &names, &mut centered, &mut wanted)
                 }
                 Subject::Filter { filter, systems } => admitted(
                     ui,
                     filter,
                     systems.as_deref(),
-                    focus,
+                    center,
                     &mut picked,
                     &mut opening,
-                    &mut centred,
+                    &mut centered,
                 ),
             }
         });
 
         // Only a panel that drew what it holds. A window rolled up into its
         // title bar stands a line high, which is no height to place the next
-        // panel by.
-        if let Some(window) = window
-            && window.inner.is_some()
-        {
-            tallest = tallest.max(window.response.rect.height());
+        // panel by. Its width is what it always was, the title bar being the
+        // one part of it that is drawn either way, so that is taken from any
+        // panel that was shown at all.
+        if let Some(window) = window {
+            widest = widest.max(window.response.rect.width());
+            if window.inner.is_some() {
+                tallest = tallest.max(window.response.rect.height());
+            }
+            // A press landing on a panel is how the user says which of them
+            // they are working with, and egui has already settled which
+            // window that press reached: `contains_pointer` answers for the
+            // one on top, so a panel under another does not take a press
+            // meant for it.
+            if pressed
+                && window.response.contains_pointer()
+                && let Subject::Filter { filter, .. } = &panel.subject
+            {
+                chosen = Some(filter.clone());
+            }
         }
         if !showing {
             shut.push(panel.subject.id());
         }
     }
 
-    if let Some(position) = centred {
+    if let Some(position) = centered {
         camera.write(MoveCamera { position: Some(position), framing: None });
     }
     // Picking a system out of a list says which one is meant, as clicking a
     // star does. Where the camera goes is asked for separately, from the row
     // in the bar that names what is picked out.
-    if let Some(system) = picked {
-        selection.set(system);
+    if let Some((system, gathering)) = picked {
+        selection.pick(system, gathering);
     }
     // Opened after the loop, since a panel asked for from inside one is a
     // panel pushed onto the list being walked.
@@ -467,11 +579,23 @@ fn panels(
     if let Some(filter) = wanted {
         filters.add(filter);
     }
+    // Pressing a route's panel is how the user says which of several drawn
+    // routes they mean, and the map draws that one in front of the rest.
+    // Only a route: the other filters have no line to put forward, and a
+    // press on one of their panels says nothing about which route is which.
+    if let Some(filter) = chosen
+        && filter.is_route()
+    {
+        selected.0 = Some(filter);
+    }
 
     // Nothing while every panel is rolled up into its title bar, which is
     // not a height to place the next one by.
     if tallest > 0. {
         panels.height = tallest;
+    }
+    if widest > 0. {
+        panels.width = widest;
     }
     if !shut.is_empty() {
         panels.open.retain(|panel| !shut.contains(&panel.subject.id()));
@@ -485,7 +609,7 @@ fn described(
     ui: &mut Ui,
     system: &System,
     names: &FactionNames,
-    centred: &mut Option<DVec3>,
+    centered: &mut Option<DVec3>,
     wanted: &mut Option<Filter>,
 ) {
     egui::Grid::new(("system-fields", system.address)).num_columns(2).show(
@@ -493,7 +617,7 @@ fn described(
         |ui| {
             let [x, y, z] = system.position;
             field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
-            field(ui, "Population", thousands(system.population));
+            field(ui, "Population", crate::ui::thousands(system.population));
             field(ui, "Allegiance", named(&system.allegiance));
             field(ui, "Government", named(&system.government));
             field(ui, "Security", named(&system.security));
@@ -514,7 +638,7 @@ fn described(
     // bar.
     ui.add_space(MARGIN);
     if ui.button("Center Camera").clicked() {
-        *centred = Some(DVec3::from(system.position));
+        *centered = Some(DVec3::from(system.position));
     }
 }
 
@@ -525,19 +649,27 @@ fn described(
 /// nowhere to put the next one.
 const LISTED: usize = 8;
 
-/// What a click on a line in a filter's list asked for
+/// What a filter's panel says it is showing, above the list of it
 ///
-/// One click says which system is meant and a second says to go there, which
-/// is what a click and a double click mean out on the map. The list answers
-/// them the same way, so the two places a system can be reached from are one
-/// gesture rather than two to be learned.
-enum Picked {
-    /// Pick the system out, as clicking a star does
-    Select,
-    /// Send the camera to it, as double clicking a star does
-    Travel,
-    /// Say what is known about it, and leave the selection alone
-    Describe,
+/// How many systems, and for a route the range it was plotted for as well. A
+/// panel is titled with what the filter is called, and a route is called after
+/// its two ends, so two plots between the same pair come up under the same
+/// name. What tells them apart is the range that was asked for, and how many
+/// systems that came to: a ship that reaches further crosses the same gap in
+/// fewer.
+///
+/// A range rather than a jump. It is how far the ship can go in one, which is
+/// what the route was worked out against; how far it actually goes is the
+/// distance on each line of the list below, and is usually less.
+///
+/// Said in the panel rather than in the title, which is cut to the room a
+/// window has and would lose it. The other filters are named for the whole of
+/// what they are and have nothing to add here.
+fn summary(filter: &Filter, held: usize) -> String {
+    match filter.range() {
+        Some(range) => format!("{held} systems, {range} Ly range"),
+        None => format!("{held} systems"),
+    }
 }
 
 /// The systems a filter admits, and the one the user picks out of them
@@ -548,14 +680,18 @@ enum Picked {
 /// Answered the way the map itself is: one click says which system is meant
 /// and a second says to go there, so a system reached through a list and a
 /// system reached by its star are reached the same way.
+///
+/// Each line ends in a distance, and which distance it is follows from what
+/// the list is: the jump that reaches the system where the filter is flown,
+/// and how far off it is from the camera where it is not.
 fn admitted(
     ui: &mut Ui,
     filter: &Filter,
     systems: Option<&[System]>,
-    focus: Option<DVec3>,
-    picked: &mut Option<System>,
+    center: Option<DVec3>,
+    picked: &mut Option<(System, bool)>,
     described: &mut Option<System>,
-    centred: &mut Option<DVec3>,
+    centered: &mut Option<DVec3>,
 ) {
     let Some(systems) = systems else {
         ui.label(egui::RichText::new("Looking...").weak());
@@ -567,18 +703,45 @@ fn admitted(
         return;
     }
 
-    ui.label(egui::RichText::new(format!("{} systems", systems.len())).weak());
+    ui.label(egui::RichText::new(summary(filter, systems.len())).weak());
     ui.add_space(MARGIN);
 
     let line = ui.text_style_height(&egui::TextStyle::Body)
-        + LINE_PADDING * 2.
+        + crate::ui::LINE_PADDING * 2.
         + ui.spacing().item_spacing.y;
-    let mut order: Vec<(&System, Option<f64>)> = systems
-        .iter()
-        .map(|system| {
-            (system, focus.map(|at| at.distance(DVec3::from(system.position))))
-        })
-        .collect();
+    // What each line has to say about where its system is, which is not the
+    // same question in the two kinds of list.
+    //
+    // A route is flown, so what is worth knowing about a system on one is the
+    // jump that reaches it: how far it is from the system before, which is
+    // what a ship has to be able to make. Measured off the list, which for a
+    // route is already in the order it is travelled. The first system is
+    // where the flying starts and no jump reaches it, so its line says
+    // nothing.
+    //
+    // Everywhere else the systems are a set, in no order but the one this
+    // list puts them in, and how far off they are from where the camera is
+    // looking is both what orders them and what says why.
+    let mut order: Vec<(&System, Option<f64>)> = if filter.ordered() {
+        let mut legs = Vec::with_capacity(systems.len());
+        let mut left = None;
+        for system in systems {
+            let at = DVec3::from(system.position);
+            legs.push((system, left.map(|from: DVec3| from.distance(at))));
+            left = Some(at);
+        }
+        legs
+    } else {
+        systems
+            .iter()
+            .map(|system| {
+                (
+                    system,
+                    center.map(|at| at.distance(DVec3::from(system.position))),
+                )
+            })
+            .collect()
+    };
 
     // A filter with an order of its own is left in it. A route is travelled
     // from one end to the other, and a list of its systems put in any other
@@ -600,185 +763,37 @@ fn admitted(
         });
     }
 
-    crate::ui::scrolling(ui, line * LISTED as f32, |ui| {
-        for (system, away) in order {
-            match line_for(ui, system, away) {
-                Some(Picked::Select) => *picked = Some(system.clone()),
-                Some(Picked::Travel) => {
-                    *centred = Some(DVec3::from(system.position))
+    // Named for the filter it lists, since a panel stands per filter and two
+    // of them open at once are two lists, each scrolled to its own place.
+    crate::ui::scrolling(ui, line * LISTED as f32, filter, |ui| {
+        for (index, (system, away)) in order.into_iter().enumerate() {
+            // Said as well as sorted by, where it is what sorts them. A list
+            // in an order nobody can see reads as an order nobody chose.
+            let trailing = away.map(|away| format!("{away:.1} Ly"));
+            // Keyed by place rather than by which system stands there. The
+            // list is put in order afresh every frame, so a row holds its
+            // rectangle while the system in it changes as the camera moves,
+            // which is the one thing egui reads as a widget taking another's
+            // state.
+            let asked = crate::ui::system_line(
+                ui,
+                &system.name,
+                trailing,
+                true,
+                ("admitted", index),
+            );
+            match asked {
+                Some(Chose::Select { gathering }) => {
+                    *picked = Some((system.clone(), gathering))
                 }
-                Some(Picked::Describe) => *described = Some(system.clone()),
+                Some(Chose::Travel) => {
+                    *centered = Some(DVec3::from(system.position))
+                }
+                Some(Chose::Describe) => *described = Some(system.clone()),
                 None => {}
             }
         }
     });
-}
-
-/// How far a line in a list holds its text off its own edge
-const LINE_PADDING: f32 = 3.;
-
-/// One full width line of a list, and the pointer's answer to it
-///
-/// The whole line answers rather than the letters on it, so that a short name
-/// is as easy to hit as a long one and a list reads as a column of controls
-/// rather than as text that happens to be clickable. Laid out and painted for
-/// the reason the rows in the bar are: a label is a widget in its own right,
-/// and one inside a row that also answers leaves the two bidding for the
-/// pointer.
-///
-/// `reserved` is room kept clear at the right hand end, which the caller
-/// paints into itself. The rect handed back is the whole line, so it knows
-/// where that room ended up.
-///
-/// A line that is not a `control` is laid out the same and answers to nothing:
-/// it neither lights under the pointer nor takes the hand cursor, so a list
-/// holding one keeps its shape without offering something that cannot be had.
-fn line(
-    ui: &mut Ui,
-    text: egui::RichText,
-    reserved: f32,
-    control: bool,
-) -> (egui::Rect, egui::Response) {
-    let room = ui.available_width() - LINE_PADDING * 2. - reserved;
-    let text = egui::WidgetText::from(text).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        room.max(0.),
-        egui::TextStyle::Body,
-    );
-
-    let height = text.size().y;
-    let (rect, answer) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height + LINE_PADDING * 2.),
-        if control { egui::Sense::click() } else { egui::Sense::empty() },
-    );
-
-    if control && (answer.hovered() || answer.has_focus()) {
-        ui.painter().rect_filled(
-            rect,
-            ui.visuals().widgets.hovered.corner_radius,
-            ui.visuals().widgets.hovered.weak_bg_fill,
-        );
-    }
-    ui.painter().galley(
-        egui::pos2(rect.left() + LINE_PADDING, rect.center().y - height / 2.),
-        text,
-        // A real colour, since a line is laid out from whatever the caller
-        // hands over and that is usually plain text. Plain text carries no
-        // colour of its own, so it comes out of layout as a placeholder for
-        // this to answer, and a placeholder answered by a placeholder reaches
-        // the tessellator, which panics rather than guess.
-        ui.visuals().text_color(),
-    );
-
-    if control {
-        (rect, answer.on_hover_cursor(egui::CursorIcon::PointingHand))
-    } else {
-        (rect, answer)
-    }
-}
-
-/// One system's line in a filter's list, and what it was asked for
-///
-/// A [`line`] with the distance and a mark kept at its end. The mark says what
-/// is known about the system without picking it out, which is how a list is
-/// read through: several systems can be opened and compared while the
-/// selection stays wherever the user left it. It is the same mark the rows in
-/// the bar carry, and opens the same panel.
-fn line_for(ui: &mut Ui, system: &System, away: Option<f64>) -> Option<Picked> {
-    let gap = ui.spacing().item_spacing.x;
-    // Laid out in nothing, so that the colour can be chosen once the pointer
-    // has been asked about, which cannot happen until the line has been
-    // placed.
-    let mark = egui::WidgetText::from(
-        egui::RichText::new(crate::ui::INFO).color(egui::Color32::PLACEHOLDER),
-    )
-    .into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Body,
-    );
-
-    // Said as well as sorted by. A list in an order nobody can see reads as
-    // an order nobody chose.
-    let away = away.map(|away| {
-        egui::WidgetText::from(
-            egui::RichText::new(format!("{away:.1} Ly")).weak(),
-        )
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Extend),
-            f32::INFINITY,
-            egui::TextStyle::Body,
-        )
-    });
-
-    let reserved = mark.size().x
-        + gap
-        + away.as_ref().map_or(0., |away| away.size().x + gap);
-    let (rect, row) =
-        line(ui, egui::RichText::new(system.name.as_str()), reserved, true);
-    let middle = rect.center().y;
-
-    // Asked about after the line, so that it is the one answering where the
-    // two overlap. Under it the line would have to work out what it was not
-    // being clicked on.
-    let at = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - LINE_PADDING - mark.size().x, rect.top()),
-        egui::pos2(rect.right() - LINE_PADDING, rect.bottom()),
-    );
-
-    // Between the name and the mark, right against the mark, so that the
-    // distances line up down the list rather than following the names.
-    if let Some(away) = away {
-        let size = away.size();
-        ui.painter().galley(
-            egui::pos2(at.left() - gap - size.x, middle - size.y / 2.),
-            away,
-            egui::Color32::PLACEHOLDER,
-        );
-    }
-
-    let describing = ui.interact(
-        at,
-        ui.id().with(("describe", system.address)),
-        egui::Sense::click(),
-    );
-    let lit = describing.hovered() || describing.has_focus();
-    if lit {
-        ui.painter().rect_filled(
-            at,
-            ui.visuals().widgets.hovered.corner_radius,
-            ui.visuals().widgets.hovered.weak_bg_fill,
-        );
-    }
-    let height = mark.size().y;
-    ui.painter().galley(
-        egui::pos2(at.left(), middle - height / 2.),
-        mark,
-        if lit {
-            ui.visuals().strong_text_color()
-        } else {
-            ui.visuals().weak_text_color()
-        },
-    );
-
-    // The double first. Egui answers the first click of a pair as a click
-    // and the second as a double, so a line double clicked has already been
-    // picked out by the time this is asked, which is what the first click of
-    // the pair was for.
-    let asked = if describing.clicked() {
-        Some(Picked::Describe)
-    } else if row.double_clicked() {
-        Some(Picked::Travel)
-    } else if row.clicked() {
-        Some(Picked::Select)
-    } else {
-        None
-    };
-    describing.on_hover_cursor(egui::CursorIcon::PointingHand);
-    asked
 }
 
 /// Every faction present in the system, one to a line
@@ -822,7 +837,7 @@ fn factions(
             Some(name) => egui::RichText::new(name),
             None => egui::RichText::new(UNNAMED).weak(),
         };
-        let (_, answer) = line(ui, text, 0., name.is_some());
+        let (_, answer) = crate::ui::line(ui, text, 0., name.is_some());
 
         if let Some(name) = name
             && answer.clicked()
@@ -872,22 +887,6 @@ fn named<T: Display>(value: &Option<T>) -> String {
     }
 }
 
-/// A count with its digits grouped in threes
-///
-/// Populations run to eleven digits, which is a length rather than a number
-/// until it is broken up.
-fn thousands(count: u64) -> String {
-    let digits = count.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (place, digit) in digits.char_indices() {
-        if place > 0 && (digits.len() - place).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,7 +932,12 @@ mod tests {
     #[test]
     fn a_line_paints_in_a_colour() {
         painted(|ui| {
-            line(ui, egui::RichText::new("Alliance of Sol"), 0., true);
+            crate::ui::line(
+                ui,
+                egui::RichText::new("Alliance of Sol"),
+                0.,
+                true,
+            );
         });
     }
 
@@ -941,7 +945,7 @@ mod tests {
     #[test]
     fn a_line_with_room_reserved_paints_in_a_colour() {
         painted(|ui| {
-            line(ui, egui::RichText::new("Sol"), 20., true);
+            crate::ui::line(ui, egui::RichText::new("Sol"), 20., true);
         });
     }
 
@@ -976,8 +980,11 @@ mod tests {
     #[test]
     fn a_route_list_paints_in_a_colour() {
         let systems = [system(1), system(2)];
-        let route =
-            Filter::Route { label: "A -> B".to_owned(), systems: vec![1, 2] };
+        let route = Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: vec![1, 2],
+            range: "10".to_owned(),
+        };
         painted(|ui| {
             admitted(
                 ui,
@@ -989,6 +996,307 @@ mod tests {
                 &mut None,
             );
         });
+    }
+
+    /// The rectangle a panel titled `title` came out in, opened at `at`
+    ///
+    /// The window as the panels draw it, `contents` being whatever the test
+    /// wants to ask of the room inside it.
+    fn shown(
+        title: &str,
+        at: egui::Pos2,
+        contents: impl FnMut(&mut Ui),
+    ) -> egui::Rect {
+        let mut contents = contents;
+        let ctx = crate::tests::context();
+        let mut rect = egui::Rect::ZERO;
+
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut showing = true;
+            let panel = framed(
+                ui.ctx(),
+                title,
+                egui::Id::new("test-panel"),
+                at,
+                false,
+                &mut showing,
+            );
+            if let Some(panel) = panel.show(ui.ctx(), &mut contents) {
+                rect = panel.response.rect;
+            }
+        });
+
+        rect
+    }
+
+    /// How wide a panel titled `title` lays its contents out, and how much
+    /// room it had
+    ///
+    /// What is being asked is what the contents make of the width the title
+    /// left them.
+    fn laid_out(title: &str) -> (f32, f32) {
+        let mut taken = 0.;
+        let rect = shown(title, egui::Pos2::ZERO, |ui| {
+            spread(ui);
+            taken = ui.available_width();
+        });
+        let margins =
+            egui::Frame::window(&crate::tests::context().global_style())
+                .total_margin()
+                .sum()
+                .x;
+
+        (taken, rect.width() - margins)
+    }
+
+    /// A panel's contents are laid out across the whole of its window
+    ///
+    /// A window is at least as wide as its title bar, and a system is called
+    /// what it is called: it is not cut down the way a route's two ends are,
+    /// so a long enough name is a wider panel. Contents laid out to the width
+    /// a panel asks for would leave a band of empty panel down the right hand
+    /// side of one, which reads as a margin nobody chose.
+    ///
+    /// Named at a length no lettering would fit, rather than at one that fits
+    /// today and not tomorrow.
+    #[test]
+    fn a_long_title_widens_what_stands_under_it() {
+        let (taken, had) = laid_out(&"COL 285 SECTOR ".repeat(4));
+
+        assert!(had > WIDTH, "{had} is no wider than the {WIDTH} asked for");
+        assert_eq!(taken, had);
+    }
+
+    /// A title that fits leaves the panel the width it asked for
+    #[test]
+    fn a_short_title_leaves_the_width_alone() {
+        assert_eq!(laid_out("SOL"), (WIDTH, WIDTH));
+    }
+
+    /// A title fills the bar it stands in
+    ///
+    /// Which is what puts it at the left: egui centres a title between the
+    /// marks either side of it, and one that fills the bar has nothing left
+    /// to centre.
+    #[test]
+    fn a_title_fills_the_bar_it_stands_in() {
+        let ctx = crate::tests::context();
+        // Inside a pass, egui having no fonts to measure with before one.
+        let (mut said, mut room) = (String::new(), 0);
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            said = titled(ui.ctx(), "SOL").text().to_owned();
+            room = titling(ui.ctx());
+        });
+
+        assert!(said.starts_with("SOL"), "{said:?}");
+        assert_eq!(said.chars().count(), room);
+    }
+
+    /// A route's panel is no wider than a panel, however it is named
+    ///
+    /// Both ends of a route run long, and a window is as wide as its title
+    /// bar needs. Left whole, the title decides how wide the panel stands,
+    /// which is a panel the tiling cannot step by and the user cannot read
+    /// two of side by side.
+    ///
+    /// Which is also what holds [`TITLE_MARKS`] down. What the title bar
+    /// spends on the fold arrow and the close mark is measured off egui
+    /// rather than worked out, so this is where it is found to have drifted.
+    #[test]
+    fn a_route_panel_is_no_wider_than_a_panel() {
+        let (_, had) = laid_out("SIGMA DRACONIS -> MINISTRY");
+
+        assert_eq!(had, WIDTH);
+    }
+
+    /// A panel opens with its right hand top corner where it was put
+    ///
+    /// Which is what standing off the edge of the viewport by the margin
+    /// comes to. Placed by its left edge instead, a panel wider than the
+    /// width it was given would reach past that edge, and egui would push it
+    /// back inside with nothing between it and the corner.
+    ///
+    /// Both titles, since what a panel is called is what widens it and the
+    /// corner is not to move with the words in the title bar.
+    #[test]
+    fn a_panel_opens_at_the_corner_it_is_given() {
+        let at = egui::pos2(400., 30.);
+
+        for title in ["SOL", "SIGMA DRACONIS -> MINISTRY"] {
+            let rect = shown(title, at, |ui| {
+                spread(ui);
+                ui.label("5 systems");
+            });
+
+            assert_eq!(rect.right_top(), at, "{title}");
+        }
+    }
+
+    /// A system at `place`, otherwise as bare as [`system`]
+    fn placed(address: i64, place: [f64; 3]) -> System {
+        let mut system = system(address);
+        system.position = place;
+        system
+    }
+
+    /// Every distance the list puts on the lines of a route through `places`
+    ///
+    /// Read off what was painted rather than asked of the row, a row laying
+    /// its own text out having no label to be asked what it says.
+    ///
+    /// The camera is a hundred light years off, so a distance measured from
+    /// it could not be read as a jump.
+    fn flown(places: &[[f64; 3]]) -> Vec<String> {
+        let systems: Vec<System> = places
+            .iter()
+            .enumerate()
+            .map(|(place, at)| placed(place as i64 + 1, *at))
+            .collect();
+        let route = Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: (1..=places.len() as i64).collect(),
+            range: "10".to_owned(),
+        };
+
+        crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &route,
+                Some(&systems),
+                Some(DVec3::new(100., 0., 0.)),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        })
+        .into_iter()
+        .filter(|said| said.ends_with(" Ly"))
+        .collect()
+    }
+
+    /// A route says how far the jump that reaches each system is
+    ///
+    /// It is flown, so what is worth knowing about a system on one is whether
+    /// the ship can get to it from the one before. How far it is from the
+    /// camera answers a question nobody asked of a route.
+    ///
+    /// Two distances over three systems, the first being where the flying
+    /// starts: no jump reaches it, so its line has nothing to say.
+    #[test]
+    fn a_route_says_how_far_each_jump_is() {
+        let said = flown(&[[0., 0., 0.], [3., 4., 0.], [3., 4., 12.]]);
+
+        assert_eq!(said, vec!["5.0 Ly", "12.0 Ly"], "{said:?}");
+    }
+
+    /// A set of systems says how far off each one is instead
+    ///
+    /// Nothing about a faction's holdings is a sequence, so there is no jump
+    /// to measure and the distance the whole map is read in is what is left.
+    #[test]
+    fn a_set_of_systems_says_how_far_off_each_is() {
+        let systems = [placed(1, [3., 4., 0.]), placed(2, [0., 0., 12.])];
+
+        let said = crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &faction(7),
+                Some(&systems),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+
+        assert!(said.contains(&"5.0 Ly".to_owned()), "{said:?}");
+        assert!(said.contains(&"12.0 Ly".to_owned()), "{said:?}");
+    }
+
+    /// A route between `label`'s ends, plotted for a ship reaching `range`
+    fn plotted_for(label: &str, range: &str) -> Filter {
+        Filter::Route {
+            label: label.to_owned(),
+            systems: vec![1, 2],
+            range: range.to_owned(),
+        }
+    }
+
+    /// A route's panel says how far the ship it was plotted for reaches
+    ///
+    /// A panel is titled with what its filter is called and a route is called
+    /// after its two ends, so the range is the one thing on screen telling two
+    /// plots between the same pair apart.
+    ///
+    /// A range and not a jump. What the ship can cross in one is what the
+    /// route was worked out against; what it actually crosses is on the lines
+    /// below, and is usually less.
+    #[test]
+    fn a_route_panel_says_the_range_it_was_plotted_for() {
+        assert_eq!(
+            summary(&plotted_for("SOL -> BARNARD", "10"), 12),
+            "12 systems, 10 Ly range"
+        );
+    }
+
+    /// Two plots between the same ends are told apart by it
+    ///
+    /// Which is the whole of why it is said. Both panels are titled the same,
+    /// both list systems between the same two, and what the user asked for is
+    /// the difference between them.
+    #[test]
+    fn two_routes_between_the_same_ends_read_apart() {
+        let near = summary(&plotted_for("SOL -> BARNARD", "10"), 12);
+        let far = summary(&plotted_for("SOL -> BARNARD", "20"), 7);
+
+        assert_ne!(near, far);
+        assert!(near.contains("10 Ly"), "{near}");
+        assert!(far.contains("20 Ly"), "{far}");
+    }
+
+    /// A filter that was never plotted says how many and no more
+    ///
+    /// A faction and a hand-picked set were never asked a range, and a panel
+    /// that answered one for them would be answering for the user.
+    #[test]
+    fn a_filter_that_was_not_plotted_says_only_how_many() {
+        assert_eq!(summary(&faction(7), 12), "12 systems");
+        assert_eq!(
+            summary(
+                &Filter::Systems {
+                    label: "3 systems".to_owned(),
+                    systems: vec![1, 2, 3],
+                },
+                3
+            ),
+            "3 systems"
+        );
+    }
+
+    /// And the panel draws whatever the summary came to
+    ///
+    /// Read off what was painted, the line being a label the panel lays out
+    /// from what `summary` answered.
+    #[test]
+    fn the_panel_draws_the_summary() {
+        let systems = [placed(1, [0., 0., 0.]), placed(2, [3., 4., 0.])];
+
+        let said = crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &plotted_for("SOL -> BARNARD", "10"),
+                Some(&systems),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+
+        assert!(
+            said.contains(&"2 systems, 10 Ly range".to_owned()),
+            "{said:?}"
+        );
     }
 
     /// A line carries the id its filter would be built from
@@ -1196,52 +1504,6 @@ mod tests {
         panels.open_filter(faction(7));
 
         assert_eq!(panels.open.len(), 2);
-    }
-
-    /// A number short enough to read is left as it is
-    ///
-    /// Including the empty systems, of which there are far more than
-    /// inhabited ones, so this is the common answer rather than an edge.
-    #[test]
-    fn small_populations_are_left_alone() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(7), "7");
-        assert_eq!(thousands(999), "999");
-    }
-
-    /// Longer ones are broken into threes from the right
-    ///
-    /// From the right, so that the leading group is whatever is left over
-    /// rather than the number being padded to fit.
-    #[test]
-    fn long_populations_are_grouped_from_the_right() {
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(22_780), "22,780");
-        assert_eq!(thousands(999_999), "999,999");
-        assert_eq!(thousands(1_000_000), "1,000,000");
-    }
-
-    /// The largest populations on record still read
-    ///
-    /// The most populous systems run to eleven digits, which is the length
-    /// this is here for.
-    #[test]
-    fn the_largest_populations_are_grouped() {
-        assert_eq!(thousands(22_780_919_531), "22,780,919,531");
-    }
-
-    /// A separator never leads or trails
-    ///
-    /// The grouping is decided per digit from how many follow it, so a count
-    /// whose length is a multiple of three is where a stray leading comma
-    /// would show up.
-    #[test]
-    fn grouping_never_leads_or_trails() {
-        for count in [1u64, 100, 1_000, 100_000, 1_000_000] {
-            let grouped = thousands(count);
-            assert!(!grouped.starts_with(','), "{grouped} leads with one");
-            assert!(!grouped.ends_with(','), "{grouped} trails one");
-        }
     }
 
     /// What the database does not say is said to be unknown

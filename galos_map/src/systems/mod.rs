@@ -135,33 +135,62 @@ impl Spyglass {
     pub const UNASKED: f32 = 200.;
 }
 
+impl Spyglass {
+    /// Whether the spyglass reaches `position`, from a camera centered on
+    /// `center`
+    ///
+    /// Everything loaded where it has been overridden, that being what
+    /// overriding it means.
+    ///
+    /// Asked by whatever has to tell the two reasons a system is not drawn
+    /// apart. Out of reach is the map saying it is not looking there;
+    /// excluded by a filter is the user saying they are not interested, and
+    /// what is drawn for a system they picked out by hand answers only the
+    /// first.
+    pub fn reaches(&self, center: DVec3, position: DVec3) -> bool {
+        self.disabled || center.distance(position) <= self.radius as f64
+    }
+}
+
 /// How much of the sky is in reach, and how much of that the filters admit
 ///
 /// Tallied by [`visibility`], which has already settled both for every system
-/// on the map, so what is said is the answer the map acted on rather than a
-/// second count taken from the side.
+/// on the map. Counted there rather than by whoever draws the number, so what
+/// is said is the answer the map acted on rather than a second count taken
+/// from the side. Both halves want the same two questions asked of the same
+/// system, and that is the one place both are in hand.
 ///
 /// In reach rather than loaded. What the spyglass has dragged in from wherever
 /// the camera has been is not what the user is looking at.
 #[derive(Resource, Default, PartialEq, Eq)]
 pub struct InReach {
     /// Systems the spyglass reaches
+    ///
+    /// The sky only where the excluded systems are being fetched to be dimmed.
+    /// At [`filter::DimTo`] zero the region is asked for what the filters
+    /// admit and nothing else, so what is in reach and excluded is whatever
+    /// was brought in before the filter was asked for and never despawned.
+    /// That is a number about where the camera has been rather than about the
+    /// sky, and [`crate::ui`] draws this only where it is the sky.
     pub total: usize,
     /// How many of those the filters admit
+    ///
+    /// Whole however the region was asked for. Narrowing the query asks for
+    /// exactly the systems a filter admits, so what is left out of it is what
+    /// this was never counting.
     pub admitted: usize,
 }
 
 /// Decide which systems are drawn
 ///
-/// One question, and one place answering it: whether the spyglass reaches the
-/// system. Two systems each writing a `Visibility` would take turns undoing
-/// each other.
+/// Two questions, and a system has to pass both: the spyglass has to reach it,
+/// and the filters have to admit it. One answer written in one place, since
+/// two systems each writing a `Visibility` would take turns undoing each
+/// other.
 ///
-/// The filters do not decide it. What they exclude is drawn faintly rather
-/// than taken away, which is [`filter`]'s whole point: a faction read against
-/// the space around it. So the spyglass alone says what is drawn, and the
-/// filters are counted here only because this is where the answer is settled
-/// for every system at once.
+/// A filtered system is only hidden where it is being dimmed to nothing.
+/// Anywhere above that it is drawn faintly, which is the other half of what
+/// [`filter`] is for: a faction read against the space around it.
 ///
 /// Runs over every star every frame, so it writes only where the answer
 /// actually changed. Assigning regardless would mark the whole sky as
@@ -170,21 +199,16 @@ pub fn visibility(
     camera: Query<&OrbitCamera>,
     mut systems: Query<(&System, &mut Visibility, Has<filter::Filtered>)>,
     spyglass: Res<Spyglass>,
+    dim: Res<filter::DimTo>,
     mut in_reach: ResMut<InReach>,
 ) {
-    // How far the spyglass reaches, or nothing at all when it has been
-    // overridden and everything loaded is drawn.
-    let reach = if spyglass.disabled {
-        None
-    } else {
-        let Ok(camera) = camera.single() else { return };
-        Some((camera.focus, spyglass.radius as f64))
-    };
+    let Ok(camera) = camera.single() else { return };
+    let excluded_are_drawn = dim.0 > 0.;
+
     let mut tally = InReach::default();
     for (system, mut visibility, filtered) in &mut systems {
-        let within = reach.is_none_or(|(focus, radius)| {
-            focus.distance(DVec3::from(system.position)) <= radius
-        });
+        let within =
+            spyglass.reaches(camera.center, DVec3::from(system.position));
         if within {
             tally.total += 1;
             if !filtered {
@@ -192,7 +216,7 @@ pub fn visibility(
             }
         }
 
-        visibility.set_if_neq(if within {
+        visibility.set_if_neq(if within && (!filtered || excluded_are_drawn) {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -251,15 +275,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// A system called `name`
+    ///
+    /// For whoever is testing what gets said about a system rather than what
+    /// is done with it. A [`System`]'s fields are private to this module, so
+    /// the name has to be set from in here.
+    pub(crate) fn named(address: i64, name: &str) -> System {
+        let mut system = system(address);
+        system.name = name.to_owned();
+        system
+    }
+
     /// A system at `away` light years from the origin, on the x axis
-    fn at(address: i64, away: f64) -> System {
+    ///
+    /// Shared for the same reason [`named`] is: a position is set from in
+    /// here or not at all, and what is drawn about a system is tested from
+    /// wherever it is drawn.
+    pub(crate) fn at(address: i64, away: f64) -> System {
         let mut system = system(address);
         system.position = [away, 0., 0.];
         system
     }
 
     /// A world holding one camera at the origin, and nothing else
-    fn map(radius: f32, disabled: bool) -> App {
+    fn map(radius: f32, disabled: bool, dim: f32) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Spyglass {
@@ -268,6 +307,7 @@ pub(crate) mod tests {
             fetch: false,
             lock_camera: false,
         });
+        app.insert_resource(filter::DimTo(dim));
         app.init_resource::<InReach>();
         app.world_mut().spawn(OrbitCamera::default());
         app.add_systems(Update, visibility);
@@ -280,10 +320,39 @@ pub(crate) mod tests {
             != Visibility::Hidden
     }
 
+    /// The spyglass reaches what is inside its radius and no further
+    #[test]
+    fn the_spyglass_reaches_what_is_within_it() {
+        let spyglass = Spyglass {
+            radius: 10.,
+            fetch: false,
+            disabled: false,
+            lock_camera: false,
+        };
+        let center = DVec3::ZERO;
+
+        assert!(spyglass.reaches(center, DVec3::new(5., 0., 0.)));
+        assert!(spyglass.reaches(center, DVec3::new(10., 0., 0.)));
+        assert!(!spyglass.reaches(center, DVec3::new(11., 0., 0.)));
+    }
+
+    /// Overridden, it reaches everything loaded however far off
+    #[test]
+    fn an_overridden_spyglass_reaches_whatever_is_loaded() {
+        let spyglass = Spyglass {
+            radius: 10.,
+            fetch: false,
+            disabled: true,
+            lock_camera: false,
+        };
+
+        assert!(spyglass.reaches(DVec3::ZERO, DVec3::new(5e4, 0., 0.)));
+    }
+
     /// The spyglass draws what it reaches and hides the rest
     #[test]
     fn the_spyglass_decides_what_is_drawn() {
-        let mut app = map(10., false);
+        let mut app = map(10., false, 0.15);
         let near =
             app.world_mut().spawn((at(1, 5.), Visibility::default())).id();
         let far =
@@ -298,7 +367,7 @@ pub(crate) mod tests {
     /// An overridden spyglass draws everything loaded, however far off
     #[test]
     fn an_overridden_spyglass_reaches_everything() {
-        let mut app = map(10., true);
+        let mut app = map(10., true, 0.15);
         let far =
             app.world_mut().spawn((at(1, 5e4), Visibility::default())).id();
 
@@ -313,7 +382,7 @@ pub(crate) mod tests {
     /// read against the space around it.
     #[test]
     fn a_filtered_system_is_drawn_to_be_dimmed() {
-        let mut app = map(10., false);
+        let mut app = map(10., false, 0.15);
         let excluded = app
             .world_mut()
             .spawn((at(1, 5.), Visibility::default(), filter::Filtered))
@@ -322,6 +391,26 @@ pub(crate) mod tests {
         app.update();
 
         assert!(drawn(&app, excluded));
+    }
+
+    /// Dimming to nothing takes the excluded systems off the map
+    ///
+    /// A star faded to nothing is still a star being drawn, and still one the
+    /// pointer can land on, so this is hidden rather than merely invisible.
+    #[test]
+    fn dimming_to_nothing_hides_what_is_filtered() {
+        let mut app = map(10., false, 0.);
+        let excluded = app
+            .world_mut()
+            .spawn((at(1, 5.), Visibility::default(), filter::Filtered))
+            .id();
+        let included =
+            app.world_mut().spawn((at(2, 5.), Visibility::default())).id();
+
+        app.update();
+
+        assert!(!drawn(&app, excluded));
+        assert!(drawn(&app, included));
     }
 
     /// What the tally came to
@@ -336,7 +425,7 @@ pub(crate) mod tests {
     /// and those are not what the user is looking at.
     #[test]
     fn the_tally_counts_what_is_in_reach() {
-        let mut app = map(10., false);
+        let mut app = map(10., false, 0.15);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((at(2, 7.), Visibility::default()));
         app.world_mut().spawn((at(3, 5e3), Visibility::default()));
@@ -350,7 +439,7 @@ pub(crate) mod tests {
     /// reach
     #[test]
     fn the_tally_says_how_many_a_filter_admits() {
-        let mut app = map(10., false);
+        let mut app = map(10., false, 0.15);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((
             at(2, 5.),
@@ -371,7 +460,38 @@ pub(crate) mod tests {
     /// through, which only the marks answer.
     #[test]
     fn the_tally_counts_the_excluded_among_the_drawn() {
-        let mut app = map(10., false);
+        let mut app = map(10., false, 0.15);
+        app.world_mut().spawn((at(1, 5.), Visibility::default()));
+        app.world_mut().spawn((
+            at(2, 5.),
+            Visibility::default(),
+            filter::Filtered,
+        ));
+        app.world_mut().spawn((
+            at(3, 5.),
+            Visibility::default(),
+            filter::Filtered,
+        ));
+
+        app.update();
+
+        assert_eq!(counted(&app), (1, 3));
+    }
+
+    /// Dimming to nothing still counts what it took off the map
+    ///
+    /// Being hidden is not being gone. A system the spyglass reaches is in
+    /// reach whether or not a filter is letting it be drawn, so the two
+    /// numbers go on being two numbers here rather than collapsing into one
+    /// the moment the sky is put out.
+    ///
+    /// Which is what the tally is for and not what it is read for: the map
+    /// stops fetching the excluded at this opacity, so the systems counted
+    /// here are the ones that happened to be loaded already, and the bar says
+    /// only how many are getting through. See [`InReach::total`].
+    #[test]
+    fn the_tally_holds_up_when_nothing_excluded_is_drawn() {
+        let mut app = map(10., false, 0.);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((
             at(2, 5.),
@@ -392,7 +512,7 @@ pub(crate) mod tests {
     /// The spyglass still hides what it cannot reach, filter or no filter
     #[test]
     fn a_filtered_system_out_of_reach_stays_hidden() {
-        let mut app = map(10., false);
+        let mut app = map(10., false, 0.15);
         let far = app
             .world_mut()
             .spawn((at(1, 50.), Visibility::default(), filter::Filtered))
@@ -401,5 +521,22 @@ pub(crate) mod tests {
         app.update();
 
         assert!(!drawn(&app, far));
+    }
+
+    /// Overriding the spyglass does not override the filters
+    ///
+    /// The two answer different questions, and the one that draws everything
+    /// loaded has nothing to say about what was asked for.
+    #[test]
+    fn an_overridden_spyglass_still_honours_a_filter() {
+        let mut app = map(10., true, 0.);
+        let excluded = app
+            .world_mut()
+            .spawn((at(1, 5e4), Visibility::default(), filter::Filtered))
+            .id();
+
+        app.update();
+
+        assert!(!drawn(&app, excluded));
     }
 }

@@ -6,7 +6,7 @@ use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
-    filter::{self, Filtered, Filters},
+    filter::{DimTo, Filtered, Filters},
     pointing::{
         DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
         UNFITTED_SCALE,
@@ -28,7 +28,11 @@ use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
-use std::{collections::HashMap, ops::Deref, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+    time::Instant,
+};
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(MeshPickingPlugin);
@@ -45,6 +49,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Startup, (init_mesh, init_materials));
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
+    app.add_systems(Update, redim.in_set(MapSet::Populate));
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -64,13 +69,13 @@ pub struct SystemMesh(pub Handle<Mesh>);
 /// Two sets of the same colours rather than one recoloured per star, because
 /// the colour lives on a shared asset. A star moves between the sets by
 /// swapping which handle it points at, which repaints only that star, and the
-/// two sets are built once, since how faintly to draw is one number rather
-/// than a setting.
+/// dim set is recoloured in place when [`DimTo`] moves, which is meant to
+/// repaint every dimmed star at once.
 #[derive(Resource)]
 pub struct SystemMaterials {
     /// One per colour, indexed as [`hue`] answers
     bright: Vec<Handle<StandardMaterial>>,
-    /// The same colours, at [`filter::DIMMED`] of full
+    /// The same colours, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
 }
 
@@ -199,6 +204,7 @@ fn select_on_click(
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     frame: Res<FrameCount>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut answered: Local<Option<u32>>,
     mut selection: ResMut<Selection>,
 ) {
@@ -228,7 +234,23 @@ fn select_on_click(
     // lying nearer behind it. Asking it rather than working the hit out
     // again keeps the click on whatever the ring and the tint are on.
     let Ok(system) = pointed_at.single() else { return };
-    selection.set(system.clone());
+    // Held down, a modifier gathers systems up rather than replacing what is
+    // held, and lets go of one already held, so the same gesture builds a set
+    // and takes it apart.
+    //
+    // Any of the three, and both sides of each. Which one means "as well as
+    // that one" is a matter of what the user came from: control on Windows
+    // and Linux, command on macOS. Shift is offered beside them because it is
+    // the one no platform reads as asking for something else.
+    let gathering = keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+        KeyCode::ShiftLeft,
+        KeyCode::ShiftRight,
+    ]);
+    selection.pick(system.clone(), gathering);
 }
 
 /// How long a second click may take to arrive and still make a double
@@ -298,7 +320,7 @@ impl LastClick {
 /// resulting star systems
 pub fn spawn(
     systems_query: Query<(Entity, &System)>,
-    route_query: Query<Entity, With<Route>>,
+    route_query: Query<(Entity, &Route)>,
     galaxy: Res<Galaxy>,
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
@@ -316,78 +338,55 @@ pub fn spawn(
 ) {
     let Ok(grid) = grids.single() else { return };
 
+    // Every row that arrived this frame, and when the last of them was asked
+    // for. Put together first and handed over once, for the reason given at
+    // [`one_per_system`].
+    //
+    // One time for however many queries landed together, since what it is for
+    // is the line the spawn is logged under. Nothing is stamped with it and
+    // nothing measures how stale a row is by it, so the latest of them stands
+    // for the batch rather than each row having to carry its own.
+    let mut arrived: Vec<DbSystem> = Vec::new();
+    let mut arrived_at = time.startup();
+
     tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(new_systems) = status {
-            // TODO: Pass FetchIndex along. I'd like to have index.marker() or
-            // similar so I can mark entities with some info about where they
-            // were fetched from.
-            spawn_systems(
-                &new_systems,
-                &systems_query,
-                &galaxy,
-                grid,
-                &color_by,
-                &filters,
-                &mut commands,
-                &mesh,
-                &materials,
-                &invisible,
-                &time,
-                fetched_at,
-            );
-
-            // Said rather than acted on. What a route does to the map is
-            // `route::plotted`'s business; this is the one place its systems
-            // are in hand, so it is the one place that can say what they are.
-            if let FetchIndex::Route(..) = index
-                && let (Some(first), Some(last)) =
-                    (new_systems.first(), new_systems.last())
-                && new_systems.len() >= 2
-            {
-                let places: Vec<_> =
-                    new_systems.iter().filter_map(system_to_vec).collect();
-                if let Some((middle, extent)) = framing(&places) {
-                    // In the order they are travelled, which is the order
-                    // the route came back in and the order its panel lists.
-                    let systems = new_systems
-                        .iter()
-                        .map(|system| system.address)
-                        .collect();
-                    plotted.write(Plotted {
-                        label: format!("{} -> {}", first.name, last.name),
-                        systems,
-                        middle,
-                        extent,
-                    });
+            if let FetchIndex::Route(start, end, range) = index {
+                // A route is a line between systems, so one system is
+                // no route. Coming back with nothing is how the
+                // database says it could not get from one end to the
+                // other in jumps that long, and nothing drawn is the
+                // same nothing as a route still being worked out.
+                //
+                // Only ever an answer to a route still being waited on.
+                // A name that resolved to nothing is already said, and
+                // said more exactly than this could: the route was
+                // fetched anyway, and it comes back empty for the same
+                // reason, so without this the better answer is talked
+                // over a moment after it arrives.
+                if *plot == Plot::Working {
+                    *plot = if new_systems.len() < 2 {
+                        Plot::Trouble(format!(
+                            "No route from {start} to {end} at {range} Ly"
+                        ))
+                    } else {
+                        Plot::Nothing
+                    };
                 }
-            }
 
-            match index {
-                FetchIndex::Route(start, end, range) => {
-                    // A route is a line between systems, so one system is
-                    // no route. Coming back with nothing is how the
-                    // database says it could not get from one end to the
-                    // other in jumps that long, and nothing drawn is the
-                    // same nothing as a route still being worked out.
-                    //
-                    // Only ever an answer to a route still being waited on.
-                    // A name that resolved to nothing is already said, and
-                    // said more exactly than this could: the route was
-                    // fetched anyway, and it comes back empty for the same
-                    // reason, so without this the better answer is talked
-                    // over a moment after it arrives.
-                    if *plot == Plot::Working {
-                        *plot = if new_systems.len() < 2 {
-                            Plot::Trouble(format!(
-                                "No route from {start} to {end} at {range} Ly"
-                            ))
-                        } else {
-                            Plot::Nothing
-                        };
-                    }
+                // Said rather than acted on. What a route does to the map is
+                // `route::plotted`'s business; this is the one place its
+                // systems are in hand, so it is the one place that can say
+                // what they are.
+                //
+                // The line is drawn from the same value, so that what it
+                // carries and what the row in the bar holds are one filter
+                // and closing the row finds the line.
+                if let Some(landed) = plotted_route(&new_systems, range) {
                     spawn_route(
+                        &landed.filter(),
                         &new_systems,
                         &route_query,
                         &galaxy,
@@ -396,14 +395,87 @@ pub fn spawn(
                         &mut mesh_assets,
                         &mut material_assets,
                     );
+                    plotted.write(landed);
                 }
-                _ => {}
             }
+
+            // TODO: Pass FetchIndex along. I'd like to have index.marker() or
+            // similar so I can mark entities with some info about where they
+            // were fetched from.
+            //
+            arrived_at = arrived_at.max(*fetched_at);
+            arrived.extend(new_systems);
         }
         retain
     });
 
+    let arrived = one_per_system(arrived);
+    if !arrived.is_empty() {
+        spawn_systems(
+            &arrived,
+            &systems_query,
+            &galaxy,
+            grid,
+            &color_by,
+            &filters,
+            &mut commands,
+            &mesh,
+            &materials,
+            &invisible,
+            &time,
+            &arrived_at,
+        );
+    }
+
     // TODO(#43): despawn stuff...
+}
+
+/// What a route that has landed amounts to, if it amounts to a route
+///
+/// Nothing where fewer than two systems came back, a line between one system
+/// being no line, and nothing where none of them has a position on record and
+/// there is nowhere to put it.
+///
+/// `range` comes off the key the route was fetched under, that being where
+/// what the user asked for is still written down. The rows that came back say
+/// which systems the ship passes through and nothing about how far it reaches.
+fn plotted_route(systems: &[DbSystem], range: &str) -> Option<Plotted> {
+    let (first, last) = (systems.first()?, systems.last()?);
+    if systems.len() < 2 {
+        return None;
+    }
+
+    let places: Vec<_> = systems.iter().filter_map(system_to_vec).collect();
+    let (middle, extent) = framing(&places)?;
+
+    Some(Plotted {
+        label: format!("{} -> {}", first.name, last.name),
+        // In the order they are travelled, which is the order the route came
+        // back in and the order its panel lists.
+        systems: systems.iter().map(|system| system.address).collect(),
+        middle,
+        extent,
+        range: range.to_owned(),
+    })
+}
+
+/// The rows that arrived, with each system named once
+///
+/// [`spawn_systems`] finds what is already on the map by asking the world, and
+/// the world does not yet hold what a command spawned a moment ago: commands
+/// wait for the next sync point. So two answers arriving in one frame about
+/// one system would each find nothing there and each spawn it, leaving two
+/// stars on top of each other for as long as the map holds them, which is for
+/// good. The map fetches by region and by name at once, and a system searched
+/// for and flown to is exactly the system the region around it is bringing in,
+/// so the two answers are not rare.
+///
+/// Whichever answer came first is the one kept. Two of them in one frame are
+/// one system as two queries a few milliseconds apart saw it, which is the
+/// same system.
+fn one_per_system(arrived: Vec<DbSystem>) -> Vec<DbSystem> {
+    let mut named = HashSet::with_capacity(arrived.len());
+    arrived.into_iter().filter(|system| named.insert(system.address)).collect()
 }
 
 /// Create or refresh the entities for each row fetched
@@ -529,6 +601,27 @@ fn update(
     }
 }
 
+/// Repaint the dimmed colours when the slider moves
+///
+/// The handles stay as they are, so nothing has to be told which material it
+/// is pointing at. Recolouring a shared asset repaints everything drawn in
+/// it, which here is every star the filters exclude, and is the point.
+fn redim(
+    dim: Res<DimTo>,
+    materials: Res<SystemMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+) {
+    if !dim.is_changed() {
+        return;
+    }
+
+    for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
+        if let Some(mut material) = assets.get_mut(handle) {
+            *material = star_material(hue.color(), dim.0);
+        }
+    }
+}
+
 /// Where a star sits, as the galaxy's grid wants it
 ///
 /// Split into the cell the position falls in and how far into that cell it
@@ -606,6 +699,7 @@ fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
 
 fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
+    dim: Res<DimTo>,
     mut commands: Commands,
 ) {
     let mut set = |strength: f32| {
@@ -615,10 +709,8 @@ fn init_materials(
             .collect()
     };
 
-    commands.insert_resource(SystemMaterials {
-        bright: set(1.),
-        dim: set(filter::DIMMED),
-    });
+    commands
+        .insert_resource(SystemMaterials { bright: set(1.), dim: set(dim.0) });
     commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
         base_color: Color::NONE,
         alpha_mode: AlphaMode::Blend,
@@ -702,6 +794,68 @@ impl TryFrom<&DbSystem> for System {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row for the system at `address`, with nothing else on record
+    fn row(address: i64) -> DbSystem {
+        DbSystem {
+            address,
+            name: format!("System {address}"),
+            position: None,
+            population: 0,
+            security: None,
+            government: None,
+            allegiance: None,
+            primary_economy: None,
+            secondary_economy: None,
+            factions: Vec::new(),
+            updated_at: chrono::DateTime::UNIX_EPOCH,
+            updated_by: String::new(),
+        }
+    }
+
+    /// Which systems a set of rows is about, in order
+    fn about(rows: &[DbSystem]) -> Vec<i64> {
+        rows.iter().map(|system| system.address).collect()
+    }
+
+    /// Two answers about one system leave one row for it
+    ///
+    /// Which is what keeps two stars from being spawned on top of each other.
+    /// The map cannot see what it spawned a moment ago, so it has to be told
+    /// about a system once.
+    #[test]
+    fn a_system_answered_for_twice_is_named_once() {
+        let arrived = vec![row(1), row(2), row(1)];
+
+        assert_eq!(about(&one_per_system(arrived)), vec![1, 2]);
+    }
+
+    /// The answer that came first is the one kept
+    #[test]
+    fn the_first_answer_about_a_system_is_the_one_kept() {
+        let mut second = row(1);
+        second.name = "Renamed".to_owned();
+        let arrived = vec![row(1), second];
+
+        let kept = one_per_system(arrived);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "System 1");
+    }
+
+    /// Rows about different systems are all kept, in the order they arrived
+    #[test]
+    fn every_system_answered_for_once_is_kept() {
+        let arrived = vec![row(3), row(1), row(2)];
+
+        assert_eq!(about(&one_per_system(arrived)), vec![3, 1, 2]);
+    }
+
+    /// Nothing arriving is nothing to spawn
+    #[test]
+    fn nothing_arriving_names_nothing() {
+        assert!(one_per_system(Vec::new()).is_empty());
+    }
 
     /// One click on its own opens nothing
     #[test]

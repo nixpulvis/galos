@@ -1,31 +1,37 @@
-//! Narrowing the map down to what the user is looking for
+//! Picking the map out against the rest of the sky
 //!
 //! A filter is a question asked of every system, and several are asked at
-//! once: a system passes when all of them admit it. What fails is not taken
-//! off the map, it is drawn faintly, so a faction is read against the space
-//! around it rather than against an empty sky.
+//! once: a system is admitted when any one of them admits it. Each adds to
+//! what is picked out rather than cutting into it, every filter being
+//! something the user asked to see.
 //!
 //! This is a layer over the map rather than a mode. The spyglass goes on
 //! fetching by region, the camera stays where it is, and nothing is
-//! despawned. All that changes is how brightly each system is drawn.
+//! despawned.
 //!
-//! [`DIMMED`] says how faintly, the same for all of them. What is excluded is
-//! still wanted on screen, so it is still fetched: a system that was never
-//! asked for cannot be drawn faintly, and the space around a faction is the
-//! thing being drawn.
+//! [`DimTo`] says how faintly what none of them admits is drawn, and answers
+//! for the whole of it. Above zero the excluded systems are wanted on screen,
+//! so they are fetched to be dimmed: what was never asked for cannot be drawn
+//! faintly, and a faction read against the space around it is the thing being
+//! drawn. At zero they are not drawn at all, which is the other thing a filter
+//! is asked for: this kind of system and none of the rest.
 
 use crate::Db;
 use crate::schedule::MapSet;
+use crate::search::Asking;
 use crate::systems::System;
 use bevy::prelude::*;
-use bevy::tasks::futures_lite::future;
+use bevy::tasks::AsyncComputeTaskPool;
 use galos_db::Database;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
+    app.init_resource::<DimTo>();
     app.init_resource::<Asked>();
+    app.init_resource::<Resolving>();
+    app.init_resource::<FactionResults>();
     app.add_message::<Wanted>();
     // Answering what the user asked for, so with the rest of that.
     app.add_systems(Update, resolve.in_set(MapSet::Search));
@@ -63,7 +69,28 @@ pub enum Filter {
     /// `label` is what its row says, settled when the route landed, since it
     /// names the two ends as the database spells them rather than as they
     /// were typed.
-    Route { label: String, systems: Vec<i64> },
+    ///
+    /// `range` is how far the ship it was plotted for reaches in one jump, in
+    /// light years, as the user typed it. The two ends are what a route is
+    /// named for and they are not the whole of what it is: the same pair
+    /// plotted for a ship that reaches further is a different route through
+    /// different systems, and with nothing but the ends to go on the two are
+    /// one name over two answers. Kept as the text that was typed, being a
+    /// number the map only ever reads back out.
+    ///
+    /// What the ship can cross rather than what it does. The legs of the route
+    /// are shorter, each landing on whatever system lies within reach rather
+    /// than out at the limit of it.
+    Route { label: String, systems: Vec<i64>, range: String },
+    /// The systems the user picked out by hand
+    ///
+    /// A copy of what was selected rather than a reading of the selection as
+    /// it stands. Taking a copy is what makes the filter worth having: the
+    /// rings and the rows can be let go of and those systems stay picked out
+    /// against the rest.
+    ///
+    /// `label` says how many, a hand-picked set having no name of its own.
+    Systems { label: String, systems: Vec<i64> },
 }
 
 impl Filter {
@@ -72,7 +99,20 @@ impl Filter {
         match self {
             Filter::Faction { id, .. } => system.factions.contains(id),
             Filter::Route { systems, .. } => systems.contains(&system.address),
+            Filter::Systems { systems, .. } => {
+                systems.contains(&system.address)
+            }
         }
+    }
+
+    /// Whether this is a route
+    ///
+    /// What the bar groups its rows by and what the map draws a line for. Its
+    /// own question rather than a reading of [`Self::ordered`] or of
+    /// [`Self::range`], which happen to answer the same today and are about
+    /// what a route is like rather than about what it is.
+    pub fn is_route(&self) -> bool {
+        matches!(self, Filter::Route { .. })
     }
 
     /// Whether what it admits has an order of its own
@@ -91,10 +131,41 @@ impl Filter {
     /// system it does not admit at all.
     pub fn place_of(&self, address: i64) -> Option<usize> {
         match self {
-            Filter::Faction { .. } => None,
+            Filter::Faction { .. } | Filter::Systems { .. } => None,
             Filter::Route { systems, .. } => {
                 systems.iter().position(|on| *on == address)
             }
+        }
+    }
+
+    /// How many jumps what this admits is flown in
+    ///
+    /// A route of two systems is one jump, so it is one fewer than what the
+    /// route runs through. Nothing for a filter that is not flown at all, and
+    /// nothing for a route with nothing in it, there being no leg to count.
+    ///
+    /// What a row about a route says at its end, as a row about a system says
+    /// how far off it is. A route is named for its two ends, and how many
+    /// jumps lie between them is what it was plotted to find out.
+    pub fn hops(&self) -> Option<usize> {
+        match self {
+            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Route { systems, .. } => systems.len().checked_sub(1),
+        }
+    }
+
+    /// How far the ship this was plotted for reaches, where one was named
+    ///
+    /// The one thing a route was asked for that its name does not say. A
+    /// faction and a hand-picked set are not plotted, so there is nothing to
+    /// ask them.
+    ///
+    /// Not how far it goes. That is a jump, and there is one of those between
+    /// each pair of systems the route runs through.
+    pub fn range(&self) -> Option<&str> {
+        match self {
+            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Route { range, .. } => Some(range),
         }
     }
 
@@ -102,7 +173,9 @@ impl Filter {
     pub fn name(&self) -> &str {
         match self {
             Filter::Faction { name, .. } => name,
-            Filter::Route { label, .. } => label,
+            Filter::Route { label, .. } | Filter::Systems { label, .. } => {
+                label
+            }
         }
     }
 
@@ -120,103 +193,131 @@ impl Filter {
             Filter::Faction { name, .. } => {
                 DbSystem::fetch_faction(db, name).await.unwrap_or_default()
             }
-            Filter::Route { systems, .. } => {
+            Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
             }
         }
     }
 }
 
-/// A filter the user has asked for, before it is known to exist
+/// A name the user has typed, to be looked up
 ///
-/// What is typed is a name and what a filter tests against is an id, so
-/// something has to look one up for the other. That is a database question,
-/// asked here rather than in the bar, which draws during egui's own pass and
-/// has no business waiting on anything.
+/// What is typed is part of a name and what a filter tests against is an id,
+/// so something has to find the one from the other. That is a database
+/// question, asked here rather than in the bar, which draws during egui's own
+/// pass and has no business waiting on anything.
 ///
 /// Its own message rather than a [`crate::search::Searched`]: asking for a
-/// filter is not searching. The map goes nowhere, fetches nothing in
+/// filter is not searching the map. It goes nowhere, fetches nothing in
 /// particular, and picks nothing out.
-#[derive(Message, Debug)]
+#[derive(Message, Debug, Clone)]
 pub enum Wanted {
-    /// Systems a faction of this name is present in
+    /// Factions whose names hold this
     Faction { name: String },
 }
 
-impl Wanted {
-    /// The filter this asks for, or why there is none
-    async fn resolve(&self, db: &Database) -> Result<Filter, String> {
-        match self {
-            Wanted::Faction { name } => {
-                match DbFaction::fetch_by_name(db, name).await {
-                    Ok(faction) => Ok(Filter::Faction {
-                        id: faction.id,
-                        name: faction.name,
-                    }),
-                    Err(_) => Err(format!("No faction named {name}")),
-                }
-            }
-        }
-    }
-}
-
-/// What became of the last filter asked for
+/// What became of the last name the filter's field was asked about
 ///
-/// Three states rather than an error or nothing, because the field that asked
-/// has to know the difference between not yet answered and answered well. It
-/// cannot know either at the moment it asks: a name is looked up against the
-/// database a frame later, so the field is still holding what was typed when
-/// the answer arrives.
+/// What was found is a list rather than a state, so this says only what a
+/// list cannot: that a name matched nothing at all. Nothing on screen is what
+/// the bar looks like before anything has been asked, and the two have to be
+/// told apart.
 ///
 /// Its own resource rather than [`crate::search::SearchNote`], which answers a
 /// name typed into the search input. Two unrelated answers sharing one line
-/// means each wipes the other: adding a faction would clear a note about a
-/// system that was never found, and the note about a faction would be read
+/// means each wipes the other: asking about a faction would clear a note about
+/// a system that was never found, and the note about a faction would be read
 /// out under the box that has nothing to do with it.
 #[derive(Resource, Default, Debug, PartialEq, Eq)]
 pub enum Asked {
-    /// Nothing has been asked for, or the answer has been acted on
+    /// Nothing has been asked about, or what was found is standing in a list
     #[default]
     Nothing,
-    /// What was asked for is standing in a row of its own
-    Added,
-    /// Why there is nothing to stand there
+    /// Why there is no list
     Trouble(String),
 }
 
-impl Asked {
-    /// Whether the field that asked has done its job
-    ///
-    /// A filter that was added is a row on screen now, so what was typed to
-    /// ask for it has been answered and the field is free for the next one.
-    ///
-    /// A name that resolved to nothing is left where it was typed. It is
-    /// most likely nearly right, and clearing it makes the user type the
-    /// whole of it again to find out which part was wrong.
-    pub fn answered(&self) -> bool {
-        matches!(self, Asked::Added)
+/// How many factions a search answers with
+///
+/// A screenful of the bar, as a search for a system is answered with.
+const FACTIONS: i64 = 25;
+
+/// The search under way, if there is one
+///
+/// One at a time: the field asks about one name and holds what was typed
+/// until it is answered, so a second ask is the user having changed their
+/// mind rather than a second question.
+pub type Resolving = Asking<String, Vec<DbFaction>>;
+
+/// The factions the last search found, for the bar to draw
+///
+/// Carrying the id as well as the name, which is what a filter tests against.
+/// A faction picked out of this list is a filter already, with nothing left to
+/// look up: the search asked the question the lookup would have asked.
+#[derive(Resource, Default)]
+pub struct FactionResults(Vec<DbFaction>);
+
+impl FactionResults {
+    /// What was found, best first
+    pub fn iter(&self) -> impl Iterator<Item = &DbFaction> {
+        self.0.iter()
+    }
+
+    /// Whether anything was found
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Stop offering whatever was found
+    pub fn clear(&mut self) {
+        self.0.clear();
     }
 }
 
-/// Turn what the user asked for into a filter, or say why not
+/// Look up the factions a typed name might mean
+///
+/// Asked of the database off the main thread. A name is matched however it
+/// was typed, which the index on the factions cannot answer, so this is a walk
+/// of every faction on record. Done in the frame, that is the map stopping for
+/// it.
+///
+/// The answer is a list rather than a filter. A name part way through being
+/// typed means whichever factions hold it, and which of those was meant is a
+/// question only the user can answer, so the list is offered and a click
+/// chooses, exactly as a search for a system is answered.
 fn resolve(
     mut wanted: MessageReader<Wanted>,
-    mut filters: ResMut<Filters>,
+    mut resolving: ResMut<Resolving>,
+    mut results: ResMut<FactionResults>,
     mut answer: ResMut<Asked>,
+    time: Res<Time<Real>>,
     db: Res<Db>,
 ) {
+    let now = time.last_update().unwrap_or(time.startup());
+    let pool = AsyncComputeTaskPool::get();
+
     for asked in wanted.read() {
-        // Waited on, as a search is. A name resolves against one indexed row
-        // and this answers something the user just did.
-        future::block_on(async {
-            *answer = match asked.resolve(&db.0).await {
-                Ok(filter) => {
-                    filters.add(filter);
-                    Asked::Added
-                }
-                Err(why) => Asked::Trouble(why),
-            };
-        });
+        let Wanted::Faction { name } = asked;
+        let db = db.0.clone();
+        let asked = name.clone();
+        resolving.ask(
+            name.clone(),
+            now,
+            pool.spawn(async move {
+                DbFaction::search_by_name(&db, &asked, FACTIONS)
+                    .await
+                    .unwrap_or_default()
+            }),
+        );
+    }
+
+    if let Some((name, found)) = resolving.answered(now) {
+        results.0 = found;
+        *answer = if results.is_empty() {
+            Asked::Trouble(format!("No faction named {name}"))
+        } else {
+            Asked::Nothing
+        };
     }
 }
 
@@ -235,40 +336,34 @@ pub struct Active {
 pub struct Filters(Vec<Active>);
 
 impl Filters {
-    /// Whether every enabled filter admits `system`
+    /// Whether any enabled filter admits `system`
     ///
-    /// All of them, so filters narrow as they are added. A system passing
-    /// some but not others is not what any of them was asking for.
+    /// Any of them, so each one adds to what is shown rather than cutting
+    /// into it. Every filter is something the user asked to see, and a second
+    /// ask is a second thing wanted, not a condition on the first: asking for
+    /// a faction and then for a route means both, where taking the systems
+    /// they share would usually mean nothing at all, the two rarely
+    /// overlapping.
+    ///
+    /// Nothing asked for admits everything. A map with no filter on it is a
+    /// map showing the sky rather than an empty one.
     pub fn admit(&self, system: &System) -> bool {
-        self.0
-            .iter()
-            .filter(|active| active.enabled)
-            .all(|active| active.filter.admits(system))
+        let mut asked =
+            self.0.iter().filter(|active| active.enabled).peekable();
+        if asked.peek().is_none() {
+            return true;
+        }
+        asked.any(|active| active.filter.admits(system))
     }
 
     /// Add `filter`, unless it is already being asked
     ///
-    /// Asking the same thing twice narrows nothing and leaves two rows that
-    /// have to be turned off one at a time.
+    /// Asking the same thing twice picks out nothing further and leaves two
+    /// rows that have to be turned off one at a time.
     pub fn add(&mut self, filter: Filter) {
         if self.0.iter().any(|active| active.filter == filter) {
             return;
         }
-        self.0.push(Active { filter, enabled: true });
-    }
-
-    /// Add `filter` in place of whatever else of its kind is being asked
-    ///
-    /// For a kind there can only be one of. The map draws one route at a
-    /// time, replacing the line as each is plotted, so a second route filter
-    /// standing beside the first would ask about a line that is no longer
-    /// there and narrow the map to nothing between them.
-    ///
-    /// Factions do not go through here. Several of them at once is the whole
-    /// point of a filter being a filter.
-    pub fn replace(&mut self, filter: Filter) {
-        let kind = std::mem::discriminant(&filter);
-        self.0.retain(|active| std::mem::discriminant(&active.filter) != kind);
         self.0.push(Active { filter, enabled: true });
     }
 
@@ -290,44 +385,163 @@ impl Filters {
             active.enabled = !active.enabled;
         }
     }
+
+    /// How many filters are being held, turned on or not
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether none is held at all, which is a map showing the whole sky
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether any filter is turned on
+    ///
+    /// Which is whether the map is picking anything out. With every filter
+    /// off the sky is drawn whole, as it is with none of them held at all.
+    pub fn any_enabled(&self) -> bool {
+        self.0.iter().any(|active| active.enabled)
+    }
+
+    /// The filter standing in the `index`th place
+    pub fn get(&self, index: usize) -> Option<&Active> {
+        self.0.get(index)
+    }
+
+    /// Turn every filter at `rows` off, or every one back on
+    ///
+    /// Off while any of them is on, since that is the question the control
+    /// answers: show me the sky as it is, and then put back what I was
+    /// looking at. All of them come back rather than the ones that were on
+    /// before, so the two clicks are one gesture and its undo rather than a
+    /// state to be remembered.
+    ///
+    /// Told which rows rather than taking the lot. The bar draws its filters
+    /// in sections and each has a row of its own standing over it, so what
+    /// this answers is one section's worth: turning the routes off is no
+    /// reason to turn the factions off with them.
+    pub fn toggle_all(&mut self, rows: &[usize]) {
+        let on = rows.iter().any(|index| {
+            self.0.get(*index).is_some_and(|active| active.enabled)
+        });
+        for index in rows {
+            if let Some(active) = self.0.get_mut(*index) {
+                active.enabled = !on;
+            }
+        }
+    }
+
+    /// Stop asking every filter at `rows`
+    ///
+    /// Taken from the back, so that removing one does not move the next one
+    /// still to be removed out from under its own index.
+    pub fn clear(&mut self, rows: &[usize]) {
+        let mut rows = rows.to_vec();
+        rows.sort_unstable();
+        for index in rows.into_iter().rev() {
+            self.remove(index);
+        }
+    }
+
+    /// What the filters admit, as a query can ask it
+    ///
+    /// Every enabled filter says either which faction it wants or which
+    /// systems by name, so all of them together are two lists. That is the
+    /// whole of what a query has to be told, and it is told once however many
+    /// filters there are.
+    ///
+    /// Nothing where they admit everything, which is where none of them is
+    /// turned on. A query narrowed by two empty lists answers with nothing at
+    /// all, where what is meant is the whole sky.
+    pub fn admitting(&self) -> Option<Admitting> {
+        let mut admitting = Admitting::default();
+        let mut asked = false;
+
+        for active in self.0.iter().filter(|active| active.enabled) {
+            asked = true;
+            match &active.filter {
+                Filter::Faction { id, .. } => admitting.factions.push(*id),
+                Filter::Route { systems, .. }
+                | Filter::Systems { systems, .. } => {
+                    admitting.systems.extend(systems.iter().copied())
+                }
+            }
+        }
+
+        asked.then_some(admitting)
+    }
+}
+
+/// What a set of filters admits, said as two lists
+///
+/// Which is as much as the database is told. A faction is a membership to be
+/// looked up and a route or a hand-picked set is its addresses outright, and
+/// a system is admitted by standing in either list.
+///
+/// Part of what a region is asked for, so two regions about the same place
+/// admitting different things are different questions. Hence [`Eq`] and
+/// [`Hash`]: what tells those questions apart is these lists.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct Admitting {
+    /// The factions asked for, by id
+    pub factions: Vec<i32>,
+    /// The systems asked for outright, by address
+    pub systems: Vec<i64>,
 }
 
 /// A system no enabled filter admits
 ///
-/// The verdict is one bit because filters are ANDed, so it is carried by a
-/// marker, and how faintly to draw is [`DIMMED`], the same for all of them. Written when the
-/// filters change or a system does, rather than worked out afresh by each of
-/// the things that draws from it.
+/// The verdict is one bit, whichever of them admitted it and however many
+/// did, so it is carried by a marker and how faintly to draw lives apart in
+/// [`DimTo`]. Written when the filters change or a system does, rather than
+/// worked out afresh by each of the things that draws from it.
 #[derive(Component)]
 pub struct Filtered;
 
-/// How brightly a system the filters exclude is drawn
+/// How opaque a system no filter admits is drawn
 ///
-/// A fraction of what it would be drawn at unfiltered. Faint enough to read as
-/// background rather than as something picked out, and bright enough to still
-/// be read, which is the whole point of dimming rather than hiding: the space
-/// around a faction stays legible.
+/// A fraction of the alpha it would be drawn at unfiltered, so one is
+/// untouched and zero is not drawn at all. Reads as what it does: dim to a
+/// fifth, dim to nothing.
 ///
-/// One number rather than a setting. What it is worth setting to is the same
-/// answer every time, and a control that only ever moves between "right" and
-/// "wrong" is a control that costs more than it gives.
-pub const DIMMED: f32 = 0.15;
+/// Zero is not merely invisible. A star faded to nothing is still a star
+/// being drawn, and still one the pointer can land on, so zero hides it
+/// outright, which takes its name, its ring and its hit box with it.
+#[derive(Resource)]
+pub struct DimTo(pub f32);
 
-/// `color` as it should be drawn for a system, given whether it is excluded
-///
-/// The colour is left alone and the alpha carries it, so that what is dimmed
-/// reads as standing further back rather than as having changed into something
-/// else.
-///
-/// For what is painted straight rather than through a material: the two rings
-/// are gizmos, and a gizmo takes its colour at the call.
-pub fn dim(color: Srgba, filtered: bool) -> Srgba {
-    if filtered {
-        Srgba { alpha: color.alpha * DIMMED, ..color }
-    } else {
-        color
+impl Default for DimTo {
+    fn default() -> Self {
+        DimTo(DEFAULT_DIM)
     }
 }
+
+impl DimTo {
+    /// `color` as it should be drawn for a system, given whether it is
+    /// excluded
+    ///
+    /// The colour is left alone and the alpha carries it, so that what is
+    /// dimmed reads as standing further back rather than as having changed
+    /// into something else.
+    ///
+    /// For what is painted straight rather than through a material: the two
+    /// rings are gizmos, and a gizmo takes its colour at the call.
+    pub fn against(&self, color: Srgba, filtered: bool) -> Srgba {
+        if filtered {
+            Srgba { alpha: color.alpha * self.0, ..color }
+        } else {
+            color
+        }
+    }
+}
+
+/// How faint an excluded system is to begin with
+///
+/// Faint enough to read as background rather than as something picked out,
+/// and bright enough to still be read: the point of dimming rather than
+/// hiding is that the space around a faction stays legible.
+const DEFAULT_DIM: f32 = 0.15;
 
 /// Keep the mark on whichever systems the filters exclude
 ///
@@ -376,28 +590,12 @@ mod tests {
         system
     }
 
-    /// A filter that was added has answered the field that asked for it
-    #[test]
-    fn an_added_filter_frees_the_field() {
-        assert!(Asked::Added.answered());
-    }
-
-    /// A name that resolved to nothing has not
+    /// A question nobody has asked is answered by nothing at all
     ///
-    /// The field goes on holding it, since it is most likely nearly right and
-    /// clearing it makes the user type the whole of it again to find out
-    /// which part was wrong.
+    /// Which is what the bar looks like before a name has been typed, and
+    /// what it has to look like again once one has been.
     #[test]
-    fn a_name_that_failed_leaves_the_field_alone() {
-        let trouble = Asked::Trouble("No faction named Zargon".to_owned());
-
-        assert!(!trouble.answered());
-    }
-
-    /// Nor has a question nobody has asked
-    #[test]
-    fn nothing_asked_frees_nothing() {
-        assert!(!Asked::default().answered());
+    fn nothing_asked_says_nothing() {
         assert_eq!(Asked::default(), Asked::Nothing);
     }
 
@@ -421,19 +619,22 @@ mod tests {
         assert!(!filters.admit(&member(4, &[])));
     }
 
-    /// Two filters admit what passes both
+    /// Two filters admit what passes either
     ///
-    /// Which is what a stack of rows reads as, and what makes adding one
-    /// narrow the map rather than widen it.
+    /// Each row is something the user asked to see, so a second row shows a
+    /// second thing rather than cutting into the first. Two factions asked
+    /// for together and ANDed would answer with the systems both are present
+    /// in, which is usually none of them.
     #[test]
-    fn filters_narrow_each_other() {
+    fn filters_add_to_each_other() {
         let mut filters = Filters::default();
         filters.add(faction(7));
         filters.add(faction(9));
 
         assert!(filters.admit(&member(1, &[7, 9])));
-        assert!(!filters.admit(&member(2, &[7])));
-        assert!(!filters.admit(&member(3, &[9])));
+        assert!(filters.admit(&member(2, &[7])));
+        assert!(filters.admit(&member(3, &[9])));
+        assert!(!filters.admit(&member(4, &[3])));
     }
 
     /// A filter turned off asks nothing
@@ -444,6 +645,150 @@ mod tests {
         filters.toggle(0);
 
         assert!(filters.admit(&member(1, &[])));
+    }
+
+    /// Turning them all off shows the sky whole, and holds on to every filter
+    ///
+    /// Which is the point of the row: lift the whole set to see what it was
+    /// dimming, without having to type any of it in again.
+    #[test]
+    fn turning_them_all_off_admits_everything() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+
+        filters.toggle_all(&[0, 1]);
+
+        assert!(!filters.any_enabled());
+        assert_eq!(filters.len(), 2);
+        assert!(filters.admit(&member(1, &[3])));
+    }
+
+    /// And the same gesture puts every one of them back
+    ///
+    /// All of them rather than the ones that were on before, so the second
+    /// click undoes the first rather than restoring a state nobody chose.
+    #[test]
+    fn turning_them_all_on_asks_every_one() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+        filters.toggle(1);
+
+        filters.toggle_all(&[0, 1]);
+        filters.toggle_all(&[0, 1]);
+
+        assert!(filters.admit(&member(1, &[7])));
+        assert!(filters.admit(&member(2, &[9])));
+        assert!(!filters.admit(&member(3, &[3])));
+    }
+
+    /// One left on is enough for the set to read as asking
+    ///
+    /// So the row turns the rest off with it rather than turning the one
+    /// that is off back on, which would take two clicks to reach the sky.
+    #[test]
+    fn one_left_on_turns_them_all_off() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+        filters.toggle(1);
+
+        filters.toggle_all(&[0, 1]);
+
+        assert!(!filters.any_enabled());
+    }
+
+    /// Clearing them takes every filter away
+    #[test]
+    fn clearing_leaves_nothing_held() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+
+        filters.clear(&[0, 1]);
+
+        assert_eq!(filters.len(), 0);
+        assert!(filters.admit(&member(1, &[3])));
+    }
+
+    /// What the filters admit is two lists a query can be handed
+    #[test]
+    fn a_faction_filter_admits_by_id() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let admitting = filters.admitting().expect("something asked for");
+
+        assert_eq!(admitting.factions, vec![7]);
+        assert!(admitting.systems.is_empty());
+    }
+
+    /// A hand-picked set says its systems outright
+    #[test]
+    fn a_gathered_filter_admits_by_address() {
+        let mut filters = Filters::default();
+        filters.add(gathered(&[1, 2, 3]));
+
+        let admitting = filters.admitting().expect("something asked for");
+
+        assert_eq!(admitting.systems, vec![1, 2, 3]);
+        assert!(admitting.factions.is_empty());
+    }
+
+    /// Several of them are gathered into the two lists between them
+    ///
+    /// Each adds to what is admitted, so the lists are what all of them want
+    /// rather than what they have in common.
+    #[test]
+    fn several_filters_admit_between_them() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+        filters.add(gathered(&[1, 2]));
+
+        let admitting = filters.admitting().expect("something asked for");
+
+        assert_eq!(admitting.factions, vec![7, 9]);
+        assert_eq!(admitting.systems, vec![1, 2]);
+    }
+
+    /// A filter turned off asks for nothing, and is not asked for
+    #[test]
+    fn a_disabled_filter_admits_nothing_in_particular() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.toggle(0);
+
+        assert_eq!(filters.admitting(), None);
+    }
+
+    /// Nothing held admits the whole sky rather than none of it
+    ///
+    /// A query narrowed by two empty lists comes back with nothing, where
+    /// what is meant is everything, so there is nothing to narrow it by.
+    #[test]
+    fn no_filters_admit_everything() {
+        assert_eq!(Filters::default().admitting(), None);
+    }
+
+    /// A filter that admits nothing asks for nothing, and means it
+    ///
+    /// Which is the one case the two empty lists are the right answer: a
+    /// filter is being asked and it admits no system, so a query that comes
+    /// back with nothing is what was asked for. It is told apart from nothing
+    /// being asked by which of the two it is, and not by what the lists hold.
+    ///
+    /// What holds this together is that [`Filters::admit`] says the same. The
+    /// map dims by that and fetches by this, so a filter the two disagreed
+    /// about would be a sky drawn from one answer and fetched from the other.
+    #[test]
+    fn a_filter_that_admits_nothing_narrows_to_nothing() {
+        let mut filters = Filters::default();
+        filters.add(route(&[]));
+
+        assert_eq!(filters.admitting(), Some(Admitting::default()));
+        assert!(!filters.admit(&member(1, &[7])));
     }
 
     /// One of two turned off leaves the other asking
@@ -458,11 +803,42 @@ mod tests {
         assert!(!filters.admit(&member(2, &[9])));
     }
 
+    /// A hand-picked set holding the systems at `addresses`
+    fn gathered(addresses: &[i64]) -> Filter {
+        Filter::Systems {
+            label: format!("{} systems", addresses.len()),
+            systems: addresses.to_vec(),
+        }
+    }
+
+    /// A hand-picked set admits the systems that were picked
+    #[test]
+    fn a_gathered_set_admits_what_was_picked() {
+        let mut filters = Filters::default();
+        filters.add(gathered(&[7, 3]));
+
+        assert!(filters.admit(&member(3, &[])));
+        assert!(filters.admit(&member(7, &[])));
+        assert!(!filters.admit(&member(9, &[])));
+    }
+
+    /// And has no order for a panel to list it in
+    ///
+    /// Unlike a route, which is travelled from one end to the other. A set is
+    /// gathered up, and the order it happened to be clicked in says nothing
+    /// worth holding a list to.
+    #[test]
+    fn a_gathered_set_has_no_order_of_its_own() {
+        assert!(!gathered(&[7, 3]).ordered());
+        assert_eq!(gathered(&[7, 3]).place_of(3), None);
+    }
+
     /// A route between the systems at `addresses`
     fn route(addresses: &[i64]) -> Filter {
         Filter::Route {
             label: "A -> B".to_owned(),
             systems: addresses.to_vec(),
+            range: "10".to_owned(),
         }
     }
 
@@ -522,50 +898,79 @@ mod tests {
         assert_eq!(faction(7).place_of(1), None);
     }
 
-    /// A second route takes the place of the first
+    /// A route is one jump fewer than the systems it runs through
     ///
-    /// One route is drawn at a time, so two route filters would ask about a
-    /// line that is no longer there and narrow the map to whatever the two
-    /// happened to share.
+    /// The systems are where a jump lands, so two of them are one jump. A
+    /// route is what the count is about, so nothing else is counted at all.
     #[test]
-    fn a_route_replaces_the_route_before_it() {
+    fn a_route_is_flown_in_one_jump_fewer_than_it_holds() {
+        assert_eq!(route(&[1, 2]).hops(), Some(1));
+        assert_eq!(route(&[1, 2, 3, 4]).hops(), Some(3));
+        assert_eq!(route(&[]).hops(), None);
+        assert_eq!(faction(7).hops(), None);
+        assert_eq!(gathered(&[1, 2]).hops(), None);
+    }
+
+    /// A second route stands beside the first
+    ///
+    /// Each keeps its own line and its own row, so plotting another is asking
+    /// to see both. What the map is picking out is then either of them, the
+    /// filters adding to each other.
+    #[test]
+    fn a_second_route_stands_beside_the_first() {
         let mut filters = Filters::default();
-        filters.replace(route(&[1, 2]));
-        filters.replace(route(&[8, 9]));
+        filters.add(route(&[1, 2]));
+        filters.add(route(&[8, 9]));
+
+        assert_eq!(filters.iter().count(), 2);
+        assert!(filters.admit(&member(9, &[])));
+        assert!(filters.admit(&member(1, &[])));
+    }
+
+    /// The same route asked for twice is one route
+    ///
+    /// Two rows naming one line would have to be turned off one at a time,
+    /// and there is nothing to see twice.
+    #[test]
+    fn the_same_route_asked_for_twice_is_held_once() {
+        let mut filters = Filters::default();
+        filters.add(route(&[1, 2]));
+        filters.add(route(&[1, 2]));
 
         assert_eq!(filters.iter().count(), 1);
-        assert!(filters.admit(&member(9, &[])));
-        assert!(!filters.admit(&member(1, &[])));
     }
 
     /// And leaves the factions where they are
-    ///
-    /// Several factions at once is the whole point of a filter being a
-    /// filter, so only the kind that replaces itself does.
     #[test]
     fn a_route_leaves_the_factions_alone() {
         let mut filters = Filters::default();
         filters.add(faction(7));
         filters.add(faction(9));
-        filters.replace(route(&[1, 2]));
+        filters.add(route(&[1, 2]));
 
         assert_eq!(filters.iter().count(), 3);
     }
 
-    /// A route narrows the factions rather than replacing them
+    /// A route stands beside the factions rather than cutting into them
+    ///
+    /// Both were asked for, and a route through a faction's space rarely
+    /// keeps to it. Taking only what the two share would answer a plotted
+    /// route with the handful of its systems that faction happens to hold.
     #[test]
     fn a_route_and_a_faction_ask_together() {
         let mut filters = Filters::default();
         filters.add(faction(7));
-        filters.replace(route(&[1, 2]));
+        filters.add(route(&[1, 2]));
 
         let mut on_both = member(1, &[7]);
         on_both.factions = vec![7];
         assert!(filters.admit(&on_both));
-        // On the route, but not the faction's.
-        assert!(!filters.admit(&member(2, &[])));
-        // The faction's, but not on the route.
-        assert!(!filters.admit(&member(5, &[7])));
+        // On the route, though the faction is nowhere near it.
+        assert!(filters.admit(&member(2, &[])));
+        // The faction's, though the route runs elsewhere.
+        assert!(filters.admit(&member(5, &[7])));
+        // Neither, so neither asked for it.
+        assert!(!filters.admit(&member(6, &[3])));
     }
 
     /// Two filters that differ are told apart, and equal ones are not
