@@ -1632,16 +1632,35 @@ fn applied(
         (filters.len() > 1).then(|| whole_set(ui, filters, place)).flatten();
 
     for (index, active) in filters.iter().enumerate() {
+        // What a route says at its end, where a selection row says how far
+        // off its system is. Nothing on the others: a faction's name says all
+        // there is to say, and a set says how many it holds in its own name.
+        let hops = active.filter.hops().map(|hops| {
+            let said = if hops == 1 {
+                "1 hop".to_owned()
+            } else {
+                format!("{hops} hops")
+            };
+            egui::WidgetText::from(egui::RichText::new(said).weak())
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+        });
+
         let marks = lay_out_marks(ui);
 
-        // Whatever the dot and the marks leave. Faction names run long, and
-        // one laid out against no bound is painted out past the edge of the
-        // bar.
+        // Whatever the dot, the hops and the marks leave. Faction names run
+        // long, and one laid out against no bound is painted out past the
+        // edge of the bar.
         let room = ui.available_width()
             - ROW_PADDING * 2.
             - DOT
             - gap
-            - marks_width(&marks, gap);
+            - marks_width(&marks, gap)
+            - hops.as_ref().map_or(0., |hops| hops.size().x + gap);
         let text = egui::RichText::new(active.filter.name());
         let name = egui::WidgetText::from(if active.enabled {
             text.strong()
@@ -1693,13 +1712,17 @@ fn applied(
             );
         }
         x += DOT + gap;
-        // The galley carries the colour it was laid out in, so there is
-        // nothing for a fallback to answer for.
-        ui.painter().galley(
-            egui::pos2(x, middle - name.size().y / 2.),
-            name,
-            egui::Color32::PLACEHOLDER,
-        );
+        for galley in [Some(name), hops].into_iter().flatten() {
+            let size = galley.size();
+            // The galleys carry the colours they were laid out in, so there
+            // is nothing for a fallback to answer for.
+            ui.painter().galley(
+                egui::pos2(x, middle - size.y / 2.),
+                galley,
+                egui::Color32::PLACEHOLDER,
+            );
+            x += size.x + gap;
+        }
 
         let Marks { info, close } = place_marks(ui, rect, marks, of);
 
@@ -3406,6 +3429,41 @@ mod tests {
             "{alone:?}"
         );
         assert!(both.contains(&"2 filters".to_owned()), "{both:?}");
+    }
+
+    /// A route's row says how many jumps it is, and the rest say nothing
+    ///
+    /// Where a selection row says how far off its system is. A route is named
+    /// for its two ends, so its row would otherwise say nothing about the one
+    /// thing it was plotted to find out. A faction's name is all its row has
+    /// to say, and a set says how many it holds in its own name already.
+    #[test]
+    fn a_route_row_says_how_many_jumps_it_is() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: vec![1, 2, 3, 4, 5],
+        });
+        let mut panels = Panels::default();
+
+        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+
+        assert!(said.contains(&"4 hops".to_owned()), "{said:?}");
+    }
+
+    /// One jump is a hop rather than one hops
+    #[test]
+    fn a_route_of_one_jump_says_it_in_the_singular() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: vec![1, 2],
+        });
+        let mut panels = Panels::default();
+
+        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+
+        assert!(said.contains(&"1 hop".to_owned()), "{said:?}");
     }
 
     /// A list whose items change is not read as a widget changing identity

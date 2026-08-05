@@ -116,6 +116,22 @@ impl Filter {
         }
     }
 
+    /// How many jumps what this admits is flown in
+    ///
+    /// A route of two systems is one jump, so it is one fewer than what the
+    /// route runs through. Nothing for a filter that is not flown at all, and
+    /// nothing for a route with nothing in it, there being no leg to count.
+    ///
+    /// What a row about a route says at its end, as a row about a system says
+    /// how far off it is. A route is named for its two ends, and how many
+    /// jumps lie between them is what it was plotted to find out.
+    pub fn hops(&self) -> Option<usize> {
+        match self {
+            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Route { systems, .. } => systems.len().checked_sub(1),
+        }
+    }
+
     /// What the filter is asking for, as a row can say it
     pub fn name(&self) -> &str {
         match self {
@@ -817,6 +833,19 @@ mod tests {
         assert!(route(&[1, 2]).ordered());
         assert!(!faction(7).ordered());
         assert_eq!(faction(7).place_of(1), None);
+    }
+
+    /// A route is one jump fewer than the systems it runs through
+    ///
+    /// The systems are where a jump lands, so two of them are one jump. A
+    /// route is what the count is about, so nothing else is counted at all.
+    #[test]
+    fn a_route_is_flown_in_one_jump_fewer_than_it_holds() {
+        assert_eq!(route(&[1, 2]).hops(), Some(1));
+        assert_eq!(route(&[1, 2, 3, 4]).hops(), Some(3));
+        assert_eq!(route(&[]).hops(), None);
+        assert_eq!(faction(7).hops(), None);
+        assert_eq!(gathered(&[1, 2]).hops(), None);
     }
 
     /// A second route takes the place of the first
