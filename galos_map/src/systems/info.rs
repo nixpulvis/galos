@@ -534,6 +534,10 @@ const LISTED: usize = 8;
 /// Answered the way the map itself is: one click says which system is meant
 /// and a second says to go there, so a system reached through a list and a
 /// system reached by its star are reached the same way.
+///
+/// Each line ends in a distance, and which distance it is follows from what
+/// the list is: the jump that reaches the system where the filter is flown,
+/// and how far off it is from the camera where it is not.
 fn admitted(
     ui: &mut Ui,
     filter: &Filter,
@@ -559,12 +563,39 @@ fn admitted(
     let line = ui.text_style_height(&egui::TextStyle::Body)
         + crate::ui::LINE_PADDING * 2.
         + ui.spacing().item_spacing.y;
-    let mut order: Vec<(&System, Option<f64>)> = systems
-        .iter()
-        .map(|system| {
-            (system, center.map(|at| at.distance(DVec3::from(system.position))))
-        })
-        .collect();
+    // What each line has to say about where its system is, which is not the
+    // same question in the two kinds of list.
+    //
+    // A route is flown, so what is worth knowing about a system on one is the
+    // jump that reaches it: how far it is from the system before, which is
+    // what a ship has to be able to make. Measured off the list, which for a
+    // route is already in the order it is travelled. The first system is
+    // where the flying starts and no jump reaches it, so its line says
+    // nothing.
+    //
+    // Everywhere else the systems are a set, in no order but the one this
+    // list puts them in, and how far off they are from where the camera is
+    // looking is both what orders them and what says why.
+    let mut order: Vec<(&System, Option<f64>)> = if filter.ordered() {
+        let mut legs = Vec::with_capacity(systems.len());
+        let mut left = None;
+        for system in systems {
+            let at = DVec3::from(system.position);
+            legs.push((system, left.map(|from: DVec3| from.distance(at))));
+            left = Some(at);
+        }
+        legs
+    } else {
+        systems
+            .iter()
+            .map(|system| {
+                (
+                    system,
+                    center.map(|at| at.distance(DVec3::from(system.position))),
+                )
+            })
+            .collect()
+    };
 
     // A filter with an order of its own is left in it. A route is travelled
     // from one end to the other, and a list of its systems put in any other
@@ -590,8 +621,8 @@ fn admitted(
     // of them open at once are two lists, each scrolled to its own place.
     crate::ui::scrolling(ui, line * LISTED as f32, filter, |ui| {
         for (index, (system, away)) in order.into_iter().enumerate() {
-            // Said as well as sorted by. A list in an order nobody can see
-            // reads as an order nobody chose.
+            // Said as well as sorted by, where it is what sorts them. A list
+            // in an order nobody can see reads as an order nobody chose.
             let trailing = away.map(|away| format!("{away:.1} Ly"));
             // Keyed by place rather than by which system stands there. The
             // list is put in order afresh every frame, so a row holds its
@@ -816,6 +847,86 @@ mod tests {
                 &mut None,
             );
         });
+    }
+
+    /// A system at `place`, otherwise as bare as [`system`]
+    fn placed(address: i64, place: [f64; 3]) -> System {
+        let mut system = system(address);
+        system.position = place;
+        system
+    }
+
+    /// Every distance the list puts on the lines of a route through `places`
+    ///
+    /// Read off what was painted rather than asked of the row, a row laying
+    /// its own text out having no label to be asked what it says.
+    ///
+    /// The camera is a hundred light years off, so a distance measured from
+    /// it could not be read as a jump.
+    fn flown(places: &[[f64; 3]]) -> Vec<String> {
+        let systems: Vec<System> = places
+            .iter()
+            .enumerate()
+            .map(|(place, at)| placed(place as i64 + 1, *at))
+            .collect();
+        let route = Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: (1..=places.len() as i64).collect(),
+        };
+
+        crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &route,
+                Some(&systems),
+                Some(DVec3::new(100., 0., 0.)),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        })
+        .into_iter()
+        .filter(|said| said.ends_with(" Ly"))
+        .collect()
+    }
+
+    /// A route says how far the jump that reaches each system is
+    ///
+    /// It is flown, so what is worth knowing about a system on one is whether
+    /// the ship can get to it from the one before. How far it is from the
+    /// camera answers a question nobody asked of a route.
+    ///
+    /// Two distances over three systems, the first being where the flying
+    /// starts: no jump reaches it, so its line has nothing to say.
+    #[test]
+    fn a_route_says_how_far_each_jump_is() {
+        let said = flown(&[[0., 0., 0.], [3., 4., 0.], [3., 4., 12.]]);
+
+        assert_eq!(said, vec!["5.0 Ly", "12.0 Ly"], "{said:?}");
+    }
+
+    /// A set of systems says how far off each one is instead
+    ///
+    /// Nothing about a faction's holdings is a sequence, so there is no jump
+    /// to measure and the distance the whole map is read in is what is left.
+    #[test]
+    fn a_set_of_systems_says_how_far_off_each_is() {
+        let systems = [placed(1, [3., 4., 0.]), placed(2, [0., 0., 12.])];
+
+        let said = crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &faction(7),
+                Some(&systems),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+
+        assert!(said.contains(&"5.0 Ly".to_owned()), "{said:?}");
+        assert!(said.contains(&"12.0 Ly".to_owned()), "{said:?}");
     }
 
     /// A line carries the id its filter would be built from
