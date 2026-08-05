@@ -34,7 +34,7 @@ pub(crate) mod tests {
     /// Draw `contents` into a bare context and tessellate what it made
     ///
     /// Laying a widget out is not the half of it that goes wrong. Egui defers
-    /// a colour the caller did not give as a placeholder for the painter to
+    /// a color the caller did not give as a placeholder for the painter to
     /// answer, and one answered by another placeholder is caught nowhere until
     /// epaint meets it and panics. So the shapes are turned into triangles
     /// here, which is the step that looks.
@@ -158,7 +158,7 @@ pub(crate) mod tests {
     /// What egui complained about in the margins while `contents` was drawn
     ///
     /// Egui reports two widgets sharing an id by painting the offending
-    /// rectangle in its error colour and writing what happened beside it. It
+    /// rectangle in its error color and writing what happened beside it. It
     /// says so nowhere else, so this picks it out of what was painted.
     pub(crate) fn complaints(
         contents: impl FnMut(&mut egui::Ui),

@@ -33,9 +33,9 @@ pub fn plugin(app: &mut App) {
     app.add_observer(track_drag);
 }
 
-/// The colour everything pointed at is drawn in
+/// The color everything pointed at is drawn in
 ///
-/// One colour for the ring, the name and the line between them, so that a
+/// One color for the ring, the name and the line between them, so that a
 /// system being pointed at reads as one thing rather than as three that
 /// happen to have all changed at once.
 pub const INDICATOR: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
@@ -321,7 +321,7 @@ pub fn point_the_cursor(
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<&OrbitCamera>,
-    // A selected system is already ringed, in its own colour. Ringing it
+    // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<

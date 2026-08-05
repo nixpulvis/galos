@@ -31,7 +31,7 @@ pub(crate) fn plugin(app: &mut App) {
         (fit_name_boxes, tint_marked_names)
             .in_set(MapSet::Present)
             .after(super::pointing::point_at)
-            // A name is spawned in the colour of a system at rest, so one
+            // A name is spawned in the color of a system at rest, so one
             // that appears because its system has just been marked out
             // draws untinted for a frame unless the tint follows the spawn.
             // Both of these want the name that exists rather than the one
@@ -135,7 +135,7 @@ const RISE: f32 = 1.0;
 /// [`Text3dStyling`].
 const FONT: &str = "Gautami";
 
-/// Colour of the line joining a star to its name
+/// Color of the line joining a star to its name
 ///
 /// Dimmer than the text so it reads as a connector rather than as content.
 const LEADER_COLOR: Srgba = Srgba::new(1., 1., 1., 0.35);
@@ -312,12 +312,12 @@ pub(super) fn screen_position(
 
 /// What a name may be drawn in
 ///
-/// A material per colour rather than one recoloured per name, because the
-/// colour lives on a shared asset: changing it would repaint every name at
+/// A material per color rather than one recolored per name, because the
+/// color lives on a shared asset: changing it would repaint every name at
 /// once. Swapping which handle a label points at repaints only that one.
 ///
 /// Two sets of the same three: full strength, and whatever [`DimTo`] asks for
-/// a name whose system the filters exclude. The dim set is recoloured in
+/// a name whose system the filters exclude. The dim set is recolored in
 /// place when that moves, which is the case where repainting every name at
 /// once is exactly what is wanted.
 #[derive(Resource)]
@@ -328,7 +328,7 @@ pub struct LabelMaterials {
     invisible: Handle<StandardMaterial>,
 }
 
-/// Which colour a name is drawn in, given what its system is
+/// Which color a name is drawn in, given what its system is
 ///
 /// Named rather than numbered, for the reason [`super::spawn::Hue`] is: the
 /// two sets are laid out in [`Tint::ALL`] order and indexed by the tint.
@@ -345,7 +345,7 @@ impl Tint {
 
     /// What a name of this tint comes out
     ///
-    /// A name comes out the colour of the ring drawn around its star, so that
+    /// A name comes out the color of the ring drawn around its star, so that
     /// a system marked out is one thing in two places rather than two answers
     /// that have to be matched up.
     const fn color(self) -> Srgba {
@@ -717,7 +717,7 @@ pub fn leaders(
 
         // A ring around a system says which one a name belongs to better
         // than a line to it does, and leaves nothing for the line to say.
-        // Either ring answers, and a name the colour of the ring it belongs
+        // Either ring answers, and a name the color of the ring it belongs
         // to has already said which star it came from.
         if pointed_at || selected {
             continue;
@@ -781,7 +781,7 @@ pub fn init_materials(
 
 /// How a name is painted in `tint`
 ///
-/// The glyphs are drawn white and unlit, so a material's base colour
+/// The glyphs are drawn white and unlit, so a material's base color
 /// multiplies straight through them and is what a name comes out.
 fn name_material(tint: Srgba) -> StandardMaterial {
     StandardMaterial {
@@ -795,7 +795,7 @@ fn name_material(tint: Srgba) -> StandardMaterial {
 
 /// `tint` at `strength` of full
 ///
-/// The colour is left alone and the alpha carries it, since a name dimmed by
+/// The color is left alone and the alpha carries it, since a name dimmed by
 /// darkening would go black against the sky and read as a hole rather than as
 /// something standing further back.
 fn faded(tint: Srgba, strength: f32) -> Srgba {
@@ -1065,7 +1065,7 @@ mod tests {
     /// Pointing at what is already selected does not unseat it
     ///
     /// The two claims are one claim, since both are the same system being
-    /// marked out, and the ring and the name it earns are drawn the colour
+    /// marked out, and the ring and the name it earns are drawn the color
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {

@@ -8,11 +8,11 @@ use galos_db::systems::System as DbSystem;
 
 /// What a route's line is painted, at `strength` of the full
 ///
-/// White, so a route reads against a sky of coloured stars as a thing drawn
+/// White, so a route reads against a sky of colored stars as a thing drawn
 /// over it rather than as more of it, and faint even at full strength: the
 /// line crosses systems the user is meant to go on seeing.
 ///
-/// The colour is left alone and the alpha carries the strength, so that a
+/// The color is left alone and the alpha carries the strength, so that a
 /// route held behind another reads as further off rather than as some other
 /// kind of route.
 pub fn line_color(strength: f32) -> Color {
@@ -95,7 +95,7 @@ pub fn spawn_route(
     commands.spawn((
         Mesh3d(meshes.add(LineStrip { points })),
         // Its own material rather than one shared between the lines, so that
-        // holding one route behind another is a write to that route's colour.
+        // holding one route behind another is a write to that route's color.
         // Drawn as the active one, being the route just plotted;
         // [`super::emphasise`] settles it from there.
         MeshMaterial3d(materials.add(StandardMaterial {

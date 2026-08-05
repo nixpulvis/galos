@@ -521,12 +521,12 @@ impl DimTo {
     /// `color` as it should be drawn for a system, given whether it is
     /// excluded
     ///
-    /// The colour is left alone and the alpha carries it, so that what is
+    /// The color is left alone and the alpha carries it, so that what is
     /// dimmed reads as standing further back rather than as having changed
     /// into something else.
     ///
     /// For what is painted straight rather than through a material: the two
-    /// rings are gizmos, and a gizmo takes its colour at the call.
+    /// rings are gizmos, and a gizmo takes its color at the call.
     pub fn against(&self, color: Srgba, filtered: bool) -> Srgba {
         if filtered {
             Srgba { alpha: color.alpha * self.0, ..color }

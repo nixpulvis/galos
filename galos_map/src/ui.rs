@@ -371,11 +371,11 @@ const ROW_MARGIN: f32 = 2.;
 /// How far the selection's row holds its contents off its own edge
 const ROW_PADDING: f32 = 3.;
 
-/// The colour that dot is drawn in
+/// The color that dot is drawn in
 ///
 /// [`SELECTION`] in egui's terms, so that the status line under the search
 /// box and the ring out on the map are one mark in two places rather than
-/// two colours to be matched up.
+/// two colors to be matched up.
 const SELECTION_DOT: egui::Color32 = egui::Color32::from_rgb(
     (SELECTION.red * 255.) as u8,
     (SELECTION.green * 255.) as u8,
@@ -597,7 +597,7 @@ pub fn chrome(
 
         heading(ui, "View", true);
         // Whether a system is named is a choice about what the map draws, the
-        // same as which colour a star comes out and how large it is, so it
+        // same as which color a star comes out and how large it is, so it
         // stands with those rather than alone.
         ui.checkbox(&mut knobs.show_names.0, "Show System Names");
         if knobs.show_names.0 {
@@ -1065,7 +1065,7 @@ fn search_box(
     waiting: bool,
 ) -> (Response, bool) {
     // Laid out first, since the room it wants is room the field cannot have.
-    // In nothing, so the colour can be chosen once the pointer has been asked
+    // In nothing, so the color can be chosen once the pointer has been asked
     // about, which cannot happen until the field has been placed.
     let showing = typed(value).is_some() || !results.is_empty();
     let mark = showing.then(|| {
@@ -1352,7 +1352,7 @@ pub(crate) fn system_list<'a>(
 ///
 /// The line is the control that sends the camera to what is picked out.
 /// Clicking the answer to go to what it names beats a button saying so in
-/// words, and the dot in the ring's own colour says which mark out on the
+/// words, and the dot in the ring's own color says which mark out on the
 /// map is about to be flown to.
 ///
 /// Measured from where the camera is looking rather than from the camera
@@ -1477,7 +1477,7 @@ fn selected(
             x += DOT + gap;
             for galley in [Some(name), away].into_iter().flatten() {
                 let size = galley.size();
-                // The galleys carry the colours they were laid out in, so
+                // The galleys carry the colors they were laid out in, so
                 // there is nothing for a fallback to answer for.
                 ui.painter().galley(
                     egui::pos2(x, middle - size.y / 2.),
@@ -2144,7 +2144,7 @@ fn section_rows(
         x += DOT + gap;
         for galley in [Some(name), hops].into_iter().flatten() {
             let size = galley.size();
-            // The galleys carry the colours they were laid out in, so there
+            // The galleys carry the colors they were laid out in, so there
             // is nothing for a fallback to answer for.
             ui.painter().galley(
                 egui::pos2(x, middle - size.y / 2.),
@@ -2299,7 +2299,7 @@ fn whole_set(
         );
     }
     x += DOT + gap;
-    // The galley carries the colour it was laid out in, so there is nothing
+    // The galley carries the color it was laid out in, so there is nothing
     // for a fallback to answer for.
     ui.painter().galley(
         egui::pos2(x, middle - name.size().y / 2.),
@@ -2519,7 +2519,7 @@ fn lay_out(ui: &Ui, glyphs: &[&str]) -> Vec<std::sync::Arc<egui::Galley>> {
     glyphs
         .iter()
         .map(|glyph| {
-            // Laid out in nothing, so that the colour can be chosen once the
+            // Laid out in nothing, so that the color can be chosen once the
             // pointer has been asked about, which cannot happen until the row
             // has been placed.
             egui::WidgetText::from(
@@ -2648,9 +2648,9 @@ pub(crate) fn line(
     ui.painter().galley(
         egui::pos2(rect.left() + LINE_PADDING, rect.center().y - height / 2.),
         text,
-        // A real colour, since a line is laid out from whatever the caller
+        // A real color, since a line is laid out from whatever the caller
         // hands over and that is usually plain text. Plain text carries no
-        // colour of its own, so it comes out of layout as a placeholder for
+        // color of its own, so it comes out of layout as a placeholder for
         // this to answer, and a placeholder answered by a placeholder reaches
         // the tessellator, which panics rather than guess.
         ui.visuals().text_color(),
@@ -2703,7 +2703,7 @@ pub(crate) fn system_line(
     // to be is not offered one. Nothing is left standing in its place: the
     // line already says why, in the slot the mark would sit beside.
     let mark = reachable.then(|| {
-        // Laid out in nothing, so the colour can be chosen once the pointer
+        // Laid out in nothing, so the color can be chosen once the pointer
         // has been asked about, which cannot happen until the line has been
         // placed.
         egui::WidgetText::from(
@@ -2954,11 +2954,11 @@ fn singleline(
 
 /// Name the control beside it, as plainly as a checkbox names itself
 ///
-/// Egui paints a label in the colour it keeps for what cannot be interacted
+/// Egui paints a label in the color it keeps for what cannot be interacted
 /// with, a shade under the text it puts on a checkbox. That is the right
 /// answer for a caption and the wrong one for the name of the box next to it,
 /// which stands in a column of checkboxes and is no lesser thing than any of
-/// them. Reading the colour off the style rather than naming one keeps it
+/// them. Reading the color off the style rather than naming one keeps it
 /// with them through whatever theme is set.
 fn field_name(ui: &mut Ui, name: &str) {
     let named = ui.visuals().widgets.inactive.fg_stroke.color;
@@ -4185,13 +4185,13 @@ mod tests {
         assert!(listed(&SearchResults::default(), None).is_empty());
     }
 
-    /// The list paints in colours something can draw
+    /// The list paints in colors something can draw
     ///
     /// The distance at the end of a line is laid out apart from the line and
     /// painted against a placeholder, which is the arrangement that reaches
     /// the tessellator with nothing to draw and panics there.
     #[test]
-    fn the_results_paint_in_colours() {
+    fn the_results_paint_in_colors() {
         painted(|ui| {
             let mut selection = Selection::default();
             let mut travelled = None;
@@ -4660,9 +4660,9 @@ mod tests {
         assert!(!said.iter().any(|line| line.contains("spyglass")), "{said:?}");
     }
 
-    /// The filter rows come out in colours something can draw
+    /// The filter rows come out in colors something can draw
     ///
-    /// Every galley here is laid out strong or weak, which resolves a colour,
+    /// Every galley here is laid out strong or weak, which resolves a color,
     /// so the placeholder each is painted with is never reached. That holds
     /// by how the rows happen to be styled and nothing else, and one plain
     /// piece of text would take the whole bar down.
@@ -4670,7 +4670,7 @@ mod tests {
     /// Covers the marks as well, which the selection's row draws the same
     /// way.
     #[test]
-    fn the_filter_rows_paint_in_colours() {
+    fn the_filter_rows_paint_in_colors() {
         let mut filters = Filters::default();
         filters.add(Filter::Faction { id: 1, name: "Zargon Front".into() });
         filters.add(Filter::Faction { id: 2, name: "Alliance".into() });
@@ -4720,8 +4720,8 @@ mod tests {
         found
     }
 
-    /// The colour each piece of text among `shapes` was painted in
-    fn colours(shapes: &[egui::Shape]) -> Vec<egui::Color32> {
+    /// The color each piece of text among `shapes` was painted in
+    fn colors(shapes: &[egui::Shape]) -> Vec<egui::Color32> {
         fn walk(shape: &egui::Shape, into: &mut Vec<egui::Color32>) {
             match shape {
                 egui::Shape::Text(text) => into.push(text.fallback_color),
@@ -4764,7 +4764,7 @@ mod tests {
         // The mark answered the pointer, which is what leaves the assertion
         // below with something to say.
         assert!(
-            colours(&painted)
+            colors(&painted)
                 .contains(&egui::Visuals::default().strong_text_color()),
             "nothing lit up, so nothing was under the pointer"
         );

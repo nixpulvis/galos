@@ -41,7 +41,7 @@ async fn main() -> Result<(), Error> {
     // it, dependencies included. `RUST_LOG` picks what to hear, and info
     // upwards from everything without it.
     tracing_subscriber::fmt()
-        // Colour is for a terminal. Redirected, it would be escape codes
+        // Color is for a terminal. Redirected, it would be escape codes
         // around every line of the log.
         .with_ansi(stderr().is_terminal())
         .with_env_filter(

@@ -3,7 +3,7 @@
 //! Pointing at a system says what is under the pointer, for as long as it is
 //! there. Selecting one says what the user came for, and holds while they
 //! pan, orbit and zoom around it. The two are drawn the same way in
-//! different colours, so a selection reads as the lasting form of a point.
+//! different colors, so a selection reads as the lasting form of a point.
 //!
 //! Several are held at once, in the order they were picked. A plain click
 //! picks one out in place of the rest and ctrl-click gathers them up, so a
@@ -13,7 +13,7 @@
 //! What is selected is held as values rather than as entities. A system
 //! reached by name is answered by the database before the map fetches
 //! anything, so there is nothing on the map to mark until the camera
-//! arrives, and the name is worth colouring from the moment it resolves.
+//! arrives, and the name is worth coloring from the moment it resolves.
 //!
 //! A click on empty sky lets go of a selection, so long as the click was the
 //! map's rather than the UI's. A search leaves the camera where it is, so what
@@ -52,7 +52,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
 }
 
-/// The colour everything about the selection is drawn in
+/// The color everything about the selection is drawn in
 ///
 /// Answers [`super::pointing::INDICATOR`], and has to be told apart from it
 /// at a glance, since hovering one system while another is selected shows
@@ -337,7 +337,7 @@ fn ring(
     }
 }
 
-/// What colour a selected system's ring is drawn in
+/// What color a selected system's ring is drawn in
 ///
 /// It dims with the star it is drawn around, so that a selection the filters
 /// exclude does not read as one they have let go of.

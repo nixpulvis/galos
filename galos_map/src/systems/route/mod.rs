@@ -248,12 +248,12 @@ pub fn strength(is_active: bool) -> f32 {
 
 /// Draw the active route at full strength and hold the rest behind it
 ///
-/// The colour is left alone and the alpha carries it, as it does for a system
+/// The color is left alone and the alpha carries it, as it does for a system
 /// the filters exclude, so a route standing back reads as further off rather
 /// than as something else.
 ///
 /// Each line was spawned with a material of its own, so this writes to one
-/// route's colour without touching another's.
+/// route's color without touching another's.
 fn emphasise(
     filters: Res<Filters>,
     selected: Res<Selected>,

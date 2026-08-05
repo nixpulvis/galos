@@ -65,16 +65,16 @@ pub struct SystemMesh(pub Handle<Mesh>);
 
 /// What a star is drawn in, at full strength and dimmed
 ///
-/// Two sets of the same colours rather than one recoloured per star, because
-/// the colour lives on a shared asset. A star moves between the sets by
+/// Two sets of the same colors rather than one recolored per star, because
+/// the color lives on a shared asset. A star moves between the sets by
 /// swapping which handle it points at, which repaints only that star, and the
-/// dim set is recoloured in place when [`DimTo`] moves, which is meant to
+/// dim set is recolored in place when [`DimTo`] moves, which is meant to
 /// repaint every dimmed star at once.
 #[derive(Resource)]
 pub struct SystemMaterials {
-    /// One per colour, indexed as [`hue`] answers
+    /// One per color, indexed as [`hue`] answers
     bright: Vec<Handle<StandardMaterial>>,
-    /// The same colours, at whatever [`DimTo`] is asking
+    /// The same colors, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
 }
 
@@ -86,11 +86,11 @@ impl SystemMaterials {
     }
 }
 
-/// The colours a star may be drawn in
+/// The colors a star may be drawn in
 ///
-/// Named rather than numbered, so that a scheme below says which colour it
+/// Named rather than numbered, so that a scheme below says which color it
 /// means. The two material sets are laid out in [`Hue::ALL`] order and
-/// indexed by the hue itself, so there is one list of colours rather than a
+/// indexed by the hue itself, so there is one list of colors rather than a
 /// list and a set of numbers agreeing with it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Hue {
@@ -568,7 +568,7 @@ pub fn spawn_systems(
     }
 }
 
-/// Carry a changed row, a changed colour scheme or a changed filter onto what
+/// Carry a changed row, a changed color scheme or a changed filter onto what
 /// is drawn
 ///
 /// The two halves of a star are refreshed from different things. Its
@@ -612,10 +612,10 @@ fn update(
     }
 }
 
-/// Repaint the dimmed colours when the slider moves
+/// Repaint the dimmed colors when the slider moves
 ///
 /// The handles stay as they are, so nothing has to be told which material it
-/// is pointing at. Recolouring a shared asset repaints everything drawn in
+/// is pointing at. Recoloring a shared asset repaints everything drawn in
 /// it, which here is every star the filters exclude, and is the point.
 fn redim(
     dim: Res<DimTo>,
@@ -694,7 +694,7 @@ fn star(
     )
 }
 
-/// Which colour a star is drawn in
+/// Which color a star is drawn in
 fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     match color_by.deref() {
         ColorBy::Allegiance => allegiance_hue(system),

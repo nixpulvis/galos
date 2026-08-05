@@ -1103,15 +1103,15 @@ mod tests {
         assert_eq!(listed(&[2, 1], &names), wanted);
     }
 
-    /// A line comes out in a colour something can draw
+    /// A line comes out in a color something can draw
     ///
     /// A line is laid out from whatever it is handed, which is usually plain
-    /// text carrying no colour of its own. A placeholder answered by a
+    /// text carrying no color of its own. A placeholder answered by a
     /// placeholder reaches the tessellator, which panics, and takes every
     /// panel holding a list with it: the factions of a system, and the systems
     /// of a filter.
     #[test]
-    fn a_line_paints_in_a_colour() {
+    fn a_line_paints_in_a_color() {
         painted(|ui| {
             crate::ui::line(
                 ui,
@@ -1124,7 +1124,7 @@ mod tests {
 
     /// So does one with room kept at its end
     #[test]
-    fn a_line_with_room_reserved_paints_in_a_colour() {
+    fn a_line_with_room_reserved_paints_in_a_color() {
         painted(|ui| {
             crate::ui::line(ui, egui::RichText::new("Sol"), 20., true);
         });
@@ -1132,7 +1132,7 @@ mod tests {
 
     /// And so does a whole faction list, marks and placeholders included
     #[test]
-    fn a_faction_list_paints_in_a_colour() {
+    fn a_faction_list_paints_in_a_color() {
         let names = known(&[(1, "Alliance of Sol")]);
         painted(|ui| {
             // One named and one still waiting, so both arms are drawn.
@@ -1142,7 +1142,7 @@ mod tests {
 
     /// And a filter's list of systems, which carries a distance and a mark
     #[test]
-    fn a_system_list_paints_in_a_colour() {
+    fn a_system_list_paints_in_a_color() {
         let systems = [system(1), system(2)];
         painted(|ui| {
             admitted(
@@ -1159,7 +1159,7 @@ mod tests {
 
     /// So does one a route lists in the order it is travelled
     #[test]
-    fn a_route_list_paints_in_a_colour() {
+    fn a_route_list_paints_in_a_color() {
         let systems = [system(1), system(2)];
         let route = Filter::Route {
             label: "A -> B".to_owned(),
