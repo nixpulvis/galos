@@ -28,7 +28,7 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
-    DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget,
+    DRAG_THRESHOLD, DragDistance, Indicator, PointedAt,
 };
 use crate::systems::{Spyglass, System};
 use crate::ui::Gesture;
@@ -298,39 +298,43 @@ fn clear_when_nothing_is_clicked(
 /// read as the filter having let go of it.
 fn ring(
     mut gizmos: Gizmos,
-    camera: Query<&OrbitCamera>,
+    camera: Query<(&OrbitCamera, &Camera)>,
     spyglass: Res<Spyglass>,
     selected: Query<
-        (&System, &GlobalTransform, &Children, Has<Filtered>),
+        (&System, &GlobalTransform, &Indicator, Has<Filtered>),
         With<Selected>,
     >,
-    targets: Query<&GlobalTransform, With<PointerTarget>>,
     dim: Res<DimTo>,
 ) {
-    let Ok(camera) = camera.single() else { return };
+    let Ok((orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (system, at, children, filtered) in &selected {
+    for (system, at, indicator, filtered) in &selected {
         // Reach rather than whether the star is drawn. The two part company
         // where the filters draw what they exclude at nothing, and this ring
         // answers the wrong one of them: the spyglass says where the user is
         // looking, and a ring outside it is a ring off the edge of that. What
         // the filters say is about the sky rather than about the handful of
         // systems the user picked out by hand.
-        if !spyglass.reaches(camera.center, DVec3::from(system.position)) {
+        let position = DVec3::from(system.position);
+        if !spyglass.reaches(orbit.center, position) {
             continue;
         }
 
-        let Some(radius) = children
-            .iter()
-            .filter_map(|child| targets.get(child).ok())
-            .map(|target| target.scale().x)
-            .next()
-        else {
-            continue;
-        };
+        // The mark is held in pixels, and a gizmo is drawn in the world, so
+        // this is where the two meet. Through the same conversion the
+        // pointing ring uses, so the two circles are the same circle.
+        let radius = super::pointing::drawn_radius(
+            orbit,
+            cot_half_fov,
+            viewport,
+            position,
+            indicator.0,
+        );
 
         gizmos.circle(
-            Isometry3d::new(at.translation(), camera.rotation),
+            Isometry3d::new(at.translation(), orbit.rotation),
             radius,
             ringed(&dim, filtered),
         );

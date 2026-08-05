@@ -1,7 +1,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::filter::{DimTo, Filtered};
-use crate::systems::pointing::{INDICATOR, PointedAt, UNFITTED_SCALE};
+use crate::systems::pointing::{INDICATOR, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{Shell, ShowNames};
 use crate::systems::{Spyglass, System};
@@ -10,8 +10,7 @@ use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_rich_text3d::{
-    LoadFonts, Text3d, Text3dDimensionOut, Text3dPlugin, Text3dStyling,
-    TextAnchor, TextAtlas,
+    LoadFonts, Text3d, Text3dPlugin, Text3dStyling, TextAnchor, TextAtlas,
 };
 
 pub(crate) fn plugin(app: &mut App) {
@@ -28,14 +27,14 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_systems(Update, redim.in_set(MapSet::Present));
     app.add_systems(
         Update,
-        (fit_name_boxes, tint_marked_names)
+        tint_marked_names
             .in_set(MapSet::Present)
             .after(super::pointing::point_at)
             // A name is spawned in the color of a system at rest, so one
             // that appears because its system has just been marked out
             // draws untinted for a frame unless the tint follows the spawn.
-            // Both of these want the name that exists rather than the one
-            // asked for last frame.
+            // This wants the name that exists rather than the one asked for
+            // last frame.
             .after(respawn),
     );
     // `face_camera` and the sizing systems both write a `Transform`, on
@@ -333,8 +332,6 @@ pub(super) fn screen_position(
 pub struct LabelMaterials {
     bright: [Handle<StandardMaterial>; 3],
     dim: [Handle<StandardMaterial>; 3],
-    /// Drawn for a [`NameBox`], and drawing nothing
-    invisible: Handle<StandardMaterial>,
 }
 
 /// Which color a name is drawn in, given what its system is
@@ -373,30 +370,6 @@ impl LabelMaterials {
         &set[tint as usize]
     }
 }
-
-/// The unit rectangle every [`NameBox`] is stretched from
-#[derive(Resource)]
-pub struct NameBoxMesh(Handle<Mesh>);
-
-/// How far behind its name a hit box sits, in the name's own units
-///
-/// Enough that the two never argue over which is in front, and far less
-/// than the gap to anything else.
-const BOX_DEPTH: f32 = 1.;
-
-/// The box behind a name that catches the pointer
-///
-/// A name's mesh is one quad per glyph, so a ray aimed between two letters,
-/// or at the space between two words, falls through it to whatever is
-/// behind. Probing along a name a letter at a time found this: aimed at the
-/// middle, only two thirds of names were hit at all.
-///
-/// This is a single rectangle covering the whole name, which is what the
-/// pointer is actually tested against. Invisible, being drawn in a fully
-/// transparent material, since picking only considers what is being drawn
-/// and hiding it would take it out of the running.
-#[derive(Component)]
-pub struct NameBox;
 
 /// Decide which systems get to show their name
 ///
@@ -561,7 +534,7 @@ fn name_score(from_center: f32, pointed_at: bool, selected: bool) -> f32 {
 ///
 /// The width is a guess from the letter count, since the mesh that would
 /// give an exact one is the thing being decided about.
-fn name_rect(at: Vec2, name: &str) -> Rect {
+pub(super) fn name_rect(at: Vec2, name: &str) -> Rect {
     let size = NAME_HEIGHT;
     let width = name.chars().count() as f32 * ADVANCE * size;
     let margin = size * CROWDING;
@@ -592,7 +565,6 @@ pub fn respawn(
     unnamed: Query<&Children, (With<System>, Without<Named>)>,
     labels: Query<Entity, With<Label>>,
     materials: Res<LabelMaterials>,
-    box_mesh: Res<NameBoxMesh>,
 ) {
     for children in &unnamed {
         for child in children.iter() {
@@ -631,15 +603,11 @@ pub fn respawn(
                 MeshMaterial3d(materials.get(Tint::Resting, false).clone()),
                 // Placed by `face_camera` before the first draw.
                 Transform::default(),
-            ))
-            .with_child((
-                NameBox,
-                Mesh3d(box_mesh.0.clone()),
-                MeshMaterial3d(materials.invisible.clone()),
-                // Sized by `fit_name_boxes` once the name has a mesh to
-                // measure, and catching nothing until then, which is the
-                // right answer for a name not yet drawn.
-                Transform::from_scale(Vec3::splat(UNFITTED_SCALE)),
+                // What catches the pointer over a name. The area is worked
+                // out on screen by `super::pointing`, from the same
+                // rectangle `choose_names` laid this name out in, so a name
+                // catches over exactly the room it was granted rather than
+                // over the quads its glyphs happen to occupy.
                 Pickable::default(),
             ))
             .id();
@@ -772,19 +740,14 @@ pub fn leaders(
 
 pub fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
     dim: Res<DimTo>,
     mut commands: Commands,
 ) {
-    commands.insert_resource(NameBoxMesh(
-        meshes.add(Mesh::from(Rectangle::new(1., 1.))),
-    ));
     let mut label = |tint: Srgba| assets.add(name_material(tint));
 
     commands.insert_resource(LabelMaterials {
         bright: Tint::ALL.map(|tint| label(tint.color())),
         dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
-        invisible: label(Srgba::NONE),
     });
 }
 
@@ -828,27 +791,6 @@ fn redim(
         if let Some(mut material) = assets.get_mut(handle) {
             *material = name_material(faded(tint.color(), dim.0));
         }
-    }
-}
-
-/// Stretch each hit box over the name it stands behind
-///
-/// The extent comes from the name's own mesh, so a box only gets its size
-/// once there is a name to measure. A name is anchored so that its glyphs
-/// run rightwards from its origin, which is where the offset comes from.
-pub fn fit_name_boxes(
-    names: Query<&Text3dDimensionOut, With<Label>>,
-    mut boxes: Query<(&mut Transform, &ChildOf), With<NameBox>>,
-) {
-    for (mut hit_box, child_of) in &mut boxes {
-        let Ok(name) = names.get(child_of.parent()) else { continue };
-        let width = name.dimension.x;
-        if width <= 0. {
-            continue;
-        }
-
-        hit_box.translation = Vec3::new(width / 2., 0., -BOX_DEPTH);
-        hit_box.scale = Vec3::new(width, name.dimension.y.max(SIZE), 1.);
     }
 }
 

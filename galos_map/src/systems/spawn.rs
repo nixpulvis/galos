@@ -7,9 +7,7 @@ use crate::systems::{
     fetch::FetchIndex,
     fetch::FetchTasks,
     filter::{DimTo, Filtered, Filters},
-    pointing::{
-        DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
-    },
+    pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
     route::spawn::{framing, spawn_route},
     route::{self, Plotted, Route},
     selection::Selection,
@@ -34,10 +32,15 @@ use std::{
 };
 
 pub fn plugin(app: &mut App) {
+    // For what is drawn at its own size and has a shape worth aiming at,
+    // which is the bodies inside a system. A system and its name are aimed
+    // at on screen instead, by `super::pointing`, being marks of a size in
+    // pixels rather than things in the world.
+    //
+    // Marking what is worth hitting keeps the ray cast off every mesh in the
+    // world. Requires `MeshPickingCamera` on the camera and `Pickable` on
+    // each.
     app.add_plugins(MeshPickingPlugin);
-    // A star and its name are worth clicking; the route line is not. Marking
-    // what is worth hitting keeps the ray cast off every mesh in the world.
-    // Requires `MeshPickingCamera` on the camera and `Pickable` on each.
     app.insert_resource(MeshPickingSettings {
         require_markers: true,
         ..default()
@@ -152,9 +155,6 @@ fn star_material(color: Color, strength: f32) -> StandardMaterial {
     }
 }
 
-/// A material that draws nothing, for what only has to be hit
-#[derive(Resource)]
-pub struct InvisibleMaterial(pub Handle<StandardMaterial>);
 // pub struct SystemMaterials(pub HashMap<String, Handle<StandardMaterial>>);
 
 /// Determains what color to draw in system view mode.
@@ -342,7 +342,6 @@ pub fn spawn(
     filters: Res<Filters>,
     mesh: Res<SystemMesh>,
     materials: Res<SystemMaterials>,
-    invisible: Res<InvisibleMaterial>,
     time: Res<Time<Real>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
@@ -436,7 +435,6 @@ pub fn spawn(
             &mut commands,
             &mesh,
             &materials,
-            &invisible,
             &time,
             &arrived_at,
         );
@@ -517,7 +515,6 @@ pub fn spawn_systems(
     commands: &mut Commands,
     mesh: &Res<SystemMesh>,
     materials: &Res<SystemMaterials>,
-    invisible: &Res<InvisibleMaterial>,
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
 ) {
@@ -552,10 +549,16 @@ pub fn spawn_systems(
             // be drawn once at full strength before it arrived.
             let excluded = !filters.admit(&system);
             let drawn = star(&system, color_by, mesh, materials, excluded);
-            let target = pointer_target(mesh, invisible);
             let mut spawned = commands.spawn((
                 placement(&system, grid),
                 system,
+                // Fitted by `pointing::size_indicators` before the first
+                // draw, and what the pointer is tested against.
+                Indicator::default(),
+                // A system does not block what lies behind it, so a name
+                // drawn over one is reported as well and `pointing` can
+                // weigh the two.
+                Pickable { should_block_lower: false, is_hoverable: true },
                 // The star is what is shown or hidden; the mesh and any
                 // labels inherit that from it.
                 Visibility::default(),
@@ -567,7 +570,7 @@ pub fn spawn_systems(
             if excluded {
                 spawned.insert(Filtered);
             }
-            spawned.with_child(drawn).with_child(target);
+            spawned.with_child(drawn);
         }
     }
 }
@@ -659,35 +662,15 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
     (cell, Transform::from_translation(translation))
 }
 
-/// What catches the pointer for a system
+/// The shell a system is drawn as
 ///
-/// Sized each frame by [`super::pointing`] to match the ring it draws, so a
-/// system is as easy to hit as the mark says it is. Sits at the system's own
-/// position and draws nothing.
-fn pointer_target(
-    mesh: &Res<SystemMesh>,
-    invisible: &Res<InvisibleMaterial>,
-) -> impl Bundle {
-    (
-        PointerTarget,
-        Mesh3d(mesh.0.clone()),
-        MeshMaterial3d(invisible.0.clone()),
-        // Fitted by `pointing::size_targets` before the first draw.
-        Transform::from_scale(Vec3::splat(UNFITTED_SCALE)),
-        NotShadowCaster,
-        // Mesh picking requires markers, see `plugin`. A star does not
-        // block what lies behind it, so a name drawn over one is reported
-        // as well and `pointing` can weigh the two.
-        Pickable { should_block_lower: false, is_hoverable: true },
-    )
-}
-
-/// The one star a system is drawn with
+/// Sits at the system's own position with an identity transform.
+/// [`super::scale`] writes a size onto it each frame, which is why it is a
+/// child: that size is an exaggeration, and scale is inherited.
 ///
-/// Sits at the system's own position with an identity transform, since there
-/// is nothing yet to tell one star of a system from another. [`super::scale`]
-/// writes a size onto it each frame, and picking hits land here rather than
-/// on the system, so [`fly_on_double_click`] reads through to the parent.
+/// Nothing aims at it. What answers the pointer is the system itself, over
+/// the mark [`super::pointing::Indicator`] holds, so a system is as easy to
+/// hit as the ring says it is however small the shell is drawn.
 fn star(
     system: &System,
     color_by: &Res<ColorBy>,
@@ -714,8 +697,9 @@ fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
 }
 
 fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
-    let handle = assets.add(Sphere::new(1.).mesh().ico(1).unwrap());
-    commands.insert_resource(SystemMesh(handle));
+    commands.insert_resource(SystemMesh(
+        assets.add(Sphere::new(1.).mesh().ico(1).unwrap()),
+    ));
 }
 
 fn init_materials(
@@ -732,12 +716,6 @@ fn init_materials(
 
     commands
         .insert_resource(SystemMaterials { bright: set(1.), dim: set(dim.0) });
-    commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
-        base_color: Color::NONE,
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    })));
 }
 
 fn allegiance_hue(system: &System) -> Hue {
