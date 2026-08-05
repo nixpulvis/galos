@@ -10,11 +10,14 @@
 //! anything drawn; the entities, the grid a system carries and the camera's
 //! descent into it all wait until there is something worth seeing.
 
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use galos_db::bodies::Body as DbBody;
 use galos_db::stars::Star as DbStar;
+use orbit::{Orbit, Orbits};
 
 pub mod fetch;
+pub mod orbit;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
@@ -104,6 +107,64 @@ impl Contents {
             Some(widest.map_or(r, |w| w.max(r)))
         })
     }
+
+    /// Where everything in the system stands, `since` seconds after the epoch
+    ///
+    /// Worked out for the system as a whole rather than a body at a time,
+    /// since placing a moon means placing its planet too and doing that once
+    /// per moon would place the planet again for each of them.
+    ///
+    /// Stars go in alongside bodies. A body's `parent_id` may name either, and
+    /// the two share a numbering, so a chain that stepped over the stars would
+    /// lose the planet's own place about its sun in a system that has more
+    /// than one.
+    pub fn orbits(&self) -> Orbits {
+        let mut orbits = Orbits::default();
+        for star in self.stars() {
+            orbits.insert(star.id, star.parent_id, recorded_star(star));
+        }
+        for body in self.bodies() {
+            orbits.insert(body.id, body.parent_id, recorded_body(body));
+        }
+        orbits
+    }
+
+    /// Where the thing with `id` stands, in metres from the system's centre
+    ///
+    /// For one answer. Anything placing the whole system at once should build
+    /// the [`Orbits`] once and ask it, rather than calling this per body.
+    pub fn place(&self, id: i16, since: f64) -> DVec3 {
+        self.orbits().place(id, since)
+    }
+}
+
+/// The orbit a body was recorded on
+fn recorded_body(body: &DbBody) -> Orbit {
+    Orbit::recorded(
+        body.semi_major_axis,
+        body.eccentricity,
+        body.orbital_inclination,
+        body.periapsis,
+        body.ascending_node,
+        body.mean_anomaly,
+        body.orbital_period,
+    )
+}
+
+/// The orbit a star was recorded on
+///
+/// The same seven numbers under the same names. `stars` and `bodies` are two
+/// tables holding one idea, and until they are one this says so twice.
+fn recorded_star(star: &DbStar) -> Orbit {
+    Orbit::recorded(
+        star.semi_major_axis,
+        star.eccentricity,
+        star.orbital_inclination,
+        star.periapsis,
+        star.ascending_node,
+        star.mean_anomaly,
+        star.orbital_period,
+    )
 }
 
 /// How far an orbit gets from what it goes round, in metres
