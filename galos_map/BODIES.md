@@ -270,14 +270,31 @@ One notion, in `scale.rs` beside the sizing already there:
 fn apparent(size: f64, distance: f64) -> f64;
 ```
 
+**It is asked about the shell's own marker size, not about the system's
+extent.** `closeness` ramps on `m(d) = marker(d) / d`, the angle subtended by
+the very sphere that is about to swallow the camera, from `RESOLVING` (`0.02`
+rad ≈ 1.1°, about 4.3 ly out) to `RESOLVED` (`0.5` rad, about 0.17 ly).
+
+Keying it on the extent instead is wrong, and wrong in a way that hides on the
+system anyone would test with. The marker's floor is `8.5e-2` ly, so for a
+compact system — a thousand light seconds, which describes a great many of them
+— a ramp starting at `apparent(extent, d) = 5e-3` begins when the camera is
+already **thirteen times inside** an opaque sphere that has not started to
+shrink, with nothing spawned in it. Sol escapes only because its extent is large
+enough to fire the gate further out. Keyed on the marker, the camera is still
+358× outside the true surface for Sol and 5,400× for a compact system when the
+ramp finishes, whatever the system turns out to hold.
+
+It also removes a chicken-and-egg: the marker is known without fetching
+anything, so there is no need for a **presumed extent** to gate the fetch on.
+That construct is gone.
+
 It answers four things:
 
-1. **Whether to fetch and spawn a system's contents.** Above `WORTH_FETCHING`
-   (≈ `5e-3` rad) they are asked for; below `WORTH_KEEPING` (≈ `2e-3`) they are
-   dropped. The gap is hysteresis, so a system on the line does not thrash.
-   Before anything is known there is no extent to measure, so a **presumed
-   extent** stands in — about a thousand light seconds — replaced by the measured
-   one when contents land.
+1. **Whether to fetch and spawn a system's contents.** As soon as `closeness`
+   leaves zero. Dropped again below a slightly lower `m` than it started at, the
+   gap being hysteresis so a system on the line does not thrash. At the ramp's
+   start about one system is in reach, so nothing needs a budget.
 2. **When a system becomes a grid, and when the camera descends into it.** The
    same threshold, so these are one decision rather than three that can
    disagree.
@@ -326,7 +343,28 @@ since it is a promise being deliberately broken.
 `the_camera_descends_when_the_contents_arrive`,
 `the_shell_shrinks_to_the_system_as_it_is_approached`,
 `the_shell_is_never_smaller_than_what_it_encloses`,
-`the_shell_thins_out_as_it_is_flown_into`.
+`the_shell_thins_out_as_it_is_flown_into`,
+`the_camera_never_reaches_a_shell_that_is_still_a_marker` — the last is the one
+that would have caught keying the ramp on the extent, and it has to be written
+over a *compact* system, since Sol passes either way.
+
+**Walked end to end**, focus following the zoom, `near = radius × 1e-4`:
+
+| focus | camera radius | near | grid | on screen |
+|---|---|---|---|---|
+| galaxy | `4.7e20` m (50,000 ly) | `4.7e16` m | galaxy | shells as points, `4e-4` rad |
+| Sol | `2.8e17` m (30 ly) | `2.8e13` m | galaxy | shell 0.097 ly, `3.2e-3` rad |
+| Sol | `4.1e16` m (4.3 ly) | `4.1e12` m | → system | ramp starts, contents arrive, camera descends |
+| Sol | `1.6e15` m (0.17 ly) | `1.6e11` m | system | ramp ends, shell at `4.5e12` m and translucent |
+| Sol | `4.5e12` m (15,000 ls) | `4.5e8` m | system | through the shell surface |
+| Earth | `5e7` m (50,000 km) | `5e3` m | system | Earth a 7.3° disc |
+| Luna | `5e6` m (5,000 km) | `500` m | system | Luna 20°, Earth 0.95°, Sol `4.6e-3` rad |
+
+Fourteen orders of magnitude of camera radius, one continuous zoom, one grid
+handover. At the far end the camera's offset is good to 30 nm while Luna's mesh,
+`f32` vertices scaled to `1.7e6` m, is good to about 0.1 m — the mesh becomes
+the limit before the grid does, which is the argument for chunked terrain when
+surfaces arrive rather than for finer cells.
 
 ---
 
