@@ -15,11 +15,11 @@
 //! anything, so there is nothing on the map to mark until the camera
 //! arrives, and the name is worth colouring from the moment it resolves.
 //!
-//! A click on empty sky lets go of a selection, unless the UI has already
-//! answered that press. A search leaves the camera where it is, so what is
-//! picked out is what the user is working with rather than where they happen
-//! to be looking, and the press that shuts a form is no reason to throw a
-//! typed name away.
+//! A click on empty sky lets go of a selection, so long as the click was the
+//! map's rather than the UI's. A search leaves the camera where it is, so what
+//! is picked out is what the user is working with rather than where they
+//! happen to be looking, and the press that shuts a form is no reason to throw
+//! a typed name away.
 //!
 //! What the map knows about the selected system beyond its name is written
 //! out by [`super::info`], which the user asks for separately.
@@ -28,10 +28,10 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
-    DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
+    DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget,
 };
 use crate::systems::{Spyglass, System};
-use crate::ui::{PointerOverUi, PressAnswered};
+use crate::ui::Gesture;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 
@@ -255,29 +255,22 @@ fn follow_selection(
 
 /// Let go of the selection when a click lands on nothing
 ///
-/// The same three questions a click on a system is weighed by, so that the
-/// two cannot both answer one press: the primary button, travel short enough
-/// to be a click rather than a drag of the map, and the pointer's own
-/// business rather than the UI's. What is left is a click on empty sky.
+/// The same two questions a click on a system is weighed by, so that the two
+/// cannot both answer one press: a click the map owns, and travel short
+/// enough to be a click rather than a drag of the map. What is left is a
+/// click on empty sky.
 ///
-/// A press the UI has already spent is the UI's own business too, even
-/// though it landed on the map. Shutting the bar's form is done by pressing
-/// off it, and that press closing a form and letting go of a selection would
-/// be one gesture doing two things.
+/// Whose the click is covers what the pointer was over and what the UI spent
+/// it on both. Shutting the bar's form is done by pressing off it, and that
+/// press closing a form and letting go of a selection would be one gesture
+/// doing two things.
 fn clear_when_nothing_is_clicked(
-    buttons: Res<ButtonInput<MouseButton>>,
-    over_ui: Res<PointerOverUi>,
-    mut press: ResMut<PressAnswered>,
+    gesture: Gesture,
     dragged: Query<&DragDistance>,
     pointed_at: Query<(), With<PointedAt>>,
     mut selection: ResMut<Selection>,
 ) {
-    if !buttons.just_released(PRIMARY) {
-        return;
-    }
-    // Spent either way, since whatever the press was for is over.
-    let answered = std::mem::take(&mut press.0);
-    if over_ui.0 || answered {
+    if !gesture.on_map() {
         return;
     }
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
@@ -365,7 +358,9 @@ fn ringed(dim: &DimTo, filtered: bool) -> Srgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::pointing::PRIMARY;
     use crate::systems::tests::system;
+    use crate::ui::Grasp;
 
     /// A world with nothing in it but the selection and the mark
     fn map() -> App {
@@ -374,6 +369,151 @@ mod tests {
         app.init_resource::<Selection>();
         app.add_systems(Update, follow_selection);
         app
+    }
+
+    /// A world holding a selection and the click that may let go of it
+    ///
+    /// Nothing is pointed at and no pointer has travelled, so what the click
+    /// lands on is empty sky.
+    fn clicked_on() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.init_resource::<Grasp>();
+
+        let mut selection = Selection::default();
+        selection.set(system(1));
+        app.insert_resource(selection);
+
+        app.add_systems(Update, clear_when_nothing_is_clicked);
+        app
+    }
+
+    /// Take a frame, with the button doing `act` at the start of it and the
+    /// UI settling whose the press was at the end
+    ///
+    /// The order egui runs in: it draws from `PostUpdate`, after everything
+    /// that answers a click, so a press is settled at the close of the frame
+    /// it landed in. `wanted` is whether the UI took it.
+    fn frame(
+        app: &mut App,
+        wanted: bool,
+        act: impl FnOnce(&mut ButtonInput<MouseButton>),
+    ) {
+        let mut buttons =
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        buttons.clear();
+        act(&mut buttons);
+
+        app.update();
+
+        let world = app.world_mut();
+        let buttons = world.resource::<ButtonInput<MouseButton>>().clone();
+        world.resource_mut::<Grasp>().settle(&buttons, wanted);
+    }
+
+    /// Whether anything is still held
+    fn holding(app: &App) -> bool {
+        !app.world().resource::<Selection>().is_empty()
+    }
+
+    /// A click on empty sky lets go of the selection
+    #[test]
+    fn a_click_on_nothing_lets_go() {
+        let mut app = clicked_on();
+
+        frame(&mut app, false, |buttons| buttons.press(PRIMARY));
+        assert!(holding(&app), "let go before the button came up");
+        frame(&mut app, false, |buttons| buttons.release(PRIMARY));
+
+        assert!(!holding(&app));
+    }
+
+    /// A press the UI took is not the map's to answer
+    ///
+    /// Whose it was is settled at the press and stands for the whole of it,
+    /// so the release finds the answer already there.
+    #[test]
+    fn a_press_the_ui_took_does_not_let_go() {
+        let mut app = clicked_on();
+
+        frame(&mut app, true, |buttons| buttons.press(PRIMARY));
+        frame(&mut app, false, |buttons| buttons.release(PRIMARY));
+
+        assert!(holding(&app));
+    }
+
+    /// Nor when the whole click falls inside one frame
+    ///
+    /// A frame slow enough to hold a press and its release together puts the
+    /// map's reading of the click before the UI's, egui drawing from
+    /// `PostUpdate`. The click that shut the form would otherwise let go of
+    /// the selection as well, which is one gesture doing two things.
+    #[test]
+    fn a_whole_click_in_one_slow_frame_does_not_let_go() {
+        let mut app = clicked_on();
+
+        frame(&mut app, true, |buttons| {
+            buttons.press(PRIMARY);
+            buttons.release(PRIMARY);
+        });
+        frame(&mut app, false, |_| {});
+
+        assert!(holding(&app));
+    }
+
+    /// And the click after it is still the map's to answer
+    ///
+    /// Whose a press was is spent on that press. Left standing, it would be
+    /// taken out of the next click instead, and the selection would outlast
+    /// the gesture that let go of it.
+    #[test]
+    fn the_click_after_a_slow_one_still_lets_go() {
+        let mut app = clicked_on();
+
+        frame(&mut app, true, |buttons| {
+            buttons.press(PRIMARY);
+            buttons.release(PRIMARY);
+        });
+        frame(&mut app, false, |_| {});
+        assert!(holding(&app), "let go of it on the UI's own click");
+
+        frame(&mut app, false, |buttons| buttons.press(PRIMARY));
+        frame(&mut app, false, |buttons| buttons.release(PRIMARY));
+
+        assert!(!holding(&app));
+    }
+
+    /// A whole click in one frame still lets go where the UI wanted none of it
+    ///
+    /// Held over a frame rather than thrown away. A slow map is one a click
+    /// still has to work on.
+    #[test]
+    fn a_whole_click_in_one_frame_lets_go_of_its_own() {
+        let mut app = clicked_on();
+
+        frame(&mut app, false, |buttons| {
+            buttons.press(PRIMARY);
+            buttons.release(PRIMARY);
+        });
+        frame(&mut app, false, |_| {});
+
+        assert!(!holding(&app));
+    }
+
+    /// A press that began on the map is the map's wherever it ends
+    ///
+    /// The UI wanting the pointer by the time the button comes up says
+    /// nothing about the gesture: a drag off the sky that happens to finish
+    /// over a panel is still a drag of the sky.
+    #[test]
+    fn a_press_that_began_on_the_map_stays_the_map_s() {
+        let mut app = clicked_on();
+
+        frame(&mut app, false, |buttons| buttons.press(PRIMARY));
+        frame(&mut app, true, |buttons| buttons.release(PRIMARY));
+
+        assert!(!holding(&app));
     }
 
     /// A click reads as replace or as gather, by the modifier alone

@@ -8,15 +8,14 @@ use crate::systems::{
     fetch::FetchTasks,
     filter::{DimTo, Filtered, Filters},
     pointing::{
-        DRAG_THRESHOLD, DragDistance, PRIMARY, PointedAt, PointerTarget,
-        UNFITTED_SCALE,
+        DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
     },
     route::spawn::{framing, spawn_route},
     route::{self, Plotted, Route},
     selection::Selection,
     system_to_vec,
 };
-use crate::ui::PointerOverUi;
+use crate::ui::{Gesture, Grasp};
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -203,6 +202,7 @@ fn select_on_click(
     pointed_at: Query<&System, With<PointedAt>>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
+    grasp: Res<Grasp>,
     frame: Res<FrameCount>,
     keys: Res<ButtonInput<KeyCode>>,
     mut answered: Local<Option<u32>>,
@@ -213,6 +213,18 @@ fn select_on_click(
         .and_then(|pointer| dragged.get(pointer).ok())
         .map_or(0., |travelled| travelled.0);
     if click.button != PointerButton::Primary || travelled > DRAG_THRESHOLD {
+        return;
+    }
+    // A press the UI took is not the map's to answer, so it picks nothing out
+    // however squarely it landed on a star: the press that shuts the search
+    // form is one gesture, and shutting a form and picking out a system are
+    // two things for it to do.
+    //
+    // Unless it is unowned, which is the map's rather than nobody's. Picking
+    // reports a click before the UI has settled whose the press was, so a
+    // whole click inside one frame reaches here with no owner at all, and
+    // refusing those would be a star that cannot be picked out on a slow map.
+    if grasp.taken_by_ui() {
         return;
     }
 
@@ -270,15 +282,14 @@ const DOUBLE_CLICK: f32 = 0.4;
 /// the pointer's own business rather than the UI's. What is asked on top of
 /// those is that the click before it landed on the same system, recently.
 fn fly_on_double_click(
-    buttons: Res<ButtonInput<MouseButton>>,
-    over_ui: Res<PointerOverUi>,
+    gesture: Gesture,
     dragged: Query<&DragDistance>,
     pointed_at: Query<&System, With<PointedAt>>,
     time: Res<Time<Real>>,
     mut last: Local<LastClick>,
     mut camera: MessageWriter<MoveCamera>,
 ) {
-    if !buttons.just_released(PRIMARY) || over_ui.0 {
+    if !gesture.on_map() {
         return;
     }
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
