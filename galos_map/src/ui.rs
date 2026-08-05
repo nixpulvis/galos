@@ -1689,6 +1689,15 @@ fn clipped(name: &str, room: usize) -> String {
     format!("{}{CUT}", kept.trim_end())
 }
 
+/// How wide one character of `kind` stands
+///
+/// Everything is lettered in one width, so a character is a measure of room
+/// as much as a pixel is.
+pub(crate) fn one_character(ctx: &Context, kind: egui::TextStyle) -> f32 {
+    let font = kind.resolve(&ctx.global_style());
+    ctx.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'))
+}
+
 /// How many characters of `kind` fit in `room` pixels
 ///
 /// Exact, and exactly what [`shortened`] is measured in, everything being
@@ -1698,12 +1707,28 @@ pub(crate) fn characters(
     kind: egui::TextStyle,
     room: f32,
 ) -> usize {
-    let font = kind.resolve(&ctx.global_style());
-    let one = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'));
+    let one = one_character(ctx, kind);
     if one <= 0. {
         return 0;
     }
     (room / one).floor().max(0.) as usize
+}
+
+/// How many characters of `kind` it takes to cover `room` pixels
+///
+/// [`characters`] the other way about. As many as fit stops short of the
+/// room whenever the room is not a whole number of characters, which is for
+/// whoever is filling a space rather than reading what is in it.
+pub(crate) fn covering(
+    ctx: &Context,
+    kind: egui::TextStyle,
+    room: f32,
+) -> usize {
+    let one = one_character(ctx, kind);
+    if one <= 0. {
+        return 0;
+    }
+    (room / one).ceil().max(0.) as usize
 }
 
 /// What a field holds, if it holds anything

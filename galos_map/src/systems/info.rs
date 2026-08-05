@@ -49,6 +49,9 @@ pub fn plugin(app: &mut App) {
 /// Wide enough for a position and for the longest of the names a field is
 /// answered with, so that the two columns do not shift from one system to
 /// the next.
+///
+/// A panel comes out at this taken up to a whole character, the title bar
+/// being lettered and filled out to its end.
 const WIDTH: f32 = 230.;
 
 /// What the title bar spends on the fold arrow, the close mark and the gaps
@@ -56,7 +59,7 @@ const WIDTH: f32 = 230.;
 ///
 /// The rest of [`WIDTH`] is the title's. Measured rather than worked out, egui
 /// laying its own title bar out, and held down by
-/// `a_route_panel_is_no_wider_than_a_panel`.
+/// `a_short_title_leaves_the_width_alone`.
 const TITLE_MARKS: f32 = 46.;
 
 /// How much of a title a panel has room for, in characters
@@ -64,8 +67,13 @@ const TITLE_MARKS: f32 = 46.;
 /// A window is at least as wide as its title bar needs, so what a panel is
 /// called is what decides how wide it stands. Cut to this, a route's panel
 /// keeps the width every other panel has.
+///
+/// Enough characters to cover the room rather than as many as fit inside
+/// it, since the title is padded out to fill the bar. A bar a fraction of a
+/// character narrower than what stands under it is a panel that draws itself
+/// in the moment it is folded away into the bar, and back out when it opens.
 fn titling(ctx: &Context) -> usize {
-    crate::ui::characters(ctx, egui::TextStyle::Body, WIDTH - TITLE_MARKS)
+    crate::ui::covering(ctx, egui::TextStyle::Body, WIDTH - TITLE_MARKS)
 }
 
 /// What a panel is called, laid out across its title bar
@@ -1248,10 +1256,93 @@ mod tests {
         assert_eq!(taken, had);
     }
 
+    /// How wide one character of a panel's lettering stands
+    fn character() -> f32 {
+        let ctx = crate::tests::context();
+        // Inside a pass, egui having no fonts to measure with before one.
+        let mut one = 0.;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            one = crate::ui::one_character(ui.ctx(), egui::TextStyle::Body);
+        });
+
+        one
+    }
+
     /// A title that fits leaves the panel the width it asked for
+    ///
+    /// To the character. A title bar holds a whole number of them and is
+    /// filled out to its end, so a panel stands at the width asked for taken
+    /// up to the next one, and never short of it.
+    ///
+    /// Which is also what holds [`TITLE_MARKS`] down. What the title bar
+    /// spends on the fold arrow and the close mark is measured off egui
+    /// rather than worked out, and a panel standing anywhere but within a
+    /// character of the width asked for is that measurement having drifted.
     #[test]
     fn a_short_title_leaves_the_width_alone() {
-        assert_eq!(laid_out("SOL"), (WIDTH, WIDTH));
+        let (taken, had) = laid_out("SOL");
+
+        assert_eq!(taken, had);
+        assert!(had >= WIDTH, "{had} is narrower than the {WIDTH} asked for");
+        assert!(
+            had < WIDTH + character(),
+            "{had} is over a character wider than the {WIDTH} asked for"
+        );
+    }
+
+    /// How wide a panel comes out, folded away into its title bar or open
+    ///
+    /// Drawn over enough passes for egui to have finished animating the
+    /// fold, a panel halfway into one being neither width.
+    fn width(folded: bool) -> f32 {
+        let ctx = crate::tests::context();
+        let id = egui::Id::new("test-panel");
+        let mut width = 0.;
+
+        for pass in 0..20 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                if pass == 0 {
+                    let mut fold =
+                        egui::containers::collapsing_header::CollapsingState::
+                            load_with_default_open(
+                                ui.ctx(),
+                                id.with("collapsing"),
+                                true,
+                            );
+                    fold.set_open(!folded);
+                    fold.store(ui.ctx());
+                }
+
+                let mut showing = true;
+                let panel = framed(
+                    ui.ctx(),
+                    "SOL",
+                    id,
+                    egui::Pos2::ZERO,
+                    pass > 0,
+                    &mut showing,
+                );
+                if let Some(panel) = panel.show(ui.ctx(), |ui| {
+                    spread(ui);
+                    ui.label("5 systems");
+                }) {
+                    width = panel.response.rect.width();
+                }
+            });
+        }
+
+        width
+    }
+
+    /// Folding a panel away leaves its width alone
+    ///
+    /// A window is as wide as its title bar needs and as wide as whatever
+    /// stands under it, and a folded panel is the title bar alone. A bar
+    /// narrower than the contents is a panel that draws itself in the moment
+    /// the fold finishes, and back out again when it is opened.
+    #[test]
+    fn folding_a_panel_leaves_its_width_alone() {
+        assert_eq!(width(true), width(false));
     }
 
     /// A title fills the bar it stands in
@@ -1279,15 +1370,12 @@ mod tests {
     /// bar needs. Left whole, the title decides how wide the panel stands,
     /// which is a panel the tiling cannot step by and the user cannot read
     /// two of side by side.
-    ///
-    /// Which is also what holds [`TITLE_MARKS`] down. What the title bar
-    /// spends on the fold arrow and the close mark is measured off egui
-    /// rather than worked out, so this is where it is found to have drifted.
     #[test]
     fn a_route_panel_is_no_wider_than_a_panel() {
-        let (_, had) = laid_out("SIGMA DRACONIS -> MINISTRY");
+        let (_, route) = laid_out("SIGMA DRACONIS -> MINISTRY");
+        let (_, plain) = laid_out("SOL");
 
-        assert_eq!(had, WIDTH);
+        assert_eq!(route, plain);
     }
 
     /// A panel opens with its right hand top corner where it was put
