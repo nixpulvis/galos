@@ -263,7 +263,7 @@ Galaxy         BigSpace, Grid(2^53 m)
 
 ## Stage 5 — Arriving
 
-**The floor goes, and the system's own size takes its place.**
+**The old law had the right shape. Its floor was standing in for the system.**
 
 A shell is drawn at `4e-4·d + 8.5e-2` light years today: an angular term, which
 holds it to a constant size on screen however far off it is, and a floor. The
@@ -273,74 +273,112 @@ there would be nothing left to look at. It has a consequence nobody wanted: the
 sphere never shrinks below `8.5e-2` ly, so from that distance inward the camera
 is inside it, and zooming into a system is not awkward but impossible.
 
-So the floor was always standing in for the size of the system, back when that
-was not known. Now it is, and it can say so:
+Put the system's own size where the constant was and everything wanted falls
+out of the same expression:
 
 ```rust
 /// How large a system is drawn, in metres
 ///
-/// Two answers, and the larger of them wins. A system drawn at its true size
-/// is invisible from the next one over, so far off it is drawn at whatever
-/// angle keeps it on screen; and that angle shrinks as the camera closes,
-/// until it passes the size the system actually is and there is no longer any
-/// reason to pretend.
-fn shell(extent: f64, distance: f64) -> f64;   // ANGULAR * distance ⊕ extent
+/// A system drawn at its true size is invisible from the next one over, so
+/// what is drawn is that size plus whatever angle keeps it on screen. Far off
+/// the angle is the whole of it and a system holds a constant mark; the angle
+/// falls away as the camera closes, and what is left is the system, a little
+/// larger than life so that its outermost orbit sits comfortably inside.
+///
+/// Always larger than the system, and approaching it: the excess halves as the
+/// distance halves. So a shell settles onto its system rather than arriving at
+/// it, and there is no distance at which it does anything sudden.
+fn shell(extent: f64, distance: f64) -> f64 {
+    ANGULAR * distance + extent * MARGIN
+}
 ```
 
-A soft maximum rather than a bare one — `(a^n + b^n)^(1/n)` with a small `n` —
-so the handover is a knee rather than a corner. `n → ∞` is `max`, and if the
-corner turns out not to show, `max` is the simpler thing to keep.
+Continuous everywhere, monotonic, and never smaller than what it encloses. No
+maximum to put a corner in it, no ramp with two ends to name, no `closeness`,
+no blend. The camera reaches the surface at `d ≈ extent × MARGIN` and passes
+through a shell that is dissolving by then.
 
-**This is what the sizing wanted all along**, and it costs nothing to reason
-about. The camera is outside the shell exactly while `d > extent`, and inside
-exactly when `d < extent` — which is what being inside a system means. There is
-no distance at which it is trapped in a sphere larger than the thing that sphere
-stands for, for any system, with no threshold deciding it.
+### What a system's size is before anybody has asked
 
-It also takes the constants with it. There is no ramp, so nothing to name its
-two ends; and no **presumed extent**, since nothing has to guess a system's size
-in order to decide anything. `closeness` is just `extent / shell` — nothing far
-away, one once the extent has taken over — and the same number drives both the
-size and the material.
+`extent` has three states, not two: **not yet asked**, **asked and empty**, and
+**asked and known**. The first two are the same picture — the map does not know
+— so they are drawn the same way, from a stand-in extent of a typical system.
+That makes an unasked system and one with nothing on record indistinguishable,
+which is honest, since nothing about the difference is actionable.
 
-Three distances follow from it, each meaning something:
+An empty system therefore holds at the stand-in: its shell converges, stops, and
+stays opaque, because nothing loaded means nothing to dissolve for. There is no
+way through it. Zooming further is pointless rather than broken, which is about
+as close to stopping the zoom as is worth building.
 
-| | Sol (`extent` 0.00048 ly) | a compact system (0.000032 ly) |
-|---|---|---|
-| contents fetched | ~1 ly | ~1 ly |
-| handover, `extent / ANGULAR` | 1.19 ly | 0.079 ly |
-| camera passes the surface, `extent` | 0.00048 ly | 0.000032 ly |
+### Two ranges, and why the load one is generous
 
-Two things to watch, both consequences of the floor going rather than of
-anything added:
+- **Load range, about 5 light years.** Fetch the rows and learn the true extent.
+  Data only: no entities, no grid, no camera descent. One system at a time — the
+  nearest — with hysteresis so a tie does not thrash, and one query per swap.
+- **Spawn range, close in.** Create the bodies, insert the `Grid`, descend the
+  camera. This is where the cost is, and it stays where there is something to
+  see.
 
-- **A system with nothing on record has no extent, so its shell shrinks to a
-  point and goes.** That is honest — it says what is known — but it is a visible
-  change in behaviour and the alternative, a small floor of its own, is one
-  constant away.
-- **`ANGULAR` becomes load-bearing.** At `4e-4` it is about `0.023°`, half a
-  pixel at 1080p, and with the floor gone it is the only thing keeping a distant
-  system on screen; bloom is carrying it today. Expect to raise it once it can
-  be seen — and settle it against a sky of millions rather than against one
-  star, since what it really sets is how a crowd of overlapping shells reads.
+The load is generous **so that the extent changes while the angular term is
+still most of the shell**. The test is not that the shell be too small to see —
+at 5 ly it is a small sphere and should be — but that `ANGULAR · d` dominate
+`extent × MARGIN`, because then swapping one extent for another barely moves it.
+With `ANGULAR` at `4e-3`, about a fifth of a degree, and a stand-in of 5,000
+light seconds:
 
-It answers four things:
+| at 5 ly | shell | on a 1080p screen | change when the rows land |
+|---|---|---|---|
+| stand-in | `0.0202` ly | 4.7 px | — |
+| Sol, 15,000 ls | `0.0206` ly | 4.8 px | **+1.9%** |
+| compact, 1,000 ls | `0.0200` ly | 4.7 px | **−0.8%** |
+| far tail, 700,000 ls | `0.0466` ly | 11 px | +131% |
 
-1. **Whether to fetch and spawn a system's contents.** In absolute light years,
-   about one, with hysteresis — not from apparent size. Whether to load a
-   system's data is a question about proximity and budget rather than about how
-   large it looks, and it has to be answerable before anything is known about
-   the system. About one system stands within that, so nothing needs a budget.
-   It is also roughly ten times the handover distance for a typical system,
-   which is the lead time the fetch wants to have landed by.
+An ordinary system does not visibly change at all. What the true extent actually
+decides is **where the shell stops shrinking** — a smaller one pushes that
+crossover closer in, so the shell goes on shrinking for longer and only begins
+to grow on screen later. That is the whole of the difference, and it is a
+difference in timing rather than an event.
+
+It is also the same dial as the one that has to be settled by eye for a crowded
+sky: `ANGULAR` is what holds a distant system on screen, and raising it is what
+makes the 5 ly load smooth. One experiment answers both, and it comes first.
+
+The stand-in does not have to err large. At 5 ly the camera would have to close
+two and a half thousand times over before a single query returned in order to be
+caught inside the shell, so a stand-in near the typical extent is right, keeping
+corrections small in both directions rather than biased into one.
+
+**Only the far tail moves visibly**, roughly doubling. Which the dissolve covers,
+given the rule below.
+
+### Opacity answers `d / shell`, and nothing else
+
+Not time since loading, not an absolute distance. Keyed on where the camera is
+relative to the shell it is approaching, two things come out right on their own:
+
+- Flying in dissolves the shell, because `d / shell` falls. Tuned by eye.
+- A system that gains bodies while the camera is already deep inside it grows
+  its shell around the camera — and is transparent when it does, because
+  `d / shell` is already tiny. What the viewer sees is the bodies arriving,
+  which is what happened. Key it on time or on absolute distance instead and a
+  solid sphere snaps shut around the camera.
+
+**Bodies are not polled.** `Poll` exists because a system's row changes:
+population, allegiance, who holds it. Orbital elements do not — what changes is
+whether anyone has scanned them, and learning that mid-approach is rare enough
+to leave to the next visit, when the camera is light years off and nothing
+shows. That removes almost every mid-flight change of extent, and the rule above
+covers the rest.
+
+It answers three things:
+
+1. **When to load, and when to spawn.** The two ranges above.
 2. **When a system becomes a grid, and when the camera descends into it.** At
-   the handover — `extent / ANGULAR`, where the shell stops standing for the
-   system and starts being it. One moment for both, so the two cannot disagree,
-   and it is the moment the map itself already marks.
-
-   Galaxy-grid precision there is ~270,000 km against a distance of `0.079` ly
-   for even a compact system, five orders below, so the descent has room either
-   side and does not have to be exact.
+   the spawn range, so the grid, the bodies and the camera's frame arrive
+   together and cannot disagree. Galaxy-grid precision is ~270,000 km, five
+   orders below any distance the spawn range would sit at, so the descent has
+   room either side and does not have to be exact.
 
    **Rendering is not affected by where the camera lives.** big_space composes
    every grid's transform relative to the floating origin, so a shell in the
@@ -363,12 +401,9 @@ It answers four things:
    since flying to a body targets that body's exact local position.
 
    Still the fiddliest part of the change, and confined to one component.
-3. **How large to draw the shell.** `shell(extent, d)` above — the angular term
-   until it falls past the extent, the extent after.
-4. **How solidly to draw it.** `closeness = extent / shell` on its material —
-   bright and emissive while it stands for a system, faint and translucent once
-   it is one, a border about to be flown through. The same number as the size,
-   so it cannot be the wrong size for how solid it looks.
+3. **How large to draw the shell, and how solidly.** `shell(extent, d)` for the
+   size, `d / shell` for the material — hand-tuned, since how a boundary should
+   read as it is flown through is a thing to look at rather than to derive.
 
 Later, `apparent_brightness(luminosity, distance)` sits beside this and decides
 which stars are too faint to draw at all. `stars.absolute_magnitude` and
@@ -380,102 +415,61 @@ it is.
 the point of all this is that there is no mode to switch to. Say so in the doc,
 since it is a promise being deliberately broken.
 
-**Tests:** `a_system_too_small_to_see_keeps_its_contents_to_itself`,
-`flying_in_brings_a_systems_bodies_out`,
-`a_system_on_the_threshold_does_not_flicker`,
-`the_camera_descends_where_the_shell_becomes_the_system`,
-`the_shell_holds_one_angle_until_it_meets_the_system`,
-`the_shell_stops_shrinking_at_the_size_of_what_it_encloses`,
-`the_shell_thins_out_as_it_is_flown_into`,
-`a_system_with_nothing_on_record_dwindles_to_a_point`, and the invariant the
-whole thing rests on —
-`the_camera_is_outside_the_shell_until_it_is_inside_the_system`, swept over
-distances spanning the range and over extents from a compact system to the
-widest on record. That last one has to be written over a *compact* system as
-well as over Sol: a floor-shaped mistake passes on Sol and fails on everything
-smaller, which is how the first one survived being designed.
+**Tests**, on the sizing itself, which is pure and wants sweeping rather than
+sampling:
+
+- `the_shell_is_never_smaller_than_the_system_it_holds` — the invariant the rest
+  rests on. Swept over distances spanning the whole range and over extents from
+  a compact system to the widest on record.
+- `the_shell_settles_onto_its_system_rather_than_arriving` — halving the distance
+  halves what is left over above the true size.
+- `swapping_a_stand_in_for_the_truth_barely_moves_the_shell` — at the load range,
+  and this is the one the whole two-range arrangement exists for.
+- `a_smaller_system_only_moves_where_the_shell_stops_shrinking` — that the
+  difference is in timing rather than in size.
+- `a_system_with_nothing_on_record_holds_at_the_stand_in`.
+- `a_shell_that_grows_around_the_camera_is_already_transparent` — the `d / shell`
+  rule, which is what makes a system gaining bodies mid-flight harmless.
+- `a_system_on_the_threshold_does_not_flicker`,
+  `the_camera_descends_when_the_bodies_are_spawned`, over `MinimalPlugins`.
+
+Write the size ones over a *compact* system as well as over Sol. A floor-shaped
+mistake passes on Sol and fails on everything smaller, which is exactly how the
+first version of this survived being designed.
 
 **Walked end to end**, focus following the zoom, `near = radius × 1e-4`,
-`shell = 4e-4·d ⊕ extent`, Sol's extent taken as Neptune's orbit, `4.5e12` m:
+`shell = ANGULAR·d + extent × MARGIN` with `ANGULAR` at `4e-3` and `MARGIN` at
+`1.2`, Sol's extent taken as Neptune's orbit — `4.5e12` m, so `5.4e12` with the
+margin:
 
 | focus | camera radius | near | grid | shell | on screen |
 |---|---|---|---|---|---|
-| galaxy | `4.7e20` m (50,000 ly) | `4.7e16` m | galaxy | `1.9e17` m (20 ly) | a point, `4e-4` rad |
-| Sol | `2.8e17` m (30 ly) | `2.8e13` m | galaxy | `1.1e14` m (0.012 ly) | a point, `4e-4` rad |
-| Sol | `4.7e16` m (5 ly) | `4.7e12` m | galaxy | `1.9e13` m | contents fetched |
-| Sol | `1.1e16` m (1.19 ly) | `1.1e12` m | → system | `4.5e12` m | handover: the shell is the system |
-| Sol | `4.5e12` m (15,000 ls) | `4.5e8` m | system | `4.5e12` m | through the surface, `1` rad |
+| galaxy | `4.7e20` m (50,000 ly) | `4.7e16` m | galaxy | `1.9e18` m | `4e-3` rad, a mark |
+| Sol | `2.8e17` m (30 ly) | `2.8e13` m | galaxy | `1.1e15` m | `4e-3` rad, still a mark |
+| Sol | `4.7e16` m (5 ly) | `4.7e12` m | galaxy | `1.9e14` m | rows land, shell moves 1.9% |
+| Sol | `1.4e15` m (0.14 ly) | `1.4e11` m | galaxy | `1.1e13` m | the angle and the system are equal here |
+| Sol | `9.5e13` m (0.01 ly) | `9.5e9` m | → system | `5.8e12` m | bodies spawned, camera descends, `3.5°` |
+| Sol | `5.4e12` m | `5.4e8` m | system | `5.4e12` m | through the surface, `1` rad, nearly clear |
 | Earth | `5e7` m (50,000 km) | `5e3` m | system | — | Earth a 7.3° disc |
 | Luna | `5e6` m (5,000 km) | `500` m | system | — | Luna 20°, Earth 0.95° |
 
 Fourteen orders of magnitude of camera radius, one continuous zoom, one grid
-handover. The shell holds `4e-4` rad the whole way down until it meets Sol's
-own size, then holds that and grows on screen as it is approached — which is
-what a thing does when you fly at it.
+handover, and nothing anywhere in it that steps.
 
 At the far end the camera's offset is good to 30 nm while Luna's mesh, `f32`
 vertices scaled to `1.7e6` m, is good to about 0.1 m — the mesh becomes the
 limit before the grid does, which is the argument for chunked terrain when
 surfaces arrive rather than for finer cells.
 
-**Where the fetch distance has to sit.** The handover is at `extent / ANGULAR` —
-a *camera distance*, not a size. It is `0.079` ly for a compact system and
-`1.19` ly for Sol, so a few light years covers both with room.
+### Still open: what should `extent` mean?
 
-It does not cover the tail. A system with bodies at 700,000 light seconds hands
-over when the camera is 55 ly off, and Alpha Centauri, whose reach runs to about
-a fifth of a light year, at some 500. Those are far outside any sane fetch
-distance, so they take their true size when their contents land rather than at
-the handover, and grow in one step — from `0.002` to `0.022` ly for the first of
-those, a tenfold jump that is a quarter of a degree on screen. Honest enough, a
-system being drawn at the size that keeps it visible until the map has asked what
-size it really is, but worth watching before it is called fine.
-
-### A system's size is learned too late — open, and to be tested first
-
-The shell's size wants `extent`, and `extent` comes out of the database, so
-between a system appearing and its contents landing the map is drawing something
-whose size it does not know. Where the handover falls further out than the fetch,
-the shell has been drawn too small for the whole approach and jumps to the truth
-the moment the answer arrives. Nothing is wrong afterwards; it is the arriving
-that shows.
-
-**Test before building anything.** `ANGULAR` is the leverage: the distance the
-fetch must reach is `extent / ANGULAR`, so raising it shrinks the problem in
-proportion. At `4e-4` a system reaching 700,000 light seconds wants 55 ly; at
-`4e-3` it wants 5.5, which is about where the fetch would sit anyway. Since
-`ANGULAR` has to be settled by eye regardless — it is what holds a distant system
-on screen, and what decides how a crowd of them reads — that experiment may
-answer this one for nothing. Do it first.
-
-If something is still wanted after that, three things, cheapest first, and each
-useful without the others:
-
-1. **Ease the size rather than assigning it.** Hold what is drawn and approach
-   the answer over a few hundred milliseconds. `camera.rs:144`'s `approach` is
-   exactly this and is already frame-rate independent and tested. It does not
-   make the size right any sooner — it stops the wrongness from being a flinch,
-   and it covers everything, including a system whose extent changes later
-   because more of it has been scanned since.
-2. **Learn the extents early and cheaply, without the bodies.** One aggregate —
-   `max(semi_major_axis)` grouped by `system_address` over the addresses the
-   spyglass already holds — answers a float per system rather than every row of
-   every one. Batched on the `FetchTasks` model, cached by address for the
-   session since a system's reach does not change. That removes the cause rather
-   than the symptom, and it scales to the outliers, which no fetch distance can.
-3. **Store it on the `systems` row.** The same number, kept rather than derived.
-   `DbSystem` is already fetched for everything in the spyglass, so the shell
-   would never be drawn at a size it had to guess at, at any distance. Costs a
-   migration, a backfill over `bodies`, and a line in the sync path — worth it
-   once, not worth it on suspicion. Adjacent to issue #69.
-
-**And a question underneath all three: what should `extent` mean?** Taken as the
-outermost body it is set by whatever is furthest, which is what makes the tail so
-long — a system with everything inside a few thousand light seconds and one thing
-at 700,000 gets a shell two hundred times wider than where it actually lives, and
-what there is to see is a speck at the middle of it. A high percentile instead of
-a maximum would frame what is there, and would collapse the range of extents so
-far that the handover falls inside any sensible fetch for almost every system.
+Taken as the outermost body it is set by whatever is furthest out, which is what
+makes the tail so long. A system with everything inside a few thousand light
+seconds and one thing at 700,000 gets a shell two hundred times wider than where
+it actually lives, and what there is to see is a speck at the middle of it. A
+high percentile instead of a maximum would frame what is there, and would
+collapse the range of extents far enough that the tail's correction at the load
+range stops being the one visible case.
 
 It trades away containment: those few far bodies would be drawn outside their own
 shell. Whether that is wrong or simply honest is a question about what the shell
@@ -484,10 +478,10 @@ is *for*, and it should be looked at rather than assumed.
 **Shells at their true size cannot overlap.** The widest is about a fifth of a
 light year against a spacing of four or more, twenty times clear, and the
 ordinary ones are clear by thousands. Overlap belongs entirely to the angular
-term, and is unbounded: at 50,000 ly every shell is drawn 20 ly across against
-that same four, so millions of them interpenetrate. That is what makes the
-galaxy read as a glow rather than as points, and it is the current behaviour
-rather than anything introduced here.
+term, and is unbounded: at 50,000 ly with `ANGULAR` at `4e-3` every shell is
+drawn 200 ly across against that same four, so millions of them interpenetrate.
+That is what makes the galaxy read as a glow rather than as points, and it is
+what the map already does — raising `ANGULAR` only makes more of it.
 
 But it says the angular term is doing a point sprite's work with geometry. The
 two ends of the map want different machinery — additive sprites carrying
