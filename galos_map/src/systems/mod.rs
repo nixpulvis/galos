@@ -15,7 +15,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(Spyglass {
         radius: Spyglass::OPENING,
         fetch: true,
-        disabled: false,
+        clear: true,
         lock_camera: false,
         follow_camera: true,
     });
@@ -95,9 +95,20 @@ pub mod spawn;
 /// A global setting which controls the spyglass around the camera
 #[derive(Resource)]
 pub struct Spyglass {
+    /// Ask the database for what is within the reach
+    ///
+    /// The two halves of what a spyglass does, this and [`Spyglass::clear`],
+    /// and each is worth having without the other. Off, the map draws what it
+    /// has and asks for nothing more, which is how to look at a sky that
+    /// stops changing under you.
     pub fetch: bool,
     pub radius: f32,
-    pub disabled: bool,
+    /// Clear away what the reach does not hold
+    ///
+    /// On to begin with, that being what looking through a spyglass is. Off,
+    /// everything loaded is drawn however far off it lies, which is
+    /// everywhere the camera has been rather than anywhere it is looking.
+    pub clear: bool,
     /// Zoom the camera to whatever the reach is set to
     ///
     /// Only meaningful while [`Spyglass::follow_camera`] is off. The two are
@@ -164,8 +175,8 @@ impl Spyglass {
     /// Whether the spyglass reaches `position`, from a camera centered on
     /// `center`
     ///
-    /// Everything loaded where it has been overridden, that being what
-    /// overriding it means.
+    /// Everything loaded while it is not clearing, there being no reach to be
+    /// outside of then.
     ///
     /// Asked by whatever has to tell the two reasons a system is not drawn
     /// apart. Out of reach is the map saying it is not looking there;
@@ -173,7 +184,7 @@ impl Spyglass {
     /// what is drawn for a system they picked out by hand answers only the
     /// first.
     pub fn reaches(&self, center: DVec3, position: DVec3) -> bool {
-        self.disabled || center.distance(position) <= self.radius as f64
+        !self.clear || center.distance(position) <= self.radius as f64
     }
 
     /// Whether the camera stands wherever the reach puts it
@@ -398,12 +409,12 @@ pub(crate) mod tests {
     }
 
     /// A world holding one camera at the origin, and nothing else
-    fn map(radius: f32, disabled: bool, dim: f32) -> App {
+    fn map(radius: f32, clear: bool, dim: f32) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Spyglass {
             radius,
-            disabled,
+            clear,
             fetch: false,
             lock_camera: false,
             follow_camera: false,
@@ -427,7 +438,7 @@ pub(crate) mod tests {
         let spyglass = Spyglass {
             radius: 10.,
             fetch: false,
-            disabled: false,
+            clear: true,
             lock_camera: false,
             follow_camera: false,
         };
@@ -438,13 +449,13 @@ pub(crate) mod tests {
         assert!(!spyglass.reaches(center, DVec3::new(11., 0., 0.)));
     }
 
-    /// Overridden, it reaches everything loaded however far off
+    /// Not clearing, it reaches everything loaded however far off
     #[test]
-    fn an_overridden_spyglass_reaches_whatever_is_loaded() {
+    fn a_spyglass_that_does_not_clear_reaches_whatever_is_loaded() {
         let spyglass = Spyglass {
             radius: 10.,
             fetch: false,
-            disabled: true,
+            clear: false,
             lock_camera: false,
             follow_camera: false,
         };
@@ -455,7 +466,7 @@ pub(crate) mod tests {
     /// The spyglass draws what it reaches and hides the rest
     #[test]
     fn the_spyglass_decides_what_is_drawn() {
-        let mut app = map(10., false, 0.15);
+        let mut app = map(10., true, 0.15);
         let near =
             app.world_mut().spawn((at(1, 5.), Visibility::default())).id();
         let far =
@@ -467,10 +478,10 @@ pub(crate) mod tests {
         assert!(!drawn(&app, far));
     }
 
-    /// An overridden spyglass draws everything loaded, however far off
+    /// A spyglass that does not clear draws everything loaded, however far off
     #[test]
-    fn an_overridden_spyglass_reaches_everything() {
-        let mut app = map(10., true, 0.15);
+    fn a_spyglass_that_does_not_clear_draws_everything() {
+        let mut app = map(10., false, 0.15);
         let far =
             app.world_mut().spawn((at(1, 5e4), Visibility::default())).id();
 
@@ -485,7 +496,7 @@ pub(crate) mod tests {
     /// read against the space around it.
     #[test]
     fn a_filtered_system_is_drawn_to_be_dimmed() {
-        let mut app = map(10., false, 0.15);
+        let mut app = map(10., true, 0.15);
         let excluded = app
             .world_mut()
             .spawn((at(1, 5.), Visibility::default(), filter::Filtered))
@@ -502,7 +513,7 @@ pub(crate) mod tests {
     /// pointer can land on, so this is hidden rather than merely invisible.
     #[test]
     fn dimming_to_nothing_hides_what_is_filtered() {
-        let mut app = map(10., false, 0.);
+        let mut app = map(10., true, 0.);
         let excluded = app
             .world_mut()
             .spawn((at(1, 5.), Visibility::default(), filter::Filtered))
@@ -528,7 +539,7 @@ pub(crate) mod tests {
     /// and those are not what the user is looking at.
     #[test]
     fn the_tally_counts_what_is_in_reach() {
-        let mut app = map(10., false, 0.15);
+        let mut app = map(10., true, 0.15);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((at(2, 7.), Visibility::default()));
         app.world_mut().spawn((at(3, 5e3), Visibility::default()));
@@ -542,7 +553,7 @@ pub(crate) mod tests {
     /// reach
     #[test]
     fn the_tally_says_how_many_a_filter_admits() {
-        let mut app = map(10., false, 0.15);
+        let mut app = map(10., true, 0.15);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((
             at(2, 5.),
@@ -563,7 +574,7 @@ pub(crate) mod tests {
     /// through, which only the marks answer.
     #[test]
     fn the_tally_counts_the_excluded_among_the_drawn() {
-        let mut app = map(10., false, 0.15);
+        let mut app = map(10., true, 0.15);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((
             at(2, 5.),
@@ -594,7 +605,7 @@ pub(crate) mod tests {
     /// only how many are getting through. See [`InReach::total`].
     #[test]
     fn the_tally_holds_up_when_nothing_excluded_is_drawn() {
-        let mut app = map(10., false, 0.);
+        let mut app = map(10., true, 0.);
         app.world_mut().spawn((at(1, 5.), Visibility::default()));
         app.world_mut().spawn((
             at(2, 5.),
@@ -615,7 +626,7 @@ pub(crate) mod tests {
     /// The spyglass still hides what it cannot reach, filter or no filter
     #[test]
     fn a_filtered_system_out_of_reach_stays_hidden() {
-        let mut app = map(10., false, 0.15);
+        let mut app = map(10., true, 0.15);
         let far = app
             .world_mut()
             .spawn((at(1, 50.), Visibility::default(), filter::Filtered))
@@ -626,13 +637,13 @@ pub(crate) mod tests {
         assert!(!drawn(&app, far));
     }
 
-    /// Overriding the spyglass does not override the filters
+    /// A spyglass that does not clear leaves the filters clearing
     ///
     /// The two answer different questions, and the one that draws everything
     /// loaded has nothing to say about what was asked for.
     #[test]
-    fn an_overridden_spyglass_still_honours_a_filter() {
-        let mut app = map(10., true, 0.);
+    fn a_spyglass_that_does_not_clear_still_honours_a_filter() {
+        let mut app = map(10., false, 0.);
         let excluded = app
             .world_mut()
             .spawn((at(1, 5e4), Visibility::default(), filter::Filtered))
@@ -654,7 +665,7 @@ pub(crate) mod tests {
         app.insert_resource(Spyglass {
             radius: Spyglass::OPENING,
             fetch: false,
-            disabled: false,
+            clear: true,
             lock_camera,
             follow_camera,
         });

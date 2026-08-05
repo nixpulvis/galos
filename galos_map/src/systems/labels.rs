@@ -110,13 +110,14 @@ pub struct NameRadius {
 impl NameRadius {
     /// How far names actually reach, given what the spyglass is doing
     ///
-    /// Never past the spyglass while it is in force, since a system it has
-    /// hidden has nothing to put a name against. Overriding it draws
-    /// everything loaded, and then the asking is the only limit.
+    /// Never past the spyglass while it is clearing, since a system it has
+    /// hidden has nothing to put a name against. A spyglass that is not
+    /// clearing draws everything loaded, and then the asking is the only
+    /// limit.
     pub fn reach(&self, spyglass: &Spyglass) -> f32 {
         if self.follow_spyglass {
             spyglass.radius
-        } else if spyglass.disabled {
+        } else if !spyglass.clear {
             self.radius
         } else {
             self.radius.min(spyglass.radius)
@@ -980,12 +981,12 @@ mod tests {
         }
     }
 
-    /// A spyglass of a given reach, in force unless said otherwise
-    fn spyglass(radius: f32, disabled: bool) -> Spyglass {
+    /// A spyglass of a given reach, clearing unless said otherwise
+    fn spyglass(radius: f32, clear: bool) -> Spyglass {
         Spyglass {
             fetch: true,
             radius,
-            disabled,
+            clear,
             lock_camera: false,
             follow_camera: false,
         }
@@ -1000,7 +1001,7 @@ mod tests {
     fn names_reach_no_further_than_the_spyglass() {
         let asked = NameRadius { follow_spyglass: false, radius: 200. };
 
-        assert_eq!(asked.reach(&spyglass(30., false)), 30.);
+        assert_eq!(asked.reach(&spyglass(30., true)), 30.);
     }
 
     /// Following takes the spyglass's answer whatever it is
@@ -1009,19 +1010,19 @@ mod tests {
         let following = NameRadius { follow_spyglass: true, radius: 5. };
 
         for radius in [7., 30., 4_000.] {
-            assert_eq!(following.reach(&spyglass(radius, false)), radius);
+            assert_eq!(following.reach(&spyglass(radius, true)), radius);
         }
     }
 
-    /// Overriding the spyglass lets names be asked for beyond it
+    /// A spyglass that does not clear lets names be asked for beyond it
     ///
     /// Everything loaded is drawn then, so there is nothing left for the
     /// spyglass to say about which of it may be named.
     #[test]
-    fn overriding_the_spyglass_lifts_the_ceiling() {
+    fn a_spyglass_that_does_not_clear_lifts_the_ceiling() {
         let asked = NameRadius { follow_spyglass: false, radius: 200. };
 
-        assert_eq!(asked.reach(&spyglass(30., true)), 200.);
+        assert_eq!(asked.reach(&spyglass(30., false)), 200.);
     }
 
     /// What the pointer is on takes the top of the order

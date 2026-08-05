@@ -12,8 +12,8 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
-    app.insert_resource(Poll(Some(1.)));
-    app.insert_resource(Throttle(50));
+    app.insert_resource(Poll(Some(10.)));
+    app.insert_resource(Throttle(100));
 
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();

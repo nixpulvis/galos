@@ -344,7 +344,7 @@ mod tests {
         app.insert_resource(Spyglass {
             fetch: true,
             radius: Spyglass::OPENING,
-            disabled: false,
+            clear: true,
             lock_camera: false,
             follow_camera: false,
         });
@@ -365,7 +365,7 @@ mod tests {
         Spyglass {
             fetch: held.fetch,
             radius: held.radius,
-            disabled: held.disabled,
+            clear: held.clear,
             lock_camera: held.lock_camera,
             follow_camera: held.follow_camera,
         }
@@ -610,7 +610,7 @@ mod tests {
         app.insert_resource(Spyglass {
             fetch: true,
             radius: Spyglass::OPENING,
-            disabled: false,
+            clear: true,
             lock_camera: false,
             follow_camera: false,
         });
