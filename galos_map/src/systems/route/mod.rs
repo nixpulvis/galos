@@ -115,8 +115,8 @@ pub mod spawn;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]
-struct LineStrip {
-    points: Vec<Vec3>,
+pub(crate) struct LineStrip {
+    pub(crate) points: Vec<Vec3>,
 }
 
 impl From<LineStrip> for Mesh {

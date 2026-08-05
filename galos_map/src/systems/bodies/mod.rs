@@ -18,10 +18,12 @@ use orbit::{Orbit, Orbits};
 
 pub mod fetch;
 pub mod orbit;
+pub mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
     app.add_plugins(fetch::plugin);
+    app.add_plugins(spawn::plugin);
 }
 
 /// The one system the map is holding the insides of
