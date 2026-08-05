@@ -2825,7 +2825,9 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
     let mut enabled = opt.is_some();
     if ui.checkbox(&mut enabled, "Poll").changed() {
         if enabled {
-            *opt = Some(1.);
+            // Turned back on at what it opened at, the wait it was left at
+            // having gone when it was turned off.
+            *opt = Some(10.);
         } else {
             *opt = None
         }
