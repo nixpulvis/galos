@@ -105,6 +105,10 @@ pub fn spawn_route(
         })),
         cell,
         Transform::from_translation(translation),
+        // Said outright rather than left to `Mesh3d`, which asks only for a
+        // transform. Turning a route's row off hides its line, which is a
+        // write to this.
+        Visibility::default(),
         Route(route.clone()),
         ChildOf(galaxy.0),
     ));

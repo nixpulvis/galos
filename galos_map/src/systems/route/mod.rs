@@ -135,36 +135,53 @@ fn plotted(
     }
 }
 
-/// Take a line away when the filter naming it goes
+/// Keep each line answering to the row that names it
 ///
 /// The line and the filter row are two halves of one answer: the row says
-/// which route is being shown and the line shows it. Closing the row is how
-/// the user says they are done with that route, so a line left drawn across
-/// the map afterwards is an answer to a question nobody is asking, and one
-/// with nothing left on screen to say what it is.
+/// which route is being shown and the line shows it. So the row's two gestures
+/// reach the line, and each means what it means everywhere else in the bar.
+///
+/// Closing the row takes the route away for good, and the line goes with it. A
+/// line left drawn afterwards is an answer to a question nobody is asking, and
+/// one with nothing left on screen to say what it is.
+///
+/// Turning the row off hides the line and keeps it. That is what a filter
+/// turned off is: something to come back to. The route it names is still the
+/// route they plotted, so the line waits rather than being worked out again,
+/// and the row is still there to turn back on.
 ///
 /// Each line is weighed against the filters by which route it is, rather than
-/// every line going the moment no route at all is held. Several stand at once
-/// and they are closed one at a time.
-///
-/// Presence rather than whether it is being asked. A filter turned off is one
-/// the user means to come back to, and the route it names is still the route
-/// they plotted.
+/// every line answering to whether any route at all is held. Several stand at
+/// once and they are turned off one at a time.
 fn follow_filters(
     filters: Res<Filters>,
-    lines: Query<(Entity, &Route)>,
+    mut lines: Query<(Entity, &Route, &mut Visibility)>,
     mut commands: Commands,
 ) {
-    for (entity, line) in &lines {
-        if !asked(&filters, &line.0) {
-            commands.entity(entity).despawn();
+    for (entity, line, mut visibility) in &mut lines {
+        match asked(&filters, &line.0) {
+            None => commands.entity(entity).despawn(),
+            Some(enabled) => {
+                visibility.set_if_neq(if enabled {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                });
+            }
         }
     }
 }
 
-/// Whether `route` is among the filters, turned on or not
-fn asked(filters: &Filters, route: &Filter) -> bool {
-    filters.iter().any(|active| active.filter == *route)
+/// Whether `route` is among the filters, and whether it is turned on
+///
+/// Nothing at all where no row names it, which is a route that was closed.
+/// That is the difference the line answers with two different things: a row
+/// turned off still names its route.
+fn asked(filters: &Filters, route: &Filter) -> Option<bool> {
+    filters
+        .iter()
+        .find(|active| active.filter == *route)
+        .map(|active| active.enabled)
 }
 
 /// The route the user picked out of the ones on screen, if they picked one
@@ -189,7 +206,13 @@ pub struct Selected(pub Option<Filter>);
 /// nothing on screen standing for it, and nothing left to hand the emphasis
 /// back to.
 ///
-/// Nothing where no route is held at all, there being nothing to be active.
+/// Only among the routes being shown. A row turned off takes its line off the
+/// map, and a route nobody can see cannot be the one in front: the rest would
+/// be held back for it and the map would have every route drawn faintly and
+/// none of them picked out.
+///
+/// Nothing where no route is being shown at all, there being nothing to be
+/// active.
 fn active<'a>(
     filters: &'a Filters,
     selected: &'a Option<Filter>,
@@ -197,6 +220,7 @@ fn active<'a>(
     let held = || {
         filters
             .iter()
+            .filter(|active| active.enabled)
             .map(|active| &active.filter)
             .filter(|filter| matches!(filter, Filter::Route { .. }))
     };
@@ -292,13 +316,23 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(filters);
         app.add_systems(Update, follow_filters);
-        let line = app.world_mut().spawn(Route(drawing)).id();
+        let line = line_for(&mut app, drawing);
         (app, line)
     }
 
-    /// Whether the line is still drawn
+    /// A drawn line for `route`, as `spawn_route` leaves one
+    fn line_for(app: &mut App, route: Filter) -> Entity {
+        app.world_mut().spawn((Route(route), Visibility::default())).id()
+    }
+
+    /// Whether the line is still held, shown or hidden
     fn drawn(app: &App, line: Entity) -> bool {
         app.world().get_entity(line).is_ok()
+    }
+
+    /// Whether the line is on screen
+    fn shown(app: &App, line: Entity) -> bool {
+        app.world().get::<Visibility>(line) == Some(&Visibility::Visible)
     }
 
     /// The spyglass a route centered on `middle` and reaching `extent` leaves
@@ -414,9 +448,12 @@ mod tests {
         assert!(!drawn(&app, line));
     }
 
-    /// A filter turned off is one to come back to, and keeps its line
+    /// Turning a route's row off takes its line off the map
+    ///
+    /// The row is the control that says whether that route is being shown, as
+    /// it is for every other filter, so it reaches the line the row is about.
     #[test]
-    fn a_route_turned_off_keeps_its_line() {
+    fn a_route_turned_off_is_taken_off_the_map() {
         let mut filters = Filters::default();
         filters.add(asking(&[1, 2]));
         filters.toggle(0);
@@ -424,7 +461,27 @@ mod tests {
 
         app.update();
 
-        assert!(drawn(&app, line));
+        assert!(!shown(&app, line));
+    }
+
+    /// And keeps it, so turning the row back on draws it again
+    ///
+    /// A filter turned off is one the user means to come back to. The route
+    /// it names is still the route they plotted, so the line waits rather than
+    /// having to be worked out a second time.
+    #[test]
+    fn a_route_turned_off_and_back_on_is_drawn_again() {
+        let mut filters = Filters::default();
+        filters.add(asking(&[1, 2]));
+        filters.toggle(0);
+        let (mut app, line) = map(filters, asking(&[1, 2]));
+        app.update();
+        assert!(drawn(&app, line), "the line was not kept to come back to");
+
+        app.world_mut().resource_mut::<Filters>().toggle(0);
+        app.update();
+
+        assert!(shown(&app, line));
     }
 
     /// Filters of another kind say nothing about a route's line
@@ -489,6 +546,39 @@ mod tests {
         let filters = holding(std::slice::from_ref(&held));
 
         assert_eq!(active(&filters, &Some(closed)), Some(&held));
+    }
+
+    /// A route turned off is not the one put in front
+    ///
+    /// Its line is off the map, so holding the rest back for it would leave
+    /// every route drawn faintly and none of them picked out.
+    #[test]
+    fn a_route_turned_off_is_not_the_active_one() {
+        let (older, newest) = (asking(&[1, 2]), asking(&[8, 9]));
+        let mut filters = holding(&[older.clone(), newest]);
+        // The last plotted, which is the one it would otherwise fall to.
+        filters.toggle(1);
+
+        assert_eq!(active(&filters, &None), Some(&older));
+    }
+
+    /// Nor when it was the one picked out
+    #[test]
+    fn a_route_picked_out_and_turned_off_hands_it_back() {
+        let (held, hidden) = (asking(&[1, 2]), asking(&[8, 9]));
+        let mut filters = holding(&[held.clone(), hidden.clone()]);
+        filters.toggle(1);
+
+        assert_eq!(active(&filters, &Some(hidden)), Some(&held));
+    }
+
+    /// With every route turned off there is none in front
+    #[test]
+    fn every_route_turned_off_leaves_none_active() {
+        let mut filters = holding(&[asking(&[1, 2]), asking(&[8, 9])]);
+        filters.toggle_all();
+
+        assert_eq!(active(&filters, &None), None);
     }
 
     /// A faction is never the active route
@@ -557,7 +647,7 @@ mod tests {
         filters.add(closed.clone());
 
         let (mut app, first) = map(filters, kept);
-        let second = app.world_mut().spawn(Route(closed)).id();
+        let second = line_for(&mut app, closed);
         app.update();
         assert!(drawn(&app, first) && drawn(&app, second));
 

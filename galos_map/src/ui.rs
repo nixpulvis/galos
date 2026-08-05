@@ -21,7 +21,6 @@ use crate::systems::filter::{
 };
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
-use crate::systems::route::Plotted;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{SELECTION, Selection};
 use crate::systems::spawn::{ColorBy, ShowNames};
@@ -39,13 +38,8 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<SettingsOpen>();
     app.init_resource::<PressAnswered>();
     app.init_resource::<BarFields>();
-    // Before the bar is drawn, so that a route landing this frame is a form
-    // already folded away by the time anything is painted. The lettering
-    // leads, being what everything after it is drawn in.
-    app.add_systems(
-        EguiPrimaryContextPass,
-        (lettering, folded, chrome).chain(),
-    );
+    // The lettering leads, being what everything after it is drawn in.
+    app.add_systems(EguiPrimaryContextPass, (lettering, chrome).chain());
 }
 
 /// Set every style the chrome is drawn in
@@ -308,9 +302,8 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
 /// itself owns. The filters are drawn between them and keep their own in
 /// [`FilterBar`], so that nothing about a filter is reachable from here.
 ///
-/// Held apart from the system that draws the bar, so that what the map does
-/// can fold the form away: [`folded`] answers a route landing, and a route
-/// lands frames after the button that asked for it was let go of.
+/// A resource rather than a local, so that what is typed outlives any one
+/// pass over the bar and can be read from outside the system that draws it.
 #[derive(Resource, Default)]
 pub struct BarFields {
     /// The system named in the box the bar leads with
@@ -385,22 +378,6 @@ pub struct FilterBar<'w, 's> {
     asking: Res<'w, Resolving>,
     /// How faintly what they exclude is drawn
     dim: ResMut<'w, DimTo>,
-}
-
-/// Fold the form away as a route lands
-///
-/// A route on the map is the answer the form was filled in for, and a form
-/// left standing over it is a form covering what it was asked for. So the
-/// route puts the form away itself, rather than waiting for a press somewhere
-/// off it.
-///
-/// Only a route that landed. One that came back with nothing has something to
-/// say about it, and where that is said is the form, so the form stays.
-fn folded(mut plotted: MessageReader<Plotted>, mut search: ResMut<BarFields>) {
-    if !plotted.is_empty() {
-        plotted.clear();
-        search.expanded = false;
-    }
 }
 
 pub fn chrome(
@@ -3296,43 +3273,6 @@ mod tests {
         // and egui rounds where an area is put onto the pixel grid.
         let off = (at.center().y - middle).abs();
         assert!(off <= 0.5, "{off} off the {middle} it was given");
-    }
-
-    /// Whether the form is still out after `landed` routes have come in
-    ///
-    /// Left out to begin with, since a form already folded away says nothing
-    /// about what folding it away takes.
-    fn out_after(landed: usize) -> bool {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.add_message::<Plotted>();
-        app.insert_resource(BarFields { expanded: true, ..default() });
-        app.add_systems(Update, folded);
-
-        for _ in 0..landed {
-            app.world_mut().write_message(Plotted {
-                label: "A -> B".to_owned(),
-                systems: vec![1, 2],
-                middle: DVec3::ZERO,
-                extent: 10.,
-                range: "10".to_owned(),
-            });
-        }
-        app.update();
-
-        app.world().resource::<BarFields>().expanded
-    }
-
-    /// A route landing folds the form away
-    #[test]
-    fn a_route_drawn_puts_the_form_away() {
-        assert!(!out_after(1));
-    }
-
-    /// And nothing landing leaves it where it was
-    #[test]
-    fn a_form_with_no_route_to_show_stays_out() {
-        assert!(out_after(0));
     }
 
     /// The instrument itself sees a clash when there is one
