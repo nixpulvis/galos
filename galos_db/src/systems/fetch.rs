@@ -1,5 +1,5 @@
 use super::System;
-use crate::{Database, Error};
+use crate::{Database, Error, escaped};
 use elite_journal::prelude::*;
 use geozero::wkb;
 use std::collections::HashMap;
@@ -659,48 +659,5 @@ impl System {
                 updated_by: row.updated_by,
             })
             .collect())
-    }
-}
-
-/// What the user typed, as a `LIKE` pattern matching those letters
-///
-/// `%` and `_` mean something to `LIKE` and nothing to whoever typed them, so
-/// they are held out at the pattern's own escape character. The escape itself
-/// goes first, or escaping the other two would go on to be read as an escape
-/// in its own right.
-fn escaped(query: &str) -> String {
-    query.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A name with nothing special in it is left as it is
-    #[test]
-    fn a_plain_name_is_left_alone() {
-        assert_eq!(escaped("Col 285 Sector"), "Col 285 Sector");
-    }
-
-    /// The two characters `LIKE` reads are held out
-    ///
-    /// A user typing either means the character. Left as they are, `%` would
-    /// match the rest of every name on record and `_` any character at all,
-    /// so a search for a literal one would answer with systems that have
-    /// nothing to do with it.
-    #[test]
-    fn the_wildcards_are_held_out() {
-        assert_eq!(escaped("100%"), r"100\%");
-        assert_eq!(escaped("a_b"), r"a\_b");
-    }
-
-    /// The escape character is held out first
-    ///
-    /// Or the backslash put in front of a `%` would itself be escaped
-    /// afterwards, leaving `\\%`: a literal backslash followed by a wildcard,
-    /// which is the wildcard the escaping was there to take away.
-    #[test]
-    fn the_escape_is_held_out_before_what_it_escapes() {
-        assert_eq!(escaped(r"a\%b"), r"a\\\%b");
     }
 }

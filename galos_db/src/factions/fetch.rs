@@ -1,5 +1,5 @@
 use super::{Faction, SystemFaction};
-use crate::{Database, Error};
+use crate::{Database, Error, escaped};
 use elite_journal::{faction::State as JournalState, prelude::*};
 
 impl Faction {
@@ -71,9 +71,10 @@ impl Faction {
     ///
     /// `query` is read as letters rather than as a pattern, since a name is a
     /// thing the user is halfway through typing and `%` and `_` in it are
-    /// characters they typed. That is the difference between this and
-    /// [`Faction::fetch_like_name`], which takes a pattern whole from whoever
-    /// wrote it, and answers with however many match.
+    /// characters they typed, which [`escaped`] takes them at their word for.
+    /// That is the difference between this and [`Faction::fetch_like_name`],
+    /// which takes a pattern whole from whoever wrote it, and answers with
+    /// however many match.
     ///
     /// Ordered so that the `limit` keeps the rows worth keeping: the name
     /// spelled out in full, then names that start with the query, then the
@@ -88,10 +89,7 @@ impl Faction {
         query: &str,
         limit: i64,
     ) -> Result<Vec<Self>, Error> {
-        let query = query
-            .replace('\\', r"\\")
-            .replace('%', r"\%")
-            .replace('_', r"\_");
+        let query = escaped(query);
         let rows = sqlx::query!(
             r#"
             SELECT id, name
