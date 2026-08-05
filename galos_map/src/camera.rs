@@ -393,6 +393,7 @@ pub fn orbit_camera(
     scroll: Res<AccumulatedMouseScroll>,
     over_ui: Res<PointerOverUi>,
     time: Res<Time<Real>>,
+    spyglass: Res<Spyglass>,
     grids: Query<&Grid, With<BigSpace>>,
     mut cameras: Query<(&mut OrbitCamera, &mut CellCoord, &mut Transform)>,
 ) {
@@ -427,7 +428,13 @@ pub fn orbit_camera(
             MouseScrollUnit::Line => scroll.delta.y,
             MouseScrollUnit::Pixel => scroll.delta.y / PIXELS_PER_LINE,
         };
-        if lines != 0. {
+        // Held to the spyglass, the camera has nowhere of its own to stand
+        // and a scroll has nothing to say about where it goes. Taking one
+        // anyway moves it for a frame, until `zoom_with_spyglass` writes the
+        // reach back over it, which reads as a zoom that keeps snapping back.
+        // The reach is what to move, and the radius on the settings pane is
+        // where it is moved.
+        if lines != 0. && !spyglass.locks_camera() {
             let zoom = -lines * ZOOM_RATE * orbit.zoom_sensitivity;
             orbit.target_radius = (orbit.target_radius * zoom.exp())
                 .clamp(MIN_RADIUS, MAX_RADIUS);
@@ -496,6 +503,93 @@ pub fn orbit_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::input::mouse::AccumulatedMouseScroll;
+
+    /// A world holding a grid, a camera `back` light years out, and one
+    /// scroll of the wheel waiting to be read
+    ///
+    /// Everything [`orbit_camera`] reads and nothing else. The pointer is out
+    /// over the map rather than over the settings, since a scroll that lands
+    /// on the pane is already ignored for a reason of its own.
+    fn scrolled(back: f32, spyglass: Spyglass) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(spyglass);
+        app.insert_resource(PointerOverUi(false));
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.init_resource::<AccumulatedMouseMotion>();
+        app.insert_resource(AccumulatedMouseScroll {
+            unit: MouseScrollUnit::Line,
+            delta: Vec2::new(0., -1.),
+        });
+        app.world_mut().spawn((BigSpace::default(), Grid::new(1., 0.1)));
+        app.world_mut().spawn((
+            OrbitCamera { radius: back, target_radius: back, ..default() },
+            CellCoord::default(),
+            Transform::default(),
+        ));
+        app.add_systems(Update, orbit_camera);
+        app
+    }
+
+    /// How far back the camera is asked to stand
+    fn asked(app: &mut App) -> f32 {
+        app.world_mut()
+            .query::<&OrbitCamera>()
+            .single(app.world())
+            .unwrap()
+            .target_radius
+    }
+
+    /// A spyglass reaching ten light years, set however the test wants
+    fn spyglass(lock_camera: bool, follow_camera: bool) -> Spyglass {
+        Spyglass {
+            radius: Spyglass::OPENING,
+            fetch: false,
+            disabled: false,
+            lock_camera,
+            follow_camera,
+        }
+    }
+
+    /// Scrolling pulls the camera back
+    #[test]
+    fn the_wheel_zooms_the_camera() {
+        let mut app = scrolled(100., spyglass(false, false));
+
+        app.update();
+
+        assert!(asked(&mut app) > 100., "stayed at {}", asked(&mut app));
+    }
+
+    /// Locked to the spyglass, the wheel does nothing at all
+    ///
+    /// Not even for the one frame it would take `zoom_with_spyglass` to write
+    /// the reach back over it. A camera that lurches and returns on every
+    /// notch of the wheel is worse than one that holds still, and holding
+    /// still is what being locked to the reach means.
+    #[test]
+    fn a_locked_camera_does_not_zoom() {
+        let mut app = scrolled(100., spyglass(true, false));
+
+        app.update();
+
+        assert_eq!(asked(&mut app), 100.);
+    }
+
+    /// Locked while the camera is what sets the reach, the wheel works
+    ///
+    /// Nothing writes the camera's distance in that case, so there is nothing
+    /// for a zoom to be undone by, and a wheel that had stopped working would
+    /// be a setting doing something it says it is not.
+    #[test]
+    fn the_wheel_zooms_a_camera_that_sets_the_reach() {
+        let mut app = scrolled(100., spyglass(true, true));
+
+        app.update();
+
+        assert!(asked(&mut app) > 100., "stayed at {}", asked(&mut app));
+    }
 
     /// Where [`approach`] lands after `steps` frames of `dt` seconds each
     fn travel(smoothness: f32, dt: f32, steps: usize) -> f64 {

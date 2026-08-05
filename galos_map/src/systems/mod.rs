@@ -174,6 +174,20 @@ impl Spyglass {
     pub fn reaches(&self, center: DVec3, position: DVec3) -> bool {
         self.disabled || center.distance(position) <= self.radius as f64
     }
+
+    /// Whether the camera stands wherever the reach puts it
+    ///
+    /// Locking holds the camera only while the camera is not itself what sets
+    /// the reach, the two being the same link read in opposite directions.
+    ///
+    /// Asked by both ends of that: by what writes the camera's distance from
+    /// the reach, and by what would otherwise let a scroll write it too. A
+    /// zoom that is going to be written back over on the next frame is a
+    /// camera that lurches and returns, so while this holds there is no zoom
+    /// at all.
+    pub fn locks_camera(&self) -> bool {
+        self.lock_camera && !self.follow_camera
+    }
 }
 
 /// How much of the sky is in reach, and how much of that the filters admit
@@ -258,7 +272,7 @@ pub fn zoom_with_spyglass(
     spyglass: Res<Spyglass>,
     mut camera: Query<&mut OrbitCamera>,
 ) {
-    if spyglass.lock_camera && !spyglass.follow_camera {
+    if spyglass.locks_camera() {
         if let Ok(mut camera) = camera.single_mut() {
             camera.target_radius = spyglass.radius * 3.;
         }
