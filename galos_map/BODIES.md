@@ -263,41 +263,83 @@ Galaxy         BigSpace, Grid(2^53 m)
 
 ## Stage 5 — Arriving
 
-One notion, in `scale.rs` beside the sizing already there:
+**The floor goes, and the system's own size takes its place.**
+
+A shell is drawn at `4e-4·d + 8.5e-2` light years today: an angular term, which
+holds it to a constant size on screen however far off it is, and a floor. The
+floor is there because a system used to be one sphere with nothing inside it —
+the angular term falls to nothing as the camera arrives, and without a minimum
+there would be nothing left to look at. It has a consequence nobody wanted: the
+sphere never shrinks below `8.5e-2` ly, so from that distance inward the camera
+is inside it, and zooming into a system is not awkward but impossible.
+
+So the floor was always standing in for the size of the system, back when that
+was not known. Now it is, and it can say so:
 
 ```rust
-/// How large something of `size` looks from `distance` away, in radians
-fn apparent(size: f64, distance: f64) -> f64;
+/// How large a system is drawn, in metres
+///
+/// Two answers, and the larger of them wins. A system drawn at its true size
+/// is invisible from the next one over, so far off it is drawn at whatever
+/// angle keeps it on screen; and that angle shrinks as the camera closes,
+/// until it passes the size the system actually is and there is no longer any
+/// reason to pretend.
+fn shell(extent: f64, distance: f64) -> f64;   // ANGULAR * distance ⊕ extent
 ```
 
-**It is asked about the shell's own marker size, not about the system's
-extent.** `closeness` ramps on `m(d) = marker(d) / d`, the angle subtended by
-the very sphere that is about to swallow the camera, from `RESOLVING` (`0.02`
-rad ≈ 1.1°, about 4.3 ly out) to `RESOLVED` (`0.5` rad, about 0.17 ly).
+A soft maximum rather than a bare one — `(a^n + b^n)^(1/n)` with a small `n` —
+so the handover is a knee rather than a corner. `n → ∞` is `max`, and if the
+corner turns out not to show, `max` is the simpler thing to keep.
 
-Keying it on the extent instead is wrong, and wrong in a way that hides on the
-system anyone would test with. The marker's floor is `8.5e-2` ly, so for a
-compact system — a thousand light seconds, which describes a great many of them
-— a ramp starting at `apparent(extent, d) = 5e-3` begins when the camera is
-already **thirteen times inside** an opaque sphere that has not started to
-shrink, with nothing spawned in it. Sol escapes only because its extent is large
-enough to fire the gate further out. Keyed on the marker, the camera is still
-358× outside the true surface for Sol and 5,400× for a compact system when the
-ramp finishes, whatever the system turns out to hold.
+**This is what the sizing wanted all along**, and it costs nothing to reason
+about. The camera is outside the shell exactly while `d > extent`, and inside
+exactly when `d < extent` — which is what being inside a system means. There is
+no distance at which it is trapped in a sphere larger than the thing that sphere
+stands for, for any system, with no threshold deciding it.
 
-It also removes a chicken-and-egg: the marker is known without fetching
-anything, so there is no need for a **presumed extent** to gate the fetch on.
-That construct is gone.
+It also takes the constants with it. There is no ramp, so nothing to name its
+two ends; and no **presumed extent**, since nothing has to guess a system's size
+in order to decide anything. `closeness` is just `extent / shell` — nothing far
+away, one once the extent has taken over — and the same number drives both the
+size and the material.
+
+Three distances follow from it, each meaning something:
+
+| | Sol (`extent` 0.00048 ly) | a compact system (0.000032 ly) |
+|---|---|---|
+| contents fetched | ~1 ly | ~1 ly |
+| handover, `extent / ANGULAR` | 1.19 ly | 0.079 ly |
+| camera passes the surface, `extent` | 0.00048 ly | 0.000032 ly |
+
+Two things to watch, both consequences of the floor going rather than of
+anything added:
+
+- **A system with nothing on record has no extent, so its shell shrinks to a
+  point and goes.** That is honest — it says what is known — but it is a visible
+  change in behaviour and the alternative, a small floor of its own, is one
+  constant away.
+- **`ANGULAR` becomes load-bearing.** At `4e-4` it is about `0.023°`, half a
+  pixel at 1080p, and with the floor gone it is the only thing keeping a distant
+  system on screen; bloom is carrying it today. Expect to raise it once it can
+  be seen.
 
 It answers four things:
 
-1. **Whether to fetch and spawn a system's contents.** As soon as `closeness`
-   leaves zero. Dropped again below a slightly lower `m` than it started at, the
-   gap being hysteresis so a system on the line does not thrash. At the ramp's
-   start about one system is in reach, so nothing needs a budget.
-2. **When a system becomes a grid, and when the camera descends into it.** The
-   same threshold, so these are one decision rather than three that can
-   disagree.
+1. **Whether to fetch and spawn a system's contents.** In absolute light years,
+   about one, with hysteresis — not from apparent size. Whether to load a
+   system's data is a question about proximity and budget rather than about how
+   large it looks, and it has to be answerable before anything is known about
+   the system. About one system stands within that, so nothing needs a budget.
+   It is also roughly ten times the handover distance for a typical system,
+   which is the lead time the fetch wants to have landed by.
+2. **When a system becomes a grid, and when the camera descends into it.** At
+   the handover — `extent / ANGULAR`, where the shell stops standing for the
+   system and starts being it. One moment for both, so the two cannot disagree,
+   and it is the moment the map itself already marks.
+
+   Galaxy-grid precision there is ~270,000 km against a distance of `0.079` ly
+   for even a compact system, five orders below, so the descent has room either
+   side and does not have to be exact.
 
    **Rendering is not affected by where the camera lives.** big_space composes
    every grid's transform relative to the floating origin, so a shell in the
@@ -320,18 +362,18 @@ It answers four things:
    since flying to a body targets that body's exact local position.
 
    Still the fiddliest part of the change, and confined to one component.
-3. **How large to draw the shell.** Between the visibility law it uses today,
-   `4e-4·d + 8.5e-2` — already *angle × distance + floor* — and the system's true
-   extent. Blended **geometrically**, `marker^(1-c) · extent^c`, not by a lerp:
-   the ends are orders of magnitude apart, so a linear blend would hang near the
-   marker for the whole ramp and then plunge.
-4. **How solidly to draw it.** The same `closeness` on its material — bright and
-   emissive as a marker, faint and translucent as a border being flown through.
-   One number for both, so it cannot be the wrong size for how solid it looks.
+3. **How large to draw the shell.** `shell(extent, d)` above — the angular term
+   until it falls past the extent, the extent after.
+4. **How solidly to draw it.** `closeness = extent / shell` on its material —
+   bright and emissive while it stands for a system, faint and translucent once
+   it is one, a border about to be flown through. The same number as the size,
+   so it cannot be the wrong size for how solid it looks.
 
-Later, `apparent_brightness(luminosity, distance)` sits beside `apparent` and
-gates stars the same way. `stars.absolute_magnitude` and `stars.luminosity` are
-already in the schema waiting for it.
+Later, `apparent_brightness(luminosity, distance)` sits beside this and decides
+which stars are too faint to draw at all. `stars.absolute_magnitude` and
+`stars.luminosity` are already in the schema waiting for it, and it is the same
+shape of question: what a thing looks like from here, rather than how far away
+it is.
 
 **Drop the `View::Bodies` TODO** at `scale.rs:60` rather than filling it in —
 the point of all this is that there is no mode to switch to. Say so in the doc,
@@ -340,31 +382,49 @@ since it is a promise being deliberately broken.
 **Tests:** `a_system_too_small_to_see_keeps_its_contents_to_itself`,
 `flying_in_brings_a_systems_bodies_out`,
 `a_system_on_the_threshold_does_not_flicker`,
-`the_camera_descends_when_the_contents_arrive`,
-`the_shell_shrinks_to_the_system_as_it_is_approached`,
-`the_shell_is_never_smaller_than_what_it_encloses`,
+`the_camera_descends_where_the_shell_becomes_the_system`,
+`the_shell_holds_one_angle_until_it_meets_the_system`,
+`the_shell_stops_shrinking_at_the_size_of_what_it_encloses`,
 `the_shell_thins_out_as_it_is_flown_into`,
-`the_camera_never_reaches_a_shell_that_is_still_a_marker` — the last is the one
-that would have caught keying the ramp on the extent, and it has to be written
-over a *compact* system, since Sol passes either way.
+`a_system_with_nothing_on_record_dwindles_to_a_point`, and the invariant the
+whole thing rests on —
+`the_camera_is_outside_the_shell_until_it_is_inside_the_system`, swept over
+distances spanning the range and over extents from a compact system to the
+widest on record. That last one has to be written over a *compact* system as
+well as over Sol: a floor-shaped mistake passes on Sol and fails on everything
+smaller, which is how the first one survived being designed.
 
-**Walked end to end**, focus following the zoom, `near = radius × 1e-4`:
+**Walked end to end**, focus following the zoom, `near = radius × 1e-4`,
+`shell = 4e-4·d ⊕ extent`, Sol's extent taken as Neptune's orbit, `4.5e12` m:
 
-| focus | camera radius | near | grid | on screen |
-|---|---|---|---|---|
-| galaxy | `4.7e20` m (50,000 ly) | `4.7e16` m | galaxy | shells as points, `4e-4` rad |
-| Sol | `2.8e17` m (30 ly) | `2.8e13` m | galaxy | shell 0.097 ly, `3.2e-3` rad |
-| Sol | `4.1e16` m (4.3 ly) | `4.1e12` m | → system | ramp starts, contents arrive, camera descends |
-| Sol | `1.6e15` m (0.17 ly) | `1.6e11` m | system | ramp ends, shell at `4.5e12` m and translucent |
-| Sol | `4.5e12` m (15,000 ls) | `4.5e8` m | system | through the shell surface |
-| Earth | `5e7` m (50,000 km) | `5e3` m | system | Earth a 7.3° disc |
-| Luna | `5e6` m (5,000 km) | `500` m | system | Luna 20°, Earth 0.95°, Sol `4.6e-3` rad |
+| focus | camera radius | near | grid | shell | on screen |
+|---|---|---|---|---|---|
+| galaxy | `4.7e20` m (50,000 ly) | `4.7e16` m | galaxy | `1.9e17` m (20 ly) | a point, `4e-4` rad |
+| Sol | `2.8e17` m (30 ly) | `2.8e13` m | galaxy | `1.1e14` m (0.012 ly) | a point, `4e-4` rad |
+| Sol | `4.7e16` m (5 ly) | `4.7e12` m | galaxy | `1.9e13` m | contents fetched |
+| Sol | `1.1e16` m (1.19 ly) | `1.1e12` m | → system | `4.5e12` m | handover: the shell is the system |
+| Sol | `4.5e12` m (15,000 ls) | `4.5e8` m | system | `4.5e12` m | through the surface, `1` rad |
+| Earth | `5e7` m (50,000 km) | `5e3` m | system | — | Earth a 7.3° disc |
+| Luna | `5e6` m (5,000 km) | `500` m | system | — | Luna 20°, Earth 0.95° |
 
 Fourteen orders of magnitude of camera radius, one continuous zoom, one grid
-handover. At the far end the camera's offset is good to 30 nm while Luna's mesh,
-`f32` vertices scaled to `1.7e6` m, is good to about 0.1 m — the mesh becomes
-the limit before the grid does, which is the argument for chunked terrain when
+handover. The shell holds `4e-4` rad the whole way down until it meets Sol's
+own size, then holds that and grows on screen as it is approached — which is
+what a thing does when you fly at it.
+
+At the far end the camera's offset is good to 30 nm while Luna's mesh, `f32`
+vertices scaled to `1.7e6` m, is good to about 0.1 m — the mesh becomes the
+limit before the grid does, which is the argument for chunked terrain when
 surfaces arrive rather than for finer cells.
+
+**Where the fetch distance has to sit.** The handover is at `extent / ANGULAR`,
+which is `0.079` ly for a compact system and `1.19` ly for Sol — so a few light
+years covers both with room. It does not cover everything: a system with bodies
+out at 700,000 light seconds hands over at 55 ly, far outside any sane fetch
+distance. Those take their true size when their contents land rather than at the
+handover, and grow in one step. Honest — a system is drawn at the size that
+keeps it visible until the map has asked what size it is — but it is a visible
+pop on the largest systems, and worth looking at before deciding it is fine.
 
 ---
 
