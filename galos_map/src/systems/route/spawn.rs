@@ -1,9 +1,23 @@
 use super::{LineStrip, Route, system_to_vec};
 use crate::space::Galaxy;
+use crate::systems::filter::Filter;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
 use galos_db::systems::System as DbSystem;
+
+/// What a route's line is painted, at `strength` of the full
+///
+/// White, so a route reads against a sky of coloured stars as a thing drawn
+/// over it rather than as more of it, and faint even at full strength: the
+/// line crosses systems the user is meant to go on seeing.
+///
+/// The colour is left alone and the alpha carries the strength, so that a
+/// route held behind another reads as further off rather than as some other
+/// kind of route.
+pub fn line_color(strength: f32) -> Color {
+    Color::srgba(1., 1., 1., 0.25 * strength)
+}
 
 /// Where a route sits, and how far it reaches from there
 ///
@@ -27,10 +41,23 @@ pub fn framing(places: &[DVec3]) -> Option<(DVec3, f32)> {
     Some((middle, extent as f32))
 }
 
+/// Draw the line for one route
+///
+/// `route` is which route this is, and the line carries it so that closing
+/// that route's row in the bar takes this line and no other.
+///
+/// Whatever is already drawn is left alone. Several routes stand at once, and
+/// a second plotted is asking to see both; the one already there goes when its
+/// own row is closed. A route drawn a second time is the same filter, so
+/// [`super::follow_filters`] has nothing to say about it and the two lines
+/// would sit on top of each other. Asking whether it is already drawn is what
+/// keeps that from happening.
 // TODO: Save another Local<Option<Handle<Mesh>>>?
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_route(
+    route: &Filter,
     systems: &[DbSystem],
-    route_query: &Query<Entity, With<Route>>,
+    drawn: &Query<(Entity, &Route)>,
     galaxy: &Res<Galaxy>,
     grid: &Grid,
     commands: &mut Commands,
@@ -48,13 +75,11 @@ pub fn spawn_route(
         return;
     }
 
-    // Asked before the line already drawn is taken away, so that a plot that
-    // came back with nothing leaves the last one whole. Taken away first, a
-    // route that failed would clear the line and leave the filter naming it
-    // standing in the bar, dimming the map down to a route with nothing drawn
-    // on it.
-    for entity in route_query.iter() {
-        commands.entity(entity).despawn();
+    // The same route plotted again is the line already drawn. Nothing here
+    // takes lines away, so a second would stand exactly over the first and
+    // only one of them would answer to the row.
+    if drawn.iter().any(|(_, line)| line.0 == *route) {
+        return;
     }
 
     // Mesh vertices are floats, with no cell to lean on, so a route drawn in
@@ -69,14 +94,18 @@ pub fn spawn_route(
 
     commands.spawn((
         Mesh3d(meshes.add(LineStrip { points })),
+        // Its own material rather than one shared between the lines, so that
+        // holding one route behind another is a write to that route's colour.
+        // Drawn as the active one, being the route just plotted;
+        // [`super::emphasise`] settles it from there.
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(1., 1., 1., 0.25),
+            base_color: line_color(super::strength(true)),
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
         cell,
         Transform::from_translation(translation),
-        Route,
+        Route(route.clone()),
         ChildOf(galaxy.0),
     ));
 }

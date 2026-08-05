@@ -320,7 +320,7 @@ impl LastClick {
 /// resulting star systems
 pub fn spawn(
     systems_query: Query<(Entity, &System)>,
-    route_query: Query<Entity, With<Route>>,
+    route_query: Query<(Entity, &Route)>,
     galaxy: Res<Galaxy>,
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
@@ -353,61 +353,40 @@ pub fn spawn(
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
         if let Some(new_systems) = status {
-            // Said rather than acted on. What a route does to the map is
-            // `route::plotted`'s business; this is the one place its systems
-            // are in hand, so it is the one place that can say what they are.
-            // The range comes off the key the route was fetched under, that
-            // being where what was asked for is still written down. The rows
-            // that came back say which systems the ship passes through and
-            // nothing about how far it can jump between them.
-            if let FetchIndex::Route(_, _, range) = index
-                && let (Some(first), Some(last)) =
-                    (new_systems.first(), new_systems.last())
-                && new_systems.len() >= 2
-            {
-                let places: Vec<_> =
-                    new_systems.iter().filter_map(system_to_vec).collect();
-                if let Some((middle, extent)) = framing(&places) {
-                    // In the order they are travelled, which is the order
-                    // the route came back in and the order its panel lists.
-                    let systems = new_systems
-                        .iter()
-                        .map(|system| system.address)
-                        .collect();
-                    plotted.write(Plotted {
-                        label: format!("{} -> {}", first.name, last.name),
-                        systems,
-                        middle,
-                        extent,
-                        range: range.clone(),
-                    });
+            if let FetchIndex::Route(start, end, range) = index {
+                // A route is a line between systems, so one system is
+                // no route. Coming back with nothing is how the
+                // database says it could not get from one end to the
+                // other in jumps that long, and nothing drawn is the
+                // same nothing as a route still being worked out.
+                //
+                // Only ever an answer to a route still being waited on.
+                // A name that resolved to nothing is already said, and
+                // said more exactly than this could: the route was
+                // fetched anyway, and it comes back empty for the same
+                // reason, so without this the better answer is talked
+                // over a moment after it arrives.
+                if *plot == Plot::Working {
+                    *plot = if new_systems.len() < 2 {
+                        Plot::Trouble(format!(
+                            "No route from {start} to {end} at {range} Ly"
+                        ))
+                    } else {
+                        Plot::Nothing
+                    };
                 }
-            }
 
-            match index {
-                FetchIndex::Route(start, end, range) => {
-                    // A route is a line between systems, so one system is
-                    // no route. Coming back with nothing is how the
-                    // database says it could not get from one end to the
-                    // other in jumps that long, and nothing drawn is the
-                    // same nothing as a route still being worked out.
-                    //
-                    // Only ever an answer to a route still being waited on.
-                    // A name that resolved to nothing is already said, and
-                    // said more exactly than this could: the route was
-                    // fetched anyway, and it comes back empty for the same
-                    // reason, so without this the better answer is talked
-                    // over a moment after it arrives.
-                    if *plot == Plot::Working {
-                        *plot = if new_systems.len() < 2 {
-                            Plot::Trouble(format!(
-                                "No route from {start} to {end} at {range} Ly"
-                            ))
-                        } else {
-                            Plot::Nothing
-                        };
-                    }
+                // Said rather than acted on. What a route does to the map is
+                // `route::plotted`'s business; this is the one place its
+                // systems are in hand, so it is the one place that can say
+                // what they are.
+                //
+                // The line is drawn from the same value, so that what it
+                // carries and what the row in the bar holds are one filter
+                // and closing the row finds the line.
+                if let Some(landed) = plotted_route(&new_systems, range) {
                     spawn_route(
+                        &landed.filter(),
                         &new_systems,
                         &route_query,
                         &galaxy,
@@ -416,8 +395,8 @@ pub fn spawn(
                         &mut mesh_assets,
                         &mut material_assets,
                     );
+                    plotted.write(landed);
                 }
-                _ => {}
             }
 
             // TODO: Pass FetchIndex along. I'd like to have index.marker() or
@@ -449,6 +428,35 @@ pub fn spawn(
     }
 
     // TODO(#43): despawn stuff...
+}
+
+/// What a route that has landed amounts to, if it amounts to a route
+///
+/// Nothing where fewer than two systems came back, a line between one system
+/// being no line, and nothing where none of them has a position on record and
+/// there is nowhere to put it.
+///
+/// `range` comes off the key the route was fetched under, that being where
+/// what the user asked for is still written down. The rows that came back say
+/// which systems the ship passes through and nothing about how far it reaches.
+fn plotted_route(systems: &[DbSystem], range: &str) -> Option<Plotted> {
+    let (first, last) = (systems.first()?, systems.last()?);
+    if systems.len() < 2 {
+        return None;
+    }
+
+    let places: Vec<_> = systems.iter().filter_map(system_to_vec).collect();
+    let (middle, extent) = framing(&places)?;
+
+    Some(Plotted {
+        label: format!("{} -> {}", first.name, last.name),
+        // In the order they are travelled, which is the order the route came
+        // back in and the order its panel lists.
+        systems: systems.iter().map(|system| system.address).collect(),
+        middle,
+        extent,
+        range: range.to_owned(),
+    })
 }
 
 /// The rows that arrived, with each system named once

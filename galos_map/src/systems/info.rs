@@ -455,6 +455,7 @@ fn panels(
     names: Res<FactionNames>,
     mut selection: ResMut<Selection>,
     mut filters: ResMut<Filters>,
+    mut selected: ResMut<crate::systems::route::Selected>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
@@ -494,6 +495,10 @@ fn panels(
     let mut picked = None;
     let mut opening = None;
     let mut wanted = None;
+    // Which panel the user pressed, if they pressed one. Asked once for the
+    // whole pass, since a press is one press however many windows are drawn.
+    let pressed = ctx.input(|input| input.pointer.any_pressed());
+    let mut chosen = None;
     for panel in &mut panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
@@ -538,6 +543,17 @@ fn panels(
             if window.inner.is_some() {
                 tallest = tallest.max(window.response.rect.height());
             }
+            // A press landing on a panel is how the user says which of them
+            // they are working with, and egui has already settled which
+            // window that press reached: `contains_pointer` answers for the
+            // one on top, so a panel under another does not take a press
+            // meant for it.
+            if pressed
+                && window.response.contains_pointer()
+                && let Subject::Filter { filter, .. } = &panel.subject
+            {
+                chosen = Some(filter.clone());
+            }
         }
         if !showing {
             shut.push(panel.subject.id());
@@ -562,6 +578,15 @@ fn panels(
     // map holds, so it goes straight in rather than round by `Wanted`.
     if let Some(filter) = wanted {
         filters.add(filter);
+    }
+    // Pressing a route's panel is how the user says which of several drawn
+    // routes they mean, and the map draws that one in front of the rest.
+    // Only a route: the other filters have no line to put forward, and a
+    // press on one of their panels says nothing about which route is which.
+    if let Some(filter) = chosen
+        && filter.range().is_some()
+    {
+        selected.0 = Some(filter);
     }
 
     // Nothing while every panel is rolled up into its title bar, which is

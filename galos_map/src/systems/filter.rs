@@ -357,21 +357,6 @@ impl Filters {
         self.0.push(Active { filter, enabled: true });
     }
 
-    /// Add `filter` in place of whatever else of its kind is being asked
-    ///
-    /// For a kind there can only be one of. The map draws one route at a
-    /// time, replacing the line as each is plotted, so a second route filter
-    /// standing beside the first would go on picking out the systems of a
-    /// route whose line was rubbed out when the next one was plotted.
-    ///
-    /// Factions do not go through here. Several of them at once is the whole
-    /// point of a filter being a filter.
-    pub fn replace(&mut self, filter: Filter) {
-        let kind = std::mem::discriminant(&filter);
-        self.0.retain(|active| std::mem::discriminant(&active.filter) != kind);
-        self.0.push(Active { filter, enabled: true });
-    }
-
     /// Stop asking the filter at `index`
     pub fn remove(&mut self, index: usize) {
         if index < self.0.len() {
@@ -895,32 +880,42 @@ mod tests {
         assert_eq!(gathered(&[1, 2]).hops(), None);
     }
 
-    /// A second route takes the place of the first
+    /// A second route stands beside the first
     ///
-    /// One route is drawn at a time, so two route filters would ask about a
-    /// line that is no longer there and narrow the map to whatever the two
-    /// happened to share.
+    /// Each keeps its own line and its own row, so plotting another is asking
+    /// to see both. What the map is picking out is then either of them, the
+    /// filters adding to each other.
     #[test]
-    fn a_route_replaces_the_route_before_it() {
+    fn a_second_route_stands_beside_the_first() {
         let mut filters = Filters::default();
-        filters.replace(route(&[1, 2]));
-        filters.replace(route(&[8, 9]));
+        filters.add(route(&[1, 2]));
+        filters.add(route(&[8, 9]));
+
+        assert_eq!(filters.iter().count(), 2);
+        assert!(filters.admit(&member(9, &[])));
+        assert!(filters.admit(&member(1, &[])));
+    }
+
+    /// The same route asked for twice is one route
+    ///
+    /// Two rows naming one line would have to be turned off one at a time,
+    /// and there is nothing to see twice.
+    #[test]
+    fn the_same_route_asked_for_twice_is_held_once() {
+        let mut filters = Filters::default();
+        filters.add(route(&[1, 2]));
+        filters.add(route(&[1, 2]));
 
         assert_eq!(filters.iter().count(), 1);
-        assert!(filters.admit(&member(9, &[])));
-        assert!(!filters.admit(&member(1, &[])));
     }
 
     /// And leaves the factions where they are
-    ///
-    /// Several factions at once is the whole point of a filter being a
-    /// filter, so only the kind that replaces itself does.
     #[test]
     fn a_route_leaves_the_factions_alone() {
         let mut filters = Filters::default();
         filters.add(faction(7));
         filters.add(faction(9));
-        filters.replace(route(&[1, 2]));
+        filters.add(route(&[1, 2]));
 
         assert_eq!(filters.iter().count(), 3);
     }
@@ -934,7 +929,7 @@ mod tests {
     fn a_route_and_a_faction_ask_together() {
         let mut filters = Filters::default();
         filters.add(faction(7));
-        filters.replace(route(&[1, 2]));
+        filters.add(route(&[1, 2]));
 
         let mut on_both = member(1, &[7]);
         on_both.factions = vec![7];
