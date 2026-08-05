@@ -228,6 +228,25 @@ the system centre — an honest shortcut, documented where taken.
 `a_body_whose_parent_is_not_on_record_orbits_the_system`,
 `a_moon_is_placed_relative_to_the_planet_it_goes_round`.
 
+### To revisit once there is a multi-star system on screen
+
+The parent that is missing is nearly always a **barycentre**: a journal names
+one in a body's ancestry, `ScanBaryCentre` is saved nowhere (issue #70), so the
+id sits in `parent_id` with no row behind it. Ending the walk there is not one
+shortcut but two, and only one of them is likely right.
+
+- **The root barycentre of a multi-star system** ought to come out correct by
+  accident. That barycentre *is* the middle of the system, so measuring from the
+  centre lands where following it would have.
+- **A barycentre further down** — a close pair that itself goes round something
+  — will not. The pair would be put at the centre rather than out where it
+  belongs, its whole outer orbit dropped.
+
+Neither can be settled without data, so this is written down rather than
+guessed at. What would settle it is one multi-star system drawn: if its stars
+sit sensibly about the middle and a nested pair does not, the reading is right
+and the fix belongs to issue #70 rather than to the placement.
+
 ---
 
 ## Stage 4 — Drawing them
