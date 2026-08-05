@@ -418,6 +418,42 @@ pub fn chrome(
             ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
         }
 
+        // Folded away under what it is about. Everything in here is the
+        // spyglass going about its work rather than a choice about the sky,
+        // and it is reached for once in a session if at all, so it is shut
+        // until it is asked for.
+        ui.add_space(FIELD_GAP);
+        ui.collapsing("Advanced", |ui| {
+            // Fetching first, the reach being of no use until the systems
+            // within it are on the map. Clearing is what to do with them once
+            // they are.
+            //
+            // Named for the halves alone. Standing inside the spyglass's own
+            // section, a name saying so again would be saying it twice.
+            ui.checkbox(&mut knobs.spyglass.fetch, "Fetch");
+            if knobs.spyglass.fetch {
+                // The throttle first, being the wait before asking about
+                // somewhere new, which is what moving the camera does and so
+                // what the map spends its time doing. The poll is the wait
+                // before asking a second time about somewhere it has already
+                // been, which only a map being sat still ever reaches.
+                ui.horizontal(|ui| {
+                    field_name(ui, "Throttle");
+                    ui.add(
+                        egui::DragValue::new(&mut knobs.throttle.0)
+                            .suffix(" ms"),
+                    );
+                });
+                ui.horizontal(|ui| poll_value(ui, &mut knobs.poll.0));
+            }
+            ui.add_space(FIELD_GAP);
+            ui.checkbox(&mut knobs.spyglass.clear, "Clear");
+            ui.add_space(FIELD_GAP);
+            if ui.button("Despawn Systems").clicked() {
+                knobs.despawner.write(Despawn);
+            }
+        });
+
         heading(ui, "View", true);
         // Whether a system is named is a choice about what the map draws, the
         // same as which colour a star comes out and how large it is, so it
@@ -435,13 +471,13 @@ pub fn chrome(
                 );
                 if !knobs.name_radius.follow_spyglass {
                     // A name can only be drawn for a system that is drawn,
-                    // and the spyglass decides that. Overriding it draws
-                    // everything loaded, and then names may be asked for
-                    // beyond its reach.
-                    let ceiling = if knobs.spyglass.disabled {
-                        Spyglass::CEILING
-                    } else {
+                    // and the spyglass decides that. One that is not clearing
+                    // draws everything loaded, and then names may be asked
+                    // for beyond its reach.
+                    let ceiling = if knobs.spyglass.clear {
                         knobs.spyglass.radius
+                    } else {
+                        Spyglass::CEILING
                     };
                     ui.label("Name Radius (Ly)");
                     radius_slider(ui, &mut knobs.name_radius.radius, ceiling);
@@ -505,30 +541,6 @@ pub fn chrome(
         // it gives no other sign of why.
         if filter.dim.0 == 0. {
             ui.label(egui::RichText::new("Not drawn at all").weak());
-        }
-
-        // Last, and folded away. Everything above says what the map looks
-        // like; these say how it goes about it, and are reached for once in a
-        // session if at all.
-        heading(ui, "Advanced", true);
-        // Draw everything loaded, reach or no reach. Down here because what
-        // it shows is whatever the map happens to have fetched, which is a
-        // record of where the camera has been rather than a picture of
-        // anything, and because with the reach following the camera there is
-        // less call to reach past it.
-        ui.checkbox(&mut knobs.spyglass.disabled, "Override Spyglass");
-        ui.add_space(FIELD_GAP);
-        ui.checkbox(&mut knobs.spyglass.fetch, "Fetch Systems");
-        if knobs.spyglass.fetch {
-            ui.horizontal(|ui| poll_value(ui, &mut knobs.poll.0));
-            ui.horizontal(|ui| {
-                ui.label("Throttle (ms)");
-                ui.add(egui::DragValue::new(&mut knobs.throttle.0));
-            });
-        }
-        ui.add_space(FIELD_GAP);
-        if ui.button("Despawn Systems").clicked() {
-            knobs.despawner.write(Despawn);
         }
     });
 
@@ -2796,6 +2808,19 @@ fn singleline(
     response
 }
 
+/// Name the control beside it, as plainly as a checkbox names itself
+///
+/// Egui paints a label in the colour it keeps for what cannot be interacted
+/// with, a shade under the text it puts on a checkbox. That is the right
+/// answer for a caption and the wrong one for the name of the box next to it,
+/// which stands in a column of checkboxes and is no lesser thing than any of
+/// them. Reading the colour off the style rather than naming one keeps it
+/// with them through whatever theme is set.
+fn field_name(ui: &mut Ui, name: &str) {
+    let named = ui.visuals().widgets.inactive.fg_stroke.color;
+    ui.label(egui::RichText::new(name).color(named));
+}
+
 fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
     let mut enabled = opt.is_some();
     if ui.checkbox(&mut enabled, "Poll").changed() {
@@ -2806,8 +2831,9 @@ fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
         }
     }
 
+    // The unit stands in the box with the number, so the row is the name of
+    // the thing and the value of it and nothing between them.
     if let Some(val) = opt {
-        ui.label("Every");
         ui.add(
             egui::DragValue::new(val).range(0.0..=60.).speed(0.01).suffix(" s"),
         );

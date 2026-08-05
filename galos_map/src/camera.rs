@@ -546,7 +546,7 @@ mod tests {
         Spyglass {
             radius: Spyglass::OPENING,
             fetch: false,
-            disabled: false,
+            clear: true,
             lock_camera,
             follow_camera,
         }
