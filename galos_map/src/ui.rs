@@ -2282,7 +2282,11 @@ const FIELD_BORDER: egui::Stroke =
 /// it.
 ///
 /// `placeholer` names the field as well as standing in it, so two fields in
-/// one form want two of them.
+/// one form want two of them. It is the only name a field has, so it is drawn
+/// whenever the field is empty, whether or not the caret is in it: a field
+/// typed into and emptied again, or one the form put the caret in without
+/// being asked, would otherwise be a blank box with nothing on screen to say
+/// what belongs in it.
 fn singleline(
     ui: &mut Ui,
     value: &mut Option<String>,
@@ -2296,8 +2300,10 @@ fn singleline(
     let id = ui.id().with(("field", placeholer));
     let editing = ui.memory(|memory| memory.has_focus(id));
 
-    // What it wants stands in the field itself rather than behind it, so a
-    // field holding nothing is a field holding those words.
+    // Whether what it wants stands in the field as its contents. It does
+    // while the caret is elsewhere, so a field holding nothing is a field
+    // holding those words. Under the caret they are the hint instead, since
+    // contents there are about to be typed into.
     //
     // Read off what the field holds and who is typing, rather than kept up as
     // the focus comes and goes. A field is drawn every frame and the focus
@@ -2337,7 +2343,14 @@ fn singleline(
             }
             ui.add_sized(
                 egui::vec2(ui.available_width(), 0.),
-                egui::TextEdit::singleline(&mut text).id(id).margin(margin),
+                // The hint answers the field being empty with the caret in
+                // it, which is the one empty state `wanting` does not cover:
+                // the words cannot stand in the field as its contents there,
+                // since the caret is about to be typed into them.
+                egui::TextEdit::singleline(&mut text)
+                    .id(id)
+                    .margin(margin)
+                    .hint_text(placeholer),
             )
         })
         .inner;
@@ -3728,12 +3741,12 @@ mod tests {
         assert!(!said.contains(&"Search".to_owned()), "{said:?}");
     }
 
-    /// A field being typed into is empty rather than full of what it wants
+    /// A field at rest and the same field with the caret in it
     ///
-    /// The words stand in the field itself, so a field that kept them while
-    /// it was being typed into would have them typed over.
-    #[test]
-    fn a_field_being_typed_into_stands_empty() {
+    /// Answers what each pass painted and what the field was left holding.
+    /// Clicked into rather than focused by hand, since where the caret lands
+    /// is what settles which of the two the field is drawing.
+    fn field_clicked_into() -> (Vec<String>, Vec<String>, Option<String>) {
         let ctx = egui::Context::default();
         let mut value: Option<String> = None;
 
@@ -3753,13 +3766,37 @@ mod tests {
 
         // Two passes with nothing happening, to place the field.
         let _ = fields(egui::RawInput::default(), &mut value);
-        let (at, said) = fields(egui::RawInput::default(), &mut value);
-        assert!(said.contains(&"Search".to_owned()), "{said:?}");
+        let (at, resting) = fields(egui::RawInput::default(), &mut value);
 
         fields(clicking(at.center()), &mut value);
-        let (_, said) = fields(egui::RawInput::default(), &mut value);
+        let (_, editing) = fields(egui::RawInput::default(), &mut value);
 
-        assert!(!said.contains(&"Search".to_owned()), "{said:?}");
+        (resting, editing, value)
+    }
+
+    /// A field says what it wants whether or not the caret is in it
+    ///
+    /// The words are the only name it has. A form that puts the caret in a
+    /// field the user did not click would otherwise hand them a blank box
+    /// with nothing on screen to say what belongs in it.
+    #[test]
+    fn a_field_says_what_it_wants_either_way() {
+        let (resting, editing, _) = field_clicked_into();
+
+        assert!(resting.contains(&"Search".to_owned()), "{resting:?}");
+        assert!(editing.contains(&"Search".to_owned()), "{editing:?}");
+    }
+
+    /// And holds none of them, however they were drawn
+    ///
+    /// The words a field stands there wanting are not words anybody typed, so
+    /// a field showing them holds nothing. Were they its contents while it was
+    /// being typed into, the first keystroke would land on the end of them.
+    #[test]
+    fn a_field_never_holds_what_it_only_wants() {
+        let (_, _, value) = field_clicked_into();
+
+        assert_eq!(typed(&value), None, "{value:?}");
     }
 
     /// A primary click at `at`, and the pointer moved there to make it
