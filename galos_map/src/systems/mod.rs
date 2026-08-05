@@ -155,19 +155,29 @@ impl Spyglass {
 /// How much of the sky is in reach, and how much of that the filters admit
 ///
 /// Tallied by [`visibility`], which has already settled both for every system
-/// on the map. Counted there rather than by whoever draws the number, for two
-/// reasons: what is said is then the answer the map acted on, and the reach is
-/// still counted when the filters have taken their systems off the map
-/// entirely. Counting drawn entities would make the two equal at
-/// [`filter::DimTo`] zero, where the question matters most.
+/// on the map. Counted there rather than by whoever draws the number, so what
+/// is said is the answer the map acted on rather than a second count taken
+/// from the side. Both halves want the same two questions asked of the same
+/// system, and that is the one place both are in hand.
 ///
 /// In reach rather than loaded. What the spyglass has dragged in from wherever
 /// the camera has been is not what the user is looking at.
 #[derive(Resource, Default, PartialEq, Eq)]
 pub struct InReach {
     /// Systems the spyglass reaches
+    ///
+    /// The sky only where the excluded systems are being fetched to be dimmed.
+    /// At [`filter::DimTo`] zero the region is asked for what the filters
+    /// admit and nothing else, so what is in reach and excluded is whatever
+    /// was brought in before the filter was asked for and never despawned.
+    /// That is a number about where the camera has been rather than about the
+    /// sky, and [`crate::ui`] draws this only where it is the sky.
     pub total: usize,
     /// How many of those the filters admit
+    ///
+    /// Whole however the region was asked for. Narrowing the query asks for
+    /// exactly the systems a filter admits, so what is left out of it is what
+    /// this was never counting.
     pub admitted: usize,
 }
 
@@ -470,10 +480,15 @@ pub(crate) mod tests {
 
     /// Dimming to nothing still counts what it took off the map
     ///
-    /// This is the case the count is most needed for: the sky has emptied,
-    /// and how much of it the filter is answerable for is the question. A
-    /// tally over what is drawn would make the two numbers equal here and
-    /// say nothing at all.
+    /// Being hidden is not being gone. A system the spyglass reaches is in
+    /// reach whether or not a filter is letting it be drawn, so the two
+    /// numbers go on being two numbers here rather than collapsing into one
+    /// the moment the sky is put out.
+    ///
+    /// Which is what the tally is for and not what it is read for: the map
+    /// stops fetching the excluded at this opacity, so the systems counted
+    /// here are the ones that happened to be loaded already, and the bar says
+    /// only how many are getting through. See [`InReach::total`].
     #[test]
     fn the_tally_holds_up_when_nothing_excluded_is_drawn() {
         let mut app = map(10., false, 0.);
