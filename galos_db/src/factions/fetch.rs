@@ -81,9 +81,9 @@ impl Faction {
     /// rest by name. Someone typing `dukes` means The Dukes of Mikunn before
     /// they mean Grand Duke Enterprise.
     ///
-    /// Bounded because it has to be. A query of a letter matches 18,553 of the
-    /// 17,568 factions on record today, and a list nobody can read to the end
-    /// of is no more use for being complete.
+    /// Bounded because it has to be. A query of a letter matches most of the
+    /// factions on record, `%a%` reaching 19,000 of the 23,000 held today, and
+    /// a list nobody can read to the end of is no more use for being complete.
     pub async fn search_by_name(
         db: &Database,
         query: &str,
