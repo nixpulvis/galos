@@ -82,8 +82,12 @@ impl Faction {
     /// they mean Grand Duke Enterprise.
     ///
     /// Bounded because it has to be. A query of a letter matches most of the
-    /// factions on record, `%a%` reaching 19,000 of the 23,000 held today, and
-    /// a list nobody can read to the end of is no more use for being complete.
+    /// factions on record, `%a%` reaching four in five of the twenty-odd
+    /// thousand held, and a list nobody can read to the end of is no more use
+    /// for being complete.
+    ///
+    /// A share rather than a count of them, for the reason
+    /// [`crate::systems::System::search_by_name`] gives.
     pub async fn search_by_name(
         db: &Database,
         query: &str,

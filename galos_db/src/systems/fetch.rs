@@ -179,9 +179,14 @@ impl System {
     /// to be near by and nowhere to be flown to.
     ///
     /// Bounded because it has to be. A query of a letter or two matches most
-    /// of the systems on record, `%a%` reaching 180,000 of the 284,000 held
-    /// today, and a list nobody can read to the end of is no more use for
-    /// being complete.
+    /// of the systems on record, `%a%` reaching two in three of the hundreds
+    /// of thousands held, and a list nobody can read to the end of is no more
+    /// use for being complete.
+    ///
+    /// A share rather than a count of them. The ingest adds systems for as
+    /// long as it runs, so a number written here is right on the day and drifts
+    /// from then on, where what the bound is argued from is the share and that
+    /// holds.
     pub async fn search_by_name(
         db: &Database,
         query: &str,
