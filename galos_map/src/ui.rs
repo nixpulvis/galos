@@ -88,6 +88,14 @@ const BAR_WIDTH: f32 = 220.;
 /// How tall the gear is drawn
 const GEAR_SIZE: f32 = 18.;
 
+/// How much room across the gear is given
+///
+/// Wider than the glyph, which leaves it a little air on either side. Said
+/// rather than measured, since the bar stands beside the gear and the gear
+/// stands level with the bar's search box: one of the two has to know where
+/// it goes before the other has been drawn.
+const GEAR_ROOM: f32 = 20.;
+
 /// How far the chrome stands from the edges of the viewport, and from itself
 ///
 /// Read by [`crate::systems::info`] as well, so that the panels it opens
@@ -460,11 +468,12 @@ pub fn chrome(
         }
     });
 
-    // The gear next, since where it ends is where the bar begins.
-    let beside = gear(ctx, edge, &mut settings.0);
-    let shut = main_bar(
+    // The bar next, in the room the gear is not standing in, and the gear
+    // last: it stands level with the search box, which is not known until the
+    // bar has drawn it.
+    let (shut, middle) = main_bar(
         ctx,
-        beside,
+        edge + MARGIN + GEAR_ROOM,
         // Whether the search box's answer is late enough to say so. Settled
         // where the clock is, which is the system that put the question; the
         // bar draws during egui's own pass and has no clock of its own.
@@ -480,6 +489,7 @@ pub fn chrome(
         &mut bar.plot,
         &mut filter,
     );
+    gear(ctx, edge, middle, &mut settings.0);
     if shut {
         press.0 = true;
     }
@@ -552,26 +562,37 @@ fn settings_pane(
 /// gear in it. It rides the pane's edge at `left`, since a handle the pane
 /// slides over is a handle the user cannot reach.
 ///
-/// Answers where its right hand edge falls, which is where the bar stands.
-fn gear(ctx: &Context, left: f32, open: &mut bool) -> f32 {
+/// `middle` is where the bar's search box sits, and the gear is hung about it
+/// rather than dropped from the top of the viewport as the bar is. The two
+/// stand side by side, so what lines them up is the field the user is looking
+/// at rather than the top edge of a box the field is padded inside.
+///
+/// It is given [`GEAR_ROOM`] across, that being what the bar leaves for it.
+/// Measured instead, the room would not be known until the gear had been
+/// drawn, and the gear cannot be drawn until the bar has said where its search
+/// box is.
+fn gear(ctx: &Context, left: f32, middle: f32, open: &mut bool) {
     let style = ctx.global_style();
-    let area = egui::Area::new(egui::Id::new("settings-gear"))
+    let clicked = egui::Area::new(egui::Id::new("settings-gear"))
         .order(egui::Order::Foreground)
-        .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
+        .pivot(egui::Align2::LEFT_CENTER)
+        .fixed_pos(egui::pos2(left + MARGIN, middle))
         .show(ctx, |ui| {
             let mut gear = egui::RichText::new("⚙").size(GEAR_SIZE);
             if *open {
                 gear = gear.color(style.visuals.strong_text_color());
             }
-            ui.add(egui::Button::new(gear).frame(false)).clicked()
-        });
-    let clicked = area.inner;
+            ui.add_sized(
+                egui::vec2(GEAR_ROOM, 0.),
+                egui::Button::new(gear).frame(false),
+            )
+            .clicked()
+        })
+        .inner;
 
     if clicked {
         *open = !*open;
     }
-
-    area.response.rect.right()
 }
 
 /// Ask for a system, and for whatever else the user unfolds
@@ -589,13 +610,17 @@ fn gear(ctx: &Context, left: f32, open: &mut bool) -> f32 {
 /// rest, rather than a frame left out and put back. Nothing shifts as it
 /// comes up, because nothing about the layout has changed.
 ///
-/// It stands beside the gear at `left` and rides the settings pane's edge as
-/// the gear does, so that the whole of the chrome is gathered into one corner.
-/// Down the middle it would stand over the sky the spyglass fills, which is
-/// drawn about the middle of the viewport and is what the map is for.
+/// It stands beside the gear, in the room past `left`, and rides the settings
+/// pane's edge as the gear does, so that the whole of the chrome is gathered
+/// into one corner. Down the middle it would stand over the sky the spyglass
+/// fills, which is drawn about the middle of the viewport and is what the map
+/// is for.
 ///
 /// The note is not part of what drops down. It answers the name in the input,
 /// and is worth reading whether or not the rest is out.
+///
+/// Answers whether a press was spent shutting the form, and where the search
+/// box came out, that being the height the gear is hung at.
 fn main_bar(
     ctx: &Context,
     left: f32,
@@ -610,7 +635,7 @@ fn main_bar(
     panels: &mut Panels,
     plot: &mut Plot,
     filter: &mut FilterBar,
-) -> bool {
+) -> (bool, f32) {
     let style = ctx.global_style();
     let mut frame =
         egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
@@ -643,6 +668,8 @@ fn main_bar(
                         asking,
                     );
                     taken |= response.gained_focus();
+                    // Where the gear stands, the two of them being one row.
+                    let middle = response.rect.center().y;
                     // Both answer a name, so neither is any answer at all
                     // once that name is being typed over. The mark has
                     // already taken all three where it was the one asked.
@@ -744,7 +771,7 @@ fn main_bar(
                         );
                     }
 
-                    taken
+                    (taken, middle)
                 })
                 .inner
         });
@@ -769,13 +796,14 @@ fn main_bar(
     // can undo the other. A field goes on holding focus after the press that
     // shut the form, and asking whether it holds focus would open the form
     // again the very next frame.
-    if bar.inner {
+    let (took, middle) = bar.inner;
+    if took {
         search.expanded = true;
     }
     if dismissed {
         search.expanded = false;
     }
-    shut
+    (shut, middle)
 }
 
 /// The whole of the bar's searching
@@ -2980,6 +3008,36 @@ mod tests {
         });
 
         assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// The gear hangs about the height it is given
+    ///
+    /// Which is where the bar's search box came out, so that the handle and
+    /// the field beside it read as one row. Dropped from the top of the
+    /// viewport as the bar is, it would sit level with the top edge of a box
+    /// the field is padded inside rather than with the field.
+    ///
+    /// Twice round, since an area is placed about a pivot from the size it
+    /// came out last time and has no size at all the first time it is drawn.
+    #[test]
+    fn the_gear_hangs_about_the_height_it_is_given() {
+        let ctx = Context::default();
+        let middle = 40.;
+        let mut open = false;
+
+        for _ in 0..2 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                gear(ui.ctx(), 0., middle, &mut open);
+            });
+        }
+        let at = ctx
+            .memory(|memory| memory.area_rect(egui::Id::new("settings-gear")))
+            .expect("a gear was drawn");
+
+        // Within half a pixel: the gear stands an odd number of them tall,
+        // and egui rounds where an area is put onto the pixel grid.
+        let off = (at.center().y - middle).abs();
+        assert!(off <= 0.5, "{off} off the {middle} it was given");
     }
 
     /// Whether the form is still out after `landed` routes have come in
