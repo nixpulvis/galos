@@ -213,11 +213,29 @@ impl Orbits {
     /// Each step of the way up adds where that thing stands about its own
     /// parent, so a moon lands beside its planet rather than beside the star.
     ///
-    /// A parent that is not on record — a star the map did not read, or a
-    /// barycentre the database does not keep at all — ends the walk, and what
-    /// is left is measured from the system's centre. An honest shortcut: the
-    /// body is put somewhere plausible rather than nowhere, and it is the
-    /// missing row rather than this that makes it approximate.
+    /// A parent that is not on record ends the walk, and what is left is
+    /// measured from the system's centre. An honest shortcut: the body is put
+    /// somewhere plausible rather than nowhere, and it is the missing row
+    /// rather than this that makes it approximate.
+    ///
+    /// # Barycentres, and what is being assumed
+    ///
+    /// The missing parent is nearly always a barycentre. A journal names one
+    /// in a body's ancestry, and `ScanBaryCentre` is not saved anywhere
+    /// (issue #70), so the id is in `parent_id` with no row behind it.
+    ///
+    /// For the one at the root of a multi-star system this ought to come out
+    /// right by accident: that barycentre *is* the middle of the system, so
+    /// ending the walk there and measuring from the centre lands where
+    /// following it would have. For a barycentre further down — a close pair
+    /// that itself goes round something — it will not: the pair would be put
+    /// at the centre instead of out where it belongs, its whole outer orbit
+    /// dropped.
+    ///
+    /// Neither can be confirmed without data. What would settle it is a
+    /// multi-star system on screen: if its stars sit sensibly about the middle
+    /// and a nested pair does not, the reading above is right and the fix is
+    /// issue #70 rather than anything here.
     pub fn place(&self, id: i16, since: f64) -> DVec3 {
         let mut place = DVec3::ZERO;
         let mut at = Some(id);
