@@ -9,22 +9,32 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::filter::{DimTo, Filtered};
-use crate::systems::labels::{Label, NameBox, depth, world_per_pixel};
+use crate::systems::labels::{
+    Label, depth, name_rect, screen_position, world_per_pixel,
+};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
+use bevy::camera::RenderTarget;
 use bevy::math::DVec3;
+use bevy::picking::backend::{HitData, PointerHits};
 use bevy::picking::hover::HoverMap;
-use bevy::picking::pointer::PointerMap;
+use bevy::picking::pointer::{PointerId, PointerLocation, PointerMap};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 
 pub fn plugin(app: &mut App) {
     app.add_systems(
         Update,
-        (point_at, size_targets, point_the_cursor)
+        (point_at, size_indicators, point_the_cursor)
             .in_set(MapSet::Present)
             .after(super::scale::size_by_distance)
             .after(super::scale::size_uniformly),
+    );
+    // Answers where the pointer is before anything asks, which is what a
+    // picking backend is and where bevy expects one to run.
+    app.add_systems(
+        PreUpdate,
+        hits.in_set(bevy::picking::PickingSystems::Backend),
     );
     // Reads where a star ended up rather than deciding it, so it waits for
     // the transforms to be worked out, as `labels::leaders` does.
@@ -54,19 +64,23 @@ const INDICATOR_MARGIN: f32 = 1.5;
 /// same size to the hand at every zoom.
 const INDICATOR_MIN_RADIUS: f32 = 9.5;
 
-/// What catches the pointer for a system
+/// How large a system's mark is, as a radius in logical pixels
 ///
-/// The same shape and size as the ring drawn around it, so that what can be
-/// clicked is exactly what is shown. A star is drawn far too small to aim
-/// at, and a target larger than the mark would be as misleading as one
-/// smaller.
+/// The one answer behind both the ring drawn around a system and the area
+/// that answers the pointer over it, so what can be clicked is exactly what
+/// is shown.
 ///
-/// A sphere rather than a disc facing the camera, so that it presents the
-/// same circle from wherever it is seen and nothing has to turn it.
-/// Invisible, being drawn in a fully transparent material, since picking
-/// only considers what is being drawn.
-#[derive(Component)]
-pub struct PointerTarget;
+/// Pixels, because that is what the mark is specified in and what aiming is
+/// done in: [`INDICATOR_MIN_RADIUS`] is a distance to the hand rather than a
+/// distance in the world. A ring is drawn in the world and so converts this
+/// back at the moment of drawing, which is the only place the two units meet.
+///
+/// Held on the system itself. It once sat on an invisible sphere hung off the
+/// system for a ray to be thrown at, and that sphere had to be a size in
+/// metres, which is what a system is not: a mark is nine pixels across
+/// whether the camera is a light year away or fifty thousand.
+#[derive(Component, Default)]
+pub struct Indicator(pub f32);
 
 /// How long the pointer must rest on a system before it is asking about it
 ///
@@ -74,13 +88,6 @@ pub struct PointerTarget;
 /// takes its place from the ones around it, so a claim staked in passing
 /// takes away the very name that was being reached for.
 const DWELL: f32 = 0.25;
-
-/// The scale a thing that catches the pointer stands at before it is fitted
-///
-/// Small enough to catch nothing, since it does not yet stand for anything.
-/// Not zero: a ray is put into the space of what it might hit by inverting
-/// that thing's transform, and a zero scale has no inverse.
-pub(super) const UNFITTED_SCALE: f32 = 1e-6;
 
 /// The button that answers for whatever is under the pointer
 ///
@@ -180,9 +187,8 @@ pub(super) fn point_at(
     time: Res<Time<Real>>,
     buttons: Res<ButtonInput<MouseButton>>,
     dragged: Query<&DragDistance>,
-    boxes: Query<&ChildOf, With<NameBox>>,
     names: Query<&ChildOf, With<Label>>,
-    targets: Query<&ChildOf, With<PointerTarget>>,
+    marked: Query<(), With<Indicator>>,
     filtered: Query<(), With<Filtered>>,
     pointed_at: Query<Entity, With<PointedAt>>,
     mut commands: Commands,
@@ -218,12 +224,10 @@ pub(super) fn point_at(
 
     for hits in hovered.values() {
         for (entity, hit) in hits.iter() {
-            if let Ok(hit_box) = boxes.get(*entity) {
-                if let Ok(name) = names.get(hit_box.parent()) {
-                    named = Some(name.parent());
-                }
-            } else if let Ok(target) = targets.get(*entity) {
-                let system = target.parent();
+            if let Ok(name) = names.get(*entity) {
+                named = Some(name.parent());
+            } else if marked.contains(*entity) {
+                let system = *entity;
                 let dim = filtered.contains(system);
                 let better = nearest.is_none_or(|(_, was_dim, depth)| {
                     (dim, hit.depth) < (was_dim, depth)
@@ -253,39 +257,148 @@ pub(super) fn point_at(
     }
 }
 
-/// Fit each system's target to what its indicator will be drawn at
+/// Work out how large each system's mark is, in pixels
 ///
-/// One answer for both, worked out here and read back by [`ring`], so that
-/// the mark and the area catching the pointer cannot come apart.
-pub fn size_targets(
+/// One answer, read back off [`Indicator`] both by what draws the ring and by
+/// what answers the pointer, so the mark and the area that catches cannot
+/// come apart.
+///
+/// A shell is drawn in metres and holds a size that changes with the camera,
+/// so it is measured into pixels here and the larger of that and the floor
+/// wins. Where the shell is too small to aim at, which is nearly everywhere,
+/// the floor is the whole of the answer.
+pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
-    systems: Query<(&System, &Children)>,
-    stars: Query<&Transform, With<Shell>>,
-    mut targets: Query<&mut Transform, (With<PointerTarget>, Without<Shell>)>,
+    mut systems: Query<(&System, &Children, &mut Indicator)>,
+    shells: Query<&Transform, With<Shell>>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (system, children) in &systems {
+    for (system, children, mut indicator) in &mut systems {
         let drawn = children
             .iter()
-            .filter_map(|child| stars.get(child).ok())
-            .map(|star| star.scale.x)
+            .filter_map(|child| shells.get(child).ok())
+            .map(|shell| shell.scale.x)
             .fold(0., f32::max);
 
         // A metre, which is as near as the camera may be pulled to anything.
         // What the floor is for is the sign rather than the distance.
         let into_view = depth(orbit, DVec3::from(system.position)).max(1.);
-        let smallest = INDICATOR_MIN_RADIUS
-            * world_per_pixel(cot_half_fov, viewport.y, into_view);
-        let radius = (drawn * INDICATOR_MARGIN).max(smallest);
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
+        let shell = drawn * INDICATOR_MARGIN / per_pixel;
 
-        for child in children.iter() {
-            if let Ok(mut target) = targets.get_mut(child) {
-                target.scale = Vec3::splat(radius);
+        indicator.0 = shell.max(INDICATOR_MIN_RADIUS);
+    }
+}
+
+/// How wide a mark of `radius` pixels is out where its system stands
+///
+/// A ring is world geometry, so what is held in pixels is spoken back into
+/// metres at the moment of drawing. The one place the two meet, and both
+/// rings go through it, so neither can disagree with what is caught.
+pub(super) fn drawn_radius(
+    orbit: &OrbitCamera,
+    cot_half_fov: f32,
+    viewport: Vec2,
+    position: DVec3,
+    radius: f32,
+) -> f32 {
+    let into_view = depth(orbit, position).max(1.);
+    radius * world_per_pixel(cot_half_fov, viewport.y, into_view)
+}
+
+/// Say what the pointer is over, measured on screen
+///
+/// A picking backend, which is to say it answers one question: which entities
+/// lie under each pointer. Everything downstream of that — what is hovered,
+/// what a click lands on, whether the cursor turns — is bevy's and is not
+/// touched by how the answer is arrived at.
+///
+/// Arrived at here by projecting each system to the screen and comparing
+/// distances in pixels, rather than by throwing a ray at a mesh standing in
+/// for it. What is being aimed at is a mark nine pixels across; putting that
+/// in the world only to ask a ray about it is a long way round, and at this
+/// map's scale it does not survive the trip. A ray is built from a point at
+/// the near plane and one at `near / f32::EPSILON`, and it is met by
+/// inverting the target's transform and multiplying three of its lengths
+/// together. In metres, with a system's mark drawn `1e15` across and stars
+/// `1e17` apart, all three of those overflow a float. The map was briefly
+/// unclickable in three separate ways for this reason.
+///
+/// Screen space has none of that: a projection and a distance, both in
+/// pixels, both small. It is also where the sizes were decided to begin with.
+///
+/// Bodies are still met by rays, and rightly. They are drawn at their own
+/// size, they have shapes worth hitting rather than a disc standing in for
+/// them, and the numbers stay ordinary.
+fn hits(
+    pointers: Query<(&PointerId, &PointerLocation)>,
+    window: Query<Entity, With<PrimaryWindow>>,
+    cameras: Query<(Entity, &Camera, &RenderTarget, &OrbitCamera)>,
+    systems: Query<(Entity, &System, &Indicator, &ViewVisibility)>,
+    labels: Query<(Entity, &ChildOf), With<Label>>,
+    mut hits: MessageWriter<PointerHits>,
+) {
+    let Ok((eye, camera, target, orbit)) = cameras.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    let caught = |camera: Entity, position: DVec3| HitData {
+        camera,
+        depth: depth(orbit, position),
+        position: None,
+        normal: None,
+        extra: None,
+    };
+
+    for (pointer, at) in &pointers {
+        let Some(at) = at.location() else { continue };
+        if !at.is_in_viewport(camera, target, &window) {
+            continue;
+        }
+        let at = at.position;
+        let mut picks = Vec::new();
+
+        for (entity, system, indicator, drawn) in &systems {
+            // What is not drawn is not there to be pointed at. The spyglass
+            // hides a system by writing its visibility, and one hidden is one
+            // the user has said they are not looking at.
+            if !drawn.get() {
+                continue;
+            }
+            let position = DVec3::from(system.position);
+            let Some(on_screen) =
+                screen_position(orbit, cot_half_fov, viewport, position)
+            else {
+                continue;
+            };
+            if on_screen.distance(at) <= indicator.0 {
+                picks.push((entity, caught(eye, position)));
             }
         }
+
+        // A name is caught over the rectangle it was given, which is the same
+        // one [`super::labels::choose_names`] laid out to keep names from
+        // touching. So the areas that catch cannot overlap either, and a name
+        // is clickable over exactly the room it was granted.
+        for (label, child_of) in &labels {
+            let Ok((_, system, ..)) = systems.get(child_of.parent()) else {
+                continue;
+            };
+            let position = DVec3::from(system.position);
+            let Some(on_screen) =
+                screen_position(orbit, cot_half_fov, viewport, position)
+            else {
+                continue;
+            };
+            if name_rect(on_screen, &system.name).contains(at) {
+                picks.push((label, caught(eye, position)));
+            }
+        }
+
+        hits.write(PointerHits::new(*pointer, picks, camera.order as f32));
     }
 }
 
@@ -296,7 +409,7 @@ pub fn size_targets(
 /// behind whichever of the two events happens to arrive last.
 pub fn point_the_cursor(
     hovered: Res<HoverMap>,
-    clickable: Query<(), Or<(With<PointerTarget>, With<NameBox>)>>,
+    clickable: Query<(), Or<(With<Indicator>, With<Label>)>>,
     window: Query<Entity, With<PrimaryWindow>>,
     mut commands: Commands,
 ) {
@@ -322,33 +435,33 @@ pub fn point_the_cursor(
 /// than as a hoop the star is sitting inside.
 pub fn ring(
     mut gizmos: Gizmos,
-    camera: Query<&OrbitCamera>,
+    camera: Query<(&OrbitCamera, &Camera)>,
     // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (&GlobalTransform, &Children, Has<Filtered>),
-        (With<System>, With<PointedAt>, Without<Selected>),
+        (&GlobalTransform, &System, &Indicator, Has<Filtered>),
+        (With<PointedAt>, Without<Selected>),
     >,
-    targets: Query<&GlobalTransform, With<PointerTarget>>,
     dim: Res<DimTo>,
 ) {
-    let Ok(camera) = camera.single() else { return };
+    let Ok((orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (system, children, filtered) in &pointed_at {
-        // Drawn at whatever the target was fitted to, so the ring is the
-        // outline of the very thing the pointer is tested against.
-        let Some(radius) = children
-            .iter()
-            .filter_map(|child| targets.get(child).ok())
-            .map(|target| target.scale().x)
-            .next()
-        else {
-            continue;
-        };
+    for (at, system, indicator, filtered) in &pointed_at {
+        // Drawn at what the pointer is tested against, so the ring is the
+        // outline of the very area that catches.
+        let radius = drawn_radius(
+            orbit,
+            cot_half_fov,
+            viewport,
+            DVec3::from(system.position),
+            indicator.0,
+        );
 
         gizmos.circle(
-            Isometry3d::new(system.translation(), camera.rotation),
+            Isometry3d::new(at.translation(), orbit.rotation),
             radius,
             dim.against(INDICATOR, filtered),
         );
@@ -407,16 +520,12 @@ mod tests {
         let systems = stars
             .iter()
             .map(|(dim, depth)| {
-                let system = app.world_mut().spawn_empty().id();
+                let system = app.world_mut().spawn(Indicator(0.)).id();
                 if *dim {
                     app.world_mut().entity_mut(system).insert(Filtered);
                 }
-                let target = app
-                    .world_mut()
-                    .spawn((PointerTarget, ChildOf(system)))
-                    .id();
                 over.insert(
-                    target,
+                    system,
                     HitData {
                         camera: Entity::PLACEHOLDER,
                         depth: *depth,
@@ -476,5 +585,93 @@ mod tests {
         let (app, stars) = pointed(&[(true, 1.), (true, 50.)]);
 
         assert_eq!(points_at(&app, &stars), vec![true, false]);
+    }
+
+    /// A camera at the origin, looking down `-Z`
+    fn looking() -> OrbitCamera {
+        OrbitCamera { eye: DVec3::ZERO, rotation: Quat::IDENTITY, ..default() }
+    }
+
+    /// The cotangent of half the vertical field of view, for a default lens
+    ///
+    /// What `Camera::clip_from_view` answers, worked out here rather than
+    /// built from a window so the sizing can be tested without one.
+    fn cot_half_fov() -> f32 {
+        1. / (PerspectiveProjection::default().fov / 2.).tan()
+    }
+
+    /// A mark is the same size to the hand however far off its system is
+    ///
+    /// The whole reason it is held in pixels. Nine pixels at the near end of
+    /// the map and nine at the far end, where the two ends are fourteen
+    /// orders of magnitude apart.
+    #[test]
+    fn a_mark_is_the_same_size_to_the_hand_at_every_zoom() {
+        let camera = looking();
+        let viewport = Vec2::new(1280., 720.);
+        let mark = INDICATOR_MIN_RADIUS;
+
+        // A metre off, and the width of the galaxy off.
+        for away in [1f64, 1e6, 1e12, 1e18, 1e21] {
+            let position = DVec3::new(0., 0., -away);
+            let drawn =
+                drawn_radius(&camera, cot_half_fov(), viewport, position, mark);
+            // Back into pixels, the way the ring's size is arrived at.
+            let per_pixel = world_per_pixel(
+                cot_half_fov(),
+                viewport.y,
+                depth(&camera, position).max(1.),
+            );
+
+            assert!(
+                (drawn / per_pixel - mark).abs() < mark * 1e-3,
+                "a {mark} pixel mark {away}m off came back {} pixels",
+                drawn / per_pixel
+            );
+        }
+    }
+
+    /// A mark stays a number at the far end of the map
+    ///
+    /// What the ray this replaced could not do. Aiming at a system meant
+    /// inverting a transform scaled to metres and multiplying three of its
+    /// lengths together, and at these distances all of that overflows a
+    /// float and comes back as an infinity or as nothing at all.
+    #[test]
+    fn a_mark_across_the_galaxy_is_still_a_number() {
+        let camera = looking();
+        let viewport = Vec2::new(1280., 720.);
+
+        // A hundred thousand light years, in the metres the map is drawn in.
+        let across = DVec3::new(0., 0., -9.46e20);
+        let drawn = drawn_radius(
+            &camera,
+            cot_half_fov(),
+            viewport,
+            across,
+            INDICATOR_MIN_RADIUS,
+        );
+
+        assert!(drawn.is_finite(), "the mark came back {drawn}");
+        assert!(drawn > 0., "the mark collapsed to {drawn}");
+    }
+
+    /// A system dead ahead lands in the middle of the screen
+    ///
+    /// Which is what the pointer is measured against, so a mark that is not
+    /// where its system is drawn is a mark that catches somewhere else.
+    #[test]
+    fn a_system_ahead_is_marked_where_it_is_drawn() {
+        let camera = looking();
+        let viewport = Vec2::new(1280., 720.);
+        let ahead = DVec3::new(0., 0., -9.46e17);
+
+        let at = screen_position(&camera, cot_half_fov(), viewport, ahead)
+            .expect("a system in front of the camera is on screen");
+
+        assert!(
+            at.distance(viewport / 2.) < 1e-3,
+            "a system dead ahead landed at {at}"
+        );
     }
 }
