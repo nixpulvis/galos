@@ -1,7 +1,8 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use crate::systems::bodies::spawn::Body;
 use crate::systems::filter::{DimTo, Filtered};
-use crate::systems::pointing::{INDICATOR, PointedAt};
+use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{Shell, ShowNames};
 use crate::systems::{Spyglass, System};
@@ -425,6 +426,8 @@ pub fn choose_names(
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
     systems: Query<(Entity, &System, &Visibility, Has<Filtered>)>,
+    bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
+    eye_at: Query<&GlobalTransform, With<Camera>>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
@@ -498,6 +501,37 @@ pub fn choose_names(
         })
         .collect();
 
+    // Everything inside the system the camera is in, which is asked for
+    // whatever the names switch says. A system's name is one of thousands and
+    // is turned off to keep the sky readable; a body's is one of a handful,
+    // and they are only ever drawn when the viewer has flown in to look at
+    // them. Naming them is the whole of what flying in is for.
+    if let Ok(eye) = eye_at.single() {
+        for (entity, body, at, indicator) in &bodies {
+            let offset = (at.translation() - eye.translation()).as_dvec3();
+            let Some(place) =
+                screen_offset(orbit, cot_half_fov, viewport, offset)
+            else {
+                continue;
+            };
+            let rect = name_rect(place, &body.name);
+            let screen = Rect::from_corners(Vec2::ZERO, viewport);
+            if screen.intersect(rect).is_empty() {
+                continue;
+            }
+
+            let pointed_at = pointing
+                .get(entity)
+                .is_ok_and(|at| at.settled(time.elapsed_secs()));
+            let score = body_name_score(
+                indicator.0,
+                pointed_at,
+                selection.contains(entity),
+            );
+            wanted.push((entity, rect, score));
+        }
+    }
+
     // Best first, so that what is dropped is dropped in favour of something
     // the viewer wanted more.
     wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2));
@@ -526,6 +560,36 @@ pub fn choose_names(
             commands.entity(entity).insert(Named);
         }
     }
+}
+
+/// The most a body's own size can argue for its name being drawn
+///
+/// Above [`CENTER_WEIGHT`] and below [`POINTED_WEIGHT`], which places bodies
+/// where they belong in the order. A body outranks the ordinary run of
+/// systems, since bodies are only ever drawn while the camera is inside a
+/// system and what is in front of the viewer is then what they came to look
+/// at. It never outranks what is pointed at or picked out, whichever that is.
+const INSIDE_WEIGHT: f32 = 300.;
+
+/// How large a body has to look to be worth half of [`INSIDE_WEIGHT`]
+///
+/// In logical pixels of radius. Around the size a body stops being a dot and
+/// starts being a disc, so the bodies that read as worlds are named first and
+/// the specks last.
+const BODY_NAME_REACH: f32 = 20.;
+
+/// How much a body deserves to have its name drawn
+///
+/// Its own apparent size, bounded so that no body ever outranks whatever is
+/// pointed at or picked out. Bigger first, which for a system's contents is
+/// nearly always the order the viewer would have chosen: the worlds before
+/// the moons, and the moons before whatever is a pixel across.
+fn body_name_score(apparent: f32, pointed_at: bool, selected: bool) -> f32 {
+    let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
+    let picked = if selected { SELECTED_WEIGHT } else { 0. };
+    let size = INSIDE_WEIGHT * apparent / (apparent + BODY_NAME_REACH);
+
+    picked.max(pointed) + size
 }
 
 /// How much a system deserves to have its name drawn
@@ -590,7 +654,8 @@ pub(super) fn name_rect(at: Vec2, name: &str) -> Rect {
 pub fn respawn(
     mut commands: Commands,
     named: Query<(Entity, &System, Option<&Children>), With<Named>>,
-    unnamed: Query<&Children, (With<System>, Without<Named>)>,
+    named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
+    unnamed: Query<&Children, (Or<(With<System>, With<Body>)>, Without<Named>)>,
     labels: Query<Entity, With<Label>>,
     materials: Res<LabelMaterials>,
 ) {
@@ -602,6 +667,19 @@ pub fn respawn(
         }
     }
 
+    // The same nameplate, hung off whatever it names.
+    for (entity, body, children) in &named_bodies {
+        let labelled = children
+            .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
+        if labelled {
+            continue;
+        }
+
+        let label =
+            commands.spawn(nameplate(body.name.clone(), &materials)).id();
+        commands.entity(entity).add_child(label);
+    }
+
     for (entity, system, children) in &named {
         let labelled = children
             .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
@@ -609,39 +687,45 @@ pub fn respawn(
             continue;
         }
 
-        let label = commands
-            .spawn((
-                Label,
-                Text3d::new(system.name.clone()),
-                Text3dStyling {
-                    size: SIZE,
-                    font: FONT.into(),
-                    color: Srgba::WHITE,
-                    // The anchor says where the text sits relative to the
-                    // entity, not which edge of the text lands on it.
-                    // CENTER_RIGHT puts the name to the right of its system
-                    // rather than straddling it, leaving room for the gap
-                    // below.
-                    anchor: TextAnchor::CENTER_RIGHT,
-                    ..default()
-                },
-                Mesh3d::default(),
-                // Whatever the system is; `tint_marked_names` runs after
-                // this and settles it before the name is drawn.
-                MeshMaterial3d(materials.get(Tint::Resting, false).clone()),
-                // Placed by `face_camera` before the first draw.
-                Transform::default(),
-                // What catches the pointer over a name. The area is worked
-                // out on screen by `super::pointing`, from the same
-                // rectangle `choose_names` laid this name out in, so a name
-                // catches over exactly the room it was granted rather than
-                // over the quads its glyphs happen to occupy.
-                Pickable::default(),
-            ))
-            .id();
+        let label =
+            commands.spawn(nameplate(system.name.clone(), &materials)).id();
 
         commands.entity(entity).add_child(label);
     }
+}
+
+/// The name of a thing, drawn beside it
+///
+/// One plate for a system and for a body alike: what differs is only what it
+/// is hung off and what decided it was worth drawing.
+fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
+    (
+        Label,
+        Text3d::new(name),
+        Text3dStyling {
+            size: SIZE,
+            font: FONT.into(),
+            color: Srgba::WHITE,
+            // The anchor says where the text sits relative to the entity,
+            // not which edge of the text lands on it. CENTER_RIGHT puts the
+            // name to the right of what it names rather than straddling it,
+            // leaving room for the gap below.
+            anchor: TextAnchor::CENTER_RIGHT,
+            ..default()
+        },
+        Mesh3d::default(),
+        // Whatever the thing is; `tint_marked_names` runs after this and
+        // settles it before the name is drawn.
+        MeshMaterial3d(materials.get(Tint::Resting, false).clone()),
+        // Placed by `face_camera` before the first draw.
+        Transform::default(),
+        // What catches the pointer over a name. The area is worked out on
+        // screen by `super::pointing`, from the same rectangle
+        // `choose_names` laid this name out in, so a name catches over
+        // exactly the room it was granted rather than over the quads its
+        // glyphs happen to occupy.
+        Pickable::default(),
+    )
 }
 
 /// Turn each label to the camera and place it beside its system
@@ -656,6 +740,8 @@ pub fn face_camera(
     // `Without<System>` is already true of any label. It is spelled out so
     // the scheduler can prove this query is disjoint from the one above, and
     // from every other system that reads a star's transform.
+    bodies: Query<(&GlobalTransform, &Indicator), Without<Label>>,
+    eye_at: Query<&GlobalTransform, (With<Camera>, Without<Label>)>,
     mut labels: Query<
         (&mut Transform, &ChildOf),
         (With<Label>, Without<System>),
@@ -666,7 +752,38 @@ pub fn face_camera(
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     for (mut label, child_of) in &mut labels {
-        let Ok(system) = systems.get(child_of.parent()) else { continue };
+        let Ok(system) = systems.get(child_of.parent()) else {
+            // A name hung off something inside a system, which knows where it
+            // is relative to the camera rather than where it is in the
+            // galaxy.
+            let Ok(eye) = eye_at.single() else { continue };
+            let Ok((at, indicator)) = bodies.get(child_of.parent()) else {
+                continue;
+            };
+
+            let offset = (at.translation() - eye.translation()).as_dvec3();
+            let into_view = depth_of(orbit, offset).max(MIN_DEPTH);
+            let world_per_pixel =
+                world_per_pixel(cot_half_fov, viewport.y, into_view);
+
+            let height = NAME_HEIGHT * world_per_pixel;
+            // Clear of the body itself rather than a fixed step from its
+            // middle. A body is drawn at the size it is, so a name set the
+            // gap a system's name is set at would sit inside anything larger
+            // than a speck. Measured from the mark, which is the outline the
+            // pointer is tested against, so the name stands off exactly what
+            // is drawn.
+            let clear = indicator.0 * world_per_pixel;
+            let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
+                + orbit.rotation * Vec3::Y * (height * RISE);
+
+            // The plate is drawn at the body's own scale otherwise, and a
+            // body's scale is its radius in metres.
+            label.scale = Vec3::splat(height / SIZE / at.scale().x.max(1e-6));
+            label.translation = offset / at.scale().x.max(1e-6);
+            label.rotation = orbit.rotation;
+            continue;
+        };
 
         // Measured to the system, not to the label's offset within it, so
         // that every name on screen is sized against the same view.
@@ -838,6 +955,9 @@ pub fn tint_marked_names(
         (Has<PointedAt>, Has<Selected>, Has<Filtered>),
         With<System>,
     >,
+    // What is inside a system answers the same two marks. No filter: a
+    // filter is a question asked of systems, and nothing asks it of a body.
+    bodies: Query<(Has<PointedAt>, Has<Selected>), With<Body>>,
     materials: Res<LabelMaterials>,
     mut names: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
@@ -845,9 +965,13 @@ pub fn tint_marked_names(
     >,
 ) {
     for (child_of, mut material) in &mut names {
-        let Ok((pointed_at, selected, filtered)) =
-            systems.get(child_of.parent())
-        else {
+        let marked = systems.get(child_of.parent()).ok().or_else(|| {
+            bodies
+                .get(child_of.parent())
+                .ok()
+                .map(|(pointed_at, selected)| (pointed_at, selected, false))
+        });
+        let Some((pointed_at, selected, filtered)) = marked else {
             continue;
         };
         let tint = if selected {
