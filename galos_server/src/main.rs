@@ -6,7 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
-use galos_db::bodies::Body;
+use galos_db::bodies::{Body, Surface};
 use galos_db::stations::Station;
 use galos_db::systems::System;
 use galos_db::Database;
@@ -38,6 +38,14 @@ async fn main() {
 
 fn table_data<T: Display>(option: &Option<T>) -> String {
     option.as_ref().map(|o| o.to_string()).unwrap_or("---".into())
+}
+
+fn atmosphere_type(surface: &Option<Surface>) -> String {
+    table_data(&surface.as_ref().map(|surface| &surface.atmosphere_type))
+}
+
+fn surface_pressure(surface: &Option<Surface>) -> String {
+    table_data(&surface.as_ref().map(|surface| surface.pressure))
 }
 
 #[derive(Template)]

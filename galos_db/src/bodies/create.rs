@@ -1,4 +1,5 @@
 use super::Body;
+use super::Surface;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::body::Body as JournalBody;
@@ -16,8 +17,10 @@ impl Body {
         } else {
             None
         };
+        let surface = body.surface.as_ref();
         let atmosphere_type =
-            body.atmosphere_type.as_ref().map(|kind| kind.to_string());
+            surface.map(|surface| surface.atmosphere_type.to_string());
+        let surface_pressure = surface.map(|surface| surface.pressure);
 
         let row = sqlx::query!(
             "
@@ -107,7 +110,7 @@ impl Body {
             body.radius,
             body.surface_gravity,
             body.surface_temperature,
-            body.surface_pressure,
+            surface_pressure,
             body.semi_major_axis,
             body.eccentricity,
             body.orbital_inclination,
@@ -133,13 +136,13 @@ impl Body {
             landable: row.landable,
             terraform_state: row.terraform_state,
             atmosphere: row.atmosphere,
-            atmosphere_type: row.atmosphere_type,
+            surface: Surface::read(row.atmosphere_type, row.surface_pressure),
             volcanism: row.volcanism,
             mass: row.mass,
             radius: row.radius,
             surface_gravity: row.surface_gravity,
             surface_temperature: row.surface_temperature,
-            surface_pressure: row.surface_pressure,
+
             semi_major_axis: row.semi_major_axis,
             eccentricity: row.eccentricity,
             orbital_inclination: row.orbital_inclination,
