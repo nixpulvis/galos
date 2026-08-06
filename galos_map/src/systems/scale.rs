@@ -4,17 +4,10 @@
 //! its own scale is invisible from the next one over, so what is drawn is
 //! whatever keeps it on screen and tells the viewer something.
 //!
-//! # Where this is going
-//!
-//! Once the camera is close enough to see inside a system, its extent should
-//! come from what is in it, so that its drawn radius is the orbit of its
-//! outermost body and zooming in lands on the system at its true size.
-//! Further out that is far too small to see, and has to give way to the
-//! sizings here, which exist so a system stays visible from light years off
-//! and can carry population or anything else the galaxy view wants to show.
-//!
-//! The two want blending over the range where neither is right on its own,
-//! rather than switching between them at a threshold.
+//! [`View::Systems`] blends the two: an angle that holds a system on screen
+//! from light years off, and the system's own extent, which is what is left
+//! once the angle has fallen away. [`View::Stars`] does not, and is the older
+//! of the two.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
@@ -54,8 +47,18 @@ pub fn plugin(app: &mut App) {
 
 #[derive(Resource, Debug, PartialEq)]
 pub enum View {
+    // TODO: Settle this one by eye. The size a shell is drawn at now falls
+    // to the system's own extent rather than to a fixed floor, and nothing
+    // has looked at what that does across the whole range, a crowded sky
+    // especially.
     // #[default]
     Systems,
+    // TODO(#46): Draw a star at the size and color it actually is, and give
+    // this a name that says so. `size_uniformly` draws every system at a
+    // hundredth of a light year, whatever the star is and wherever the camera
+    // stands, which was a stand-in from before the map was laid out in metres
+    // and a star had a radius worth drawing. Whether a shell belongs in this
+    // view at all, or only what is inside one, is the same question.
     Stars,
     // TODO(#44): Bodies
 }
@@ -146,15 +149,38 @@ fn population_factor(population: u64, average: f64) -> f32 {
 /// system stands out at about the same size wherever it is. Whether a system is
 /// drawn at all is a question about how bright it is rather than how large, and
 /// is not asked here.
-const ANGULAR: f32 = 4e-4;
-
-/// The least a shell is drawn at, in metres
 ///
-/// Standing in for the size of the system, which is not known until its bodies
-/// have been read. Once they have, this gives way to what they say — the
-/// expression is the same either way, an angle plus a size, and only the size
-/// is a guess.
-const FLOOR: f32 = (8.5e-2 * crate::space::LIGHT_YEAR) as f32;
+/// About a fifth of a degree, which is six pixels down a 1080 line window.
+const ANGULAR: f32 = 4e-3;
+
+/// How much larger than its system a shell is drawn
+///
+/// Enough that the outermost orbit sits inside rather than on the surface.
+const MARGIN: f32 = 1.2;
+
+/// How far a system reaches when the map has not been told, in metres
+///
+/// Five thousand light seconds, near the middle of what a system comes to.
+/// Stands for one nobody has asked about and one with nothing on record
+/// alike, both being the map not knowing, and neither being worth telling
+/// apart on screen.
+const STAND_IN: f32 = 1.5e12;
+
+/// How large a system is drawn, in metres
+///
+/// A system at its true size is invisible from the next one over, so what is
+/// drawn is that size plus whatever angle keeps it on screen. Far off the
+/// angle is the whole of it and every system holds the same small mark. The
+/// angle falls away as the camera closes and what is left is the system
+/// itself, so a shell settles onto its system rather than arriving at it and
+/// there is no distance at which it does anything sudden.
+///
+/// `prominence` scales the angle and not the system. A busy system is worth a
+/// larger mark; it is not worth a larger volume, and a quarter of one would
+/// put the shell inside the orbits it stands around.
+fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
+    ANGULAR * away * prominence + extent * MARGIN
+}
 
 /// Draw each system large enough to be seen from where the camera is
 ///
@@ -170,6 +196,7 @@ const FLOOR: f32 = (8.5e-2 * crate::space::LIGHT_YEAR) as f32;
 pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
+    contents: Res<super::bodies::Contents>,
     camera: Query<&OrbitCamera>,
     systems: Query<&System>,
     mut shells: Query<(&mut Transform, &ChildOf), With<Shell>>,
@@ -178,16 +205,25 @@ pub fn size_by_distance(
         let Ok(eye) = camera.single().map(|c| c.eye) else { return };
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut shell, child_of) in shells.iter_mut() {
+        for (mut drawn, child_of) in shells.iter_mut() {
             let Ok(system) = systems.get(child_of.parent()) else { continue };
             let away = crate::space::metres(eye - DVec3::from(system.position))
                 .length() as f32;
-            let mut scale = ANGULAR * away + FLOOR;
-            if scale_population.0 {
-                scale *=
-                    population_factor(system.population, stats.population_mean);
-            }
-            shell.scale = Vec3::splat(scale);
+            // Only the one system the map is holding the insides of can say
+            // how far it reaches. Every other is drawn at the stand-in, which
+            // is what not knowing looks like.
+            let extent = if contents.known(system.address) {
+                contents.extent().unwrap_or(STAND_IN)
+            } else {
+                STAND_IN
+            };
+            let prominence = if scale_population.0 {
+                population_factor(system.population, stats.population_mean)
+            } else {
+                1.
+            };
+
+            drawn.scale = Vec3::splat(shell(extent, away, prominence));
         }
     }
 }
@@ -208,6 +244,65 @@ pub fn size_uniformly(mut shells: Query<&mut Transform, With<Shell>>) {
 mod tests {
     use super::*;
     use crate::systems::tests::system;
+
+    /// A shell always holds the system it stands around
+    ///
+    /// What the rest rests on. Swept over the whole range of distances the map
+    /// allows and over extents from a compact system to the widest on record,
+    /// since a floor-shaped mistake passes on a large system and fails on
+    /// every smaller one.
+    #[test]
+    fn a_shell_holds_the_system_inside_it() {
+        // A light second out to a light hour, which is compact to the widest
+        // on record.
+        for extent in [3e8f32, 1.5e12, 1.7e14, 2.1e14] {
+            // A metre out to the far rim of the galaxy.
+            for away in [1f32, 1e9, 1e13, 1e17, 4.7e20] {
+                for prominence in [POP_MIN, 1., POP_MAX] {
+                    let drawn = shell(extent, away, prominence);
+
+                    assert!(
+                        drawn >= extent,
+                        "a system {extent}m across was drawn {drawn}m \
+                         from {away}m away"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A shell settles onto its system rather than arriving at it
+    ///
+    /// Halving the distance halves what is left over above the true size, so
+    /// there is no distance at which the shell stops shrinking and nothing to
+    /// cross.
+    #[test]
+    fn a_shell_settles_onto_its_system() {
+        let extent = 1.7e14;
+        let held = extent * MARGIN;
+
+        let far = shell(extent, 1e16, 1.) - held;
+        let near = shell(extent, 5e15, 1.) - held;
+
+        assert!(
+            (far / near - 2.).abs() < 1e-3,
+            "half the distance left {near} over against {far}"
+        );
+    }
+
+    /// A system the map knows nothing about is still drawn as a mark
+    ///
+    /// The stand-in is what keeps a system visible from light years off. Read
+    /// at the spacing of the nearest stars, where the old floor drew a sphere
+    /// tens of degrees across.
+    #[test]
+    fn a_neighbour_is_a_mark_rather_than_a_sky() {
+        // A tenth of a light year, which is nearer than any real neighbour.
+        let away = 0.1 * crate::space::LIGHT_YEAR as f32;
+        let seen = shell(STAND_IN, away, 1.) / away;
+
+        assert!(seen < 0.01, "a system {away}m off subtended {seen} radians");
+    }
 
     /// A world that keeps the stats current, and nothing else
     fn map() -> App {
