@@ -16,6 +16,8 @@ impl Body {
         } else {
             None
         };
+        let atmosphere_type =
+            body.atmosphere_type.as_ref().map(|kind| kind.to_string());
 
         let row = sqlx::query!(
             "
@@ -99,7 +101,7 @@ impl Body {
             body.landable,
             body.terraform_state,
             body.atmosphere,
-            body.atmosphere_type,
+            atmosphere_type,
             body.volcanism,
             body.mass,
             body.radius,
