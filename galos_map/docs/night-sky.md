@@ -147,6 +147,26 @@ holds a sunlit planet, the constellations are gone, exactly as they are
 from the day side of a real window. A compressed-range cheat can be a
 toggle later if honesty proves annoying; it is not the default.
 
+**The instrument.** The point spread function is part of the camera too,
+and its parameters are dials beside the exposure in one camera-controls
+panel: core width, wing strength, later spikes. The form is a Moffat,
+`I(θ) ∝ (1 + (θ/α)²)^(−β)` — a Gaussian-ish core with power-law wings,
+and the wings are where "bright looks bigger" lives: the radius above
+threshold grows as `F^(1/2β)`, the gentle law the eye expects, where a
+pure Gaussian clips every star to one size. One PSF for every star,
+energy-normalized so summed fluxes stay honest — which shape to use is
+an instrument choice, never a per-star one. Its values come three ways,
+composable: computed from a declared instrument (an Airy core from an
+aperture; for the dark-adapted eye the CIE disability-glare function,
+roughly `10/θ³ + 5/θ²` over 0.1°–100°, is a citable, parameter-complete
+wing); fitted from a reference photograph whose look is wanted — the
+inverse problem astronomy tooling like AstroPhot solves, run backwards
+as our parameter source; or calibrated against the renderer, since the
+drawn PSF is the shader's core composed with bloom's fixed kernel — a
+test renders a star, reads the radial profile off the framebuffer, and
+tunes bloom until the encircled energy matches the target, once, rather
+than by eye.
+
 ## Distance bands (Real mode only)
 
 The sky is kept honest by a refresh policy whose cost scales with
@@ -179,9 +199,14 @@ zoom are therefore exact at all times; nothing about a bake privileges a
 view. What can go stale is only *set membership* — which stars belong in
 a magnitude-limited band changes as the camera travels — and membership
 error is invisible by construction, since a star enters or leaves the set
-at the visibility floor. The shader is also where later polish lives
-(scotopic desaturation, spikes are per-star, distance-dependent effects),
-so it is part of the rendering phase, not an optimization.
+at the visibility floor. The fragment half draws the PSF core integrated
+over each pixel's footprint (an erf difference per axis) rather than
+sampled at its centre, so a star crossing a pixel boundary hands its
+energy over smoothly instead of shimmering — the same sampling
+discipline photometry packages apply when fitting the other way. The
+shader is also where later polish lives (scotopic desaturation, spikes
+are per-star, distance-dependent effects), so it is part of the
+rendering phase, not an optimization.
 
 **Refetch is the only real cost, so give it a margin.** Fetch each band
 with ~10× spatial margin around its baked eye. Then most invalidations
@@ -309,17 +334,19 @@ an absolute magnitude is not news the way a faction flip is.
    expression and its true-size handover; adds the context blend on the
    angular term. Shell mode is complete here, database untouched.
 3. **Camera 2.0.** Stand here, orbit that, the wheel handoff to focal
-   length, drag scaled by field of view, the exposure dial with
-   auto-metering. Works in Shell mode too, so it lands independently of
-   everything photometric.
+   length, drag scaled by field of view, and the camera-controls panel:
+   the exposure dial with auto-metering, and the instrument's PSF
+   parameters beside it. Works in Shell mode too, so it lands
+   independently of everything photometric.
 4. **Real-mode data.** The join query, `Photometry` component, lazy fetch
    keyed by mode + band with coverage margin, baked-eye invalidation,
    the speed-tiered policy with rebake-on-settle.
 5. **Real-mode rendering.** Within the spyglass, binned photometric
    materials on the existing entities (quarter-magnitude × ~8 temperature
    buckets keeps the shared-handle pattern of `SystemMaterials`). Beyond
-   it, band meshes with the billboard vertex shader. Additive blending,
-   bloom tuning against the exposure scale.
+   it, band meshes with the billboard vertex shader and pixel-integrated
+   PSF core. Additive blending, and the one-time encircled-energy
+   calibration of bloom against the instrument's target profile.
 6. **The far background.** The `star_flux_cells` aggregate table and
    ingest split, the offline bake walk, reference-grid cubemaps.
 7. **Polish**, each droppable: scotopic desaturation below a flux
