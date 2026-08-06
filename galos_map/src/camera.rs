@@ -1,5 +1,5 @@
 use crate::schedule::MapSet;
-use crate::systems::Spyglass;
+use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
 use bevy::camera::Hdr;
 use bevy::input::mouse::{
@@ -453,10 +453,19 @@ pub fn orbit_camera(
     time: Res<Time<Real>>,
     spyglass: Res<Spyglass>,
     grids: Query<&Grid, With<BigSpace>>,
-    mut cameras: Query<(&mut OrbitCamera, &mut CellCoord, &mut Transform)>,
+    // The grid of whatever the camera has descended into, if it has.
+    inside: Query<(&Grid, &System), Without<BigSpace>>,
+    mut cameras: Query<(
+        &mut OrbitCamera,
+        &mut CellCoord,
+        &mut Transform,
+        Option<&ChildOf>,
+    )>,
 ) {
     let Ok(grid) = grids.single() else { return };
-    let Ok((mut orbit, mut cell, mut transform)) = cameras.single_mut() else {
+    let Ok((mut orbit, mut cell, mut transform, child_of)) =
+        cameras.single_mut()
+    else {
         return;
     };
 
@@ -561,8 +570,23 @@ pub fn orbit_camera(
     // The whole orbit above is worked out in light years, which is what the
     // map measures in and what everything asking the camera where it is
     // expects. Only here does it become the metres the grid is laid out in.
-    let (eye_cell, eye_translation) =
-        grid.translation_to_grid(crate::space::metres(eye));
+    //
+    // Which grid depends on where the camera is standing. Inside a system it
+    // is measured from that system, whose cells are a metre, so what a float
+    // has left over is nanometres and everything drawn near it is drawn
+    // exactly. Out in the galaxy it is measured from the middle of it, where
+    // the cells are a light year and the remainder is hundreds of thousands
+    // of kilometres. That is far finer than anything the galaxy draws and far
+    // coarser than anything a system does, which is the whole reason for
+    // going down.
+    let descended = child_of
+        .map(|child_of| child_of.parent())
+        .and_then(|parent| inside.get(parent).ok());
+    let (eye_cell, eye_translation) = match descended {
+        Some((grid, system)) => grid
+            .translation_to_grid(crate::space::metres(eye - system.position())),
+        None => grid.translation_to_grid(crate::space::metres(eye)),
+    };
     cell.set_if_neq(eye_cell);
     transform.translation = eye_translation;
     transform.rotation = rotation;

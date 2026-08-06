@@ -81,6 +81,16 @@ pub struct System {
     updated_at: DateTime<Utc>,
 }
 
+impl System {
+    /// Where the system is, in light years from the galactic center
+    ///
+    /// A [`System`]'s fields are private to this module, and the camera is
+    /// not in it. It has to measure from a system to descend into one.
+    pub fn position(&self) -> DVec3 {
+        DVec3::from(self.position)
+    }
+}
+
 pub mod bodies;
 pub mod despawn;
 pub mod fetch;
