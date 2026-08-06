@@ -2,6 +2,7 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
+use crate::systems::bodies::spawn::Body;
 use crate::systems::{
     System,
     fetch::FetchIndex,
@@ -10,7 +11,7 @@ use crate::systems::{
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
     route::spawn::{framing, spawn_route},
     route::{self, Plotted, Route},
-    selection::Selection,
+    selection::{Selected, Selection},
     system_to_vec,
 };
 use crate::ui::{Gesture, Grasp};
@@ -190,6 +191,8 @@ pub struct Shell;
 fn select_on_click(
     click: On<Pointer<Click>>,
     pointed_at: Query<&System, With<PointedAt>>,
+    pointed_body: Query<Entity, (With<Body>, With<PointedAt>)>,
+    picked_bodies: Query<Entity, (With<Body>, With<Selected>)>,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     grasp: Res<Grasp>,
@@ -197,6 +200,7 @@ fn select_on_click(
     keys: Res<ButtonInput<KeyCode>>,
     mut answered: Local<Option<u32>>,
     mut selection: ResMut<Selection>,
+    mut commands: Commands,
 ) {
     let travelled = pointers
         .get_entity(click.pointer_id)
@@ -235,7 +239,6 @@ fn select_on_click(
     // has already settled which system that is, weighing a name over a star
     // lying nearer behind it. Asking it rather than working the hit out
     // again keeps the click on whatever the ring and the tint are on.
-    let Ok(system) = pointed_at.single() else { return };
     // Held down, a modifier gathers systems up rather than replacing what is
     // held, and lets go of one already held, so the same gesture builds a set
     // and takes it apart.
@@ -252,6 +255,40 @@ fn select_on_click(
         KeyCode::ShiftLeft,
         KeyCode::ShiftRight,
     ]);
+    // A body is picked out beside the system holding it rather than instead
+    // of it: it is a thing inside the place, not an alternative to it. So
+    // clicking a planet leaves the system it is in picked out, and what a
+    // plain click replaces is whatever body was picked out before.
+    //
+    // Held on the entity rather than in [`Selection`], because the reason
+    // that resource holds values does not apply here. A system is described
+    // by a search before the map has fetched it, so there is nothing to mark;
+    // a body can only be clicked once it is drawn. Letting the mark die with
+    // the entity is then what keeps the selection honest when the camera
+    // leaves and the bodies go with it.
+    if let Ok(body) = pointed_body.single() {
+        let held = picked_bodies.contains(body);
+        if !gathering {
+            for other in &picked_bodies {
+                commands.entity(other).remove::<Selected>();
+            }
+        }
+        if gathering && held {
+            commands.entity(body).remove::<Selected>();
+        } else {
+            commands.entity(body).insert(Selected);
+        }
+        return;
+    }
+
+    let Ok(system) = pointed_at.single() else { return };
+    // Picking a system out is picking out a different subject, so whatever
+    // body was held inside the last one is let go of with it.
+    if !gathering {
+        for body in &picked_bodies {
+            commands.entity(body).remove::<Selected>();
+        }
+    }
     selection.pick(system.clone(), gathering);
 }
 
