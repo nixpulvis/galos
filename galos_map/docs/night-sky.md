@@ -84,36 +84,129 @@ into `Mode { Real, Shell }` unless the uniform view is still wanted.
 
 The sky is kept honest by a refresh policy whose cost scales with
 `velocity/distance`. Sky stars are grouped into concentric distance bands,
-each remembering the **baked eye position** its directions, magnitudes and
-material bins were computed for. A band is valid while
+each remembering the **baked eye position** it was fetched around. A band
+goes stale in proportion to camera movement: a star computed for an eye
+`Δ` away is off by `Δ/d` radians and `~2.2·(Δ/d)` magnitudes, so
+tolerance scales with `d_inner`. A system is ~1e-4 ly across, so flight
+inside one never trips any band: the "camera in a system looking out"
+case costs zero recomputation as a limit, not as a detected mode. Band
+membership needs hysteresis at the edges, as `SWITCHING_THRESHOLD` does
+for grid cells.
 
-    |eye_now − eye_baked| < θ_tol · d_inner
+**Bands are meshes, not entities.** Entities exist only within the
+spyglass, where Shell mode needs picking and labels anyway; Real mode
+rematerializes those same entities photometrically. Beyond the spyglass a
+band bakes to one point-cloud mesh — far stars need no per-star identity,
+and per-frame cost becomes a handful of draw calls whatever the count. A
+whole sky is ~10–50k stars (magnitude 8 from Earth is ~40k, and the DB is
+sparser than reality beyond the bubble), so the meshes are small. Vertices
+are anchored to the cell of the baked eye; f32 offsets keep sub-tolerance
+precision at every band's distance.
 
-with `θ_tol` ≈ 1 mrad (half a bloom width; the photometric tolerance is
-looser, so one test covers both). Tolerated movement before refresh:
+**The projection is live; only the star list is a snapshot.** Each star's
+quad carries its center position, absolute magnitude and color as vertex
+attributes, and a billboard vertex shader expands it in view space each
+frame — computing direction (rasterization), angular size (the sizing
+law), and flux (1/d² from the current eye) live on the GPU. Rotation and
+zoom are therefore exact at all times; nothing about a bake privileges a
+view. What can go stale is only *set membership* — which stars belong in
+a magnitude-limited band changes as the camera travels — and membership
+error is invisible by construction, since a star enters or leaves the set
+at the visibility floor. The shader is also where later polish lives
+(scotopic desaturation, spikes are per-star, distance-dependent effects),
+so it is part of the rendering phase, not an optimization.
 
-| band     | movement  |
-|----------|-----------|
-| 10 ly    | ~0.01 ly  |
-| 100 ly   | ~0.1 ly   |
-| 1,000 ly | ~1 ly     |
+**Refetch is the only real cost, so give it a margin.** Fetch each band
+with ~10× spatial margin around its baked eye. Then most invalidations
+are answered by what is already cached (cheap mesh rebuilds, milliseconds
+for the whole sky on `AsyncComputeTaskPool`, swap when ready), and the
+database is only asked again when the camera outruns the margin. Far
+bands are magnitude-limited: at 5,000 ly only bright giants clear
+naked-eye visibility, so row counts stay sane.
 
-A system is ~1e-4 ly across, so flight inside one never trips any band:
-the "camera in a system looking out" case costs zero recomputation as a
-limit, not as a detected mode. A 20 ly jump refreshes only the cheap inner
-bands. Refreshes run on `AsyncComputeTaskPool` (the `fetch.rs` pattern)
-and swap when ready; the stale band shown meanwhile is under tolerance by
-construction. Band membership needs hysteresis at the edges, as
-`SWITCHING_THRESHOLD` does for grid cells.
+**The policy is speed-tiered**, which is where "take a photo of this"
+becomes literal:
 
-Far bands are magnitude-limited: at 5,000 ly only bright giants clear
-naked-eye visibility, so row counts stay sane. The outermost layer — the
-Milky Way band, i.e. the summed flux of everything unresolved — is a
-cubemap baked offline (from the full table or a density model) for a
-handful of reference positions; its tolerance is hundreds of ly of travel.
+- Parked or in-system: every band valid, zero cost.
+- Slow drift: inner bands churn cheaply from cache; outer bands barely
+  notice. Live for any speed at which someone is actually reading the sky.
+- Fast travel (a fly-to crosses the galaxy at thousands of ly/s,
+  invalidating everything every frame): stop chasing. Freeze the
+  composite — show the last good photo — and rebake the cascade on
+  arrival, inner bands first. The camera already signals settling
+  (`Travel` completes, `snap` pins the center), so the photo develops
+  when you stand still without new detection machinery. Physically
+  honest, too: a long exposure during a slew gives star trails, not a
+  sharper sky.
 
 Shell mode needs none of this. Its reach is the spyglass, as today; the
-band entities and the invalidation system exist only while Real is on.
+band meshes and the invalidation system exist only while Real is on.
+
+## The far background: a cubemap over an aggregate table
+
+The mesh remembers positions; a cubemap remembers directions. A band mesh
+is a catalog re-projected live every frame, so translation works. A
+cubemap is an image indexed by direction alone — rotation is exact, but
+the depth is gone, so it behaves as if everything in it were infinitely
+far. That flaw is harmless exactly where `Δ/d` stays under tolerance for
+any plausible travel, which is why the cubemap is reserved for the
+outermost layer: the Milky Way band, the summed glow of stars each
+individually below threshold. An image is the natural container for
+"integrated flux per direction"; a point list is the natural container
+for discrete sources. Bakes happen offline for a grid of reference
+positions; crossing hundreds of ly swaps to the nearest bake.
+
+**The background renders the record.** It is an accurate picture of what
+the database holds, survey bias included — a bright corridor along a
+popular exploration route is information, and the map is a map. A galaxy
+density model for a prettier Milky Way is a separate future feature; it
+would feed the same bake as another flux source, changing nothing below.
+
+Baking cannot scan every row, so the database grows an aggregate layer.
+The bake is a sum of `L/(4πd²)` over far stars — the same 1/d² sum as
+N-body gravity — so the structure is a Barnes–Hut-style luminosity
+octree: a sparse hierarchy of 3D cells, each holding the photometric
+aggregate of everything inside it.
+
+    star_flux_cells (
+        level, cx, cy, cz,     -- sparse integer cell coords per level
+        luminosity real[],     -- linear flux units, ~6 temperature buckets
+        centroid   real[3],    -- luminosity-weighted mean position
+        spread     real,       -- luminosity-weighted RMS radius
+        count      bigint,
+    )
+
+- Luminosity in linear units, never magnitudes: magnitudes do not add.
+  Convert `10^(-0.4·M)` at ingest and sum.
+- Temperature buckets keep the background's color structure (warm bulge,
+  blue arms) without per-star storage.
+- The weighted centroid, not the cell center, is where a cell's light
+  splats from, or the glow quantizes into grid-sized blobs.
+- The spread renders each cell as a Gaussian splat rather than a point,
+  which is what makes a coarse cell look like a star field.
+
+A bake walks the hierarchy from a reference point with an opening-angle
+test (`size/d` under a fraction of a degree: splat; otherwise descend),
+bottoming out at the band radius. Cost is governed by the opening angle,
+not the star count — tens of thousands of indexed reads rather than a
+full scan. Coarser levels roll up from the fine one by `GROUP BY`; the
+weighted moments compose exactly.
+
+**Bright and faint split at ingest**, by absolute magnitude. Stars above
+the cutoff (a fraction of a percent) stay out of the aggregates in an
+individually-queryable bright-star table; everything fainter contributes
+to cells and is never queried individually at range again. This keeps the
+far bands' magnitude-limited queries off the full table *and* prevents
+double counting: a giant drawn live in a band must not also be baked into
+the glow behind it. The mesh/cubemap boundary becomes one ingest-time
+constant.
+
+Maintenance is incremental because sums are additive: a scan event
+upserts its star's flux into one fine cell per level. New discoveries
+change any cell's flux by nothing the eye can see, so baked cubemaps may
+lag the table by weeks; rebaking is a cron job. The table is worth
+designing so `galos_server` can share it — "total recorded luminosity in
+a region" comes for free.
 
 ## Data
 
@@ -149,13 +242,19 @@ an absolute magnitude is not news the way a faction flip is.
    reproduces today's constants exactly. Shell mode is complete here —
    beach-ball fix included, database untouched. Independently landable.
 3. **Real-mode data.** The join query, `Photometry` component, lazy fetch
-   keyed by mode + band, baked-eye invalidation.
-4. **Real-mode rendering.** Binned photometric materials (quarter-
-   magnitude × ~8 temperature buckets keeps the shared-handle pattern of
-   `SystemMaterials`), additive blending, bloom/exposure tuning, exposure
-   as the one user dial.
-5. **Polish**, each droppable: scotopic desaturation below a flux
-   threshold, optional diffraction spikes, the baked galaxy background.
+   keyed by mode + band with coverage margin, baked-eye invalidation,
+   the speed-tiered policy with rebake-on-settle.
+4. **Real-mode rendering.** Within the spyglass, binned photometric
+   materials on the existing entities (quarter-magnitude × ~8 temperature
+   buckets keeps the shared-handle pattern of `SystemMaterials`). Beyond
+   it, band meshes with the billboard vertex shader. Additive blending,
+   bloom/exposure tuning, exposure as the one user dial.
+5. **The far background.** The `star_flux_cells` aggregate table and
+   ingest split, the offline bake walk, reference-grid cubemaps.
+6. **Polish**, each droppable: scotopic desaturation below a flux
+   threshold, optional diffraction spikes, star trails during fast
+   travel. A galaxy density model feeding the same bake is a separate
+   future feature, not part of this plan.
 
 ## Coordination with the bodies work
 
