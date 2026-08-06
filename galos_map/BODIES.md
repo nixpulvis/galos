@@ -1,5 +1,32 @@
 # Rendering bodies inside a system
 
+## Where this stands
+
+Bodies are drawn, answer the pointer, can be picked out and carry their names.
+The branch is `body-rendering`, twenty five commits off master.
+
+| Stage | | |
+|---|---|---|
+| 0 | See anything at all | landed `cb3e255`, and `2659d58` after it |
+| 1 | Metres, and two grids | landed `d5ddb3a` |
+| 2 | Reading what is in a system | landed `c824ea5` |
+| 3 | Where each body sits | landed `8af0443` |
+| 4 | Drawing them | landed `c9560a1` |
+| 5 | Arriving | the sizing and the descent landed; the chase and the dissolve are not written |
+| 6 | Reaching a body | pointing, selection and names landed; search, the panel and the switches are not written |
+
+Two things happened that this plan did not call for, and both are described
+where they belong below: picking was rewritten to work on the screen rather
+than by casting rays, and `elite_journal` went to 0.3 so that a gas giant can
+be scanned at all.
+
+**The data is the thing holding the rest back.** Three quarters of every body
+on record names a parent that is not there, so they are drawn against the
+middle of their system rather than against what they go round. Pluto is two
+thousand kilometres from its sun. `ISSUE-bodies-placed-wrong.md` and
+`ISSUE-gas-giants-dropped.md` at the repository root have the counts and the
+three causes. None of it is a fault in the placement here.
+
 ## Context
 
 `big_space` is in (issue #28, closed), and `space.rs` already says what comes
@@ -75,7 +102,7 @@ down. Read `space.rs`, `scale.rs` and `camera.rs` before writing a line.
 
 ---
 
-## Stage 0 — See anything at all *(landed: `7613607`)*
+## Stage 0 — See anything at all *(landed: `cb3e255`, `2659d58`)*
 
 `camera.rs` grew `focus_lens`, the sole writer of the camera's `Projection`,
 holding `near = radius × NEAR_FRACTION` (`1e-4`) so the clip plane is always a
@@ -94,7 +121,7 @@ clipping meant for portals.
 
 ---
 
-## Stage 1 — Metres, and two grids
+## Stage 1 — Metres, and two grids *(landed: `d5ddb3a`)*
 
 **`galos_map/src/space.rs`** — the root grid is re-based to metres, and gains a
 nested grid per system.
@@ -154,7 +181,7 @@ sphere is drawn wildly exaggerated.
 
 ---
 
-## Stage 2 — Reading what is in a system
+## Stage 2 — Reading what is in a system *(landed: `c824ea5`)*
 
 **`galos_db`**
 
@@ -185,7 +212,7 @@ Polled in `MapSet::Populate`, as `spawn::spawn` polls its own.
 
 ---
 
-## Stage 3 — Where each body sits
+## Stage 3 — Where each body sits *(landed: `8af0443`)*
 
 **`galos_map/src/systems/bodies/orbit.rs`** — pure maths, no ECS, testable
 without a window or a database.
@@ -242,14 +269,27 @@ shortcut but two, and only one of them is likely right.
   — will not. The pair would be put at the centre rather than out where it
   belongs, its whole outer orbit dropped.
 
-Neither can be settled without data, so this is written down rather than
-guessed at. What would settle it is one multi-star system drawn: if its stars
-sit sensibly about the middle and a nested pair does not, the reading is right
-and the fix belongs to issue #70 rather than to the placement.
+The data has since settled it, and worse than either case above. Of 383,016
+bodies on record, 283,009 name a parent that is not there. That is 73.9%, and
+most of them are not barycentres at all: they are moons of gas giants, and no
+gas giant has ever been stored, because a scan of one failed to parse and the
+whole entry was dropped in silence. `ISSUE-gas-giants-dropped.md` has the
+proof.
+
+So the shortcut is wrong far more often than it is right, and Pluto is the
+example to hand: its recorded orbit is around the Pluto-Charon barycentre, so
+it is drawn two thousand kilometres from its sun instead of six billion.
+
+Three things fix it, none of them here. Gas giants have to parse, which
+`elite_journal` 0.3 now does. Barycentres have to be stored, which is #70 and
+which now parses and has nowhere to go. `DistanceFromArrivalLS` has to be
+stored, which is the cheapest of the three and would place a body correctly
+without resolving its parent at all. All three want the database filled again
+before anything shows.
 
 ---
 
-## Stage 4 — Drawing them
+## Stage 4 — Drawing them *(landed: `c9560a1`)*
 
 ```
 Galaxy         BigSpace, Grid(2^53 m)
@@ -274,13 +314,41 @@ Galaxy         BigSpace, Grid(2^53 m)
   shell want their own handles at a higher subdivision.
 - **Orbit lines** reuse `route::LineStrip`, hung off their own centre as
   `route/spawn.rs:60-68` documents, so vertices carry only the size of the orbit.
-- **Picking**: `MeshPickingSettings { require_markers: true }`, so bodies need
-  their own targets on the `pointer_target` model with
-  `should_block_lower: false`.
+- **Picking** is not done by casting rays at all, and no longer could be. See
+  below.
 
 ---
 
-## Stage 5 — Arriving
+## Stage 5 — Arriving *(the sizing and the descent landed; the rest is not written)*
+
+What landed:
+
+- **The sizing**, `dd7dd3f`, as the law below describes it. `ANGULAR` is
+  `4e-3` and `MARGIN` is `1.2`, both as written here. The stand-in is five
+  thousand light seconds. Population scales the angle rather than the system,
+  which the plan did not say and which containment needs: the factor runs down
+  to a quarter, and applied to the whole shell it would pull the surface
+  inside the orbits it stands around.
+- **The descent**, `2a5e231`, and it mattered far more than expected. Left
+  undone, orbits drew as wobbling polygons and names as scribble, because a
+  float has about three hundred thousand kilometres left over inside a galaxy
+  cell and everything near the camera was being snapped to a lattice that
+  coarse. Descending leaves under a metre. There is a screenshot of the
+  before in the session that fixed it.
+- **The two ranges**, in `bodies/fetch.rs` and `bodies/spawn.rs`. The load
+  range is five light years, the spawn range an angle rather than a distance.
+
+What is not written:
+
+- **The chase.** `shell(extent, distance)` is written straight onto the
+  `Shell` rather than approached, so an extent that changes moves the sphere
+  in one frame. Nothing has been seen to jump, since the only extent that
+  changes is the held system's and it changes far out where the angle is
+  nearly all of the size.
+- **The dissolve.** Opacity still does not answer `d / shell`, so the shell is
+  as solid at the surface as it is from light years off. What saves it for now
+  is that a sphere is back-face culled, so from inside there is nothing drawn
+  rather than a wall. Worth looking at directly before writing anything.
 
 **The old law had the right shape. Its floor was standing in for the system.**
 
@@ -457,8 +525,13 @@ it is.
 the point of all this is that there is no mode to switch to. Say so in the doc,
 since it is a promise being deliberately broken.
 
-**Tests**, on the sizing itself, which is pure and wants sweeping rather than
-sampling:
+**Tests.** Three of the list below are written, under names close to these:
+containment swept over the whole range of distances and extents, the settling,
+and one pinning that a near neighbour reads as a mark rather than as a sky.
+The rest are not, and the last two cannot be until the chase and the dissolve
+are.
+
+On the sizing itself, which is pure and wants sweeping rather than sampling:
 
 - `the_shell_is_never_smaller_than_the_system_it_holds` — the invariant the rest
   rests on. Swept over distances spanning the whole range and over extents from
@@ -535,7 +608,61 @@ the thing to test first, since it decides how a sky of millions reads.
 
 ---
 
-## Stage 6 — Reaching a body
+## Picking, which this plan got wrong *(landed: `a5f417f`, `6af2b0a`)*
+
+Nothing on the map is met by a ray now. A ray at this scale does not survive
+the arithmetic, and there are three separate places it gives out:
+
+1. The camera builds one from a point at the near plane and another at
+   `near / f32::EPSILON`. Normalising squares that, and the square overflows
+   once `near` passes about `2.2e12`. Past that no ray is built at all and
+   nothing anywhere answers the pointer. `2659d58` caps the plane.
+2. Meeting a ray means inverting the target's transform, which divides by its
+   determinant, and for an even scale that is the scale cubed. A mark drawn
+   `1e15` metres across cubes past what a float holds: the inverse comes back
+   all zeros and the ray sits at the origin pointing nowhere.
+3. A triangle is met by multiplying three of its lengths together. Out where
+   the stars are, that overflows and cancels to a nought that is not a number,
+   which fails every comparison and reports a miss.
+
+None of it was a question about the world. A system's mark is nine pixels and
+a name is twelve pixels tall, and both were being turned into metre-scale
+geometry only so that a ray could be thrown at them. They are compared on the
+screen instead, in a picking backend of our own, so everything downstream of
+the answer is still bevy's: what is hovered, what a click lands on, whether
+the cursor turns.
+
+Bodies are answered the same way. A sphere projects to a disc, so the disc is
+its outline, and a floor keeps one drawn too small to see still worth aiming
+at. `MeshPickingPlugin` is gone, along with the invisible sphere hung off
+every system and the box behind every name.
+
+The one number left over is `TARGET_RADIUS`, and it is gone with the rest.
+
+---
+
+## Stage 6 — Reaching a body *(pointing, selection and names landed)*
+
+What landed, none of it quite as this stage imagined:
+
+- **Pointing**, `6af2b0a`. A body carries an `Indicator`, which is a radius in
+  pixels, and answers the pointer over it. A body wins the pointer from the
+  system holding it; a name still wins over both.
+- **Selection**, `7c58109`. A body is picked out beside its system rather than
+  instead of it, as this stage asks, but held as a `Selected` on the entity
+  rather than in `Selection`. The reason that resource holds values does not
+  apply: a system reached by search is described before it is fetched, and a
+  body cannot be clicked until it is drawn. The mark then dies with the
+  entity, which is what keeps it honest when the camera leaves.
+- **Names**, `d16b60b`. Body names are candidates in the same screen-space
+  packing as system names, so the two cannot overlap. Ranked by apparent size,
+  bounded so no body outranks whatever is pointed at. Not gated on
+  `ShowNames`, unlike a system's.
+
+What is not written: the search reading a name as a body, `Subject::Body`, and
+the System section of switches. All three are as this stage describes them.
+
+### As first written
 
 **Search (`search.rs`)** — one box, not two. A name is tried as a system, and if
 nothing answers, as a body: `Body::fetch_like_name` then
@@ -568,23 +695,25 @@ world" needs new `galos_db` queries, another prepared-query regeneration, and a
 
 ## What to watch
 
-- The camera's descent is the one piece with no precedent in the codebase. Build
-  it behind the same gate as the contents so the two cannot disagree.
-- `visibility()` (`systems/mod.rs:169`) hides a system by writing `Visibility` on
-  the parent; bodies inherit it. Confirm that is wanted when the spyglass narrows
-  while you are inside a system.
-- `labels::choose_names` solves a screen-space packing over every candidate.
-  Keep bodies out of it for now, or gate them on the same `apparent`.
-- Turn on big_space's `BigSpaceValidationPlugin` while the nested grids are being
-  built — nothing validates the hierarchy at runtime.
-- Grids are per-frame work for big_space, so they are created and destroyed with
-  a system's contents rather than living on every loaded system. Measure it, and
-  say in the doc comment what the measurement was.
-- The spyglass is not drawn — it is a culling radius `visibility()` applies by
-  distance from the focus, and nothing on screen shows its reach. Worth a gizmo
-  sphere one day; out of scope here, and not to be confused with the shell.
-- `Body` is not `Clone` and `Star` has no read path: Stage 2 blocks everything
-  after it.
+- **The camera is a child of the system it has descended into**, so anything
+  that despawns a system entity takes the camera with it. `99e0013` lifts it
+  out before the one place that does. Any new despawn has to do the same.
+- `visibility()` (`systems/mod.rs`) hides a system by writing `Visibility` on
+  the parent; bodies inherit it, and so now does the camera. A camera renders
+  whatever its own visibility says, so this has not bitten, but it is worth
+  confirming when the spyglass narrows while you are inside a system.
+- Turn on big_space's `BigSpaceValidationPlugin` while the nested grids are
+  being built. Nothing validates the hierarchy at runtime, and this has not
+  been done.
+- Grids are per-frame work for big_space, so they are created and destroyed
+  with a system's contents rather than living on every loaded system. Still
+  not measured, and the doc comment still says so.
+- The spyglass is not drawn. It is a culling radius `visibility()` applies by
+  distance from the center, and nothing on screen shows its reach. Worth a
+  gizmo sphere one day, and not to be confused with the shell.
+- `scale.rs` carries two TODOs written against what is drawn now: `View::Stars`
+  wants the rework #46 asks for, and `View::Systems` wants an eye on the new
+  sizing in a crowded sky.
 
 ## Verifying
 
@@ -594,12 +723,16 @@ SQLX_OFFLINE=true cargo test --all   # what CI runs
 DATABASE_URL=postgresql://…/galos cargo run -p galos_map
 ```
 
-`cargo sqlx prepare --workspace` needs a live database and has to happen before
-CI can build Stage 2.
+`cargo sqlx prepare --workspace` needs a live database, and has been run.
 
-End to end, by hand: search `Sol`, click the row to fly there, and keep zooming.
-The shell should shrink and thin out rather than swallow the camera, closing
-around you at the system's true extent, with the star and its planets inside it
-where the ephemeris says. Then search `Sol 3`, confirm it is picked out and
-described, and open its panel. `--features inspector` gives a world inspector if
-a transform looks wrong.
+End to end, by hand: search a system with bodies on record, click the row to
+fly there, and keep zooming. Orbits should be smooth rather than faceted and
+names legible rather than scribble, both of which say the camera descended.
+Bodies should ring under the pointer, take a blue ring when clicked, and carry
+their names. Neighbouring systems should stay small marks the whole way in.
+`--features inspector` gives a world inspector if a transform looks wrong.
+
+`SOL` has 35 bodies and is the system to try, but note that four of its
+planets are missing entirely and seventeen of the rest are drawn against the
+middle rather than against what they orbit. That is the data, not the
+drawing.
