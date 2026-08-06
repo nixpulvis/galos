@@ -339,7 +339,8 @@ fn init_materials(
 /// cost with nothing to show for it.
 #[allow(clippy::too_many_arguments)]
 fn draw(
-    camera: Query<&OrbitCamera>,
+    camera: Query<(Entity, &OrbitCamera)>,
+    galaxy: Res<crate::space::Galaxy>,
     systems: Query<(Entity, &System)>,
     inside: Query<Entity, With<Inside>>,
     contents: Res<Contents>,
@@ -351,7 +352,9 @@ fn draw(
     mut drawn: ResMut<Drawn>,
     mut commands: Commands,
 ) {
-    let Ok(eye) = camera.single().map(|camera| camera.eye) else { return };
+    let Ok((eye_entity, eye)) = camera.single().map(|(e, c)| (e, c.eye)) else {
+        return;
+    };
 
     // How large the system being held looks from here, which is the one
     // question deciding whether any of this is worth drawing.
@@ -379,9 +382,11 @@ fn draw(
         _ => return,
     };
 
-    // Contents first, then the grid they were placed in: a `CellCoord` under
-    // an entity that is no longer a grid has nothing to be measured against.
+    // The camera first, then the contents, then the grid they were all
+    // placed in: a `CellCoord` under an entity that is no longer a grid has
+    // nothing to be measured against.
     if let Some(shown) = drawn.0.take() {
+        commands.entity(eye_entity).insert(ChildOf(galaxy.0));
         for entity in &inside {
             commands.entity(entity).despawn();
         }
@@ -398,6 +403,17 @@ fn draw(
     let orbits = contents.orbits();
     let mut commands = commands.entity(entity);
     commands.insert(grid.clone());
+    // Down into the system with them.
+    //
+    // Everything is drawn relative to the cell the floating origin stands in
+    // rather than to the origin itself, so what a float has left over inside
+    // that cell is the precision everything near the camera is drawn with. A
+    // galaxy cell is `2^53` metres and the camera can stand anywhere in one,
+    // which leaves about five hundred thousand kilometres: enough to shred an
+    // orbit into a polygon and a name into scribble. A system's cells are a
+    // metre, so descending leaves nothing over and everything inside is drawn
+    // as exactly as a float can hold it.
+    commands.add_child(eye_entity);
 
     for star in contents.stars() {
         let place = orbits.place(star.id, 0.);
