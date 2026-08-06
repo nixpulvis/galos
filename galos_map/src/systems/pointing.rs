@@ -8,9 +8,11 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::bodies::spawn::Body;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
-    Label, depth, name_rect, screen_position, world_per_pixel,
+    Label, depth, depth_of, name_rect, screen_offset, screen_position,
+    world_per_pixel,
 };
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
@@ -38,7 +40,15 @@ pub fn plugin(app: &mut App) {
     );
     // Reads where a star ended up rather than deciding it, so it waits for
     // the transforms to be worked out, as `labels::leaders` does.
-    app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
+    // Both read where something inside a system ended up rather than
+    // deciding it, and a body's place is written by `big_space` during
+    // `PostUpdate`. Sized any earlier and a body just spawned would be
+    // measured from a transform that has never been worked out, which is the
+    // origin: it would be marked as though it sat on the camera.
+    app.add_systems(
+        PostUpdate,
+        (size_bodies, ring).chain().after(TransformSystems::Propagate),
+    );
     app.add_observer(start_drag);
     app.add_observer(track_drag);
 }
@@ -64,11 +74,29 @@ const INDICATOR_MARGIN: f32 = 1.5;
 /// same size to the hand at every zoom.
 const INDICATOR_MIN_RADIUS: f32 = 9.5;
 
-/// How large a system's mark is, as a radius in logical pixels
+/// The smallest a body's mark may be, as a radius in logical pixels
 ///
-/// The one answer behind both the ring drawn around a system and the area
-/// that answers the pointer over it, so what can be clicked is exactly what
-/// is shown.
+/// Smaller than [`INDICATOR_MIN_RADIUS`], and for the opposite reason. A
+/// system stands alone in the sky and a mark that swamps it costs nothing;
+/// bodies are drawn packed inside one, and at the range they first appear the
+/// whole system is some eighty pixels across. A floor as generous as a
+/// system's would draw every body in it as one blob.
+///
+/// So it is small: enough to aim at a moon that is drawn at a fraction of a
+/// pixel, not so much that a system reads as a smear. What answers a crowded
+/// system is flying further in, which is what the map is for.
+const BODY_MIN_RADIUS: f32 = 4.;
+
+/// How large a thing's mark is, as a radius in logical pixels
+///
+/// The one answer behind both the ring drawn around it and the area that
+/// answers the pointer over it, so what can be clicked is exactly what is
+/// shown.
+///
+/// Carried by systems and by the bodies inside them alike. What each is
+/// worked out from differs — a system's mark is a floor it almost never
+/// leaves, a body's is the size it is actually drawn — but what the number
+/// means, and everything that reads it, does not.
 ///
 /// Pixels, because that is what the mark is specified in and what aiming is
 /// done in: [`INDICATOR_MIN_RADIUS`] is a distance to the hand rather than a
@@ -188,6 +216,7 @@ pub(super) fn point_at(
     buttons: Res<ButtonInput<MouseButton>>,
     dragged: Query<&DragDistance>,
     names: Query<&ChildOf, With<Label>>,
+    bodies: Query<(), With<Body>>,
     marked: Query<(), With<Indicator>>,
     filtered: Query<(), With<Filtered>>,
     pointed_at: Query<Entity, With<PointedAt>>,
@@ -221,11 +250,19 @@ pub(super) fn point_at(
     // the dim star in front is the background the filter is read against, and
     // background that answers the pointer is background in the way.
     let mut nearest: Option<(Entity, bool, f32)> = None;
+    // The nearest body, which is the whole of the weighing between them:
+    // a body is a real thing at a real size, so one in front of another is
+    // simply the one being pointed at.
+    let mut inside: Option<(Entity, f32)> = None;
 
     for hits in hovered.values() {
         for (entity, hit) in hits.iter() {
             if let Ok(name) = names.get(*entity) {
                 named = Some(name.parent());
+            } else if bodies.contains(*entity) {
+                if inside.is_none_or(|(_, depth)| hit.depth < depth) {
+                    inside = Some((*entity, hit.depth));
+                }
             } else if marked.contains(*entity) {
                 let system = *entity;
                 let dim = filtered.contains(system);
@@ -239,7 +276,13 @@ pub(super) fn point_at(
         }
     }
 
-    let wanted = named.or(nearest.map(|(system, ..)| system));
+    // A name over everything, since a name is drawn over everything. Then
+    // whatever is inside a system over the mark standing for the system as a
+    // whole: once the camera is close enough to see a body, the body is the
+    // thing being pointed at and the system is the place it is in.
+    let wanted = named
+        .or(inside.map(|(body, _)| body))
+        .or(nearest.map(|(system, ..)| system));
     let mut already = false;
     for system in &pointed_at {
         if Some(system) == wanted {
@@ -293,6 +336,48 @@ pub fn size_indicators(
     }
 }
 
+/// Work out how large each body's mark is, in pixels
+///
+/// A body is drawn at the size it is, so unlike a system its mark is mostly
+/// the thing itself: the disc a sphere projects to is its own outline, and
+/// aiming at that is aiming at the body. The floor only takes over where a
+/// body is drawn too small to hit.
+///
+/// Measured from the body's own [`GlobalTransform`], which [`big_space`]
+/// writes relative to the camera and which is exact this close in. A body
+/// carries no galactic position to ask about, and this is better than one:
+/// the arithmetic never leaves the neighbourhood the camera is standing in.
+///
+/// Which is why this runs in `PostUpdate`: that transform is written there,
+/// and a body sized before its own place is known is sized from the origin.
+/// Until then a body's mark is nothing at all, so a body that has just
+/// appeared catches nothing rather than catching everywhere.
+pub fn size_bodies(
+    camera: Query<(&GlobalTransform, &OrbitCamera, &Camera)>,
+    mut bodies: Query<(&GlobalTransform, &Body, &mut Indicator)>,
+) {
+    let Ok((eye, orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    for (at, body, mut indicator) in &mut bodies {
+        let offset = (at.translation() - eye.translation()).as_dvec3();
+        // A metre, which is as near as the camera may be pulled to anything.
+        let into_view = depth_of(orbit, offset).max(1.);
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
+
+        indicator.0 = body_mark(body.radius, per_pixel);
+    }
+}
+
+/// How large a body of `radius` is marked, where a pixel covers `per_pixel`
+///
+/// Its own size, which for a sphere is also its outline, until that is too
+/// small to aim at and the floor takes over.
+fn body_mark(radius: f32, per_pixel: f32) -> f32 {
+    (radius / per_pixel).max(BODY_MIN_RADIUS)
+}
+
 /// How wide a mark of `radius` pixels is out where its system stands
 ///
 /// A ring is world geometry, so what is held in pixels is spoken back into
@@ -305,7 +390,23 @@ pub(super) fn drawn_radius(
     position: DVec3,
     radius: f32,
 ) -> f32 {
-    let into_view = depth(orbit, position).max(1.);
+    let offset = crate::space::metres(position - orbit.eye);
+    drawn_radius_of(orbit, cot_half_fov, viewport, offset, radius)
+}
+
+/// How wide a mark of `radius` pixels is, `offset` metres from the eye
+///
+/// What [`drawn_radius`] is written on, and what anything already holding its
+/// own place relative to the camera asks: everything inside a system does.
+pub(super) fn drawn_radius_of(
+    orbit: &OrbitCamera,
+    cot_half_fov: f32,
+    viewport: Vec2,
+    offset: DVec3,
+    radius: f32,
+) -> f32 {
+    // A metre, which is as near as the camera may be pulled to anything.
+    let into_view = depth_of(orbit, offset).max(1.);
     radius * world_per_pixel(cot_half_fov, viewport.y, into_view)
 }
 
@@ -336,12 +437,24 @@ pub(super) fn drawn_radius(
 fn hits(
     pointers: Query<(&PointerId, &PointerLocation)>,
     window: Query<Entity, With<PrimaryWindow>>,
-    cameras: Query<(Entity, &Camera, &RenderTarget, &OrbitCamera)>,
+    cameras: Query<(
+        Entity,
+        &Camera,
+        &RenderTarget,
+        &OrbitCamera,
+        &GlobalTransform,
+    )>,
     systems: Query<(Entity, &System, &Indicator, &ViewVisibility)>,
+    bodies: Query<
+        (Entity, &GlobalTransform, &Indicator, &ViewVisibility),
+        With<Body>,
+    >,
     labels: Query<(Entity, &ChildOf), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
 ) {
-    let Ok((eye, camera, target, orbit)) = cameras.single() else { return };
+    let Ok((eye, camera, target, orbit, eye_at)) = cameras.single() else {
+        return;
+    };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
@@ -398,6 +511,35 @@ fn hits(
             }
         }
 
+        // Everything inside a system, measured from the camera rather than
+        // from the galaxy. A body is drawn at its own size, so its mark is
+        // its own outline, and one drawn over another is settled by which is
+        // nearer, exactly as two overlapping spheres would be.
+        for (entity, body_at, indicator, drawn) in &bodies {
+            if !drawn.get() {
+                continue;
+            }
+            let offset =
+                (body_at.translation() - eye_at.translation()).as_dvec3();
+            let Some(on_screen) =
+                screen_offset(orbit, cot_half_fov, viewport, offset)
+            else {
+                continue;
+            };
+            if on_screen.distance(at) <= indicator.0 {
+                picks.push((
+                    entity,
+                    HitData {
+                        camera: eye,
+                        depth: depth_of(orbit, offset),
+                        position: None,
+                        normal: None,
+                        extra: None,
+                    },
+                ));
+            }
+        }
+
         hits.write(PointerHits::new(*pointer, picks, camera.order as f32));
     }
 }
@@ -410,6 +552,7 @@ fn hits(
 pub fn point_the_cursor(
     hovered: Res<HoverMap>,
     clickable: Query<(), Or<(With<Indicator>, With<Label>)>>,
+
     window: Query<Entity, With<PrimaryWindow>>,
     mut commands: Commands,
 ) {
@@ -443,11 +586,37 @@ pub fn ring(
         (&GlobalTransform, &System, &Indicator, Has<Filtered>),
         (With<PointedAt>, Without<Selected>),
     >,
+    // Whatever inside a system is pointed at, which carries no filter and no
+    // galactic position of its own.
+    inside: Query<
+        (&GlobalTransform, &Indicator),
+        (With<Body>, With<PointedAt>, Without<Selected>),
+    >,
+    eye_at: Query<&GlobalTransform, With<Camera>>,
     dim: Res<DimTo>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    if let Ok(eye) = eye_at.single() {
+        for (at, indicator) in &inside {
+            let offset = (at.translation() - eye.translation()).as_dvec3();
+            let radius = drawn_radius_of(
+                orbit,
+                cot_half_fov,
+                viewport,
+                offset,
+                indicator.0,
+            );
+
+            gizmos.circle(
+                Isometry3d::new(at.translation(), orbit.rotation),
+                radius,
+                INDICATOR,
+            );
+        }
+    }
 
     for (at, system, indicator, filtered) in &pointed_at {
         // Drawn at what the pointer is tested against, so the ring is the
@@ -672,6 +841,124 @@ mod tests {
         assert!(
             at.distance(viewport / 2.) < 1e-3,
             "a system dead ahead landed at {at}"
+        );
+    }
+
+    /// A body of `radius` metres at `depth` metres, marked
+    fn marked(radius: f32, depth: f32) -> f32 {
+        let viewport = Vec2::new(1280., 720.);
+        body_mark(radius, world_per_pixel(cot_half_fov(), viewport.y, depth))
+    }
+
+    /// A body is marked at the size it is drawn
+    ///
+    /// Which for a sphere is its own outline, so aiming at the mark and
+    /// aiming at the body are the same act. Twice as far off is half as
+    /// large, as anything drawn in perspective is.
+    #[test]
+    fn a_body_is_marked_at_the_size_it_is_drawn() {
+        // An Earth, near enough to fill a good part of the view.
+        let near = marked(6.371e6, 5e7);
+        let far = marked(6.371e6, 1e8);
+
+        assert!(near > BODY_MIN_RADIUS, "the floor answered instead: {near}");
+        assert!(
+            (near / far - 2.).abs() < 1e-3,
+            "half the distance marked {near} against {far}"
+        );
+    }
+
+    /// A body twice the size is marked twice as large
+    #[test]
+    fn a_larger_body_is_marked_larger() {
+        let small = marked(6.371e6, 5e7);
+        let large = marked(1.2742e7, 5e7);
+
+        assert!((large / small - 2.).abs() < 1e-3);
+    }
+
+    /// A body too small to see is still worth aiming at
+    ///
+    /// A moon at the far side of a system is drawn at a fraction of a pixel,
+    /// and something drawn at nothing can never be pointed at. The floor is
+    /// what makes it reachable without flying to it first.
+    #[test]
+    fn a_body_too_small_to_see_is_still_worth_aiming_at() {
+        // A moon a light hour off, which is a hundredth of a pixel.
+        let mark = marked(1.7e6, 1.08e12);
+
+        assert_eq!(mark, BODY_MIN_RADIUS);
+    }
+
+    /// A body's floor is well short of a system's
+    ///
+    /// Bodies are drawn packed inside one system, so a floor as generous as
+    /// the one a system stands alone with would draw a whole system as a
+    /// single blob of overlapping marks.
+    #[test]
+    fn a_body_is_not_marked_as_broadly_as_a_system() {
+        assert!(BODY_MIN_RADIUS < INDICATOR_MIN_RADIUS);
+    }
+
+    /// A world holding one system and one body, both under the pointer
+    ///
+    /// The body deeper than the system, so that anything preferring the
+    /// nearer of the two would answer with the system and fail the test.
+    fn inside(body_depth: f32) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.add_systems(Update, point_at);
+
+        let system = app.world_mut().spawn(Indicator(0.)).id();
+        let body = app
+            .world_mut()
+            .spawn((
+                Indicator(0.),
+                Body {
+                    name: String::new(),
+                    id: 1,
+                    class: String::new(),
+                    radius: 1e6,
+                },
+            ))
+            .id();
+
+        let hit = |depth| HitData {
+            camera: Entity::PLACEHOLDER,
+            depth,
+            position: None,
+            normal: None,
+            extra: None,
+        };
+        let mut over = EntityHashMap::default();
+        over.insert(system, hit(1.));
+        over.insert(body, hit(body_depth));
+
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+        (app, system, body)
+    }
+
+    /// A body is pointed at through the system holding it
+    ///
+    /// Once the camera is close enough to see what is inside a system, what
+    /// is inside it is what is being pointed at. The mark standing for the
+    /// system as a whole still sits at its centre, and answering with that
+    /// would put the place in front of the thing in it.
+    #[test]
+    fn a_body_is_pointed_at_through_the_system_holding_it() {
+        let (app, system, body) = inside(50.);
+
+        assert!(
+            app.world().entity(body).contains::<PointedAt>(),
+            "the body was not pointed at"
+        );
+        assert!(
+            !app.world().entity(system).contains::<PointedAt>(),
+            "the system answered over the body inside it"
         );
     }
 }

@@ -267,8 +267,20 @@ pub struct Label;
 /// it holds a position relative to the floating origin rather than to the
 /// galaxy. Negative behind the camera.
 pub(super) fn depth(camera: &OrbitCamera, point: DVec3) -> f32 {
+    depth_of(camera, crate::space::metres(point - camera.eye))
+}
+
+/// How far in front of the camera something `offset` from the eye is
+///
+/// The same measurement as [`depth`], for whatever already knows where it is
+/// relative to the eye rather than where it is in the galaxy. Everything
+/// inside a system does: [`big_space`] writes a `GlobalTransform` measured
+/// from the floating origin, which is the camera, and it is exact near it.
+///
+/// Answers in whatever unit `offset` is given in.
+pub(super) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
     let forward = (camera.rotation * Vec3::NEG_Z).as_dvec3();
-    crate::space::metres(point - camera.eye).dot(forward) as f32
+    offset.dot(forward) as f32
 }
 
 /// How much world one logical pixel covers, at a given depth
@@ -305,7 +317,23 @@ pub(super) fn screen_position(
     viewport: Vec2,
     point: DVec3,
 ) -> Option<Vec2> {
-    let offset = point - camera.eye;
+    screen_offset(camera, cot_half_fov, viewport, point - camera.eye)
+}
+
+/// Where something `offset` from the eye lands on screen
+///
+/// What [`screen_position`] is written on, and what anything already holding
+/// its own place relative to the camera asks directly.
+///
+/// The unit does not matter so long as it is one unit: a place on screen is a
+/// length over a length, and the two cancel. So a system may ask in light
+/// years and a body in metres, and both are answered in pixels.
+pub(super) fn screen_offset(
+    camera: &OrbitCamera,
+    cot_half_fov: f32,
+    viewport: Vec2,
+    offset: DVec3,
+) -> Option<Vec2> {
     let depth = offset.dot((camera.rotation * Vec3::NEG_Z).as_dvec3()) as f32;
     if depth <= 0. {
         return None;

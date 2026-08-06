@@ -17,7 +17,6 @@ use crate::ui::{Gesture, Grasp};
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
-use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
 use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
@@ -32,19 +31,6 @@ use std::{
 };
 
 pub fn plugin(app: &mut App) {
-    // For what is drawn at its own size and has a shape worth aiming at,
-    // which is the bodies inside a system. A system and its name are aimed
-    // at on screen instead, by `super::pointing`, being marks of a size in
-    // pixels rather than things in the world.
-    //
-    // Marking what is worth hitting keeps the ray cast off every mesh in the
-    // world. Requires `MeshPickingCamera` on the camera and `Pickable` on
-    // each.
-    app.add_plugins(MeshPickingPlugin);
-    app.insert_resource(MeshPickingSettings {
-        require_markers: true,
-        ..default()
-    });
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
 
