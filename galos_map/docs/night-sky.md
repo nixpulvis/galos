@@ -80,6 +80,66 @@ The `Systems`/`Stars` split in `View` becomes vestigial once sizing is
 context-driven (`Stars` is the law with `boost = 0` everywhere); fold both
 into `Mode { Real, Shell }` unless the uniform view is still wanted.
 
+## Camera 2.0: aiming and exposure
+
+Looking at the sky is pointing a camera: an aim, a lens, and an exposure.
+The map's camera grows those three things, and none of them is a new
+camera — they are regimes and dials of the orbit camera it already has.
+
+**First person is the orbit camera at radius zero.** The pose math
+already holds there: `rotation` is stored explicitly rather than derived
+from positions, so `eye = center + rotation·Z·radius` degenerates
+cleanly, drag keeps rotating through the very line it rotates through
+today, the pan rate already scales by `radius` and so dies exactly on
+arrival, and `PITCH_LIMIT` stops a milliradian short of the zenith, which
+is less than a bloom width. There is no mode enum; the regime is
+`radius == 0`, pinned by `snap`.
+
+**Stand here.** The way in is not a move but a re-parametrization:
+`center ← eye`, `radius ← 0`, rotation kept. The eye has not moved and
+the view direction has not changed — the world holds still to the pixel,
+so instant *is* smooth, and anything animated is affordance (a reticle,
+the dials) rather than the camera. It works from any orbit: wherever the
+eye happens to be is where aiming starts. Setting it also pins
+`target_center` and `target_radius`, so the easing never finishes a
+stale approach underneath the new standpoint.
+
+**Aiming.** Drag rotates in place. Sensitivity scales with the field of
+view, as on any real camera: telephoto aiming needs a finer hand.
+
+**One magnification axis.** Far out, the wheel dollies, as today. At the
+radius floor it hands off to focal length: scrolling in narrows the
+field of view (telephoto — frame a binary, resolve a neighbor), scrolling
+out widens it back to normal. Run the field of view at the same
+`ZOOM_RATE` in e-folds and magnification per notch is continuous across
+the handoff; nobody finds the seam. The billboard shader and the sizing
+law already read the field of view as a uniform, so telephoto genuinely
+magnifies the sky — the projection is live.
+
+**There is no switch back, by design.** After aiming around, the old
+center is stale; restoring it would snap the view to a former interest,
+so no inverse is kept. Leaving is a forward choice, made two ways.
+Wheel-out past the widest field of view dollies backward along the view
+axis, orbiting the spot just stood on — backing away from the tripod.
+Or **orbit that**: point at something and take it as the new center —
+`center ← target`, `radius ← distance to it`, rotation kept. The target
+lies along the view ray, so the pose identity holds exactly and again
+nothing on screen moves. This rides machinery the map already has:
+`PointedAt`, `Selection`, and the double-click that today means "that
+one."
+
+**Exposure.** One dial, EV100 — shutter, iso and aperture trade against
+motion blur and depth of field, and there is neither, so one knob is the
+honest number. Auto-metering by default (Bevy ships histogram
+auto-exposure): with brightness on an honest photometric scale, swinging
+the view away from the local star makes the exposure climb and the stars
+fade in over a second — dark adaptation, emergent rather than scripted.
+Manual override remains for shooting the sky properly, which is an
+underexposed foreground. The scale stays honest: at an exposure that
+holds a sunlit planet, the constellations are gone, exactly as they are
+from the day side of a real window. A compressed-range cheat can be a
+toggle later if honesty proves annoying; it is not the default.
+
 ## Distance bands (Real mode only)
 
 The sky is kept honest by a refresh policy whose cost scales with
@@ -241,17 +301,21 @@ an absolute magnitude is not news the way a faction flip is.
 2. **Sizing-law refactor.** Context-blended coefficients; map context
    reproduces today's constants exactly. Shell mode is complete here —
    beach-ball fix included, database untouched. Independently landable.
-3. **Real-mode data.** The join query, `Photometry` component, lazy fetch
+3. **Camera 2.0.** Stand here, orbit that, the wheel handoff to focal
+   length, drag scaled by field of view, the exposure dial with
+   auto-metering. Works in Shell mode too, so it lands independently of
+   everything photometric.
+4. **Real-mode data.** The join query, `Photometry` component, lazy fetch
    keyed by mode + band with coverage margin, baked-eye invalidation,
    the speed-tiered policy with rebake-on-settle.
-4. **Real-mode rendering.** Within the spyglass, binned photometric
+5. **Real-mode rendering.** Within the spyglass, binned photometric
    materials on the existing entities (quarter-magnitude × ~8 temperature
    buckets keeps the shared-handle pattern of `SystemMaterials`). Beyond
    it, band meshes with the billboard vertex shader. Additive blending,
-   bloom/exposure tuning, exposure as the one user dial.
-5. **The far background.** The `star_flux_cells` aggregate table and
+   bloom tuning against the exposure scale.
+6. **The far background.** The `star_flux_cells` aggregate table and
    ingest split, the offline bake walk, reference-grid cubemaps.
-6. **Polish**, each droppable: scotopic desaturation below a flux
+7. **Polish**, each droppable: scotopic desaturation below a flux
    threshold, optional diffraction spikes, star trails during fast
    travel. A galaxy density model feeding the same bake is a separate
    future feature, not part of this plan.
@@ -262,6 +326,14 @@ The bodies branch owns the near field: the current system's own stars and
 planets at real geometry. The sky is the complementary far field, excludes
 the current system, and — by consequence 3 above — never parallaxes while
 the camera flies within one. The two compose without knowing about each
-other; they meet only in the sizing law's context scalar, which the bodies
-view will want for the same blend the `scale.rs` module doc already asks
-for.
+other; they meet in only two places. One is the sizing law's context
+scalar, which the bodies view will want for the same blend the `scale.rs`
+module doc already asks for (and which should also drive today's ambient
+light down to black inside a system, where PBR needs a dark sky). The
+other is the photometric scale: each local star lights the bodies as a
+point light whose color and intensity come from the same phase-1
+functions, anchored to the same EV100 exposure the sky renders under, so
+lit surfaces and emissive stars sit on one believable brightness axis.
+Bevy's photometric light units assume meters and the map's unit is the
+light year, so light intensities are set from our own photometry math
+rather than passed as physical values.
