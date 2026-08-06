@@ -22,6 +22,7 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::space;
 use crate::systems::System;
+use crate::systems::pointing::Indicator;
 use crate::systems::route::LineStrip;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -453,6 +454,8 @@ fn drawn_star(
             radius: star.radius,
         },
         Inside,
+        // Fitted by `pointing::size_bodies` before the first draw.
+        Indicator::default(),
         cell,
         Transform::from_translation(offset)
             .with_scale(Vec3::splat(star.radius.max(1.))),
@@ -461,6 +464,8 @@ fn drawn_star(
             materials.0[Glow::of(&star.star_class) as usize].clone(),
         ),
         NotShadowCaster,
+        // A body does not block what lies behind it, so everything under the
+        // pointer is reported and `pointing` weighs them by which is nearer.
         Pickable { should_block_lower: false, is_hoverable: true },
         // Placed on the star rather than beside it, and given the star's real
         // output. Shadows are off: a shadow map spanning a system would be
@@ -496,6 +501,8 @@ fn drawn_body(
             radius: body.radius,
         },
         Inside,
+        // Fitted by `pointing::size_bodies` before the first draw.
+        Indicator::default(),
         cell,
         Transform::from_translation(offset)
             .with_scale(Vec3::splat(body.radius.max(1.))),
@@ -503,6 +510,7 @@ fn drawn_body(
         MeshMaterial3d(
             materials.0[Surface::of(&body.planet_class) as usize].clone(),
         ),
+        // As a star: what lies behind is reported too, and settled by depth.
         Pickable { should_block_lower: false, is_hoverable: true },
     )
 }

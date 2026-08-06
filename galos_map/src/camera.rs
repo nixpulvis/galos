@@ -6,7 +6,6 @@ use bevy::input::mouse::{
     AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit,
 };
 use bevy::math::DVec3;
-use bevy::picking::mesh_picking::MeshPickingCamera;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use big_space::prelude::*;
@@ -395,8 +394,6 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
-        // Mesh picking requires markers, see `systems::spawn::plugin`.
-        MeshPickingCamera,
         AmbientLight { color: Color::default(), brightness: 1e3, ..default() },
         // Every other entity is drawn relative to this one.
         FloatingOrigin,
