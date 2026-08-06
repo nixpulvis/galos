@@ -27,7 +27,7 @@
     </tr>
     <tr>
         <th>Atmosphere Type</th>
-        <td>{{ self::table_data(body.atmosphere_type) }}</td>
+        <td>{{ self::atmosphere_type(body.surface) }}</td>
     </tr>
     <tr>
         <th>Volcanism</th>
@@ -51,7 +51,7 @@
     </tr>
     <tr>
         <th>Surface Pressure</th>
-        <td>{{ self::table_data(body.surface_pressure) }}</td>
+        <td>{{ self::surface_pressure(body.surface) }}</td>
     </tr>
     <tr>
         <th>Semi Major Axis</th>

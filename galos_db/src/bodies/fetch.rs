@@ -1,4 +1,5 @@
 use super::Body;
+use super::Surface;
 use crate::{Database, Error};
 
 impl Body {
@@ -29,13 +30,13 @@ impl Body {
             landable: row.landable,
             terraform_state: row.terraform_state,
             atmosphere: row.atmosphere,
-            atmosphere_type: row.atmosphere_type,
+            surface: Surface::read(row.atmosphere_type, row.surface_pressure),
             volcanism: row.volcanism,
             mass: row.mass,
             radius: row.radius,
             surface_gravity: row.surface_gravity,
             surface_temperature: row.surface_temperature,
-            surface_pressure: row.surface_pressure,
+
             semi_major_axis: row.semi_major_axis,
             eccentricity: row.eccentricity,
             orbital_inclination: row.orbital_inclination,
@@ -79,13 +80,16 @@ impl Body {
                 landable: row.landable,
                 terraform_state: row.terraform_state,
                 atmosphere: row.atmosphere,
-                atmosphere_type: row.atmosphere_type,
+                surface: Surface::read(
+                    row.atmosphere_type,
+                    row.surface_pressure,
+                ),
                 volcanism: row.volcanism,
                 mass: row.mass,
                 radius: row.radius,
                 surface_gravity: row.surface_gravity,
                 surface_temperature: row.surface_temperature,
-                surface_pressure: row.surface_pressure,
+
                 semi_major_axis: row.semi_major_axis,
                 eccentricity: row.eccentricity,
                 orbital_inclination: row.orbital_inclination,
@@ -130,13 +134,13 @@ impl Body {
             landable: row.landable,
             terraform_state: row.terraform_state,
             atmosphere: row.atmosphere,
-            atmosphere_type: row.atmosphere_type,
+            surface: Surface::read(row.atmosphere_type, row.surface_pressure),
             volcanism: row.volcanism,
             mass: row.mass,
             radius: row.radius,
             surface_gravity: row.surface_gravity,
             surface_temperature: row.surface_temperature,
-            surface_pressure: row.surface_pressure,
+
             semi_major_axis: row.semi_major_axis,
             eccentricity: row.eccentricity,
             orbital_inclination: row.orbital_inclination,
@@ -181,13 +185,16 @@ impl Body {
                 landable: row.landable,
                 terraform_state: row.terraform_state,
                 atmosphere: row.atmosphere,
-                atmosphere_type: row.atmosphere_type,
+                surface: Surface::read(
+                    row.atmosphere_type,
+                    row.surface_pressure,
+                ),
                 volcanism: row.volcanism,
                 mass: row.mass,
                 radius: row.radius,
                 surface_gravity: row.surface_gravity,
                 surface_temperature: row.surface_temperature,
-                surface_pressure: row.surface_pressure,
+
                 semi_major_axis: row.semi_major_axis,
                 eccentricity: row.eccentricity,
                 orbital_inclination: row.orbital_inclination,
