@@ -17,14 +17,16 @@ pub struct Body {
     pub landable: bool,
     pub terraform_state: Option<String>,
     pub atmosphere: Option<String>,
-    pub atmosphere_type: String,
+    /// [`None`] for a body with no surface to have an atmosphere over
+    pub atmosphere_type: Option<String>,
     pub volcanism: Option<String>,
 
     pub mass: f32,
     pub radius: f32,
     pub surface_gravity: f32,
     pub surface_temperature: f32,
-    pub surface_pressure: f32,
+    /// [`None`] for a body with no surface to be measured at
+    pub surface_pressure: Option<f32>,
     pub semi_major_axis: f32,
     pub eccentricity: f32,
     pub orbital_inclination: f32,
