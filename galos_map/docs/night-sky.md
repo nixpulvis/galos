@@ -49,30 +49,37 @@ their blackbody tint.
 **Camera context** is a continuous scalar: how deep inside a system the
 camera sits. It drives *sizing only*, never mode. Both modes are defined
 at every camera position; nothing modal happens when the camera crosses
-into a system. ("Shell" here means the drawn ball, as in `Hue::color`'s
-"translucent ball with a glow" — not the distance bands below.)
+into a system. ("Shell" here means the drawn ball — the bodies branch
+already names the component `Shell` — not the distance bands below.)
 
 ## The sizing law
 
-Today `size_by_distance` uses `scale = 4e-4·d + 8.5e-2`, i.e. angular
-radius `4e-4 + 0.085/d`. The constant term makes near neighbors enormous
-from inside a system: Alpha Centauri from Sol subtends ~1.1°, two full
-moons. Generalize to one law with context-blended coefficients:
+The bodies branch already writes the law in the right shape:
+`scale = ANGULAR·d + FLOOR`, an angle a shell holds on screen plus a
+size, with `FLOOR` documented as a stand-in for the system's true size
+until its bodies have been read, giving way to the real extent once they
+have. The stand-in is what makes near neighbors enormous from inside a
+system — at 8.5e-2 ly it puts Alpha Centauri, seen from Sol, at ~1.1°,
+two full moons — and the handover already planned there fixes most of
+it: with a true system size (light hours) in place of the guess, a
+neighbor settles to about `ANGULAR` ≈ 1.4 arcmin on its own.
 
-    angular_radius(d) = floor(context) + boost(context)/d
+What the sky adds is a context blend on the angular term itself:
+
+    angular_radius(d) = angular(context) + size(system)/d
     scale             = angular_radius(d) · d
 
-- Map context (camera light-years from everything): `floor = 4e-4`,
-  `boost = 0.085` — today's numbers exactly, a pure refactor.
-- Sky context (camera inside a system): `boost → 0`, and `floor` drops to
-  the sky scale — ~`5e-5`–`1e-4` rad for Shell (a marker, grown a bit),
-  effectively "one pixel" for Real (bloom does the rest).
+- Map context (camera light-years from everything): `angular = 4e-4`, as
+  today.
+- Sky context (camera inside a system): `angular` eases down to the sky
+  scale — ~`5e-5`–`1e-4` rad for Shell (a marker, grown a bit),
+  effectively one pixel for Real (bloom does the rest).
 - Context: smoothstep over `log10(distance to nearest system)`, full sky
-  inside ~0.1 ly, full map beyond ~2 ly, coefficients lerped in log space.
-  The nearest-system distance comes from the already-fetched region.
+  inside ~0.1 ly, full map beyond ~2 ly, eased in log space. The
+  nearest-system distance comes from the already-fetched region.
 
-Outside, shells shrink with distance toward the map floor as today;
-entering a system they shrink quickly to the sky floor so neighbors read
+Outside, shells shrink with distance toward the map angle as today;
+entering a system they shrink quickly to the sky scale so neighbors read
 as bright dots. `PointerTarget` is sized independently by `pointing`, so
 sky-scale dots keep a fat hit target.
 
@@ -298,9 +305,9 @@ an absolute magnitude is not news the way a faction flip is.
 1. **Photometry core.** Pure functions: apparent magnitude, flux,
    combined magnitude, blackbody color, the class fallback table. Every
    function is a one-line physics claim with a unit test.
-2. **Sizing-law refactor.** Context-blended coefficients; map context
-   reproduces today's constants exactly. Shell mode is complete here —
-   beach-ball fix included, database untouched. Independently landable.
+2. **Sizing-law refactor.** Rides the bodies branch's angle-plus-size
+   expression and its true-size handover; adds the context blend on the
+   angular term. Shell mode is complete here, database untouched.
 3. **Camera 2.0.** Stand here, orbit that, the wheel handoff to focal
    length, drag scaled by field of view, the exposure dial with
    auto-metering. Works in Shell mode too, so it lands independently of
@@ -334,6 +341,7 @@ other is the photometric scale: each local star lights the bodies as a
 point light whose color and intensity come from the same phase-1
 functions, anchored to the same EV100 exposure the sky renders under, so
 lit surfaces and emissive stars sit on one believable brightness axis.
-Bevy's photometric light units assume meters and the map's unit is the
-light year, so light intensities are set from our own photometry math
-rather than passed as physical values.
+The bodies branch draws the map in metres — one of its stated reasons
+being that bevy's lighting speaks physical units — so the phase-1
+functions feed the lights real values, candela from a star's luminosity
+and color from its temperature, with no unit shim in between.
