@@ -26,6 +26,7 @@
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use crate::systems::bodies::spawn::Body;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, Indicator, PointedAt,
@@ -268,7 +269,9 @@ fn clear_when_nothing_is_clicked(
     gesture: Gesture,
     dragged: Query<&DragDistance>,
     pointed_at: Query<(), With<PointedAt>>,
+    picked_bodies: Query<Entity, (With<Body>, With<Selected>)>,
     mut selection: ResMut<Selection>,
+    mut commands: Commands,
 ) {
     if !gesture.on_map() {
         return;
@@ -276,13 +279,19 @@ fn clear_when_nothing_is_clicked(
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
         return;
     }
-    if !pointed_at.is_empty() || selection.is_empty() {
+    if !pointed_at.is_empty()
+        || (selection.is_empty() && picked_bodies.is_empty())
+    {
         return;
     }
 
-    // All of them. The gesture means let go, and letting go of some of what
-    // is held is not something a click on empty sky could say which of.
+    // All of them, bodies as well as systems. The gesture means let go, and
+    // letting go of some of what is held is not something a click on empty
+    // sky could say which of.
     selection.clear();
+    for body in &picked_bodies {
+        commands.entity(body).remove::<Selected>();
+    }
 }
 
 /// Ring the selected system
@@ -304,11 +313,34 @@ fn ring(
         (&System, &GlobalTransform, &Indicator, Has<Filtered>),
         With<Selected>,
     >,
+    // Whatever inside a system is picked out, which carries neither a filter
+    // nor a galactic position of its own.
+    inside: Query<(&GlobalTransform, &Indicator), (With<Body>, With<Selected>)>,
+    eye_at: Query<&GlobalTransform, With<Camera>>,
     dim: Res<DimTo>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    if let Ok(eye) = eye_at.single() {
+        for (at, indicator) in &inside {
+            let offset = (at.translation() - eye.translation()).as_dvec3();
+            let radius = super::pointing::drawn_radius_of(
+                orbit,
+                cot_half_fov,
+                viewport,
+                offset,
+                indicator.0,
+            );
+
+            gizmos.circle(
+                Isometry3d::new(at.translation(), orbit.rotation),
+                radius,
+                SELECTION,
+            );
+        }
+    }
 
     for (system, at, indicator, filtered) in &selected {
         // Reach rather than whether the star is drawn. The two part company
