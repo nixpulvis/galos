@@ -668,6 +668,7 @@ pub fn point_the_cursor(
 ///
 /// It goes out with the shell as the camera comes inside the system, as
 /// [`super::selection::ring`] does and for the same reason.
+#[allow(clippy::too_many_arguments)]
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
@@ -685,12 +686,41 @@ pub fn ring(
         (&GlobalTransform, &Indicator),
         (With<Body>, With<PointedAt>, Without<Selected>),
     >,
+    // The stops the route reaches from here. Ringed whether or not anything
+    // is pointing at them, that being the whole of what the mark is for, and
+    // whatever the filters say, as they are drawn regardless of those too.
+    hops: Query<
+        (Entity, &GlobalTransform, &System, &Indicator),
+        (With<crate::systems::route::Hop>, Without<Selected>),
+    >,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     dim: Res<DimTo>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    for (entity, at, system, indicator) in &hops {
+        let standing = seen_as.standing(entity);
+        if standing <= 0. {
+            continue;
+        }
+        let radius = drawn_radius(
+            orbit,
+            cot_half_fov,
+            viewport,
+            DVec3::from(system.position),
+            indicator.0,
+        );
+
+        gizmos
+            .circle(
+                Isometry3d::new(at.translation(), orbit.rotation),
+                radius,
+                super::selection::going(crate::systems::route::HOP, standing),
+            )
+            .resolution(RING_POINTS);
+    }
 
     if let Ok(eye) = eye_at.single() {
         for (at, indicator) in &inside {
