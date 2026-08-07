@@ -12,6 +12,7 @@
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use galos_db::barycenters::Barycenter as DbBarycenter;
 use galos_db::bodies::Body as DbBody;
 use galos_db::stars::Star as DbStar;
 use orbit::{Orbit, Orbits};
@@ -48,7 +49,11 @@ enum Held {
     /// Asked, and not yet answered
     Asking,
     /// Answered, with whatever the database had — which may be nothing at all
-    Known { stars: Vec<DbStar>, bodies: Vec<DbBody> },
+    Known {
+        stars: Vec<DbStar>,
+        bodies: Vec<DbBody>,
+        centers: Vec<DbBarycenter>,
+    },
 }
 
 impl Contents {
@@ -82,6 +87,34 @@ impl Contents {
         }
     }
 
+    /// The points a close pair of the system being held goes round
+    ///
+    /// Nothing is drawn for one. What they are worth is that everything under
+    /// one can be placed: a body measures its orbit about its nearest
+    /// ancestor, and where that ancestor stands is the rest of the answer.
+    pub fn barycenters(&self) -> &[DbBarycenter] {
+        match &self.held {
+            Held::Known { centers, .. } => centers,
+            _ => &[],
+        }
+    }
+
+    /// What the thing with `id` goes round, as the bodies under it say
+    ///
+    /// A barycenter is recorded with an orbit and nothing about what that
+    /// orbit is around, `ScanBaryCentre` not naming any ancestor of its own.
+    /// What does name one is every body beneath it, each of which carries the
+    /// whole chain back to its star, so the link is read off there: find the
+    /// barycenter in an ancestry and take whatever the scan put behind it.
+    fn goes_round(&self, id: i16) -> Option<i16> {
+        self.bodies().iter().find_map(|body| {
+            let mut ancestry =
+                body.parents.iter().skip_while(|parent| parent.id != id);
+            ancestry.next()?;
+            Some(ancestry.next()?.id)
+        })
+    }
+
     /// How far the system reaches, in metres
     ///
     /// To the far side of the outermost thing going round it — the apoapsis of
@@ -93,15 +126,23 @@ impl Contents {
     /// Both are the same picture to whoever is drawing: the map cannot say how
     /// far this system reaches.
     pub fn extent(&self) -> Option<f32> {
-        let Held::Known { stars, bodies } = &self.held else { return None };
+        let Held::Known { stars, bodies, .. } = &self.held else {
+            return None;
+        };
 
         let reaches = bodies
             .iter()
             .map(|b| {
-                reach(b.semi_major_axis, b.eccentricity) + b.radius.max(0.)
+                reach(b.orbit.semi_major_axis, b.orbit.eccentricity)
+                    + b.radius.max(0.)
             })
             .chain(stars.iter().map(|s| {
-                reach(s.semi_major_axis, s.eccentricity) + s.radius.max(0.)
+                // A primary goes round nothing, so it reaches only as far as
+                // it is wide.
+                s.orbit
+                    .as_ref()
+                    .map_or(0., |o| reach(o.semi_major_axis, o.eccentricity))
+                    + s.radius.max(0.)
             }))
             .filter(|r| r.is_finite() && *r > 0.);
 
@@ -123,10 +164,21 @@ impl Contents {
     pub fn orbits(&self) -> Orbits {
         let mut orbits = Orbits::default();
         for star in self.stars() {
-            orbits.insert(star.id, star.parent_id, recorded_star(star));
+            orbits.insert(star.id, star.parent_id(), recorded_star(star));
         }
         for body in self.bodies() {
-            orbits.insert(body.id, body.parent_id, recorded_body(body));
+            orbits.insert(body.id, body.parent_id(), recorded_body(body));
+        }
+        // The barycenters go in as well, though nothing is drawn for one.
+        // A close pair names its center and the center names the star, so
+        // leaving them out breaks the chain at its first step and drops the
+        // pair at the middle of the system with its whole outer orbit lost.
+        for center in self.barycenters() {
+            orbits.insert(
+                center.id,
+                self.goes_round(center.id),
+                recorded_center(center),
+            );
         }
         orbits
     }
@@ -143,30 +195,52 @@ impl Contents {
 /// The orbit a body was recorded on
 fn recorded_body(body: &DbBody) -> Orbit {
     Orbit::recorded(
-        body.semi_major_axis,
-        body.eccentricity,
-        body.orbital_inclination,
-        body.periapsis,
-        body.ascending_node,
-        body.mean_anomaly,
-        body.orbital_period,
+        body.orbit.semi_major_axis,
+        body.orbit.eccentricity,
+        body.orbit.orbital_inclination,
+        body.orbit.periapsis,
+        body.orbit.ascending_node,
+        body.orbit.mean_anomaly,
+        body.orbit.orbital_period,
     )
+}
+
+/// The orbit a barycenter was recorded on
+///
+/// The one at the root of a multi-star system goes round nothing and is
+/// recorded without an orbit, as a primary star is, and stands at the middle
+/// of the system for the same reason.
+fn recorded_center(center: &DbBarycenter) -> Orbit {
+    center.orbit.as_ref().map_or_else(Orbit::still, |orbit| {
+        Orbit::recorded(
+            orbit.semi_major_axis,
+            orbit.eccentricity,
+            orbit.orbital_inclination,
+            orbit.periapsis,
+            orbit.ascending_node,
+            orbit.mean_anomaly,
+            orbit.orbital_period,
+        )
+    })
 }
 
 /// The orbit a star was recorded on
 ///
-/// The same seven numbers under the same names. `stars` and `bodies` are two
-/// tables holding one idea, and until they are one this says so twice.
+/// A primary star goes round nothing and is recorded without an orbit, which
+/// comes back as one of no size: it stands at the middle of its system, which
+/// is what everything else there is measured from.
 fn recorded_star(star: &DbStar) -> Orbit {
-    Orbit::recorded(
-        star.semi_major_axis,
-        star.eccentricity,
-        star.orbital_inclination,
-        star.periapsis,
-        star.ascending_node,
-        star.mean_anomaly,
-        star.orbital_period,
-    )
+    star.orbit.as_ref().map_or_else(Orbit::still, |orbit| {
+        Orbit::recorded(
+            orbit.semi_major_axis,
+            orbit.eccentricity,
+            orbit.orbital_inclination,
+            orbit.periapsis,
+            orbit.ascending_node,
+            orbit.mean_anomaly,
+            orbit.orbital_period,
+        )
+    })
 }
 
 /// How far an orbit gets from what it goes round, in metres
@@ -184,44 +258,161 @@ fn reach(semi_major_axis: f32, eccentricity: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use elite_journal::body::{
+        Discovery as JournalDiscovery, Orbit as JournalOrbit,
+        Spin as JournalSpin,
+    };
+    use galos_db::bodies::Parent;
 
     /// A body `a` metres out on a circle, with no size of its own
     fn body(a: f32) -> DbBody {
         DbBody {
             system_address: 1,
             id: 1,
-            parent_id: None,
+            parents: vec![],
             name: String::new(),
+            body_type: None,
+            distance_from_arrival: None,
             updated_at: chrono::DateTime::UNIX_EPOCH,
             updated_by: String::new(),
             planet_class: String::new(),
             tidal_lock: false,
-            landable: false,
-            terraform_state: None,
-            atmosphere: None,
-            volcanism: None,
             mass: 0.,
             radius: 0.,
-            surface_gravity: 0.,
-            surface_temperature: 0.,
+            gravity: 0.,
+            temperature: 0.,
             surface: None,
+            orbit: JournalOrbit {
+                semi_major_axis: a,
+                eccentricity: 0.,
+                orbital_inclination: 0.,
+                periapsis: 0.,
+                orbital_period: 0.,
+                ascending_node: 0.,
+                mean_anomaly: 0.,
+            },
+            spin: JournalSpin { period: 0., tilt: 0. },
+            discovery: JournalDiscovery { discovered: false, mapped: false },
+        }
+    }
+
+    /// A circular orbit `a` metres across, as the journal records one
+    fn circle(a: f32) -> JournalOrbit {
+        JournalOrbit {
             semi_major_axis: a,
             eccentricity: 0.,
             orbital_inclination: 0.,
             periapsis: 0.,
-            orbital_period: 0.,
-            rotation_period: 0.,
-            axial_tilt: 0.,
+            orbital_period: 1.,
             ascending_node: 0.,
             mean_anomaly: 0.,
-            was_mapped: false,
-            was_discovered: false,
         }
+    }
+
+    /// A star with `id`, `a` metres out around whatever `parents` names
+    fn star(id: i16, a: f32, parents: Vec<Parent>) -> DbStar {
+        DbStar {
+            system_address: 1,
+            id,
+            name: String::new(),
+            parents,
+            updated_at: chrono::DateTime::UNIX_EPOCH,
+            updated_by: String::new(),
+            absolute_magnitude: 0.,
+            age_my: 0,
+            distance_from_arrival_ls: 0.,
+            luminosity: String::new(),
+            star_class: String::new(),
+            stellar_mass: 0.,
+            subclass: 0,
+            orbit: Some(circle(a)),
+            spin: JournalSpin { period: 0., tilt: 0. },
+            radius: 0.,
+            temperature: 0.,
+            discovery: JournalDiscovery { discovered: false, mapped: false },
+        }
+    }
+
+    /// A barycenter with `id`, `a` metres out around whatever holds it
+    fn center(id: i16, a: f32) -> DbBarycenter {
+        DbBarycenter {
+            system_address: 1,
+            id,
+            updated_at: chrono::DateTime::UNIX_EPOCH,
+            updated_by: String::new(),
+            orbit: Some(circle(a)),
+        }
+    }
+
+    /// One ancestor a scan named
+    fn parent(ty: &str, id: i16) -> Parent {
+        Parent { ty: Some(ty.to_owned()), id }
+    }
+
+    /// A body under a barycenter is placed out where the barycenter is
+    ///
+    /// The case Ross 248 is made of: a close pair goes round a point that goes
+    /// round a star that goes round the middle of the system. The pair names
+    /// the point and nothing else does, so a map that does not hold the points
+    /// breaks the chain at its first step and draws the pair at the middle
+    /// with both of the outer orbits lost.
+    #[test]
+    fn a_body_under_a_barycenter_stands_out_where_it_belongs() {
+        let mut close = body(1e9);
+        close.id = 11;
+        close.parents =
+            vec![parent("Null", 10), parent("Star", 1), parent("Null", 0)];
+
+        let contents = Contents {
+            of: Some(1),
+            held: Held::Known {
+                stars: vec![star(1, 1e13, vec![parent("Null", 0)])],
+                bodies: vec![close],
+                centers: vec![center(10, 1e11)],
+            },
+        };
+
+        // Every orbit is a circle read at the same angle, so the three stack
+        // up and the body stands at their sum.
+        let out = contents.place(11, 0.).length();
+        let wanted = 1e13 + 1e11 + 1e9;
+        assert!(
+            (out - wanted).abs() < wanted * 1e-6,
+            "the body stood {out}m out, not {wanted}m"
+        );
+    }
+
+    /// And is at the middle of the system without the barycenter
+    ///
+    /// What the map was doing, and what the screenshot of Ross 248 showed: the
+    /// walk ends at the missing point and only the pair's own small orbit is
+    /// left, so it is drawn a million kilometres from the centre rather than
+    /// ten billion.
+    #[test]
+    fn a_body_under_a_missing_barycenter_falls_to_the_middle() {
+        let mut close = body(1e9);
+        close.id = 11;
+        close.parents =
+            vec![parent("Null", 10), parent("Star", 1), parent("Null", 0)];
+
+        let contents = Contents {
+            of: Some(1),
+            held: Held::Known {
+                stars: vec![star(1, 1e13, vec![parent("Null", 0)])],
+                bodies: vec![close],
+                centers: vec![],
+            },
+        };
+
+        assert!((contents.place(11, 0.).length() - 1e9).abs() < 1e3);
     }
 
     /// Contents that came back holding `bodies`
     fn known(bodies: Vec<DbBody>) -> Contents {
-        Contents { of: Some(1), held: Held::Known { stars: vec![], bodies } }
+        Contents {
+            of: Some(1),
+            held: Held::Known { stars: vec![], bodies, centers: vec![] },
+        }
     }
 
     /// A system nobody has asked about has no extent to give
@@ -255,7 +446,7 @@ mod tests {
     #[test]
     fn an_eccentric_orbit_is_measured_where_it_reaches() {
         let mut eccentric = body(1e12);
-        eccentric.eccentricity = 0.5;
+        eccentric.orbit.eccentricity = 0.5;
 
         assert_eq!(known(vec![eccentric]).extent(), Some(1.5e12));
     }
@@ -287,7 +478,7 @@ mod tests {
     #[test]
     fn an_eccentricity_of_one_does_not_reach_forever() {
         let mut escaping = body(1e12);
-        escaping.eccentricity = 1.;
+        escaping.orbit.eccentricity = 1.;
 
         let extent = known(vec![escaping]).extent().unwrap();
         assert!(extent.is_finite(), "the extent ran away to {extent}");
