@@ -281,6 +281,17 @@ type Weighed<'a, T> = (
     Has<crate::systems::route::Hop>,
 );
 
+/// What [`respawn`] needs of a system that has won a name
+///
+/// Whether it already carries the plate, and whether the name has a jump to
+/// say as well as a system.
+type Plated = (
+    Entity,
+    &'static System,
+    Option<&'static Children>,
+    Option<&'static crate::systems::route::Hop>,
+);
+
 /// What [`leaders`] needs of whatever a name is hung off
 ///
 /// Where it is, what is drawn under it to begin clear of, and the three ways
@@ -831,9 +842,14 @@ pub(super) fn name_rect(at: Vec2, name: &str, clear: f32) -> Rect {
 /// without a [`Named`] has no label, which is what keeps the mesh cost to
 /// the names actually drawn, and means nothing has to be hidden after the
 /// fact.
+#[allow(clippy::too_many_arguments)]
 pub fn respawn(
     mut commands: Commands,
-    named: Query<(Entity, &System, Option<&Children>), With<Named>>,
+    named: Query<Plated, With<Named>>,
+    // Where the jump to a stop is measured from, which is the system the
+    // camera is standing in.
+    standing_in: Query<&System, Without<Named>>,
+    seen_as: Res<Apparent>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     unnamed: Query<&Children, (Or<(With<System>, With<Body>)>, Without<Named>)>,
     labels: Query<Entity, With<Label>>,
@@ -860,15 +876,31 @@ pub fn respawn(
         commands.entity(entity).add_child(label);
     }
 
-    for (entity, system, children) in &named {
+    // Where a jump is measured from. Nothing where the map is holding no
+    // system, which is also when nothing is a stop.
+    let from = seen_as
+        .of()
+        .and_then(|held| standing_in.get(held).ok())
+        .map(|held| held.position());
+
+    for (entity, system, children, hop) in &named {
         let labelled = children
             .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
         if labelled {
             continue;
         }
 
-        let label =
-            commands.spawn(nameplate(system.name.clone(), &materials)).id();
+        // A stop says how far the jump to it is. That is the one number the
+        // viewer wants of a system they are being told to go to next, and the
+        // name alone does not carry it.
+        let said = match (hop, from) {
+            (Some(_), Some(from)) => {
+                let jump = (system.position() - from).length();
+                format!("{} {jump:.1} Ly", system.name)
+            }
+            _ => system.name.clone(),
+        };
+        let label = commands.spawn(nameplate(said, &materials)).id();
 
         commands.entity(entity).add_child(label);
     }
