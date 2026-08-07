@@ -458,7 +458,14 @@ pub fn choose_names(
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
     show_body_names: Res<ShowBodyNames>,
-    systems: Query<(Entity, &System, &Visibility, &Indicator, Has<Filtered>)>,
+    systems: Query<(
+        Entity,
+        &System,
+        &Visibility,
+        &Indicator,
+        Has<Filtered>,
+        Has<crate::systems::route::Hop>,
+    )>,
     bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     named: Query<Entity, With<Named>>,
@@ -500,7 +507,7 @@ pub fn choose_names(
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system, visibility, indicator, filtered)| {
+        .filter_map(|(entity, system, visibility, indicator, filtered, hop)| {
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -532,11 +539,15 @@ pub fn choose_names(
             let stands = seen_as.standing(entity) > 0.
                 && carried != Some(system.address);
 
+            // A stop the route reaches is named whatever else is set. It is
+            // one of two systems out of the whole sky that the viewer is being
+            // told to look at, and a mark saying look there without saying
+            // where there is is half an answer.
             if !worth_naming(
                 stands,
                 show_names.0,
                 filtered,
-                pointed_at,
+                pointed_at || hop,
                 selected,
             ) {
                 return None;
@@ -546,7 +557,7 @@ pub fn choose_names(
             let from_center = (position - orbit.center).length() as f32;
             // Further out than names were asked to reach, and not one of the
             // two the map is marking out.
-            if !pointed_at && !selected && from_center > reach {
+            if !pointed_at && !selected && !hop && from_center > reach {
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;
