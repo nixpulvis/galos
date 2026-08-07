@@ -528,14 +528,20 @@ impl From<LineList> for Mesh {
 /// being shown.
 const SOLID: f32 = 0.35;
 
-/// How many dashes carry the rest of it
+/// How long a dash is, and the gap after it, in metres
 ///
-/// Enough, over the two thirds they are spread across, to read as a dashed
-/// line rather than as a handful of marks left behind by one. Short and close
-/// together, since what carries the distance is the run of them: a dash long
-/// enough to read as a line of its own reads as the route continuing rather
-/// than as it running out.
-const DASHES: usize = 10;
+/// A length in the world rather than a share of the leg. A share cannot be
+/// read at more than one zoom: the legs of a route differ by tens of times
+/// over, so the same share draws a dash of one size out at one stop and
+/// another size at the next, and flying in leaves it a few pixels long against
+/// a leg that now runs off both edges of the screen. Held at a distance
+/// instead, a dash is the same thing everywhere on the route and grows on
+/// screen as the camera comes in, which is what everything else drawn in the
+/// world does.
+///
+/// Half a light year, which is a few pixels with a whole route in view and a
+/// clear mark by the time one stop is.
+const DASH: f32 = (0.5 * crate::space::LIGHT_YEAR) as f32;
 
 /// The line to draw for a route, as pairs of points
 ///
@@ -565,19 +571,22 @@ fn legs(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
             (here, _) => {
                 let (from, to) =
                     if here { (ends[0], ends[1]) } else { (ends[1], ends[0]) };
-                let along = to - from;
-                drawn.push(from);
-                drawn.push(from + along * SOLID);
+                let leg = (to - from).length();
+                let Some(along) = (to - from).try_normalize() else { continue };
 
-                // Each dash takes the middle half of its own share of what
-                // is left, so a dash and the gap after it are the same length,
-                // and there is a gap after the solid stretch and another
-                // before the system that is not drawn.
-                let period = (1. - SOLID) / DASHES as f32;
-                for dash in 0..DASHES {
-                    let at = SOLID + dash as f32 * period;
-                    drawn.push(from + along * (at + period * 0.25));
-                    drawn.push(from + along * (at + period * 0.75));
+                drawn.push(from);
+                drawn.push(from + along * leg * SOLID);
+
+                // A dash and the gap after it are the same length, so the run
+                // reads as a dashed line rather than as marks left by one. It
+                // starts a gap clear of the solid stretch and stops a gap
+                // short of the system that is not drawn, so however many fit
+                // is however many the leg has room for.
+                let mut at = leg * SOLID + DASH;
+                while at + DASH <= leg - DASH {
+                    drawn.push(from + along * at);
+                    drawn.push(from + along * (at + DASH));
+                    at += DASH + DASH;
                 }
             }
         }
@@ -617,8 +626,10 @@ mod tests {
     }
 
     /// Two points, so a leg is one pair of them
+    ///
+    /// Twenty light years apart, which is a jump a route is plotted in.
     const A: Vec3 = Vec3::ZERO;
-    const B: Vec3 = Vec3::new(10., 0., 0.);
+    const B: Vec3 = Vec3::new(20. * DASH / 0.5, 0., 0.);
 
     /// A leg between two systems on the map is drawn whole
     #[test]
@@ -651,13 +662,35 @@ mod tests {
                 drawn.iter().all(|at| at.distance(far) > 0.1),
                 "a dash reached the system that is not drawn"
             );
-            assert_eq!(
-                drawn.len(),
-                2 + DASHES * 2,
-                "the solid run and {DASHES} dashes are {} points",
-                2 + DASHES * 2
+            assert!(
+                drawn.len() > 4,
+                "the leg came back as {} points, too few to be dashed",
+                drawn.len()
             );
         }
+    }
+
+    /// A dash is the same length on a short leg as on a long one
+    ///
+    /// The whole reason for measuring it in the world. A share of the leg
+    /// draws one size out at one stop and another at the next, and a route's
+    /// legs differ by tens of times over.
+    #[test]
+    fn a_dash_is_the_same_length_whatever_the_leg() {
+        let short = Vec3::new(B.x / 3., 0., 0.);
+
+        let long = legs(&[A, B], &[true, false]);
+        let brief = legs(&[A, short], &[true, false]);
+
+        // The first dash of each, which is the pair after the solid run.
+        assert!(
+            ((long[3] - long[2]).length() - (brief[3] - brief[2]).length())
+                .abs()
+                < 1.,
+            "a dash drew {} on one leg and {} on another",
+            (long[3] - long[2]).length(),
+            (brief[3] - brief[2]).length()
+        );
     }
 
     /// A line is cut only where its stops and what is drawn agree in length
