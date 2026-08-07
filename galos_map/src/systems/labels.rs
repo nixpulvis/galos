@@ -24,6 +24,7 @@ pub(crate) fn plugin(app: &mut App) {
         follow_spyglass: true,
         radius: DEFAULT_NAME_RADIUS,
     });
+    app.insert_resource(ShowBodyNames(true));
     app.add_systems(Startup, init_materials);
     app.add_systems(Update, redim.in_set(MapSet::Present));
     app.add_systems(
@@ -130,6 +131,15 @@ impl NameRadius {
         }
     }
 }
+
+/// Whether the things inside a system are named
+///
+/// On to begin with, unlike the systems' own names. A system's name is one of
+/// thousands and is off until asked for, to keep the sky readable; a body's is
+/// one of a handful and is only ever drawn once the camera has flown in to
+/// look at them, which is most of what flying in is for.
+#[derive(Resource)]
+pub struct ShowBodyNames(pub bool);
 
 /// Sideways gap between a star and its label, in text heights
 const GAP: f32 = 0.75;
@@ -243,6 +253,19 @@ fn worth_naming(
     selected: bool,
 ) -> bool {
     stands && (pointed_at || selected || (shown && !filtered))
+}
+
+/// Whether a thing inside a system is worth naming
+///
+/// The switch says the same thing about every body at once, and being marked
+/// out beats it, both exactly as they do for a system.
+///
+/// What [`worth_naming`] has and this does not is `stands`, whether the map is
+/// still standing a mark in for the thing. A body is drawn as itself from the
+/// first moment it is drawn at all, so there is no mark whose going takes its
+/// name with it, and nothing here to beat.
+fn worth_naming_body(shown: bool, pointed_at: bool, selected: bool) -> bool {
+    shown || pointed_at || selected
 }
 
 /// How far the center bonus reaches, in light years
@@ -441,6 +464,7 @@ pub fn choose_names(
     radius: Res<NameRadius>,
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
+    show_body_names: Res<ShowBodyNames>,
     systems: Query<(Entity, &System, &Visibility, &Indicator, Has<Filtered>)>,
     bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
@@ -529,11 +553,10 @@ pub fn choose_names(
         })
         .collect();
 
-    // Everything inside the system the camera is in, which is asked for
-    // whatever the names switch says. A system's name is one of thousands and
-    // is turned off to keep the sky readable; a body's is one of a handful,
-    // and they are only ever drawn when the viewer has flown in to look at
-    // them. Naming them is the whole of what flying in is for.
+    // Everything inside the system the camera is in. Its own switch, since a
+    // system's name and a body's are asked for at different moments: the sky
+    // is read by name and a system inside is read by looking, so one is off
+    // until wanted and the other on until it is in the way.
     if let Ok(eye) = eye_at.single() {
         for (entity, body, at, indicator) in &bodies {
             let offset = (at.translation() - eye.translation()).as_dvec3();
@@ -548,15 +571,23 @@ pub fn choose_names(
                 continue;
             }
 
+            // Pointing at a body or picking it out is asking for it by name,
+            // which the switch has no more business refusing than it does for
+            // a system.
             let pointed_at = pointing
                 .get(entity)
                 .is_ok_and(|at| at.settled(time.elapsed_secs()));
+            let selected = selection.contains(entity);
+            if !worth_naming_body(show_body_names.0, pointed_at, selected) {
+                continue;
+            }
+
             let score = body_name_score(
                 indicator.0,
                 body.ancestors,
                 body.star,
                 pointed_at,
-                selection.contains(entity),
+                selected,
             );
             wanted.push((entity, rect, score));
         }
@@ -1110,6 +1141,23 @@ mod tests {
             "the corner point is only {} away, too close to tell the two apart",
             corner.length()
         );
+    }
+
+    /// The switch turns every body's name off at once
+    #[test]
+    fn the_bodies_are_named_or_not_as_asked() {
+        assert!(worth_naming_body(true, false, false));
+        assert!(!worth_naming_body(false, false, false));
+    }
+
+    /// Asking for a body by name beats the switch, as it does for a system
+    ///
+    /// Pointing at one or picking it out is asking for the name, which is the
+    /// one thing a name is for.
+    #[test]
+    fn a_body_asked_for_is_named_whatever_the_switch_says() {
+        assert!(worth_naming_body(false, true, false));
+        assert!(worth_naming_body(false, false, true));
     }
 
     /// A system the map is still standing a mark in for
