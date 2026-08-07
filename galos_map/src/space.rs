@@ -36,7 +36,7 @@ use big_space::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(BigSpaceDefaultPlugins);
-    app.add_systems(Startup, spawn_galaxy);
+    app.add_systems(Startup, spawn_map);
 }
 
 /// Metres in a light year
@@ -113,13 +113,48 @@ const SYSTEM_CELL_EDGE: f32 = 1.;
 /// on the boundary back and forth between two cells.
 const SWITCHING_THRESHOLD: f32 = 0.1;
 
+/// Everything the map is drawn in
+///
+/// The root of the high precision hierarchy, holding the camera and the
+/// [`Galaxy`]. Nothing that is drawn hangs off it directly: what is on the map
+/// hangs off the galaxy, so that clearing the map is the galaxy being replaced
+/// and the camera is not touched by it.
+#[derive(Resource)]
+pub struct Map(pub Entity);
+
 /// The grid every star is placed in
 ///
 /// Held as a resource because stars are spawned by systems that have no way
 /// to reach the builder the grid was created with. Everything drawn in the
 /// galaxy has to be a child of this entity to be positioned by its grid.
+///
+/// Replaced outright when the map is cleared, so nothing may hold this entity
+/// across a frame. Read it from the resource each time.
 #[derive(Resource)]
 pub struct Galaxy(pub Entity);
+
+/// The grid the stars are laid out in
+///
+/// Handed to whoever spawns a galaxy, which is [`spawn_map`] at startup and
+/// [`crate::systems::despawn`] every time the map is cleared after that.
+pub fn galaxy_grid() -> Grid {
+    Grid::new(GALAXY_CELL_EDGE, SWITCHING_THRESHOLD)
+}
+
+/// What a galaxy is, apart from what is drawn in it
+///
+/// A grid of its own rather than the root's, since an entity is placed by the
+/// grid on the parent it actually hangs from. `Visibility` because what hangs
+/// off it carries one, and bevy warns for every child whose visibility has
+/// nowhere to propagate from.
+pub fn galaxy() -> impl Bundle {
+    (
+        Visibility::default(),
+        Transform::default(),
+        CellCoord::default(),
+        galaxy_grid(),
+    )
+}
 
 /// The grid a system's own contents are placed in
 ///
@@ -135,21 +170,26 @@ pub fn system_grid() -> Grid {
     Grid::new(SYSTEM_CELL_EDGE, SWITCHING_THRESHOLD)
 }
 
-/// Create the galaxy grid, and the camera that looks at it
+/// Create the map, the galaxy drawn in it, and the camera that looks at both
 ///
 /// The camera is spawned here rather than alongside the rest of its own
-/// module because it has to be a child of the grid, and because it carries
+/// module because it has to be a child of a grid, and because it carries
 /// [`FloatingOrigin`]: every other entity's rendered position is computed
 /// relative to it.
-fn spawn_galaxy(mut commands: Commands, spyglass: Res<Spyglass>) {
-    commands.spawn_big_space(
-        Grid::new(GALAXY_CELL_EDGE, SWITCHING_THRESHOLD),
-        |galaxy| {
-            let entity = galaxy.id();
-            galaxy.commands().insert_resource(Galaxy(entity));
-            galaxy.spawn_spatial(crate::camera::camera(&spyglass));
-        },
-    );
+///
+/// It hangs off the map rather than off the galaxy, which is what lets the
+/// galaxy be thrown away whole. The two are siblings, and the camera keeps
+/// looking at wherever it was looking while what it was looking at is
+/// replaced underneath it.
+fn spawn_map(mut commands: Commands, spyglass: Res<Spyglass>) {
+    commands.spawn_big_space(galaxy_grid(), |map| {
+        let entity = map.id();
+        map.commands().insert_resource(Map(entity));
+        map.spawn_spatial(crate::camera::camera(&spyglass));
+
+        let galaxy = map.spawn_grid(galaxy_grid(), galaxy()).id();
+        map.commands().insert_resource(Galaxy(galaxy));
+    });
 }
 
 #[cfg(test)]
