@@ -92,6 +92,30 @@ const INDICATOR_MIN_RADIUS: f32 = 9.5;
 /// system is flying further in, which is what the map is for.
 const BODY_MIN_RADIUS: f32 = 4.;
 
+/// How much air a body's mark leaves around it, as a fraction of the body
+///
+/// A ring drawn on a body's own outline sits on the silhouette and reads as
+/// part of it rather than as something around it, which is the whole of what a
+/// mark is for.
+///
+/// A fraction, because a gap has to be read against what it is a gap around: a
+/// couple of pixels tells a mark from a moon and disappears entirely against a
+/// planet a hundred and sixty pixels wide. A tenth is a few pixels where a
+/// body is small enough for a few pixels to show and grows with it from there.
+///
+/// Gentler than [`INDICATOR_MARGIN`], which is what a system's shell is given.
+/// A shell is a handful of pixels across and half again of it is still a
+/// handful; a planet filling the view would be ringed off the edge of the
+/// screen.
+const BODY_MARGIN: f32 = 0.1;
+
+/// The least air it leaves, as a radius in pixels
+///
+/// Half of [`BODY_MIN_RADIUS`], which is what a body too small to see is
+/// marked at, so the gap where the body is too small for a tenth of it to show
+/// is half the mark it gets at range.
+const BODY_AIR: f32 = BODY_MIN_RADIUS / 2.;
+
 /// How large a thing's mark is, as a radius in logical pixels
 ///
 /// The one answer behind both the ring drawn around it and the area that
@@ -407,10 +431,15 @@ pub fn size_bodies(
 
 /// How large a body of `radius` is marked, where a pixel covers `per_pixel`
 ///
-/// Its own size, which for a sphere is also its outline, until that is too
-/// small to aim at and the floor takes over.
+/// Its own size, which for a sphere is also its outline, and air around it:
+/// [`BODY_MARGIN`] of the body or [`BODY_AIR`], whichever is the more. Until
+/// both are too small to aim at and the floor takes over, which is where the
+/// air is already the whole of the mark.
 fn body_mark(radius: f32, per_pixel: f32) -> f32 {
-    (radius / per_pixel).max(BODY_MIN_RADIUS)
+    let drawn = radius / per_pixel;
+    let air = (drawn * BODY_MARGIN).max(BODY_AIR);
+
+    (drawn + air).max(BODY_MIN_RADIUS)
 }
 
 /// How wide a mark of `radius` pixels is out where its system stands
@@ -907,6 +936,12 @@ mod tests {
         body_mark(radius, world_per_pixel(cot_half_fov(), viewport.y, depth))
     }
 
+    /// How wide a body of `radius` metres is drawn at `depth` metres
+    fn drawn(radius: f32, depth: f32) -> f32 {
+        let viewport = Vec2::new(1280., 720.);
+        radius / world_per_pixel(cot_half_fov(), viewport.y, depth)
+    }
+
     /// A body is marked at the size it is drawn
     ///
     /// Which for a sphere is its own outline, so aiming at the mark and
@@ -932,6 +967,53 @@ mod tests {
         let large = marked(1.2742e7, 5e7);
 
         assert!((large / small - 2.).abs() < 1e-3);
+    }
+
+    /// A body's mark always stands clear of the body
+    ///
+    /// Which is what a ring around one has to do to read as a ring. Swept from
+    /// a moon drawn at a hundredth of a pixel to a planet filling the view,
+    /// since the mark was the body's own outline and met it exactly at every
+    /// size.
+    #[test]
+    fn a_body_is_marked_clear_of_itself() {
+        // An Earth from a light hour off down to a few radii away.
+        for depth in [1.08e12, 1e11, 1e10, 1e9, 5e7, 2e7] {
+            let mark = marked(6.371e6, depth);
+            let body = drawn(6.371e6, depth);
+            let air = (body * BODY_MARGIN).max(BODY_AIR);
+
+            assert!(
+                mark - body >= air - 1e-3,
+                "a body drawn {body} wide was marked at {mark}, \
+                 which is {} of air against the {air} it is owed",
+                mark - body
+            );
+        }
+    }
+
+    /// The least air around one is half the mark it gets from far off
+    ///
+    /// So the gap where a body is too small for a fraction of it to show is of
+    /// a piece with the dot such a body is drawn as, rather than a second
+    /// number chosen on its own.
+    #[test]
+    fn the_least_air_is_half_the_furthest_mark() {
+        assert_eq!(BODY_AIR * 2., BODY_MIN_RADIUS);
+    }
+
+    /// The air grows with the body
+    ///
+    /// The whole of what was wrong before. A couple of pixels reads against a
+    /// moon and vanishes against a planet a hundred and sixty across, which is
+    /// a ring drawn on the silhouette.
+    #[test]
+    fn the_air_around_a_body_grows_with_it() {
+        let close = marked(6.371e6, 2e7) - drawn(6.371e6, 2e7);
+        let off = marked(6.371e6, 1e9) - drawn(6.371e6, 1e9);
+
+        assert!(close > off * 4., "{close} of air against {off}");
+        assert!(close > 8., "a planet filling the view got {close} of air");
     }
 
     /// A body too small to see is still worth aiming at
