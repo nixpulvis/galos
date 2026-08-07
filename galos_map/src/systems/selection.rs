@@ -467,6 +467,10 @@ fn clear_when_nothing_is_clicked(
 /// exclude stays selected, and a full strength ring around a faint star would
 /// read as the filter having let go of it.
 ///
+/// A stop the route reaches is left to [`super::pointing::ring`] while the map
+/// is holding a system, that being where every mark for a stop is drawn then
+/// and the only place they all land together.
+///
 /// And it goes out with the shell, as the camera comes inside the system it
 /// stands around. Everything the map draws for a system as a whole is a mark
 /// standing in for something too small to see, and a ring left around a system
@@ -477,7 +481,14 @@ fn ring(
     spyglass: Res<Spyglass>,
     seen_as: Res<Apparent>,
     selected: Query<
-        (Entity, &System, &GlobalTransform, &Indicator, Has<Filtered>),
+        (
+            Entity,
+            &System,
+            &GlobalTransform,
+            &Indicator,
+            Has<Filtered>,
+            Has<crate::systems::route::Hop>,
+        ),
         With<Selected>,
     >,
     // Whatever inside a system is picked out, which carries neither a filter
@@ -511,7 +522,16 @@ fn ring(
         }
     }
 
-    for (entity, system, at, indicator, filtered) in &selected {
+    for (entity, system, at, indicator, filtered, hop) in &selected {
+        // A stop the route reaches is ringed by [`super::pointing::ring`],
+        // in this same color, while the map is holding a system. Everything
+        // drawn for a stop then is drawn where the camera can see it rather
+        // than where the stop is, and a ring drawn here would be out at the
+        // stop's true distance with the rest of the mark a jump nearer.
+        if hop && seen_as.of().is_some() {
+            continue;
+        }
+
         // Reach rather than whether the star is drawn. The two part company
         // where the filters draw what they exclude at nothing, and this ring
         // answers the wrong one of them: the spyglass says where the user is

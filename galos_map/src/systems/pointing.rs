@@ -846,18 +846,21 @@ pub fn ring(
                 // found it is a line pointing at a thing already in sight.
                 // Which of the two stops this is belongs on the ring itself.
                 Some(place) => {
-                    // The selection draws its own ring, in its own color, so
-                    // a stop picked out is not ringed twice.
-                    if !picked {
-                        let ringed = indicator.0.max(INDICATOR_MIN_RADIUS);
-                        gizmos
-                            .circle(
-                                Isometry3d::new(placed(place), orbit.rotation),
-                                ringed * pixel,
-                                color,
-                            )
-                            .resolution(RING_POINTS);
-                    }
+                    // Drawn here whether or not the stop is picked out, in
+                    // whichever color `hue` settled on. A stop is drawn where
+                    // the camera can see it rather than where it is, and
+                    // [`super::selection::ring`] draws where a thing is: a
+                    // selection ringed out at its true distance is a ring
+                    // nobody sees. So this rings every stop and the selection
+                    // leaves stops alone.
+                    let ringed = indicator.0.max(INDICATOR_MIN_RADIUS);
+                    gizmos
+                        .circle(
+                            Isometry3d::new(placed(place), orbit.rotation),
+                            ringed * pixel,
+                            color,
+                        )
+                        .resolution(RING_POINTS);
 
                     // Under the name and starting where it starts. The name is
                     // laid out from the mark by these same two figures, so they
