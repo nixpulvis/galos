@@ -745,16 +745,14 @@ pub fn ring(
     // The stops the route reaches from here. Ringed whether or not anything
     // is pointing at them, that being the whole of what the mark is for, and
     // whatever the filters say, as they are drawn regardless of those too.
-    hops: Query<
-        (
-            Entity,
-            &GlobalTransform,
-            &System,
-            &Indicator,
-            &crate::systems::route::Hop,
-        ),
-        Without<Selected>,
-    >,
+    hops: Query<(
+        Entity,
+        &GlobalTransform,
+        &System,
+        &Indicator,
+        &crate::systems::route::Hop,
+        Has<Selected>,
+    )>,
     // The system the camera is standing in, which the lines to the stops
     // leave from.
     standing_in: Query<&GlobalTransform, With<System>>,
@@ -790,15 +788,20 @@ pub fn ring(
         // A point `at` pixels from the middle of the screen, drawn out there.
         let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
-        for (entity, at, _, indicator, hop) in &hops {
+        for (entity, at, _, indicator, hop, picked) in &hops {
             let standing = seen_as.standing(entity);
             if standing <= 0. {
                 continue;
             }
-            let color = super::selection::going(
-                crate::systems::route::REACHING,
-                standing,
-            );
+            // A stop picked out is ringed by the selection in its own color,
+            // and what is drawn beside it follows that rather than standing
+            // there in another.
+            let hue = if picked {
+                super::selection::SELECTION
+            } else {
+                crate::systems::route::REACHING
+            };
+            let color = super::selection::going(hue, standing);
 
             let there = (at.translation() - eye.translation()).as_dvec3();
             let landed = super::labels::screen_offset(
@@ -831,21 +834,30 @@ pub fn ring(
                 // found it is a line pointing at a thing already in sight.
                 // Which of the two stops this is belongs on the ring itself.
                 Some(place) => {
-                    let ringed = indicator.0.max(INDICATOR_MIN_RADIUS);
-                    gizmos
-                        .circle(
-                            Isometry3d::new(placed(place), orbit.rotation),
-                            ringed * pixel,
-                            super::selection::going(
-                                crate::systems::route::HOP,
-                                standing,
-                            ),
-                        )
-                        .resolution(RING_POINTS);
+                    // The selection draws its own ring, in its own color, so
+                    // a stop picked out is not ringed twice.
+                    if !picked {
+                        let ringed = indicator.0.max(INDICATOR_MIN_RADIUS);
+                        gizmos
+                            .circle(
+                                Isometry3d::new(placed(place), orbit.rotation),
+                                ringed * pixel,
+                                super::selection::going(
+                                    crate::systems::route::HOP,
+                                    standing,
+                                ),
+                            )
+                            .resolution(RING_POINTS);
+                    }
 
-                    // Beside the ring, where a name would stand.
+                    // Under the name and starting where it starts. The name is
+                    // laid out from the mark by these same two figures, so they
+                    // are read from where it reads them rather than guessed at
+                    // a second time.
+                    let left = indicator.0
+                        + super::labels::NAME_HEIGHT * super::labels::GAP;
                     for mark in
-                        transport(hop, place + Vec2::X * (ringed + ICON))
+                        transport(hop, place + Vec2::X * (left + ICON * 0.5))
                     {
                         gizmos.linestrip(mark.map(placed), color);
                     }

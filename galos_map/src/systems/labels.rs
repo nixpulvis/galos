@@ -95,7 +95,7 @@ const DEFAULT_NAME_RADIUS: f32 = 100.;
 /// The line box, which for a single line of text is the size the font is
 /// set at. The one number that decides how large a name is; everything else
 /// follows from the viewport and where the camera is.
-const NAME_HEIGHT: f32 = 12.;
+pub(super) const NAME_HEIGHT: f32 = 12.;
 
 /// How far from what the camera looks at a system may be and still be named
 ///
@@ -142,7 +142,7 @@ impl NameRadius {
 pub struct ShowBodyNames(pub bool);
 
 /// Sideways gap between a star and its label, in text heights
-const GAP: f32 = 0.75;
+pub(super) const GAP: f32 = 0.75;
 
 /// How far a label sits above its star, in text heights
 const RISE: f32 = 1.0;
