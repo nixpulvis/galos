@@ -388,7 +388,7 @@ pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<(Entity, &Route)>,
     galaxy: Res<Galaxy>,
-    grids: Query<&Grid, With<BigSpace>>,
+    grids: Query<&Grid>,
     color_by: Res<ColorBy>,
     filters: Res<Filters>,
     roundness: Res<Roundness>,
@@ -401,7 +401,7 @@ pub fn spawn(
     mut tasks: ResMut<FetchTasks>,
     mut plot: ResMut<Plot>,
 ) {
-    let Ok(grid) = grids.single() else { return };
+    let Ok(grid) = grids.get(galaxy.0) else { return };
 
     // Every row that arrived this frame, and when the last of them was asked
     // for. Put together first and handed over once, for the reason given at
@@ -633,10 +633,11 @@ pub fn spawn_systems(
 /// star is drawn *in* follows the row as well, and [`shells`] settles that.
 fn update(
     systems_query: Query<(Entity, Ref<System>)>,
-    grids: Query<&Grid, With<BigSpace>>,
+    galaxy: Res<Galaxy>,
+    grids: Query<&Grid>,
     mut commands: Commands,
 ) {
-    let Ok(grid) = grids.single() else { return };
+    let Ok(grid) = grids.get(galaxy.0) else { return };
 
     for (entity, system) in &systems_query {
         if system.is_changed() {

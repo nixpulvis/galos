@@ -426,7 +426,7 @@ fn init_materials(
 #[allow(clippy::too_many_arguments)]
 fn draw(
     camera: Query<(Entity, &OrbitCamera)>,
-    galaxy: Res<crate::space::Galaxy>,
+    map: Res<crate::space::Map>,
     systems: Query<(Entity, &System)>,
     inside: Query<Entity, With<Inside>>,
     contents: Res<Contents>,
@@ -479,7 +479,7 @@ fn draw(
     // placed in: a `CellCoord` under an entity that is no longer a grid has
     // nothing to be measured against.
     if let Some(shown) = drawn.0.take() {
-        commands.entity(eye_entity).insert(ChildOf(galaxy.0));
+        commands.entity(eye_entity).insert(ChildOf(map.0));
         for entity in &inside {
             commands.entity(entity).despawn();
         }
