@@ -541,7 +541,7 @@ impl DimTo {
 /// Faint enough to read as background rather than as something picked out,
 /// and bright enough to still be read: the point of dimming rather than
 /// hiding is that the space around a faction stays legible.
-const DEFAULT_DIM: f32 = 0.15;
+const DEFAULT_DIM: f32 = 0.25;
 
 /// Keep the mark on whichever systems the filters exclude
 ///

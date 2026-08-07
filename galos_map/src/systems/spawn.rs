@@ -141,12 +141,16 @@ impl Hue {
 /// Both the fill and the glow are scaled, since a star drawn dim but glowing
 /// as brightly as the rest reads as no dimmer at all: the glow is most of
 /// what is seen of a star at any distance.
+///
+/// Which is why the glow is what carries how bright the sky reads, and the
+/// fill is left where it is. The fill is blended over whatever stands behind
+/// it, so raising it thickens a crowded sky as much as it lights one.
 fn star_material(color: Color, strength: f32) -> StandardMaterial {
     let faded = color.with_alpha(color.alpha() * strength);
     StandardMaterial {
         base_color: faded,
         alpha_mode: AlphaMode::Blend,
-        emissive: LinearRgba::from(color.with_alpha(1.)) * 10. * strength,
+        emissive: LinearRgba::from(color.with_alpha(1.)) * 16. * strength,
         ..default()
     }
 }
