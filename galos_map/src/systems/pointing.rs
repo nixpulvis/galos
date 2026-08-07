@@ -747,9 +747,51 @@ pub fn ring(
         // is what makes it readable at any zoom, and it starts clear of the star
         // rather than touching it. Where to look is all it has to say.
         if let (Some(from), Ok(eye)) = (from, eye_at.single()) {
-            let toward = (at.translation() - from).try_normalize();
             let right = orbit.rotation * Vec3::X;
             let up = orbit.rotation * Vec3::Y;
+            let there = (at.translation() - eye.translation()).as_dvec3();
+
+            // Where the stop itself lands, if it lands at all. Once it does,
+            // the stub has a thing on screen to belong to and becomes the line
+            // a label hangs off: out from the ring, the way a name sits beside
+            // what it names. Only while the stop is nowhere to be seen does it
+            // have to say which way to turn instead.
+            let landed = super::labels::screen_offset(
+                orbit,
+                cot_half_fov,
+                viewport,
+                there,
+            )
+            .filter(|at| {
+                Rect::from_corners(Vec2::ZERO, viewport).contains(*at)
+            });
+
+            if landed.is_some() {
+                let pixel =
+                    drawn_radius_of(orbit, cot_half_fov, viewport, there, 1.);
+                // Clear of the ring drawn round the stop, as a name
+                // stands clear of the mark round what it names.
+                let ringed = drawn_radius(
+                    orbit,
+                    cot_half_fov,
+                    viewport,
+                    DVec3::from(system.position),
+                    indicator.0,
+                );
+                let out = ringed + REACHING_EDGE * pixel;
+
+                gizmos.line(
+                    at.translation() + right * out,
+                    at.translation() + right * (out + REACHING_LENGTH * pixel),
+                    super::selection::going(
+                        crate::systems::route::REACHING,
+                        standing,
+                    ),
+                );
+                continue;
+            }
+
+            let toward = (at.translation() - from).try_normalize();
             // Which way the stop lies across the view, which is the whole of
             // what the stub has to say. Nothing to say for one lying straight
             // out through the middle of the screen, which has no across to it.
