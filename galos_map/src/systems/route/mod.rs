@@ -65,10 +65,23 @@ pub enum Hop {
 /// nothing at all where the camera is not standing in a system the route runs
 /// through: a route passes near far more systems than it stops at, and being
 /// beside one is not being on it.
+///
+/// And nothing at all until the camera is inside, which `standing` says: it is
+/// how much of the mark for the system being held is left, and it reaches
+/// nothing only once the camera is in there. The rows come in from far
+/// further out than that, so the system being held is not the system being
+/// stood in, and reading the rows alone put the mark up while the camera was
+/// still out among the stars. Out there the line answers this question
+/// already, and answers it better; in here the line is gone.
 fn reaching(
     route: Option<&Filter>,
     here: Option<i64>,
+    standing: f32,
 ) -> (Option<i64>, Option<i64>) {
+    if standing > 0. {
+        return (None, None);
+    }
+
     let (Some(Filter::Route { systems, .. }), Some(here)) = (route, here)
     else {
         return (None, None);
@@ -92,10 +105,12 @@ fn hops(
     filters: Res<Filters>,
     selected: Res<Selected>,
     contents: Res<crate::systems::bodies::Contents>,
+    seen_as: Res<crate::systems::bodies::spawn::Apparent>,
     systems: Query<(Entity, &System, Option<&Hop>)>,
     mut commands: Commands,
 ) {
-    let (last, next) = reaching(active(&filters, &selected.0), contents.of());
+    let (last, next) =
+        reaching(active(&filters, &selected.0), contents.of(), seen_as.held());
 
     for (entity, system, held) in &systems {
         let wanted = if last.is_some() && last == Some(system.address) {
@@ -414,7 +429,7 @@ mod tests {
     fn a_route_reaches_both_ways_from_where_it_stands() {
         let route = route(vec![1, 2, 3]);
 
-        assert_eq!(reaching(Some(&route), Some(2)), (Some(1), Some(3)));
+        assert_eq!(reaching(Some(&route), Some(2), 0.), (Some(1), Some(3)));
     }
 
     /// Either end of a route reaches only the one way
@@ -422,8 +437,21 @@ mod tests {
     fn the_ends_of_a_route_reach_one_way() {
         let route = route(vec![1, 2, 3]);
 
-        assert_eq!(reaching(Some(&route), Some(1)), (None, Some(2)));
-        assert_eq!(reaching(Some(&route), Some(3)), (Some(2), None));
+        assert_eq!(reaching(Some(&route), Some(1), 0.), (None, Some(2)));
+        assert_eq!(reaching(Some(&route), Some(3), 0.), (Some(2), None));
+    }
+
+    /// Nothing is reached from outside the system, whole mark or fading one
+    ///
+    /// The rows for a system come in from far further out than the camera ever
+    /// goes, so holding them is not standing in it. Out there the line says
+    /// where the route runs, and says it better than two rings could.
+    #[test]
+    fn a_route_reaches_nowhere_from_outside_the_system() {
+        let route = route(vec![1, 2, 3]);
+
+        assert_eq!(reaching(Some(&route), Some(2), 1.), (None, None));
+        assert_eq!(reaching(Some(&route), Some(2), 0.5), (None, None));
     }
 
     /// Standing beside a route is not standing on it
@@ -434,9 +462,9 @@ mod tests {
     fn a_system_the_route_misses_reaches_nowhere() {
         let route = route(vec![1, 2, 3]);
 
-        assert_eq!(reaching(Some(&route), Some(9)), (None, None));
-        assert_eq!(reaching(Some(&route), None), (None, None));
-        assert_eq!(reaching(None, Some(2)), (None, None));
+        assert_eq!(reaching(Some(&route), Some(9), 0.), (None, None));
+        assert_eq!(reaching(Some(&route), None, 0.), (None, None));
+        assert_eq!(reaching(None, Some(2), 0.), (None, None));
     }
 
     /// A route filter over the systems at `addresses`
