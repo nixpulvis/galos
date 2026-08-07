@@ -723,135 +723,102 @@ pub fn ring(
         .and_then(|held| standing_in.get(held).ok())
         .map(|at| at.translation());
 
-    for (entity, at, system, indicator) in &hops {
-        let standing = seen_as.standing(entity);
-        if standing <= 0. {
-            continue;
-        }
+    // Everything about a stop is drawn where the camera can see it rather than
+    // where the stop actually is. A stop is a jump away, and standing inside a
+    // system the camera is measuring in metres: a ring out at its true distance
+    // is past the far plane, and a line between here and there reads as depth
+    // rather than as a mark. So the stop is projected to the screen and drawn
+    // back in the plane the star stands in, which puts the whole of it in front
+    // of the camera at a depth whose scale is already worked out.
+    if let (Some(from), Ok(eye)) = (from, eye_at.single()) {
+        let right = orbit.rotation * Vec3::X;
+        let up = orbit.rotation * Vec3::Y;
+        let ahead = orbit.rotation * Vec3::NEG_Z;
+        let here = (from - eye.translation()).as_dvec3();
+        let pixel = drawn_radius_of(orbit, cot_half_fov, viewport, here, 1.);
+        let middle =
+            eye.translation() + ahead * (from - eye.translation()).dot(ahead);
+        // A point `at` pixels from the middle of the screen, drawn out there.
+        let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
-        // A stop is a jump away and as likely to be behind the camera as in
-        // front of it, so the ring alone can only be found by turning until it
-        // appears. A stub says which way to turn.
-        //
-        // Its own mark rather than the route's line, which cannot be drawn
-        // from in here at all: that line holds its vertices as metres from the
-        // route's own middle, tens of light years of them, and a float carrying
-        // such a number has whole light seconds between the values it can hold.
-        // Out among the stars that is far finer than anything drawn. Standing
-        // inside a system it is the width of the sky, and the line whips about
-        // as the camera moves.
-        //
-        // So only the direction is taken from where the stop is, which survives
-        // that easily: the far end may wander by light seconds and still point
-        // the same way to within nothing. The length is a size on screen, which
-        // is what makes it readable at any zoom, and it starts clear of the star
-        // rather than touching it. Where to look is all it has to say.
-        if let (Some(from), Ok(eye)) = (from, eye_at.single()) {
-            let right = orbit.rotation * Vec3::X;
-            let up = orbit.rotation * Vec3::Y;
+        for (entity, at, _, indicator) in &hops {
+            let standing = seen_as.standing(entity);
+            if standing <= 0. {
+                continue;
+            }
+            let color = super::selection::going(
+                crate::systems::route::REACHING,
+                standing,
+            );
+
             let there = (at.translation() - eye.translation()).as_dvec3();
-
-            // Where the stop itself lands, if it lands at all. Once it does,
-            // the stub has a thing on screen to belong to and becomes the line
-            // a label hangs off: out from the ring, the way a name sits beside
-            // what it names. Only while the stop is nowhere to be seen does it
-            // have to say which way to turn instead.
             let landed = super::labels::screen_offset(
                 orbit,
                 cot_half_fov,
                 viewport,
                 there,
             )
-            .filter(|at| {
-                Rect::from_corners(Vec2::ZERO, viewport).contains(*at)
-            });
+            .map(|at| at - viewport * 0.5)
+            .filter(|at| at.abs().cmple(viewport * 0.5).all());
 
-            let toward = (at.translation() - from).try_normalize();
-            // Which way the stop lies across the view, which both of the
-            // things this can draw are laid out along. Nothing to say for one
-            // lying straight out through the middle of the screen, which has
-            // no across to it.
-            let across = toward.and_then(|toward| {
-                Vec2::new(toward.dot(right), toward.dot(up)).try_normalize()
-            });
+            // Which way the stop lies across the view. Both of the things this
+            // draws lie along it, so following one leads to the other and the
+            // handover between them moves nothing. Nothing to say for a stop
+            // lying straight out through the middle, which has no across to it.
+            let across =
+                landed.and_then(|at| at.try_normalize()).or_else(|| {
+                    (at.translation() - from).try_normalize().and_then(
+                        |toward| {
+                            Vec2::new(toward.dot(right), -toward.dot(up))
+                                .try_normalize()
+                        },
+                    )
+                });
             let Some(across) = across else { continue };
-            let along = right * across.x + up * across.y;
 
-            if landed.is_some() {
-                let pixel =
-                    drawn_radius_of(orbit, cot_half_fov, viewport, there, 1.);
-                // Clear of the ring drawn round the stop, as a name stands
-                // clear of the mark round what it names.
-                let ringed = drawn_radius(
-                    orbit,
-                    cot_half_fov,
-                    viewport,
-                    DVec3::from(system.position),
-                    indicator.0,
-                );
-                let out = ringed + REACHING_EDGE * pixel;
+            match landed {
+                // On screen: a ring round it, and a leader off the side the
+                // star is on, which is the way the eye came in.
+                Some(place) => {
+                    let ringed = indicator.0.max(INDICATOR_MIN_RADIUS);
+                    gizmos
+                        .circle(
+                            Isometry3d::new(placed(place), orbit.rotation),
+                            ringed * pixel,
+                            super::selection::going(
+                                crate::systems::route::HOP,
+                                standing,
+                            ),
+                        )
+                        .resolution(RING_POINTS);
 
-                // Back down the way it came, which is the side the star is on.
-                // The edge stub and this lie along the one axis, so what the
-                // eye follows in from the edge is what it goes on following
-                // once the stop has arrived, rather than the line jumping the
-                // ring to hang off the far side.
-                gizmos.line(
-                    at.translation() - along * out,
-                    at.translation() - along * (out + REACHING_LENGTH * pixel),
-                    super::selection::going(
-                        crate::systems::route::REACHING,
-                        standing,
-                    ),
-                );
-                continue;
-            }
+                    let out = ringed + REACHING_EDGE;
+                    gizmos.line(
+                        placed(place - across * out),
+                        placed(place - across * (out + REACHING_LENGTH)),
+                        color,
+                    );
+                }
+                // Nowhere to be seen: a stub at the edge saying which way to
+                // turn, run out along the same axis a leader would lie on.
+                None => {
+                    let half = viewport * 0.5;
+                    let edge = (half.x / across.x.abs())
+                        .min(half.y / across.y.abs())
+                        - REACHING_EDGE;
 
-            {
-                // Drawn in the plane the star stands in, that being the one
-                // depth in the view whose scale is already worked out, and the
-                // stub is over empty sky at any of them.
-                let offset = (from - eye.translation()).as_dvec3();
-                let pixel =
-                    drawn_radius_of(orbit, cot_half_fov, viewport, offset, 1.);
-                let ahead = orbit.rotation * Vec3::NEG_Z;
-                let middle = eye.translation()
-                    + ahead * (from - eye.translation()).dot(ahead);
-
-                // Out to whichever edge this direction meets first, held off
-                // it by a margin, and back in by the stub's own length.
-                let half = viewport * 0.5;
-                let edge = (half.x / across.x.abs())
-                    .min(half.y / across.y.abs())
-                    - REACHING_EDGE;
-
-                gizmos.line(
-                    middle + along * ((edge - REACHING_LENGTH) * pixel),
-                    middle + along * (edge * pixel),
-                    super::selection::going(
-                        crate::systems::route::REACHING,
-                        standing,
-                    ),
-                );
+                    gizmos.line(
+                        placed(across * (edge - REACHING_LENGTH)),
+                        placed(across * edge),
+                        color,
+                    );
+                }
             }
         }
-        let radius = drawn_radius(
-            orbit,
-            cot_half_fov,
-            viewport,
-            DVec3::from(system.position),
-            indicator.0,
-        );
-
-        gizmos
-            .circle(
-                Isometry3d::new(at.translation(), orbit.rotation),
-                radius,
-                super::selection::going(crate::systems::route::HOP, standing),
-            )
-            .resolution(RING_POINTS);
     }
 
+    // Whatever inside a system is pointed at, which is drawn where it stands
+    // and needs none of the above: it is in here with the camera.
     if let Ok(eye) = eye_at.single() {
         for (at, indicator) in &inside {
             let offset = (at.translation() - eye.translation()).as_dvec3();
