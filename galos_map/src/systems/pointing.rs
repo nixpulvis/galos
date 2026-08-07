@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::spawn::{Apparent, Body, Star};
+use crate::systems::bodies::spawn::{Apparent, Body};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
     Label, depth, depth_of, name_rect, screen_offset, screen_position,
@@ -203,9 +203,9 @@ impl PointedAt {
 /// A name is the thing it names, and wins over a mark. Names are drawn over
 /// everything, so a name under the pointer is what the eye says is being
 /// pointed at, whatever happens to lie nearer the camera behind it. The one
-/// thing that beats a name is a star with the name of something going round it
-/// laid across it, which is a label for something else rather than a reason to
-/// stop aiming at the star.
+/// thing that beats a name is whatever the thing it names goes round: a label
+/// laid across a star or a planet is a label for something else rather than a
+/// reason to stop aiming at what it was laid across.
 ///
 /// Between stars, an admitted one wins, and only then the nearer of the two,
 /// as it would if they blocked each other. A filter says which systems the
@@ -224,8 +224,7 @@ pub(super) fn point_at(
     buttons: Res<ButtonInput<MouseButton>>,
     dragged: Query<&DragDistance>,
     names: Query<&ChildOf, With<Label>>,
-    bodies: Query<(), With<Body>>,
-    stars: Query<(), With<Star>>,
+    bodies: Query<&Body>,
     marked: Query<(), With<Indicator>>,
     filtered: Query<(), With<Filtered>>,
     pointed_at: Query<Entity, With<PointedAt>>,
@@ -259,17 +258,18 @@ pub(super) fn point_at(
     // the dim star in front is the background the filter is read against, and
     // background that answers the pointer is background in the way.
     let mut nearest: Option<(Entity, bool, f32)> = None;
-    // Whatever is inside a system, weighed by three things in this order: a
-    // star, then a name, then the nearest.
+    // Whatever is inside a system, weighed by three things in this order: how
+    // far down the system it sits, then a name, then the nearest.
     //
-    // A star first, because it is what the system is named for and what
-    // everything else in it goes round, so one behind a moon crossing it — or
-    // behind that moon's name — is still what was being aimed at. Then a name,
-    // for the reason a name wins anywhere: it is drawn over everything, so a
-    // name under the pointer is what the eye says is being pointed at. Then
-    // depth, a body being a real thing at a real size, so one in front of
-    // another is simply the one nearer.
-    let mut inside: Option<(Entity, (bool, bool, f32))> = None;
+    // A parent before whatever goes round it, however the two are drawn. A
+    // star is what its system is named for and a planet is what its moons are
+    // named after, so one behind something crossing it — or behind that
+    // thing's name — is still what was being aimed at. Then a name, for the
+    // reason a name wins anywhere: it is drawn over everything, so a name
+    // under the pointer is what the eye says is being pointed at. Then depth,
+    // a body being a real thing at a real size, so one in front of another is
+    // simply the one nearer.
+    let mut inside: Option<(Entity, (u8, bool, f32))> = None;
 
     for hits in hovered.values() {
         for (entity, hit) in hits.iter() {
@@ -279,8 +279,8 @@ pub(super) fn point_at(
                 Err(_) => (*entity, false),
             };
 
-            if bodies.contains(thing) {
-                let rank = (!stars.contains(thing), !by_name, hit.depth);
+            if let Ok(body) = bodies.get(thing) {
+                let rank = (body.ancestors, !by_name, hit.depth);
                 if inside.is_none_or(|(_, was)| rank < was) {
                     inside = Some((thing, rank));
                 }
@@ -972,6 +972,7 @@ mod tests {
                     id: 1,
                     class: String::new(),
                     radius: 1e6,
+                    ancestors: 0,
                 },
             ))
             .id();
@@ -994,25 +995,31 @@ mod tests {
         (app, system, body)
     }
 
-    /// A world holding a star and a body, both under the pointer
-    ///
-    /// The star the deeper of the two, so that anything preferring the nearer
-    /// answers with the body and fails the test.
-    fn crossing() -> (App, Entity, Entity) {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<ButtonInput<MouseButton>>();
-        app.add_systems(Update, point_at);
-
-        let body = |id| Body {
+    /// A body with `id`, named under `ancestors` of them
+    fn body(id: i16, ancestors: u8) -> Body {
+        Body {
             address: 1,
             name: String::new(),
             id,
             class: String::new(),
             radius: 1e6,
-        };
-        let star = app.world_mut().spawn((Indicator(0.), body(1), Star)).id();
-        let moon = app.world_mut().spawn((Indicator(0.), body(2))).id();
+            ancestors,
+        }
+    }
+
+    /// A world holding two bodies under the pointer, `over` steps down the
+    /// system and `under` steps down
+    ///
+    /// The one further up is the deeper of the two in the view, so that
+    /// anything preferring the nearer answers with the other and fails.
+    fn crossing(over: u8, under: u8) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.add_systems(Update, point_at);
+
+        let star = app.world_mut().spawn((Indicator(0.), body(1, over))).id();
+        let moon = app.world_mut().spawn((Indicator(0.), body(2, under))).id();
 
         let hit = |depth| HitData {
             camera: Entity::PLACEHOLDER,
@@ -1032,31 +1039,36 @@ mod tests {
         (app, star, moon)
     }
 
-    /// A star is pointed at through whatever is crossing in front of it
+    /// A parent is pointed at through whatever goes round it
     ///
-    /// It is what the system is named for and what everything else in it goes
-    /// round, and a moon a pixel across passing over it is not what the user
-    /// was aiming at.
+    /// A star is what its system is named for and a planet is what its moons
+    /// are named after, and something a pixel across passing over either is
+    /// not what the user was aiming at.
+    ///
+    /// Every step down: a star through its planet, and that planet through
+    /// its own moon.
     #[test]
-    fn a_star_is_pointed_at_through_what_goes_round_it() {
-        let (app, star, moon) = crossing();
+    fn a_parent_is_pointed_at_through_what_goes_round_it() {
+        for (over, under) in [(0, 1), (1, 2), (2, 3)] {
+            let (app, parent, child) = crossing(over, under);
 
-        assert!(
-            app.world().entity(star).contains::<PointedAt>(),
-            "the star was not pointed at"
-        );
-        assert!(
-            !app.world().entity(moon).contains::<PointedAt>(),
-            "a moon in front answered for the star behind it"
-        );
+            assert!(
+                app.world().entity(parent).contains::<PointedAt>(),
+                "the one {over} down was not pointed at"
+            );
+            assert!(
+                !app.world().entity(child).contains::<PointedAt>(),
+                "the one {under} down answered for what it goes round"
+            );
+        }
     }
 
-    /// A name reaches the thing it names, and a star beats one
+    /// A name reaches the thing it names, and what that goes round beats it
     ///
     /// A name is drawn over everything, so a name under the pointer is
-    /// ordinarily what the eye says is being pointed at. A star is what the
-    /// system is named for, though, and a moon's name laid across it is a
-    /// label for something else rather than a reason to stop aiming at it.
+    /// ordinarily what the eye says is being pointed at. A moon's name laid
+    /// across the star it goes round is a label for something else, though,
+    /// rather than a reason to stop aiming at the star.
     #[test]
     fn a_star_is_pointed_at_through_the_name_of_a_moon() {
         let mut app = App::new();
@@ -1064,15 +1076,8 @@ mod tests {
         app.init_resource::<ButtonInput<MouseButton>>();
         app.add_systems(Update, point_at);
 
-        let body = |id| Body {
-            address: 1,
-            name: String::new(),
-            id,
-            class: String::new(),
-            radius: 1e6,
-        };
-        let star = app.world_mut().spawn((Indicator(0.), body(1), Star)).id();
-        let moon = app.world_mut().spawn((Indicator(0.), body(2))).id();
+        let star = app.world_mut().spawn((Indicator(0.), body(1, 0))).id();
+        let moon = app.world_mut().spawn((Indicator(0.), body(2, 2))).id();
         let label = app.world_mut().spawn(Label).id();
         app.world_mut().entity_mut(moon).add_child(label);
 
@@ -1113,15 +1118,8 @@ mod tests {
         app.init_resource::<ButtonInput<MouseButton>>();
         app.add_systems(Update, point_at);
 
-        let body = |id| Body {
-            address: 1,
-            name: String::new(),
-            id,
-            class: String::new(),
-            radius: 1e6,
-        };
-        let near = app.world_mut().spawn((Indicator(0.), body(1))).id();
-        let far = app.world_mut().spawn((Indicator(0.), body(2))).id();
+        let near = app.world_mut().spawn((Indicator(0.), body(1, 2))).id();
+        let far = app.world_mut().spawn((Indicator(0.), body(2, 2))).id();
         let label = app.world_mut().spawn(Label).id();
         app.world_mut().entity_mut(far).add_child(label);
 
