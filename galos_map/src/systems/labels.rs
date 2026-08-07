@@ -995,7 +995,13 @@ pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
     named: Query<
-        (&GlobalTransform, Option<&Children>, Has<PointedAt>, Has<Selected>),
+        (
+            &GlobalTransform,
+            Option<&Children>,
+            Has<PointedAt>,
+            Has<Selected>,
+            Has<crate::systems::route::Hop>,
+        ),
         Or<(With<System>, With<Body>)>,
     >,
     shells: Query<&GlobalTransform, With<Shell>>,
@@ -1004,7 +1010,7 @@ pub fn leaders(
         if !drawn.get() {
             continue;
         }
-        let Ok((at, children, pointed_at, selected)) =
+        let Ok((at, children, pointed_at, selected, hop)) =
             named.get(child_of.parent())
         else {
             continue;
@@ -1014,7 +1020,11 @@ pub fn leaders(
         // than a line to it does, and leaves nothing for the line to say.
         // Either ring answers, and a name the color of the ring it belongs
         // to has already said which star it came from.
-        if pointed_at || selected {
+        //
+        // A stop the route reaches is ringed as well, and carries the mark
+        // saying which way it lies between the ring and the name, which joins
+        // the two of them more plainly than a line drawn under it could.
+        if pointed_at || selected || hop {
             continue;
         }
 
