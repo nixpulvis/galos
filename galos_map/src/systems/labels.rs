@@ -267,6 +267,32 @@ fn worth_naming(
 /// a system exactly, so this only has to forgive one that is merely near it.
 const CENTER_REACH: f32 = 2.;
 
+/// What [`choose_names`] weighs a thing by, alongside what it is
+///
+/// Spelled out once. Both of the questions it answers are asked of the same
+/// five things, and written into the query they read as a wall rather than as
+/// a list of claims.
+type Weighed<'a, T> = (
+    Entity,
+    T,
+    &'a Visibility,
+    &'a Indicator,
+    Has<Filtered>,
+    Has<crate::systems::route::Hop>,
+);
+
+/// What [`leaders`] needs of whatever a name is hung off
+///
+/// Where it is, what is drawn under it to begin clear of, and the three ways
+/// of being marked out that leave a line with nothing to say.
+type Led = (
+    &'static GlobalTransform,
+    Option<&'static Children>,
+    Has<PointedAt>,
+    Has<Selected>,
+    Has<crate::systems::route::Hop>,
+);
+
 /// A system whose name has won a place on screen
 ///
 /// Awarded by [`choose_names`] and read by [`respawn`], which spawns a label
@@ -458,14 +484,7 @@ pub fn choose_names(
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
     show_body_names: Res<ShowBodyNames>,
-    systems: Query<(
-        Entity,
-        &System,
-        &Visibility,
-        &Indicator,
-        Has<Filtered>,
-        Has<crate::systems::route::Hop>,
-    )>,
+    systems: Query<Weighed<'_, &'static System>>,
     bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     named: Query<Entity, With<Named>>,
@@ -994,16 +1013,7 @@ pub fn face_camera(
 pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
-    named: Query<
-        (
-            &GlobalTransform,
-            Option<&Children>,
-            Has<PointedAt>,
-            Has<Selected>,
-            Has<crate::systems::route::Hop>,
-        ),
-        Or<(With<System>, With<Body>)>,
-    >,
+    named: Query<Led, Or<(With<System>, With<Body>)>>,
     shells: Query<&GlobalTransform, With<Shell>>,
 ) {
     for (label, drawn, child_of) in &labels {

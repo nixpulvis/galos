@@ -68,17 +68,9 @@ impl Path {
     }
 
     /// The line as it stands, whole
-    pub fn whole(&self) -> Vec<Vec3> {
+    pub(super) fn whole(&self) -> Vec<Vec3> {
         self.stops.iter().map(|(_, at)| *at).collect()
     }
-}
-
-/// Every leg of `path` drawn, for a line that has not been cut back yet
-pub(super) fn legs_whole(path: &Path) -> Vec<Vec3> {
-    let points = path.whole();
-    let shown = vec![true; points.len()];
-
-    legs(&points, &shown)
 }
 
 /// Cut each route's line back to what is on the map
@@ -146,12 +138,6 @@ fn trim(
 /// is faint: the line crosses systems that are meant to go on being seen, and
 /// this is a mark around one of them.
 pub const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
-
-/// What the stub pointing at a stop is drawn in
-///
-/// Fainter than the ring it points at. It is there to be glanced at and
-/// followed rather than read.
-pub const REACHING: Srgba = Srgba::new(1., 1., 1., 0.5);
 
 /// A stop the route reaches from the system the camera is standing in
 ///
@@ -573,7 +559,7 @@ const DASH: f32 = (0.5 * crate::space::LIGHT_YEAR) as f32;
 /// what is being shown, which is true and is the one thing the viewer cannot
 /// otherwise tell: a leg simply cut at the edge of the reach reads as a route
 /// that ends there.
-fn legs(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
+pub(super) fn legs(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
     if points.len() != shown.len() {
         return Vec::new();
     }
