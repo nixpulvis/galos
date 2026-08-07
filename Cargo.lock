@@ -3696,6 +3696,7 @@ dependencies = [
  "big_space",
  "chrono",
  "elite_journal",
+ "epaint_default_fonts",
  "galos_db",
  "log",
 ]
