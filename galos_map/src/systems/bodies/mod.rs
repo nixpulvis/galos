@@ -87,6 +87,19 @@ impl Contents {
         }
     }
 
+    /// The star with `id`, if what stands there is a star
+    ///
+    /// What a panel describing one is opened from. The row rather than the
+    /// entity, as the panel holds a value and outlives the camera leaving.
+    pub fn star(&self, id: i16) -> Option<&DbStar> {
+        self.stars().iter().find(|star| star.id == id)
+    }
+
+    /// The body with `id`, if what stands there is a body
+    pub fn body(&self, id: i16) -> Option<&DbBody> {
+        self.bodies().iter().find(|body| body.id == id)
+    }
+
     /// The points a close pair of the system being held goes round
     ///
     /// Nothing is drawn for one. What they are worth is that everything under

@@ -14,6 +14,7 @@
 
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
+use crate::systems::bodies::Contents;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
@@ -525,6 +526,7 @@ pub fn chrome(
     mut settings: ResMut<SettingsOpen>,
     mut search: ResMut<BarFields>,
     mut selection: ResMut<Selection>,
+    contents: Res<Contents>,
     mut camera: MessageWriter<MoveCamera>,
     orbit: Query<&OrbitCamera>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -700,6 +702,7 @@ pub fn chrome(
         &mut bar.note,
         &mut bar.results,
         &mut selection,
+        &contents,
         &mut camera,
         orbit.single().map(|camera| camera.center).ok(),
         &mut panels,
@@ -850,6 +853,7 @@ fn main_bar(
     note: &mut SearchNote,
     results: &mut SearchResults,
     selection: &mut Selection,
+    contents: &Contents,
     camera: &mut MessageWriter<MoveCamera>,
     center: Option<DVec3>,
     panels: &mut Panels,
@@ -955,6 +959,7 @@ fn main_bar(
                     let routing = selected(
                         ui,
                         selection,
+                        contents,
                         center,
                         &mut went,
                         panels,
@@ -1378,6 +1383,7 @@ pub(crate) fn system_list<'a>(
 fn selected(
     ui: &mut Ui,
     selection: &mut Selection,
+    contents: &Contents,
     center: Option<DVec3>,
     travelled: &mut Option<DVec3>,
     panels: &mut Panels,
@@ -1441,12 +1447,7 @@ fn selected(
                     )
             });
 
-            // Only a system has a panel to open. A row that ends with the
-            // close mark alone ends where every other row ends, the close mark
-            // standing outermost.
-            let describing = matches!(held, Picked::System(_));
-            let marks =
-                if describing { lay_out_marks(ui) } else { lay_out_close(ui) };
+            let marks = lay_out_marks(ui);
             let name = held.name();
 
             // Whatever the dot, the distance and the marks leave the name.
@@ -1551,11 +1552,23 @@ fn selected(
     if let Some((index, chose)) = chose {
         match chose {
             Held::Travel => *travelled = selection.position(index),
-            Held::Describe => {
-                if let Some(system) = selection.system(index) {
-                    panels.open_system(system.clone());
+            // Whatever the row is about. A system is described from the row
+            // the bar holds; what is inside one is described from the rows the
+            // map is holding, which it has for as long as the thing is drawn,
+            // and a row for one is only held for that long either.
+            Held::Describe => match selection.get(index) {
+                Some(Picked::System(system)) => {
+                    panels.open_system(system.clone())
                 }
-            }
+                Some(Picked::Body(body)) => {
+                    if let Some(star) = contents.star(body.id()) {
+                        panels.open_star(star.clone());
+                    } else if let Some(row) = contents.body(body.id()) {
+                        panels.open_body(row.clone());
+                    }
+                }
+                None => {}
+            },
             Held::LetGo => selection.remove(index),
         }
     }
@@ -3343,6 +3356,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 None,
                 &mut travelled,
                 &mut panels,
@@ -3381,6 +3395,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 None,
                 &mut None,
                 &mut Panels::default(),
@@ -3419,6 +3434,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 Some(DVec3::ZERO),
                 &mut None,
                 &mut Panels::default(),
@@ -3444,6 +3460,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 None,
                 &mut None,
                 &mut Panels::default(),
@@ -3482,6 +3499,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 None,
                 &mut None,
                 &mut Panels::default(),
@@ -3508,6 +3526,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 Some(DVec3::ZERO),
                 &mut None,
                 &mut Panels::default(),
@@ -3621,6 +3640,7 @@ mod tests {
                 selected(
                     ui,
                     &mut selection,
+                    &Contents::default(),
                     None,
                     &mut travelled,
                     &mut panels,
@@ -3667,6 +3687,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 None,
                 &mut travelled,
                 &mut panels,
@@ -3714,6 +3735,7 @@ mod tests {
             selected(
                 ui,
                 &mut selection,
+                &Contents::default(),
                 None,
                 &mut travelled,
                 &mut panels,
@@ -3839,6 +3861,7 @@ mod tests {
             selected(
                 ui,
                 &mut held,
+                &Contents::default(),
                 None,
                 &mut travelled,
                 &mut panels,
