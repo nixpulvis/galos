@@ -194,15 +194,18 @@ impl PointedAt {
     }
 }
 
-/// Mark the one system the pointer is on
+/// Mark the one thing the pointer is on
 ///
 /// Read from what is hovered rather than from coming and going, so that the
 /// choice between two things under the pointer at once is made in one place
 /// instead of falling to whichever event happened to arrive last.
 ///
-/// A name wins over a star. Names are drawn over everything, so a name under
-/// the pointer is what the eye says is being pointed at, whatever happens to
-/// lie nearer the camera behind it.
+/// A name is the thing it names, and wins over a mark. Names are drawn over
+/// everything, so a name under the pointer is what the eye says is being
+/// pointed at, whatever happens to lie nearer the camera behind it. The one
+/// thing that beats a name is a star with the name of something going round it
+/// laid across it, which is a label for something else rather than a reason to
+/// stop aiming at the star.
 ///
 /// Between stars, an admitted one wins, and only then the nearer of the two,
 /// as it would if they blocked each other. A filter says which systems the
@@ -256,43 +259,53 @@ pub(super) fn point_at(
     // the dim star in front is the background the filter is read against, and
     // background that answers the pointer is background in the way.
     let mut nearest: Option<(Entity, bool, f32)> = None;
-    // A star, and only then the nearest. A star is what a system is named
-    // for and what everything else in it goes round, so one behind a moon that
-    // happens to be crossing it is still the thing being aimed at. Between two
-    // of a kind the nearer wins, a body being a real thing at a real size.
-    let mut inside: Option<(Entity, bool, f32)> = None;
+    // Whatever is inside a system, weighed by three things in this order: a
+    // star, then a name, then the nearest.
+    //
+    // A star first, because it is what the system is named for and what
+    // everything else in it goes round, so one behind a moon crossing it — or
+    // behind that moon's name — is still what was being aimed at. Then a name,
+    // for the reason a name wins anywhere: it is drawn over everything, so a
+    // name under the pointer is what the eye says is being pointed at. Then
+    // depth, a body being a real thing at a real size, so one in front of
+    // another is simply the one nearer.
+    let mut inside: Option<(Entity, (bool, bool, f32))> = None;
 
     for hits in hovered.values() {
         for (entity, hit) in hits.iter() {
-            if let Ok(name) = names.get(*entity) {
-                named = Some(name.parent());
-            } else if bodies.contains(*entity) {
-                let sun = stars.contains(*entity);
-                let better = inside.is_none_or(|(_, was_sun, depth)| {
-                    (!sun, hit.depth) < (!was_sun, depth)
-                });
-                if better {
-                    inside = Some((*entity, sun, hit.depth));
+            // A name is the thing it names, wherever it happens to be drawn.
+            let (thing, by_name) = match names.get(*entity) {
+                Ok(name) => (name.parent(), true),
+                Err(_) => (*entity, false),
+            };
+
+            if bodies.contains(thing) {
+                let rank = (!stars.contains(thing), !by_name, hit.depth);
+                if inside.is_none_or(|(_, was)| rank < was) {
+                    inside = Some((thing, rank));
                 }
-            } else if marked.contains(*entity) {
-                let system = *entity;
-                let dim = filtered.contains(system);
+            } else if by_name {
+                // A system's name, which is drawn over the whole sky and over
+                // every mark in it.
+                named = Some(thing);
+            } else if marked.contains(thing) {
+                let dim = filtered.contains(thing);
                 let better = nearest.is_none_or(|(_, was_dim, depth)| {
                     (dim, hit.depth) < (was_dim, depth)
                 });
                 if better {
-                    nearest = Some((system, dim, hit.depth));
+                    nearest = Some((thing, dim, hit.depth));
                 }
             }
         }
     }
 
-    // A name over everything, since a name is drawn over everything. Then
-    // whatever is inside a system over the mark standing for the system as a
-    // whole: once the camera is close enough to see a body, the body is the
-    // thing being pointed at and the system is the place it is in.
+    // A system's name over everything, since a name is drawn over everything.
+    // Then whatever is inside a system over the mark standing for the system
+    // as a whole: once the camera is close enough to see a body, the body is
+    // the thing being pointed at and the system is the place it is in.
     let wanted = named
-        .or(inside.map(|(body, ..)| body))
+        .or(inside.map(|(body, _)| body))
         .or(nearest.map(|(system, ..)| system));
     let mut already = false;
     for system in &pointed_at {
@@ -1036,6 +1049,100 @@ mod tests {
             !app.world().entity(moon).contains::<PointedAt>(),
             "a moon in front answered for the star behind it"
         );
+    }
+
+    /// A name reaches the thing it names, and a star beats one
+    ///
+    /// A name is drawn over everything, so a name under the pointer is
+    /// ordinarily what the eye says is being pointed at. A star is what the
+    /// system is named for, though, and a moon's name laid across it is a
+    /// label for something else rather than a reason to stop aiming at it.
+    #[test]
+    fn a_star_is_pointed_at_through_the_name_of_a_moon() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.add_systems(Update, point_at);
+
+        let body = |id| Body {
+            address: 1,
+            name: String::new(),
+            id,
+            class: String::new(),
+            radius: 1e6,
+        };
+        let star = app.world_mut().spawn((Indicator(0.), body(1), Star)).id();
+        let moon = app.world_mut().spawn((Indicator(0.), body(2))).id();
+        let label = app.world_mut().spawn(Label).id();
+        app.world_mut().entity_mut(moon).add_child(label);
+
+        let hit = |depth| HitData {
+            camera: Entity::PLACEHOLDER,
+            depth,
+            position: None,
+            normal: None,
+            extra: None,
+        };
+        let mut over = EntityHashMap::default();
+        over.insert(star, hit(50.));
+        over.insert(label, hit(1.));
+
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+
+        assert!(
+            app.world().entity(star).contains::<PointedAt>(),
+            "the star was not pointed at"
+        );
+        assert!(
+            !app.world().entity(moon).contains::<PointedAt>(),
+            "a moon's name answered for the star it was drawn over"
+        );
+    }
+
+    /// Between two of a kind, a name still wins over a disc
+    ///
+    /// Which is the reading a name is given anywhere: it is drawn over
+    /// everything, so one under the pointer is what is being pointed at.
+    #[test]
+    fn a_body_is_pointed_at_by_its_name_over_another_body() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.add_systems(Update, point_at);
+
+        let body = |id| Body {
+            address: 1,
+            name: String::new(),
+            id,
+            class: String::new(),
+            radius: 1e6,
+        };
+        let near = app.world_mut().spawn((Indicator(0.), body(1))).id();
+        let far = app.world_mut().spawn((Indicator(0.), body(2))).id();
+        let label = app.world_mut().spawn(Label).id();
+        app.world_mut().entity_mut(far).add_child(label);
+
+        let hit = |depth| HitData {
+            camera: Entity::PLACEHOLDER,
+            depth,
+            position: None,
+            normal: None,
+            extra: None,
+        };
+        let mut over = EntityHashMap::default();
+        over.insert(near, hit(1.));
+        over.insert(label, hit(50.));
+
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+
+        assert!(app.world().entity(far).contains::<PointedAt>());
+        assert!(!app.world().entity(near).contains::<PointedAt>());
     }
 
     /// A body is pointed at through the system holding it
