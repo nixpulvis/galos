@@ -17,7 +17,7 @@ use bevy_rich_text3d::{
 pub(crate) fn plugin(app: &mut App) {
     app.add_plugins(Text3dPlugin { load_system_fonts: false, ..default() });
     app.insert_resource(LoadFonts {
-        font_embedded: vec![include_bytes!("../../assets/gautami.ttf")],
+        font_embedded: vec![epaint_default_fonts::HACK_REGULAR],
         ..default()
     });
     app.insert_resource(NameRadius {
@@ -137,9 +137,13 @@ const GAP: f32 = 0.75;
 /// How far a label sits above its star, in text heights
 const RISE: f32 = 1.0;
 
-/// The family name inside `assets/gautami.ttf`, used to select it in
-/// [`Text3dStyling`].
-const FONT: &str = "Gautami";
+/// The family name inside [`epaint_default_fonts::HACK_REGULAR`], used to
+/// select it in [`Text3dStyling`]
+///
+/// The same face egui draws the chrome in, so a name on the map and the same
+/// name in the bar are the one typeface. Monospaced, which is what [`ADVANCE`]
+/// rests on.
+const FONT: &str = "Hack";
 
 /// Color of the line joining a star to its name
 ///
@@ -154,21 +158,22 @@ const LEADER_GAP: f32 = 0.15;
 
 /// How wide a character is taken to be, as a fraction of the font size
 ///
-/// Whether two names overlap is decided from their rectangles, and a name's
-/// width depends on which glyphs it is made of. The width it will draw at is
-/// known exactly, in `Text3dDimensionOut`, but only once the text mesh has
-/// been built, and building it is what [`choose_names`] is deciding whether
-/// to do. So the width is guessed from the letter count instead.
+/// Whether two names overlap is decided from their rectangles, and the width
+/// a name will draw at is known exactly, in `Text3dDimensionOut`, but only
+/// once the text mesh has been built, and building it is what [`choose_names`]
+/// is deciding whether to do. So the width is reckoned from the letter count
+/// instead.
 ///
 /// Named for the typographic advance, how far the pen moves along after
-/// drawing a glyph. An `i` advances a little and a `W` a lot, so this is an
-/// average over a name rather than a measurement of one.
+/// drawing a glyph. [`FONT`] is monospaced, so every glyph advances the same
+/// and a name of `n` letters is exactly `n` of these across, whichever letters
+/// they are. That is also why the names may be drawn in capitals for nothing:
+/// a `W` takes the room an `i` does.
 ///
-/// Deliberately above that average, so that it errs wide. Erring wide costs
-/// a gap between two names, and with it a third name that would have fitted
-/// between them; erring narrow overlaps them, which is the thing being
-/// prevented. Over the names of a hundred and fifty systems the widest ran
-/// to a little under seven tenths, which is where this sits.
+/// Above the font's own advance of `1233/2048`, so that it errs wide. Erring
+/// wide costs a gap between two names, and with it a third name that would
+/// have fitted between them; erring narrow overlaps them, which is the thing
+/// being prevented.
 const ADVANCE: f32 = 0.7;
 
 /// How much of a name's own height is kept clear around it
@@ -779,7 +784,9 @@ pub fn respawn(
 fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
     (
         Label,
-        Text3d::new(name),
+        // In capitals, as everything else the map says out loud is. The font
+        // is monospaced, so this costs no width.
+        Text3d::new(name.to_uppercase()),
         Text3dStyling {
             size: SIZE,
             font: FONT.into(),
