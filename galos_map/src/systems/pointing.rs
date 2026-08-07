@@ -766,11 +766,22 @@ pub fn ring(
                 Rect::from_corners(Vec2::ZERO, viewport).contains(*at)
             });
 
+            let toward = (at.translation() - from).try_normalize();
+            // Which way the stop lies across the view, which both of the
+            // things this can draw are laid out along. Nothing to say for one
+            // lying straight out through the middle of the screen, which has
+            // no across to it.
+            let across = toward.and_then(|toward| {
+                Vec2::new(toward.dot(right), toward.dot(up)).try_normalize()
+            });
+            let Some(across) = across else { continue };
+            let along = right * across.x + up * across.y;
+
             if landed.is_some() {
                 let pixel =
                     drawn_radius_of(orbit, cot_half_fov, viewport, there, 1.);
-                // Clear of the ring drawn round the stop, as a name
-                // stands clear of the mark round what it names.
+                // Clear of the ring drawn round the stop, as a name stands
+                // clear of the mark round what it names.
                 let ringed = drawn_radius(
                     orbit,
                     cot_half_fov,
@@ -780,9 +791,14 @@ pub fn ring(
                 );
                 let out = ringed + REACHING_EDGE * pixel;
 
+                // Back down the way it came, which is the side the star is on.
+                // The edge stub and this lie along the one axis, so what the
+                // eye follows in from the edge is what it goes on following
+                // once the stop has arrived, rather than the line jumping the
+                // ring to hang off the far side.
                 gizmos.line(
-                    at.translation() + right * out,
-                    at.translation() + right * (out + REACHING_LENGTH * pixel),
+                    at.translation() - along * out,
+                    at.translation() - along * (out + REACHING_LENGTH * pixel),
                     super::selection::going(
                         crate::systems::route::REACHING,
                         standing,
@@ -791,15 +807,7 @@ pub fn ring(
                 continue;
             }
 
-            let toward = (at.translation() - from).try_normalize();
-            // Which way the stop lies across the view, which is the whole of
-            // what the stub has to say. Nothing to say for one lying straight
-            // out through the middle of the screen, which has no across to it.
-            let across = toward.and_then(|toward| {
-                Vec2::new(toward.dot(right), toward.dot(up)).try_normalize()
-            });
-
-            if let Some(across) = across {
+            {
                 // Drawn in the plane the star stands in, that being the one
                 // depth in the view whose scale is already worked out, and the
                 // stub is over empty sky at any of them.
@@ -816,7 +824,6 @@ pub fn ring(
                 let edge = (half.x / across.x.abs())
                     .min(half.y / across.y.abs())
                     - REACHING_EDGE;
-                let along = right * across.x + up * across.y;
 
                 gizmos.line(
                     middle + along * ((edge - REACHING_LENGTH) * pixel),
