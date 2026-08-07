@@ -6,6 +6,7 @@ use crate::systems::filter::{Filter, Filters};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
+use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
 use super::system_to_vec;
@@ -36,6 +37,91 @@ pub fn plugin(app: &mut App) {
         Update,
         hops.in_set(MapSet::Populate).after(follow_filters),
     );
+    // After what is drawn has been settled, that being what the line is cut
+    // back to.
+    app.add_systems(
+        Update,
+        trim.in_set(MapSet::Present).after(crate::systems::visibility),
+    );
+}
+
+/// The stops a route's line runs through, and which of them were drawn
+///
+/// The addresses as well as the places, since which systems are on the map
+/// decides what of the line is drawn and the places alone cannot say. Kept on
+/// the line because a system the route runs through may not be spawned at all:
+/// there is then no entity to read a position off, and the line still has to
+/// know where the leg was going.
+#[derive(Component)]
+pub struct Path {
+    /// Each stop, by address, and where it sits in the line's own space
+    stops: Vec<(i64, Vec3)>,
+    /// Which of them were on the map when the line was last cut
+    shown: Vec<bool>,
+}
+
+impl Path {
+    /// A path through `stops`, with nothing yet known about what is drawn
+    pub fn new(stops: Vec<(i64, Vec3)>) -> Path {
+        let shown = vec![true; stops.len()];
+        Path { stops, shown }
+    }
+
+    /// The line as it stands, whole
+    pub fn whole(&self) -> Vec<Vec3> {
+        self.stops.iter().map(|(_, at)| *at).collect()
+    }
+}
+
+/// Every leg of `path` drawn, for a line that has not been cut back yet
+pub(super) fn legs_whole(path: &Path) -> Vec<Vec3> {
+    let points = path.whole();
+    let shown = vec![true; points.len()];
+
+    legs(&points, &shown)
+}
+
+/// Cut each route's line back to what is on the map
+///
+/// Runs over the lines rather than over the systems, and rebuilds one only
+/// where the answer moved. The mesh is rebuilt in place, under the handle the
+/// line already holds, so nothing downstream has to be told.
+fn trim(
+    systems: Query<(&System, &Visibility)>,
+    mut lines: Query<(&mut Path, &Mesh3d)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if lines.is_empty() {
+        return;
+    }
+
+    let shown: HashSet<i64> = systems
+        .iter()
+        .filter(|(_, visibility)| **visibility != Visibility::Hidden)
+        .map(|(system, _)| system.address)
+        .collect();
+
+    for (mut path, mesh) in &mut lines {
+        // A system the map never spawned is not on it, which is the same
+        // answer as one the spyglass or the filters put away.
+        let wanted: Vec<bool> = path
+            .stops
+            .iter()
+            .map(|(address, _)| shown.contains(address))
+            .collect();
+        if path.shown == wanted {
+            continue;
+        }
+
+        let points = legs(&path.whole(), &wanted);
+        // Nothing to write to where the mesh has already gone. What was drawn
+        // is left unrecorded with it, so the cut is tried again rather than
+        // taken as done.
+        if meshes.insert(&mesh.0, LineList { points }.into()).is_err() {
+            continue;
+        }
+        path.shown = wanted;
+    }
 }
 
 /// What the ring around a stop is drawn in
@@ -411,6 +497,89 @@ impl From<LineStrip> for Mesh {
     }
 }
 
+/// Points taken two at a time, each pair a line of its own
+///
+/// A strip joins everything handed to it, which a route cannot use: it has to
+/// leave gaps, between the dashes running out to a system that is not drawn
+/// and across the legs that are not drawn at all.
+#[derive(Debug, Clone)]
+pub(crate) struct LineList {
+    pub(crate) points: Vec<Vec3>,
+}
+
+impl From<LineList> for Mesh {
+    fn from(line: LineList) -> Self {
+        Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points)
+    }
+}
+
+/// How much of a leg into a system that is not drawn is drawn solid
+///
+/// About a third. Enough that the leg reads as a leg where it leaves the
+/// system that is drawn, and no more than that: the rest is given over to the
+/// dashes, which are what says the route goes on past the edge of what is
+/// being shown.
+const SOLID: f32 = 0.35;
+
+/// How many dashes carry the rest of it
+///
+/// Enough, over the two thirds they are spread across, to read as a dashed
+/// line rather than as a handful of marks left behind by one. Short and close
+/// together, since what carries the distance is the run of them: a dash long
+/// enough to read as a line of its own reads as the route continuing rather
+/// than as it running out.
+const DASHES: usize = 10;
+
+/// The line to draw for a route, as pairs of points
+///
+/// A leg between two systems that are both drawn is drawn whole. One between
+/// two that are not is not drawn at all: neither end is on the map, so a line
+/// joining them says nothing about anything the viewer can see, and a route
+/// crossing an unfetched stretch would otherwise be one long line over
+/// nothing.
+///
+/// A leg with one end on the map is the interesting one. It is drawn from the
+/// end that is there, solid most of the way and then in dashes, and stops
+/// short of the end that is not. What that says is that the route goes on past
+/// what is being shown, which is true and is the one thing the viewer cannot
+/// otherwise tell: a leg simply cut at the edge of the reach reads as a route
+/// that ends there.
+fn legs(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
+    if points.len() != shown.len() {
+        return Vec::new();
+    }
+
+    let mut drawn = Vec::new();
+    for (leg, ends) in points.windows(2).enumerate() {
+        match (shown[leg], shown[leg + 1]) {
+            (true, true) => drawn.extend_from_slice(ends),
+            (false, false) => {}
+            // From whichever end is on the map, towards the one that is not.
+            (here, _) => {
+                let (from, to) =
+                    if here { (ends[0], ends[1]) } else { (ends[1], ends[0]) };
+                let along = to - from;
+                drawn.push(from);
+                drawn.push(from + along * SOLID);
+
+                // Each dash takes the middle half of its own share of what
+                // is left, so a dash and the gap after it are the same length,
+                // and there is a gap after the solid stretch and another
+                // before the system that is not drawn.
+                let period = (1. - SOLID) / DASHES as f32;
+                for dash in 0..DASHES {
+                    let at = SOLID + dash as f32 * period;
+                    drawn.push(from + along * (at + period * 0.25));
+                    drawn.push(from + along * (at + period * 0.75));
+                }
+            }
+        }
+    }
+
+    drawn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +608,56 @@ mod tests {
 
         assert_eq!(reaching(Some(&route), Some(1), 0.), (None, Some(2)));
         assert_eq!(reaching(Some(&route), Some(3), 0.), (Some(2), None));
+    }
+
+    /// Two points, so a leg is one pair of them
+    const A: Vec3 = Vec3::ZERO;
+    const B: Vec3 = Vec3::new(10., 0., 0.);
+
+    /// A leg between two systems on the map is drawn whole
+    #[test]
+    fn a_leg_between_two_drawn_systems_is_one_line() {
+        assert_eq!(legs(&[A, B], &[true, true]), vec![A, B]);
+    }
+
+    /// A leg between two systems that are not on the map is not drawn
+    ///
+    /// Neither end is there to be joined to anything, so a line between them
+    /// says nothing about what the viewer can see.
+    #[test]
+    fn a_leg_between_two_undrawn_systems_is_nothing() {
+        assert!(legs(&[A, B], &[false, false]).is_empty());
+    }
+
+    /// A leg with one end on the map runs out from that end and stops short
+    ///
+    /// Whichever end it is. The solid stretch begins at the system that is
+    /// drawn, and nothing reaches the one that is not: a line touching it
+    /// would say it is there.
+    #[test]
+    fn a_leg_out_of_the_map_trails_off_before_it_arrives() {
+        for (shown, near, far) in [([true, false], A, B), ([false, true], B, A)]
+        {
+            let drawn = legs(&[A, B], &shown);
+
+            assert_eq!(drawn.first(), Some(&near), "did not start where drawn");
+            assert!(
+                drawn.iter().all(|at| at.distance(far) > 0.1),
+                "a dash reached the system that is not drawn"
+            );
+            assert_eq!(
+                drawn.len(),
+                2 + DASHES * 2,
+                "the solid run and {DASHES} dashes are {} points",
+                2 + DASHES * 2
+            );
+        }
+    }
+
+    /// A line is cut only where its stops and what is drawn agree in length
+    #[test]
+    fn a_line_nothing_is_known_about_is_not_drawn() {
+        assert!(legs(&[A, B], &[true]).is_empty());
     }
 
     /// Nothing is reached from outside the system, whole mark or fading one
