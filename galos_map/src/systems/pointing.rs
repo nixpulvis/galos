@@ -96,35 +96,43 @@ const BODY_MIN_RADIUS: f32 = 4.;
 ///
 /// Small. It is read once, to tell one of two stops from the other, and then
 /// not looked at again.
-const ICON: f32 = 18.;
+const ICON: f32 = 14.;
 
-/// The mark for `hop`, about `at`, as two outlines in pixels
+/// The mark for `hop`, about `at`, as lines in pixels
 ///
 /// The two triangles every machine that has ever played anything back puts on
 /// its buttons: onward for the stop ahead and back the way it came for the one
-/// behind. A single arrow at this size is a scratch that could be pointing
-/// anywhere, where this reads as one thing at a glance and is already known.
-fn transport(hop: &crate::systems::route::Hop, at: Vec2) -> [[Vec2; 4]; 2] {
+/// behind. Nobody has to work out what they mean, and they read at a glance
+/// rather than on inspection, which a single arrow at this size does not: its
+/// head is a few pixels and its tail is a line like every other line drawn.
+///
+/// Filled by ruling them. Gizmos have only lines to draw with, and a hollow
+/// triangle this small is mostly the gap in the middle of it, so each is drawn
+/// as a row of lines from its flat side out to wherever the two sloping sides
+/// have met by that row.
+fn transport(hop: &crate::systems::route::Hop, at: Vec2) -> Vec<[Vec2; 2]> {
     let way = match hop {
         crate::systems::route::Hop::Next => 1.,
         crate::systems::route::Hop::Last => -1.,
     };
     let wing = ICON * 0.5;
     let half = ICON * 0.35;
+    let rows = (half * 2.).round().max(1.) as usize;
 
-    // One triangle, flat side at `base` and point ahead of it, laid the way
-    // this stop is. Closed, so the outline is drawn whole.
-    let mark = |base: f32| {
-        [
-            Vec2::new(base, -half),
-            Vec2::new(base + wing, 0.),
-            Vec2::new(base, half),
-            Vec2::new(base, -half),
-        ]
-        .map(|corner| at + Vec2::new(corner.x * way, corner.y))
-    };
+    let mut ruled = Vec::with_capacity((rows + 1) * 2);
+    for base in [-wing, 0.] {
+        for row in 0..=rows {
+            let y = half * (2. * row as f32 / rows as f32 - 1.);
+            let reach = wing * (1. - (y / half).abs());
 
-    [mark(-wing), mark(0.)]
+            ruled.push([
+                at + Vec2::new(base * way, y),
+                at + Vec2::new((base + reach) * way, y),
+            ]);
+        }
+    }
+
+    ruled
 }
 
 /// How far in from the edge of the view a stub pointing at a stop sits
@@ -859,8 +867,8 @@ pub fn ring(
                     // At the inner end, which is the end that is looked at:
                     // the outer one is against the border of the view.
                     let at = across * (edge - REACHING_LENGTH - ICON);
-                    for mark in transport(hop, at) {
-                        gizmos.linestrip(mark.map(placed), color);
+                    for rule in transport(hop, at) {
+                        gizmos.line(placed(rule[0]), placed(rule[1]), color);
                     }
                 }
             }
