@@ -2,9 +2,10 @@
 //!
 //! Stored apart from [`crate::bodies`] because it is not a body. A scan of one
 //! carries a system, an id and an orbit, and none of the mass, radius, class or
-//! surface a body is described by. Nothing here is drawn: a barycenter is a
-//! point that other things hang off, and what it is worth is that a body naming
-//! it as an ancestor can be placed where it belongs.
+//! surface a body is described by. A barycenter is a point that other things
+//! hang off, and what it is worth is twofold: a body naming it as an ancestor
+//! can be placed where it belongs, and the orbit here is the one the pair
+//! itself rides.
 use chrono::{DateTime, Utc};
 use elite_journal::body::Orbit;
 

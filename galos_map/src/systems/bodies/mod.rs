@@ -16,6 +16,7 @@ use galos_db::barycenters::Barycenter as DbBarycenter;
 use galos_db::bodies::Body as DbBody;
 use galos_db::stars::Star as DbStar;
 use orbit::{Orbit, Orbits};
+use std::collections::HashSet;
 
 pub mod fetch;
 pub mod orbit;
@@ -102,9 +103,11 @@ impl Contents {
 
     /// The points a close pair of the system being held goes round
     ///
-    /// Nothing is drawn for one. What they are worth is that everything under
-    /// one can be placed: a body measures its orbit about its nearest
-    /// ancestor, and where that ancestor stands is the rest of the answer.
+    /// No sphere stands at one, and its ellipse is drawn: a close pair rides
+    /// that ellipse, so it is the whole of how far out the pair sits. What
+    /// they are worth besides is that everything under one can be placed. A
+    /// body measures its orbit about its nearest ancestor, and where that
+    /// ancestor stands is the rest of the answer.
     pub fn barycenters(&self) -> &[DbBarycenter] {
         match &self.held {
             Held::Known { centers, .. } => centers,
@@ -181,7 +184,7 @@ impl Contents {
     /// Both are the same picture to whoever is drawing: the map cannot say how
     /// far this system reaches.
     pub fn extent(&self) -> Option<f32> {
-        let Held::Known { stars, bodies, .. } = &self.held else {
+        let Held::Known { stars, bodies, centers } = &self.held else {
             return None;
         };
 
@@ -210,6 +213,19 @@ impl Contents {
                     })
                     + s.radius.max(0.)
             }))
+            .chain(centers.iter().filter(|c| orbits.holds(c.id)).map(|c| {
+                // A barycenter has no size of its own, so its ellipse is the
+                // whole of what is drawn for it. The pair riding it says only
+                // where it stands today, which on an eccentric orbit is short
+                // of where the line reaches.
+                //
+                // Whichever of them the orbits kept, so that the shell is
+                // measured against exactly what is drawn.
+                about(orbits.parent(c.id))
+                    + c.orbit.as_ref().map_or(0., |o| {
+                        reach(o.semi_major_axis, o.eccentricity)
+                    })
+            }))
             .filter(|r| r.is_finite() && *r > 0.);
 
         reaches
@@ -237,11 +253,25 @@ impl Contents {
         for body in self.bodies() {
             orbits.insert(body.id, body.parent_id(), recorded_body(body));
         }
-        // The barycenters go in as well, though nothing is drawn for one.
-        // A close pair names its center and the center names the star, so
-        // leaving them out breaks the chain at its first step and drops the
-        // pair at the middle of the system with its whole outer orbit lost.
+        // The barycenters go in as well. A close pair names its center and the
+        // center names the star, so leaving them out breaks the chain at its
+        // first step and drops the pair at the middle of the system with its
+        // whole outer orbit lost.
+        //
+        // Only the ones something rides. A center and the pair that goes round
+        // it arrive as separate scans, so the database holds a great many
+        // points with nothing yet under them. Neither of the two things a
+        // center is worth applies to one of those: no chain runs through it,
+        // and the ellipse drawn for it would be a ring with nothing on it.
+        let ridden: HashSet<i16> = self
+            .bodies()
+            .iter()
+            .flat_map(|body| body.parents.iter().map(|parent| parent.id))
+            .collect();
         for center in self.barycenters() {
+            if !ridden.contains(&center.id) {
+                continue;
+            }
             orbits.insert(
                 center.id,
                 self.goes_round(center.id),
@@ -526,6 +556,113 @@ mod tests {
             (out - 1e13).abs() < 1e13 * 1e-3,
             "the body stood {out}m from the star, not the 1e13 of its orbit"
         );
+    }
+
+    /// Every kind of thing in a system is offered a line
+    ///
+    /// The lines are drawn from what [`Contents::orbits`] holds, so a kind
+    /// missing here is a kind placed on the map with no orbit drawn for it.
+    /// The barycenter is the one that costs something: nothing is drawn at
+    /// one, but a close pair rides its ellipse, and without that the pair is
+    /// two small rings around a point nothing leads to.
+    #[test]
+    fn every_kind_of_thing_is_offered_a_line() {
+        let orbits = binary(true).orbits();
+        let mut held: Vec<_> = orbits.circling().map(|(id, _)| id).collect();
+        held.sort();
+
+        // Two stars, one body, one barycenter.
+        assert_eq!(held, vec![1, 2, 10, 11]);
+        assert!(
+            orbits.path(10, 64).is_some(),
+            "the barycenter was offered no path"
+        );
+    }
+
+    /// A barycenter nothing rides is left out, and does not stretch the system
+    ///
+    /// A center and the pair that goes round it arrive as separate scans, so
+    /// the database holds a great many points with nothing yet under them. The
+    /// ellipse drawn for one would be a ring with nothing on it, and a shell
+    /// drawn out to that ring is a system with one star in the middle of a
+    /// great deal of nothing.
+    #[test]
+    fn a_barycenter_nothing_rides_is_left_out() {
+        let mut lone = star(1, 0., 0., vec![]);
+        lone.radius = 5.9e7;
+        let contents = Contents {
+            of: Some(1),
+            held: Held::Known {
+                stars: vec![lone],
+                bodies: vec![],
+                centers: vec![center(10, 4e12)],
+            },
+        };
+
+        assert!(
+            !contents.orbits().holds(10),
+            "the center was kept with nothing riding it"
+        );
+        assert_eq!(contents.extent(), Some(STAND_IN));
+    }
+
+    /// A system whose outermost thing is a close pair on an eccentric orbit
+    ///
+    /// One star at the middle, a barycenter going round it, and one body
+    /// riding the barycenter. A mean anomaly of nothing stands the pair at
+    /// periapsis, so where it is today and how far its line reaches are as far
+    /// apart as the orbit allows.
+    fn eccentric_pair() -> Contents {
+        let mut close = body(1e8);
+        close.id = 11;
+        close.parents = vec![parent("Null", 10), parent("Star", 1)];
+
+        let mut wide = center(10, 4e12);
+        wide.orbit.as_mut().expect("a center with an orbit").eccentricity = 0.5;
+
+        Contents {
+            of: Some(1),
+            held: Held::Known {
+                stars: vec![star(1, 0., 0., vec![])],
+                bodies: vec![close],
+                centers: vec![wide],
+            },
+        }
+    }
+
+    /// The extent reaches the far end of a barycenter's ellipse
+    ///
+    /// The pair riding it says only where it stands today. Measured from that
+    /// alone the shell is drawn at the periapsis and the far half of the line
+    /// hangs outside the system it belongs to.
+    #[test]
+    fn the_extent_takes_in_the_whole_of_a_barycenters_ellipse() {
+        let reaches =
+            eccentric_pair().extent().expect("the pair reaches somewhere");
+
+        assert!(
+            (reaches - 6e12).abs() < 6e12 * 1e-6,
+            "the system reached {reaches}m, not the 6e12 of the apoapsis"
+        );
+    }
+
+    /// And no part of that ellipse falls outside it
+    #[test]
+    fn a_barycenters_line_stays_inside_the_extent() {
+        let contents = eccentric_pair();
+        let orbits = contents.orbits();
+        let middle = contents.middle(&orbits, 0.);
+        let about = orbits.place(1, 0.) - middle;
+        let reaches =
+            contents.extent().expect("the pair reaches somewhere") as f64;
+
+        for point in orbits.path(10, 64).expect("the center has a path") {
+            let out = (about + point).length();
+            assert!(
+                out <= reaches,
+                "the line reached {out}m out, past a {reaches}m extent"
+            );
+        }
     }
 
     /// Contents that came back holding `bodies`
