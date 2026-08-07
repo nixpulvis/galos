@@ -23,6 +23,7 @@ use crate::systems::filter::{
 };
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
+use crate::systems::labels::ShowBodyNames;
 use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
@@ -479,6 +480,7 @@ pub struct Knobs<'w> {
     poll: ResMut<'w, Poll>,
     name_radius: ResMut<'w, NameRadius>,
     show_orbits: ResMut<'w, ShowOrbits>,
+    show_body_names: ResMut<'w, ShowBodyNames>,
     despawner: MessageWriter<'w, Despawn>,
 }
 
@@ -599,7 +601,7 @@ pub fn chrome(
             }
         });
 
-        heading(ui, "View", true);
+        heading(ui, "Galaxy View", true);
         // Whether a system is named is a choice about what the map draws, the
         // same as which color a star comes out and how large it is, so it
         // stands with those rather than alone.
@@ -656,6 +658,7 @@ pub fn chrome(
         // under the view above it: which of the two ways the sky is drawn says
         // nothing about what a system looks like from within.
         heading(ui, "System View", true);
+        ui.checkbox(&mut knobs.show_body_names.0, "Show Labels");
         ui.checkbox(&mut knobs.show_orbits.0, "Orbit Lines");
 
         // How the filters answer, rather than which they are: the filters
