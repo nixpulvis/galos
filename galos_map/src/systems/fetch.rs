@@ -35,6 +35,25 @@ pub fn plugin(app: &mut App) {
 #[derive(Resource)]
 pub struct Poll(pub Option<f64>);
 
+impl Poll {
+    /// Whether enough has passed since `last` to ask again at `now`
+    ///
+    /// The one reading of the setting, put to it by everything refreshing on
+    /// it. The spyglass asks about a region of the galaxy and
+    /// [`crate::systems::bodies::fetch`] asks about the inside of one system,
+    /// and the two share nothing else; what they do share is that the user set
+    /// one number for how often the map goes back to the database, and it
+    /// means the same thing to both.
+    ///
+    /// Never when the poll is off, so a caller only has to ask this to honour
+    /// the checkbox.
+    pub fn elapsed(&self, last: Instant, now: Instant) -> bool {
+        self.0.is_some_and(|wait| {
+            last + Duration::from_secs_f64(wait.max(0.)) < now
+        })
+    }
+}
+
 /// The amount to throttle requests for new indices (millis).
 #[derive(Resource)]
 pub struct Throttle(pub u64);
@@ -327,9 +346,7 @@ pub fn spyglass_condition(
 
     tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
         if index.refreshes(last_fetched) {
-            poll.0.map_or(false, |wait| {
-                last_fetched_at.0 + Duration::from_secs_f64(wait.max(0.)) < now
-            })
+            poll.elapsed(last_fetched_at.0, now)
         } else {
             last_fetched_at.0 + Duration::from_millis(throttle.0) < now
         }
