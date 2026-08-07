@@ -245,6 +245,12 @@ const SELECTED_WEIGHT: f32 = 1000.;
 /// is inside, what is drawn there is the system itself, and the things in it
 /// carry their own names. A name left hanging over them would be the label of
 /// a shell that is no longer drawn.
+///
+/// The star a system arrives at ends it as surely as the mark fading does, and
+/// sooner: it is named for the system, so from the moment it is drawn the
+/// system's name is already on screen. The two would otherwise both be laid
+/// out, the same words a few pixels apart, for the whole band over which the
+/// contents arrive before the mark begins to go.
 fn worth_naming(
     stands: bool,
     shown: bool,
@@ -479,6 +485,17 @@ pub fn choose_names(
 
     let reach = radius.reach(&spyglass);
 
+    // Which system, if any, has the star it arrives at drawn inside it. That
+    // star is named for the system, so while it is drawn the system's own name
+    // is the same words a second time over the same place, and which of the
+    // two survives the layout comes down to whichever scored higher as the
+    // camera moved. What that looks like is a name flickering between two
+    // labels a few pixels apart.
+    let carried = bodies
+        .iter()
+        .find(|(_, body, _, _)| body.primary)
+        .map(|(_, body, _, _)| body.address);
+
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
@@ -509,8 +526,11 @@ pub fn choose_names(
 
             // And the map still standing a mark in for the system at all,
             // which beats every other claim: past there the system is drawn
-            // rather than marked, and its name belongs to the mark.
-            let stands = seen_as.standing(entity) > 0.;
+            // rather than marked, and its name belongs to the mark. The star
+            // it arrives at being drawn ends it just as surely, that star
+            // carrying the name from there on.
+            let stands = seen_as.standing(entity) > 0.
+                && carried != Some(system.address);
 
             if !worth_naming(
                 stands,
@@ -583,6 +603,7 @@ pub fn choose_names(
                 indicator.0,
                 body.ancestors,
                 body.star,
+                body.primary,
                 pointed_at,
                 selected,
             );
@@ -657,10 +678,16 @@ const DEEPEST: u8 = 4;
 
 /// How much a body deserves to have its name drawn
 ///
-/// Three claims, each settled before the next is asked.
+/// Four claims, each settled before the next is asked.
 ///
-/// A parent before whatever goes round it, whatever the two are drawn at: a
-/// star before its planets, and a planet before its moons. A moon the camera
+/// The star the system arrives at before anything else in it. It is what the
+/// system is named for, what everything else is measured from, and where the
+/// camera is sent; a name for it is the one name that says which system this
+/// is. It takes a rank of its own above the deepest, so nothing below can
+/// reach it however large it draws or however shallow it sits.
+///
+/// Then a parent before whatever goes round it, whatever the two are drawn at:
+/// a star before its planets, and a planet before its moons. A moon the camera
 /// happens to be beside is drawn larger than the star at the middle of the
 /// system and is not more worth naming than it. `under` is how many ancestors
 /// the scan named it under, which counts up the same way.
@@ -673,20 +700,25 @@ const DEEPEST: u8 = 4;
 /// Then its own apparent size. Bigger first, which is nearly always the order
 /// the viewer would have chosen: the worlds before the specks.
 ///
-/// The three are nested rather than added together. [`INSIDE_WEIGHT`] is cut
-/// into a step per depth, being a star takes half a step, and the size argues
-/// over what is left, so nothing carries enough to cross a claim above it. The
-/// whole of it stays inside [`INSIDE_WEIGHT`], so nothing inside a system
-/// outranks whatever is pointed at or picked out.
+/// The four are nested rather than added together. [`INSIDE_WEIGHT`] is cut
+/// into a step per depth and one more for the arrival star, being a star takes
+/// half a step, and the size argues over what is left, so nothing carries
+/// enough to cross a claim above it. The whole of it stays inside
+/// [`INSIDE_WEIGHT`], so nothing inside a system outranks whatever is pointed
+/// at or picked out.
 fn body_name_score(
     apparent: f32,
     under: u8,
     star: bool,
+    primary: bool,
     pointed_at: bool,
     selected: bool,
 ) -> f32 {
-    let step = INSIDE_WEIGHT / (DEEPEST + 1) as f32;
-    let depth = (DEEPEST - under.min(DEEPEST)) as f32 * step;
+    // A rank apiece for the depths, and one over them all for the star the
+    // system arrives at.
+    let step = INSIDE_WEIGHT / (DEEPEST + 2) as f32;
+    let rank = if primary { DEEPEST + 1 } else { DEEPEST - under.min(DEEPEST) };
+    let depth = rank as f32 * step;
     let sun = if star { step / 2. } else { 0. };
     let size = (step / 2.) * apparent / (apparent + BODY_NAME_REACH);
 
@@ -1254,8 +1286,9 @@ mod tests {
     #[test]
     fn a_parent_is_named_before_what_goes_round_it() {
         for under in 0..DEEPEST {
-            let parent = body_name_score(0., under, false, false, false);
-            let child = body_name_score(1e4, under + 1, false, false, false);
+            let parent = body_name_score(0., under, false, false, false, false);
+            let child =
+                body_name_score(1e4, under + 1, false, false, false, false);
 
             assert!(
                 parent > child,
@@ -1273,8 +1306,8 @@ mod tests {
     #[test]
     fn a_star_is_named_before_its_own_siblings() {
         // The star drawn at nothing, and the planet filling the view.
-        let star = body_name_score(0., 1, true, false, false);
-        let planet = body_name_score(1e4, 1, false, false, false);
+        let star = body_name_score(0., 1, true, false, false, false);
+        let planet = body_name_score(1e4, 1, false, false, false, false);
 
         assert!(star > planet, "the star scored {star} against {planet}");
     }
@@ -1287,8 +1320,8 @@ mod tests {
     /// to how the terms happen to add up.
     #[test]
     fn depth_is_asked_before_being_a_star() {
-        let deeper = body_name_score(1e4, 2, true, false, false);
-        let higher = body_name_score(0., 1, false, false, false);
+        let deeper = body_name_score(1e4, 2, true, false, false, false);
+        let higher = body_name_score(0., 1, false, false, false, false);
 
         assert!(higher > deeper, "{higher} did not beat {deeper}");
     }
@@ -1299,8 +1332,9 @@ mod tests {
     /// to tell the rest apart is smaller than the room a name takes.
     #[test]
     fn the_deepest_step_is_the_last_one_told_apart() {
-        let deep = body_name_score(0., DEEPEST, false, false, false);
-        let deeper = body_name_score(0., DEEPEST + 3, false, false, false);
+        let deep = body_name_score(0., DEEPEST, false, false, false, false);
+        let deeper =
+            body_name_score(0., DEEPEST + 3, false, false, false, false);
 
         assert_eq!(deep, deeper);
     }
@@ -1308,10 +1342,50 @@ mod tests {
     /// At one depth, the larger is named first
     #[test]
     fn the_larger_of_two_at_one_depth_is_named_first() {
-        let world = body_name_score(1e4, 2, false, false, false);
-        let speck = body_name_score(0.1, 2, false, false, false);
+        let world = body_name_score(1e4, 2, false, false, false, false);
+        let speck = body_name_score(0.1, 2, false, false, false, false);
 
         assert!(world > speck, "the world scored {world} against {speck}");
+    }
+
+    /// The star a system arrives at outranks everything else in the system
+    ///
+    /// Whatever the rest have going for them: the shallowest place, being
+    /// stars themselves, and drawing as large as a body ever does. Its name
+    /// is the one that says which system this is.
+    #[test]
+    fn the_arrival_star_outranks_the_whole_system() {
+        let primary = body_name_score(0., 0, true, true, false, false);
+
+        // The best anything else can do, which is a second star sitting as
+        // shallow as the arrival star and filling the view.
+        let best = body_name_score(1e9, 0, true, false, false, false);
+        assert!(
+            primary > best,
+            "the arrival star scored {primary}, under the {best} of another"
+        );
+    }
+
+    /// The arrival star wins a pair the rest of the order cannot separate
+    ///
+    /// Shinrarta Dezhra is the case: two stars, both hanging off the point in
+    /// the middle so both are named one ancestor down, both stars, and both
+    /// drawn at the floor a mark cannot go under while the whole system is on
+    /// screen. Every term but the arrival tied exactly, so which of the two
+    /// names was drawn came down to which row the database returned first.
+    #[test]
+    fn the_arrival_star_wins_a_pair_nothing_else_separates() {
+        // What `pointing` will not draw a mark under, which both stars sit at
+        // from anywhere the whole system is in view.
+        let floor = 4.;
+        let arrival = body_name_score(floor, 1, true, true, false, false);
+        let other = body_name_score(floor, 1, true, false, false, false);
+
+        assert!(
+            arrival > other,
+            "the arrival star scored {arrival} against the {other} of the \
+             star beside it"
+        );
     }
 
     /// And all of it gives way to what is pointed at or picked out
@@ -1321,10 +1395,10 @@ mod tests {
     /// for itself.
     #[test]
     fn a_marked_body_outranks_a_star_at_rest() {
-        let star = body_name_score(1e4, 0, true, false, false);
+        let star = body_name_score(1e4, 0, true, false, false, false);
 
-        assert!(body_name_score(0., DEEPEST, false, true, false) > star);
-        assert!(body_name_score(0., DEEPEST, false, false, true) > star);
+        assert!(body_name_score(0., DEEPEST, false, false, true, false) > star);
+        assert!(body_name_score(0., DEEPEST, false, false, false, true) > star);
     }
 
     /// Names are offered in order of nearness to the center
