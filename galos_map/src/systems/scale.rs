@@ -16,6 +16,7 @@ use crate::schedule::MapSet;
 use super::System;
 use super::bodies::spawn::Body;
 use super::labels::{depth_of, world_per_pixel};
+use super::roundness::Roundness;
 use super::spawn::Shell;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -229,15 +230,19 @@ pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
     contents: Res<super::bodies::Contents>,
-    camera: Query<&OrbitCamera>,
+    camera: Query<(&OrbitCamera, &Camera)>,
     systems: Query<&System>,
-    mut shells: Query<(&mut Transform, &ChildOf), With<Shell>>,
+    roundness: Res<Roundness>,
+    mut shells: Query<(&mut Transform, &ChildOf, &mut Mesh3d), With<Shell>>,
 ) {
     if !shells.is_empty() {
-        let Ok(eye) = camera.single().map(|c| c.eye) else { return };
+        let Ok((orbit, camera)) = camera.single() else { return };
+        let Some(viewport) = camera.logical_viewport_size() else { return };
+        let cot_half_fov = camera.clip_from_view().y_axis.y;
+        let eye = orbit.eye;
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut drawn, child_of) in shells.iter_mut() {
+        for (mut drawn, child_of, mut mesh) in shells.iter_mut() {
             let Ok(system) = systems.get(child_of.parent()) else { continue };
             let away = crate::space::metres(eye - DVec3::from(system.position))
                 .length() as f32;
@@ -255,7 +260,20 @@ pub fn size_by_distance(
                 1.
             };
 
-            drawn.scale = Vec3::splat(shell(extent, away, prominence));
+            let size = shell(extent, away, prominence);
+            drawn.scale = Vec3::splat(size);
+
+            // Measured out along the line to the system rather than into the
+            // view, which is what the size itself is measured by. A mark off
+            // to one side is drawn a little coarser than it strictly asks for,
+            // by well under the pixel the rungs are set by, and the two agree
+            // about how far away a system is.
+            let per_pixel =
+                world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
+            let wanted = roundness.at(&mesh.0, size / per_pixel);
+            if mesh.0 != *wanted {
+                mesh.0 = wanted.clone();
+            }
         }
     }
 }
@@ -285,13 +303,14 @@ const SMALLEST_DRAWN: f32 = 1.;
 /// the same body for the same reason.
 pub fn size_inside(
     camera: Query<(&GlobalTransform, &OrbitCamera, &Camera)>,
-    mut bodies: Query<(&GlobalTransform, &Body, &mut Transform)>,
+    roundness: Res<Roundness>,
+    mut bodies: Query<(&GlobalTransform, &Body, &mut Transform, &mut Mesh3d)>,
 ) {
     let Ok((eye, orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (at, body, mut drawn) in &mut bodies {
+    for (at, body, mut drawn, mut mesh) in &mut bodies {
         let offset = (at.translation() - eye.translation()).as_dvec3();
         // A metre, which is as near as the camera may be pulled to anything.
         let into_view = depth_of(orbit, offset).max(1.);
@@ -306,18 +325,53 @@ pub fn size_inside(
         if drawn.scale.x != size {
             drawn.scale = Vec3::splat(size);
         }
+
+        // The size it is drawn at rather than the size it is, so a body held
+        // at the floor asks for the sphere a point wants.
+        let wanted = roundness.at(&mesh.0, size / per_pixel);
+        if mesh.0 != *wanted {
+            mesh.0 = wanted.clone();
+        }
     }
 }
 
 /// Draw every system the same size, whatever the camera is doing
 ///
-/// This view is a picture of where things are rather than of how far away
-/// they are, so nothing here reads the camera.
-pub fn size_uniformly(mut shells: Query<&mut Transform, With<Shell>>) {
+/// This view is a picture of where things are rather than of how far away they
+/// are, so the size here reads nothing. How round that size is drawn is a
+/// different question and has to ask, since a shell held at one size in the
+/// world still covers everything from half a pixel to half the screen.
+pub fn size_uniformly(
+    camera: Query<(&OrbitCamera, &Camera)>,
+    systems: Query<&System>,
+    roundness: Res<Roundness>,
+    mut shells: Query<(&mut Transform, &ChildOf, &mut Mesh3d), With<Shell>>,
+) {
+    let size = (1e-2 * crate::space::LIGHT_YEAR) as f32;
+    // Nothing to be round for where there is no viewport to be round in, and
+    // the size is written either way.
+    let seen = match camera.single() {
+        Ok((orbit, camera)) => camera.logical_viewport_size().map(|viewport| {
+            (orbit.eye, camera.clip_from_view().y_axis.y, viewport.y)
+        }),
+        Err(_) => None,
+    };
+
     // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
     // transparent when they are too far away.
-    for mut shell in shells.iter_mut() {
-        shell.scale = Vec3::splat((1e-2 * crate::space::LIGHT_YEAR) as f32);
+    for (mut drawn, child_of, mut mesh) in shells.iter_mut() {
+        drawn.scale = Vec3::splat(size);
+
+        let Some((eye, cot_half_fov, height)) = seen else { continue };
+        let Ok(system) = systems.get(child_of.parent()) else { continue };
+        let away = crate::space::metres(eye - DVec3::from(system.position))
+            .length() as f32;
+
+        let per_pixel = world_per_pixel(cot_half_fov, height, away.max(1.));
+        let wanted = roundness.at(&mesh.0, size / per_pixel);
+        if mesh.0 != *wanted {
+            mesh.0 = wanted.clone();
+        }
     }
 }
 

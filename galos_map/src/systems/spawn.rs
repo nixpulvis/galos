@@ -9,6 +9,7 @@ use crate::systems::{
     fetch::FetchTasks,
     filter::{DimTo, Filtered, Filters},
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
+    roundness::Roundness,
     route::spawn::{framing, spawn_route},
     route::{self, Plotted, Route},
     selection::{Picked, PickedBody, Selection},
@@ -35,7 +36,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
 
-    app.add_systems(Startup, (init_mesh, init_materials));
+    app.add_systems(Startup, init_materials);
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
     app.add_systems(Update, redim.in_set(MapSet::Populate));
@@ -53,9 +54,6 @@ pub fn plugin(app: &mut App) {
             .after(super::pointing::point_at),
     );
 }
-
-#[derive(Resource)]
-pub struct SystemMesh(pub Handle<Mesh>);
 
 /// What a star is drawn in, at full strength and dimmed
 ///
@@ -393,7 +391,7 @@ pub fn spawn(
     grids: Query<&Grid, With<BigSpace>>,
     color_by: Res<ColorBy>,
     filters: Res<Filters>,
-    mesh: Res<SystemMesh>,
+    roundness: Res<Roundness>,
     materials: Res<SystemMaterials>,
     time: Res<Time<Real>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
@@ -486,7 +484,7 @@ pub fn spawn(
             &color_by,
             &filters,
             &mut commands,
-            &mesh,
+            &roundness,
             &materials,
             &time,
             &arrived_at,
@@ -566,7 +564,7 @@ pub fn spawn_systems(
     color_by: &Res<ColorBy>,
     filters: &Res<Filters>,
     commands: &mut Commands,
-    mesh: &Res<SystemMesh>,
+    roundness: &Res<Roundness>,
     materials: &Res<SystemMaterials>,
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
@@ -601,7 +599,7 @@ pub fn spawn_systems(
             // by a command lands at the next sync point and the star would
             // be drawn once at full strength before it arrived.
             let excluded = !filters.admit(&system);
-            let drawn = star(&system, color_by, mesh, materials, excluded);
+            let drawn = star(&system, color_by, roundness, materials, excluded);
             let mut spawned = commands.spawn((
                 placement(&system, grid),
                 system,
@@ -768,13 +766,14 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
 fn star(
     system: &System,
     color_by: &Res<ColorBy>,
-    mesh: &Res<SystemMesh>,
+    roundness: &Res<Roundness>,
     materials: &Res<SystemMaterials>,
     dimmed: bool,
 ) -> impl Bundle {
     (
         Shell,
-        Mesh3d(mesh.0.clone()),
+        // Fitted by `super::scale` before the first draw, as the size is.
+        Mesh3d(roundness.coarsest()),
         MeshMaterial3d(materials.get(hue(system, color_by), dimmed)),
         Transform::default(),
         NotShadowCaster,
@@ -788,12 +787,6 @@ fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
         ColorBy::Government => government_hue(system),
         ColorBy::Security => security_hue(system),
     }
-}
-
-fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
-    commands.insert_resource(SystemMesh(
-        assets.add(Sphere::new(1.).mesh().ico(1).unwrap()),
-    ));
 }
 
 fn init_materials(
