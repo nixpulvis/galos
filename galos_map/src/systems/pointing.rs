@@ -135,6 +135,13 @@ fn transport(hop: &crate::systems::route::Hop, at: Vec2) -> Vec<[Vec2; 2]> {
     ruled
 }
 
+/// How far the mark sits below the line the name is set on, in pixels
+///
+/// A name is set on a baseline and these are triangles standing on nothing, so
+/// squaring their tops with the letters leaves them reading high. A little
+/// under, and the two settle onto the one line.
+const ICON_DROP: f32 = 1.5;
+
 /// How far in from the edge of the view a stub pointing at a stop sits
 ///
 /// At the edge rather than about the star. The edge is where the eye goes to
@@ -856,10 +863,9 @@ pub fn ring(
                     // a second time.
                     let left = indicator.0
                         + super::labels::NAME_HEIGHT * super::labels::GAP;
-                    for mark in
-                        transport(hop, place + Vec2::X * (left + ICON * 0.5))
-                    {
-                        gizmos.linestrip(mark.map(placed), color);
+                    let at = place + Vec2::new(left + ICON * 0.5, ICON_DROP);
+                    for rule in transport(hop, at) {
+                        gizmos.line(placed(rule[0]), placed(rule[1]), color);
                     }
                 }
                 // Nowhere to be seen: a stub at the edge saying which way to
