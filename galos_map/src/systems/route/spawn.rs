@@ -1,4 +1,4 @@
-use super::{LineStrip, Route, system_to_vec};
+use super::{Route, system_to_vec};
 use crate::space::Galaxy;
 use crate::systems::filter::Filter;
 use bevy::math::DVec3;
@@ -70,8 +70,16 @@ pub fn spawn_route(
     //
     //     ERROR bevy_render::slab_allocator: Use-after-free: attempted to
     //     copy element data for an unallocated key
-    let points: Vec<DVec3> = systems.iter().filter_map(system_to_vec).collect();
-    if points.len() < 2 {
+    // The address travels with the place. Which of a route's stops are on the
+    // map decides what of its line is drawn, and a place alone cannot say
+    // which system it is.
+    let stops: Vec<(i64, DVec3)> = systems
+        .iter()
+        .filter_map(|system| {
+            system_to_vec(system).map(|at| (system.address, at))
+        })
+        .collect();
+    if stops.len() < 2 {
         return;
     }
 
@@ -91,17 +99,24 @@ pub fn spawn_route(
     // In metres from here down, which is what the grid is laid out in and what
     // a vertex is measured in. The systems arrive in light years, as every
     // position the map states does.
-    let midpoint = points.iter().fold(DVec3::ZERO, |sum, p| sum + *p)
-        / points.len() as f64;
+    let midpoint = stops.iter().fold(DVec3::ZERO, |sum, (_, at)| sum + *at)
+        / stops.len() as f64;
     let (cell, translation) =
         grid.translation_to_grid(crate::space::metres(midpoint));
-    let points = points
-        .iter()
-        .map(|p| crate::space::metres(*p - midpoint).as_vec3())
-        .collect();
+    let path = super::Path::new(
+        stops
+            .iter()
+            .map(|(address, at)| {
+                (*address, crate::space::metres(*at - midpoint).as_vec3())
+            })
+            .collect(),
+    );
 
+    // Whole to begin with. `super::trim` cuts it back to what is on the map
+    // on the frame it is drawn, which is before anything is seen of it.
+    let points = super::LineList { points: super::legs_whole(&path) };
     commands.spawn((
-        Mesh3d(meshes.add(LineStrip { points })),
+        Mesh3d(meshes.add(points)),
         // Its own material rather than one shared between the lines, so that
         // holding one route behind another is a write to that route's color.
         // Drawn as the active one, being the route just plotted;
@@ -125,6 +140,7 @@ pub fn spawn_route(
         // write to this.
         Visibility::default(),
         Route(route.clone()),
+        path,
         ChildOf(galaxy.0),
     ));
 }
