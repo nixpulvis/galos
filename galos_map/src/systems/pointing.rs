@@ -92,18 +92,18 @@ const INDICATOR_MIN_RADIUS: f32 = 9.5;
 /// system is flying further in, which is what the map is for.
 const BODY_MIN_RADIUS: f32 = 4.;
 
-/// How far from a star the stub pointing at a route's stop begins, in pixels
+/// How far in from the edge of the view a stub pointing at a stop sits
 ///
-/// Clear of the star drawn there and of the name beside it. What the stub says
-/// is a direction, and a direction is said as well from a little way off as
-/// from touching.
-const REACHING_FROM: f32 = 30.;
+/// At the edge rather than about the star. The edge is where the eye goes to
+/// ask what lies off that way, which is the question the stub answers, and
+/// around the star it is clutter laid over the one thing the view is of.
+const REACHING_EDGE: f32 = 40.;
 
-/// And how far out it reaches
+/// And how long it is drawn, in pixels
 ///
-/// Long enough to read as pointing somewhere rather than as a tick beside the
-/// star, and short enough to leave the system it is drawn over legible.
-const REACHING_TO: f32 = 90.;
+/// Long enough to read as pointing out of the view rather than as a tick in
+/// the corner of it.
+const REACHING_LENGTH: f32 = 60.;
 
 /// How many line segments a ring is drawn with
 ///
@@ -747,22 +747,38 @@ pub fn ring(
         // is what makes it readable at any zoom, and it starts clear of the star
         // rather than touching it. Where to look is all it has to say.
         if let (Some(from), Ok(eye)) = (from, eye_at.single()) {
-            let toward = at.translation() - from;
-            if let Some(toward) = toward.try_normalize() {
+            let toward = (at.translation() - from).try_normalize();
+            let right = orbit.rotation * Vec3::X;
+            let up = orbit.rotation * Vec3::Y;
+            // Which way the stop lies across the view, which is the whole of
+            // what the stub has to say. Nothing to say for one lying straight
+            // out through the middle of the screen, which has no across to it.
+            let across = toward.and_then(|toward| {
+                Vec2::new(toward.dot(right), toward.dot(up)).try_normalize()
+            });
+
+            if let Some(across) = across {
+                // Drawn in the plane the star stands in, that being the one
+                // depth in the view whose scale is already worked out, and the
+                // stub is over empty sky at any of them.
                 let offset = (from - eye.translation()).as_dvec3();
-                let out = |pixels| {
-                    drawn_radius_of(
-                        orbit,
-                        cot_half_fov,
-                        viewport,
-                        offset,
-                        pixels,
-                    )
-                };
+                let pixel =
+                    drawn_radius_of(orbit, cot_half_fov, viewport, offset, 1.);
+                let ahead = orbit.rotation * Vec3::NEG_Z;
+                let middle = eye.translation()
+                    + ahead * (from - eye.translation()).dot(ahead);
+
+                // Out to whichever edge this direction meets first, held off
+                // it by a margin, and back in by the stub's own length.
+                let half = viewport * 0.5;
+                let edge = (half.x / across.x.abs())
+                    .min(half.y / across.y.abs())
+                    - REACHING_EDGE;
+                let along = right * across.x + up * across.y;
 
                 gizmos.line(
-                    from + toward * out(REACHING_FROM),
-                    from + toward * out(REACHING_TO),
+                    middle + along * ((edge - REACHING_LENGTH) * pixel),
+                    middle + along * (edge * pixel),
                     super::selection::going(
                         crate::systems::route::REACHING,
                         standing,
