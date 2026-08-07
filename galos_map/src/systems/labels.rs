@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{Apparent, Body};
+use crate::systems::bodies::spawn::{Apparent, Body, Star};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
@@ -437,7 +437,7 @@ pub fn choose_names(
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
     systems: Query<(Entity, &System, &Visibility, &Indicator, Has<Filtered>)>,
-    bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
+    bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator, Has<Star>)>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
@@ -530,7 +530,7 @@ pub fn choose_names(
     // and they are only ever drawn when the viewer has flown in to look at
     // them. Naming them is the whole of what flying in is for.
     if let Ok(eye) = eye_at.single() {
-        for (entity, body, at, indicator) in &bodies {
+        for (entity, body, at, indicator, sun) in &bodies {
             let offset = (at.translation() - eye.translation()).as_dvec3();
             let Some(place) =
                 screen_offset(orbit, cot_half_fov, viewport, offset)
@@ -548,6 +548,7 @@ pub fn choose_names(
                 .is_ok_and(|at| at.settled(time.elapsed_secs()));
             let score = body_name_score(
                 indicator.0,
+                sun,
                 pointed_at,
                 selection.contains(entity),
             );
@@ -593,7 +594,10 @@ pub fn choose_names(
     }
 }
 
-/// The most a body's own size can argue for its name being drawn
+/// What being inside the system the camera is in is worth to a name
+///
+/// The whole of it for a star, and as much of it as its size argues for to
+/// anything going round one.
 ///
 /// Above [`CENTER_WEIGHT`] and below [`POINTED_WEIGHT`], which places bodies
 /// where they belong in the order. A body outranks the ordinary run of
@@ -611,14 +615,31 @@ const BODY_NAME_REACH: f32 = 20.;
 
 /// How much a body deserves to have its name drawn
 ///
-/// Its own apparent size, bounded so that no body ever outranks whatever is
-/// pointed at or picked out. Bigger first, which for a system's contents is
-/// nearly always the order the viewer would have chosen: the worlds before
+/// A star takes the whole of [`INSIDE_WEIGHT`] and so is named before anything
+/// going round it, whatever the two are drawn at. It is what the system is
+/// named for, and a moon the camera happens to be beside is not more worth
+/// naming than the star it goes round.
+///
+/// Everything else argues from its own apparent size, which never quite
+/// reaches what a star is given. Bigger first, which for a system's contents
+/// is nearly always the order the viewer would have chosen: the worlds before
 /// the moons, and the moons before whatever is a pixel across.
-fn body_name_score(apparent: f32, pointed_at: bool, selected: bool) -> f32 {
+///
+/// Bounded either way, so that nothing inside a system outranks whatever is
+/// pointed at or picked out.
+fn body_name_score(
+    apparent: f32,
+    sun: bool,
+    pointed_at: bool,
+    selected: bool,
+) -> f32 {
     let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
     let picked = if selected { SELECTED_WEIGHT } else { 0. };
-    let size = INSIDE_WEIGHT * apparent / (apparent + BODY_NAME_REACH);
+    let size = if sun {
+        INSIDE_WEIGHT
+    } else {
+        INSIDE_WEIGHT * apparent / (apparent + BODY_NAME_REACH)
+    };
 
     picked.max(pointed) + size
 }
@@ -1143,6 +1164,33 @@ mod tests {
                 rect.min.x - at.x
             );
         }
+    }
+
+    /// A star is named before anything going round it
+    ///
+    /// Whatever the two are drawn at. A moon the camera happens to be beside
+    /// is drawn larger than the star at the middle of the system, and the
+    /// star is still what the system is named for.
+    #[test]
+    fn a_star_is_named_before_what_goes_round_it() {
+        // A star drawn at nothing, and a moon filling the view.
+        let star = body_name_score(0., true, false, false);
+        let moon = body_name_score(1e4, false, false, false);
+
+        assert!(star > moon, "the star scored {star} against {moon}");
+    }
+
+    /// And still gives way to what is pointed at or picked out
+    ///
+    /// Being marked out is the user asking for something by name, which is
+    /// the one thing a name is for, and it beats every claim a thing makes
+    /// for itself.
+    #[test]
+    fn a_marked_body_outranks_a_star_at_rest() {
+        let star = body_name_score(1e4, true, false, false);
+
+        assert!(body_name_score(0., false, true, false) > star);
+        assert!(body_name_score(0., false, false, true) > star);
     }
 
     /// Names are offered in order of nearness to the center
