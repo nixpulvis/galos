@@ -92,6 +92,17 @@ const INDICATOR_MIN_RADIUS: f32 = 9.5;
 /// system is flying further in, which is what the map is for.
 const BODY_MIN_RADIUS: f32 = 4.;
 
+/// How many line segments a ring is drawn with
+///
+/// Bevy draws a gizmo circle with thirty two unless it is told otherwise,
+/// which is a ring visibly cornered by the time one is a few hundred pixels
+/// across, and a mark around a body is exactly that once the body is worth
+/// looking at. At this it is off by a hundredth of a pixel there.
+///
+/// Rings are drawn one per thing marked out and a handful of things are ever
+/// marked out at once, so the count is nothing beside the orbits.
+pub(super) const RING_POINTS: u32 = 256;
+
 /// How much air a body's mark leaves around it, as a fraction of the body
 ///
 /// A ring drawn on a body's own outline sits on the silhouette and reads as
@@ -692,11 +703,13 @@ pub fn ring(
                 indicator.0,
             );
 
-            gizmos.circle(
-                Isometry3d::new(at.translation(), orbit.rotation),
-                radius,
-                INDICATOR,
-            );
+            gizmos
+                .circle(
+                    Isometry3d::new(at.translation(), orbit.rotation),
+                    radius,
+                    INDICATOR,
+                )
+                .resolution(RING_POINTS);
         }
     }
 
@@ -715,11 +728,16 @@ pub fn ring(
             indicator.0,
         );
 
-        gizmos.circle(
-            Isometry3d::new(at.translation(), orbit.rotation),
-            radius,
-            super::selection::going(dim.against(INDICATOR, filtered), standing),
-        );
+        gizmos
+            .circle(
+                Isometry3d::new(at.translation(), orbit.rotation),
+                radius,
+                super::selection::going(
+                    dim.against(INDICATOR, filtered),
+                    standing,
+                ),
+            )
+            .resolution(RING_POINTS);
     }
 }
 

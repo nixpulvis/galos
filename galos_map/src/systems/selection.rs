@@ -36,7 +36,7 @@ use crate::schedule::MapSet;
 use crate::systems::bodies::spawn::{Apparent, Body};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
-    DRAG_THRESHOLD, DragDistance, Indicator, PointedAt,
+    DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_POINTS,
 };
 use crate::systems::{Spyglass, System};
 use crate::ui::Gesture;
@@ -493,11 +493,13 @@ fn ring(
                 indicator.0,
             );
 
-            gizmos.circle(
-                Isometry3d::new(at.translation(), orbit.rotation),
-                radius,
-                SELECTION,
-            );
+            gizmos
+                .circle(
+                    Isometry3d::new(at.translation(), orbit.rotation),
+                    radius,
+                    SELECTION,
+                )
+                .resolution(RING_POINTS);
         }
     }
 
@@ -528,11 +530,13 @@ fn ring(
             indicator.0,
         );
 
-        gizmos.circle(
-            Isometry3d::new(at.translation(), orbit.rotation),
-            radius,
-            going(ringed(&dim, filtered), standing),
-        );
+        gizmos
+            .circle(
+                Isometry3d::new(at.translation(), orbit.rotation),
+                radius,
+                going(ringed(&dim, filtered), standing),
+            )
+            .resolution(RING_POINTS);
     }
 }
 
