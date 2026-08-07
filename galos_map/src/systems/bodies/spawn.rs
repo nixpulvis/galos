@@ -207,9 +207,16 @@ const ORBIT_POINTS: usize = 512;
 /// that, where a dashed ring and a solid one say the same thing anyway.
 const DASHES: usize = 32;
 
-/// Which system's insides are drawn, if any
+/// Which system's insides are drawn, and which answer about it they were drawn
+/// from
+///
+/// The answer as well as the system, because the poll keeps asking after the
+/// one being stood in and a scan running in the game fills it in as it goes.
+/// What is on screen is the rows as they stood at one moment, so the moment is
+/// recorded beside the system: without it a system flown into half scanned
+/// stays half drawn for as long as the camera is in it.
 #[derive(Resource, Default)]
-struct Drawn(Option<i64>);
+struct Drawn(Option<(i64, u32)>);
 
 /// Anything drawn because it is inside a system
 ///
@@ -536,11 +543,22 @@ fn draw(
     let wanted = match (drawn.0, apparent) {
         // Nothing held, or too small to bother with.
         (_, None) => None,
-        // Already drawn, and still worth keeping.
-        (Some(shown), Some((address, _, seen)))
-            if shown == address && seen >= WORTH_KEEPING =>
+        // Already drawn, from the rows as they stand, and still worth keeping.
+        (Some((shown, from)), Some((address, _, seen)))
+            if shown == address
+                && from == contents.revision()
+                && seen >= WORTH_KEEPING =>
         {
             return;
+        }
+        // Drawn from rows the poll has since found more behind. Drawn again at
+        // the size that keeps a system rather than the larger size it takes to
+        // start one: this system is already on screen, and taking it away for
+        // being too small to have begun is taking away what is being looked at.
+        (Some((shown, _)), Some((address, entity, seen)))
+            if shown == address && seen >= WORTH_KEEPING =>
+        {
+            Some((address, entity))
         }
         (_, Some((address, entity, seen))) if seen >= WORTH_DRAWING => {
             Some((address, entity))
@@ -552,7 +570,7 @@ fn draw(
     // The camera first, then the contents, then the grid they were all
     // placed in: a `CellCoord` under an entity that is no longer a grid has
     // nothing to be measured against.
-    if let Some(shown) = drawn.0.take() {
+    if let Some((shown, _)) = drawn.0.take() {
         commands.entity(eye_entity).insert(ChildOf(map.0));
         for entity in &inside {
             commands.entity(entity).despawn();
@@ -642,7 +660,7 @@ fn draw(
     }
 
     debug!("drew what is inside {address}");
-    drawn.0 = Some(address);
+    drawn.0 = Some((address, contents.revision()));
 }
 
 /// Where something inside a system sits, as that system's grid wants it

@@ -39,6 +39,13 @@ pub struct Contents {
     of: Option<i64>,
     /// What has come back about it
     held: Held,
+    /// How many answers about this system have said something new
+    ///
+    /// The poll asks over and over and most of what comes back says what the
+    /// last one did. This counts only the answers that did not, which is what
+    /// whoever drew from the rows compares against to know their picture is
+    /// out of date.
+    revision: u32,
 }
 
 /// How far along the asking has got
@@ -61,6 +68,41 @@ impl Contents {
     /// Which system is being held, if any
     pub fn of(&self) -> Option<i64> {
         self.of
+    }
+
+    /// Which answer about this system is being held
+    ///
+    /// Nothing to read into the number itself. It stands still while the
+    /// answers repeat and moves when one of them does not, so two readings
+    /// that differ mean the rows differ.
+    pub fn revision(&self) -> u32 {
+        self.revision
+    }
+
+    /// Take in what the database said, if it said anything new
+    ///
+    /// The rows are compared rather than taken as fresh because the poll asks
+    /// whether anything changed and the answer is usually no. Everything
+    /// inside a system is despawned and drawn again from scratch when what is
+    /// held changes, so an answer repeating the last one has to leave both the
+    /// rows and the revision exactly as they were.
+    pub(super) fn know(
+        &mut self,
+        stars: Vec<DbStar>,
+        bodies: Vec<DbBody>,
+        centers: Vec<DbBarycenter>,
+    ) {
+        if let Held::Known { stars: had, bodies: were, centers: about } =
+            &self.held
+            && *had == stars
+            && *were == bodies
+            && *about == centers
+        {
+            return;
+        }
+
+        self.held = Held::Known { stars, bodies, centers };
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Whether the database has answered about `address`
@@ -477,6 +519,7 @@ mod tests {
 
         Contents {
             of: Some(1),
+            revision: 0,
             held: Held::Known {
                 stars: vec![
                     star(1, 0., 1e13, vec![parent("Null", 0)]),
@@ -592,6 +635,7 @@ mod tests {
         lone.radius = 5.9e7;
         let contents = Contents {
             of: Some(1),
+            revision: 0,
             held: Held::Known {
                 stars: vec![lone],
                 bodies: vec![],
@@ -622,6 +666,7 @@ mod tests {
 
         Contents {
             of: Some(1),
+            revision: 0,
             held: Held::Known {
                 stars: vec![star(1, 0., 0., vec![])],
                 bodies: vec![close],
@@ -669,6 +714,7 @@ mod tests {
     fn known(bodies: Vec<DbBody>) -> Contents {
         Contents {
             of: Some(1),
+            revision: 0,
             held: Held::Known { stars: vec![], bodies, centers: vec![] },
         }
     }
@@ -774,6 +820,7 @@ mod tests {
         lone.radius = 5.9e7;
         let contents = Contents {
             of: Some(1),
+            revision: 0,
             held: Held::Known {
                 stars: vec![lone],
                 bodies: vec![],
@@ -797,5 +844,50 @@ mod tests {
         let extent = known(vec![escaping]).extent().unwrap();
         assert!(extent.is_finite(), "the extent ran away to {extent}");
         assert!(extent < 2e12, "the extent reached {extent}");
+    }
+
+    /// A poll finding nothing new leaves the revision where it was
+    ///
+    /// Most of them find nothing new, nobody being mid scan most of the time.
+    /// Everything inside a system is despawned and drawn again when the
+    /// revision moves, so a repeat that moved it would be a system blinking
+    /// every poll for no reason at all.
+    #[test]
+    fn a_poll_finding_nothing_new_moves_nothing() {
+        let mut contents = Contents::default();
+        contents.know(vec![], vec![body(1e9)], vec![]);
+
+        let first = contents.revision();
+        contents.know(vec![], vec![body(1e9)], vec![]);
+
+        assert_eq!(
+            contents.revision(),
+            first,
+            "the same rows again read as something new"
+        );
+    }
+
+    /// A body arriving mid scan reaches the map
+    ///
+    /// What the poll is for. The rows land in the database from another
+    /// program while the camera stands in the system, and what is drawn has to
+    /// follow them rather than stay as the system was when it was first asked
+    /// after.
+    #[test]
+    fn a_body_arriving_mid_scan_is_taken_in() {
+        let mut contents = Contents::default();
+        contents.know(vec![], vec![body(1e9)], vec![]);
+        let first = contents.revision();
+
+        let mut arriving = body(2e9);
+        arriving.id = 2;
+        contents.know(vec![], vec![body(1e9), arriving], vec![]);
+
+        assert_ne!(
+            contents.revision(),
+            first,
+            "a body that was not there before read as the same rows"
+        );
+        assert_eq!(contents.bodies().len(), 2);
     }
 }
