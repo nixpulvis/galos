@@ -144,6 +144,14 @@ impl Apparent {
         1. - through.clamp(0., 1.)
     }
 
+    /// Which system the map is holding, if any
+    ///
+    /// For whoever has to draw from it rather than at it: a line leaving the
+    /// system the camera is standing in has to know where that is.
+    pub fn of(&self) -> Option<Entity> {
+        self.0.map(|(system, _)| system)
+    }
+
     /// How much of the mark is left for whatever the map is holding
     ///
     /// The same figure without having to name the system, for whoever is drawn

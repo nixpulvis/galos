@@ -693,6 +693,9 @@ pub fn ring(
         (Entity, &GlobalTransform, &System, &Indicator),
         (With<crate::systems::route::Hop>, Without<Selected>),
     >,
+    // The system the camera is standing in, which the lines to the stops
+    // leave from.
+    standing_in: Query<&GlobalTransform, With<System>>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     dim: Res<DimTo>,
 ) {
@@ -700,10 +703,33 @@ pub fn ring(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
+    // Where the line to each stop leaves from, which is the system the camera
+    // is standing in. Nothing to draw from where the map holds nothing.
+    let from = seen_as
+        .of()
+        .and_then(|held| standing_in.get(held).ok())
+        .map(|at| at.translation());
+
     for (entity, at, system, indicator) in &hops {
         let standing = seen_as.standing(entity);
         if standing <= 0. {
             continue;
+        }
+
+        // A stop is a jump away and as likely to be behind the camera as in
+        // front of it, so the ring alone can only be found by turning until it
+        // appears. The line says which way to turn: it leaves the star the
+        // camera is looking at, which is the middle of the view, so some of it
+        // is on screen wherever the far end has got to.
+        if let Some(from) = from {
+            gizmos.line(
+                from,
+                at.translation(),
+                super::selection::going(
+                    crate::systems::route::REACHING,
+                    standing,
+                ),
+            );
         }
         let radius = drawn_radius(
             orbit,
