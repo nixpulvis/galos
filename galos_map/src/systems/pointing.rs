@@ -142,18 +142,21 @@ fn transport(hop: &crate::systems::route::Hop, at: Vec2) -> Vec<[Vec2; 2]> {
 /// under, and the two settle onto the one line.
 const ICON_DROP: f32 = 1.5;
 
+/// How much fainter the stub is than the mark it leads to
+const STUB_FADE: f32 = 0.6;
+
 /// How far in from the edge of the view a stub pointing at a stop sits
 ///
 /// At the edge rather than about the star. The edge is where the eye goes to
 /// ask what lies off that way, which is the question the stub answers, and
 /// around the star it is clutter laid over the one thing the view is of.
-const REACHING_EDGE: f32 = 40.;
+const STUB_EDGE: f32 = 40.;
 
 /// And how long it is drawn, in pixels
 ///
 /// Long enough to read as pointing out of the view rather than as a tick in
 /// the corner of it.
-const REACHING_LENGTH: f32 = 60.;
+const STUB_LENGTH: f32 = 60.;
 
 /// How many line segments a ring is drawn with
 ///
@@ -806,7 +809,7 @@ pub fn ring(
             let hue = if picked {
                 super::selection::SELECTION
             } else {
-                crate::systems::route::REACHING
+                crate::systems::route::HOP
             };
             let color = super::selection::going(hue, standing);
 
@@ -835,7 +838,9 @@ pub fn ring(
                 });
             let Some(across) = across else { continue };
 
-            match landed {
+            // Where the mark saying which way this stop lies goes, which each
+            // of the two ways of drawing a stop settles for itself.
+            let icon = match landed {
                 // On screen: the ring, and nothing else. The line was only
                 // ever there to find the stop with, and once the stop is
                 // found it is a line pointing at a thing already in sight.
@@ -849,10 +854,7 @@ pub fn ring(
                             .circle(
                                 Isometry3d::new(placed(place), orbit.rotation),
                                 ringed * pixel,
-                                super::selection::going(
-                                    crate::systems::route::HOP,
-                                    standing,
-                                ),
+                                color,
                             )
                             .resolution(RING_POINTS);
                     }
@@ -863,10 +865,7 @@ pub fn ring(
                     // a second time.
                     let left = indicator.0
                         + super::labels::NAME_HEIGHT * super::labels::GAP;
-                    let at = place + Vec2::new(left + ICON * 0.5, ICON_DROP);
-                    for rule in transport(hop, at) {
-                        gizmos.line(placed(rule[0]), placed(rule[1]), color);
-                    }
+                    place + Vec2::new(left + ICON * 0.5, ICON_DROP)
                 }
                 // Nowhere to be seen: a stub at the edge saying which way to
                 // turn, run out along the same axis a leader would lie on.
@@ -874,21 +873,25 @@ pub fn ring(
                     let half = viewport * 0.5;
                     let edge = (half.x / across.x.abs())
                         .min(half.y / across.y.abs())
-                        - REACHING_EDGE;
+                        - STUB_EDGE;
 
                     gizmos.line(
-                        placed(across * (edge - REACHING_LENGTH)),
+                        placed(across * (edge - STUB_LENGTH)),
                         placed(across * edge),
-                        color,
+                        // Fainter than the mark it leads to. It is there to be
+                        // glanced along rather than read.
+                        color.with_alpha(color.alpha() * STUB_FADE),
                     );
 
                     // At the inner end, which is the end that is looked at:
                     // the outer one is against the border of the view.
-                    let at = across * (edge - REACHING_LENGTH - ICON);
-                    for rule in transport(hop, at) {
-                        gizmos.line(placed(rule[0]), placed(rule[1]), color);
-                    }
+                    across * (edge - STUB_LENGTH - ICON)
                 }
+            };
+
+            // The same mark either way, so it is drawn in one place.
+            for rule in transport(hop, icon) {
+                gizmos.line(placed(rule[0]), placed(rule[1]), color);
             }
         }
     }

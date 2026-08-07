@@ -112,11 +112,15 @@ pub fn spawn_route(
             .collect(),
     );
 
-    // Whole to begin with. `super::trim` cuts it back to what is on the map
-    // on the frame it is drawn, which is before anything is seen of it.
-    let points = super::LineList { points: super::legs_whole(&path) };
+    // Whole to begin with, every stop taken as drawn. `super::trim` cuts it
+    // back to what is on the map on the frame it is spawned, which is before
+    // anything is seen of it.
+    let whole = path.whole();
+    let shown = vec![true; whole.len()];
     commands.spawn((
-        Mesh3d(meshes.add(points)),
+        Mesh3d(
+            meshes.add(super::LineList { points: super::legs(&whole, &shown) }),
+        ),
         // Its own material rather than one shared between the lines, so that
         // holding one route behind another is a write to that route's color.
         // Drawn as the active one, being the route just plotted;
