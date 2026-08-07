@@ -605,7 +605,7 @@ pub fn chrome(
         // Whether a system is named is a choice about what the map draws, the
         // same as which color a star comes out and how large it is, so it
         // stands with those rather than alone.
-        ui.checkbox(&mut knobs.show_names.0, "Show System Names");
+        ui.checkbox(&mut knobs.show_names.0, "Show Labels");
         if knobs.show_names.0 {
             // Indented under what turns them on, since neither means anything
             // without it. The rule egui draws down the side of an indent says

@@ -255,19 +255,6 @@ fn worth_naming(
     stands && (pointed_at || selected || (shown && !filtered))
 }
 
-/// Whether a thing inside a system is worth naming
-///
-/// The switch says the same thing about every body at once, and being marked
-/// out beats it, both exactly as they do for a system.
-///
-/// What [`worth_naming`] has and this does not is `stands`, whether the map is
-/// still standing a mark in for the thing. A body is drawn as itself from the
-/// first moment it is drawn at all, so there is no mark whose going takes its
-/// name with it, and nothing here to beat.
-fn worth_naming_body(shown: bool, pointed_at: bool, selected: bool) -> bool {
-    shown || pointed_at || selected
-}
-
 /// How far the center bonus reaches, in light years
 ///
 /// It falls to half at this distance. The point the camera orbits is usually
@@ -577,8 +564,18 @@ pub fn choose_names(
             let pointed_at = pointing
                 .get(entity)
                 .is_ok_and(|at| at.settled(time.elapsed_secs()));
+            // The same question the sky is asked, with the two terms a body
+            // cannot answer settled: it is drawn as itself rather than stood
+            // in for, so there is no mark whose going takes its name, and the
+            // filters are about systems.
             let selected = selection.contains(entity);
-            if !worth_naming_body(show_body_names.0, pointed_at, selected) {
+            if !worth_naming(
+                true,
+                show_body_names.0,
+                false,
+                pointed_at,
+                selected,
+            ) {
                 continue;
             }
 
@@ -688,15 +685,12 @@ fn body_name_score(
     pointed_at: bool,
     selected: bool,
 ) -> f32 {
-    let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
-    let picked = if selected { SELECTED_WEIGHT } else { 0. };
-
     let step = INSIDE_WEIGHT / (DEEPEST + 1) as f32;
     let depth = (DEEPEST - under.min(DEEPEST)) as f32 * step;
     let sun = if star { step / 2. } else { 0. };
     let size = (step / 2.) * apparent / (apparent + BODY_NAME_REACH);
 
-    picked.max(pointed) + depth + sun + size
+    marked_score(pointed_at, selected) + depth + sun + size
 }
 
 /// How much a system deserves to have its name drawn
@@ -724,9 +718,19 @@ fn body_name_score(
 /// that earns a star its size, so that both follow whatever that becomes.
 fn name_score(from_center: f32, pointed_at: bool, selected: bool) -> f32 {
     let centered = CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
+    marked_score(pointed_at, selected) + centered - from_center
+}
+
+/// What being marked out is worth, to a system and a body alike
+///
+/// The greater of the two rather than the sum: a system both pointed at and
+/// picked out is asked for once, and adding them would put it above a pair of
+/// systems that between them are asked for twice.
+fn marked_score(pointed_at: bool, selected: bool) -> f32 {
     let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
     let picked = if selected { SELECTED_WEIGHT } else { 0. };
-    picked.max(pointed) + centered - from_center
+
+    picked.max(pointed)
 }
 
 /// The screen rectangle a name would occupy, with room around it
@@ -932,30 +936,33 @@ pub fn face_camera(
     }
 }
 
-/// Join each star to its name with a line
+/// Join each thing to its name with a line
 ///
-/// The name sits off to one side, which is ambiguous once stars are close
+/// The name sits off to one side, which is ambiguous once things are close
 /// together. Drawn as a gizmo rather than a mesh because both ends move
 /// every frame the camera does, and there is nothing to keep between frames.
 ///
 /// A line only exists where its name is drawn. Names are hidden by the
 /// spyglass, by the names toggle, and by facing away from the camera, and a
 /// line answering to anything less than the drawn text outlives one of them.
+///
+/// A system's name and a body's are the same name drawn the same way, so both
+/// get one. What differs is only what the line has to begin clear of.
 pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
-    systems: Query<
-        (&GlobalTransform, &Children, Has<PointedAt>, Has<Selected>),
-        With<System>,
+    named: Query<
+        (&GlobalTransform, Option<&Children>, Has<PointedAt>, Has<Selected>),
+        Or<(With<System>, With<Body>)>,
     >,
-    stars: Query<&GlobalTransform, With<Shell>>,
+    shells: Query<&GlobalTransform, With<Shell>>,
 ) {
     for (label, drawn, child_of) in &labels {
         if !drawn.get() {
             continue;
         }
-        let Ok((system, children, pointed_at, selected)) =
-            systems.get(child_of.parent())
+        let Ok((at, children, pointed_at, selected)) =
+            named.get(child_of.parent())
         else {
             continue;
         };
@@ -968,23 +975,23 @@ pub fn leaders(
             continue;
         }
 
-        // A name is the system's, so the line points at the system. What it
-        // has to begin clear of is the star drawn there, which carries the
-        // size it is drawn at where the system deliberately does not. The
-        // largest of them, since a system may hold more than one, and they
-        // all sit at its own position for now.
-        let Some(edge) = children
-            .iter()
-            .filter_map(|child| stars.get(child).ok())
-            .map(|star| star.scale().x)
-            .reduce(f32::max)
-        else {
-            continue;
-        };
+        // What the line has to begin clear of is whatever is drawn where the
+        // name points. For a system that is the shell hung under it, which
+        // carries the size it is drawn at where the system deliberately does
+        // not, and the largest of them where it holds more than one. A body is
+        // drawn at its own size and needs nothing looked up, so folding its own
+        // scale in as the starting figure answers both: a system's own scale is
+        // a metre and loses to any shell, and a body has no shell to lose to.
+        let edge = children
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .filter_map(|child| shells.get(child).ok())
+            .map(|shell| shell.scale().x)
+            .fold(at.scale().x, f32::max);
 
         // The label's origin is the left edge of the text, so the line runs
-        // from the system straight to where the name begins.
-        let from = system.translation();
+        // from the thing straight to where the name begins.
+        let from = at.translation();
         let to = label.translation();
         let length = from.distance(to);
         let Some(direction) = (to - from).try_normalize() else { continue };
@@ -1143,21 +1150,16 @@ mod tests {
         );
     }
 
-    /// The switch turns every body's name off at once
-    #[test]
-    fn the_bodies_are_named_or_not_as_asked() {
-        assert!(worth_naming_body(true, false, false));
-        assert!(!worth_naming_body(false, false, false));
-    }
-
-    /// Asking for a body by name beats the switch, as it does for a system
+    /// A body asks the same question with nothing standing in for it
     ///
-    /// Pointing at one or picking it out is asking for the name, which is the
-    /// one thing a name is for.
+    /// What the bodies pass: always standing, never filtered. The switch then
+    /// decides, and being asked for by name beats it.
     #[test]
-    fn a_body_asked_for_is_named_whatever_the_switch_says() {
-        assert!(worth_naming_body(false, true, false));
-        assert!(worth_naming_body(false, false, true));
+    fn a_body_is_named_by_the_switch_or_by_being_asked_for() {
+        assert!(worth_naming(STANDS, true, false, false, false));
+        assert!(!worth_naming(STANDS, false, false, false, false));
+        assert!(worth_naming(STANDS, false, false, true, false));
+        assert!(worth_naming(STANDS, false, false, false, true));
     }
 
     /// A system the map is still standing a mark in for
