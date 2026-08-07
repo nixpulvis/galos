@@ -9,6 +9,7 @@ use crate::Db;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::fetch::Poll;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
@@ -16,9 +17,10 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_db::barycenters::Barycenter as DbBarycenter;
 use galos_db::bodies::Body as DbBody;
 use galos_db::stars::Star as DbStar;
+use std::time::Instant;
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<Asking>();
+    app.init_resource::<Polling>();
     app.add_systems(Update, choose.in_set(MapSet::Fetch));
     app.add_systems(Update, collect.in_set(MapSet::Populate));
 }
@@ -46,13 +48,64 @@ const ASK_WITHIN: f32 = 5.;
 /// held is dropped only once something else is clearly nearer.
 const HOLD_WITHIN: f32 = 7.;
 
-/// The query in flight, if there is one
-///
-/// Separate from [`Contents`] so that dropping the task cancels it: a system
-/// left behind while its rows are still coming back should not land them on
-/// the map a moment later.
+/// What is outstanding, and when it was asked
 #[derive(Resource, Default)]
-pub(super) struct Asking(Option<(i64, Task<Answer>)>);
+pub(super) struct Polling {
+    /// The query in flight, if there is one
+    ///
+    /// Separate from [`Contents`] so that dropping the task cancels it: a
+    /// system left behind while its rows are still coming back should not land
+    /// them on the map a moment later.
+    query: Option<(i64, Task<Answer>)>,
+    /// When the system being held was last asked about
+    ///
+    /// What [`Poll`] is measured from, and nothing until something has been
+    /// asked.
+    asked_at: Option<Instant>,
+}
+
+impl Polling {
+    /// Whether what is held is due to be asked about again
+    ///
+    /// On the same [`Poll`] the spyglass refreshes systems on, that being the
+    /// same question put about the inside of one: how often should the map ask
+    /// again for what it already has. So the checkbox beside it holds a system
+    /// still, and the box holds both to one answer.
+    ///
+    /// Never while a query is outstanding, so a poll landing on top of one
+    /// still on the wire is a poll that does nothing rather than a second copy
+    /// of the same answer. Measured from when the last was asked rather than
+    /// when it came back, as the spyglass measures it.
+    fn due(&self, poll: &Poll, now: Instant) -> bool {
+        self.query.is_none()
+            && self.asked_at.is_none_or(|last| poll.elapsed(last, now))
+    }
+
+    /// Put the question about `address`, dropping whatever was outstanding
+    fn ask(&mut self, db: &Db, address: i64, now: Instant) {
+        let db = db.0.clone();
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            // Nothing is made of a failure but an empty answer. A system the
+            // database cannot speak about and one it has nothing to say about
+            // are the same thing to a map that has to draw something either
+            // way.
+            Answer {
+                stars: DbStar::fetch_all(&db, address)
+                    .await
+                    .unwrap_or_default(),
+                bodies: DbBody::fetch_all(&db, address)
+                    .await
+                    .unwrap_or_default(),
+                centers: DbBarycenter::fetch_all(&db, address)
+                    .await
+                    .unwrap_or_default(),
+            }
+        });
+
+        self.query = Some((address, task));
+        self.asked_at = Some(now);
+    }
+}
 
 /// What the database had about one system
 pub(super) struct Answer {
@@ -77,12 +130,15 @@ fn choose(
     camera: Query<&OrbitCamera>,
     systems: Query<&System>,
     db: Res<Db>,
+    time: Res<Time<Real>>,
+    poll: Res<Poll>,
     mut contents: ResMut<Contents>,
-    mut asking: ResMut<Asking>,
+    mut polling: ResMut<Polling>,
 ) {
     let Ok(center) = camera.single().map(|camera| camera.center) else {
         return;
     };
+    let now = time.last_update().unwrap_or(time.startup());
 
     let nearest = systems
         .iter()
@@ -104,6 +160,13 @@ fn choose(
                     <= HOLD_WITHIN as f64
         })
     {
+        // A system is scanned while the camera stands in it, and the rows land
+        // from another program entirely. Nothing says they arrived, so what is
+        // held is asked after again on the poll.
+        if polling.due(&poll, now) {
+            debug!("asking again what is in {held}");
+            polling.ask(&db, held, now);
+        }
         return;
     }
 
@@ -112,44 +175,32 @@ fn choose(
         // question still outstanding about it.
         if contents.of().is_some() {
             *contents = Contents::default();
-            asking.0 = None;
+            *polling = Polling::default();
         }
         return;
     };
     if contents.of() == Some(address) {
+        if polling.due(&poll, now) {
+            debug!("asking again what is in {address}");
+            polling.ask(&db, address, now);
+        }
         return;
     }
 
     debug!("asking what is in {address}");
-    let pool = AsyncComputeTaskPool::get();
-    let db = db.0.clone();
-    let task = pool.spawn(async move {
-        // Nothing is made of a failure but an empty answer. A system the
-        // database cannot speak about and one it has nothing to say about
-        // are the same thing to a map that has to draw something either way.
-        Answer {
-            stars: DbStar::fetch_all(&db, address).await.unwrap_or_default(),
-            bodies: DbBody::fetch_all(&db, address).await.unwrap_or_default(),
-            centers: DbBarycenter::fetch_all(&db, address)
-                .await
-                .unwrap_or_default(),
-        }
-    });
-
-    *contents = Contents { of: Some(address), held: Held::Asking };
-    // Replaces whatever was outstanding, and dropping it is what cancels it.
-    asking.0 = Some((address, task));
+    *contents = Contents { of: Some(address), held: Held::Asking, revision: 0 };
+    polling.ask(&db, address, now);
 }
 
 /// Take in whatever has come back
 pub(super) fn collect(
     mut contents: ResMut<Contents>,
-    mut asking: ResMut<Asking>,
+    mut polling: ResMut<Polling>,
 ) {
-    let Some((address, task)) = asking.0.as_mut() else { return };
+    let Some((address, task)) = polling.query.as_mut() else { return };
     let Some(answer) = block_on(future::poll_once(task)) else { return };
     let address = *address;
-    asking.0 = None;
+    polling.query = None;
 
     // The camera may have moved on while this was in flight, in which case
     // the answer is about somewhere nobody is standing any more.
@@ -163,9 +214,5 @@ pub(super) fn collect(
         answer.bodies.len(),
         answer.centers.len()
     );
-    contents.held = Held::Known {
-        stars: answer.stars,
-        bodies: answer.bodies,
-        centers: answer.centers,
-    };
+    contents.know(answer.stars, answer.bodies, answer.centers);
 }
