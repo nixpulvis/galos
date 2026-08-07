@@ -143,6 +143,16 @@ impl Apparent {
         let through = (seen - WORTH_MARKING) / (WORTH_HIDING - WORTH_MARKING);
         1. - through.clamp(0., 1.)
     }
+
+    /// How much of the mark is left for whatever the map is holding
+    ///
+    /// The same figure without having to name the system, for whoever is drawn
+    /// across the whole sky rather than at one place in it. One while the
+    /// camera is out among the systems, and nothing once it has descended into
+    /// one of them.
+    pub fn held(&self) -> f32 {
+        self.0.map_or(1., |(system, _)| self.standing(system))
+    }
 }
 
 /// How far past the system a star's light is allowed to reach
