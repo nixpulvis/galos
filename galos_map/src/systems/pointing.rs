@@ -777,8 +777,10 @@ pub fn ring(
             let Some(across) = across else { continue };
 
             match landed {
-                // On screen: a ring round it, and a leader off the side the
-                // star is on, which is the way the eye came in.
+                // On screen: the ring, and nothing else. The line was only
+                // ever there to find the stop with, and once the stop is
+                // found it is a line pointing at a thing already in sight.
+                // Which of the two stops this is belongs on the ring itself.
                 Some(place) => {
                     let ringed = indicator.0.max(INDICATOR_MIN_RADIUS);
                     gizmos
@@ -791,13 +793,6 @@ pub fn ring(
                             ),
                         )
                         .resolution(RING_POINTS);
-
-                    let out = ringed + REACHING_EDGE;
-                    gizmos.line(
-                        placed(place - across * out),
-                        placed(place - across * (out + REACHING_LENGTH)),
-                        color,
-                    );
                 }
                 // Nowhere to be seen: a stub at the edge saying which way to
                 // turn, run out along the same axis a leader would lie on.
