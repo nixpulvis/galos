@@ -15,6 +15,7 @@
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
 use crate::systems::bodies::Contents;
+use crate::systems::bodies::spawn::ShowOrbits;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
@@ -477,6 +478,7 @@ pub struct Knobs<'w> {
     throttle: ResMut<'w, Throttle>,
     poll: ResMut<'w, Poll>,
     name_radius: ResMut<'w, NameRadius>,
+    show_orbits: ResMut<'w, ShowOrbits>,
     despawner: MessageWriter<'w, Despawn>,
 }
 
@@ -648,6 +650,13 @@ pub fn chrome(
             ui.add_space(FIELD_GAP);
             ui.checkbox(&mut knobs.population_scale.0, "Scale w/ Population");
         }
+
+        // What is drawn once the camera is inside a system, rather than what
+        // the galaxy is drawn as. Its own section for that reason, and not
+        // under the view above it: which of the two ways the sky is drawn says
+        // nothing about what a system looks like from within.
+        heading(ui, "System View", true);
+        ui.checkbox(&mut knobs.show_orbits.0, "Orbit Lines");
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing

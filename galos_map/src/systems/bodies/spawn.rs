@@ -36,6 +36,7 @@ use galos_db::stars::Star as DbStar;
 pub fn plugin(app: &mut App) {
     app.init_resource::<Drawn>();
     app.init_resource::<Apparent>();
+    app.insert_resource(ShowOrbits(true));
     app.add_systems(Startup, init_materials);
     // After the rows have been taken in, so that a system's contents can be
     // drawn on the frame they land rather than the one after.
@@ -43,6 +44,37 @@ pub fn plugin(app: &mut App) {
         Update,
         draw.in_set(MapSet::Populate).after(super::fetch::collect),
     );
+    // After the lines are spawned, so one drawn this frame is hidden on this
+    // frame rather than being shown once and taken away.
+    app.add_systems(Update, show_orbits.in_set(MapSet::Present));
+}
+
+/// Whether the lines a system's contents trace are drawn
+#[derive(Resource)]
+pub struct ShowOrbits(pub bool);
+
+/// The line one thing traces about whatever it goes round
+///
+/// Its own marker rather than [`Inside`], which the bodies wear too. What is
+/// asked of these is asked of the lines alone.
+#[derive(Component)]
+pub struct OrbitLine;
+
+/// Draw the orbit lines, or do not, as the view asks
+///
+/// Every line every frame rather than only when the answer changes, since a
+/// line spawned while they are turned off has to be caught as well. There is
+/// one system's worth of them, and nothing is written where nothing moved.
+fn show_orbits(
+    showing: Res<ShowOrbits>,
+    mut lines: Query<&mut Visibility, With<OrbitLine>>,
+) {
+    let wanted =
+        if showing.0 { Visibility::Inherited } else { Visibility::Hidden };
+
+    for mut visibility in &mut lines {
+        visibility.set_if_neq(wanted);
+    }
 }
 
 /// How large a system has to look before what is in it is drawn, in radians
@@ -711,6 +743,7 @@ fn drawn_orbit(
     let points = path.into_iter().map(|p| p.as_vec3()).collect();
     Some((
         Inside,
+        OrbitLine,
         cell,
         Transform::from_translation(offset),
         Mesh3d(meshes.add(LineStrip { points })),
@@ -721,6 +754,32 @@ fn drawn_orbit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Turning the orbit lines off hides them, and on brings them back
+    #[test]
+    fn the_orbit_lines_are_drawn_or_not_as_asked() {
+        let mut app = App::new();
+        app.insert_resource(ShowOrbits(true));
+        app.add_systems(Update, show_orbits);
+        let line =
+            app.world_mut().spawn((OrbitLine, Visibility::Inherited)).id();
+
+        app.world_mut().resource_mut::<ShowOrbits>().0 = false;
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(line),
+            Some(&Visibility::Hidden),
+            "the line was left drawn"
+        );
+
+        app.world_mut().resource_mut::<ShowOrbits>().0 = true;
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(line),
+            Some(&Visibility::Inherited),
+            "the line did not come back"
+        );
+    }
 
     /// Where the one body in `app` says it stands
     #[derive(Resource, Default)]
