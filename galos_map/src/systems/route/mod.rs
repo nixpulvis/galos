@@ -131,6 +131,12 @@ fn trim(
 /// this is a mark around one of them.
 pub const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
 
+/// What the line out to a stop is drawn in
+///
+/// Fainter than the ring at the end of it. The line is there to be followed
+/// rather than read, and it crosses the whole of a system on its way out.
+pub const REACHING: Srgba = Srgba::new(1., 1., 1., 0.35);
+
 /// A stop the route reaches from the system the camera is standing in
 ///
 /// The one behind and the one ahead. A route is drawn as a line between
