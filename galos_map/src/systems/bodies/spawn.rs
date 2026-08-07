@@ -218,6 +218,13 @@ pub struct Body {
     /// overlap. A moon crossing in front of its planet is not what was being
     /// aimed at.
     pub ancestors: u8,
+    /// Whether it is the star the system arrives at
+    ///
+    /// The one the system is named for and the one everything else in it is
+    /// measured from, so its name is the one worth keeping where two would
+    /// overlap. A star rather than a body always, and the nearest to arrival
+    /// where a system has several, which [`Contents::primary`] settles.
+    pub primary: bool,
     /// Whether it is a star rather than something going round one
     ///
     /// What settles the rest of it. A system's stars and the planets that go
@@ -551,10 +558,17 @@ fn draw(
     // How far a star has to light, which is out to the far side of the
     // outermost thing going round it.
     let reach = contents.extent().unwrap_or_default();
+    let primary = contents.primary();
     for star in contents.stars() {
         let place = orbits.place(star.id, 0.) - middle;
         commands.with_child(drawn_star(
-            star, place, reach, &grid, &roundness, &stars,
+            star,
+            primary == Some(star.id),
+            place,
+            reach,
+            &grid,
+            &roundness,
+            &stars,
         ));
     }
     for body in contents.bodies() {
@@ -631,6 +645,7 @@ impl Placed<'_, '_> {
 /// A star, drawn at its own size and lighting what is around it
 fn drawn_star(
     star: &DbStar,
+    primary: bool,
     place: DVec3,
     reach: f32,
     grid: &Grid,
@@ -646,6 +661,7 @@ fn drawn_star(
             class: star.star_class.clone(),
             radius: star.radius,
             ancestors: star.parents.len() as u8,
+            primary,
             star: true,
         },
         Inside,
@@ -700,6 +716,7 @@ fn drawn_body(
             class: body.planet_class.clone(),
             radius: body.radius,
             ancestors: body.parents.len() as u8,
+            primary: false,
             star: false,
         },
         Inside,
@@ -818,6 +835,7 @@ mod tests {
                 class: String::new(),
                 radius: 1e6,
                 ancestors: 0,
+                primary: false,
                 star: false,
             },
             cell,

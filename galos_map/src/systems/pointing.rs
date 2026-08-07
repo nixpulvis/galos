@@ -1079,6 +1079,7 @@ mod tests {
                     class: String::new(),
                     radius: 1e6,
                     ancestors: 0,
+                    primary: false,
                     star: false,
                 },
             ))
@@ -1111,6 +1112,7 @@ mod tests {
             class: String::new(),
             radius: 1e6,
             ancestors,
+            primary: false,
             star: false,
         }
     }
