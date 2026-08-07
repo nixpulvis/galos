@@ -160,12 +160,21 @@ impl Contents {
         })
     }
 
-    /// How far the system reaches, in metres
+    /// How far the system reaches from its middle, in metres
     ///
-    /// To the far side of the outermost thing going round it — the apoapsis of
-    /// the widest orbit, plus the radius of whatever is sitting at it, so that
-    /// the shell drawn at this holds the whole of what it stands for rather
-    /// than cutting through the last of it.
+    /// Measured from the arrival star, which is where the shell is drawn and
+    /// where everything inside is placed short of. An orbit is recorded about
+    /// whatever it goes round, so its own apoapsis says how far a thing gets
+    /// from its parent and nothing about how far the parent stands from the
+    /// middle. Both are needed: in a wide binary the two stars are ten billion
+    /// kilometres apart, and reading the orbits alone leaves everything about
+    /// the far one outside the shell drawn about the near one.
+    ///
+    /// To the far side of what is drawn rather than to where it stands. What
+    /// is drawn for a thing is a sphere at its own place and the whole ellipse
+    /// of its orbit, and the ellipse reaches its apoapsis on the far side of
+    /// the parent from the middle, which is further out than the thing itself
+    /// ever gets.
     ///
     /// Nothing until the rows are in, and nothing for a system that has none.
     /// Both are the same picture to whoever is drawing: the map cannot say how
@@ -175,18 +184,29 @@ impl Contents {
             return None;
         };
 
+        let orbits = self.orbits();
+        let middle = self.middle(&orbits, 0.);
+        // How far from the middle the orbit itself is centred, which is where
+        // whatever it goes round stands.
+        let about = |parent: Option<i16>| {
+            let anchor = parent.map_or(DVec3::ZERO, |id| orbits.place(id, 0.));
+            (anchor - middle).length() as f32
+        };
+
         let reaches = bodies
             .iter()
             .map(|b| {
-                reach(b.orbit.semi_major_axis, b.orbit.eccentricity)
+                about(b.parent_id())
+                    + reach(b.orbit.semi_major_axis, b.orbit.eccentricity)
                     + b.radius.max(0.)
             })
             .chain(stars.iter().map(|s| {
                 // A primary goes round nothing, so it reaches only as far as
                 // it is wide.
-                s.orbit
-                    .as_ref()
-                    .map_or(0., |o| reach(o.semi_major_axis, o.eccentricity))
+                about(s.parent_id())
+                    + s.orbit.as_ref().map_or(0., |o| {
+                        reach(o.semi_major_axis, o.eccentricity)
+                    })
                     + s.radius.max(0.)
             }))
             .filter(|r| r.is_finite() && *r > 0.);
@@ -551,6 +571,41 @@ mod tests {
     #[test]
     fn a_body_at_the_centre_leaves_the_extent_unsaid() {
         assert_eq!(known(vec![body(0.)]).extent(), None);
+    }
+
+    /// The extent is measured from the middle, not from what a thing goes round
+    ///
+    /// The whole of a wide binary is drawn about its arrival star, and the far
+    /// star's orbit reaches its apoapsis on the other side of the point the
+    /// pair goes round. That point stands the arrival star's own orbit away
+    /// from the middle, so the two add. Read as orbits alone the extent stops
+    /// at the wider of them and the shell cuts through the far half of the
+    /// system, which is where the bodies out there were coming from.
+    #[test]
+    fn the_extent_is_measured_from_the_middle() {
+        let reaches =
+            binary(true).extent().expect("a binary reaches somewhere");
+
+        assert!(
+            (reaches - 3e13).abs() < 3e13 * 1e-6,
+            "the binary reached {reaches}m, not the 3e13 out to the far side \
+             of the outer star's orbit"
+        );
+    }
+
+    /// Nothing drawn in a system stands outside the extent
+    #[test]
+    fn nothing_in_a_binary_stands_outside_its_extent() {
+        let contents = binary(true);
+        let reaches = contents.extent().expect("a binary reaches somewhere");
+
+        for id in [1, 2, 11] {
+            let out = contents.place(id, 0.).length();
+            assert!(
+                out <= reaches as f64,
+                "{id} stood {out}m out, past a {reaches}m extent"
+            );
+        }
     }
 
     /// A near-parabolic orbit is held to something finite
