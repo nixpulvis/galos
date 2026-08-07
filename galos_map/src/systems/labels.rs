@@ -871,8 +871,9 @@ pub fn respawn(
             continue;
         }
 
-        let label =
-            commands.spawn(nameplate(body.name.clone(), &materials)).id();
+        let label = commands
+            .spawn(nameplate(body.name.to_uppercase(), &materials))
+            .id();
         commands.entity(entity).add_child(label);
     }
 
@@ -896,9 +897,9 @@ pub fn respawn(
         let said = match (hop, from) {
             (Some(_), Some(from)) => {
                 let jump = (system.position() - from).length();
-                format!("{} {jump:.1} Ly", system.name)
+                format!("{} {jump:.1} Ly", system.name.to_uppercase())
             }
-            _ => system.name.clone(),
+            _ => system.name.to_uppercase(),
         };
         let label = commands.spawn(nameplate(said, &materials)).id();
 
@@ -910,12 +911,15 @@ pub fn respawn(
 ///
 /// One plate for a system and for a body alike: what differs is only what it
 /// is hung off and what decided it was worth drawing.
+///
+/// Given the words to set rather than making them. Names are put in capitals,
+/// as everything else the map says out loud is, and the font being monospaced
+/// that costs no width. A unit standing beside one is not a name and is spelt
+/// the way a unit is spelt, so whoever knows which is which says so.
 fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
     (
         Label,
-        // In capitals, as everything else the map says out loud is. The font
-        // is monospaced, so this costs no width.
-        Text3d::new(name.to_uppercase()),
+        Text3d::new(name),
         Text3dStyling {
             size: SIZE,
             font: FONT.into(),
