@@ -13,6 +13,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use galos_db::barycenters::Barycenter as DbBarycenter;
 use galos_db::bodies::Body as DbBody;
 use galos_db::stars::Star as DbStar;
 
@@ -57,6 +58,13 @@ pub(super) struct Asking(Option<(i64, Task<Answer>)>);
 pub(super) struct Answer {
     stars: Vec<DbStar>,
     bodies: Vec<DbBody>,
+    /// The points a close pair goes round, which are not drawn
+    ///
+    /// Asked for with the rest because a body naming one as its nearest
+    /// ancestor cannot be placed without it: the walk back to the star stops
+    /// at whatever is missing, and a pair whose center is missing is a pair
+    /// drawn at the middle of the system.
+    centers: Vec<DbBarycenter>,
 }
 
 /// Decide which system the map is standing in, and ask about it
@@ -121,6 +129,9 @@ fn choose(
         Answer {
             stars: DbStar::fetch_all(&db, address).await.unwrap_or_default(),
             bodies: DbBody::fetch_all(&db, address).await.unwrap_or_default(),
+            centers: DbBarycenter::fetch_all(&db, address)
+                .await
+                .unwrap_or_default(),
         }
     });
 
@@ -146,9 +157,14 @@ pub(super) fn collect(
     }
 
     debug!(
-        "{address} holds {} stars and {} bodies",
+        "{address} holds {} stars, {} bodies and {} barycenters",
         answer.stars.len(),
-        answer.bodies.len()
+        answer.bodies.len(),
+        answer.centers.len()
     );
-    contents.held = Held::Known { stars: answer.stars, bodies: answer.bodies };
+    contents.held = Held::Known {
+        stars: answer.stars,
+        bodies: answer.bodies,
+        centers: answer.centers,
+    };
 }

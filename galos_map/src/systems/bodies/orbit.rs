@@ -70,6 +70,23 @@ pub struct Orbit {
 }
 
 impl Orbit {
+    /// The orbit of something that goes round nothing
+    ///
+    /// No size and no period, so it stands at whatever it is measured from.
+    /// A system's primary star is recorded without an orbit and comes back as
+    /// this, which puts it at the middle of its system.
+    pub fn still() -> Orbit {
+        Orbit {
+            semi_major_axis: 0.,
+            eccentricity: 0.,
+            inclination: 0.,
+            periapsis: 0.,
+            ascending_node: 0.,
+            mean_anomaly: 0.,
+            period: None,
+        }
+    }
+
     /// The elements as the journal records them: metres, degrees, seconds
     ///
     /// The one place a degree is spoken. An orbit with no size and one with no
@@ -230,24 +247,22 @@ impl Orbits {
     /// somewhere plausible rather than nowhere, and it is the missing row
     /// rather than this that makes it approximate.
     ///
-    /// # Barycentres, and what is being assumed
+    /// # Barycentres
     ///
-    /// The missing parent is nearly always a barycentre. A journal names one
-    /// in a body's ancestry, and `ScanBaryCentre` is not saved anywhere
-    /// (issue #70), so the id is in `parent_id` with no row behind it.
+    /// A barycentre is nobody's row in `bodies`, so a chain that names one
+    /// steps somewhere else for it: [`super::Contents::orbits`] puts them in
+    /// alongside the stars and the bodies, and the chain runs whole.
     ///
-    /// For the one at the root of a multi-star system this ought to come out
-    /// right by accident: that barycentre *is* the middle of the system, so
-    /// ending the walk there and measuring from the centre lands where
-    /// following it would have. For a barycentre further down — a close pair
-    /// that itself goes round something — it will not: the pair would be put
-    /// at the centre instead of out where it belongs, its whole outer orbit
-    /// dropped.
+    /// One of them stays missing on purpose. The barycentre at the root of a
+    /// multi-star system goes round nothing and is the middle of the system,
+    /// so ending the walk there and measuring from the centre lands exactly
+    /// where following it would have.
     ///
-    /// Neither can be confirmed without data. What would settle it is a
-    /// multi-star system on screen: if its stars sit sensibly about the middle
-    /// and a nested pair does not, the reading above is right and the fix is
-    /// issue #70 rather than anything here.
+    /// This was read the other way round for a while, with none of them held:
+    /// the root came out right by accident and every close pair was drawn at
+    /// the middle of its system with its whole outer orbit dropped. Ross 248
+    /// is what showed it, its stars ten billion kilometres out on either side
+    /// and four of its bodies gathered at the centre between them.
     pub fn place(&self, id: i16, since: f64) -> DVec3 {
         let mut place = DVec3::ZERO;
         let mut at = Some(id);
