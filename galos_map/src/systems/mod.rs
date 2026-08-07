@@ -21,6 +21,7 @@ pub fn plugin(app: &mut App) {
     });
 
     app.add_plugins(fetch::plugin);
+    app.add_plugins(roundness::plugin);
     app.add_plugins(bodies::plugin);
     app.add_plugins(spawn::plugin);
     app.add_plugins(despawn::plugin);
@@ -106,6 +107,7 @@ pub mod filter;
 pub mod info;
 pub mod labels;
 pub mod pointing;
+pub mod roundness;
 pub mod route;
 pub mod scale;
 pub mod selection;

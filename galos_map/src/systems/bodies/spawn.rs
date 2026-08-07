@@ -23,6 +23,7 @@ use crate::schedule::MapSet;
 use crate::space;
 use crate::systems::System;
 use crate::systems::pointing::Indicator;
+use crate::systems::roundness::Roundness;
 use crate::systems::route::LineStrip;
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
@@ -35,7 +36,7 @@ use galos_db::stars::Star as DbStar;
 pub fn plugin(app: &mut App) {
     app.init_resource::<Drawn>();
     app.init_resource::<Apparent>();
-    app.add_systems(Startup, (init_meshes, init_materials));
+    app.add_systems(Startup, init_materials);
     // After the rows have been taken in, so that a system's contents can be
     // drawn on the frame they land rather than the one after.
     app.add_systems(
@@ -193,14 +194,6 @@ pub struct Body {
     /// is what the system is named for and what everything in it is lit by.
     pub star: bool,
 }
-
-/// The sphere a body is drawn with
-///
-/// Its own rather than [`crate::systems::spawn::SystemMesh`], which is an
-/// icosahedron barely smoothed. That is all a mark a few pixels across ever
-/// needed; a planet filling the view wants to be round.
-#[derive(Resource)]
-struct BodyMesh(Handle<Mesh>);
 
 /// What a star is drawn in, by the colour its class comes to
 #[derive(Resource)]
@@ -382,19 +375,6 @@ fn lumens(radius: f32, temperature: f32) -> f32 {
     (watts * EFFICACY) as f32
 }
 
-fn init_meshes(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
-    // Bevy counts `20(s + 1)^2` faces, so fifteen subdivisions is a little
-    // over five thousand. One mesh serves every body in a system, so that is
-    // paid once however many are drawn.
-    //
-    // What asks for them is the silhouette. Shading reads the smooth normals
-    // whatever the count, and the outline is the polygon the faces actually
-    // make: at five subdivisions a body filling the view is visibly cornered,
-    // and at fifteen it is off by a fifth of a pixel.
-    let handle = assets.add(Sphere::new(1.).mesh().ico(15).unwrap());
-    commands.insert_resource(BodyMesh(handle));
-}
-
 fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
@@ -450,7 +430,7 @@ fn draw(
     systems: Query<(Entity, &System)>,
     inside: Query<Entity, With<Inside>>,
     contents: Res<Contents>,
-    mesh: Res<BodyMesh>,
+    roundness: Res<Roundness>,
     stars: Res<StarMaterials>,
     bodies: Res<BodyMaterials>,
     orbit_material: Res<OrbitMaterial>,
@@ -541,12 +521,14 @@ fn draw(
     let reach = contents.extent().unwrap_or_default();
     for star in contents.stars() {
         let place = orbits.place(star.id, 0.) - middle;
-        commands
-            .with_child(drawn_star(star, place, reach, &grid, &mesh, &stars));
+        commands.with_child(drawn_star(
+            star, place, reach, &grid, &roundness, &stars,
+        ));
     }
     for body in contents.bodies() {
         let place = orbits.place(body.id, 0.) - middle;
-        commands.with_child(drawn_body(body, place, &grid, &mesh, &bodies));
+        commands
+            .with_child(drawn_body(body, place, &grid, &roundness, &bodies));
     }
 
     // One line per thing that goes round something, hung off whatever it goes
@@ -620,7 +602,7 @@ fn drawn_star(
     place: DVec3,
     reach: f32,
     grid: &Grid,
-    mesh: &BodyMesh,
+    roundness: &Roundness,
     materials: &StarMaterials,
 ) -> impl Bundle {
     let (cell, offset) = placed(place, grid);
@@ -635,12 +617,13 @@ fn drawn_star(
             star: true,
         },
         Inside,
-        // Fitted by `pointing::size_bodies` before the first draw.
+        // Both fitted by `size_inside` and `pointing::size_bodies` before the
+        // first draw.
         Indicator::default(),
         cell,
         Transform::from_translation(offset)
             .with_scale(Vec3::splat(star.radius.max(1.))),
-        Mesh3d(mesh.0.clone()),
+        Mesh3d(roundness.coarsest()),
         MeshMaterial3d(
             materials.0[Glow::of(&star.star_class) as usize].clone(),
         ),
@@ -673,7 +656,7 @@ fn drawn_body(
     body: &DbBody,
     place: DVec3,
     grid: &Grid,
-    mesh: &BodyMesh,
+    roundness: &Roundness,
     materials: &BodyMaterials,
 ) -> impl Bundle {
     let (cell, offset) = placed(place, grid);
@@ -688,12 +671,13 @@ fn drawn_body(
             star: false,
         },
         Inside,
-        // Fitted by `pointing::size_bodies` before the first draw.
+        // Both fitted by `size_inside` and `pointing::size_bodies` before the
+        // first draw.
         Indicator::default(),
         cell,
         Transform::from_translation(offset)
             .with_scale(Vec3::splat(body.radius.max(1.))),
-        Mesh3d(mesh.0.clone()),
+        Mesh3d(roundness.coarsest()),
         MeshMaterial3d(
             materials.0[Surface::of(&body.planet_class) as usize].clone(),
         ),
