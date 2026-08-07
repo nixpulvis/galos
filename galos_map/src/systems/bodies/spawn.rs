@@ -118,9 +118,14 @@ const LIGHT_REACH: f32 = 4.;
 /// How many points an orbit is drawn with
 ///
 /// Enough that the roundest orbit does not read as a polygon at the size an
-/// orbit is ever looked at, and few enough that a system of a hundred bodies
-/// is a few thousand vertices rather than a mesh worth thinking about.
-const ORBIT_POINTS: usize = 128;
+/// orbit is ever looked at: a circle drawn five hundred pixels across is off
+/// by a hundredth of one between its points.
+///
+/// Few enough that a system of a hundred bodies is some tens of thousands of
+/// vertices rather than a mesh worth thinking about. Unlike a body's sphere
+/// these are a mesh apiece, every orbit being its own ellipse, so the count is
+/// paid per line.
+const ORBIT_POINTS: usize = 512;
 
 /// Which system's insides are drawn, if any
 #[derive(Resource, Default)]
@@ -366,11 +371,15 @@ fn lumens(radius: f32, temperature: f32) -> f32 {
 }
 
 fn init_meshes(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
-    // Five subdivisions is about five thousand faces, which is nothing to
-    // draw a handful of and is what a body filling the screen wants: the
-    // silhouette holds, and so does the terminator, which crosses the whole
-    // face of a body and takes its shape from where the vertices fall.
-    let handle = assets.add(Sphere::new(1.).mesh().ico(5).unwrap());
+    // Bevy counts `20(s + 1)^2` faces, so fifteen subdivisions is a little
+    // over five thousand. One mesh serves every body in a system, so that is
+    // paid once however many are drawn.
+    //
+    // What asks for them is the silhouette. Shading reads the smooth normals
+    // whatever the count, and the outline is the polygon the faces actually
+    // make: at five subdivisions a body filling the view is visibly cornered,
+    // and at fifteen it is off by a fifth of a pixel.
+    let handle = assets.add(Sphere::new(1.).mesh().ico(15).unwrap());
     commands.insert_resource(BodyMesh(handle));
 }
 
