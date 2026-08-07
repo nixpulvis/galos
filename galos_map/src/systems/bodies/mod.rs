@@ -99,6 +99,38 @@ impl Contents {
         }
     }
 
+    /// Which star the system arrives at
+    ///
+    /// The one every distance inside a system is quoted from, and where the
+    /// map puts the middle of it: a scan records the arrival star at no
+    /// distance from arrival, arriving being what happens at it.
+    ///
+    /// The nearest to arrival rather than the one recorded at exactly nothing,
+    /// so a system whose arrival star was never scanned still has a middle.
+    /// Nothing at all for one with no star on record, which is then drawn
+    /// about the point its contents go round, there being nothing else to
+    /// offer.
+    pub fn primary(&self) -> Option<i16> {
+        self.stars()
+            .iter()
+            .min_by(|one, other| {
+                one.distance_from_arrival_ls
+                    .total_cmp(&other.distance_from_arrival_ls)
+            })
+            .map(|star| star.id)
+    }
+
+    /// Where the middle of the system falls, as [`Orbits`] measures
+    ///
+    /// Which is to say where the arrival star stands about the point the
+    /// system's stars go round. Everything drawn inside a system is placed
+    /// short of this, so the star lands at the system's own position and
+    /// flying to a system arrives at its star rather than at a point in
+    /// between two of them.
+    pub(super) fn middle(&self, orbits: &Orbits, since: f64) -> DVec3 {
+        self.primary().map_or(DVec3::ZERO, |id| orbits.place(id, since))
+    }
+
     /// What the thing with `id` goes round, as the bodies under it say
     ///
     /// A barycenter is recorded with an orbit and nothing about what that
@@ -183,12 +215,13 @@ impl Contents {
         orbits
     }
 
-    /// Where the thing with `id` stands, in metres from the system's centre
+    /// Where the thing with `id` stands, in metres from the system's middle
     ///
     /// For one answer. Anything placing the whole system at once should build
     /// the [`Orbits`] once and ask it, rather than calling this per body.
     pub fn place(&self, id: i16, since: f64) -> DVec3 {
-        self.orbits().place(id, since)
+        let orbits = self.orbits();
+        orbits.place(id, since) - self.middle(&orbits, since)
     }
 }
 
@@ -309,8 +342,9 @@ mod tests {
         }
     }
 
-    /// A star with `id`, `a` metres out around whatever `parents` names
-    fn star(id: i16, a: f32, parents: Vec<Parent>) -> DbStar {
+    /// A star `away` light seconds from arrival, `a` metres out around
+    /// whatever `parents` names
+    fn star(id: i16, away: f32, a: f32, parents: Vec<Parent>) -> DbStar {
         DbStar {
             system_address: 1,
             id,
@@ -320,7 +354,7 @@ mod tests {
             updated_by: String::new(),
             absolute_magnitude: 0.,
             age_my: 0,
-            distance_from_arrival_ls: 0.,
+            distance_from_arrival_ls: away,
             luminosity: String::new(),
             star_class: String::new(),
             stellar_mass: 0.,
@@ -349,62 +383,98 @@ mod tests {
         Parent { ty: Some(ty.to_owned()), id }
     }
 
-    /// A body under a barycenter is placed out where the barycenter is
+    /// A system of two stars and one close pair, as Ross 248 is
     ///
-    /// The case Ross 248 is made of: a close pair goes round a point that goes
-    /// round a star that goes round the middle of the system. The pair names
-    /// the point and nothing else does, so a map that does not hold the points
-    /// breaks the chain at its first step and draws the pair at the middle
-    /// with both of the outer orbits lost.
-    #[test]
-    fn a_body_under_a_barycenter_stands_out_where_it_belongs() {
+    /// Star one is the arrival star and star two is further out from the point
+    /// they both go round. Body eleven goes round a barycenter that goes round
+    /// star one, which is the chain that has to be walked whole.
+    fn binary(with_center: bool) -> Contents {
         let mut close = body(1e9);
         close.id = 11;
         close.parents =
             vec![parent("Null", 10), parent("Star", 1), parent("Null", 0)];
 
-        let contents = Contents {
+        Contents {
             of: Some(1),
             held: Held::Known {
-                stars: vec![star(1, 1e13, vec![parent("Null", 0)])],
+                stars: vec![
+                    star(1, 0., 1e13, vec![parent("Null", 0)]),
+                    star(2, 1e5, 2e13, vec![parent("Null", 0)]),
+                ],
                 bodies: vec![close],
-                centers: vec![center(10, 1e11)],
+                centers: if with_center {
+                    vec![center(10, 1e11)]
+                } else {
+                    vec![]
+                },
             },
-        };
+        }
+    }
 
-        // Every orbit is a circle read at the same angle, so the three stack
-        // up and the body stands at their sum.
-        let out = contents.place(11, 0.).length();
-        let wanted = 1e13 + 1e11 + 1e9;
+    /// The middle of a system is the star it arrives at
+    ///
+    /// Not the point its stars go round, which in a wide binary is ten billion
+    /// kilometres of empty sky. A system's recorded position is where the map
+    /// sends the camera and what it zooms towards, so what stands there has to
+    /// be what the user came for.
+    #[test]
+    fn the_middle_of_a_system_is_the_star_it_arrives_at() {
+        let contents = binary(true);
+
+        assert_eq!(contents.place(1, 0.), DVec3::ZERO);
+        // Every orbit here is a circle read at the same angle, so the two
+        // stars lie the same way and stand their orbits apart. Both have moved
+        // in by the arrival star's own orbit, which is the whole of this.
+        let far = contents.place(2, 0.).length();
+        assert!(
+            (far - 1e13).abs() < 1e13 * 1e-6,
+            "the far star stood {far}m off, not the 1e13 between them"
+        );
+    }
+
+    /// The arrival star is the one recorded at no distance from arrival
+    #[test]
+    fn the_arrival_star_is_the_one_arrived_at() {
+        assert_eq!(binary(true).primary(), Some(1));
+        assert_eq!(Contents::default().primary(), None);
+    }
+
+    /// A body under a barycenter is placed out where the barycenter is
+    ///
+    /// The case Ross 248 is made of: a close pair goes round a point that goes
+    /// round a star. The pair names the point and nothing else does, so a map
+    /// that does not hold the points breaks the chain at its first step.
+    ///
+    /// Measured from the star, which is the middle, so the star's own orbit
+    /// about the point its pair goes round drops out of the sum and what is
+    /// left is the barycenter's orbit and the body's own.
+    #[test]
+    fn a_body_under_a_barycenter_stands_out_where_it_belongs() {
+        // Every orbit is a circle read at the same angle, so they stack up.
+        let out = binary(true).place(11, 0.).length();
+        let wanted = 1e11 + 1e9;
+
         assert!(
             (out - wanted).abs() < wanted * 1e-6,
             "the body stood {out}m out, not {wanted}m"
         );
     }
 
-    /// And is at the middle of the system without the barycenter
+    /// And loses its way entirely without it
     ///
-    /// What the map was doing, and what the screenshot of Ross 248 showed: the
-    /// walk ends at the missing point and only the pair's own small orbit is
-    /// left, so it is drawn a million kilometres from the centre rather than
-    /// ten billion.
+    /// The walk ends at the missing point and only the body's own orbit is
+    /// left, measured from where the walk stopped. In a system of one star
+    /// that is the star, and the body is merely drawn too near it; in a binary
+    /// it is the point the two stars go round, and the body is thrown out into
+    /// the space between them.
     #[test]
-    fn a_body_under_a_missing_barycenter_falls_to_the_middle() {
-        let mut close = body(1e9);
-        close.id = 11;
-        close.parents =
-            vec![parent("Null", 10), parent("Star", 1), parent("Null", 0)];
+    fn a_body_under_a_missing_barycenter_loses_its_way() {
+        let out = binary(false).place(11, 0.).length();
 
-        let contents = Contents {
-            of: Some(1),
-            held: Held::Known {
-                stars: vec![star(1, 1e13, vec![parent("Null", 0)])],
-                bodies: vec![close],
-                centers: vec![],
-            },
-        };
-
-        assert!((contents.place(11, 0.).length() - 1e9).abs() < 1e3);
+        assert!(
+            (out - 1e13).abs() < 1e13 * 1e-3,
+            "the body stood {out}m from the star, not the 1e13 of its orbit"
+        );
     }
 
     /// Contents that came back holding `bodies`
