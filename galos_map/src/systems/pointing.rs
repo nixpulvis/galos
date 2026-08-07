@@ -92,6 +92,19 @@ const INDICATOR_MIN_RADIUS: f32 = 9.5;
 /// system is flying further in, which is what the map is for.
 const BODY_MIN_RADIUS: f32 = 4.;
 
+/// How far from a star the stub pointing at a route's stop begins, in pixels
+///
+/// Clear of the star drawn there and of the name beside it. What the stub says
+/// is a direction, and a direction is said as well from a little way off as
+/// from touching.
+const REACHING_FROM: f32 = 30.;
+
+/// And how far out it reaches
+///
+/// Long enough to read as pointing somewhere rather than as a tick beside the
+/// star, and short enough to leave the system it is drawn over legible.
+const REACHING_TO: f32 = 90.;
+
 /// How many line segments a ring is drawn with
 ///
 /// Bevy draws a gizmo circle with thirty two unless it is told otherwise,
@@ -718,18 +731,44 @@ pub fn ring(
 
         // A stop is a jump away and as likely to be behind the camera as in
         // front of it, so the ring alone can only be found by turning until it
-        // appears. The line says which way to turn: it leaves the star the
-        // camera is looking at, which is the middle of the view, so some of it
-        // is on screen wherever the far end has got to.
-        if let Some(from) = from {
-            gizmos.line(
-                from,
-                at.translation(),
-                super::selection::going(
-                    crate::systems::route::REACHING,
-                    standing,
-                ),
-            );
+        // appears. A stub says which way to turn.
+        //
+        // Its own mark rather than the route's line, which cannot be drawn
+        // from in here at all: that line holds its vertices as metres from the
+        // route's own middle, tens of light years of them, and a float carrying
+        // such a number has whole light seconds between the values it can hold.
+        // Out among the stars that is far finer than anything drawn. Standing
+        // inside a system it is the width of the sky, and the line whips about
+        // as the camera moves.
+        //
+        // So only the direction is taken from where the stop is, which survives
+        // that easily: the far end may wander by light seconds and still point
+        // the same way to within nothing. The length is a size on screen, which
+        // is what makes it readable at any zoom, and it starts clear of the star
+        // rather than touching it. Where to look is all it has to say.
+        if let (Some(from), Ok(eye)) = (from, eye_at.single()) {
+            let toward = at.translation() - from;
+            if let Some(toward) = toward.try_normalize() {
+                let offset = (from - eye.translation()).as_dvec3();
+                let out = |pixels| {
+                    drawn_radius_of(
+                        orbit,
+                        cot_half_fov,
+                        viewport,
+                        offset,
+                        pixels,
+                    )
+                };
+
+                gizmos.line(
+                    from + toward * out(REACHING_FROM),
+                    from + toward * out(REACHING_TO),
+                    super::selection::going(
+                        crate::systems::route::REACHING,
+                        standing,
+                    ),
+                );
+            }
         }
         let radius = drawn_radius(
             orbit,
