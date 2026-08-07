@@ -109,6 +109,13 @@ pub fn spawn_route(
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: line_color(super::strength(true)),
             alpha_mode: AlphaMode::Blend,
+            // Drawn in the color it is set to rather than lit to it, as the
+            // orbit lines inside a system are. A line has no surface, and
+            // the only light out here is the ambient one, so a lit line comes
+            // out at whatever the camera's exposure makes of that: the
+            // exposure is set for what a star puts out, and a route was
+            // coming back all but black.
+            unlit: true,
             ..default()
         })),
         cell,
