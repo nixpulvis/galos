@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{Apparent, Body, Star};
+use crate::systems::bodies::spawn::{Apparent, Body};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
@@ -437,7 +437,7 @@ pub fn choose_names(
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
     systems: Query<(Entity, &System, &Visibility, &Indicator, Has<Filtered>)>,
-    bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator, Has<Star>)>,
+    bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
@@ -530,7 +530,7 @@ pub fn choose_names(
     // and they are only ever drawn when the viewer has flown in to look at
     // them. Naming them is the whole of what flying in is for.
     if let Ok(eye) = eye_at.single() {
-        for (entity, body, at, indicator, sun) in &bodies {
+        for (entity, body, at, indicator) in &bodies {
             let offset = (at.translation() - eye.translation()).as_dvec3();
             let Some(place) =
                 screen_offset(orbit, cot_half_fov, viewport, offset)
@@ -548,7 +548,7 @@ pub fn choose_names(
                 .is_ok_and(|at| at.settled(time.elapsed_secs()));
             let score = body_name_score(
                 indicator.0,
-                sun,
+                body.ancestors,
                 pointed_at,
                 selection.contains(entity),
             );
@@ -596,8 +596,8 @@ pub fn choose_names(
 
 /// What being inside the system the camera is in is worth to a name
 ///
-/// The whole of it for a star, and as much of it as its size argues for to
-/// anything going round one.
+/// Cut into a step for each of [`DEEPEST`], so a star takes nearly the whole
+/// of it and each step down takes a step less.
 ///
 /// Above [`CENTER_WEIGHT`] and below [`POINTED_WEIGHT`], which places bodies
 /// where they belong in the order. A body outranks the ordinary run of
@@ -606,42 +606,52 @@ pub fn choose_names(
 /// at. It never outranks what is pointed at or picked out, whichever that is.
 const INSIDE_WEIGHT: f32 = 300.;
 
-/// How large a body has to look to be worth half of [`INSIDE_WEIGHT`]
+/// How large a body has to look to be worth half of a step of [`DEEPEST`]
 ///
 /// In logical pixels of radius. Around the size a body stops being a dot and
 /// starts being a disc, so the bodies that read as worlds are named first and
 /// the specks last.
 const BODY_NAME_REACH: f32 = 20.;
 
+/// How many steps down a system the ordering tells apart
+///
+/// A star, its planets, their moons, and whatever a scan puts under those.
+/// Deeper than this and everything is as deep as everything else, which costs
+/// nothing: the records go four or five down at the most, and the step it
+/// would take is smaller than the room a name needs.
+const DEEPEST: u8 = 4;
+
 /// How much a body deserves to have its name drawn
 ///
-/// A star takes the whole of [`INSIDE_WEIGHT`] and so is named before anything
-/// going round it, whatever the two are drawn at. It is what the system is
-/// named for, and a moon the camera happens to be beside is not more worth
-/// naming than the star it goes round.
+/// A parent before whatever goes round it, whatever the two are drawn at: a
+/// star before its planets, and a planet before its moons. A moon the camera
+/// happens to be beside is drawn larger than the star at the middle of the
+/// system and is not more worth naming than it. `under` is how many ancestors
+/// the scan named it under, which counts up the same way.
 ///
-/// Everything else argues from its own apparent size, which never quite
-/// reaches what a star is given. Bigger first, which for a system's contents
+/// Among things at the same depth, its own apparent size. Bigger first, which
 /// is nearly always the order the viewer would have chosen: the worlds before
-/// the moons, and the moons before whatever is a pixel across.
+/// the specks.
 ///
-/// Bounded either way, so that nothing inside a system outranks whatever is
-/// pointed at or picked out.
+/// The two are nested rather than added together. [`INSIDE_WEIGHT`] is cut
+/// into a step per depth, and the size argues within one step, so no size
+/// carries anything over a step and a parent cannot be outbid by a child. And
+/// the whole of it stays inside [`INSIDE_WEIGHT`], so nothing inside a system
+/// outranks whatever is pointed at or picked out.
 fn body_name_score(
     apparent: f32,
-    sun: bool,
+    under: u8,
     pointed_at: bool,
     selected: bool,
 ) -> f32 {
     let pointed = if pointed_at { POINTED_WEIGHT } else { 0. };
     let picked = if selected { SELECTED_WEIGHT } else { 0. };
-    let size = if sun {
-        INSIDE_WEIGHT
-    } else {
-        INSIDE_WEIGHT * apparent / (apparent + BODY_NAME_REACH)
-    };
 
-    picked.max(pointed) + size
+    let step = INSIDE_WEIGHT / (DEEPEST + 1) as f32;
+    let depth = (DEEPEST - under.min(DEEPEST)) as f32 * step;
+    let size = step * apparent / (apparent + BODY_NAME_REACH);
+
+    picked.max(pointed) + depth + size
 }
 
 /// How much a system deserves to have its name drawn
@@ -1166,31 +1176,61 @@ mod tests {
         }
     }
 
-    /// A star is named before anything going round it
+    /// A parent is named before whatever goes round it
     ///
     /// Whatever the two are drawn at. A moon the camera happens to be beside
     /// is drawn larger than the star at the middle of the system, and the
     /// star is still what the system is named for.
+    ///
+    /// Every step down, so this covers a planet over its moons as much as a
+    /// star over its planets. Each is drawn at nothing against the one below
+    /// it filling the view, which is the hardest way round for it to hold.
     #[test]
-    fn a_star_is_named_before_what_goes_round_it() {
-        // A star drawn at nothing, and a moon filling the view.
-        let star = body_name_score(0., true, false, false);
-        let moon = body_name_score(1e4, false, false, false);
+    fn a_parent_is_named_before_what_goes_round_it() {
+        for under in 0..DEEPEST {
+            let parent = body_name_score(0., under, false, false);
+            let child = body_name_score(1e4, under + 1, false, false);
 
-        assert!(star > moon, "the star scored {star} against {moon}");
+            assert!(
+                parent > child,
+                "one {under} down scored {parent} against the {child} of one \
+                 under it"
+            );
+        }
     }
 
-    /// And still gives way to what is pointed at or picked out
+    /// Past the last step everything is as deep as everything else
+    ///
+    /// The records go four or five down at the most, and a step small enough
+    /// to tell the rest apart is smaller than the room a name takes.
+    #[test]
+    fn the_deepest_step_is_the_last_one_told_apart() {
+        let deep = body_name_score(0., DEEPEST, false, false);
+        let deeper = body_name_score(0., DEEPEST + 3, false, false);
+
+        assert_eq!(deep, deeper);
+    }
+
+    /// At one depth, the larger is named first
+    #[test]
+    fn the_larger_of_two_at_one_depth_is_named_first() {
+        let world = body_name_score(1e4, 2, false, false);
+        let speck = body_name_score(0.1, 2, false, false);
+
+        assert!(world > speck, "the world scored {world} against {speck}");
+    }
+
+    /// And all of it gives way to what is pointed at or picked out
     ///
     /// Being marked out is the user asking for something by name, which is
     /// the one thing a name is for, and it beats every claim a thing makes
     /// for itself.
     #[test]
     fn a_marked_body_outranks_a_star_at_rest() {
-        let star = body_name_score(1e4, true, false, false);
+        let star = body_name_score(1e4, 0, false, false);
 
-        assert!(body_name_score(0., false, true, false) > star);
-        assert!(body_name_score(0., false, false, true) > star);
+        assert!(body_name_score(0., DEEPEST, true, false) > star);
+        assert!(body_name_score(0., DEEPEST, false, true) > star);
     }
 
     /// Names are offered in order of nearness to the center

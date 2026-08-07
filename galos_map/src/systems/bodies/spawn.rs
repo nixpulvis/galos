@@ -155,15 +155,20 @@ pub struct Body {
     pub class: String,
     /// How far across it is, in metres
     pub radius: f32,
+    /// How many ancestors the scan named it under
+    ///
+    /// Nothing for the star a system arrives at, one for what goes round it,
+    /// and one more for each step further down. What a parent names is a
+    /// suffix of what its children name, so a parent always counts fewer than
+    /// they do, and the smaller of any two on one chain is the one the other
+    /// goes round.
+    ///
+    /// Which is what settles who answers when two of them are under the
+    /// pointer at once, and which of them is named where two names would
+    /// overlap. A moon crossing in front of its planet is not what was being
+    /// aimed at.
+    pub ancestors: u8,
 }
-
-/// A [`Body`] that is a star rather than something going round one
-///
-/// The two are drawn from different tables and lit from opposite ends, and
-/// they are the same thing to everything that aims at one, so what tells them
-/// apart is a mark rather than two components.
-#[derive(Component)]
-pub struct Star;
 
 /// The sphere a body is drawn with
 ///
@@ -598,8 +603,8 @@ fn drawn_star(
             id: star.id,
             class: star.star_class.clone(),
             radius: star.radius,
+            ancestors: star.parents.len() as u8,
         },
-        Star,
         Inside,
         // Fitted by `pointing::size_bodies` before the first draw.
         Indicator::default(),
@@ -650,6 +655,7 @@ fn drawn_body(
             id: body.id,
             class: body.planet_class.clone(),
             radius: body.radius,
+            ancestors: body.parents.len() as u8,
         },
         Inside,
         // Fitted by `pointing::size_bodies` before the first draw.
@@ -738,6 +744,7 @@ mod tests {
                 id: 1,
                 class: String::new(),
                 radius: 1e6,
+                ancestors: 0,
             },
             cell,
             Transform::from_translation(offset),

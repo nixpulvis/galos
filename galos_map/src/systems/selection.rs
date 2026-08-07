@@ -592,6 +592,7 @@ mod tests {
             id,
             class: String::new(),
             radius: 1e6,
+            ancestors: 0,
         }
     }
 
