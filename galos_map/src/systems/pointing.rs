@@ -92,23 +92,39 @@ const INDICATOR_MIN_RADIUS: f32 = 9.5;
 /// system is flying further in, which is what the map is for.
 const BODY_MIN_RADIUS: f32 = 4.;
 
-/// How long the arrow saying which way along a route a stop lies is, in pixels
+/// How wide the mark saying which way along a route a stop lies is, in pixels
 ///
 /// Small. It is read once, to tell one of two stops from the other, and then
 /// not looked at again.
-const ICON: f32 = 16.;
+const ICON: f32 = 18.;
 
-/// Which way the arrow for `hop` runs, about `at`
+/// The mark for `hop`, about `at`, as two outlines in pixels
 ///
-/// Onward for the stop ahead and back the way the route came for the one
-/// behind, which is what the two of them are.
-fn pointing(hop: &crate::systems::route::Hop, at: Vec2) -> (Vec2, Vec2) {
-    let half = Vec2::X * ICON * 0.5;
+/// The two triangles every machine that has ever played anything back puts on
+/// its buttons: onward for the stop ahead and back the way it came for the one
+/// behind. A single arrow at this size is a scratch that could be pointing
+/// anywhere, where this reads as one thing at a glance and is already known.
+fn transport(hop: &crate::systems::route::Hop, at: Vec2) -> [[Vec2; 4]; 2] {
+    let way = match hop {
+        crate::systems::route::Hop::Next => 1.,
+        crate::systems::route::Hop::Last => -1.,
+    };
+    let wing = ICON * 0.5;
+    let half = ICON * 0.35;
 
-    match hop {
-        crate::systems::route::Hop::Next => (at - half, at + half),
-        crate::systems::route::Hop::Last => (at + half, at - half),
-    }
+    // One triangle, flat side at `base` and point ahead of it, laid the way
+    // this stop is. Closed, so the outline is drawn whole.
+    let mark = |base: f32| {
+        [
+            Vec2::new(base, -half),
+            Vec2::new(base + wing, 0.),
+            Vec2::new(base, half),
+            Vec2::new(base, -half),
+        ]
+        .map(|corner| at + Vec2::new(corner.x * way, corner.y))
+    };
+
+    [mark(-wing), mark(0.)]
 }
 
 /// How far in from the edge of the view a stub pointing at a stop sits
@@ -820,9 +836,11 @@ pub fn ring(
                         .resolution(RING_POINTS);
 
                     // Beside the ring, where a name would stand.
-                    let (tail, head) =
-                        pointing(hop, place + Vec2::X * (ringed + ICON));
-                    gizmos.arrow(placed(tail), placed(head), color);
+                    for mark in
+                        transport(hop, place + Vec2::X * (ringed + ICON))
+                    {
+                        gizmos.linestrip(mark.map(placed), color);
+                    }
                 }
                 // Nowhere to be seen: a stub at the edge saying which way to
                 // turn, run out along the same axis a leader would lie on.
@@ -840,9 +858,10 @@ pub fn ring(
 
                     // At the inner end, which is the end that is looked at:
                     // the outer one is against the border of the view.
-                    let (tail, head) =
-                        pointing(hop, across * (edge - REACHING_LENGTH - ICON));
-                    gizmos.arrow(placed(tail), placed(head), color);
+                    let at = across * (edge - REACHING_LENGTH - ICON);
+                    for mark in transport(hop, at) {
+                        gizmos.linestrip(mark.map(placed), color);
+                    }
                 }
             }
         }
