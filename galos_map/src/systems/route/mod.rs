@@ -113,7 +113,23 @@ fn trim(
             continue;
         }
 
-        let points = legs(&path.whole(), &wanted);
+        let mut points = legs(&path.whole(), &wanted);
+        // A cut that leaves nothing is a route with none of its systems on the
+        // map, which the spyglass or the filters can do at any moment. Handing
+        // the renderer a mesh of no vertices leaves its slab allocator holding
+        // a key that was never allocated, and it says so, every frame:
+        //
+        //     ERROR bevy_render::slab_allocator: Use-after-free: attempted to
+        //     copy element data for an unallocated key
+        //
+        // A line of no length is a mesh all the same and draws nothing. The
+        // line's own `Visibility` is not free to say this instead: it carries
+        // whether the route's row is turned on, and `follow_filters` writes it
+        // every frame from that.
+        if points.is_empty() {
+            points = vec![Vec3::ZERO, Vec3::ZERO];
+        }
+
         // Nothing to write to where the mesh has already gone. What was drawn
         // is left unrecorded with it, so the cut is tried again rather than
         // taken as done.
