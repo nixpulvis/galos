@@ -15,15 +15,15 @@
     </tr>
     <tr>
         <th>Landable</th>
-        <td>{{ body.landable }}</td>
+        <td>{{ self::landable(body.surface) }}</td>
     </tr>
     <tr>
         <th>Terraform State</th>
-        <td>{{ self::table_data(body.terraform_state) }}</td>
+        <td>{{ self::terraform_state(body.surface) }}</td>
     </tr>
     <tr>
         <th>Atmosphere</th>
-        <td>{{ self::table_data(body.atmosphere) }}</td>
+        <td>{{ self::atmosphere(body.surface) }}</td>
     </tr>
     <tr>
         <th>Atmosphere Type</th>
@@ -31,7 +31,7 @@
     </tr>
     <tr>
         <th>Volcanism</th>
-        <td>{{ self::table_data(body.volcanism) }}</td>
+        <td>{{ self::volcanism(body.surface) }}</td>
     </tr>
     <tr>
         <th>Mass</th>
@@ -43,11 +43,11 @@
     </tr>
     <tr>
         <th>Surface Gravity</th>
-        <td>{{ body.surface_gravity }}</td>
+        <td>{{ body.gravity }}</td>
     </tr>
     <tr>
         <th>Surface Temperature</th>
-        <td>{{ body.surface_temperature }}</td>
+        <td>{{ body.temperature }}</td>
     </tr>
     <tr>
         <th>Surface Pressure</th>
@@ -55,48 +55,48 @@
     </tr>
     <tr>
         <th>Semi Major Axis</th>
-        <td>{{ body.semi_major_axis }}</td>
+        <td>{{ body.orbit.semi_major_axis }}</td>
     </tr>
     <tr>
         <th>Eccentricity</th>
-        <td>{{ body.eccentricity }}</td>
+        <td>{{ body.orbit.eccentricity }}</td>
     </tr>
     <tr>
         <th>Orbital Inclination</th>
-        <td>{{ body.orbital_inclination }}</td>
+        <td>{{ body.orbit.orbital_inclination }}</td>
     </tr>
     <tr>
         <th>Periapsis</th>
-        <td>{{ body.periapsis }}</td>
+        <td>{{ body.orbit.periapsis }}</td>
     </tr>
     <tr>
         <th>Orbital Period</th>
-        <td>{{ body.orbital_period }}</td>
+        <td>{{ body.orbit.orbital_period }}</td>
     </tr>
     <tr>
         <th>Rotation Period</th>
-        <td>{{ body.rotation_period }}</td>
+        <td>{{ body.spin.period }}</td>
     </tr>
     <tr>
         <th>Axial Tilt</th>
-        <td>{{ body.axial_tilt }}</td>
+        <td>{{ body.spin.tilt }}</td>
     </tr>
     <tr>
         <th>Ascending Node</th>
-        <td>{{ body.ascending_node }}</td>
+        <td>{{ body.orbit.ascending_node }}</td>
     </tr>
     <tr>
         <th>Mean Anomaly</th>
-        <td>{{ body.mean_anomaly }}</td>
+        <td>{{ body.orbit.mean_anomaly }}</td>
     </tr>
 
     <tr>
         <th>Was Mapped?</th>
-        <td>{{ body.was_mapped }}</td>
+        <td>{{ body.discovery.mapped }}</td>
     </tr>
     <tr>
         <th>Was Discovered?</th>
-        <td>{{ body.was_discovered }}</td>
+        <td>{{ body.discovery.discovered }}</td>
     </tr>
 
     <tr>

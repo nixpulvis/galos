@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM body_materials WHERE system_address = $1 AND body_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "54b0112a1f5f44b347ada79425fbb20a92fd9b5ec8977ed3bca42fb75c59149d"
+}

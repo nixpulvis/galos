@@ -6,7 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
-use galos_db::bodies::{Body, Surface};
+use galos_db::bodies::{Body, Parent, Surface};
 use galos_db::stations::Station;
 use galos_db::systems::System;
 use galos_db::Database;
@@ -40,12 +40,39 @@ fn table_data<T: Display>(option: &Option<T>) -> String {
     option.as_ref().map(|o| o.to_string()).unwrap_or("---".into())
 }
 
+/// The nearest ancestor, which is what a body's orbit is measured about
+fn parent_id(parents: &[Parent]) -> String {
+    table_data(&parents.first().map(|parent| parent.id))
+}
+
 fn atmosphere_type(surface: &Option<Surface>) -> String {
     table_data(&surface.as_ref().map(|surface| &surface.atmosphere_type))
 }
 
 fn surface_pressure(surface: &Option<Surface>) -> String {
     table_data(&surface.as_ref().map(|surface| surface.pressure))
+}
+
+// What a surface has is only answerable where there is one, so each of these
+// reads as unknown rather than as a measurement for a gas giant.
+fn landable(surface: &Option<Surface>) -> String {
+    table_data(&surface.as_ref().map(|surface| surface.landable))
+}
+
+fn terraform_state(surface: &Option<Surface>) -> String {
+    table_data(
+        &surface.as_ref().and_then(|surface| surface.terraform_state.as_ref()),
+    )
+}
+
+fn atmosphere(surface: &Option<Surface>) -> String {
+    table_data(
+        &surface.as_ref().and_then(|surface| surface.atmosphere.as_ref()),
+    )
+}
+
+fn volcanism(surface: &Option<Surface>) -> String {
+    table_data(&surface.as_ref().and_then(|surface| surface.volcanism.as_ref()))
 }
 
 #[derive(Template)]
