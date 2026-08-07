@@ -258,18 +258,24 @@ pub(super) fn point_at(
     // the dim star in front is the background the filter is read against, and
     // background that answers the pointer is background in the way.
     let mut nearest: Option<(Entity, bool, f32)> = None;
-    // Whatever is inside a system, weighed by three things in this order: how
-    // far down the system it sits, then a name, then the nearest.
+    // Whatever is inside a system, weighed by four things in this order: how
+    // far down the system it sits, whether it is a star, whether it was
+    // reached by its name, and then the nearest.
     //
     // A parent before whatever goes round it, however the two are drawn. A
     // star is what its system is named for and a planet is what its moons are
     // named after, so one behind something crossing it — or behind that
-    // thing's name — is still what was being aimed at. Then a name, for the
-    // reason a name wins anywhere: it is drawn over everything, so a name
-    // under the pointer is what the eye says is being pointed at. Then depth,
-    // a body being a real thing at a real size, so one in front of another is
-    // simply the one nearer.
-    let mut inside: Option<(Entity, (u8, bool, f32))> = None;
+    // thing's name — is still what was being aimed at.
+    //
+    // Then a star, which the depth cannot settle: a system's stars and the
+    // planets that go round the pair of them all hang off the point in the
+    // middle and count the same ancestors.
+    //
+    // Then a name, for the reason a name wins anywhere: it is drawn over
+    // everything, so a name under the pointer is what the eye says is being
+    // pointed at. Then depth, a body being a real thing at a real size, so one
+    // in front of another is simply the one nearer.
+    let mut inside: Option<(Entity, (u8, bool, bool, f32))> = None;
 
     for hits in hovered.values() {
         for (entity, hit) in hits.iter() {
@@ -280,7 +286,7 @@ pub(super) fn point_at(
             };
 
             if let Ok(body) = bodies.get(thing) {
-                let rank = (body.ancestors, !by_name, hit.depth);
+                let rank = (body.ancestors, !body.star, !by_name, hit.depth);
                 if inside.is_none_or(|(_, was)| rank < was) {
                     inside = Some((thing, rank));
                 }
@@ -973,6 +979,7 @@ mod tests {
                     class: String::new(),
                     radius: 1e6,
                     ancestors: 0,
+                    star: false,
                 },
             ))
             .id();
@@ -1004,7 +1011,13 @@ mod tests {
             class: String::new(),
             radius: 1e6,
             ancestors,
+            star: false,
         }
+    }
+
+    /// A star with `id`, named under `ancestors` of them
+    fn sun(id: i16, ancestors: u8) -> Body {
+        Body { star: true, ..body(id, ancestors) }
     }
 
     /// A world holding two bodies under the pointer, `over` steps down the
@@ -1061,6 +1074,44 @@ mod tests {
                 "the one {under} down answered for what it goes round"
             );
         }
+    }
+
+    /// A star answers before a planet that goes round the pair of it
+    ///
+    /// Which the depth cannot settle. Shinrarta Dezhra's two stars and its
+    /// three outer planets all hang off the point at the middle and count one
+    /// ancestor apiece, so being a star is what is left to ask.
+    ///
+    /// The planet nearer the camera, so that anything going by depth alone
+    /// answers with it and fails.
+    #[test]
+    fn a_star_answers_before_its_own_siblings() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.add_systems(Update, point_at);
+
+        let star = app.world_mut().spawn((Indicator(0.), sun(1, 1))).id();
+        let planet = app.world_mut().spawn((Indicator(0.), body(2, 1))).id();
+
+        let hit = |depth| HitData {
+            camera: Entity::PLACEHOLDER,
+            depth,
+            position: None,
+            normal: None,
+            extra: None,
+        };
+        let mut over = EntityHashMap::default();
+        over.insert(star, hit(50.));
+        over.insert(planet, hit(1.));
+
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+
+        assert!(app.world().entity(star).contains::<PointedAt>());
+        assert!(!app.world().entity(planet).contains::<PointedAt>());
     }
 
     /// A name reaches the thing it names, and what that goes round beats it

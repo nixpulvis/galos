@@ -163,11 +163,18 @@ pub struct Body {
     /// they do, and the smaller of any two on one chain is the one the other
     /// goes round.
     ///
-    /// Which is what settles who answers when two of them are under the
-    /// pointer at once, and which of them is named where two names would
+    /// Which is most of what settles who answers when two of them are under
+    /// the pointer at once, and which of them is named where two names would
     /// overlap. A moon crossing in front of its planet is not what was being
     /// aimed at.
     pub ancestors: u8,
+    /// Whether it is a star rather than something going round one
+    ///
+    /// What settles the rest of it. A system's stars and the planets that go
+    /// round the pair of them are all children of the point at the middle and
+    /// count the same ancestors, so the depth cannot tell them apart; a star
+    /// is what the system is named for and what everything in it is lit by.
+    pub star: bool,
 }
 
 /// The sphere a body is drawn with
@@ -604,6 +611,7 @@ fn drawn_star(
             class: star.star_class.clone(),
             radius: star.radius,
             ancestors: star.parents.len() as u8,
+            star: true,
         },
         Inside,
         // Fitted by `pointing::size_bodies` before the first draw.
@@ -656,6 +664,7 @@ fn drawn_body(
             class: body.planet_class.clone(),
             radius: body.radius,
             ancestors: body.parents.len() as u8,
+            star: false,
         },
         Inside,
         // Fitted by `pointing::size_bodies` before the first draw.
@@ -745,6 +754,7 @@ mod tests {
                 class: String::new(),
                 radius: 1e6,
                 ancestors: 0,
+                star: false,
             },
             cell,
             Transform::from_translation(offset),

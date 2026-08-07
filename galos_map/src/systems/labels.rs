@@ -549,6 +549,7 @@ pub fn choose_names(
             let score = body_name_score(
                 indicator.0,
                 body.ancestors,
+                body.star,
                 pointed_at,
                 selection.contains(entity),
             );
@@ -606,7 +607,7 @@ pub fn choose_names(
 /// at. It never outranks what is pointed at or picked out, whichever that is.
 const INSIDE_WEIGHT: f32 = 300.;
 
-/// How large a body has to look to be worth half of a step of [`DEEPEST`]
+/// How large a body has to look to be worth half of what its size can argue
 ///
 /// In logical pixels of radius. Around the size a body stops being a dot and
 /// starts being a disc, so the bodies that read as worlds are named first and
@@ -623,24 +624,31 @@ const DEEPEST: u8 = 4;
 
 /// How much a body deserves to have its name drawn
 ///
+/// Three claims, each settled before the next is asked.
+///
 /// A parent before whatever goes round it, whatever the two are drawn at: a
 /// star before its planets, and a planet before its moons. A moon the camera
 /// happens to be beside is drawn larger than the star at the middle of the
 /// system and is not more worth naming than it. `under` is how many ancestors
 /// the scan named it under, which counts up the same way.
 ///
-/// Among things at the same depth, its own apparent size. Bigger first, which
-/// is nearly always the order the viewer would have chosen: the worlds before
-/// the specks.
+/// Then a star, which the depth cannot settle. A system's stars and the
+/// planets that go round the pair of them all hang off the point in the
+/// middle and count the same ancestors, and a star is what the system is
+/// named for.
 ///
-/// The two are nested rather than added together. [`INSIDE_WEIGHT`] is cut
-/// into a step per depth, and the size argues within one step, so no size
-/// carries anything over a step and a parent cannot be outbid by a child. And
-/// the whole of it stays inside [`INSIDE_WEIGHT`], so nothing inside a system
+/// Then its own apparent size. Bigger first, which is nearly always the order
+/// the viewer would have chosen: the worlds before the specks.
+///
+/// The three are nested rather than added together. [`INSIDE_WEIGHT`] is cut
+/// into a step per depth, being a star takes half a step, and the size argues
+/// over what is left, so nothing carries enough to cross a claim above it. The
+/// whole of it stays inside [`INSIDE_WEIGHT`], so nothing inside a system
 /// outranks whatever is pointed at or picked out.
 fn body_name_score(
     apparent: f32,
     under: u8,
+    star: bool,
     pointed_at: bool,
     selected: bool,
 ) -> f32 {
@@ -649,9 +657,10 @@ fn body_name_score(
 
     let step = INSIDE_WEIGHT / (DEEPEST + 1) as f32;
     let depth = (DEEPEST - under.min(DEEPEST)) as f32 * step;
-    let size = step * apparent / (apparent + BODY_NAME_REACH);
+    let sun = if star { step / 2. } else { 0. };
+    let size = (step / 2.) * apparent / (apparent + BODY_NAME_REACH);
 
-    picked.max(pointed) + depth + size
+    picked.max(pointed) + depth + sun + size
 }
 
 /// How much a system deserves to have its name drawn
@@ -1188,8 +1197,8 @@ mod tests {
     #[test]
     fn a_parent_is_named_before_what_goes_round_it() {
         for under in 0..DEEPEST {
-            let parent = body_name_score(0., under, false, false);
-            let child = body_name_score(1e4, under + 1, false, false);
+            let parent = body_name_score(0., under, false, false, false);
+            let child = body_name_score(1e4, under + 1, false, false, false);
 
             assert!(
                 parent > child,
@@ -1199,14 +1208,42 @@ mod tests {
         }
     }
 
+    /// A star is named before a planet that goes round the pair of it
+    ///
+    /// Which the depth cannot settle. Shinrarta Dezhra's two stars and its
+    /// three outer planets all hang off the point at the middle and count one
+    /// ancestor apiece, and the stars are what the system is named for.
+    #[test]
+    fn a_star_is_named_before_its_own_siblings() {
+        // The star drawn at nothing, and the planet filling the view.
+        let star = body_name_score(0., 1, true, false, false);
+        let planet = body_name_score(1e4, 1, false, false, false);
+
+        assert!(star > planet, "the star scored {star} against {planet}");
+    }
+
+    /// And a star still gives way to what it goes round
+    ///
+    /// The depth is asked before anything else, so a star out at the second
+    /// step is under a planet at the first however either is drawn. Nothing on
+    /// record looks like that, and the ordering says so rather than leaving it
+    /// to how the terms happen to add up.
+    #[test]
+    fn depth_is_asked_before_being_a_star() {
+        let deeper = body_name_score(1e4, 2, true, false, false);
+        let higher = body_name_score(0., 1, false, false, false);
+
+        assert!(higher > deeper, "{higher} did not beat {deeper}");
+    }
+
     /// Past the last step everything is as deep as everything else
     ///
     /// The records go four or five down at the most, and a step small enough
     /// to tell the rest apart is smaller than the room a name takes.
     #[test]
     fn the_deepest_step_is_the_last_one_told_apart() {
-        let deep = body_name_score(0., DEEPEST, false, false);
-        let deeper = body_name_score(0., DEEPEST + 3, false, false);
+        let deep = body_name_score(0., DEEPEST, false, false, false);
+        let deeper = body_name_score(0., DEEPEST + 3, false, false, false);
 
         assert_eq!(deep, deeper);
     }
@@ -1214,8 +1251,8 @@ mod tests {
     /// At one depth, the larger is named first
     #[test]
     fn the_larger_of_two_at_one_depth_is_named_first() {
-        let world = body_name_score(1e4, 2, false, false);
-        let speck = body_name_score(0.1, 2, false, false);
+        let world = body_name_score(1e4, 2, false, false, false);
+        let speck = body_name_score(0.1, 2, false, false, false);
 
         assert!(world > speck, "the world scored {world} against {speck}");
     }
@@ -1227,10 +1264,10 @@ mod tests {
     /// for itself.
     #[test]
     fn a_marked_body_outranks_a_star_at_rest() {
-        let star = body_name_score(1e4, 0, false, false);
+        let star = body_name_score(1e4, 0, true, false, false);
 
-        assert!(body_name_score(0., DEEPEST, true, false) > star);
-        assert!(body_name_score(0., DEEPEST, false, true) > star);
+        assert!(body_name_score(0., DEEPEST, false, true, false) > star);
+        assert!(body_name_score(0., DEEPEST, false, false, true) > star);
     }
 
     /// Names are offered in order of nearness to the center
