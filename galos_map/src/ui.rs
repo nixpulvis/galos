@@ -23,7 +23,7 @@ use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
-use crate::systems::selection::{SELECTION, Selection};
+use crate::systems::selection::{Picked, SELECTION, Selection};
 use crate::systems::spawn::{ColorBy, ShowNames};
 use crate::systems::{InReach, Spyglass};
 use bevy::ecs::system::SystemParam;
@@ -1197,7 +1197,7 @@ fn took(
     match chose {
         Chose::Select { gathering } => {
             if let Some(system) = placed {
-                selection.pick(system, gathering);
+                selection.pick(Picked::System(system), gathering);
             }
         }
         Chose::Travel => *travelled = crate::systems::system_to_vec(system),
@@ -1403,11 +1403,27 @@ fn selected(
         + ui.spacing().item_spacing.y;
     let mut rows = |ui: &mut Ui| {
         for index in 0..selection.len() {
-            let Some(name) = selection.name(index) else { continue };
-            let away = selection
-                .position(index)
-                .zip(center)
-                .map(|(at, center)| format!("{:.1} Ly", center.distance(at)));
+            let Some(held) = selection.get(index) else { continue };
+
+            // How far off it is, measured from the focus for both kinds and
+            // said in whatever unit suits the range. A body inside a system
+            // stands light seconds away where a system stands light years, and
+            // either given in the other's unit is a number with too many
+            // digits to read at a glance.
+            //
+            // Nothing else about a body stands on its row. What kind of thing
+            // it is, and everything else on record, is the panel's to say.
+            let beside =
+                selection.position(index).zip(center).map(|(at, focus)| {
+                    let away = focus.distance(at);
+                    match held {
+                        Picked::System(_) => format!("{away:.1} Ly"),
+                        Picked::Body(_) => format!(
+                            "{:.1} Ls",
+                            crate::space::light_seconds(away)
+                        ),
+                    }
+                });
 
             // Laid out and painted rather than assembled from labels. A label
             // is a widget in its own right, and two of them under one
@@ -1415,7 +1431,7 @@ fn selected(
             // row answers over the gaps and the labels answer over the words,
             // so it flickers between being a control and not as the pointer
             // crosses them.
-            let away = away.map(|line| {
+            let away = beside.map(|line| {
                 egui::WidgetText::from(egui::RichText::new(line).weak())
                     .into_galley(
                         ui,
@@ -1425,7 +1441,13 @@ fn selected(
                     )
             });
 
-            let marks = lay_out_marks(ui);
+            // Only a system has a panel to open. A row that ends with the
+            // close mark alone ends where every other row ends, the close mark
+            // standing outermost.
+            let describing = matches!(held, Picked::System(_));
+            let marks =
+                if describing { lay_out_marks(ui) } else { lay_out_close(ui) };
+            let name = held.name();
 
             // Whatever the dot, the distance and the marks leave the name.
             // System names run to "Col 285 Sector XY-Z b12-34", and one laid
@@ -1573,7 +1595,10 @@ const SELECTED: usize = 5;
 /// It reaches the form rather than plotting, since a route still wants a jump
 /// range and there is nowhere here to say one.
 fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) -> bool {
-    let held = selection.len();
+    // The systems alone, as a filter admits systems and nothing else. A body
+    // is counted among what is picked out and not among what can be filtered
+    // on.
+    let held = selection.systems().count();
     let mut routing = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{held} systems")).weak());
@@ -1762,10 +1787,13 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
 // TODO: Plot through the whole selection, leg by leg in the order it was
 // picked, instead of refusing every set but the pair.
 fn ends_of(selection: &Selection) -> Result<(&str, &str), &'static str> {
-    match (selection.name(0), selection.name(1), selection.len()) {
-        (Some(start), Some(end), 2) => Ok((start, end)),
-        (_, _, 0) => Err("Pick out two systems to plot between"),
-        (_, _, 0..=2) => Err("Pick out a second system to plot to"),
+    // The systems alone. A route runs between places, and a body picked out
+    // beside them is a thing inside one rather than an end to plot to.
+    let mut systems = selection.systems();
+    match (systems.next(), systems.next(), systems.count()) {
+        (Some(start), Some(end), 0) => Ok((start.name(), end.name())),
+        (None, _, _) => Err("Pick out two systems to plot between"),
+        (Some(_), None, _) => Err("Pick out a second system to plot to"),
         _ => Err("A route runs between two systems for now"),
     }
 }
@@ -1781,10 +1809,11 @@ fn ends_of(selection: &Selection) -> Result<(&str, &str), &'static str> {
 /// standing under a line saying there is no route to plot yet would be
 /// answering a question the form has just said it cannot take.
 fn apart(selection: &Selection) -> Option<f64> {
-    if selection.len() != 2 {
-        return None;
-    }
-    Some(selection.position(0)?.distance(selection.position(1)?))
+    // The two the route runs between, which are the two systems picked out.
+    let places: Vec<_> = selection.systems().collect();
+    let [start, end] = places[..] else { return None };
+
+    Some(start.position().distance(end.position()))
 }
 
 /// Ask what a route may be flown in, and say where it would run
@@ -3016,6 +3045,7 @@ mod tests {
     use super::*;
     use crate::search::tests::row;
     use crate::systems::filter::Filter;
+    use crate::systems::selection::PickedBody;
     use crate::tests::{painted, words};
 
     /// A results list holding `names`, the last of them nowhere in particular
@@ -3294,8 +3324,10 @@ mod tests {
     fn holding(names: &[&str]) -> Selection {
         let mut selection = Selection::default();
         for name in names {
-            selection
-                .toggle(crate::systems::tests::named(address_of(name), name));
+            selection.toggle(Picked::System(crate::systems::tests::named(
+                address_of(name),
+                name,
+            )));
         }
         selection
     }
@@ -3333,6 +3365,134 @@ mod tests {
         assert!(said.contains(&"BARNARD".to_owned()), "{said:?}");
     }
 
+    /// A body called `name`, picked out `away` light years from the origin
+    fn body(id: i16, name: &str, away: f64) -> Picked {
+        Picked::Body(PickedBody::new(1, id, name, DVec3::new(away, 0., 0.)))
+    }
+
+    /// What the bar says about `picked` being picked out
+    fn rows_said(picked: &[Picked]) -> Vec<String> {
+        let mut selection = Selection::default();
+        for held in picked {
+            selection.toggle(held.clone());
+        }
+
+        words(|ui| {
+            selected(
+                ui,
+                &mut selection,
+                None,
+                &mut None,
+                &mut Panels::default(),
+                &mut Filters::default(),
+                &mut 0,
+            );
+        })
+    }
+
+    /// Every body picked out gets a row naming it
+    ///
+    /// The same row a system gets and in the same list, since a body is picked
+    /// out by the same gesture. The rings are out on the map where the user is
+    /// looking, and the bar is where what is picked out is read.
+    #[test]
+    fn every_picked_body_gets_a_row() {
+        let said = rows_said(&[body(3, "SOL 3", 0.), body(4, "SOL 4", 0.)]);
+
+        assert!(said.contains(&"SOL 3".to_owned()), "{said:?}");
+        assert!(said.contains(&"SOL 4".to_owned()), "{said:?}");
+    }
+
+    /// A body's row says how far off it is in light seconds
+    ///
+    /// Where a system's row says light years, and measured from the same
+    /// focus. A light second is about a thirty millionth of a light year, so
+    /// a body given in light years is a row of leading zeroes.
+    #[test]
+    fn a_body_row_says_how_far_off_it_is_in_light_seconds() {
+        // A hundred light seconds, in the light years the map measures in.
+        let away = 100. / crate::space::light_seconds(1.);
+        let mut selection = Selection::default();
+        selection.toggle(body(3, "SOL 3", away));
+
+        let said = words(|ui| {
+            selected(
+                ui,
+                &mut selection,
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut Panels::default(),
+                &mut Filters::default(),
+                &mut 0,
+            );
+        });
+
+        assert!(said.contains(&"100.0 Ls".to_owned()), "{said:?}");
+    }
+
+    /// A system and a body picked out together are one list of rows
+    ///
+    /// Which is the whole of what holding them the same way buys: the bar
+    /// draws what is picked out, in the order it was picked, without asking
+    /// what kind each of them is except to say what stands beside the name.
+    #[test]
+    fn a_system_and_a_body_share_the_one_list() {
+        let mut selection = holding(&["SOL"]);
+        selection.toggle(body(3, "SOL 3", 0.));
+
+        let said = words(|ui| {
+            selected(
+                ui,
+                &mut selection,
+                None,
+                &mut None,
+                &mut Panels::default(),
+                &mut Filters::default(),
+                &mut 0,
+            );
+        });
+
+        assert_eq!(selection.len(), 2);
+        assert!(said.contains(&"SOL".to_owned()), "{said:?}");
+        assert!(said.contains(&"SOL 3".to_owned()), "{said:?}");
+    }
+
+    /// A body picked out is no system, so it is not offered a route or filter
+    ///
+    /// Both are questions about places. Counting a body among them would put
+    /// a filter on the map naming one system where two things are held, and
+    /// offer a route to somewhere that is not a destination.
+    #[test]
+    fn a_picked_body_is_not_counted_among_the_systems() {
+        let mut selection = holding(&["SOL"]);
+        selection.toggle(body(3, "SOL 3", 0.));
+
+        assert_eq!(selection.addresses(), vec![address_of("SOL")]);
+        assert!(ends_of(&selection).is_err());
+    }
+
+    /// The rows each answer for themselves, whatever they hold
+    #[test]
+    fn the_body_rows_do_not_share_ids() {
+        let mut selection = holding(&["SOL"]);
+        selection.toggle(body(3, "SOL 3", 0.));
+        selection.toggle(body(4, "SOL 4", 0.));
+
+        let said = crate::tests::complaints(|ui| {
+            selected(
+                ui,
+                &mut selection,
+                None,
+                &mut None,
+                &mut Panels::default(),
+                &mut Filters::default(),
+                &mut 0,
+            );
+        });
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
     /// A row says how far off its system is, in as few words as that takes
     ///
     /// The number and the unit and nothing else. The rows of every other list
@@ -3342,7 +3502,7 @@ mod tests {
     #[test]
     fn a_selection_row_says_how_far_off_its_system_is() {
         let mut selection = Selection::default();
-        selection.toggle(crate::systems::tests::at(1, 12.));
+        selection.toggle(Picked::System(crate::systems::tests::at(1, 12.)));
 
         let said = words(|ui| {
             selected(
@@ -3414,7 +3574,10 @@ mod tests {
     fn strung_out(places: &[f64]) -> Selection {
         let mut selection = Selection::default();
         for (address, away) in places.iter().enumerate() {
-            selection.toggle(crate::systems::tests::at(address as i64, *away));
+            selection.toggle(Picked::System(crate::systems::tests::at(
+                address as i64,
+                *away,
+            )));
         }
         selection
     }

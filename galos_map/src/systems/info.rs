@@ -16,7 +16,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::filter::{Filter, Filters};
-use crate::systems::selection::Selection;
+use crate::systems::selection::{Picked, Selection};
 use crate::ui::Chose;
 use crate::ui::MARGIN;
 use bevy::math::DVec3;
@@ -576,7 +576,7 @@ fn panels(
     // star does. Where the camera goes is asked for separately, from the row
     // in the bar that names what is picked out.
     if let Some((system, gathering)) = picked {
-        selection.pick(system, gathering);
+        selection.pick(Picked::System(system), gathering);
     }
     // Opened after the loop, since a panel asked for from inside one is a
     // panel pushed onto the list being walked.

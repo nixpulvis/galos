@@ -4,15 +4,18 @@
 //! its own scale is invisible from the next one over, so what is drawn is
 //! whatever keeps it on screen and tells the viewer something.
 //!
-//! [`View::Systems`] blends the two: an angle that holds a system on screen
-//! from light years off, and the system's own extent, which is what is left
-//! once the angle has fallen away. [`View::Stars`] does not, and is the older
-//! of the two.
+//! [`View::Systems`] blends the two: a mark that says a system is there, held
+//! at a size in the world so the sky reads as depth, and the system's own
+//! extent, which is what is left once the camera is near enough for the mark
+//! to have been squeezed down to nothing. [`View::Stars`] does not, and is the
+//! older of the two.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
+use super::bodies::spawn::Body;
+use super::labels::{depth_of, world_per_pixel};
 use super::spawn::Shell;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -43,6 +46,11 @@ pub fn plugin(app: &mut App) {
             .ambiguous_with(size_by_distance)
             .run_if(resource_equals(View::Stars)),
     );
+    // Reads where a body ended up rather than deciding it, and `big_space`
+    // writes that during `PostUpdate`, so it waits as `pointing::size_bodies`
+    // does. What it writes is read by the next frame's propagation, which is
+    // a frame behind and nowhere near enough movement to see.
+    app.add_systems(PostUpdate, size_inside.after(TransformSystems::Propagate));
 }
 
 #[derive(Resource, Debug, PartialEq)]
@@ -143,15 +151,31 @@ fn population_factor(population: u64, average: f64) -> f32 {
         .clamp(POP_MIN, POP_MAX)
 }
 
+/// The size a system is marked at, in metres
+///
+/// About a twelfth of a light year. A size in the world rather than one on
+/// screen, which is what makes the sky read as depth: a mark held at a fixed
+/// angle draws every system the same however far off it is, so the near ones
+/// never pull ahead of the far ones and a wide view is a flat field of equal
+/// dots crowding into each other.
+const MARK: f32 = (8.5e-2 * crate::space::LIGHT_YEAR) as f32;
+
+/// The most of the sky a mark may take, as an angular radius in radians
+///
+/// Six pixels down a 1080 line window, which a mark of [`MARK`] comes to about
+/// twenty light years out. Nearer than that a size in the world swamps the
+/// sky: a twelfth of a light year seen from a tenth of one is fifty degrees
+/// across, and a system whose mark the camera is already inside cannot be
+/// flown into.
+const NEAREST: f32 = 4e-3;
+
 /// How large a system is drawn from far off, in radians
 ///
-/// The angle a shell holds on screen while nothing else decides its size, so a
-/// system stands out at about the same size wherever it is. Whether a system is
-/// drawn at all is a question about how bright it is rather than how large, and
-/// is not asked here.
-///
-/// About a fifth of a degree, which is six pixels down a 1080 line window.
-const ANGULAR: f32 = 4e-3;
+/// What is left once distance has taken the rest away, which is past about two
+/// hundred light years. Half a pixel down the same window: by then every
+/// system in the sky is the same dot, and a mark that went on shrinking would
+/// leave nothing to see at all.
+const ANGULAR: f32 = 4e-4;
 
 /// How much larger than its system a shell is drawn
 ///
@@ -168,18 +192,26 @@ const STAND_IN: f32 = 1.5e12;
 
 /// How large a system is drawn, in metres
 ///
-/// A system at its true size is invisible from the next one over, so what is
-/// drawn is that size plus whatever angle keeps it on screen. Far off the
-/// angle is the whole of it and every system holds the same small mark. The
-/// angle falls away as the camera closes and what is left is the system
-/// itself, so a shell settles onto its system rather than arriving at it and
-/// there is no distance at which it does anything sudden.
+/// The system itself, and a mark around it saying one is there. A system at
+/// its true size is invisible from the next one over, and a mark is no use
+/// once the camera is inside the system, so the two are added and each
+/// answers for the range the other cannot.
 ///
-/// `prominence` scales the angle and not the system. A busy system is worth a
+/// The mark is [`MARK`] across the middle of the map, which is a size in the
+/// world: twice as far off draws about half as large, and the sky reads as
+/// depth. It gives way to an angle at either end, where a size in the world is
+/// too large to get past or too small to see. Being an angle holds it still on
+/// screen as the camera moves, and close in that is what lets the system's own
+/// extent come up through it: the shell settles onto the outermost orbit
+/// rather than arriving at it.
+///
+/// `prominence` scales the mark and not the system. A busy system is worth a
 /// larger mark; it is not worth a larger volume, and a quarter of one would
 /// put the shell inside the orbits it stands around.
 fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
-    ANGULAR * away * prominence + extent * MARGIN
+    let mark = MARK.min(NEAREST * away) + ANGULAR * away;
+
+    extent * MARGIN + mark * prominence
 }
 
 /// Draw each system large enough to be seen from where the camera is
@@ -224,6 +256,55 @@ pub fn size_by_distance(
             };
 
             drawn.scale = Vec3::splat(shell(extent, away, prominence));
+        }
+    }
+}
+
+/// The smallest anything inside a system is drawn, as a radius in pixels
+///
+/// A sphere drawn under a pixel across falls between the samples that decide
+/// which pixels it covers, so it comes and goes as the camera moves rather
+/// than fading: a moon at the far side of a system sparkles, and so does a
+/// star seen from the edge of one. Held at a pixel it is a point instead,
+/// which is what a thing too small to have a shape looks like.
+///
+/// A radius, so this is two pixels across. Below [`super::pointing`]'s floor
+/// for the same body's mark, which keeps what can be aimed at a little wider
+/// than what is drawn.
+const SMALLEST_DRAWN: f32 = 1.;
+
+/// Draw everything inside a system at its own size, down to a point
+///
+/// A body is drawn at the size it is, which is the whole difference between
+/// what fills a system and the shell standing in for the system itself. That
+/// holds until its own size is less than the screen can carry, and from there
+/// it is a point.
+///
+/// Measured from the body's own [`GlobalTransform`], which [`big_space`]
+/// writes relative to the camera, as [`super::pointing::size_bodies`] measures
+/// the same body for the same reason.
+pub fn size_inside(
+    camera: Query<(&GlobalTransform, &OrbitCamera, &Camera)>,
+    mut bodies: Query<(&GlobalTransform, &Body, &mut Transform)>,
+) {
+    let Ok((eye, orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    for (at, body, mut drawn) in &mut bodies {
+        let offset = (at.translation() - eye.translation()).as_dvec3();
+        // A metre, which is as near as the camera may be pulled to anything.
+        let into_view = depth_of(orbit, offset).max(1.);
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
+
+        // A metre at the floor, as it is where a body is spawned: a body with
+        // no radius on record would otherwise be drawn at no size at all.
+        let size = body.radius.max(SMALLEST_DRAWN * per_pixel).max(1.);
+        // Only where it moved. A scale assigned every frame marks every body
+        // changed every frame, and everything hung off one is walked again
+        // for it.
+        if drawn.scale.x != size {
+            drawn.scale = Vec3::splat(size);
         }
     }
 }
@@ -288,6 +369,69 @@ mod tests {
             (far / near - 2.).abs() < 1e-3,
             "half the distance left {near} over against {far}"
         );
+    }
+
+    /// How much of the sky a system the map knows nothing about takes up from
+    /// `ly` light years off, as an angular radius in radians
+    fn seen(ly: f32) -> f32 {
+        let away = ly * crate::space::LIGHT_YEAR as f32;
+        shell(STAND_IN, away, 1.) / away
+    }
+
+    /// Twice as far off draws about half as large, across the middle of the map
+    ///
+    /// What makes a sky read as depth rather than as a field of equal dots.
+    /// A mark held at a fixed angle draws the near systems and the far ones
+    /// the same size, so nothing separates them and they crowd together as
+    /// the camera pulls back.
+    ///
+    /// About half rather than half: the angle a mark never falls below is in
+    /// there as well, and it is what a system holds on to whatever the
+    /// distance.
+    #[test]
+    fn twice_as_far_off_is_about_half_as_large() {
+        let near = seen(50.);
+        let far = seen(100.);
+
+        assert!(
+            near / far > 1.6,
+            "twice the distance drew {far} against {near}"
+        );
+    }
+
+    /// And a shell goes on shrinking the whole way out
+    ///
+    /// Over the range the map is actually flown at: a spyglass of ten light
+    /// years stands the camera some thirty back, and one of five hundred
+    /// stands it fifteen hundred, so this is that end to end.
+    #[test]
+    fn a_shell_shrinks_as_the_camera_pulls_back() {
+        let mut nearer = seen(20.);
+        for out in [30., 50., 100., 200., 400., 800., 1500.] {
+            let further = seen(out);
+            assert!(
+                further < nearer,
+                "a system {out}ly off drew {further}, against {nearer} for \
+                 one nearer in"
+            );
+            nearer = further;
+        }
+
+        assert!(
+            seen(20.) > seen(1500.) * 5.,
+            "the whole range only took a system from {} to {}",
+            seen(20.),
+            seen(1500.)
+        );
+    }
+
+    /// The far sky does not go dark
+    ///
+    /// A size in the world comes to nothing at the far rim, which is most of
+    /// what a map of the galaxy has on screen.
+    #[test]
+    fn a_system_across_the_galaxy_is_still_a_mark() {
+        assert!(seen(50_000.) >= ANGULAR);
     }
 
     /// A system the map knows nothing about is still drawn as a mark

@@ -2,7 +2,7 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
-use crate::systems::bodies::spawn::Body;
+use crate::systems::bodies::spawn::{Body, Placed};
 use crate::systems::{
     System,
     fetch::FetchIndex,
@@ -11,7 +11,7 @@ use crate::systems::{
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
     route::spawn::{framing, spawn_route},
     route::{self, Plotted, Route},
-    selection::{Selected, Selection},
+    selection::{Picked, PickedBody, Selection},
     system_to_vec,
 };
 use crate::ui::{Gesture, Grasp};
@@ -39,6 +39,10 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
     app.add_systems(Update, redim.in_set(MapSet::Populate));
+    // Reads how large the held system looks, which `bodies` settles while it
+    // decides whether to draw what is inside it. That is `Populate`'s work and
+    // this is `Present`'s, so the sets already say which comes first.
+    app.add_systems(Update, shells.in_set(MapSet::Present));
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -66,6 +70,13 @@ pub struct SystemMaterials {
     bright: Vec<Handle<StandardMaterial>>,
     /// The same colors, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
+    /// What the one shell on its way out is painted in
+    ///
+    /// One handle rather than a set, because only one system is ever being
+    /// closed on. Repainted every frame a shell is fading, which is what
+    /// recoloring a shared asset is good for and why the fading shell may not
+    /// share one with anything else.
+    fading: Handle<StandardMaterial>,
 }
 
 impl SystemMaterials {
@@ -175,12 +186,18 @@ pub struct ShowNames(pub bool);
 #[derive(Component)]
 pub struct Shell;
 
-/// Pick out a clicked star system
+/// Pick out whatever was clicked
 ///
-/// Clicking says which system the user means and nothing more. Where the
+/// Clicking says which thing the user means and nothing more. Where the
 /// camera goes is asked for separately, by the row that names what is picked
 /// out, so that a system can be pointed out from wherever the user happens
 /// to be looking without the map moving out from under them.
+///
+/// One gesture over stars and over the bodies inside them alike: a plain click
+/// holds what was clicked and lets go of everything else, and the modifier
+/// gathers instead. A system and a body inside it are two things that can be
+/// picked out, and being one thing inside the other says nothing about what a
+/// click means.
 ///
 /// The left button orbits the camera as well as selecting, so an orbit that
 /// happens to start and end on the same star has to be told apart from a
@@ -191,8 +208,8 @@ pub struct Shell;
 fn select_on_click(
     click: On<Pointer<Click>>,
     pointed_at: Query<&System, With<PointedAt>>,
-    pointed_body: Query<Entity, (With<Body>, With<PointedAt>)>,
-    picked_bodies: Query<Entity, (With<Body>, With<Selected>)>,
+    pointed_body: Query<(Entity, &Body), With<PointedAt>>,
+    placed: Placed,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     grasp: Res<Grasp>,
@@ -200,7 +217,6 @@ fn select_on_click(
     keys: Res<ButtonInput<KeyCode>>,
     mut answered: Local<Option<u32>>,
     mut selection: ResMut<Selection>,
-    mut commands: Commands,
 ) {
     let travelled = pointers
         .get_entity(click.pointer_id)
@@ -255,41 +271,27 @@ fn select_on_click(
         KeyCode::ShiftLeft,
         KeyCode::ShiftRight,
     ]);
-    // A body is picked out beside the system holding it rather than instead
-    // of it: it is a thing inside the place, not an alternative to it. So
-    // clicking a planet leaves the system it is in picked out, and what a
-    // plain click replaces is whatever body was picked out before.
+    // A body first, as everywhere: once the camera is close enough to see
+    // what is inside a system, what is inside it is what a click means.
     //
-    // Held on the entity rather than in [`Selection`], because the reason
-    // that resource holds values does not apply here. A system is described
-    // by a search before the map has fetched it, so there is nothing to mark;
-    // a body can only be clicked once it is drawn. Letting the mark die with
-    // the entity is then what keeps the selection honest when the camera
-    // leaves and the bodies go with it.
-    if let Ok(body) = pointed_body.single() {
-        let held = picked_bodies.contains(body);
-        if !gathering {
-            for other in &picked_bodies {
-                commands.entity(other).remove::<Selected>();
-            }
-        }
-        if gathering && held {
-            commands.entity(body).remove::<Selected>();
-        } else {
-            commands.entity(body).insert(Selected);
-        }
-        return;
-    }
+    // A body is taken as a value here rather than left as the entity it was
+    // clicked on, so that what is picked out is one list of one kind of thing.
+    // Where it stands is read now because a body does not move, and it is the
+    // one thing about a body that is not on the row it carries.
+    let picked = if let Ok((entity, body)) = pointed_body.single() {
+        placed.of(entity).map(|at| {
+            Picked::Body(PickedBody::new(body.address, body.id, &body.name, at))
+        })
+    } else {
+        pointed_at.single().ok().cloned().map(Picked::System)
+    };
 
-    let Ok(system) = pointed_at.single() else { return };
-    // Picking a system out is picking out a different subject, so whatever
-    // body was held inside the last one is let go of with it.
-    if !gathering {
-        for body in &picked_bodies {
-            commands.entity(body).remove::<Selected>();
-        }
-    }
-    selection.pick(system.clone(), gathering);
+    // Nothing under the pointer is nothing to pick out, and nothing to let go
+    // of either. A click on empty sky is a gesture in its own right and
+    // [`super::selection::clear_when_nothing_is_clicked`] is what answers it.
+    let Some(picked) = picked else { return };
+
+    selection.pick(picked, gathering);
 }
 
 /// How long a second click may take to arrive and still make a double
@@ -298,20 +300,35 @@ fn select_on_click(
 /// two deliberate clicks on the same system are not read as one gesture.
 const DOUBLE_CLICK: f32 = 0.4;
 
-/// Fly the camera to a system the user double clicks
+/// Fly the camera to whatever the user double clicks
 ///
-/// One click says which system is meant and a second says to go there, so
+/// One click says which thing is meant and a second says to go there, so
 /// the map can be pointed at from where the user is without moving, and
 /// travelled with the same hand when they do want to move.
+///
+/// A system out in the sky and a body inside one alike. The gesture is the
+/// same gesture and means the same thing, and what differs is only how the
+/// thing aimed at says where it stands: a system carries a galactic position
+/// of its own, and a body is placed in metres from the middle of the system
+/// holding it, so it is asked through [`Placed`].
 ///
 /// A click is weighed by the same three questions everywhere on the map: the
 /// primary button, travel short enough to be a click rather than a drag, and
 /// the pointer's own business rather than the UI's. What is asked on top of
-/// those is that the click before it landed on the same system, recently.
+/// those is that the click before it landed on the same thing, recently.
+///
+/// The zoom is left where the user set it, as a move that only says where to
+/// look should. Flying to a body is then the camera coming to orbit it rather
+/// than the system around it, which is what makes the next scroll of the wheel
+/// go in towards the body instead of past it.
 fn fly_on_double_click(
     gesture: Gesture,
     dragged: Query<&DragDistance>,
-    pointed_at: Query<&System, With<PointedAt>>,
+    pointed_at: Query<(Entity, &System), With<PointedAt>>,
+    // Whatever inside a system is pointed at, which carries no galactic
+    // position of its own and is asked where it stands.
+    pointed_body: Query<Entity, (With<Body>, With<PointedAt>)>,
+    placed: Placed,
     time: Res<Time<Real>>,
     mut last: Local<LastClick>,
     mut camera: MessageWriter<MoveCamera>,
@@ -322,34 +339,47 @@ fn fly_on_double_click(
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
         return;
     }
-    let Ok(system) = pointed_at.single() else { return };
 
-    if last.doubled(system.address, time.elapsed_secs()) {
-        camera.write(MoveCamera {
-            position: Some(DVec3::from(system.position)),
-            framing: None,
-        });
+    // A body first, as a click on one means the body rather than the system
+    // holding it. Only one thing is ever pointed at, so the two queries
+    // cannot both answer, and the order is what it says rather than a choice
+    // being made.
+    let aimed = if let Ok(body) = pointed_body.single() {
+        placed.of(body).map(|at| (body, at))
+    } else if let Ok((entity, system)) = pointed_at.single() {
+        Some((entity, DVec3::from(system.position)))
+    } else {
+        None
+    };
+    let Some((what, position)) = aimed else { return };
+
+    if last.doubled(what, time.elapsed_secs()) {
+        camera.write(MoveCamera { position: Some(position), framing: None });
     }
 }
 
 /// The click a second one would be counted against
 ///
-/// Which system as well as when, so that two clicks a moment apart on two
+/// Which thing as well as when, so that two clicks a moment apart on two
 /// different stars are two answers rather than one gesture. Stars stand
 /// close together on screen at any distance, and picking one out after
 /// another is an ordinary thing to do quickly.
+///
+/// What was clicked rather than which system it was, since a body is
+/// something to be aimed at as much as the system holding it is, and the two
+/// have nothing in common to be named by but being entities on the map.
 #[derive(Default)]
-struct LastClick(Option<(i64, f32)>);
+struct LastClick(Option<(Entity, f32)>);
 
 impl LastClick {
-    /// Whether a click on `address` at `now` is the second of a pair
+    /// Whether a click on `what` at `now` is the second of a pair
     ///
     /// A double is spent as soon as it is answered, so a third click starts
     /// counting afresh rather than making a second pair with the second.
-    fn doubled(&mut self, address: i64, now: f32) -> bool {
+    fn doubled(&mut self, what: Entity, now: f32) -> bool {
         let doubled = matches!(self.0, Some((clicked, when))
-            if clicked == address && now - when <= DOUBLE_CLICK);
-        self.0 = if doubled { None } else { Some((address, now)) };
+            if clicked == what && now - when <= DOUBLE_CLICK);
+        self.0 = if doubled { None } else { Some((what, now)) };
         doubled
     }
 }
@@ -598,44 +628,85 @@ pub fn spawn_systems(
     }
 }
 
-/// Carry a changed row, a changed color scheme or a changed filter onto what
-/// is drawn
+/// Carry a changed row onto where its star is drawn
 ///
-/// The two halves of a star are refreshed from different things. Its
-/// placement follows the row it was built from, and its material follows the
-/// row, [`ColorBy`] and whether the filters exclude it, so the second is
-/// checked against the star each mesh hangs off rather than a copy of it.
-///
-/// The material is decided afresh each frame and written only where it
-/// differs, as [`super::labels::tint_marked_names`] does, rather than being
-/// guarded by what has changed. A mark is applied by a command and so lands a
-/// frame after the filter that asked for it, which leaves nothing that both
-/// runs after the mark and can still see what changed.
+/// A row fetched again is written over the one already there, and the
+/// position it carries is free to differ from the one it replaces. What a
+/// star is drawn *in* follows the row as well, and [`shells`] settles that.
 fn update(
-    systems_query: Query<(Entity, Ref<System>, Has<Filtered>)>,
-    mut stars: Query<
-        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
-        With<Shell>,
-    >,
+    systems_query: Query<(Entity, Ref<System>)>,
     grids: Query<&Grid, With<BigSpace>>,
-    color_by: Res<ColorBy>,
-    materials: Res<SystemMaterials>,
     mut commands: Commands,
 ) {
     let Ok(grid) = grids.single() else { return };
 
-    for (entity, system, _) in &systems_query {
+    for (entity, system) in &systems_query {
         if system.is_changed() {
             commands.entity(entity).insert(placement(&system, grid));
         }
     }
+}
 
-    for (child_of, mut material) in &mut stars {
-        let Ok((_, system, filtered)) = systems_query.get(child_of.parent())
-        else {
+/// Decide how each shell is drawn, and whether it is drawn at all
+///
+/// Three things decide it and one of them has to write the material, so all
+/// three are settled here: the color scheme says which hue, the filters say
+/// how faintly, and how near the camera has come says how much of the shell is
+/// left at all.
+///
+/// A shell is a mark standing in for a system too small to see. It fades out
+/// as the camera closes and is gone by the time what is inside the system is
+/// drawn, which is what the camera came for. Past there the shell is a lit
+/// sphere around the camera, drawn from the galaxy's scale where a float has
+/// nothing left over at the size it is; and for a system that is one star and
+/// nothing else it sits all but exactly on that star's surface.
+///
+/// The fading shell is painted into a handle of its own, and one handle does
+/// because only one system is ever being closed on. Every other shell points
+/// at the shared handle for its hue, so nothing else is repainted by a fade.
+///
+/// Decided afresh each frame and written only where it differs, as
+/// [`super::labels::tint_marked_names`] is. A mark is applied by a command and
+/// so lands a frame after the filter that asked for it, which leaves nothing
+/// that both runs after the mark and can still see what changed.
+pub(super) fn shells(
+    systems: Query<(&System, Has<Filtered>)>,
+    seen_as: Res<super::bodies::spawn::Apparent>,
+    color_by: Res<ColorBy>,
+    dim: Res<DimTo>,
+    materials: Res<SystemMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+    mut shells: Query<
+        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility),
+        With<Shell>,
+    >,
+) {
+    for (child_of, mut material, mut visibility) in &mut shells {
+        let Ok((system, filtered)) = systems.get(child_of.parent()) else {
             continue;
         };
-        let wanted = materials.get(hue(&system, &color_by), filtered);
+        // Its own visibility rather than its system's. `super::visibility`
+        // owns that one, and a shell inherits it either way.
+        let standing = seen_as.standing(child_of.parent());
+        if standing <= 0. {
+            visibility.set_if_neq(Visibility::Hidden);
+            continue;
+        }
+        visibility.set_if_neq(Visibility::Inherited);
+
+        let hue = hue(system, &color_by);
+        let wanted = if standing < 1. {
+            // Dimmed by the filters first and by the fade after, so a shell
+            // the filters were drawing faintly does not come back to full
+            // strength on its way out.
+            let strength = if filtered { dim.0 } else { 1. };
+            if let Some(mut fading) = assets.get_mut(&materials.fading) {
+                *fading = star_material(hue.color(), strength * standing);
+            }
+            materials.fading.clone()
+        } else {
+            materials.get(hue, filtered)
+        };
         if material.0 != wanted {
             material.0 = wanted;
         }
@@ -736,9 +807,13 @@ fn init_materials(
             .map(|hue| assets.add(star_material(hue.color(), strength)))
             .collect()
     };
+    let bright = set(1.);
+    let dim = set(dim.0);
+    // Painted afresh every frame a shell is fading, so what it holds until
+    // then is only somewhere to start.
+    let fading = assets.add(star_material(Hue::Grey.color(), 1.));
 
-    commands
-        .insert_resource(SystemMaterials { bright: set(1.), dim: set(dim.0) });
+    commands.insert_resource(SystemMaterials { bright, dim, fading });
 }
 
 fn allegiance_hue(system: &System) -> Hue {
@@ -877,27 +952,32 @@ mod tests {
         assert!(one_per_system(Vec::new()).is_empty());
     }
 
+    /// A thing on the map to be clicked, told apart from the next by `which`
+    fn clickable(which: u32) -> Entity {
+        Entity::from_raw_u32(which).expect("an entity to click")
+    }
+
     /// One click on its own opens nothing
     #[test]
     fn a_single_click_is_not_a_double() {
         let mut last = LastClick::default();
-        assert!(!last.doubled(1, 0.));
+        assert!(!last.doubled(clickable(1), 0.));
     }
 
     /// Two clicks in quick succession on one system make a double
     #[test]
     fn two_quick_clicks_on_one_system_are_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(last.doubled(1, DOUBLE_CLICK));
+        last.doubled(clickable(1), 0.);
+        assert!(last.doubled(clickable(1), DOUBLE_CLICK));
     }
 
     /// Two clicks far enough apart are two singles
     #[test]
     fn two_slow_clicks_are_not_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(!last.doubled(1, DOUBLE_CLICK + 0.01));
+        last.doubled(clickable(1), 0.);
+        assert!(!last.doubled(clickable(1), DOUBLE_CLICK + 0.01));
     }
 
     /// Two clicks on different systems are two singles
@@ -908,8 +988,8 @@ mod tests {
     #[test]
     fn two_clicks_on_different_systems_are_not_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(!last.doubled(2, 0.1));
+        last.doubled(clickable(1), 0.);
+        assert!(!last.doubled(clickable(2), 0.1));
     }
 
     /// A third quick click does not make a second double
@@ -919,18 +999,18 @@ mod tests {
     #[test]
     fn a_third_quick_click_is_not_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(last.doubled(1, 0.1));
-        assert!(!last.doubled(1, 0.2));
+        last.doubled(clickable(1), 0.);
+        assert!(last.doubled(clickable(1), 0.1));
+        assert!(!last.doubled(clickable(1), 0.2));
     }
 
     /// A slow click after a double starts a fresh pair
     #[test]
     fn counting_starts_again_after_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        last.doubled(1, 0.1);
-        assert!(!last.doubled(1, 0.2));
-        assert!(last.doubled(1, 0.3));
+        last.doubled(clickable(1), 0.);
+        last.doubled(clickable(1), 0.1);
+        assert!(!last.doubled(clickable(1), 0.2));
+        assert!(last.doubled(clickable(1), 0.3));
     }
 }
