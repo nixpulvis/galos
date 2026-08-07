@@ -14,6 +14,7 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
+use super::bodies::STAND_IN;
 use super::bodies::spawn::Body;
 use super::labels::{depth_of, world_per_pixel};
 use super::roundness::Roundness;
@@ -182,14 +183,6 @@ const ANGULAR: f32 = 4e-4;
 ///
 /// Enough that the outermost orbit sits inside rather than on the surface.
 const MARGIN: f32 = 1.2;
-
-/// How far a system reaches when the map has not been told, in metres
-///
-/// Five thousand light seconds, near the middle of what a system comes to.
-/// Stands for one nobody has asked about and one with nothing on record
-/// alike, both being the map not knowing, and neither being worth telling
-/// apart on screen.
-const STAND_IN: f32 = 1.5e12;
 
 /// How large a system is drawn, in metres
 ///

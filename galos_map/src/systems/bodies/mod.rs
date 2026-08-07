@@ -160,7 +160,8 @@ impl Contents {
         })
     }
 
-    /// How far the system reaches from its middle, in metres
+    /// How far the system reaches from its middle, in metres, and never less
+    /// than [`STAND_IN`]
     ///
     /// Measured from the arrival star, which is where the shell is drawn and
     /// where everything inside is placed short of. An orbit is recorded about
@@ -211,9 +212,11 @@ impl Contents {
             }))
             .filter(|r| r.is_finite() && *r > 0.);
 
-        reaches.fold(None, |widest: Option<f32>, r| {
-            Some(widest.map_or(r, |w| w.max(r)))
-        })
+        reaches
+            .fold(None, |widest: Option<f32>, r| {
+                Some(widest.map_or(r, |w| w.max(r)))
+            })
+            .map(|widest| widest.max(STAND_IN))
     }
 
     /// Where everything in the system stands, `since` seconds after the epoch
@@ -308,6 +311,21 @@ fn recorded_star(star: &DbStar) -> Orbit {
         )
     })
 }
+
+/// How far a system reaches when the map has not been told, in metres
+///
+/// Five thousand light seconds, near the middle of what a system comes to.
+/// Stands for one nobody has asked about and one with nothing on record alike,
+/// both being the map not knowing, and neither being worth telling apart on
+/// screen.
+///
+/// A floor under [`Contents::extent`] as much as a stand-in for it. Every
+/// shell but the one system being held is drawn at this, so a system whose rows
+/// land saying it reaches less would collapse out of the mark it had been drawn
+/// as on the frame they arrive. A star with nothing on record around it is the
+/// far end of that: its own radius is a twenty-five thousandth of this, and the
+/// shell became a skin on the star rather than a mark around the system.
+pub const STAND_IN: f32 = 1.5e12;
 
 /// How far an orbit gets from what it goes round, in metres
 ///
@@ -548,19 +566,19 @@ mod tests {
     /// beyond that.
     #[test]
     fn an_eccentric_orbit_is_measured_where_it_reaches() {
-        let mut eccentric = body(1e12);
+        let mut eccentric = body(2e12);
         eccentric.orbit.eccentricity = 0.5;
 
-        assert_eq!(known(vec![eccentric]).extent(), Some(1.5e12));
+        assert_eq!(known(vec![eccentric]).extent(), Some(3e12));
     }
 
     /// A body's own size counts, so the shell holds the whole of it
     #[test]
     fn the_extent_takes_in_the_body_standing_at_it() {
-        let mut wide = body(1e12);
+        let mut wide = body(5e12);
         wide.radius = 7e7;
 
-        assert_eq!(known(vec![wide]).extent(), Some(1e12 + 7e7));
+        assert_eq!(known(vec![wide]).extent(), Some(5e12 + 7e7));
     }
 
     /// A body sitting at the centre does not make an extent of nothing
@@ -606,6 +624,27 @@ mod tests {
                 "{id} stood {out}m out, past a {reaches}m extent"
             );
         }
+    }
+
+    /// A system of nothing but its star still reaches the stand-in
+    ///
+    /// Its own radius is a twenty-five thousandth of it. Every shell but the
+    /// held one is drawn at the stand-in, so without this the shell collapses
+    /// to a skin on the star at the moment the rows land.
+    #[test]
+    fn a_system_of_one_star_still_reaches_the_stand_in() {
+        let mut lone = star(1, 0., 0., vec![]);
+        lone.radius = 5.9e7;
+        let contents = Contents {
+            of: Some(1),
+            held: Held::Known {
+                stars: vec![lone],
+                bodies: vec![],
+                centers: vec![],
+            },
+        };
+
+        assert_eq!(contents.extent(), Some(STAND_IN));
     }
 
     /// A near-parabolic orbit is held to something finite
