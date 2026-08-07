@@ -254,19 +254,29 @@ pub fn strength(is_active: bool) -> f32 {
 ///
 /// Each line was spawned with a material of its own, so this writes to one
 /// route's color without touching another's.
+///
+/// The lines go with the marks. A route is drawn between systems at the scale
+/// the sky is read at, and once the camera has descended into one of them
+/// there is no sky left for it to be read against: what is drawn there is one
+/// system at its own size, and a line laid over it is a light year wide and
+/// runs out through the walls. So it fades on exactly the band the mark
+/// standing for that system fades on, and the two go together.
 fn emphasise(
     filters: Res<Filters>,
     selected: Res<Selected>,
+    seen_as: Res<crate::systems::bodies::spawn::Apparent>,
     lines: Query<(&Route, &MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let active = active(&filters, &selected.0);
+    let standing = seen_as.held();
 
     for (line, material) in &lines {
         let Some(mut material) = materials.get_mut(&material.0) else {
             continue;
         };
-        let wanted = spawn::line_color(strength(Some(&line.0) == active));
+        let wanted =
+            spawn::line_color(strength(Some(&line.0) == active) * standing);
         // Written only where it changed. Touching a material marks the asset
         // changed, which re-uploads it, and this runs every frame.
         if material.base_color != wanted {
