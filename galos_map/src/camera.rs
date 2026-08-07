@@ -1,7 +1,7 @@
 use crate::schedule::MapSet;
 use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
-use bevy::camera::Hdr;
+use bevy::camera::{Exposure, Hdr};
 use bevy::input::mouse::{
     AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit,
 };
@@ -394,6 +394,18 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
+        // Stopped down for what a star actually puts out. A body at an
+        // Earth's distance from a Sun sees about a hundred thousand lux, and
+        // bevy's own default is set for a room: everything the star reached
+        // came back clipped to white, which drew a lit body as a flat cap
+        // with a razor edge where the light ran out rather than as a surface
+        // shading away towards the terminator.
+        //
+        // Nothing emissive moves with this. Bevy weighs emission against the
+        // exposure by `StandardMaterial::emissive_exposure_weight`, which is
+        // nothing unless it is asked for, so the stars and the shells are
+        // drawn at the strengths they were set at.
+        Exposure::SUNLIGHT,
         AmbientLight { color: Color::default(), brightness: 1e3, ..default() },
         // Every other entity is drawn relative to this one.
         FloatingOrigin,
