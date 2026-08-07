@@ -46,29 +46,41 @@ pub fn plugin(app: &mut App) {
 
 /// How large a system has to look before what is in it is drawn, in radians
 ///
-/// About three degrees, by which point the sphere standing for the system is a
-/// good part of the view and the things inside it are worth the entities.
+/// About half a degree, at which the whole system is some twenty pixels across
+/// and everything in it is a speck. Which is the point: the mark standing for
+/// the system is still whole at this size and the contents arrive behind it,
+/// so the one thing nobody should watch happen is not watched.
 ///
 /// An angle rather than a distance, so that a system reaching light hours and
 /// one reaching light seconds are both drawn when they are equally worth
 /// looking at. The rows arrive far earlier — that is [`super::fetch`]'s
 /// business — so nothing waits on the database at this range.
-const WORTH_DRAWING: f32 = 0.05;
+const WORTH_DRAWING: f32 = 0.01;
 
 /// And how small before it is taken away again
 ///
 /// Lower than it took to draw, so a camera sitting on the line does not spawn
-/// and despawn a system's insides every frame.
-const WORTH_KEEPING: f32 = 0.02;
+/// and despawn a system's insides every frame. Lower than [`WORTH_MARKING`]
+/// as well, so that the taking away happens behind a whole mark as the drawing
+/// did.
+const WORTH_KEEPING: f32 = 0.008;
 
 /// How large a system has to look before the mark standing for it starts to go
 ///
-/// A quarter of [`WORTH_DRAWING`], which is four times the distance. The mark
-/// is what says a system is there while it is too small to see, and by the
-/// time it is drawn it is standing over the thing it stood in for. Four times
-/// the distance is long enough that the exchange reads as one thing becoming
-/// another rather than as one being swapped for the other.
+/// Past [`WORTH_DRAWING`], so what the mark stands in for is already there
+/// when the mark begins to give way to it. The two bands do not overlap and
+/// that is the whole of what they are for: everything arrives and leaves
+/// behind a mark at full strength, and what is watched is one thing fading
+/// into another.
 const WORTH_MARKING: f32 = 0.0125;
+
+/// And how large before there is nothing of it left
+///
+/// About three degrees, by which point the system fills a good part of the
+/// view and a mark standing in for it would be standing over the thing itself.
+/// Four times [`WORTH_MARKING`], which is a quarter of the distance, and long
+/// enough that the fade reads as one thing becoming another.
+const WORTH_HIDING: f32 = 0.05;
 
 /// How large the system the map is holding looks, in radians
 ///
@@ -87,15 +99,15 @@ impl Apparent {
     /// How much of the mark standing for `system` is left, from one to nothing
     ///
     /// The whole of it for every system but the one being held, none of it
-    /// once that one is drawn, and the way between over [`WORTH_MARKING`] to
-    /// [`WORTH_DRAWING`].
+    /// once the camera is inside that one, and the way between over
+    /// [`WORTH_MARKING`] to [`WORTH_HIDING`].
     pub fn standing(&self, system: Entity) -> f32 {
         let Some((held, seen)) = self.0 else { return 1. };
         if held != system {
             return 1.;
         }
 
-        let through = (seen - WORTH_MARKING) / (WORTH_DRAWING - WORTH_MARKING);
+        let through = (seen - WORTH_MARKING) / (WORTH_HIDING - WORTH_MARKING);
         1. - through.clamp(0., 1.)
     }
 }
@@ -784,15 +796,37 @@ mod tests {
         Apparent(Some((on_the_map(1), seen))).standing(on_the_map(1))
     }
 
-    /// A mark is gone by the time what it stands for is drawn
+    /// A mark is gone by the time the camera is inside the system
     ///
-    /// The exchange this is for. A shell drawn over the bodies it stood in
-    /// for is a lit sphere around the camera, and one that vanished before
-    /// they arrived would leave a gap with nothing in it.
+    /// Half the exchange this is for. A shell drawn over the bodies it stood
+    /// in for is a lit sphere around the camera.
     #[test]
-    fn a_mark_is_gone_once_the_system_is_drawn() {
-        assert_eq!(standing(WORTH_DRAWING), 0.);
-        assert_eq!(standing(WORTH_DRAWING * 2.), 0.);
+    fn a_mark_is_gone_once_the_camera_is_inside() {
+        assert_eq!(standing(WORTH_HIDING), 0.);
+        assert_eq!(standing(WORTH_HIDING * 2.), 0.);
+    }
+
+    /// And whole while the system's contents come and go
+    ///
+    /// The other half, and the one that is easy to get backwards. The mark
+    /// begins to give way only once what it stands in for is already there,
+    /// and it is whole again before that is taken away, so neither the
+    /// arriving nor the leaving is ever watched.
+    #[test]
+    fn a_mark_is_whole_while_the_contents_come_and_go() {
+        assert_eq!(standing(WORTH_DRAWING), 1.);
+        assert_eq!(standing(WORTH_KEEPING), 1.);
+    }
+
+    /// The two bands stand in the one order that hides both exchanges
+    ///
+    /// Let go of, drawn, begins to fade, gone. Anything else has the contents
+    /// arriving or leaving in front of a mark the viewer can see through.
+    #[test]
+    fn the_contents_come_and_go_before_the_mark_gives_way() {
+        assert!(WORTH_KEEPING < WORTH_DRAWING);
+        assert!(WORTH_DRAWING <= WORTH_MARKING);
+        assert!(WORTH_MARKING < WORTH_HIDING);
     }
 
     /// And whole until well before then
@@ -809,7 +843,7 @@ mod tests {
         let mut before = 1.;
         for step in 1..=100 {
             let seen = WORTH_MARKING
-                + (WORTH_DRAWING - WORTH_MARKING) * step as f32 / 100.;
+                + (WORTH_HIDING - WORTH_MARKING) * step as f32 / 100.;
             let left = standing(seen);
 
             assert!(left < before, "{seen} left {left}, against {before}");
@@ -997,5 +1031,13 @@ mod tests {
     #[test]
     fn drawing_asks_more_than_keeping() {
         assert!(WORTH_DRAWING > WORTH_KEEPING);
+    }
+
+    /// A mark goes out over the whole of its band and no further
+    #[test]
+    fn a_mark_is_whole_below_its_band_and_gone_above_it() {
+        assert_eq!(standing(WORTH_MARKING), 1.);
+        assert!(standing(WORTH_MARKING * 1.001) < 1.);
+        assert!(standing(WORTH_HIDING * 0.999) > 0.);
     }
 }
