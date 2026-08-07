@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO barycenters (\n                system_address,\n                id,\n                updated_at,\n                updated_by,\n\n                semi_major_axis,\n                eccentricity,\n                orbital_inclination,\n                periapsis,\n                orbital_period,\n                ascending_node,\n                mean_anomaly)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                updated_at = $3,\n                updated_by = $4,\n\n                semi_major_axis = $5,\n                eccentricity = $6,\n                orbital_inclination = $7,\n                periapsis = $8,\n                orbital_period = $9,\n                ascending_node = $10,\n                mean_anomaly = $11\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 5,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 7,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 8,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 9,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 10,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Timestamp",
+        "Varchar",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "fc5b271c48495a9f85416016b432bbe68716ed7c70746ec1d7edb4406c94d215"
+}

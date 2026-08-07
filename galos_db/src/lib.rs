@@ -104,9 +104,11 @@ mod tests {
 }
 
 pub mod articles;
+pub mod barycenters;
 pub mod bodies;
 pub mod factions;
 pub mod markets;
+mod orbit;
 pub mod stars;
 pub mod stations;
 pub mod systems;

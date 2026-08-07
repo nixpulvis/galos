@@ -8,8 +8,8 @@ use elite_journal::entry::route::NavRoute;
 use elite_journal::entry::{Entry, Event};
 use elite_journal::system::System as JournalSystem;
 use galos_db::{
-    bodies::Body, markets::Market, stars::Star, stations::Station,
-    systems::System, Database,
+    barycenters::Barycenter, bodies::Body, markets::Market, stars::Star,
+    stations::Station, systems::System, Database,
 };
 use std::time::Duration;
 use structopt::StructOpt;
@@ -114,6 +114,50 @@ fn process_message(db: &Database, message: Message, user: String) {
                                 warn!(body = %body.name, error = %err, "scan")
                             }
                         },
+                    }
+                }
+                // A barycenter is not a body and is not drawn. It is stored so
+                // that a body naming it as an ancestor can be placed where it
+                // belongs rather than at the middle of its system.
+                Event::ScanBaryCentre(scan) => {
+                    let mut system = JournalSystem::new(
+                        scan.system_address,
+                        &scan.star_system,
+                    );
+                    system.pos = Some(scan.star_pos);
+                    match System::from_journal(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &system,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!(system = %system.name, "scan barycenter")
+                        }
+                        Err(err) => {
+                            warn!(system = %system.name, error = %err, "scan barycenter")
+                        }
+                    }
+
+                    match Barycenter::from_journal(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &scan,
+                    )
+                    .await
+                    {
+                        // A barycenter has no name of its own, so the id it is
+                        // known by within its system is said along with the
+                        // system, neither meaning much without the other.
+                        Ok(_) => {
+                            info!(system = %system.name, barycenter = scan.body_id, "scan barycenter")
+                        }
+                        Err(err) => {
+                            warn!(system = %system.name, barycenter = scan.body_id, error = %err, "scan barycenter")
+                        }
                     }
                 }
                 Event::Location(e) => {

@@ -51,9 +51,9 @@
     <tr>
         <td><a href="/systems/{{ system.address }}/bodies/{{ body.id }}">{{ body.name }}</a></td>
         <td>{{ body.id}}</td>
-        <td>{{ self::table_data(body.parent_id) }}</td>
+        <td>{{ self::parent_id(body.parents) }}</td>
         <td>{{ body.planet_class }}</td>
-        <td>{{ body.landable }}</td>
+        <td>{{ self::landable(body.surface) }}</td>
         <td>{{ body.mass }}</td>
         <td>{{ body.radius }}</td>
         <td>{{ body.updated_at }}</td>

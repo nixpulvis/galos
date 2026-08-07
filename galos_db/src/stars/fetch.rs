@@ -1,5 +1,8 @@
 use super::Star;
+use crate::bodies::Parent;
+use crate::orbit;
 use crate::{Database, Error};
+use elite_journal::body::{Discovery, Spin};
 
 /// Turn a row of `stars` into one
 ///
@@ -15,7 +18,18 @@ macro_rules! star {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            parent_id: row.parent_id,
+            parents: {
+                let types = row.parent_types.unwrap_or_default();
+                row.parent_ids
+                    .unwrap_or_default()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(depth, id)| Parent {
+                        ty: types.get(depth).cloned(),
+                        id,
+                    })
+                    .collect()
+            },
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
 
@@ -27,20 +41,22 @@ macro_rules! star {
             stellar_mass: row.stellar_mass,
             subclass: row.subclass,
 
-            ascending_node: row.ascending_node,
-            axial_tilt: row.axial_tilt,
-            eccentricity: row.eccentricity,
-            mean_anomaly: row.mean_anomaly,
-            orbital_inclination: row.orbital_inclination,
-            orbital_period: row.orbital_period,
-            periapsis: row.periapsis,
+            orbit: orbit::read(
+                row.semi_major_axis,
+                row.eccentricity,
+                row.orbital_inclination,
+                row.periapsis,
+                row.orbital_period,
+                row.ascending_node,
+                row.mean_anomaly,
+            ),
+            spin: Spin { period: row.rotation_period, tilt: row.axial_tilt },
             radius: row.radius,
-            rotation_period: row.rotation_period,
-            semi_major_axis: row.semi_major_axis,
-            surface_temperature: row.surface_temperature,
-
-            was_mapped: row.was_mapped,
-            was_discovered: row.was_discovered,
+            temperature: row.temperature,
+            discovery: Discovery {
+                discovered: row.was_discovered,
+                mapped: row.was_mapped,
+            },
         }
     }};
 }
