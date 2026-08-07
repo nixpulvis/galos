@@ -1,6 +1,7 @@
 use crate::camera::{FRAMING_MARGIN, MoveCamera};
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
+use crate::systems::System;
 use crate::systems::filter::{Filter, Filters};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
@@ -28,6 +29,94 @@ pub fn plugin(app: &mut App) {
         Update,
         emphasise.in_set(MapSet::Present).after(follow_filters),
     );
+    // Marked while the stars are being populated, so that what reads the mark
+    // in `Present` -- what is drawn, and what is ringed -- reads this frame's
+    // answer rather than last frame's.
+    app.add_systems(
+        Update,
+        hops.in_set(MapSet::Populate).after(follow_filters),
+    );
+}
+
+/// What the ring around a stop is drawn in
+///
+/// The white a route's line is drawn in, and at full strength where the line
+/// is faint: the line crosses systems that are meant to go on being seen, and
+/// this is a mark around one of them.
+pub const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
+
+/// A stop the route reaches from the system the camera is standing in
+///
+/// The one behind and the one ahead. A route is drawn as a line between
+/// systems, and that line is gone by the time the camera is inside one of
+/// them, so what is left to say where the route goes is the two systems it
+/// goes to and from.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hop {
+    /// Where the route came from
+    Last,
+    /// Where it goes next
+    Next,
+}
+
+/// Which systems a route reaches from `here`, behind and ahead
+///
+/// Nothing for either end of the route, which reaches only one way, and
+/// nothing at all where the camera is not standing in a system the route runs
+/// through: a route passes near far more systems than it stops at, and being
+/// beside one is not being on it.
+fn reaching(
+    route: Option<&Filter>,
+    here: Option<i64>,
+) -> (Option<i64>, Option<i64>) {
+    let (Some(Filter::Route { systems, .. }), Some(here)) = (route, here)
+    else {
+        return (None, None);
+    };
+    let Some(at) = systems.iter().position(|address| *address == here) else {
+        return (None, None);
+    };
+
+    (
+        at.checked_sub(1).and_then(|before| systems.get(before)).copied(),
+        systems.get(at + 1).copied(),
+    )
+}
+
+/// Keep the mark on whichever two systems the route reaches from here
+///
+/// Written only where it changed. This runs over every star every frame, and
+/// inserting a component marks the star changed whether or not the value
+/// moved, which drags its name and its material along behind it.
+fn hops(
+    filters: Res<Filters>,
+    selected: Res<Selected>,
+    contents: Res<crate::systems::bodies::Contents>,
+    systems: Query<(Entity, &System, Option<&Hop>)>,
+    mut commands: Commands,
+) {
+    let (last, next) = reaching(active(&filters, &selected.0), contents.of());
+
+    for (entity, system, held) in &systems {
+        let wanted = if last.is_some() && last == Some(system.address) {
+            Some(Hop::Last)
+        } else if next.is_some() && next == Some(system.address) {
+            Some(Hop::Next)
+        } else {
+            None
+        };
+
+        match (held, wanted) {
+            (Some(held), Some(wanted)) if *held == wanted => {}
+            (None, None) => {}
+            (_, Some(wanted)) => {
+                commands.entity(entity).insert(wanted);
+            }
+            (Some(_), None) => {
+                commands.entity(entity).remove::<Hop>();
+            }
+        }
+    }
 }
 
 /// A drawn route, and which route it is
@@ -310,6 +399,45 @@ impl From<LineStrip> for Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A route running through three systems, in the order travelled
+    fn route(systems: Vec<i64>) -> Filter {
+        Filter::Route {
+            label: "a to c".to_owned(),
+            systems,
+            range: "20".to_owned(),
+        }
+    }
+
+    /// The stop behind and the stop ahead, from the middle of a route
+    #[test]
+    fn a_route_reaches_both_ways_from_where_it_stands() {
+        let route = route(vec![1, 2, 3]);
+
+        assert_eq!(reaching(Some(&route), Some(2)), (Some(1), Some(3)));
+    }
+
+    /// Either end of a route reaches only the one way
+    #[test]
+    fn the_ends_of_a_route_reach_one_way() {
+        let route = route(vec![1, 2, 3]);
+
+        assert_eq!(reaching(Some(&route), Some(1)), (None, Some(2)));
+        assert_eq!(reaching(Some(&route), Some(3)), (Some(2), None));
+    }
+
+    /// Standing beside a route is not standing on it
+    ///
+    /// A route passes near far more systems than it stops at, and a mark
+    /// saying where to go next means nothing from a system it never visits.
+    #[test]
+    fn a_system_the_route_misses_reaches_nowhere() {
+        let route = route(vec![1, 2, 3]);
+
+        assert_eq!(reaching(Some(&route), Some(9)), (None, None));
+        assert_eq!(reaching(Some(&route), None), (None, None));
+        assert_eq!(reaching(None, Some(2)), (None, None));
+    }
 
     /// A route filter over the systems at `addresses`
     fn asking(addresses: &[i64]) -> Filter {

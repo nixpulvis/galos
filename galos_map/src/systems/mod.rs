@@ -259,6 +259,12 @@ pub struct InReach {
 /// two systems each writing a `Visibility` would take turns undoing each
 /// other.
 ///
+/// Unless it is a stop the route reaches from where the camera stands, which
+/// is drawn whatever either of them says. What that mark is for is finding the
+/// way on from here, and a spyglass narrower than the jump ahead, or a filter
+/// that admits this system and not the next, would take away the one thing
+/// that answers it.
+///
 /// A filtered system is only hidden where it is being dimmed to nothing.
 /// Anywhere above that it is drawn faintly, which is the other half of what
 /// [`filter`] is for: a faction read against the space around it.
@@ -268,7 +274,12 @@ pub struct InReach {
 /// changed each frame, and each star drags its name along with it.
 pub fn visibility(
     camera: Query<&OrbitCamera>,
-    mut systems: Query<(&System, &mut Visibility, Has<filter::Filtered>)>,
+    mut systems: Query<(
+        &System,
+        &mut Visibility,
+        Has<filter::Filtered>,
+        Has<route::Hop>,
+    )>,
     spyglass: Res<Spyglass>,
     dim: Res<filter::DimTo>,
     mut in_reach: ResMut<InReach>,
@@ -277,7 +288,7 @@ pub fn visibility(
     let excluded_are_drawn = dim.0 > 0.;
 
     let mut tally = InReach::default();
-    for (system, mut visibility, filtered) in &mut systems {
+    for (system, mut visibility, filtered, hop) in &mut systems {
         let within =
             spyglass.reaches(camera.center, DVec3::from(system.position));
         if within {
@@ -287,11 +298,13 @@ pub fn visibility(
             }
         }
 
-        visibility.set_if_neq(if within && (!filtered || excluded_are_drawn) {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(
+            if hop || (within && (!filtered || excluded_are_drawn)) {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            },
+        );
     }
 
     // Only where it moved, so that a count nobody is watching does not mark
