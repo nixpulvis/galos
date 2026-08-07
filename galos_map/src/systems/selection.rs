@@ -109,6 +109,14 @@ impl PickedBody {
     pub fn new(address: i64, id: i16, name: &str, at: DVec3) -> Self {
         PickedBody { address, id, name: name.to_owned(), at }
     }
+
+    /// Which of its system's numbering it is
+    ///
+    /// What the map's own rows for it are found by, which is where everything
+    /// about a body beyond its name is written down.
+    pub fn id(&self) -> i16 {
+        self.id
+    }
 }
 
 impl Picked {
