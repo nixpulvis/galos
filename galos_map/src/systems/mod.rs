@@ -89,6 +89,14 @@ impl System {
     pub fn position(&self) -> DVec3 {
         DVec3::from(self.position)
     }
+
+    /// What the system is called
+    ///
+    /// A [`System`]'s fields are private to this module, and a route names
+    /// both of its ends in the bar, which is not.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 pub mod bodies;

@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::Body;
+use crate::systems::bodies::spawn::{Apparent, Body};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
@@ -53,7 +53,10 @@ pub(crate) fn plugin(app: &mut App) {
             // but only while it is drawn, and that is decided here.
             .after(super::visibility)
             .after(super::scale::size_by_distance)
-            .after(super::scale::size_uniformly),
+            .after(super::scale::size_uniformly)
+            // A name stands off the mark drawn around what it names, so it
+            // wants the mark settled this frame rather than last.
+            .after(super::pointing::size_indicators),
     );
     // `leaders` reads where a label ended up rather than deciding it, and
     // neither of the two answers it needs exists during `Update`. A label's
@@ -209,7 +212,8 @@ const SELECTED_WEIGHT: f32 = 1000.;
 
 /// Whether a system is asked for a name at all
 ///
-/// Two ways to be passed over and two to be asked for regardless.
+/// Two ways to be passed over, two to be asked for regardless, and one that
+/// settles it whatever the other four say.
 ///
 /// A name is read or it is not; there is no faint reading of one. So a system
 /// the filters exclude gives its name up rather than keeping it dimly: a sky
@@ -220,13 +224,20 @@ const SELECTED_WEIGHT: f32 = 1000.;
 /// Being marked out beats both. Pointing at a system or picking it out is
 /// asking for it by name, which is the one thing a name is for, and neither
 /// the toggle nor a filter has any business refusing it.
+///
+/// `stands` beats being marked out. It is whether the map is still standing a
+/// mark in for the system, and the name is part of that mark: once the camera
+/// is inside, what is drawn there is the system itself, and the things in it
+/// carry their own names. A name left hanging over them would be the label of
+/// a shell that is no longer drawn.
 fn worth_naming(
+    stands: bool,
     shown: bool,
     filtered: bool,
     pointed_at: bool,
     selected: bool,
 ) -> bool {
-    pointed_at || selected || (shown && !filtered)
+    stands && (pointed_at || selected || (shown && !filtered))
 }
 
 /// How far the center bonus reaches, in light years
@@ -425,12 +436,13 @@ pub fn choose_names(
     radius: Res<NameRadius>,
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
-    systems: Query<(Entity, &System, &Visibility, Has<Filtered>)>,
+    systems: Query<(Entity, &System, &Visibility, &Indicator, Has<Filtered>)>,
     bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
+    seen_as: Res<Apparent>,
     time: Res<Time<Real>>,
 ) {
     let clear = |commands: &mut Commands| {
@@ -455,7 +467,7 @@ pub fn choose_names(
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system, visibility, filtered)| {
+        .filter_map(|(entity, system, visibility, indicator, filtered)| {
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -479,7 +491,18 @@ pub fn choose_names(
             let selected =
                 selection.contains(entity) && *visibility != Visibility::Hidden;
 
-            if !worth_naming(show_names.0, filtered, pointed_at, selected) {
+            // And the map still standing a mark in for the system at all,
+            // which beats every other claim: past there the system is drawn
+            // rather than marked, and its name belongs to the mark.
+            let stands = seen_as.standing(entity) > 0.;
+
+            if !worth_naming(
+                stands,
+                show_names.0,
+                filtered,
+                pointed_at,
+                selected,
+            ) {
                 return None;
             }
 
@@ -491,7 +514,7 @@ pub fn choose_names(
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;
-            let rect = name_rect(at, &system.name);
+            let rect = name_rect(at, &system.name, indicator.0);
             let screen = Rect::from_corners(Vec2::ZERO, viewport);
             if screen.intersect(rect).is_empty() {
                 return None;
@@ -514,7 +537,7 @@ pub fn choose_names(
             else {
                 continue;
             };
-            let rect = name_rect(place, &body.name);
+            let rect = name_rect(place, &body.name, indicator.0);
             let screen = Rect::from_corners(Vec2::ZERO, viewport);
             if screen.intersect(rect).is_empty() {
                 continue;
@@ -533,8 +556,16 @@ pub fn choose_names(
     }
 
     // Best first, so that what is dropped is dropped in favour of something
-    // the viewer wanted more.
-    wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2));
+    // the viewer wanted more. Ties are settled by which entity it is, which
+    // is arbitrary but the same arbitrary answer every frame.
+    //
+    // Something has to settle them, and the order they were gathered in
+    // cannot: a body drawn too small to measure scores exactly the floor, so
+    // a system's moons are routinely tied, and handing one of them a `Named`
+    // moves it to another archetype and so to another place in the order they
+    // are read in. Two names would then trade one place between them every
+    // frame, which is a flicker rather than a choice.
+    wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
 
     let mut kept: Vec<Rect> = Vec::new();
     let mut winners = EntityHashSet::default();
@@ -622,18 +653,25 @@ fn name_score(from_center: f32, pointed_at: bool, selected: bool) -> f32 {
     picked.max(pointed) + centered - from_center
 }
 
-/// The screen rectangle a system's name would occupy, with room around it
+/// The screen rectangle a name would occupy, with room around it
 ///
 /// The width is a guess from the letter count, since the mesh that would
 /// give an exact one is the thing being decided about.
-pub(super) fn name_rect(at: Vec2, name: &str) -> Rect {
+///
+/// `clear` is the radius of the mark drawn around whatever is being named, in
+/// pixels, which the name stands off rather than overlapping. What is drawn
+/// there is a ring around a system picked out or pointed at, and the shell
+/// inside that ring; up close either is far wider than the gap a name is
+/// otherwise given, and a name laid over its own system is a name that cannot
+/// be read.
+pub(super) fn name_rect(at: Vec2, name: &str, clear: f32) -> Rect {
     let size = NAME_HEIGHT;
     let width = name.chars().count() as f32 * ADVANCE * size;
     let margin = size * CROWDING;
 
-    // `face_camera` puts a name up and to the right of its system by these
-    // same multiples of its height.
-    let left = at.x + size * GAP;
+    // `face_camera` puts a name up and to the right of what it names by this
+    // same standoff and these same multiples of its height.
+    let left = at.x + clear + size * GAP;
     let middle = at.y - size * RISE;
 
     Rect::new(
@@ -736,7 +774,7 @@ fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
 /// rotation be written straight into a slot that is read as local.
 pub fn face_camera(
     camera: Query<(&OrbitCamera, &Camera)>,
-    systems: Query<&System, Without<Label>>,
+    systems: Query<(&System, &Indicator), Without<Label>>,
     // `Without<System>` is already true of any label. It is spelled out so
     // the scheduler can prove this query is disjoint from the one above, and
     // from every other system that reads a star's transform.
@@ -752,7 +790,7 @@ pub fn face_camera(
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     for (mut label, child_of) in &mut labels {
-        let Ok(system) = systems.get(child_of.parent()) else {
+        let Ok((system, indicator)) = systems.get(child_of.parent()) else {
             // A name hung off something inside a system, which knows where it
             // is relative to the camera rather than where it is in the
             // galaxy.
@@ -797,10 +835,17 @@ pub fn face_camera(
         let height = NAME_HEIGHT * world_per_pixel;
         let scale = height / SIZE;
 
+        // Clear of the mark drawn around the system, as a body's name is
+        // clear of the body. Up close that mark is a ring tens of pixels wide
+        // with the shell inside it, and a name set a fixed step from the
+        // middle would be drawn over both.
+        let clear = indicator.0 * world_per_pixel;
+
         // Offset along the camera's own axes, so the label keeps sitting up
-        // and to the right on screen however the view is orbited. Both are
-        // multiples of the height, so they are fixed pixel gaps too.
-        let offset = orbit.rotation * Vec3::X * (height * GAP)
+        // and to the right on screen however the view is orbited. All three
+        // are pixel measurements taken into the world, so they are fixed
+        // pixel gaps.
+        let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
             + orbit.rotation * Vec3::Y * (height * RISE);
 
         label.scale = Vec3::splat(scale);
@@ -1020,13 +1065,19 @@ mod tests {
         );
     }
 
+    /// A system the map is still standing a mark in for
+    ///
+    /// Which is every system but the one the camera has flown into, so it is
+    /// what the tests below are about.
+    const STANDS: bool = true;
+
     /// A system the filters exclude gives up its name
     ///
     /// A name is read or it is not, so one belonging to a dimmed star is not
     /// dimly readable, it is clutter over what the user asked to see.
     #[test]
     fn a_filtered_system_is_not_named() {
-        assert!(!worth_naming(true, true, false, false));
+        assert!(!worth_naming(STANDS, true, true, false, false));
     }
 
     /// And keeps it while it is pointed at or picked out
@@ -1035,30 +1086,63 @@ mod tests {
     /// name is for.
     #[test]
     fn a_marked_system_is_named_through_a_filter() {
-        assert!(worth_naming(true, true, true, false));
-        assert!(worth_naming(true, true, false, true));
+        assert!(worth_naming(STANDS, true, true, true, false));
+        assert!(worth_naming(STANDS, true, true, false, true));
     }
 
     /// The names toggle bars one the same way, and yields the same way
     #[test]
     fn the_names_toggle_bars_and_yields_as_a_filter_does() {
-        assert!(!worth_naming(false, false, false, false));
-        assert!(worth_naming(false, false, true, false));
-        assert!(worth_naming(false, false, false, true));
+        assert!(!worth_naming(STANDS, false, false, false, false));
+        assert!(worth_naming(STANDS, false, false, true, false));
+        assert!(worth_naming(STANDS, false, false, false, true));
     }
 
     /// A system the filters admit is named when names are on, and not when off
     #[test]
     fn an_admitted_system_follows_the_toggle() {
-        assert!(worth_naming(true, false, false, false));
-        assert!(!worth_naming(false, false, false, false));
+        assert!(worth_naming(STANDS, true, false, false, false));
+        assert!(!worth_naming(STANDS, false, false, false, false));
     }
 
     /// Marked out beats both at once
     #[test]
     fn a_marked_system_is_named_with_everything_against_it() {
-        assert!(worth_naming(false, true, true, false));
-        assert!(worth_naming(false, true, false, true));
+        assert!(worth_naming(STANDS, false, true, true, false));
+        assert!(worth_naming(STANDS, false, true, false, true));
+    }
+
+    /// A system the camera has come inside is not named at all
+    ///
+    /// Its name is part of the mark standing in for it, and there is no mark
+    /// left: what is drawn there is the system itself, with the things in it
+    /// carrying their own names.
+    #[test]
+    fn a_system_the_camera_is_inside_is_not_named() {
+        assert!(!worth_naming(false, true, false, false, false));
+        assert!(!worth_naming(false, true, false, true, false));
+        assert!(!worth_naming(false, true, false, false, true));
+    }
+
+    /// A name is laid out clear of the mark drawn around what it names
+    ///
+    /// A ring around a system picked out or pointed at is drawn at exactly
+    /// that mark, with the shell inside it, and up close the mark runs to
+    /// hundreds of pixels. A name given the same gap at every zoom would be
+    /// laid over both.
+    #[test]
+    fn a_name_stands_off_the_mark_around_it() {
+        let at = Vec2::new(500., 300.);
+
+        for mark in [0., 9.5, 40., 300.] {
+            let rect = name_rect(at, "SOL", mark);
+
+            assert!(
+                rect.min.x > at.x + mark,
+                "a mark {mark} wide left the name starting at {}",
+                rect.min.x - at.x
+            );
+        }
     }
 
     /// Names are offered in order of nearness to the center

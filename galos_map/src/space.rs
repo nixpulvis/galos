@@ -55,6 +55,31 @@ pub fn metres(position: DVec3) -> DVec3 {
     position * LIGHT_YEAR
 }
 
+/// Metres in a light second
+///
+/// Exact, the speed of light being defined. What distances inside a system are
+/// said in: a light year is the whole of one and a body sits light seconds or
+/// light hours out.
+pub const LIGHT_SECOND: f64 = 2.99792458e8;
+
+/// How many light seconds `distance` light years comes to
+///
+/// Thirty one and a half million of them to the year. What the bar says a
+/// distance inside a system in, having measured it in the light years
+/// everything else on the map is measured in.
+pub fn light_seconds(distance: f64) -> f64 {
+    distance * LIGHT_YEAR / LIGHT_SECOND
+}
+
+/// Where `position` metres from the galactic centre falls, in light years
+///
+/// [`metres`] the other way round. Everything inside a system is placed in the
+/// metres it is drawn in, measured from the middle of that system, so this is
+/// how something found there says where in the galaxy it stands.
+pub fn light_years(position: DVec3) -> DVec3 {
+    position / LIGHT_YEAR
+}
+
 /// Edge length of a galaxy grid cell, in metres
 ///
 /// Two to the fifty-third, which is a little under a light year. A power of

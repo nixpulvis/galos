@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::spawn::Body;
+use crate::systems::bodies::spawn::{Apparent, Body, Star};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
     Label, depth, depth_of, name_rect, screen_offset, screen_position,
@@ -17,6 +17,7 @@ use crate::systems::labels::{
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
 use bevy::camera::RenderTarget;
+use bevy::ecs::entity::EntityHashMap;
 use bevy::math::DVec3;
 use bevy::picking::backend::{HitData, PointerHits};
 use bevy::picking::hover::HoverMap;
@@ -30,7 +31,11 @@ pub fn plugin(app: &mut App) {
         (point_at, size_indicators, point_the_cursor)
             .in_set(MapSet::Present)
             .after(super::scale::size_by_distance)
-            .after(super::scale::size_uniformly),
+            .after(super::scale::size_uniformly)
+            // A mark is taken from the shell that is drawn this frame rather
+            // than the one that was drawn last, as it is taken from the size
+            // settled this frame.
+            .after(super::spawn::shells),
     );
     // Answers where the pointer is before anything asks, which is what a
     // picking backend is and where bevy expects one to run.
@@ -217,6 +222,7 @@ pub(super) fn point_at(
     dragged: Query<&DragDistance>,
     names: Query<&ChildOf, With<Label>>,
     bodies: Query<(), With<Body>>,
+    stars: Query<(), With<Star>>,
     marked: Query<(), With<Indicator>>,
     filtered: Query<(), With<Filtered>>,
     pointed_at: Query<Entity, With<PointedAt>>,
@@ -250,18 +256,23 @@ pub(super) fn point_at(
     // the dim star in front is the background the filter is read against, and
     // background that answers the pointer is background in the way.
     let mut nearest: Option<(Entity, bool, f32)> = None;
-    // The nearest body, which is the whole of the weighing between them:
-    // a body is a real thing at a real size, so one in front of another is
-    // simply the one being pointed at.
-    let mut inside: Option<(Entity, f32)> = None;
+    // A star, and only then the nearest. A star is what a system is named
+    // for and what everything else in it goes round, so one behind a moon that
+    // happens to be crossing it is still the thing being aimed at. Between two
+    // of a kind the nearer wins, a body being a real thing at a real size.
+    let mut inside: Option<(Entity, bool, f32)> = None;
 
     for hits in hovered.values() {
         for (entity, hit) in hits.iter() {
             if let Ok(name) = names.get(*entity) {
                 named = Some(name.parent());
             } else if bodies.contains(*entity) {
-                if inside.is_none_or(|(_, depth)| hit.depth < depth) {
-                    inside = Some((*entity, hit.depth));
+                let sun = stars.contains(*entity);
+                let better = inside.is_none_or(|(_, was_sun, depth)| {
+                    (!sun, hit.depth) < (!was_sun, depth)
+                });
+                if better {
+                    inside = Some((*entity, sun, hit.depth));
                 }
             } else if marked.contains(*entity) {
                 let system = *entity;
@@ -281,7 +292,7 @@ pub(super) fn point_at(
     // whole: once the camera is close enough to see a body, the body is the
     // thing being pointed at and the system is the place it is in.
     let wanted = named
-        .or(inside.map(|(body, _)| body))
+        .or(inside.map(|(body, ..)| body))
         .or(nearest.map(|(system, ..)| system));
     let mut already = false;
     for system in &pointed_at {
@@ -310,10 +321,14 @@ pub(super) fn point_at(
 /// so it is measured into pixels here and the larger of that and the floor
 /// wins. Where the shell is too small to aim at, which is nearly everywhere,
 /// the floor is the whole of the answer.
+///
+/// A shell that is not drawn is not measured. [`super::shells`] takes one away
+/// once the camera is inside the system, and a mark taken from a sphere
+/// nobody can see would put the whole viewport up as one system's target.
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
     mut systems: Query<(&System, &Children, &mut Indicator)>,
-    shells: Query<&Transform, With<Shell>>,
+    shells: Query<(&Transform, &Visibility), With<Shell>>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
@@ -323,7 +338,8 @@ pub fn size_indicators(
         let drawn = children
             .iter()
             .filter_map(|child| shells.get(child).ok())
-            .map(|shell| shell.scale.x)
+            .filter(|(_, shown)| **shown != Visibility::Hidden)
+            .map(|(shell, _)| shell.scale.x)
             .fold(0., f32::max);
 
         // A metre, which is as near as the camera may be pulled to anything.
@@ -445,10 +461,13 @@ fn hits(
         &GlobalTransform,
     )>,
     systems: Query<(Entity, &System, &Indicator, &ViewVisibility)>,
-    bodies: Query<
-        (Entity, &GlobalTransform, &Indicator, &ViewVisibility),
-        With<Body>,
-    >,
+    bodies: Query<(
+        Entity,
+        &Body,
+        &GlobalTransform,
+        &Indicator,
+        &ViewVisibility,
+    )>,
     labels: Query<(Entity, &ChildOf), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
 ) {
@@ -465,6 +484,20 @@ fn hits(
         normal: None,
         extra: None,
     };
+
+    // Which name hangs off what. A name is caught through the answer worked
+    // out for the thing it names rather than through a second one worked out
+    // for itself, so a name cannot catch anywhere its own thing is not, and a
+    // name whose thing is not drawn is not caught at all.
+    //
+    // Keyed the other way round than it is asked, because that is the way
+    // round the asking happens: the sky runs to thousands of systems and a
+    // handful of them wear a name, so the few are gathered here and the many
+    // are looked up as they are gone over anyway.
+    let mut named = EntityHashMap::default();
+    for (label, child_of) in &labels {
+        named.insert(child_of.parent(), label);
+    }
 
     for (pointer, at) in &pointers {
         let Some(at) = at.location() else { continue };
@@ -487,27 +520,18 @@ fn hits(
             else {
                 continue;
             };
+            let hit = caught(eye, position);
             if on_screen.distance(at) <= indicator.0 {
-                picks.push((entity, caught(eye, position)));
+                picks.push((entity, hit.clone()));
             }
-        }
-
-        // A name is caught over the rectangle it was given, which is the same
-        // one [`super::labels::choose_names`] laid out to keep names from
-        // touching. So the areas that catch cannot overlap either, and a name
-        // is clickable over exactly the room it was granted.
-        for (label, child_of) in &labels {
-            let Ok((_, system, ..)) = systems.get(child_of.parent()) else {
-                continue;
-            };
-            let position = DVec3::from(system.position);
-            let Some(on_screen) =
-                screen_position(orbit, cot_half_fov, viewport, position)
-            else {
-                continue;
-            };
-            if name_rect(on_screen, &system.name).contains(at) {
-                picks.push((label, caught(eye, position)));
+            // A name is caught over the rectangle it was given, which is the
+            // same one [`super::labels::choose_names`] laid out to keep names
+            // from touching. So the areas that catch cannot overlap either,
+            // and a name is clickable over exactly the room it was granted.
+            if let Some(label) = named.get(&entity)
+                && name_rect(on_screen, &system.name, indicator.0).contains(at)
+            {
+                picks.push((*label, hit));
             }
         }
 
@@ -515,7 +539,7 @@ fn hits(
         // from the galaxy. A body is drawn at its own size, so its mark is
         // its own outline, and one drawn over another is settled by which is
         // nearer, exactly as two overlapping spheres would be.
-        for (entity, body_at, indicator, drawn) in &bodies {
+        for (entity, body, body_at, indicator, drawn) in &bodies {
             if !drawn.get() {
                 continue;
             }
@@ -526,17 +550,23 @@ fn hits(
             else {
                 continue;
             };
+            let hit = HitData {
+                camera: eye,
+                depth: depth_of(orbit, offset),
+                position: None,
+                normal: None,
+                extra: None,
+            };
             if on_screen.distance(at) <= indicator.0 {
-                picks.push((
-                    entity,
-                    HitData {
-                        camera: eye,
-                        depth: depth_of(orbit, offset),
-                        position: None,
-                        normal: None,
-                        extra: None,
-                    },
-                ));
+                picks.push((entity, hit.clone()));
+            }
+            // A body's name as a system's, and over the same rectangle. What
+            // differs between the two is only where the thing being named
+            // ended up, which is answered before a name is asked about.
+            if let Some(label) = named.get(&entity)
+                && name_rect(on_screen, &body.name, indicator.0).contains(at)
+            {
+                picks.push((*label, hit));
             }
         }
 
@@ -576,14 +606,18 @@ pub fn point_the_cursor(
 ///
 /// Turned to face the camera, so it reads as a ring around the star rather
 /// than as a hoop the star is sitting inside.
+///
+/// It goes out with the shell as the camera comes inside the system, as
+/// [`super::selection::ring`] does and for the same reason.
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
+    seen_as: Res<Apparent>,
     // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (&GlobalTransform, &System, &Indicator, Has<Filtered>),
+        (Entity, &GlobalTransform, &System, &Indicator, Has<Filtered>),
         (With<PointedAt>, Without<Selected>),
     >,
     // Whatever inside a system is pointed at, which carries no filter and no
@@ -618,7 +652,11 @@ pub fn ring(
         }
     }
 
-    for (at, system, indicator, filtered) in &pointed_at {
+    for (entity, at, system, indicator, filtered) in &pointed_at {
+        let standing = seen_as.standing(entity);
+        if standing <= 0. {
+            continue;
+        }
         // Drawn at what the pointer is tested against, so the ring is the
         // outline of the very area that catches.
         let radius = drawn_radius(
@@ -632,7 +670,7 @@ pub fn ring(
         gizmos.circle(
             Isometry3d::new(at.translation(), orbit.rotation),
             radius,
-            dim.against(INDICATOR, filtered),
+            super::selection::going(dim.against(INDICATOR, filtered), standing),
         );
     }
 }
@@ -916,6 +954,7 @@ mod tests {
             .spawn((
                 Indicator(0.),
                 Body {
+                    address: 1,
                     name: String::new(),
                     id: 1,
                     class: String::new(),
@@ -940,6 +979,63 @@ mod tests {
         app.insert_resource(hovered);
         app.update();
         (app, system, body)
+    }
+
+    /// A world holding a star and a body, both under the pointer
+    ///
+    /// The star the deeper of the two, so that anything preferring the nearer
+    /// answers with the body and fails the test.
+    fn crossing() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.add_systems(Update, point_at);
+
+        let body = |id| Body {
+            address: 1,
+            name: String::new(),
+            id,
+            class: String::new(),
+            radius: 1e6,
+        };
+        let star = app.world_mut().spawn((Indicator(0.), body(1), Star)).id();
+        let moon = app.world_mut().spawn((Indicator(0.), body(2))).id();
+
+        let hit = |depth| HitData {
+            camera: Entity::PLACEHOLDER,
+            depth,
+            position: None,
+            normal: None,
+            extra: None,
+        };
+        let mut over = EntityHashMap::default();
+        over.insert(star, hit(50.));
+        over.insert(moon, hit(1.));
+
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+        (app, star, moon)
+    }
+
+    /// A star is pointed at through whatever is crossing in front of it
+    ///
+    /// It is what the system is named for and what everything else in it goes
+    /// round, and a moon a pixel across passing over it is not what the user
+    /// was aiming at.
+    #[test]
+    fn a_star_is_pointed_at_through_what_goes_round_it() {
+        let (app, star, moon) = crossing();
+
+        assert!(
+            app.world().entity(star).contains::<PointedAt>(),
+            "the star was not pointed at"
+        );
+        assert!(
+            !app.world().entity(moon).contains::<PointedAt>(),
+            "a moon in front answered for the star behind it"
+        );
     }
 
     /// A body is pointed at through the system holding it
