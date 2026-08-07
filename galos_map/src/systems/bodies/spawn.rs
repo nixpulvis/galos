@@ -24,7 +24,7 @@ use crate::space;
 use crate::systems::System;
 use crate::systems::pointing::Indicator;
 use crate::systems::roundness::Roundness;
-use crate::systems::route::LineStrip;
+use crate::systems::route::{LineList, LineStrip};
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -32,6 +32,7 @@ use bevy::prelude::*;
 use big_space::prelude::*;
 use galos_db::bodies::Body as DbBody;
 use galos_db::stars::Star as DbStar;
+use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Drawn>();
@@ -189,6 +190,22 @@ const LIGHT_REACH: f32 = 4.;
 /// these are a mesh apiece, every orbit being its own ellipse, so the count is
 /// paid per line.
 const ORBIT_POINTS: usize = 512;
+
+/// How many dashes an orbit with nothing standing on it is drawn in
+///
+/// A count around the ring rather than a length in the world, which is the
+/// other way round from a route's [`crate::systems::route::DASH`]. A route is
+/// a run of legs of wildly different lengths and a share of one cannot be read
+/// at more than one zoom, so its dashes are held at a distance instead. An
+/// orbit is a closed ring seen whole or not at all, and the ellipses in one
+/// system run from a few thousand kilometres to light hours across. A length
+/// would leave the small ones solid and the wide ones a dotted haze; a count
+/// draws every ring as a ring of dashes whatever its size.
+///
+/// Thirty two, which reads as dashes rather than as a chain of ticks by the
+/// time the ring is a few hundred pixels across, and merges into a line below
+/// that, where a dashed ring and a solid one say the same thing anyway.
+const DASHES: usize = 32;
 
 /// Which system's insides are drawn, if any
 #[derive(Resource, Default)]
@@ -597,15 +614,23 @@ fn draw(
 
     // One line per thing that goes round something, hung off whatever it goes
     // round so its own vertices carry only the size of the orbit.
-    let paths = contents
-        .stars()
-        .iter()
-        .map(|s| (s.id, s.parent_id()))
-        .chain(contents.bodies().iter().map(|b| (b.id, b.parent_id())));
-    for (id, parent) in paths {
+    //
+    // Read off the orbits rather than assembled a second time from the rows,
+    // so that what is drawn and what is placed cannot come to disagree about
+    // which things there are. A barycenter is one of them: nothing is drawn at
+    // one, but a close pair rides its ellipse and that is the whole of how far
+    // out the pair sits.
+    //
+    // Which is also what its line is drawn in dashes for. Every other ellipse
+    // has the thing it belongs to standing on it, and a solid ring with
+    // nothing anywhere on it reads as a body the map failed to draw.
+    let bare: HashSet<i16> =
+        contents.barycenters().iter().map(|center| center.id).collect();
+    for (id, parent) in orbits.circling() {
         if let Some(line) = drawn_orbit(
             id,
             parent,
+            bare.contains(&id),
             middle,
             &orbits,
             &grid,
@@ -760,11 +785,16 @@ fn drawn_body(
 /// off its midpoint.
 ///
 /// Nothing for something that does not go round anything, which is what a
-/// primary star comes back as.
+/// primary star and a barycenter at the root of a multi-star system both come
+/// back as.
+///
+/// `bare` for a ring with nothing standing anywhere on it, which is drawn in
+/// dashes. See [`DASHES`].
 #[allow(clippy::too_many_arguments)]
 fn drawn_orbit(
     id: i16,
     parent: Option<i16>,
+    bare: bool,
     middle: DVec3,
     orbits: &Orbits,
     grid: &Grid,
@@ -775,20 +805,120 @@ fn drawn_orbit(
     let about = parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, 0.));
     let (cell, offset) = placed(about - middle, grid);
 
-    let points = path.into_iter().map(|p| p.as_vec3()).collect();
+    let points: Vec<Vec3> = path.into_iter().map(|p| p.as_vec3()).collect();
+    let mesh = if bare {
+        meshes.add(LineList { points: dashed(&points) })
+    } else {
+        meshes.add(LineStrip { points })
+    };
     Some((
         Inside,
         OrbitLine,
         cell,
         Transform::from_translation(offset),
-        Mesh3d(meshes.add(LineStrip { points })),
+        Mesh3d(mesh),
         MeshMaterial3d(material.0.clone()),
     ))
+}
+
+/// A closed path, cut into [`DASHES`] dashes, as the pairs a [`LineList`] draws
+///
+/// The dashes are cut out of the points the whole ring was drawn with rather
+/// than measured along it afresh, so a dash bends exactly as the line it came
+/// from does. A dash and the gap after it are the same length, which is what
+/// makes the run read as a dashed line rather than as marks left by one.
+fn dashed(path: &[Vec3]) -> Vec<Vec3> {
+    let segments = path.len().saturating_sub(1);
+    // Never nothing, so a path too short to cut is drawn every other segment
+    // rather than not at all.
+    let run = (segments / (DASHES * 2)).max(1);
+
+    let mut points = Vec::with_capacity(segments);
+    for segment in 0..segments {
+        if (segment / run).is_multiple_of(2) {
+            points.push(path[segment]);
+            points.push(path[segment + 1]);
+        }
+    }
+    points
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ring drawn with `points` points, closing on itself
+    fn ring(points: usize) -> Vec<Vec3> {
+        (0..=points)
+            .map(|step| {
+                let turn = std::f32::consts::TAU * step as f32 / points as f32;
+                Vec3::new(turn.cos(), 0., turn.sin())
+            })
+            .collect()
+    }
+
+    /// How many dashes a run of pairs comes to
+    ///
+    /// A dash is however many pairs run end to end. Where one pair does not
+    /// start where the last ended, a gap has been left and a new dash begun.
+    fn counted(drawn: &[Vec3]) -> usize {
+        let pairs: Vec<_> = drawn.chunks(2).collect();
+        1 + pairs.windows(2).filter(|two| two[0][1] != two[1][0]).count()
+    }
+
+    /// An orbit with nothing on it comes out in dashes
+    #[test]
+    fn a_bare_orbit_is_cut_into_dashes() {
+        let drawn = dashed(&ring(ORBIT_POINTS));
+
+        assert_eq!(drawn.len() % 2, 0, "a line list is drawn from pairs");
+        assert_eq!(counted(&drawn), DASHES);
+    }
+
+    /// A dash and the gap after it are the same length
+    ///
+    /// Otherwise the run reads as marks left by a line rather than as a dashed
+    /// one. Half the ring drawn is what says the two are equal.
+    #[test]
+    fn a_dash_is_as_long_as_the_gap_after_it() {
+        let whole = ring(ORBIT_POINTS);
+        let drawn = dashed(&whole);
+
+        assert_eq!(
+            drawn.len() / 2,
+            ORBIT_POINTS / 2,
+            "{} of the ring's {ORBIT_POINTS} segments were drawn",
+            drawn.len() / 2
+        );
+    }
+
+    /// Every dash is cut from the points the whole ring was drawn with
+    ///
+    /// So that a dash bends the way the line it came from does, rather than
+    /// cutting the corner between two places on it.
+    #[test]
+    fn the_dashes_are_cut_from_the_line_itself() {
+        let whole = ring(ORBIT_POINTS);
+
+        for point in dashed(&whole) {
+            assert!(
+                whole.contains(&point),
+                "{point} is not on the ring it was cut from"
+            );
+        }
+    }
+
+    /// A path too short to cut into that many is still dashed
+    ///
+    /// Nothing offers one today, every orbit being drawn with the same count.
+    /// The floor is so that one which did comes back as a dashed line rather
+    /// than as no line at all.
+    #[test]
+    fn a_path_too_short_to_cut_is_still_dashed() {
+        let drawn = dashed(&ring(4));
+
+        assert_eq!(drawn.len() / 2, 2, "the short ring lost its dashes");
+    }
 
     /// Turning the orbit lines off hides them, and on brings them back
     #[test]

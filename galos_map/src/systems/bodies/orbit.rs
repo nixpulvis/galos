@@ -225,6 +225,28 @@ impl Orbits {
         self.0.insert(id, (parent, orbit));
     }
 
+    /// What `id` goes round, if it is held and goes round anything
+    pub fn parent(&self, id: i16) -> Option<i16> {
+        self.0.get(&id).and_then(|(parent, _)| *parent)
+    }
+
+    /// Whether `id` is held at all
+    ///
+    /// Apart from [`Self::parent`], which answers the same for something held
+    /// that goes round nothing as for something not held at all.
+    pub fn holds(&self, id: i16) -> bool {
+        self.0.contains_key(&id)
+    }
+
+    /// Everything held, with what each of them goes round
+    ///
+    /// What the lines are drawn from. Stars, bodies and barycenters all arrive
+    /// through [`Self::insert`], so a loop over this draws a line for each of
+    /// the three without having to be told there are three.
+    pub fn circling(&self) -> impl Iterator<Item = (i16, Option<i16>)> + '_ {
+        self.0.iter().map(|(id, (parent, _))| (*id, *parent))
+    }
+
     /// The path `id` traces about whatever it goes round, as `steps` points
     ///
     /// Relative to its parent rather than to the system, so a moon's line is
@@ -511,6 +533,37 @@ mod tests {
     #[test]
     fn something_not_on_record_at_all_sits_at_the_centre() {
         assert_eq!(Orbits::default().place(7, 0.), DVec3::ZERO);
+    }
+
+    /// Everything held comes back with what it goes round
+    ///
+    /// The lines are drawn from this, so a thing missing here is a thing
+    /// placed on the map with no orbit drawn for it.
+    #[test]
+    fn everything_held_is_offered_with_what_it_goes_round() {
+        let mut orbits = Orbits::default();
+        orbits.insert(1, None, circle(1e11));
+        orbits.insert(2, Some(1), circle(3.8e8));
+        orbits.insert(10, Some(1), circle(1e12));
+
+        let mut held: Vec<_> = orbits.circling().collect();
+        held.sort();
+
+        assert_eq!(held, vec![(1, None), (2, Some(1)), (10, Some(1))]);
+    }
+
+    /// What one thing goes round is answered on its own
+    #[test]
+    fn what_a_thing_goes_round_is_answered() {
+        let mut orbits = Orbits::default();
+        orbits.insert(1, None, circle(1e11));
+        orbits.insert(2, Some(1), circle(3.8e8));
+
+        assert_eq!(orbits.parent(2), Some(1));
+        // Held and going round nothing, and not held at all, are the same
+        // answer, as they are to `place`.
+        assert_eq!(orbits.parent(1), None);
+        assert_eq!(orbits.parent(9), None);
     }
 
     /// A chain of parents that points back at itself still answers

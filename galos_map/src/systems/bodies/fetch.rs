@@ -58,12 +58,13 @@ pub(super) struct Asking(Option<(i64, Task<Answer>)>);
 pub(super) struct Answer {
     stars: Vec<DbStar>,
     bodies: Vec<DbBody>,
-    /// The points a close pair goes round, which are not drawn
+    /// The points a close pair goes round
     ///
     /// Asked for with the rest because a body naming one as its nearest
     /// ancestor cannot be placed without it: the walk back to the star stops
     /// at whatever is missing, and a pair whose center is missing is a pair
-    /// drawn at the middle of the system.
+    /// drawn at the middle of the system. The ellipse the pair rides is drawn
+    /// from the same row.
     centers: Vec<DbBarycenter>,
 }
 
