@@ -92,6 +92,25 @@ const INDICATOR_MIN_RADIUS: f32 = 9.5;
 /// system is flying further in, which is what the map is for.
 const BODY_MIN_RADIUS: f32 = 4.;
 
+/// How long the arrow saying which way along a route a stop lies is, in pixels
+///
+/// Small. It is read once, to tell one of two stops from the other, and then
+/// not looked at again.
+const ICON: f32 = 16.;
+
+/// Which way the arrow for `hop` runs, about `at`
+///
+/// Onward for the stop ahead and back the way the route came for the one
+/// behind, which is what the two of them are.
+fn pointing(hop: &crate::systems::route::Hop, at: Vec2) -> (Vec2, Vec2) {
+    let half = Vec2::X * ICON * 0.5;
+
+    match hop {
+        crate::systems::route::Hop::Next => (at - half, at + half),
+        crate::systems::route::Hop::Last => (at + half, at - half),
+    }
+}
+
 /// How far in from the edge of the view a stub pointing at a stop sits
 ///
 /// At the edge rather than about the star. The edge is where the eye goes to
@@ -703,8 +722,14 @@ pub fn ring(
     // is pointing at them, that being the whole of what the mark is for, and
     // whatever the filters say, as they are drawn regardless of those too.
     hops: Query<
-        (Entity, &GlobalTransform, &System, &Indicator),
-        (With<crate::systems::route::Hop>, Without<Selected>),
+        (
+            Entity,
+            &GlobalTransform,
+            &System,
+            &Indicator,
+            &crate::systems::route::Hop,
+        ),
+        Without<Selected>,
     >,
     // The system the camera is standing in, which the lines to the stops
     // leave from.
@@ -741,7 +766,7 @@ pub fn ring(
         // A point `at` pixels from the middle of the screen, drawn out there.
         let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
-        for (entity, at, _, indicator) in &hops {
+        for (entity, at, _, indicator, hop) in &hops {
             let standing = seen_as.standing(entity);
             if standing <= 0. {
                 continue;
@@ -793,6 +818,11 @@ pub fn ring(
                             ),
                         )
                         .resolution(RING_POINTS);
+
+                    // Beside the ring, where a name would stand.
+                    let (tail, head) =
+                        pointing(hop, place + Vec2::X * (ringed + ICON));
+                    gizmos.arrow(placed(tail), placed(head), color);
                 }
                 // Nowhere to be seen: a stub at the edge saying which way to
                 // turn, run out along the same axis a leader would lie on.
@@ -807,6 +837,12 @@ pub fn ring(
                         placed(across * edge),
                         color,
                     );
+
+                    // At the inner end, which is the end that is looked at:
+                    // the outer one is against the border of the view.
+                    let (tail, head) =
+                        pointing(hop, across * (edge - REACHING_LENGTH - ICON));
+                    gizmos.arrow(placed(tail), placed(head), color);
                 }
             }
         }
