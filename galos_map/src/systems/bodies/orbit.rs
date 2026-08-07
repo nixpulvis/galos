@@ -237,10 +237,15 @@ impl Orbits {
         (!path.is_empty()).then_some(path)
     }
 
-    /// Where `id` sits within its system, in metres from the centre
+    /// Where `id` sits within its system, in metres from where the walk ends
     ///
     /// Each step of the way up adds where that thing stands about its own
     /// parent, so a moon lands beside its planet rather than beside the star.
+    ///
+    /// Where the walk ends is the point the system's stars go round, which is
+    /// the arrival star itself only where there is one of them.
+    /// [`super::Contents::place`] measures from the arrival star either way,
+    /// that being where the map puts the middle of a system.
     ///
     /// A parent that is not on record ends the walk, and what is left is
     /// measured from the system's centre. An honest shortcut: the body is put

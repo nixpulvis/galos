@@ -495,16 +495,24 @@ fn draw(
     // as exactly as a float can hold it.
     commands.add_child(eye_entity);
 
+    // Everything is placed short of the arrival star, so the star lands at the
+    // middle of the grid and the system's own position is where its star is.
+    // The camera is sent to that position and zooms towards it, and in a
+    // system whose stars go round a point between them it was arriving at the
+    // point: empty sky with the star it came for ten billion kilometres off to
+    // one side.
+    let middle = contents.middle(&orbits, 0.);
+
     // How far a star has to light, which is out to the far side of the
     // outermost thing going round it.
     let reach = contents.extent().unwrap_or_default();
     for star in contents.stars() {
-        let place = orbits.place(star.id, 0.);
+        let place = orbits.place(star.id, 0.) - middle;
         commands
             .with_child(drawn_star(star, place, reach, &grid, &mesh, &stars));
     }
     for body in contents.bodies() {
-        let place = orbits.place(body.id, 0.);
+        let place = orbits.place(body.id, 0.) - middle;
         commands.with_child(drawn_body(body, place, &grid, &mesh, &bodies));
     }
 
@@ -519,6 +527,7 @@ fn draw(
         if let Some(line) = drawn_orbit(
             id,
             parent,
+            middle,
             &orbits,
             &grid,
             &mut meshes,
@@ -665,9 +674,11 @@ fn drawn_body(
 ///
 /// Nothing for something that does not go round anything, which is what a
 /// primary star comes back as.
+#[allow(clippy::too_many_arguments)]
 fn drawn_orbit(
     id: i16,
     parent: Option<i16>,
+    middle: DVec3,
     orbits: &Orbits,
     grid: &Grid,
     meshes: &mut Assets<Mesh>,
@@ -675,7 +686,7 @@ fn drawn_orbit(
 ) -> Option<impl Bundle> {
     let path = orbits.path(id, ORBIT_POINTS)?;
     let about = parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, 0.));
-    let (cell, offset) = placed(about, grid);
+    let (cell, offset) = placed(about - middle, grid);
 
     let points = path.into_iter().map(|p| p.as_vec3()).collect();
     Some((
