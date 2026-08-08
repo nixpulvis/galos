@@ -28,6 +28,25 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+      # The submodules are taken by path through `[patch.crates-io]`, and a
+      # patch is applied only where its version still satisfies what asked for
+      # it. Bump one of these crates without bumping what requires it and the
+      # patch silently stops applying: the published copy comes down from the
+      # registry beside the working tree, and two of a crate in one graph means
+      # two of every type in it.
+      #
+      # Cargo will not say so. It warns about a patch used by nobody, and these
+      # are always used by somebody -- whichever crate was bumped in step.
+      - name: one of each patched crate, not two
+        run: |
+          for crate in elite_journal eddn edsm eddb; do
+            found=$(cargo tree -d --workspace -p "$crate" | grep -c "^$crate v") || true
+            if [ "$found" -gt 1 ]; then
+              echo "::error::$crate is in the graph $found times, not once:"
+              cargo tree -d --workspace -p "$crate" | grep "^$crate v"
+              exit 1
+            fi
+          done
       - uses: actions-rs/cargo@v1
         with:
           command: test
