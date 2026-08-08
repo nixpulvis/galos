@@ -290,7 +290,7 @@ type Plated = (
     Entity,
     &'static System,
     Option<&'static Children>,
-    Option<&'static crate::systems::route::Hop>,
+    Has<crate::systems::route::Hop>,
 );
 
 /// What [`leaders`] needs of whatever a name is hung off
@@ -534,6 +534,14 @@ pub fn choose_names(
         .find(|(_, body, _, _)| body.primary)
         .map(|(_, body, _, _)| body.address);
 
+    // Where a jump is measured from, for the stops that say one. Looked up in
+    // the same query the layout goes over: the system the camera is standing
+    // in is one of the systems on the map.
+    let from = seen_as
+        .of()
+        .and_then(|held| systems.get(held).ok())
+        .map(|(_, system, ..)| system.position());
+
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
@@ -592,7 +600,12 @@ pub fn choose_names(
                 return None;
             }
             let at = screen_position(orbit, cot_half_fov, viewport, position)?;
-            let rect = name_rect(at, &system.name, indicator.0);
+            // The words that will be set rather than the name alone. A stop
+            // carries the jump to it, which is a good part of the width again,
+            // and room granted for less than that is a name laid over the next
+            // one along.
+            let rect =
+                name_rect(at, &plate_for(system, hop, from), indicator.0);
             let screen = Rect::from_corners(Vec2::ZERO, viewport);
             if screen.intersect(rect).is_empty() {
                 return None;
@@ -854,8 +867,11 @@ pub fn respawn(
     mut commands: Commands,
     named: Query<Plated, With<Named>>,
     // Where the jump to a stop is measured from, which is the system the
-    // camera is standing in.
-    standing_in: Query<&System, Without<Named>>,
+    // camera is standing in. Asked of every system rather than only the ones
+    // without names, so that the answer is the same one [`choose_names`]
+    // granted room for on the frame the camera arrives and the system it is
+    // arriving in has not yet let go of its own name.
+    standing_in: Query<&System>,
     seen_as: Res<Apparent>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     unnamed: Query<&Children, (Or<(With<System>, With<Body>)>, Without<Named>)>,
@@ -894,9 +910,7 @@ pub fn respawn(
         .map(|held| held.position());
 
     for (entity, system, children, hop) in &named {
-        let jump =
-            hop.zip(from).map(|(_, from)| (system.position() - from).length());
-        let said = plate_words(&system.name, jump);
+        let wanted = plate_for(system, hop, from);
 
         let plate = children
             .into_iter()
@@ -907,20 +921,39 @@ pub fn respawn(
         // its mesh, and this runs over every name every frame.
         if let Some(plate) = plate {
             if let Ok(mut words) = plates.get_mut(plate)
-                && !says(&words, &said)
+                && said(&words) != Some(wanted.as_str())
             {
-                *words = Text3d::new(said);
+                *words = Text3d::new(wanted);
             }
             continue;
         }
 
-        let label = commands.spawn(nameplate(said, &materials)).id();
+        let label = commands.spawn(nameplate(wanted, &materials)).id();
 
         commands.entity(entity).add_child(label);
     }
 }
 
-/// What a system's plate says: its name, and `jump` where it is a stop
+/// What the plate for `system` says, `stop` being whether a route reaches it
+///
+/// `from` is where a jump is measured from, which is the system the camera is
+/// standing in. Nothing where the map is holding none, which is also when
+/// nothing is a stop.
+///
+/// Asked wherever a name is laid out as well as where one is set, since what
+/// is drawn is what has to be given room and what has to be caught over.
+pub(super) fn plate_for(
+    system: &System,
+    stop: bool,
+    from: Option<DVec3>,
+) -> String {
+    let jump =
+        from.filter(|_| stop).map(|from| (system.position() - from).length());
+
+    plate_words(&system.name, jump)
+}
+
+/// A name, and `jump` beside it where there is one
 ///
 /// A stop says how far the jump to it is. That is the one number the viewer
 /// wants of a system they are being told to go to next, and the name alone
@@ -932,15 +965,15 @@ fn plate_words(name: &str, jump: Option<f64>) -> String {
     }
 }
 
-/// Whether a plate already says `wanted`
+/// What a plate says, if it says anything this wrote
 ///
 /// A plate is one run of text, [`nameplate`] having set it that way, and
 /// anything else is not a plate this put up.
-fn says(words: &Text3d, wanted: &str) -> bool {
-    matches!(
-        words.segments.as_slice(),
-        [(Text3dSegment::String(said), _)] if said == wanted
-    )
+pub(super) fn said(words: &Text3d) -> Option<&str> {
+    match words.segments.as_slice() {
+        [(Text3dSegment::String(said), _)] => Some(said),
+        _ => None,
+    }
 }
 
 /// The name of a thing, drawn beside it
@@ -1265,21 +1298,19 @@ mod tests {
         assert_eq!(plate_words("lung", None), "LUNG");
     }
 
-    /// A plate is stale the moment the system under it becomes a stop, or
-    /// stops being one
+    /// A plate says back what it was set to
     ///
-    /// Which is what the words are compared for. A system holds its name
-    /// across both of those, so nothing else says the plate has to be set
-    /// again.
+    /// Which is what tells a plate whose words have moved on from one that is
+    /// still saying the right thing, and what the room a name is granted and
+    /// the area it is caught over are measured from.
     #[test]
-    fn a_plate_knows_when_the_words_have_moved_on() {
+    fn a_plate_says_back_what_it_was_set_to() {
         let resting = plate_words("lung", None);
         let stop = plate_words("lung", Some(6.74));
-        let plate = Text3d::new(&resting);
 
-        assert!(says(&plate, &resting));
-        assert!(!says(&plate, &stop));
-        assert!(says(&Text3d::new(&stop), &stop));
+        assert_eq!(said(&Text3d::new(&resting)), Some(resting.as_str()));
+        assert_eq!(said(&Text3d::new(&stop)), Some(stop.as_str()));
+        assert_ne!(said(&Text3d::new(&resting)), Some(stop.as_str()));
     }
 
     /// A camera at the origin, looking the way `Quat::IDENTITY` faces
@@ -1733,4 +1764,3 @@ mod tests {
         );
     }
 }
-

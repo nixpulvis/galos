@@ -24,6 +24,7 @@ use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerId, PointerLocation, PointerMap};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
+use bevy_rich_text3d::Text3d;
 
 pub fn plugin(app: &mut App) {
     app.add_systems(
@@ -593,7 +594,7 @@ fn hits(
         &Indicator,
         &ViewVisibility,
     )>,
-    labels: Query<(Entity, &ChildOf), With<Label>>,
+    labels: Query<(Entity, &ChildOf, &Text3d), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
 ) {
     let Ok((eye, camera, target, orbit, eye_at)) = cameras.single() else {
@@ -619,9 +620,12 @@ fn hits(
     // round the asking happens: the sky runs to thousands of systems and a
     // handful of them wear a name, so the few are gathered here and the many
     // are looked up as they are gone over anyway.
+    // The words with it, so a name is caught over what is drawn rather than
+    // over what it was drawn from: a stop's plate says the jump to it as well
+    // as its name, and that is a good part of the width again.
     let mut named = EntityHashMap::default();
-    for (label, child_of) in &labels {
-        named.insert(child_of.parent(), label);
+    for (label, child_of, words) in &labels {
+        named.insert(child_of.parent(), (label, super::labels::said(words)));
     }
 
     for (pointer, at) in &pointers {
@@ -653,8 +657,13 @@ fn hits(
             // same one [`super::labels::choose_names`] laid out to keep names
             // from touching. So the areas that catch cannot overlap either,
             // and a name is clickable over exactly the room it was granted.
-            if let Some(label) = named.get(&entity)
-                && name_rect(on_screen, &system.name, indicator.0).contains(at)
+            if let Some((label, said)) = named.get(&entity)
+                && name_rect(
+                    on_screen,
+                    said.unwrap_or(&system.name),
+                    indicator.0,
+                )
+                .contains(at)
             {
                 picks.push((*label, hit));
             }
@@ -688,8 +697,9 @@ fn hits(
             // A body's name as a system's, and over the same rectangle. What
             // differs between the two is only where the thing being named
             // ended up, which is answered before a name is asked about.
-            if let Some(label) = named.get(&entity)
-                && name_rect(on_screen, &body.name, indicator.0).contains(at)
+            if let Some((label, said)) = named.get(&entity)
+                && name_rect(on_screen, said.unwrap_or(&body.name), indicator.0)
+                    .contains(at)
             {
                 picks.push((*label, hit));
             }
