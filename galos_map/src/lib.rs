@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use galos_db::Database;
 
 pub mod camera;
+pub mod grid;
 pub mod schedule;
 pub mod search;
 pub mod space;

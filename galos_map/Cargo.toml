@@ -10,7 +10,7 @@ tracy = ["bevy/trace_tracy"]
 
 [dependencies]
 async-std = "*"
-bevy = "0.19"
+bevy = { version = "0.19", features = ["bevy_dev_tools"] }
 bevy-inspector-egui = { version = "0.37", optional = true }
 bevy_egui = "0.40"
 bevy_rich_text3d = "0.7"

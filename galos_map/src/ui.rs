@@ -13,6 +13,7 @@
 //! runs between is what is picked out on the map.
 
 use crate::camera::{MoveCamera, OrbitCamera};
+use crate::grid::ShowGrid;
 use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
@@ -481,6 +482,7 @@ pub struct Knobs<'w> {
     name_radius: ResMut<'w, NameRadius>,
     show_orbits: ResMut<'w, ShowOrbits>,
     show_body_names: ResMut<'w, ShowBodyNames>,
+    show_grid: ResMut<'w, ShowGrid>,
     despawner: MessageWriter<'w, Despawn>,
 }
 
@@ -600,6 +602,14 @@ pub fn chrome(
                 knobs.despawner.write(Despawn);
             }
         });
+
+        // Its own section rather than a row under either view, because it is
+        // the one thing on the pane that belongs to both: the same ruled plane
+        // carries the map from light years out among the systems to light
+        // seconds inside one, and a switch filed under either would read as
+        // turning off only that half of it.
+        heading(ui, "Scale", true);
+        ui.checkbox(&mut knobs.show_grid.0, "Grid");
 
         heading(ui, "Galaxy View", true);
         // Whether a system is named is a choice about what the map draws, the

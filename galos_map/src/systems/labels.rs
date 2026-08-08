@@ -399,7 +399,7 @@ pub(super) fn screen_position(
 /// The unit does not matter so long as it is one unit: a place on screen is a
 /// length over a length, and the two cancel. So a system may ask in light
 /// years and a body in metres, and both are answered in pixels.
-pub(super) fn screen_offset(
+pub(crate) fn screen_offset(
     camera: &OrbitCamera,
     cot_half_fov: f32,
     viewport: Vec2,
