@@ -1,11 +1,14 @@
 #![cfg(unix)]
 use crate::Run;
 use async_std::task;
+use chrono::{DateTime, Utc};
 use eddn::{subscribe, Message, URL};
+use elite_journal::body::Body as JournalBody;
 use elite_journal::entry::incremental::exploration::ScanTarget;
 use elite_journal::entry::market::Market as JournalMarket;
 use elite_journal::entry::route::NavRoute;
 use elite_journal::entry::{Entry, Event};
+use elite_journal::station::Station as JournalStation;
 use elite_journal::system::System as JournalSystem;
 use galos_db::{
     barycenters::Barycenter, bodies::Body, markets::Market, stars::Star,
@@ -13,7 +16,7 @@ use galos_db::{
 };
 use std::time::Duration;
 use structopt::StructOpt;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// How long EDDN may carry nothing before its connection is replaced
 ///
@@ -48,6 +51,7 @@ impl Run for Cli {
                 process_message(
                     db,
                     envelop.message,
+                    envelop.schema_ref,
                     envelop.header.uploader_id,
                 );
             } else if let Err(err) = result {
@@ -57,7 +61,55 @@ impl Run for Cli {
     }
 }
 
-fn process_message(db: &Database, message: Message, user: String) {
+/// Record arriving somewhere: the system, the body arrived at, the station
+///
+/// [`Event::Location`] and [`Event::CarrierJump`] describe a system in the
+/// same terms and are worth the same to a galaxy being mapped, so they are
+/// written the same way. `what` names which of the two it was and is what the
+/// log lines are filed under.
+async fn record_visit(
+    db: &Database,
+    timestamp: DateTime<Utc>,
+    user: &str,
+    system: &JournalSystem,
+    body: Option<&JournalBody>,
+    station: Option<&JournalStation>,
+    what: &str,
+) {
+    match System::from_journal(db, timestamp, user, system).await {
+        Ok(_) => info!(system = %system.name, "{}", what),
+        Err(err) => {
+            warn!(system = %system.name, error = %err, "{}", what)
+        }
+    }
+
+    if let Some(body) = body {
+        match Body::from_journal(db, timestamp, user, body, system.address)
+            .await
+        {
+            Ok(_) => info!(body = %body.name, "{}", what),
+            Err(err) => warn!(body = %body.name, error = %err, "{}", what),
+        }
+    }
+
+    if let Some(station) = station {
+        match Station::from_journal(db, timestamp, user, station, system.address)
+            .await
+        {
+            Ok(_) => info!(station = %station.name, "{}", what),
+            Err(err) => {
+                warn!(station = %station.name, error = %err, "{}", what)
+            }
+        }
+    }
+}
+
+fn process_message(
+    db: &Database,
+    message: Message,
+    schema_ref: String,
+    user: String,
+) {
     task::block_on(async {
         match message {
             Message::Journal(entry) => match entry.event {
@@ -161,55 +213,32 @@ fn process_message(db: &Database, message: Message, user: String) {
                     }
                 }
                 Event::Location(e) => {
-                    match System::from_journal(
+                    record_visit(
                         db,
                         entry.timestamp,
                         &user,
                         &e.system,
+                        e.body.as_ref(),
+                        e.station.as_ref(),
+                        "location",
                     )
                     .await
-                    {
-                        Ok(_) => info!(system = %e.system.name, "location"),
-                        Err(err) => {
-                            warn!(system = %e.system.name, error = %err, "location")
-                        }
-                    }
+                }
 
-                    if let Some(ref body) = e.body {
-                        match Body::from_journal(
-                            db,
-                            entry.timestamp,
-                            &user,
-                            &body,
-                            e.system.address,
-                        )
-                        .await
-                        {
-                            Ok(_) => info!(body = %body.name, "location"),
-                            Err(err) => {
-                                warn!(body = %body.name, error = %err, "location")
-                            }
-                        }
-                    }
-
-                    if let Some(ref station) = e.station {
-                        match Station::from_journal(
-                            db,
-                            entry.timestamp,
-                            &user,
-                            &station,
-                            e.system.address,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                info!(station = %station.name, "location")
-                            }
-                            Err(err) => {
-                                warn!(station = %station.name, error = %err, "location")
-                            }
-                        }
-                    }
+                // A carrier jump is a system visit and says everything about
+                // the system that arriving under your own power does, so it
+                // is recorded the same way.
+                Event::CarrierJump(e) => {
+                    record_visit(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &e.system,
+                        e.body.as_ref(),
+                        e.station.as_ref(),
+                        "carrier jump",
+                    )
+                    .await
                 }
                 Event::Docked(e) => {
                     let system =
@@ -333,7 +362,17 @@ fn process_message(db: &Database, message: Message, user: String) {
                     }
                 }
             }
-            _ => {}
+
+            // Alpha and beta data, describing a galaxy that is not the one
+            // being recorded here.
+            Message::Test(_) => {}
+
+            // A schema nothing here reads yet. Said at `debug` because it is
+            // most of what EDDN carries, and saying it at all is the only way
+            // to know what is going by.
+            Message::Unmodeled(_) => {
+                debug!(schema = %schema_ref, "unmodeled schema")
+            }
         }
     })
 }
