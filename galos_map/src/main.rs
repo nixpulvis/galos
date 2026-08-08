@@ -43,6 +43,9 @@ fn main() {
     app.add_plugins(space::plugin);
     app.add_plugins(camera::plugin);
     app.add_plugins(systems::plugin);
+    // After the systems, whose descent into a star is what carries the ruled
+    // plane from light years to light seconds.
+    app.add_plugins(grid::plugin);
     app.add_plugins(ui::plugin);
     app.add_plugins(search::plugin);
 
