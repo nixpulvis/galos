@@ -12,8 +12,9 @@ use elite_journal::station::Station as JournalStation;
 use elite_journal::system::Coordinate;
 use elite_journal::system::System as JournalSystem;
 use galos_db::{
-    barycenters::Barycenter, bodies::Body, body_signals::BodySignal,
-    codex_entries::CodexEntry, markets::Market, stars::Star, stations::Station,
+    barycenters::Barycenter, black_market::BlackMarket, bodies::Body,
+    body_signals::BodySignal, codex_entries::CodexEntry, markets::Market,
+    outfitting::Outfitting, shipyard::Shipyard, stars::Star, stations::Station,
     system_signals::SystemSignal, systems::System, Database,
 };
 use std::time::Duration;
@@ -135,6 +136,35 @@ async fn ensure_system(
             warn!(system = %name, error = %err, "system");
             false
         }
+    }
+}
+
+/// Note the station a market message names, where its system is known
+///
+/// Trade data names its system by name and never by address, so the system may
+/// well be one nothing has heard of. The market itself records the name and
+/// waits for the system either way; the station can only be written once there
+/// is a system for it to belong to, which is what the market's key onto it
+/// needs.
+///
+/// Best effort by design. A market whose station could not be written is still
+/// worth recording, and `System::create` links both up when the system turns
+/// up later.
+async fn ensure_station_for_market(
+    db: &Database,
+    timestamp: DateTime<Utc>,
+    user: &str,
+    system_name: &str,
+    station_name: &str,
+) {
+    let Ok(system) = System::fetch_by_name(db, system_name).await else {
+        return;
+    };
+
+    if let Err(err) =
+        Station::create(db, timestamp, user, system.address, station_name).await
+    {
+        warn!(station = %station_name, error = %err, "station");
     }
 }
 
@@ -654,6 +684,82 @@ fn process_message(
                     ),
                     Err(err) => {
                         warn!(market = %m.station_name, error = %err, "commodity")
+                    }
+                }
+            }
+
+            // The three schemas whose payload carries no `event` key, and so
+            // could not be reached at all until messages were placed by their
+            // `$schemaRef`.
+            Message::Outfitting(ref e @ Entry { event: ref o, .. }) => {
+                ensure_station_for_market(
+                    db,
+                    e.timestamp,
+                    &user,
+                    &o.system_name,
+                    &o.station_name,
+                )
+                .await;
+
+                match Outfitting::from_journal(db, e.timestamp, o).await {
+                    Ok(_) => info!(
+                        station = %o.station_name,
+                        modules = o.modules.len(),
+                        "outfitting",
+                    ),
+                    Err(err) => {
+                        warn!(station = %o.station_name, error = %err, "outfitting")
+                    }
+                }
+            }
+
+            Message::Shipyard(ref e @ Entry { event: ref s, .. }) => {
+                ensure_station_for_market(
+                    db,
+                    e.timestamp,
+                    &user,
+                    &s.system_name,
+                    &s.station_name,
+                )
+                .await;
+
+                match Shipyard::from_journal(db, e.timestamp, s).await {
+                    Ok(_) => info!(
+                        station = %s.station_name,
+                        ships = s.ships.len(),
+                        "shipyard",
+                    ),
+                    Err(err) => {
+                        warn!(station = %s.station_name, error = %err, "shipyard")
+                    }
+                }
+            }
+
+            Message::BlackMarket(ref e @ Entry { event: ref b, .. }) => {
+                // The schema does not require a market id, and a sale that
+                // cannot name its market cannot be placed at a station.
+                let Some(market_id) = b.market_id else {
+                    debug!(station = %b.station_name, "black market without a market id");
+                    return;
+                };
+
+                ensure_station_for_market(
+                    db,
+                    e.timestamp,
+                    &user,
+                    &b.system_name,
+                    &b.station_name,
+                )
+                .await;
+
+                match BlackMarket::from_journal(db, e.timestamp, market_id, b)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(station = %b.station_name, commodity = %b.name, "black market")
+                    }
+                    Err(err) => {
+                        warn!(station = %b.station_name, error = %err, "black market")
                     }
                 }
             }

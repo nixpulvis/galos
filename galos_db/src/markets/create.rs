@@ -5,22 +5,30 @@ use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Market as JournalMarket;
 
 impl Market {
-    pub async fn from_journal(
+    /// Write the market row that a station's trade data hangs off
+    ///
+    /// Commodities, outfitting, shipyard and the black market all name a
+    /// market the same way -- an id, a station, and a system by name only --
+    /// so they all place it the same way.
+    ///
+    /// Not knowing the system is not a reason to lose what was sent. The name
+    /// is recorded either way, and `System::create` links the market up if the
+    /// system turns up later.
+    ///
+    /// A market can move. Fleet carriers jump, and one of them shows up in
+    /// this database under three systems in an hour. So where it is now
+    /// replaces where it was, rather than filling in a blank: a carrier that
+    /// jumps somewhere unheard of goes back to waiting, instead of keeping the
+    /// last system it was seen in.
+    pub(crate) async fn touch(
         db: &Database,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         timestamp: DateTime<Utc>,
-        market: &JournalMarket,
+        market_id: i64,
+        system_name: &str,
+        station_name: &str,
     ) -> Result<Market, Error> {
-        // Not knowing the system is not a reason to lose the prices. The
-        // name is recorded either way, and `System::create` links the market
-        // up if the system turns up later.
-        //
-        // A market can move. Fleet carriers jump, and one of them shows up in
-        // this database under three systems in an hour. So where it is now
-        // replaces where it was, rather than filling in a blank: a carrier
-        // that jumps somewhere unheard of goes back to waiting, instead of
-        // keeping the last system it was seen in.
-        let address = match System::fetch_by_name(db, &market.system_name).await
-        {
+        let address = match System::fetch_by_name(db, system_name).await {
             Ok(system) => Some(system.address),
             // There is no such system yet, so the market waits for one.
             Err(Error::Sqlx(sqlx::Error::RowNotFound)) => None,
@@ -30,11 +38,6 @@ impl Market {
             // for a write that may never come.
             Err(err) => return Err(err),
         };
-
-        // The market and its commodities go in together. Between clearing the
-        // old prices and writing the new ones the market holds nothing it
-        // trades, which is not a state any reader should be shown.
-        let mut tx = db.pool.begin().await?;
 
         let row = sqlx::query!(
             r#"
@@ -58,13 +61,42 @@ impl Market {
                 station_name,
                 updated_at
             "#,
-            market.market_id,
+            market_id,
             address,
-            market.system_name,
-            market.station_name,
+            system_name,
+            station_name,
             timestamp.naive_utc(),
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(Market {
+            id: row.id,
+            system_address: row.system_address,
+            system_name: row.system_name,
+            station_name: row.station_name,
+            updated_at: row.updated_at.and_utc(),
+        })
+    }
+
+    pub async fn from_journal(
+        db: &Database,
+        timestamp: DateTime<Utc>,
+        market: &JournalMarket,
+    ) -> Result<Market, Error> {
+        // The market and its commodities go in together. Between clearing the
+        // old prices and writing the new ones the market holds nothing it
+        // trades, which is not a state any reader should be shown.
+        let mut tx = db.pool.begin().await?;
+
+        let placed = Market::touch(
+            db,
+            &mut tx,
+            timestamp,
+            market.market_id,
+            &market.system_name,
+            &market.station_name,
+        )
         .await?;
 
         // A market event is read as the whole of what the station trades, so
@@ -133,12 +165,6 @@ impl Market {
 
         tx.commit().await?;
 
-        Ok(Market {
-            id: row.id,
-            system_address: row.system_address,
-            system_name: row.system_name,
-            station_name: row.station_name,
-            updated_at: row.updated_at.and_utc(),
-        })
+        Ok(placed)
     }
 }
