@@ -356,6 +356,8 @@ pub(crate) mod tests {
             allegiance: None,
             economies: None,
             factions: vec![],
+            body_count: None,
+            non_body_count: None,
             updated_at: chrono::DateTime::UNIX_EPOCH,
             updated_by: String::new(),
         }

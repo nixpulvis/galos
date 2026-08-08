@@ -18,6 +18,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -48,6 +50,8 @@ impl System {
                 row.secondary_economy,
             ),
             factions: row.factions,
+            body_count: row.body_count,
+            non_body_count: row.non_body_count,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })
@@ -70,6 +74,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -100,6 +106,8 @@ impl System {
                 row.secondary_economy,
             ),
             factions: row.factions,
+            body_count: row.body_count,
+            non_body_count: row.non_body_count,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })
@@ -121,6 +129,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -154,6 +164,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -212,6 +224,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -260,6 +274,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -283,6 +299,8 @@ impl System {
                 s1.allegiance as "allegiance: Allegiance",
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
+                s1.body_count,
+                s1.non_body_count,
                 s1.updated_at,
                 s1.updated_by,
                 COALESCE((
@@ -318,6 +336,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -341,6 +361,8 @@ impl System {
                 s1.allegiance as "allegiance: Allegiance",
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
+                s1.body_count,
+                s1.non_body_count,
                 s1.updated_at,
                 s1.updated_by,
                 COALESCE((
@@ -376,6 +398,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -443,6 +467,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by
             FROM systems
@@ -463,6 +489,8 @@ impl System {
             .into_iter()
             .map(|row| System {
                 factions: present.remove(&row.address).unwrap_or_default(),
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 address: row.address,
                 name: row.name,
                 position: row
@@ -590,6 +618,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -622,6 +652,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -644,6 +676,8 @@ impl System {
                 systems.allegiance as "allegiance: Allegiance",
                 systems.primary_economy as "primary_economy: Economy",
                 systems.secondary_economy as "secondary_economy: Economy",
+                systems.body_count,
+                systems.non_body_count,
                 systems.updated_at,
                 systems.updated_by,
                 COALESCE((
@@ -678,6 +712,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })

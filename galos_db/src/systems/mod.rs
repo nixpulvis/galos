@@ -23,6 +23,18 @@ pub struct System {
     /// by whoever is naming it.
     pub factions: Vec<i32>,
 
+    /// How many bodies the system holds, as against how many are on record
+    ///
+    /// [`None`] until something reports it: the honk, the all-found tally or
+    /// a nav beacon. Against `bodies` it says whether what is known about a
+    /// system is all of it or a corner of it.
+    pub body_count: Option<i32>,
+    /// The belts and rings, which no body table will ever hold
+    ///
+    /// Only the honk counts them, so this stays [`None`] where the count came
+    /// from either of the other two.
+    pub non_body_count: Option<i32>,
+
     // TODO: Find an elegent way to represent this.
     // & = foreign key = belongs_to
     // pub controlling_faction: &Faction,
