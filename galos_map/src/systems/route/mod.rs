@@ -680,7 +680,12 @@ mod tests {
 
         assert_eq!(
             reaching([&one, &other], Some(2), 0.),
-            vec![(1, Hop::Last), (3, Hop::Next), (4, Hop::Last), (5, Hop::Next)]
+            vec![
+                (1, Hop::Last),
+                (3, Hop::Next),
+                (4, Hop::Last),
+                (5, Hop::Next)
+            ]
         );
     }
 
