@@ -752,7 +752,7 @@ pub fn ring(
         (&GlobalTransform, &Indicator),
         (With<Body>, With<PointedAt>, Without<Selected>),
     >,
-    // The stops the route reaches from here. Ringed whether or not anything
+    // The stops the routes reach from here. Ringed whether or not anything
     // is pointing at them, that being the whole of what the mark is for, and
     // whatever the filters say, as they are drawn regardless of those too.
     hops: Query<(

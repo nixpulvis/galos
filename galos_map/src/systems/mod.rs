@@ -259,11 +259,11 @@ pub struct InReach {
 /// two systems each writing a `Visibility` would take turns undoing each
 /// other.
 ///
-/// Unless it is a stop the route reaches from where the camera stands, which
-/// is drawn whatever either of them says. What that mark is for is finding the
-/// way on from here, and a spyglass narrower than the jump ahead, or a filter
-/// that admits this system and not the next, would take away the one thing
-/// that answers it.
+/// Unless it is a stop one of the routes reaches from where the camera stands,
+/// which is drawn whatever either of them says. What that mark is for is
+/// finding the way on from here, and a spyglass narrower than the jump ahead,
+/// or a filter that admits this system and not the next, would take away the
+/// one thing that answers it.
 ///
 /// A filtered system is only hidden where it is being dimmed to nothing.
 /// Anywhere above that it is drawn faintly, which is the other half of what
