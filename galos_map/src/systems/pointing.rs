@@ -823,21 +823,6 @@ pub fn ring(
             .map(|at| at - viewport * 0.5)
             .filter(|at| at.abs().cmple(viewport * 0.5).all());
 
-            // Which way the stop lies across the view. Both of the things this
-            // draws lie along it, so following one leads to the other and the
-            // handover between them moves nothing. Nothing to say for a stop
-            // lying straight out through the middle, which has no across to it.
-            let across =
-                landed.and_then(|at| at.try_normalize()).or_else(|| {
-                    (at.translation() - from).try_normalize().and_then(
-                        |toward| {
-                            Vec2::new(toward.dot(right), -toward.dot(up))
-                                .try_normalize()
-                        },
-                    )
-                });
-            let Some(across) = across else { continue };
-
             // Where the mark saying which way this stop lies goes, which each
             // of the two ways of drawing a stop settles for itself.
             let icon = match landed {
@@ -873,6 +858,21 @@ pub fn ring(
                 // Nowhere to be seen: a stub at the edge saying which way to
                 // turn, run out along the same axis a leader would lie on.
                 None => {
+                    // Which way the stop lies across the view, which is the
+                    // axis the stub is run out along. Asked only here: a stop
+                    // in sight is drawn where it is, and needs no direction to
+                    // be found by. Nothing to say for one lying straight out
+                    // through the middle, which has no across to it.
+                    let Some(across) = (at.translation() - from)
+                        .try_normalize()
+                        .and_then(|toward| {
+                            Vec2::new(toward.dot(right), -toward.dot(up))
+                                .try_normalize()
+                        })
+                    else {
+                        continue;
+                    };
+
                     let half = viewport * 0.5;
                     let edge = (half.x / across.x.abs())
                         .min(half.y / across.y.abs())
