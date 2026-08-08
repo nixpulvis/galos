@@ -11,7 +11,8 @@ use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_rich_text3d::{
-    LoadFonts, Text3d, Text3dPlugin, Text3dStyling, TextAnchor, TextAtlas,
+    LoadFonts, Text3d, Text3dPlugin, Text3dSegment, Text3dStyling, TextAnchor,
+    TextAtlas,
 };
 
 pub(crate) fn plugin(app: &mut App) {
@@ -842,6 +843,12 @@ pub(super) fn name_rect(at: Vec2, name: &str, clear: f32) -> Rect {
 /// without a [`Named`] has no label, which is what keeps the mesh cost to
 /// the names actually drawn, and means nothing has to be hidden after the
 /// fact.
+///
+/// A name already up is set again where the words have moved on. What a
+/// system's plate says is not its name alone: a stop carries the jump to it,
+/// and a system becomes a stop and stops being one without ever losing the
+/// name it holds. Left alone, a plate would go on saying whatever was true the
+/// frame it was spawned.
 #[allow(clippy::too_many_arguments)]
 pub fn respawn(
     mut commands: Commands,
@@ -853,6 +860,8 @@ pub fn respawn(
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     unnamed: Query<&Children, (Or<(With<System>, With<Body>)>, Without<Named>)>,
     labels: Query<Entity, With<Label>>,
+    // The words on a plate already up, which only a system's ever change.
+    mut plates: Query<&mut Text3d, With<Label>>,
     materials: Res<LabelMaterials>,
 ) {
     for children in &unnamed {
@@ -885,26 +894,53 @@ pub fn respawn(
         .map(|held| held.position());
 
     for (entity, system, children, hop) in &named {
-        let labelled = children
-            .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
-        if labelled {
+        let jump =
+            hop.zip(from).map(|(_, from)| (system.position() - from).length());
+        let said = plate_words(&system.name, jump);
+
+        let plate = children
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .find(|child| labels.contains(*child));
+
+        // Written only where the words moved. Setting a plate again rebuilds
+        // its mesh, and this runs over every name every frame.
+        if let Some(plate) = plate {
+            if let Ok(mut words) = plates.get_mut(plate)
+                && !says(&words, &said)
+            {
+                *words = Text3d::new(said);
+            }
             continue;
         }
 
-        // A stop says how far the jump to it is. That is the one number the
-        // viewer wants of a system they are being told to go to next, and the
-        // name alone does not carry it.
-        let said = match (hop, from) {
-            (Some(_), Some(from)) => {
-                let jump = (system.position() - from).length();
-                format!("{} {jump:.1} Ly", system.name.to_uppercase())
-            }
-            _ => system.name.to_uppercase(),
-        };
         let label = commands.spawn(nameplate(said, &materials)).id();
 
         commands.entity(entity).add_child(label);
     }
+}
+
+/// What a system's plate says: its name, and `jump` where it is a stop
+///
+/// A stop says how far the jump to it is. That is the one number the viewer
+/// wants of a system they are being told to go to next, and the name alone
+/// does not carry it. In light years, as every distance the map states is.
+fn plate_words(name: &str, jump: Option<f64>) -> String {
+    match jump {
+        Some(jump) => format!("{} {jump:.1} Ly", name.to_uppercase()),
+        None => name.to_uppercase(),
+    }
+}
+
+/// Whether a plate already says `wanted`
+///
+/// A plate is one run of text, [`nameplate`] having set it that way, and
+/// anything else is not a plate this put up.
+fn says(words: &Text3d, wanted: &str) -> bool {
+    matches!(
+        words.segments.as_slice(),
+        [(Text3dSegment::String(said), _)] if said == wanted
+    )
 }
 
 /// The name of a thing, drawn beside it
@@ -1221,6 +1257,30 @@ pub fn tint_marked_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stop says the jump to it, and anything else says its name alone
+    #[test]
+    fn only_a_stop_says_how_far_off_it_is() {
+        assert_eq!(plate_words("lung", Some(6.74)), "LUNG 6.7 Ly");
+        assert_eq!(plate_words("lung", None), "LUNG");
+    }
+
+    /// A plate is stale the moment the system under it becomes a stop, or
+    /// stops being one
+    ///
+    /// Which is what the words are compared for. A system holds its name
+    /// across both of those, so nothing else says the plate has to be set
+    /// again.
+    #[test]
+    fn a_plate_knows_when_the_words_have_moved_on() {
+        let resting = plate_words("lung", None);
+        let stop = plate_words("lung", Some(6.74));
+        let plate = Text3d::new(&resting);
+
+        assert!(says(&plate, &resting));
+        assert!(!says(&plate, &stop));
+        assert!(says(&Text3d::new(&stop), &stop));
+    }
 
     /// A camera at the origin, looking the way `Quat::IDENTITY` faces
     fn camera(rotation: Quat) -> OrbitCamera {
@@ -1673,3 +1733,4 @@ mod tests {
         );
     }
 }
+
