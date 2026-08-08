@@ -34,9 +34,6 @@ eddn = { path = "./eddn" }
 edsm = { path = "./edsm" }
 elite_journal = { path = "./elite_journal" }
 
-# TODO
-geozero = { git = "https://github.com/nixpulvis/geozero" }
-
 [workspace.package]
 # Set by bevy 0.19, the highest floor anything here depends on, and well above
 # the 1.85 that galos_map's edition needs.

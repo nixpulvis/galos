@@ -13,16 +13,13 @@ chrono = "*"
 pathfinding = "*"
 ordered-float = "*"
 elite_journal = { path = "../elite_journal", features = ["with-postgis-sqlx"] }
-
-[dependencies.sqlx]
-version = "^0.8"
-features = ["runtime-async-std-native-tls", "postgres", "chrono"]
-
-[dependencies.geozero]
-git = "https://github.com/nixpulvis/geozero"
 # A coordinate is written and read as a geometry column here, which is what
 # `with-postgis-sqlx` is: geozero's own `Encode`, `Decode` and `Type` for the
 # wrappers the queries name. Asked for here rather than taken from whatever
 # `elite_journal` happens to turn on, this being the crate that speaks to the
 # database.
-features = ["with-wkb", "with-postgis-sqlx"]
+geozero = { version = "0.15", features = ["with-wkb", "with-postgis-sqlx"] }
+
+[dependencies.sqlx]
+version = "^0.8"
+features = ["runtime-async-std-native-tls", "postgres", "chrono"]
