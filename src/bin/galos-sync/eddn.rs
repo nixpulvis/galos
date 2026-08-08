@@ -10,6 +10,7 @@ use elite_journal::entry::route::NavRoute;
 use elite_journal::entry::{Entry, Event};
 use elite_journal::station::Station as JournalStation;
 use elite_journal::system::System as JournalSystem;
+use elite_journal::system::Coordinate;
 use galos_db::{
     barycenters::Barycenter, bodies::Body, markets::Market, stars::Star,
     stations::Station, systems::System, Database,
@@ -101,6 +102,39 @@ async fn record_visit(
                 warn!(station = %station.name, error = %err, "{}", what)
             }
         }
+    }
+}
+
+/// Record how many bodies a system holds
+///
+/// The honk, the all-found tally and a nav beacon all report it, so they all
+/// land here. `what` names which of them it was.
+#[allow(clippy::too_many_arguments)]
+async fn record_body_counts(
+    db: &Database,
+    timestamp: DateTime<Utc>,
+    user: &str,
+    address: i64,
+    name: &str,
+    position: Option<Coordinate>,
+    body_count: i32,
+    non_body_count: Option<i32>,
+    what: &str,
+) {
+    match System::set_body_counts(
+        db,
+        address,
+        name,
+        position,
+        body_count,
+        non_body_count,
+        timestamp,
+        user,
+    )
+    .await
+    {
+        Ok(_) => info!(system = %name, bodies = body_count, "{}", what),
+        Err(err) => warn!(system = %name, error = %err, "{}", what),
     }
 }
 
@@ -237,6 +271,54 @@ fn process_message(
                         e.body.as_ref(),
                         e.station.as_ref(),
                         "carrier jump",
+                    )
+                    .await
+                }
+
+                // How much there is in a system, which is the other half of
+                // knowing what has been found in it. Three events report the
+                // same number under three different names.
+                Event::FssDiscoveryScan(e) => {
+                    record_body_counts(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        e.system_address,
+                        &e.system_name,
+                        Some(e.star_pos),
+                        e.body_count,
+                        Some(e.non_body_count),
+                        "fss discovery scan",
+                    )
+                    .await
+                }
+
+                Event::FssAllBodiesFound(e) => {
+                    record_body_counts(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        e.system_address,
+                        &e.system_name,
+                        Some(e.star_pos),
+                        e.count,
+                        None,
+                        "fss all bodies found",
+                    )
+                    .await
+                }
+
+                Event::NavBeaconScan(e) => {
+                    record_body_counts(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        e.system_address,
+                        &e.star_system,
+                        Some(e.star_pos),
+                        e.num_bodies,
+                        None,
+                        "nav beacon scan",
                     )
                     .await
                 }
