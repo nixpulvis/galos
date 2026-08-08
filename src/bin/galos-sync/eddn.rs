@@ -388,6 +388,43 @@ fn process_message(
                     .await
                 }
 
+                // A settlement is a station on a planet's surface, and this is
+                // the only thing that says where on the planet it is.
+                Event::ApproachSettlement(e) => {
+                    if !ensure_system(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        e.system_address,
+                        &e.system_name,
+                        Some(e.star_pos),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+
+                    match Station::from_settlement(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &e,
+                    )
+                    .await
+                    {
+                        Ok(_) => info!(
+                            settlement = %e.name,
+                            body = %e.body_name,
+                            "approach settlement",
+                        ),
+                        Err(err) => warn!(
+                            settlement = %e.name,
+                            error = %err,
+                            "approach settlement",
+                        ),
+                    }
+                }
+
                 // What is written on a body's surface. The surface scan and
                 // the honk report it in the same terms, so both land in the
                 // same place.
