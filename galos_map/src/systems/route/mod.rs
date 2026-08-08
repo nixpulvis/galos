@@ -139,12 +139,12 @@ fn trim(
 /// this is a mark around one of them.
 pub const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
 
-/// A stop the route reaches from the system the camera is standing in
+/// A stop a route reaches from the system the camera is standing in
 ///
-/// The one behind and the one ahead. A route is drawn as a line between
-/// systems, and that line is gone by the time the camera is inside one of
-/// them, so what is left to say where the route goes is the two systems it
-/// goes to and from.
+/// The one behind and the one ahead, of every route running through that
+/// system. A route is drawn as a line between systems, and that line is gone
+/// by the time the camera is inside one of them, so what is left to say where
+/// the route goes is the systems it goes to and from.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Hop {
     /// Where the route came from
@@ -153,12 +153,21 @@ pub enum Hop {
     Next,
 }
 
-/// Which systems a route reaches from `here`, behind and ahead
+/// Which systems `routes` reach from `here`, and which way each of them lies
 ///
-/// Nothing for either end of the route, which reaches only one way, and
-/// nothing at all where the camera is not standing in a system the route runs
-/// through: a route passes near far more systems than it stops at, and being
-/// beside one is not being on it.
+/// Every route the map is showing, in whatever order they are handed over, so
+/// that standing on one of several is standing on a route: the one being
+/// worked with is drawn in front out among the stars, and in here what matters
+/// is which routes come through the system the camera is in.
+///
+/// Nothing for either end of a route, which reaches only one way, and nothing
+/// from a system a route does not run through: a route passes near far more
+/// systems than it stops at, and being beside one is not being on it.
+///
+/// A system two routes both reach, one going on and the other coming back, is
+/// marked the way the first of them reaches it. There is one mark to be drawn
+/// and it points one way, so the routes are asked in the order they are given
+/// and the first answer stands.
 ///
 /// And nothing at all until the camera is inside, which `standing` says: it is
 /// how much of the mark for the system being held is left, and it reaches
@@ -167,30 +176,39 @@ pub enum Hop {
 /// stood in, and reading the rows alone put the mark up while the camera was
 /// still out among the stars. Out there the line answers this question
 /// already, and answers it better; in here the line is gone.
-fn reaching(
-    route: Option<&Filter>,
+fn reaching<'a>(
+    routes: impl IntoIterator<Item = &'a Filter>,
     here: Option<i64>,
     standing: f32,
-) -> (Option<i64>, Option<i64>) {
+) -> Vec<(i64, Hop)> {
     if standing > 0. {
-        return (None, None);
+        return Vec::new();
+    }
+    let Some(here) = here else { return Vec::new() };
+
+    let mut reached: Vec<(i64, Hop)> = Vec::new();
+    for route in routes {
+        let Filter::Route { systems, .. } = route else { continue };
+        let Some(at) = systems.iter().position(|address| *address == here)
+        else {
+            continue;
+        };
+
+        let behind = at.checked_sub(1).and_then(|before| systems.get(before));
+        let ahead = systems.get(at + 1);
+        for (address, way) in [(behind, Hop::Last), (ahead, Hop::Next)] {
+            let Some(address) = address else { continue };
+            if reached.iter().any(|(held, _)| held == address) {
+                continue;
+            }
+            reached.push((*address, way));
+        }
     }
 
-    let (Some(Filter::Route { systems, .. }), Some(here)) = (route, here)
-    else {
-        return (None, None);
-    };
-    let Some(at) = systems.iter().position(|address| *address == here) else {
-        return (None, None);
-    };
-
-    (
-        at.checked_sub(1).and_then(|before| systems.get(before)).copied(),
-        systems.get(at + 1).copied(),
-    )
+    reached
 }
 
-/// Keep the mark on whichever two systems the route reaches from here
+/// Keep the mark on whichever systems the routes reach from here
 ///
 /// Written only where it changed. This runs over every star every frame, and
 /// inserting a component marks the star changed whether or not the value
@@ -203,17 +221,20 @@ fn hops(
     systems: Query<(Entity, &System, Option<&Hop>)>,
     mut commands: Commands,
 ) {
-    let (last, next) =
-        reaching(active(&filters, &selected.0), contents.of(), seen_as.held());
+    // The route in front asked first, so that where two of them reach the same
+    // system in opposite directions the one being worked with says which way
+    // it lies.
+    let front = active(&filters, &selected.0);
+    let routes = front
+        .into_iter()
+        .chain(shown(&filters).filter(|route| Some(*route) != front));
+    let reached = reaching(routes, contents.of(), seen_as.held());
 
     for (entity, system, held) in &systems {
-        let wanted = if last.is_some() && last == Some(system.address) {
-            Some(Hop::Last)
-        } else if next.is_some() && next == Some(system.address) {
-            Some(Hop::Next)
-        } else {
-            None
-        };
+        let wanted = reached
+            .iter()
+            .find(|(address, _)| *address == system.address)
+            .map(|(_, way)| *way);
 
         match (held, wanted) {
             (Some(held), Some(wanted)) if *held == wanted => {}
@@ -415,20 +436,24 @@ fn active<'a>(
     filters: &'a Filters,
     selected: &'a Option<Filter>,
 ) -> Option<&'a Filter> {
-    let held = || {
-        filters
-            .iter()
-            .filter(|active| active.enabled)
-            .map(|active| &active.filter)
-            .filter(|filter| matches!(filter, Filter::Route { .. }))
-    };
-
     selected
         .as_ref()
-        .filter(|picked| held().any(|filter| filter == *picked))
+        .filter(|picked| shown(filters).any(|filter| filter == *picked))
         // The last route held, which is the last one plotted: they are added
         // in the order they land.
-        .or_else(|| held().last())
+        .or_else(|| shown(filters).last())
+}
+
+/// Every route the map is showing, in the order they were plotted
+///
+/// A row turned off is not among them, its line being off the map: what is
+/// asked of the routes is asked about what the user can see.
+fn shown(filters: &Filters) -> impl Iterator<Item = &Filter> {
+    filters
+        .iter()
+        .filter(|active| active.enabled)
+        .map(|active| &active.filter)
+        .filter(|filter| matches!(filter, Filter::Route { .. }))
 }
 
 /// How faint a route that is not the active one is drawn
@@ -615,7 +640,10 @@ mod tests {
     fn a_route_reaches_both_ways_from_where_it_stands() {
         let route = route(vec![1, 2, 3]);
 
-        assert_eq!(reaching(Some(&route), Some(2), 0.), (Some(1), Some(3)));
+        assert_eq!(
+            reaching([&route], Some(2), 0.),
+            vec![(1, Hop::Last), (3, Hop::Next)]
+        );
     }
 
     /// Either end of a route reaches only the one way
@@ -623,8 +651,57 @@ mod tests {
     fn the_ends_of_a_route_reach_one_way() {
         let route = route(vec![1, 2, 3]);
 
-        assert_eq!(reaching(Some(&route), Some(1), 0.), (None, Some(2)));
-        assert_eq!(reaching(Some(&route), Some(3), 0.), (Some(2), None));
+        assert_eq!(reaching([&route], Some(1), 0.), vec![(2, Hop::Next)]);
+        assert_eq!(reaching([&route], Some(3), 0.), vec![(2, Hop::Last)]);
+    }
+
+    /// A route reaches from where it stands whether or not it is the one in
+    /// front
+    ///
+    /// Several routes stand at once, and the camera is inside one system at a
+    /// time. Which route the user was last working with says nothing about
+    /// which of them runs through the system they are standing in.
+    #[test]
+    fn every_route_shown_reaches_from_where_it_stands() {
+        let front = route(vec![1, 2, 3]);
+        let behind = route(vec![7, 8, 9]);
+
+        assert_eq!(
+            reaching([&front, &behind], Some(8), 0.),
+            vec![(7, Hop::Last), (9, Hop::Next)]
+        );
+    }
+
+    /// Two routes through one system reach both ways along each of them
+    #[test]
+    fn two_routes_through_a_system_both_reach() {
+        let one = route(vec![1, 2, 3]);
+        let other = route(vec![4, 2, 5]);
+
+        assert_eq!(
+            reaching([&one, &other], Some(2), 0.),
+            vec![(1, Hop::Last), (3, Hop::Next), (4, Hop::Last), (5, Hop::Next)]
+        );
+    }
+
+    /// A stop two routes disagree about is marked the way the first says
+    ///
+    /// One mark is drawn for it and it points one way. The routes are handed
+    /// over with the one being worked with at the head, so that is the one
+    /// answering.
+    #[test]
+    fn a_stop_reached_both_ways_takes_the_first_answer() {
+        let there = route(vec![1, 2, 3]);
+        let back = route(vec![3, 2, 1]);
+
+        assert_eq!(
+            reaching([&there, &back], Some(2), 0.),
+            vec![(1, Hop::Last), (3, Hop::Next)]
+        );
+        assert_eq!(
+            reaching([&back, &there], Some(2), 0.),
+            vec![(3, Hop::Last), (1, Hop::Next)]
+        );
     }
 
     /// Two points, so a leg is one pair of them
@@ -710,8 +787,8 @@ mod tests {
     fn a_route_reaches_nowhere_from_outside_the_system() {
         let route = route(vec![1, 2, 3]);
 
-        assert_eq!(reaching(Some(&route), Some(2), 1.), (None, None));
-        assert_eq!(reaching(Some(&route), Some(2), 0.5), (None, None));
+        assert!(reaching([&route], Some(2), 1.).is_empty());
+        assert!(reaching([&route], Some(2), 0.5).is_empty());
     }
 
     /// Standing beside a route is not standing on it
@@ -722,9 +799,9 @@ mod tests {
     fn a_system_the_route_misses_reaches_nowhere() {
         let route = route(vec![1, 2, 3]);
 
-        assert_eq!(reaching(Some(&route), Some(9), 0.), (None, None));
-        assert_eq!(reaching(Some(&route), None, 0.), (None, None));
-        assert_eq!(reaching(None, Some(2), 0.), (None, None));
+        assert!(reaching([&route], Some(9), 0.).is_empty());
+        assert!(reaching([&route], None, 0.).is_empty());
+        assert!(reaching([], Some(2), 0.).is_empty());
     }
 
     /// A route filter over the systems at `addresses`
