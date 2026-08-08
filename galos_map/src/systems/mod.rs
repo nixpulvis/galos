@@ -21,6 +21,8 @@ pub fn plugin(app: &mut App) {
     });
 
     app.add_plugins(fetch::plugin);
+    app.add_plugins(roundness::plugin);
+    app.add_plugins(bodies::plugin);
     app.add_plugins(spawn::plugin);
     app.add_plugins(despawn::plugin);
     app.add_plugins(scale::plugin);
@@ -80,12 +82,32 @@ pub struct System {
     updated_at: DateTime<Utc>,
 }
 
+impl System {
+    /// Where the system is, in light years from the galactic center
+    ///
+    /// A [`System`]'s fields are private to this module, and the camera is
+    /// not in it. It has to measure from a system to descend into one.
+    pub fn position(&self) -> DVec3 {
+        DVec3::from(self.position)
+    }
+
+    /// What the system is called
+    ///
+    /// A [`System`]'s fields are private to this module, and a route names
+    /// both of its ends in the bar, which is not.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+pub mod bodies;
 pub mod despawn;
 pub mod fetch;
 pub mod filter;
 pub mod info;
 pub mod labels;
 pub mod pointing;
+pub mod roundness;
 pub mod route;
 pub mod scale;
 pub mod selection;
@@ -237,6 +259,12 @@ pub struct InReach {
 /// two systems each writing a `Visibility` would take turns undoing each
 /// other.
 ///
+/// Unless it is a stop one of the routes reaches from where the camera stands,
+/// which is drawn whatever either of them says. What that mark is for is
+/// finding the way on from here, and a spyglass narrower than the jump ahead,
+/// or a filter that admits this system and not the next, would take away the
+/// one thing that answers it.
+///
 /// A filtered system is only hidden where it is being dimmed to nothing.
 /// Anywhere above that it is drawn faintly, which is the other half of what
 /// [`filter`] is for: a faction read against the space around it.
@@ -246,7 +274,12 @@ pub struct InReach {
 /// changed each frame, and each star drags its name along with it.
 pub fn visibility(
     camera: Query<&OrbitCamera>,
-    mut systems: Query<(&System, &mut Visibility, Has<filter::Filtered>)>,
+    mut systems: Query<(
+        &System,
+        &mut Visibility,
+        Has<filter::Filtered>,
+        Has<route::Hop>,
+    )>,
     spyglass: Res<Spyglass>,
     dim: Res<filter::DimTo>,
     mut in_reach: ResMut<InReach>,
@@ -255,7 +288,7 @@ pub fn visibility(
     let excluded_are_drawn = dim.0 > 0.;
 
     let mut tally = InReach::default();
-    for (system, mut visibility, filtered) in &mut systems {
+    for (system, mut visibility, filtered, hop) in &mut systems {
         let within =
             spyglass.reaches(camera.center, DVec3::from(system.position));
         if within {
@@ -265,11 +298,13 @@ pub fn visibility(
             }
         }
 
-        visibility.set_if_neq(if within && (!filtered || excluded_are_drawn) {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        });
+        visibility.set_if_neq(
+            if hop || (within && (!filtered || excluded_are_drawn)) {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            },
+        );
     }
 
     // Only where it moved, so that a count nobody is watching does not mark

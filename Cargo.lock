@@ -3103,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "eddn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "elite_journal",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "elite_journal"
-version = "0.2.2"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "geozero",
@@ -3696,6 +3696,7 @@ dependencies = [
  "big_space",
  "chrono",
  "elite_journal",
+ "epaint_default_fonts",
  "galos_db",
  "log",
 ]
@@ -8663,7 +8664,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

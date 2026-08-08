@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT *\n            FROM bodies\n            WHERE system_address = $1 AND id = $2\n            ",
+  "query": "\n            SELECT *\n            FROM stars\n            WHERE system_address = $1 AND id = $2\n            ",
   "describe": {
     "columns": [
       {
@@ -10,13 +10,13 @@
       },
       {
         "ordinal": 1,
-        "name": "name",
-        "type_info": "Varchar"
+        "name": "id",
+        "type_info": "Int2"
       },
       {
         "ordinal": 2,
-        "name": "id",
-        "type_info": "Int2"
+        "name": "name",
+        "type_info": "Varchar"
       },
       {
         "ordinal": 3,
@@ -35,118 +35,113 @@
       },
       {
         "ordinal": 6,
-        "name": "planet_class",
-        "type_info": "Varchar"
+        "name": "absolute_magnitude",
+        "type_info": "Float4"
       },
       {
         "ordinal": 7,
-        "name": "tidal_lock",
-        "type_info": "Bool"
+        "name": "age_my",
+        "type_info": "Int4"
       },
       {
         "ordinal": 8,
-        "name": "landable",
-        "type_info": "Bool"
+        "name": "distance_from_arrival_ls",
+        "type_info": "Float4"
       },
       {
         "ordinal": 9,
-        "name": "terraform_state",
+        "name": "luminosity",
         "type_info": "Varchar"
       },
       {
         "ordinal": 10,
-        "name": "atmosphere",
+        "name": "star_class",
         "type_info": "Varchar"
       },
       {
         "ordinal": 11,
-        "name": "atmosphere_type",
-        "type_info": "Varchar"
+        "name": "stellar_mass",
+        "type_info": "Float4"
       },
       {
         "ordinal": 12,
-        "name": "volcanism",
-        "type_info": "Varchar"
+        "name": "subclass",
+        "type_info": "Int2"
       },
       {
         "ordinal": 13,
-        "name": "mass",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 14,
-        "name": "radius",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 15,
-        "name": "surface_gravity",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 16,
-        "name": "surface_temperature",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 17,
-        "name": "surface_pressure",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 18,
-        "name": "semi_major_axis",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 19,
-        "name": "eccentricity",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 20,
-        "name": "orbital_inclination",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 21,
-        "name": "periapsis",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 22,
-        "name": "orbital_period",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 23,
-        "name": "rotation_period",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 24,
-        "name": "axial_tilt",
-        "type_info": "Float4"
-      },
-      {
-        "ordinal": 25,
         "name": "ascending_node",
         "type_info": "Float4"
       },
       {
-        "ordinal": 26,
+        "ordinal": 14,
+        "name": "axial_tilt",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 15,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 16,
         "name": "mean_anomaly",
         "type_info": "Float4"
       },
       {
-        "ordinal": 27,
+        "ordinal": 17,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 18,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 19,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 20,
+        "name": "radius",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 21,
+        "name": "rotation_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 22,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 23,
+        "name": "temperature",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 24,
         "name": "was_mapped",
         "type_info": "Bool"
       },
       {
-        "ordinal": 28,
+        "ordinal": 25,
         "name": "was_discovered",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 26,
+        "name": "parent_ids",
+        "type_info": "Int2Array"
+      },
+      {
+        "ordinal": 27,
+        "name": "parent_types",
+        "type_info": "VarcharArray"
       }
     ],
     "parameters": {
@@ -165,27 +160,26 @@
       false,
       false,
       false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
       true,
       true,
+      true,
+      true,
+      true,
+      false,
       false,
       true,
       false,
       false,
       false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false
+      true,
+      true
     ]
   },
-  "hash": "f36dc7ca2e4572d5707f77c996b67728d2227bcc94113ccb9ce64540eb47db67"
+  "hash": "c6ebfa264ace5f6253700c44ebd2cfa677dc279b0fd3a4ff3e23556de8534096"
 }

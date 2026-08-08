@@ -1,10 +1,12 @@
 use crate::camera::{FRAMING_MARGIN, MoveCamera};
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
+use crate::systems::System;
 use crate::systems::filter::{Filter, Filters};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
+use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
 use super::system_to_vec;
@@ -28,6 +30,223 @@ pub fn plugin(app: &mut App) {
         Update,
         emphasise.in_set(MapSet::Present).after(follow_filters),
     );
+    // Marked while the stars are being populated, so that what reads the mark
+    // in `Present` -- what is drawn, and what is ringed -- reads this frame's
+    // answer rather than last frame's.
+    app.add_systems(
+        Update,
+        hops.in_set(MapSet::Populate).after(follow_filters),
+    );
+    // After what is drawn has been settled, that being what the line is cut
+    // back to.
+    app.add_systems(
+        Update,
+        trim.in_set(MapSet::Present).after(crate::systems::visibility),
+    );
+}
+
+/// The stops a route's line runs through, and which of them were drawn
+///
+/// The addresses as well as the places, since which systems are on the map
+/// decides what of the line is drawn and the places alone cannot say. Kept on
+/// the line because a system the route runs through may not be spawned at all:
+/// there is then no entity to read a position off, and the line still has to
+/// know where the leg was going.
+#[derive(Component)]
+pub struct Path {
+    /// Each stop, by address, and where it sits in the line's own space
+    stops: Vec<(i64, Vec3)>,
+    /// Which of them were on the map when the line was last cut
+    shown: Vec<bool>,
+}
+
+impl Path {
+    /// A path through `stops`, with nothing yet known about what is drawn
+    pub fn new(stops: Vec<(i64, Vec3)>) -> Path {
+        let shown = vec![true; stops.len()];
+        Path { stops, shown }
+    }
+
+    /// The line as it stands, whole
+    pub(super) fn whole(&self) -> Vec<Vec3> {
+        self.stops.iter().map(|(_, at)| *at).collect()
+    }
+}
+
+/// Cut each route's line back to what is on the map
+///
+/// Runs over the lines rather than over the systems, and rebuilds one only
+/// where the answer moved. The mesh is rebuilt in place, under the handle the
+/// line already holds, so nothing downstream has to be told.
+fn trim(
+    systems: Query<(&System, &Visibility)>,
+    mut lines: Query<(&mut Path, &Mesh3d)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if lines.is_empty() {
+        return;
+    }
+
+    let shown: HashSet<i64> = systems
+        .iter()
+        .filter(|(_, visibility)| **visibility != Visibility::Hidden)
+        .map(|(system, _)| system.address)
+        .collect();
+
+    for (mut path, mesh) in &mut lines {
+        // A system the map never spawned is not on it, which is the same
+        // answer as one the spyglass or the filters put away.
+        let wanted: Vec<bool> = path
+            .stops
+            .iter()
+            .map(|(address, _)| shown.contains(address))
+            .collect();
+        if path.shown == wanted {
+            continue;
+        }
+
+        let mut points = legs(&path.whole(), &wanted);
+        // A cut that leaves nothing is a route with none of its systems on the
+        // map, which the spyglass or the filters can do at any moment. Handing
+        // the renderer a mesh of no vertices leaves its slab allocator holding
+        // a key that was never allocated, and it says so, every frame:
+        //
+        //     ERROR bevy_render::slab_allocator: Use-after-free: attempted to
+        //     copy element data for an unallocated key
+        //
+        // A line of no length is a mesh all the same and draws nothing. The
+        // line's own `Visibility` is not free to say this instead: it carries
+        // whether the route's row is turned on, and `follow_filters` writes it
+        // every frame from that.
+        if points.is_empty() {
+            points = vec![Vec3::ZERO, Vec3::ZERO];
+        }
+
+        // Nothing to write to where the mesh has already gone. What was drawn
+        // is left unrecorded with it, so the cut is tried again rather than
+        // taken as done.
+        if meshes.insert(&mesh.0, LineList { points }.into()).is_err() {
+            continue;
+        }
+        path.shown = wanted;
+    }
+}
+
+/// What the ring around a stop is drawn in
+///
+/// The white a route's line is drawn in, and at full strength where the line
+/// is faint: the line crosses systems that are meant to go on being seen, and
+/// this is a mark around one of them.
+pub const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
+
+/// A stop a route reaches from the system the camera is standing in
+///
+/// The one behind and the one ahead, of every route running through that
+/// system. A route is drawn as a line between systems, and that line is gone
+/// by the time the camera is inside one of them, so what is left to say where
+/// the route goes is the systems it goes to and from.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hop {
+    /// Where the route came from
+    Last,
+    /// Where it goes next
+    Next,
+}
+
+/// Which systems `routes` reach from `here`, and which way each of them lies
+///
+/// Every route the map is showing, in whatever order they are handed over, so
+/// that standing on one of several is standing on a route: the one being
+/// worked with is drawn in front out among the stars, and in here what matters
+/// is which routes come through the system the camera is in.
+///
+/// Nothing for either end of a route, which reaches only one way, and nothing
+/// from a system a route does not run through: a route passes near far more
+/// systems than it stops at, and being beside one is not being on it.
+///
+/// A system two routes both reach, one going on and the other coming back, is
+/// marked the way the first of them reaches it. There is one mark to be drawn
+/// and it points one way, so the routes are asked in the order they are given
+/// and the first answer stands.
+///
+/// And nothing at all until the camera is inside, which `standing` says: it is
+/// how much of the mark for the system being held is left, and it reaches
+/// nothing only once the camera is in there. The rows come in from far
+/// further out than that, so the system being held is not the system being
+/// stood in, and reading the rows alone put the mark up while the camera was
+/// still out among the stars. Out there the line answers this question
+/// already, and answers it better; in here the line is gone.
+fn reaching<'a>(
+    routes: impl IntoIterator<Item = &'a Filter>,
+    here: Option<i64>,
+    standing: f32,
+) -> Vec<(i64, Hop)> {
+    if standing > 0. {
+        return Vec::new();
+    }
+    let Some(here) = here else { return Vec::new() };
+
+    let mut reached: Vec<(i64, Hop)> = Vec::new();
+    for route in routes {
+        let Filter::Route { systems, .. } = route else { continue };
+        let Some(at) = systems.iter().position(|address| *address == here)
+        else {
+            continue;
+        };
+
+        let behind = at.checked_sub(1).and_then(|before| systems.get(before));
+        let ahead = systems.get(at + 1);
+        for (address, way) in [(behind, Hop::Last), (ahead, Hop::Next)] {
+            let Some(address) = address else { continue };
+            if reached.iter().any(|(held, _)| held == address) {
+                continue;
+            }
+            reached.push((*address, way));
+        }
+    }
+
+    reached
+}
+
+/// Keep the mark on whichever systems the routes reach from here
+///
+/// Written only where it changed. This runs over every star every frame, and
+/// inserting a component marks the star changed whether or not the value
+/// moved, which drags its name and its material along behind it.
+fn hops(
+    filters: Res<Filters>,
+    selected: Res<Selected>,
+    contents: Res<crate::systems::bodies::Contents>,
+    seen_as: Res<crate::systems::bodies::spawn::Apparent>,
+    systems: Query<(Entity, &System, Option<&Hop>)>,
+    mut commands: Commands,
+) {
+    // The route in front asked first, so that where two of them reach the same
+    // system in opposite directions the one being worked with says which way
+    // it lies.
+    let front = active(&filters, &selected.0);
+    let routes = front
+        .into_iter()
+        .chain(shown(&filters).filter(|route| Some(*route) != front));
+    let reached = reaching(routes, contents.of(), seen_as.held());
+
+    for (entity, system, held) in &systems {
+        let wanted = reached
+            .iter()
+            .find(|(address, _)| *address == system.address)
+            .map(|(_, way)| *way);
+
+        match (held, wanted) {
+            (Some(held), Some(wanted)) if *held == wanted => {}
+            (None, None) => {}
+            (_, Some(wanted)) => {
+                commands.entity(entity).insert(wanted);
+            }
+            (Some(_), None) => {
+                commands.entity(entity).remove::<Hop>();
+            }
+        }
+    }
 }
 
 /// A drawn route, and which route it is
@@ -217,20 +436,24 @@ fn active<'a>(
     filters: &'a Filters,
     selected: &'a Option<Filter>,
 ) -> Option<&'a Filter> {
-    let held = || {
-        filters
-            .iter()
-            .filter(|active| active.enabled)
-            .map(|active| &active.filter)
-            .filter(|filter| matches!(filter, Filter::Route { .. }))
-    };
-
     selected
         .as_ref()
-        .filter(|picked| held().any(|filter| filter == *picked))
+        .filter(|picked| shown(filters).any(|filter| filter == *picked))
         // The last route held, which is the last one plotted: they are added
         // in the order they land.
-        .or_else(|| held().last())
+        .or_else(|| shown(filters).last())
+}
+
+/// Every route the map is showing, in the order they were plotted
+///
+/// A row turned off is not among them, its line being off the map: what is
+/// asked of the routes is asked about what the user can see.
+fn shown(filters: &Filters) -> impl Iterator<Item = &Filter> {
+    filters
+        .iter()
+        .filter(|active| active.enabled)
+        .map(|active| &active.filter)
+        .filter(|filter| matches!(filter, Filter::Route { .. }))
 }
 
 /// How faint a route that is not the active one is drawn
@@ -254,19 +477,29 @@ pub fn strength(is_active: bool) -> f32 {
 ///
 /// Each line was spawned with a material of its own, so this writes to one
 /// route's color without touching another's.
+///
+/// The lines go with the marks. A route is drawn between systems at the scale
+/// the sky is read at, and once the camera has descended into one of them
+/// there is no sky left for it to be read against: what is drawn there is one
+/// system at its own size, and a line laid over it is a light year wide and
+/// runs out through the walls. So it fades on exactly the band the mark
+/// standing for that system fades on, and the two go together.
 fn emphasise(
     filters: Res<Filters>,
     selected: Res<Selected>,
+    seen_as: Res<crate::systems::bodies::spawn::Apparent>,
     lines: Query<(&Route, &MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let active = active(&filters, &selected.0);
+    let standing = seen_as.held();
 
     for (line, material) in &lines {
         let Some(mut material) = materials.get_mut(&material.0) else {
             continue;
         };
-        let wanted = spawn::line_color(strength(Some(&line.0) == active));
+        let wanted =
+            spawn::line_color(strength(Some(&line.0) == active) * standing);
         // Written only where it changed. Touching a material marks the asset
         // changed, which re-uploads it, and this runs every frame.
         if material.base_color != wanted {
@@ -280,8 +513,8 @@ pub mod spawn;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]
-struct LineStrip {
-    points: Vec<Vec3>,
+pub(crate) struct LineStrip {
+    pub(crate) points: Vec<Vec3>,
 }
 
 impl From<LineStrip> for Mesh {
@@ -297,9 +530,284 @@ impl From<LineStrip> for Mesh {
     }
 }
 
+/// Points taken two at a time, each pair a line of its own
+///
+/// A strip joins everything handed to it, which a route cannot use: it has to
+/// leave gaps, between the dashes running out to a system that is not drawn
+/// and across the legs that are not drawn at all.
+#[derive(Debug, Clone)]
+pub(crate) struct LineList {
+    pub(crate) points: Vec<Vec3>,
+}
+
+impl From<LineList> for Mesh {
+    fn from(line: LineList) -> Self {
+        Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points)
+    }
+}
+
+/// How much of a leg into a system that is not drawn is drawn solid
+///
+/// About a third. Enough that the leg reads as a leg where it leaves the
+/// system that is drawn, and no more than that: the rest is given over to the
+/// dashes, which are what says the route goes on past the edge of what is
+/// being shown.
+const SOLID: f32 = 0.35;
+
+/// How long a dash is, and the gap after it, in metres
+///
+/// A length in the world rather than a share of the leg. A share cannot be
+/// read at more than one zoom: the legs of a route differ by tens of times
+/// over, so the same share draws a dash of one size out at one stop and
+/// another size at the next, and flying in leaves it a few pixels long against
+/// a leg that now runs off both edges of the screen. Held at a distance
+/// instead, a dash is the same thing everywhere on the route and grows on
+/// screen as the camera comes in, which is what everything else drawn in the
+/// world does.
+///
+/// Half a light year, which is a few pixels with a whole route in view and a
+/// clear mark by the time one stop is.
+const DASH: f32 = (0.5 * crate::space::LIGHT_YEAR) as f32;
+
+/// The line to draw for a route, as pairs of points
+///
+/// A leg between two systems that are both drawn is drawn whole. One between
+/// two that are not is not drawn at all: neither end is on the map, so a line
+/// joining them says nothing about anything the viewer can see, and a route
+/// crossing an unfetched stretch would otherwise be one long line over
+/// nothing.
+///
+/// A leg with one end on the map is the interesting one. It is drawn from the
+/// end that is there, solid most of the way and then in dashes, and stops
+/// short of the end that is not. What that says is that the route goes on past
+/// what is being shown, which is true and is the one thing the viewer cannot
+/// otherwise tell: a leg simply cut at the edge of the reach reads as a route
+/// that ends there.
+pub(super) fn legs(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
+    if points.len() != shown.len() {
+        return Vec::new();
+    }
+
+    let mut drawn = Vec::new();
+    for (leg, ends) in points.windows(2).enumerate() {
+        match (shown[leg], shown[leg + 1]) {
+            (true, true) => drawn.extend_from_slice(ends),
+            (false, false) => {}
+            // From whichever end is on the map, towards the one that is not.
+            (here, _) => {
+                let (from, to) =
+                    if here { (ends[0], ends[1]) } else { (ends[1], ends[0]) };
+                let leg = (to - from).length();
+                let Some(along) = (to - from).try_normalize() else { continue };
+
+                drawn.push(from);
+                drawn.push(from + along * leg * SOLID);
+
+                // A dash and the gap after it are the same length, so the run
+                // reads as a dashed line rather than as marks left by one. It
+                // starts a gap clear of the solid stretch and stops a gap
+                // short of the system that is not drawn, so however many fit
+                // is however many the leg has room for.
+                let mut at = leg * SOLID + DASH;
+                while at + DASH <= leg - DASH {
+                    drawn.push(from + along * at);
+                    drawn.push(from + along * (at + DASH));
+                    at += DASH + DASH;
+                }
+            }
+        }
+    }
+
+    drawn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A route running through three systems, in the order travelled
+    fn route(systems: Vec<i64>) -> Filter {
+        Filter::Route {
+            label: "a to c".to_owned(),
+            systems,
+            range: "20".to_owned(),
+        }
+    }
+
+    /// The stop behind and the stop ahead, from the middle of a route
+    #[test]
+    fn a_route_reaches_both_ways_from_where_it_stands() {
+        let route = route(vec![1, 2, 3]);
+
+        assert_eq!(
+            reaching([&route], Some(2), 0.),
+            vec![(1, Hop::Last), (3, Hop::Next)]
+        );
+    }
+
+    /// Either end of a route reaches only the one way
+    #[test]
+    fn the_ends_of_a_route_reach_one_way() {
+        let route = route(vec![1, 2, 3]);
+
+        assert_eq!(reaching([&route], Some(1), 0.), vec![(2, Hop::Next)]);
+        assert_eq!(reaching([&route], Some(3), 0.), vec![(2, Hop::Last)]);
+    }
+
+    /// A route reaches from where it stands whether or not it is the one in
+    /// front
+    ///
+    /// Several routes stand at once, and the camera is inside one system at a
+    /// time. Which route the user was last working with says nothing about
+    /// which of them runs through the system they are standing in.
+    #[test]
+    fn every_route_shown_reaches_from_where_it_stands() {
+        let front = route(vec![1, 2, 3]);
+        let behind = route(vec![7, 8, 9]);
+
+        assert_eq!(
+            reaching([&front, &behind], Some(8), 0.),
+            vec![(7, Hop::Last), (9, Hop::Next)]
+        );
+    }
+
+    /// Two routes through one system reach both ways along each of them
+    #[test]
+    fn two_routes_through_a_system_both_reach() {
+        let one = route(vec![1, 2, 3]);
+        let other = route(vec![4, 2, 5]);
+
+        assert_eq!(
+            reaching([&one, &other], Some(2), 0.),
+            vec![
+                (1, Hop::Last),
+                (3, Hop::Next),
+                (4, Hop::Last),
+                (5, Hop::Next)
+            ]
+        );
+    }
+
+    /// A stop two routes disagree about is marked the way the first says
+    ///
+    /// One mark is drawn for it and it points one way. The routes are handed
+    /// over with the one being worked with at the head, so that is the one
+    /// answering.
+    #[test]
+    fn a_stop_reached_both_ways_takes_the_first_answer() {
+        let there = route(vec![1, 2, 3]);
+        let back = route(vec![3, 2, 1]);
+
+        assert_eq!(
+            reaching([&there, &back], Some(2), 0.),
+            vec![(1, Hop::Last), (3, Hop::Next)]
+        );
+        assert_eq!(
+            reaching([&back, &there], Some(2), 0.),
+            vec![(3, Hop::Last), (1, Hop::Next)]
+        );
+    }
+
+    /// Two points, so a leg is one pair of them
+    ///
+    /// Twenty light years apart, which is a jump a route is plotted in.
+    const A: Vec3 = Vec3::ZERO;
+    const B: Vec3 = Vec3::new(20. * DASH / 0.5, 0., 0.);
+
+    /// A leg between two systems on the map is drawn whole
+    #[test]
+    fn a_leg_between_two_drawn_systems_is_one_line() {
+        assert_eq!(legs(&[A, B], &[true, true]), vec![A, B]);
+    }
+
+    /// A leg between two systems that are not on the map is not drawn
+    ///
+    /// Neither end is there to be joined to anything, so a line between them
+    /// says nothing about what the viewer can see.
+    #[test]
+    fn a_leg_between_two_undrawn_systems_is_nothing() {
+        assert!(legs(&[A, B], &[false, false]).is_empty());
+    }
+
+    /// A leg with one end on the map runs out from that end and stops short
+    ///
+    /// Whichever end it is. The solid stretch begins at the system that is
+    /// drawn, and nothing reaches the one that is not: a line touching it
+    /// would say it is there.
+    #[test]
+    fn a_leg_out_of_the_map_trails_off_before_it_arrives() {
+        for (shown, near, far) in [([true, false], A, B), ([false, true], B, A)]
+        {
+            let drawn = legs(&[A, B], &shown);
+
+            assert_eq!(drawn.first(), Some(&near), "did not start where drawn");
+            assert!(
+                drawn.iter().all(|at| at.distance(far) > 0.1),
+                "a dash reached the system that is not drawn"
+            );
+            assert!(
+                drawn.len() > 4,
+                "the leg came back as {} points, too few to be dashed",
+                drawn.len()
+            );
+        }
+    }
+
+    /// A dash is the same length on a short leg as on a long one
+    ///
+    /// The whole reason for measuring it in the world. A share of the leg
+    /// draws one size out at one stop and another at the next, and a route's
+    /// legs differ by tens of times over.
+    #[test]
+    fn a_dash_is_the_same_length_whatever_the_leg() {
+        let short = Vec3::new(B.x / 3., 0., 0.);
+
+        let long = legs(&[A, B], &[true, false]);
+        let brief = legs(&[A, short], &[true, false]);
+
+        // The first dash of each, which is the pair after the solid run.
+        assert!(
+            ((long[3] - long[2]).length() - (brief[3] - brief[2]).length())
+                .abs()
+                < 1.,
+            "a dash drew {} on one leg and {} on another",
+            (long[3] - long[2]).length(),
+            (brief[3] - brief[2]).length()
+        );
+    }
+
+    /// A line is cut only where its stops and what is drawn agree in length
+    #[test]
+    fn a_line_nothing_is_known_about_is_not_drawn() {
+        assert!(legs(&[A, B], &[true]).is_empty());
+    }
+
+    /// Nothing is reached from outside the system, whole mark or fading one
+    ///
+    /// The rows for a system come in from far further out than the camera ever
+    /// goes, so holding them is not standing in it. Out there the line says
+    /// where the route runs, and says it better than two rings could.
+    #[test]
+    fn a_route_reaches_nowhere_from_outside_the_system() {
+        let route = route(vec![1, 2, 3]);
+
+        assert!(reaching([&route], Some(2), 1.).is_empty());
+        assert!(reaching([&route], Some(2), 0.5).is_empty());
+    }
+
+    /// Standing beside a route is not standing on it
+    ///
+    /// A route passes near far more systems than it stops at, and a mark
+    /// saying where to go next means nothing from a system it never visits.
+    #[test]
+    fn a_system_the_route_misses_reaches_nowhere() {
+        let route = route(vec![1, 2, 3]);
+
+        assert!(reaching([&route], Some(9), 0.).is_empty());
+        assert!(reaching([&route], None, 0.).is_empty());
+        assert!(reaching([], Some(2), 0.).is_empty());
+    }
 
     /// A route filter over the systems at `addresses`
     fn asking(addresses: &[i64]) -> Filter {
