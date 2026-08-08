@@ -552,6 +552,32 @@ pub(super) fn drawn_radius_of(
     radius * world_per_pixel(cot_half_fov, viewport.y, into_view)
 }
 
+/// Where a mark drawn on the view is laid, as a depth in metres
+///
+/// A mark on the view is a thing in pixels, and a gizmo is world geometry, so
+/// it is drawn in a plane square to the camera and its sizes are spoken into
+/// metres out there. Which plane does not show: a ring of `n * pixel` metres at
+/// any depth is `n` pixels across, the two cancelling. What the plane has to be
+/// is in front of the camera, clear of the near plane, and nearer than anything
+/// that could be drawn over it.
+///
+/// So it is carried by the camera, at [`OVERLAY_FRACTION`] of how far back it
+/// is standing. A plane taken from something out in the world instead cannot
+/// promise any of the three: whatever it is taken from swings behind the camera
+/// as the camera comes in on something else, and the whole mark goes with it.
+pub(super) fn overlay_plane(radius: f32) -> f32 {
+    (radius as f64 * crate::space::LIGHT_YEAR) as f32 * OVERLAY_FRACTION
+}
+
+/// How far in front of the camera that plane sits, as a fraction of the zoom
+///
+/// A fraction for the reason [`crate::camera::NEAR_FRACTION`] is one: the map
+/// spans seventeen orders of magnitude of zoom and no fixed distance serves
+/// both ends of it. A hundredth is two orders inside whatever the camera is
+/// looking at, which nothing in a system is drawn across, and two orders past
+/// the near plane, which the camera holds at a ten-thousandth.
+const OVERLAY_FRACTION: f32 = 1e-2;
+
 /// Say what the pointer is over, measured on screen
 ///
 /// A picking backend, which is to say it answers one question: which entities
@@ -773,9 +799,6 @@ pub fn ring(
         &crate::systems::route::Hop,
         Has<Selected>,
     )>,
-    // The system the camera is standing in, which the lines to the stops
-    // leave from.
-    standing_in: Query<&GlobalTransform, With<System>>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     dim: Res<DimTo>,
 ) {
@@ -783,28 +806,25 @@ pub fn ring(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    // Where the line to each stop leaves from, which is the system the camera
-    // is standing in. Nothing to draw from where the map holds nothing.
-    let from = seen_as
-        .of()
-        .and_then(|held| standing_in.get(held).ok())
-        .map(|at| at.translation());
-
     // Everything about a stop is drawn where the camera can see it rather than
     // where the stop actually is. A stop is a jump away, and standing inside a
     // system the camera is measuring in metres: a ring out at its true distance
     // is past the far plane, and a line between here and there reads as depth
     // rather than as a mark. So the stop is projected to the screen and drawn
-    // back in the plane the star stands in, which puts the whole of it in front
-    // of the camera at a depth whose scale is already worked out.
-    if let (Some(from), Ok(eye)) = (from, eye_at.single()) {
+    // back into the plane [`overlay_plane`] names, which the camera carries
+    // with it.
+    //
+    // Only while the map is holding a system, which is what a stop is reached
+    // from and what [`super::selection::ring`] stands back for.
+    if seen_as.of().is_some()
+        && let Ok(eye) = eye_at.single()
+    {
         let right = orbit.rotation * Vec3::X;
         let up = orbit.rotation * Vec3::Y;
         let ahead = orbit.rotation * Vec3::NEG_Z;
-        let here = (from - eye.translation()).as_dvec3();
-        let pixel = drawn_radius_of(orbit, cot_half_fov, viewport, here, 1.);
-        let middle =
-            eye.translation() + ahead * (from - eye.translation()).dot(ahead);
+        let depth = overlay_plane(orbit.radius);
+        let pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
+        let middle = eye.translation() + ahead * depth;
         // A point `at` pixels from the middle of the screen, drawn out there.
         let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
@@ -873,9 +893,8 @@ pub fn ring(
                     // in sight is drawn where it is, and needs no direction to
                     // be found by. Nothing to say for one lying straight out
                     // through the middle, which has no across to it.
-                    let Some(across) = (at.translation() - from)
-                        .try_normalize()
-                        .and_then(|toward| {
+                    let Some(across) =
+                        there.as_vec3().try_normalize().and_then(|toward| {
                             Vec2::new(toward.dot(right), -toward.dot(up))
                                 .try_normalize()
                         })
@@ -1146,6 +1165,57 @@ mod tests {
 
         assert!(drawn.is_finite(), "the mark came back {drawn}");
         assert!(drawn > 0., "the mark collapsed to {drawn}");
+    }
+
+    /// Every zoom the camera may be at, from a metre to past the galaxy
+    const ZOOMS: [f32; 6] = [
+        crate::camera::MIN_RADIUS,
+        1e-9,
+        1e-6,
+        1.,
+        1e3,
+        crate::camera::MAX_RADIUS,
+    ];
+
+    /// How far back the camera is standing at `radius`, in metres
+    fn standing_off(radius: f32) -> f32 {
+        (radius as f64 * crate::space::LIGHT_YEAR) as f32
+    }
+
+    /// The plane a mark on the view is laid in is clear of the near plane
+    ///
+    /// Anything nearer than the near plane is clipped away, and this is what a
+    /// plane taken from something out in the world cannot promise: the star a
+    /// stop is a jump from swings behind the camera as the camera comes in on
+    /// a planet, and every mark for that stop goes with it.
+    #[test]
+    fn the_plane_marks_are_laid_in_clears_the_near_plane() {
+        for radius in ZOOMS {
+            let near = standing_off(radius) * crate::camera::NEAR_FRACTION;
+            let plane = overlay_plane(radius);
+
+            assert!(
+                plane > near,
+                "at a radius of {radius} the plane sat at {plane} and the near plane at {near}"
+            );
+        }
+    }
+
+    /// And short of whatever is being looked at
+    ///
+    /// A gizmo is depth tested like anything else, so a mark laid out at what
+    /// the camera is looking at is a mark that thing is drawn over.
+    #[test]
+    fn the_plane_marks_are_laid_in_is_nearer_than_what_is_looked_at() {
+        for radius in ZOOMS {
+            let looked_at = standing_off(radius);
+            let plane = overlay_plane(radius);
+
+            assert!(
+                plane < looked_at,
+                "at a radius of {radius} the plane sat at {plane} and what is looked at at {looked_at}"
+            );
+        }
     }
 
     /// A system dead ahead lands in the middle of the screen

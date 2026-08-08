@@ -64,8 +64,8 @@ const PIXELS_PER_LINE: f32 = 16.;
 /// That is some thirty light seconds, which is a sensible place to stand to
 /// look at a system whole and nowhere near close enough to look at anything in
 /// it: an Earth seen from there is four hundredths of a degree across.
-const MIN_RADIUS: f32 = (1. / crate::space::LIGHT_YEAR) as f32;
-const MAX_RADIUS: f32 = 1e6;
+pub(crate) const MIN_RADIUS: f32 = (1. / crate::space::LIGHT_YEAR) as f32;
+pub(crate) const MAX_RADIUS: f32 = 1e6;
 
 /// How near the near plane sits, as a fraction of the orbit radius
 ///
@@ -79,7 +79,7 @@ const MAX_RADIUS: f32 = 1e6;
 /// near plane is `0.1`, and a world unit was a light year then, so everything
 /// within a tenth of a light year of the camera was clipped away — which is
 /// every star at its true size and every body without exception.
-const NEAR_FRACTION: f32 = 1e-4;
+pub(crate) const NEAR_FRACTION: f32 = 1e-4;
 
 /// How far out the near plane may be pushed, in metres
 ///
