@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by\n            FROM stations\n            WHERE system_address = $1 AND name = $2\n            ",
+  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (system_address, name) DO NOTHING\n            RETURNING\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by,\n                body_id,\n                body_name,\n                latitude,\n                longitude\n            ",
   "describe": {
     "columns": [
       {
@@ -238,12 +238,34 @@
         "ordinal": 12,
         "name": "updated_by",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "body_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 14,
+        "name": "body_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "latitude",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 16,
+        "name": "longitude",
+        "type_info": "Float8"
       }
     ],
     "parameters": {
       "Left": [
         "Int8",
-        "Text"
+        "Varchar",
+        "Timestamp",
+        "Varchar"
       ]
     },
     "nullable": [
@@ -259,8 +281,12 @@
       true,
       true,
       false,
-      false
+      false,
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "b256195bb2da63c8c6466a7b6510cde26017b56fb5248882383e90e831042503"
+  "hash": "aee6cc93574b4b0675346e2424a925c984812d8b0aec617a4b74dcf4b371c013"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by\n            FROM stations\n            WHERE system_address = $1\n            ",
+  "query": "\n            SELECT\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by,\n                body_id,\n                body_name,\n                latitude,\n                longitude\n            FROM stations\n            WHERE system_address = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -238,6 +238,26 @@
         "ordinal": 12,
         "name": "updated_by",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "body_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 14,
+        "name": "body_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "latitude",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 16,
+        "name": "longitude",
+        "type_info": "Float8"
       }
     ],
     "parameters": {
@@ -258,8 +278,12 @@
       true,
       true,
       false,
-      false
+      false,
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "0afbc0eb0bf992c1bc02dd9c5f317f09a839a9f468c591a03356cee2175a30b5"
+  "hash": "e9ea7ce2460a6d28b465173b46c898cf9497ad3e2ebb1ad116ddbbf0a708d97c"
 }

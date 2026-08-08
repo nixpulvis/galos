@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT * FROM shipyard\n             WHERE market_id = $1\n             ORDER BY ship_name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "market_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "ship_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "listed_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0e11234df943412f6230fb51763a0daf7157558eccd7cd42fbe553b80afa8cd9"
+}

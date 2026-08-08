@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT * FROM outfitting\n             WHERE market_id = $1\n             ORDER BY module_name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "market_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "module_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "buy_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "merc_coins_price",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "listed_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "ba94820f27bbf67b18e65eea5221d053f81d7f1d34d7702996c3e49b8e20d03e"
+}

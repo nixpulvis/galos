@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM outfitting WHERE market_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ec78ffa88f711f0ea458665c41be76e2e2dd42d3fda7f862a24d8c7c2081f5c"
+}

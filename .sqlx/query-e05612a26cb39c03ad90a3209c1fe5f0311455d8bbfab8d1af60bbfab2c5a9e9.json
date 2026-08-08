@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                ty,\n                dist_from_star_ls,\n                market_id,\n                landing_pads,\n                faction,\n                government,\n                allegiance,\n                services,\n                economies,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n            ON CONFLICT (system_address, name)\n            DO UPDATE SET\n                ty = $3,\n                dist_from_star_ls = $4,\n                market_id = $5,\n                landing_pads = $6,\n                faction = $7,\n                government = $8,\n                allegiance = $9,\n                services = $10,\n                economies = $11,\n                updated_at = $12,\n                updated_by = $13\n            RETURNING\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by\n            ",
+  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                ty,\n                dist_from_star_ls,\n                market_id,\n                landing_pads,\n                faction,\n                government,\n                allegiance,\n                services,\n                economies,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n            ON CONFLICT (system_address, name)\n            DO UPDATE SET\n                ty = $3,\n                dist_from_star_ls = $4,\n                market_id = $5,\n                landing_pads = $6,\n                faction = $7,\n                government = $8,\n                allegiance = $9,\n                services = $10,\n                economies = $11,\n                updated_at = $12,\n                updated_by = $13\n            RETURNING\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by,\n                body_id,\n                body_name,\n                latitude,\n                longitude\n            ",
   "describe": {
     "columns": [
       {
@@ -238,6 +238,26 @@
         "ordinal": 12,
         "name": "updated_by",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "body_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 14,
+        "name": "body_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "latitude",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 16,
+        "name": "longitude",
+        "type_info": "Float8"
       }
     ],
     "parameters": {
@@ -441,8 +461,12 @@
       true,
       true,
       false,
-      false
+      false,
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "006822f6cda8ace1cc25308f109a9de5cec67f3f6b9f6b277143a465f4b5f3a6"
+  "hash": "e05612a26cb39c03ad90a3209c1fe5f0311455d8bbfab8d1af60bbfab2c5a9e9"
 }

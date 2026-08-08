@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO outfitting (\n                    market_id,\n                    module_name,\n                    buy_price,\n                    merc_coins_price,\n                    listed_at)\n                VALUES ($1, $2, $3, $4, $5)\n                ON CONFLICT (market_id, module_name)\n                DO UPDATE SET\n                    buy_price = $3,\n                    merc_coins_price = $4,\n                    listed_at = $5\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Int8",
+        "Int8",
+        "Timestamp"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9f1c9cce841e961fa7dd2b7300503573da6d2949b5dbfe41a41bd48cea4ad8cd"
+}
