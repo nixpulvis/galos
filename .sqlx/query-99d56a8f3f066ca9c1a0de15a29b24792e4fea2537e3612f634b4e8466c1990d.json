@@ -1,0 +1,238 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                b.system_address,\n                b.id,\n                b.name,\n                b.parent_ids,\n                b.parent_types,\n                b.body_type,\n                b.distance_from_arrival,\n                b.updated_at,\n                b.updated_by,\n                b.planet_class,\n                b.tidal_lock,\n                b.landable,\n                b.terraform_state,\n                b.atmosphere,\n                b.atmosphere_type,\n                b.volcanism,\n                b.mass,\n                b.radius,\n                b.gravity,\n                b.temperature,\n                b.surface_pressure,\n                b.composition_ice,\n                b.composition_rock,\n                b.composition_metal,\n                b.semi_major_axis,\n                b.eccentricity,\n                b.orbital_inclination,\n                b.periapsis,\n                b.orbital_period,\n                b.rotation_period,\n                b.axial_tilt,\n                b.ascending_node,\n                b.mean_anomaly,\n                b.was_mapped,\n                b.was_discovered,\n                COALESCE(ARRAY_AGG(m.name ORDER BY m.name)\n                    FILTER (WHERE m.name IS NOT NULL), '{}')\n                    AS \"material_names!: Vec<String>\",\n                COALESCE(ARRAY_AGG(m.percent ORDER BY m.name)\n                    FILTER (WHERE m.name IS NOT NULL), '{}')\n                    AS \"material_percents!: Vec<f64>\"\n            FROM bodies b\n            LEFT JOIN body_materials m\n                ON m.system_address = b.system_address AND m.body_id = b.id\n            WHERE b.name ILIKE $1\n            GROUP BY b.system_address, b.id\n            ORDER BY b.name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_ids",
+        "type_info": "Int2Array"
+      },
+      {
+        "ordinal": 4,
+        "name": "parent_types",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "body_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "distance_from_arrival",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "planet_class",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "tidal_lock",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "landable",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "terraform_state",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "atmosphere",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
+        "name": "atmosphere_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "volcanism",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 16,
+        "name": "mass",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 17,
+        "name": "radius",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 18,
+        "name": "gravity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 19,
+        "name": "temperature",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 20,
+        "name": "surface_pressure",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 21,
+        "name": "composition_ice",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 22,
+        "name": "composition_rock",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 23,
+        "name": "composition_metal",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 24,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 25,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 26,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 27,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 28,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 29,
+        "name": "rotation_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 30,
+        "name": "axial_tilt",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 31,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 32,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 33,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 34,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 35,
+        "name": "material_names!: Vec<String>",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 36,
+        "name": "material_percents!: Vec<f64>",
+        "type_info": "Float8Array"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "99d56a8f3f066ca9c1a0de15a29b24792e4fea2537e3612f634b4e8466c1990d"
+}

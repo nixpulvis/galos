@@ -1,12 +1,11 @@
 use crate::schedule::MapSet;
-use crate::systems::Spyglass;
+use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
-use bevy::camera::Hdr;
+use bevy::camera::{Exposure, Hdr};
 use bevy::input::mouse::{
     AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit,
 };
 use bevy::math::DVec3;
-use bevy::picking::mesh_picking::MeshPickingCamera;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use big_space::prelude::*;
@@ -20,6 +19,11 @@ pub fn plugin(app: &mut App) {
     app.add_systems(
         Update,
         orbit_camera.in_set(MapSet::Camera).after(move_camera),
+    );
+    // Answers the radius `orbit_camera` settled on, so it follows it.
+    app.add_systems(
+        Update,
+        focus_lens.in_set(MapSet::Camera).after(orbit_camera),
     );
 }
 
@@ -48,12 +52,68 @@ const ZOOM_RATE: f32 = 0.15;
 /// Pixels of scroll that count as one line, for pointers that report them
 const PIXELS_PER_LINE: f32 = 16.;
 
-/// How near and how far the camera may be pulled from what it looks at
+/// How near and how far the camera may be pulled from what it looks at, in
+/// light years
 ///
-/// The far end is past the width of the galaxy, so the whole map fits. The
-/// near end is well inside a star system, ready for bodies to be drawn.
-const MIN_RADIUS: f32 = 1e-6;
+/// The far end is past the width of the galaxy, so the whole map fits. The near
+/// end is a metre, which is not a distance anything is drawn at so much as a
+/// floor that never comes up: what stops the camera should be the thing it is
+/// looking at, not a number.
+///
+/// The near end was `1e-6` while a system was drawn as one exaggerated sphere.
+/// That is some thirty light seconds, which is a sensible place to stand to
+/// look at a system whole and nowhere near close enough to look at anything in
+/// it: an Earth seen from there is four hundredths of a degree across.
+const MIN_RADIUS: f32 = (1. / crate::space::LIGHT_YEAR) as f32;
 const MAX_RADIUS: f32 = 1e6;
+
+/// How near the near plane sits, as a fraction of the orbit radius
+///
+/// Nothing can be drawn nearer to the camera than its near plane, and the map
+/// spans seventeen orders of magnitude of zoom, so no fixed distance can serve
+/// both ends of it. A fraction of how far back the camera is standing does:
+/// whatever it is looking at is always well past the plane, and whatever is a
+/// ten-thousandth of the way there is close enough to be behind the viewer.
+///
+/// This is why nothing inside a system could be drawn before. Bevy's default
+/// near plane is `0.1`, and a world unit was a light year then, so everything
+/// within a tenth of a light year of the camera was clipped away — which is
+/// every star at its true size and every body without exception.
+const NEAR_FRACTION: f32 = 1e-4;
+
+/// How far out the near plane may be pushed, in metres
+///
+/// Picking asks the camera for a ray, and the ray is built by taking a point
+/// at the near plane and another at `near / f32::EPSILON`, some eight million
+/// times further out. Normalising the difference squares it, and a squared
+/// length overflows a float past `sqrt(f32::MAX)`, which is about `1.8e19`.
+/// The direction comes back infinite, no ray is made, and nothing on the map
+/// can be pointed at or clicked.
+///
+/// So the plane is held at a fifth of the largest that arithmetic survives,
+/// which leaves room for the corners of the view, where the ray is longer
+/// than it is down the middle.
+///
+/// Only ever makes the plane nearer, so nothing that was drawn stops being
+/// drawn. What it costs is depth precision at the far end of the zoom, and
+/// the projection is an infinite reversed one, which spends its precision
+/// near the camera and is the arrangement least troubled by a close plane.
+const NEAR_CEILING: f32 = 4e11;
+
+/// How far the frustum reaches, in metres
+///
+/// Only culling depends on it. The projection is an infinite reversed one, so
+/// the matrix never reads it, but the frustum built alongside is given it as a
+/// far plane and quietly drops whatever lies beyond.
+///
+/// Past anything the map can put in front of the camera: the furthest the
+/// camera may stand off what it looks at, plus the furthest the spyglass may
+/// reach around it, and half again for room. Bevy's own default is `1000.`,
+/// which is a thousand *metres*, and would leave the map showing nothing at
+/// all.
+const SIGHT: f32 = ((MAX_RADIUS + Spyglass::CEILING) as f64
+    * 1.5
+    * crate::space::LIGHT_YEAR) as f32;
 
 /// How close to its target a value must be before it is pinned there
 ///
@@ -334,8 +394,18 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
-        // Mesh picking requires markers, see `systems::spawn::plugin`.
-        MeshPickingCamera,
+        // Stopped down for what a star actually puts out. A body at an
+        // Earth's distance from a Sun sees about a hundred thousand lux, and
+        // bevy's own default is set for a room: everything the star reached
+        // came back clipped to white, which drew a lit body as a flat cap
+        // with a razor edge where the light ran out rather than as a surface
+        // shading away towards the terminator.
+        //
+        // Nothing emissive moves with this. Bevy weighs emission against the
+        // exposure by `StandardMaterial::emissive_exposure_weight`, which is
+        // nothing unless it is asked for, so the stars and the shells are
+        // drawn at the strengths they were set at.
+        Exposure::SUNLIGHT,
         AmbientLight { color: Color::default(), brightness: 1e3, ..default() },
         // Every other entity is drawn relative to this one.
         FloatingOrigin,
@@ -395,10 +465,19 @@ pub fn orbit_camera(
     time: Res<Time<Real>>,
     spyglass: Res<Spyglass>,
     grids: Query<&Grid, With<BigSpace>>,
-    mut cameras: Query<(&mut OrbitCamera, &mut CellCoord, &mut Transform)>,
+    // The grid of whatever the camera has descended into, if it has.
+    inside: Query<(&Grid, &System), Without<BigSpace>>,
+    mut cameras: Query<(
+        &mut OrbitCamera,
+        &mut CellCoord,
+        &mut Transform,
+        Option<&ChildOf>,
+    )>,
 ) {
     let Ok(grid) = grids.single() else { return };
-    let Ok((mut orbit, mut cell, mut transform)) = cameras.single_mut() else {
+    let Ok((mut orbit, mut cell, mut transform, child_of)) =
+        cameras.single_mut()
+    else {
         return;
     };
 
@@ -500,10 +579,74 @@ pub fn orbit_camera(
     orbit.rotation = rotation;
     orbit.eye = eye;
 
-    let (eye_cell, eye_translation) = grid.translation_to_grid(eye);
+    // The whole orbit above is worked out in light years, which is what the
+    // map measures in and what everything asking the camera where it is
+    // expects. Only here does it become the metres the grid is laid out in.
+    //
+    // Which grid depends on where the camera is standing. Inside a system it
+    // is measured from that system, whose cells are a metre, so what a float
+    // has left over is nanometres and everything drawn near it is drawn
+    // exactly. Out in the galaxy it is measured from the middle of it, where
+    // the cells are a light year and the remainder is hundreds of thousands
+    // of kilometres. That is far finer than anything the galaxy draws and far
+    // coarser than anything a system does, which is the whole reason for
+    // going down.
+    let descended = child_of
+        .map(|child_of| child_of.parent())
+        .and_then(|parent| inside.get(parent).ok());
+    let (eye_cell, eye_translation) = match descended {
+        Some((grid, system)) => grid
+            .translation_to_grid(crate::space::metres(eye - system.position())),
+        None => grid.translation_to_grid(crate::space::metres(eye)),
+    };
     cell.set_if_neq(eye_cell);
     transform.translation = eye_translation;
     transform.rotation = rotation;
+}
+
+/// Hold the near plane a fixed fraction of the way to what is being looked at
+///
+/// A camera sees between its near plane and its far one, and this map asks to
+/// be looked at from a hundred thousand light years and from inside a planet
+/// in the same session. No pair of fixed distances covers both, so the near
+/// plane follows the zoom and the far one is simply set past everything.
+///
+/// The fraction gives out at the far end of the zoom, where it would put the
+/// plane further off than the ray picking builds from it can be carried in a
+/// float, so it is held at [`NEAR_CEILING`] from there on.
+///
+/// Runs after [`orbit_camera`], which settles the radius this is worked out
+/// from. Written only where it differs: a projection assigned every frame is a
+/// frustum recomputed every frame.
+///
+/// [`PerspectiveProjection::near_clip_plane`] is deliberately left alone. Its
+/// default reads as a second near plane stuck at `0.1`, but the matrix only
+/// consults it when its normal is something other than straight back from the
+/// camera, and by default it is not. Giving it one would turn on the oblique
+/// clipping meant for portals and mirrors.
+pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
+    let Ok((orbit, mut projection)) = cameras.single_mut() else { return };
+    // The radius is a distance the map talks in and the planes are distances
+    // it draws in, so this is one of the two places a light year is spoken to
+    // metres. The other is where the camera's own cell is worked out.
+    // Held short of [`NEAR_CEILING`], past which picking can build no ray at
+    // all and the whole map stops answering the pointer.
+    let near = ((orbit.radius as f64 * crate::space::LIGHT_YEAR) as f32
+        * NEAR_FRACTION)
+        .min(NEAR_CEILING);
+
+    // Asked before it is reached for, since reaching for it is what says it
+    // has changed. Only the two planes are touched: bevy writes the aspect
+    // ratio onto this same projection as the window is resized, and a fresh
+    // one would put it back to a square.
+    let Projection::Perspective(lens) = &*projection else { return };
+    if lens.near == near && lens.far == SIGHT {
+        return;
+    }
+
+    let Projection::Perspective(lens) = projection.as_mut() else { return };
+    lens.near = near;
+    lens.far = SIGHT;
 }
 
 #[cfg(test)]
@@ -988,5 +1131,173 @@ mod tests {
         let tall = framed(1e3, Some(&lens(400., 1200.)));
 
         assert!(tall < wide, "took in {tall} against {wide}");
+    }
+
+    /// A world holding one camera standing `radius` back, and nothing else
+    fn looking(radius: f32) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.world_mut().spawn((
+            OrbitCamera { radius, ..default() },
+            Projection::Perspective(PerspectiveProjection::default()),
+        ));
+        app.add_systems(Update, focus_lens);
+        app.update();
+        app
+    }
+
+    /// The two planes the camera came out seeing between
+    fn planes(app: &mut App) -> (f32, f32) {
+        let mut lenses = app.world_mut().query::<&Projection>();
+        let Projection::Perspective(lens) = lenses.single(app.world()).unwrap()
+        else {
+            panic!("the camera was given a perspective projection")
+        };
+        (lens.near, lens.far)
+    }
+
+    /// The near plane follows the zoom rather than standing still
+    ///
+    /// The whole point of it. A plane fixed anywhere is in the wrong place at
+    /// one end or the other of seventeen orders of magnitude.
+    ///
+    /// Read from inside [`NEAR_CEILING`], which is where the fraction is what
+    /// decides the plane; past it the ceiling does, and that is
+    /// [`the_near_plane_stops_where_a_ray_stops_being_buildable`].
+    #[test]
+    fn the_near_plane_follows_the_zoom() {
+        let (out, _) = planes(&mut looking(1e-1));
+        let (in_close, _) = planes(&mut looking(1e-8));
+
+        assert!(
+            out > in_close * 1e6,
+            "the plane sat at {out} out and {in_close} in close"
+        );
+    }
+
+    /// A ray can still be built from the camera at every zoom
+    ///
+    /// Picking asks the camera for a ray, and it is made from a point at the
+    /// near plane and another at `near / f32::EPSILON`. Normalising the
+    /// difference squares its length, and a square past `f32::MAX` is an
+    /// infinity: the direction is refused, no ray comes back, and nothing on
+    /// the map can be pointed at or clicked.
+    ///
+    /// The whole map went unclickable this way once, and it went unnoticed
+    /// because a projection that draws correctly can still be one no ray can
+    /// be built from.
+    #[test]
+    fn the_near_plane_stops_where_a_ray_stops_being_buildable() {
+        for radius in [MIN_RADIUS, 1e-8, 1., 1e2, 1e4, MAX_RADIUS] {
+            let (near, _) = planes(&mut looking(radius));
+            let reach = Vec3::Z * (near / f32::EPSILON);
+
+            assert!(
+                reach.length_squared().is_finite(),
+                "standing {radius} ly back, a ray reaching {} overflows",
+                reach.z
+            );
+            assert!(
+                Dir3::new(reach).is_ok(),
+                "standing {radius} ly back, no ray could be pointed"
+            );
+        }
+    }
+
+    /// The near plane stays well short of what the camera is looking at
+    ///
+    /// Otherwise the thing being looked at is the thing being clipped, which
+    /// is the failure this whole system exists to answer.
+    #[test]
+    fn the_near_plane_never_reaches_what_is_looked_at() {
+        for radius in [MIN_RADIUS, 1e-8, 1., 1e4, MAX_RADIUS] {
+            let (near, _) = planes(&mut looking(radius));
+            // The radius is set in light years and the plane comes back in
+            // the metres the map draws in.
+            let back = (radius as f64 * crate::space::LIGHT_YEAR) as f32;
+            assert!(
+                near < back / 100.,
+                "standing {back}m back, the plane sat at {near}"
+            );
+        }
+    }
+
+    /// Zoomed in as close as the map allows, a body is still in front of the
+    /// plane rather than behind it
+    ///
+    /// Nothing about the near plane may put an Earth out of reach, and bevy's
+    /// default of `0.1` put every one of them out of reach: a world unit was a
+    /// light year then, so the plane stood a tenth of one from the camera and
+    /// clipped away everything a system is made of.
+    #[test]
+    fn zooming_in_close_still_leaves_something_in_front_of_the_camera() {
+        /// Metres, which is what the map is drawn in
+        const EARTH_RADIUS: f32 = 6.371e6;
+
+        let (near, _) = planes(&mut looking(MIN_RADIUS));
+        assert!(near > 0., "the plane collapsed onto the camera");
+        assert!(near.is_normal(), "the plane sat at {near}, a subnormal");
+        assert!(
+            near < EARTH_RADIUS,
+            "the plane sat at {near}m, past a body {EARTH_RADIUS}m across"
+        );
+    }
+
+    /// The far plane reaches past anything the map can draw
+    ///
+    /// It is a culling distance rather than a depth range, and the whole of
+    /// the galaxy has to fall inside it from wherever the camera is standing.
+    #[test]
+    fn the_sight_reaches_past_everything_drawn() {
+        let (_, far) = planes(&mut looking(MAX_RADIUS));
+
+        assert!(
+            far > MAX_RADIUS + Spyglass::CEILING,
+            "sight reached {far}, short of the far side of the galaxy"
+        );
+    }
+
+    /// How many frames have seen the projection written
+    ///
+    /// Counted from inside a system, since that is the only place change
+    /// detection means anything: a query made by hand from outside one has no
+    /// run of its own to measure the change against.
+    #[derive(Resource, Default)]
+    struct Wrote(usize);
+
+    fn count_writes(
+        mut wrote: ResMut<Wrote>,
+        lenses: Query<(), Changed<Projection>>,
+    ) {
+        wrote.0 += lenses.iter().count();
+    }
+
+    /// A frame that moves nothing leaves the projection alone
+    ///
+    /// Assigning it regardless would have the frustum worked out afresh every
+    /// frame for a camera standing perfectly still.
+    #[test]
+    fn a_resting_frame_leaves_the_lens_alone() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Wrote>();
+        app.world_mut().spawn((
+            OrbitCamera { radius: 1., ..default() },
+            Projection::Perspective(PerspectiveProjection::default()),
+        ));
+        app.add_systems(Update, (focus_lens, count_writes).chain());
+
+        // The camera arriving is itself a change, so the first frame is
+        // counted whatever this system does. It is the second that says
+        // whether a resting frame writes.
+        app.update();
+        let settled = app.world().resource::<Wrote>().0;
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<Wrote>().0,
+            settled,
+            "wrote a projection that had not moved"
+        );
     }
 }

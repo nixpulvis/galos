@@ -16,7 +16,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::filter::{Filter, Filters};
-use crate::systems::selection::Selection;
+use crate::systems::selection::{Picked, Selection};
 use crate::ui::Chose;
 use crate::ui::MARGIN;
 use bevy::math::DVec3;
@@ -24,7 +24,10 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use elite_journal::body::{Discovery, Orbit, Spin};
+use galos_db::bodies::{Body as DbBody, Surface};
 use galos_db::factions::Faction as DbFaction;
+use galos_db::stars::Star as DbStar;
 use galos_db::systems::Economies;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -204,6 +207,14 @@ struct Panel {
 enum Subject {
     /// One system, and everything the map knows about it
     System(System),
+    /// One star, and everything the map knows about it
+    ///
+    /// The row rather than the entity, for the reason a system's panel holds
+    /// one: a star is despawned the moment the camera leaves the system it is
+    /// in, and a panel opened for it has no reason to go with it.
+    Star(DbStar),
+    /// One body, likewise
+    Body(DbBody),
     /// One filter, and the systems it admits
     ///
     /// The systems are fetched once the panel is open, by [`fill_filters`],
@@ -218,6 +229,8 @@ impl Subject {
     fn title(&self) -> &str {
         match self {
             Subject::System(system) => &system.name,
+            Subject::Star(star) => &star.name,
+            Subject::Body(body) => &body.name,
             Subject::Filter { filter, .. } => filter.name(),
         }
     }
@@ -231,6 +244,14 @@ impl Subject {
         match self {
             Subject::System(system) => {
                 egui::Id::new(("system-panel", system.address))
+            }
+            // Which system as well as which of its numbering, an id being
+            // one system's own and every system having a body one.
+            Subject::Star(star) => {
+                egui::Id::new(("star-panel", star.system_address, star.id))
+            }
+            Subject::Body(body) => {
+                egui::Id::new(("body-panel", body.system_address, body.id))
             }
             Subject::Filter { filter, .. } => {
                 egui::Id::new(("filter-panel", filter))
@@ -247,6 +268,16 @@ impl Panels {
     /// copies of one answer.
     pub fn open_system(&mut self, system: System) {
         self.push(Subject::System(system));
+    }
+
+    /// Open a panel describing `star`
+    pub fn open_star(&mut self, star: DbStar) {
+        self.push(Subject::Star(star));
+    }
+
+    /// Open a panel describing `body`
+    pub fn open_body(&mut self, body: DbBody) {
+        self.push(Subject::Body(body));
     }
 
     /// Open a panel listing what `filter` admits
@@ -331,8 +362,11 @@ fn name_factions(
         .filter_map(|panel| match &panel.subject {
             Subject::System(system) => Some(system),
             // A filter panel lists systems by name and says nothing about
-            // whose they are.
-            Subject::Filter { .. } => None,
+            // whose they are, and nothing inside a system belongs to anyone:
+            // a faction holds a system, not a rock in one.
+            Subject::Star(_) | Subject::Body(_) | Subject::Filter { .. } => {
+                None
+            }
         })
         .flat_map(|system| system.factions.iter().copied())
         .filter(|id| names.get(*id).is_none())
@@ -530,6 +564,8 @@ fn panels(
                 Subject::System(system) => {
                     described(ui, system, &names, &mut centered, &mut wanted)
                 }
+                Subject::Star(star) => star_described(ui, star),
+                Subject::Body(body) => body_described(ui, body),
                 Subject::Filter { filter, systems } => admitted(
                     ui,
                     filter,
@@ -576,7 +612,7 @@ fn panels(
     // star does. Where the camera goes is asked for separately, from the row
     // in the bar that names what is picked out.
     if let Some((system, gathering)) = picked {
-        selection.pick(system, gathering);
+        selection.pick(Picked::System(system), gathering);
     }
     // Opened after the loop, since a panel asked for from inside one is a
     // panel pushed onto the list being walked.
@@ -648,6 +684,202 @@ fn described(
     if ui.button("Center Camera").clicked() {
         *centered = Some(DVec3::from(system.position));
     }
+}
+
+/// Metres in a solar radius
+///
+/// What a star's size is read in. Metres are what the database holds and what
+/// the map draws in, and a star written out in them is a run of digits nobody
+/// counts.
+const SOLAR_RADIUS: f64 = 6.957e8;
+
+/// Metres per second squared in a gravity
+///
+/// The journal records what a body pulls at in metres per second squared, and
+/// what anybody wants to know is how that compares to standing on Earth.
+const GRAVITY: f64 = 9.80665;
+
+/// Pascals in an atmosphere
+const ATMOSPHERE: f64 = 101_325.;
+
+/// Seconds in a day
+const DAY: f64 = 86_400.;
+
+/// Everything the map knows about one star
+///
+/// Read in the units a star is talked about in rather than the ones it is
+/// stored in: suns for its size and its mass, days for its turn, and light
+/// seconds for how far out it stands.
+fn star_described(ui: &mut Ui, star: &DbStar) {
+    egui::Grid::new(("star-fields", star.system_address, star.id))
+        .num_columns(2)
+        .show(ui, |ui| {
+            field(ui, "Class", format!("{}{}", star.star_class, star.subclass));
+            field(ui, "Luminosity", star.luminosity.clone());
+            field(
+                ui,
+                "Distance",
+                format!("{:.1} Ls", star.distance_from_arrival_ls),
+            );
+            field(
+                ui,
+                "Radius",
+                format!("{:.3} Sol", star.radius as f64 / SOLAR_RADIUS),
+            );
+            field(ui, "Mass", format!("{:.3} Sol", star.stellar_mass));
+            field(ui, "Temperature", format!("{:.0} K", star.temperature));
+            field(
+                ui,
+                "Age",
+                format!(
+                    "{} million years",
+                    crate::ui::thousands(star.age_my.max(0) as u64)
+                ),
+            );
+            field(ui, "Magnitude", format!("{:.2}", star.absolute_magnitude));
+            turning(ui, &star.spin);
+            circling(ui, star.orbit.as_ref());
+            found(ui, &star.discovery);
+            field(
+                ui,
+                "Updated",
+                star.updated_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+            );
+        });
+}
+
+/// Everything the map knows about one body
+fn body_described(ui: &mut Ui, body: &DbBody) {
+    egui::Grid::new(("body-fields", body.system_address, body.id))
+        .num_columns(2)
+        .show(ui, |ui| {
+            field(ui, "Class", body.planet_class.clone());
+            field(
+                ui,
+                "Distance",
+                match body.distance_from_arrival {
+                    Some(away) => format!("{away:.1} Ls"),
+                    None => UNKNOWN.into(),
+                },
+            );
+            field(
+                ui,
+                "Radius",
+                format!(
+                    "{} km",
+                    crate::ui::thousands((body.radius / 1e3) as u64)
+                ),
+            );
+            field(ui, "Mass", format!("{:.3} Earths", body.mass));
+            field(
+                ui,
+                "Gravity",
+                format!("{:.2} g", body.gravity as f64 / GRAVITY),
+            );
+            field(ui, "Temperature", format!("{:.0} K", body.temperature));
+            standing(ui, &body.surface);
+            field(ui, "Tidal lock", yes(body.tidal_lock));
+            turning(ui, &body.spin);
+            circling(ui, Some(&body.orbit));
+            found(ui, &body.discovery);
+            field(
+                ui,
+                "Updated",
+                body.updated_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+            );
+        });
+}
+
+/// What a body's surface is like, where it has one
+///
+/// A gas giant has none, and is one line saying so rather than a header over
+/// five rows of nothing.
+fn standing(ui: &mut Ui, surface: &Option<Surface>) {
+    let Some(surface) = surface else {
+        field(ui, "Surface", "None".into());
+        return;
+    };
+
+    ui.label(egui::RichText::new("Surface").strong());
+    ui.end_row();
+    under(ui, "Landable", yes(surface.landable));
+    under(ui, "Atmosphere", surface.atmosphere_type.to_string());
+    under(
+        ui,
+        "Pressure",
+        format!("{:.3} atm", surface.pressure as f64 / ATMOSPHERE),
+    );
+    under(ui, "Volcanism", named(&surface.volcanism));
+    under(ui, "Terraforming", named(&surface.terraform_state));
+}
+
+/// How a thing turns on its own axis
+fn turning(ui: &mut Ui, spin: &Spin) {
+    ui.label(egui::RichText::new("Spin").strong());
+    ui.end_row();
+    under(ui, "Period", spent(spin.period));
+    under(ui, "Tilt", format!("{:.1}°", spin.tilt.to_degrees()));
+}
+
+/// The path a thing takes about whatever it goes round
+///
+/// Nothing to say for the one that goes round nothing, which is the star a
+/// system arrives at.
+fn circling(ui: &mut Ui, orbit: Option<&Orbit>) {
+    let Some(orbit) = orbit else {
+        field(ui, "Orbit", "Goes round nothing".into());
+        return;
+    };
+
+    ui.label(egui::RichText::new("Orbit").strong());
+    ui.end_row();
+    under(ui, "Radius", spanning(orbit.semi_major_axis));
+    under(ui, "Period", spent(orbit.orbital_period));
+    under(ui, "Eccentricity", format!("{:.4}", orbit.eccentricity));
+    under(ui, "Inclination", format!("{:.1}°", orbit.orbital_inclination));
+}
+
+/// What is known about a thing rather than about the thing itself
+fn found(ui: &mut Ui, discovery: &Discovery) {
+    ui.label(egui::RichText::new("Discovery").strong());
+    ui.end_row();
+    under(ui, "Discovered", yes(discovery.discovered));
+    under(ui, "Mapped", yes(discovery.mapped));
+}
+
+/// How long something takes, in the largest unit it fills
+///
+/// Days for anything that turns slowly, which is most of what is scanned, and
+/// hours for the rest. A period in seconds is eight digits nobody reads.
+fn spent(seconds: f32) -> String {
+    if seconds <= 0. {
+        return UNKNOWN.into();
+    }
+    let days = seconds as f64 / DAY;
+    if days >= 1. {
+        format!("{days:.1} days")
+    } else {
+        format!("{:.1} hours", days * 24.)
+    }
+}
+
+/// How far something reaches, in the larger unit it fills
+///
+/// Light seconds where a light second is not most of the answer, and
+/// kilometres where it is. A moon a few thousand kilometres out is a
+/// hundredth of a light second, and a planet is millions of kilometres.
+fn spanning(metres: f32) -> String {
+    let metres = metres as f64;
+    if metres >= crate::space::LIGHT_SECOND {
+        format!("{:.2} Ls", metres / crate::space::LIGHT_SECOND)
+    } else {
+        format!("{} km", crate::ui::thousands((metres / 1e3) as u64))
+    }
+}
+
+/// What the database says of a yes or no question
+fn yes(answer: bool) -> String {
+    if answer { "Yes".into() } else { "No".into() }
 }
 
 /// How many systems a filter's panel lists before it starts scrolling
@@ -942,7 +1174,12 @@ mod tests {
     use super::*;
     use crate::systems::tests::system;
     use crate::tests::{context, painted, words};
+    use chrono::DateTime;
     use elite_journal::Allegiance;
+    use elite_journal::body::{
+        Discovery as JournalDiscovery, Orbit as JournalOrbit,
+        Spin as JournalSpin,
+    };
     use elite_journal::system::Economy;
 
     /// A registry naming each of `known`
@@ -1054,6 +1291,100 @@ mod tests {
     #[test]
     fn a_system_with_no_economy_says_so_once() {
         assert_eq!(economy(None), vec!["Economy", UNKNOWN]);
+    }
+
+    /// Founders World, as the database holds it
+    fn founders() -> DbBody {
+        DbBody {
+            system_address: 1,
+            id: 14,
+            parents: vec![],
+            name: "Founders World".to_owned(),
+            body_type: None,
+            distance_from_arrival: Some(345.5563),
+            updated_at: DateTime::UNIX_EPOCH,
+            updated_by: String::new(),
+            planet_class: "Earthlike body".to_owned(),
+            tidal_lock: false,
+            mass: 0.69,
+            radius: 5.485766e6,
+            gravity: 9.13869,
+            temperature: 298.70755,
+            surface: None,
+            orbit: JournalOrbit {
+                semi_major_axis: 1.0023064e11,
+                eccentricity: 0.0026,
+                orbital_inclination: 1.5,
+                periapsis: 0.,
+                orbital_period: 8.6e7,
+                ascending_node: 0.,
+                mean_anomaly: 0.,
+            },
+            spin: JournalSpin { period: 3.6254802e6, tilt: 0.373026 },
+            discovery: JournalDiscovery { discovered: false, mapped: true },
+        }
+    }
+
+    /// What a body's panel says
+    fn body_said() -> Vec<String> {
+        words(|ui| body_described(ui, &founders()))
+    }
+
+    /// A body's panel reads in the units a body is talked about in
+    ///
+    /// Which are not the ones it is stored in. The database holds metres and
+    /// metres per second squared because that is what a scan records and what
+    /// the map draws with, and nobody asks how many metres across a world is.
+    #[test]
+    fn a_body_is_described_in_the_units_it_is_read_in() {
+        let said = body_said();
+
+        assert!(said.contains(&"Earthlike body".to_owned()), "{said:?}");
+        assert!(said.contains(&"345.6 Ls".to_owned()), "{said:?}");
+        assert!(said.contains(&"5,485 km".to_owned()), "{said:?}");
+        assert!(said.contains(&"0.690 Earths".to_owned()), "{said:?}");
+        assert!(said.contains(&"0.93 g".to_owned()), "{said:?}");
+        assert!(said.contains(&"299 K".to_owned()), "{said:?}");
+    }
+
+    /// A gas giant has no surface, and says so in one line
+    ///
+    /// Rather than a header over five rows of nothing, as a system with no
+    /// economy on record does.
+    #[test]
+    fn a_body_with_no_surface_says_so_once() {
+        let said = body_said();
+
+        assert!(said.contains(&"Surface".to_owned()), "{said:?}");
+        assert!(said.contains(&"None".to_owned()), "{said:?}");
+        assert!(!said.contains(&"Landable".to_owned()), "{said:?}");
+    }
+
+    /// A body's turn and its orbit are read in days
+    ///
+    /// A period is recorded in seconds, and eight digits of them is a number
+    /// nobody reads.
+    #[test]
+    fn what_turns_slowly_is_read_in_days() {
+        let said = body_said();
+
+        assert!(said.contains(&"42.0 days".to_owned()), "{said:?}");
+        assert!(said.contains(&"21.4°".to_owned()), "{said:?}");
+    }
+
+    /// How far something reaches is read in whichever unit it fills
+    #[test]
+    fn a_reach_is_read_in_the_unit_it_fills() {
+        assert_eq!(spanning(1.0023064e11), "334.33 Ls");
+        assert_eq!(spanning(5.4946205e6), "5,494 km");
+    }
+
+    /// And how long it takes, likewise
+    #[test]
+    fn a_span_of_time_is_read_in_the_unit_it_fills() {
+        assert_eq!(spent(3.6254802e6), "42.0 days");
+        assert_eq!(spent(3600.), "1.0 hours");
+        assert_eq!(spent(0.), UNKNOWN);
     }
 
     /// The names down the left of a panel are written as brightly as a header

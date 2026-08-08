@@ -2,24 +2,23 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
+use crate::systems::bodies::spawn::{Body, Placed};
 use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
     filter::{DimTo, Filtered, Filters},
-    pointing::{
-        DRAG_THRESHOLD, DragDistance, PointedAt, PointerTarget, UNFITTED_SCALE,
-    },
+    pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
+    roundness::Roundness,
     route::spawn::{framing, spawn_route},
     route::{self, Plotted, Route},
-    selection::Selection,
+    selection::{Picked, PickedBody, Selection},
     system_to_vec,
 };
 use crate::ui::{Gesture, Grasp};
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
-use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
 use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::tasks::block_on;
@@ -34,21 +33,17 @@ use std::{
 };
 
 pub fn plugin(app: &mut App) {
-    app.add_plugins(MeshPickingPlugin);
-    // A star and its name are worth clicking; the route line is not. Marking
-    // what is worth hitting keeps the ray cast off every mesh in the world.
-    // Requires `MeshPickingCamera` on the camera and `Pickable` on each.
-    app.insert_resource(MeshPickingSettings {
-        require_markers: true,
-        ..default()
-    });
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(false));
 
-    app.add_systems(Startup, (init_mesh, init_materials));
+    app.add_systems(Startup, init_materials);
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
     app.add_systems(Update, redim.in_set(MapSet::Populate));
+    // Reads how large the held system looks, which `bodies` settles while it
+    // decides whether to draw what is inside it. That is `Populate`'s work and
+    // this is `Present`'s, so the sets already say which comes first.
+    app.add_systems(Update, shells.in_set(MapSet::Present));
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -59,9 +54,6 @@ pub fn plugin(app: &mut App) {
             .after(super::pointing::point_at),
     );
 }
-
-#[derive(Resource)]
-pub struct SystemMesh(pub Handle<Mesh>);
 
 /// What a star is drawn in, at full strength and dimmed
 ///
@@ -76,6 +68,13 @@ pub struct SystemMaterials {
     bright: Vec<Handle<StandardMaterial>>,
     /// The same colors, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
+    /// What the one shell on its way out is painted in
+    ///
+    /// One handle rather than a set, because only one system is ever being
+    /// closed on. Repainted every frame a shell is fading, which is what
+    /// recoloring a shared asset is good for and why the fading shell may not
+    /// share one with anything else.
+    fading: Handle<StandardMaterial>,
 }
 
 impl SystemMaterials {
@@ -142,19 +141,20 @@ impl Hue {
 /// Both the fill and the glow are scaled, since a star drawn dim but glowing
 /// as brightly as the rest reads as no dimmer at all: the glow is most of
 /// what is seen of a star at any distance.
+///
+/// Which is why the glow is what carries how bright the sky reads, and the
+/// fill is left where it is. The fill is blended over whatever stands behind
+/// it, so raising it thickens a crowded sky as much as it lights one.
 fn star_material(color: Color, strength: f32) -> StandardMaterial {
     let faded = color.with_alpha(color.alpha() * strength);
     StandardMaterial {
         base_color: faded,
         alpha_mode: AlphaMode::Blend,
-        emissive: LinearRgba::from(color.with_alpha(1.)) * 10. * strength,
+        emissive: LinearRgba::from(color.with_alpha(1.)) * 16. * strength,
         ..default()
     }
 }
 
-/// A material that draws nothing, for what only has to be hit
-#[derive(Resource)]
-pub struct InvisibleMaterial(pub Handle<StandardMaterial>);
 // pub struct SystemMaterials(pub HashMap<String, Handle<StandardMaterial>>);
 
 /// Determains what color to draw in system view mode.
@@ -169,27 +169,37 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
-/// A star, drawn inside the [`System`] that holds it
+/// A whole system, drawn as one thing
 ///
-/// A system is a place and a star is a thing in it. Only one is drawn per
-/// system today, but a system can have several, and they will differ in
-/// where they sit and how large they are.
+/// From far enough away nothing in a system can be told apart from anything
+/// else in it, so what is drawn is a single sphere standing for the lot. Up
+/// close the same sphere is the edge of what the system takes up, and its
+/// contents are drawn inside it.
+///
+/// Not a star. A system is a place, a star is a thing in it, and there may be
+/// several; those are read from the `stars` table and drawn within this.
 ///
 /// [`super::scale`] writes a size onto this entity rather than onto the
-/// system, because a star is drawn far larger than it is so as to stay
-/// visible from light years away. Scale is inherited, so anything sharing an
-/// entity with a star would be stretched by the same exaggeration; keeping
-/// stars on children of their own leaves the system's transform meaning what
-/// it says, and lets labels and, later, bodies sit at their true size.
+/// system, because a shell is drawn far larger than the system is so as to
+/// stay visible from light years away. Scale is inherited, so anything sharing
+/// an entity with it would be stretched by the same exaggeration; keeping the
+/// shell on a child of its own leaves the system's transform meaning what it
+/// says, and lets labels and bodies sit at their true size.
 #[derive(Component)]
-pub struct Star;
+pub struct Shell;
 
-/// Pick out a clicked star system
+/// Pick out whatever was clicked
 ///
-/// Clicking says which system the user means and nothing more. Where the
+/// Clicking says which thing the user means and nothing more. Where the
 /// camera goes is asked for separately, by the row that names what is picked
 /// out, so that a system can be pointed out from wherever the user happens
 /// to be looking without the map moving out from under them.
+///
+/// One gesture over stars and over the bodies inside them alike: a plain click
+/// holds what was clicked and lets go of everything else, and the modifier
+/// gathers instead. A system and a body inside it are two things that can be
+/// picked out, and being one thing inside the other says nothing about what a
+/// click means.
 ///
 /// The left button orbits the camera as well as selecting, so an orbit that
 /// happens to start and end on the same star has to be told apart from a
@@ -200,6 +210,8 @@ pub struct Star;
 fn select_on_click(
     click: On<Pointer<Click>>,
     pointed_at: Query<&System, With<PointedAt>>,
+    pointed_body: Query<(Entity, &Body), With<PointedAt>>,
+    placed: Placed,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     grasp: Res<Grasp>,
@@ -245,7 +257,6 @@ fn select_on_click(
     // has already settled which system that is, weighing a name over a star
     // lying nearer behind it. Asking it rather than working the hit out
     // again keeps the click on whatever the ring and the tint are on.
-    let Ok(system) = pointed_at.single() else { return };
     // Held down, a modifier gathers systems up rather than replacing what is
     // held, and lets go of one already held, so the same gesture builds a set
     // and takes it apart.
@@ -262,7 +273,27 @@ fn select_on_click(
         KeyCode::ShiftLeft,
         KeyCode::ShiftRight,
     ]);
-    selection.pick(system.clone(), gathering);
+    // A body first, as everywhere: once the camera is close enough to see
+    // what is inside a system, what is inside it is what a click means.
+    //
+    // A body is taken as a value here rather than left as the entity it was
+    // clicked on, so that what is picked out is one list of one kind of thing.
+    // Where it stands is read now because a body does not move, and it is the
+    // one thing about a body that is not on the row it carries.
+    let picked = if let Ok((entity, body)) = pointed_body.single() {
+        placed.of(entity).map(|at| {
+            Picked::Body(PickedBody::new(body.address, body.id, &body.name, at))
+        })
+    } else {
+        pointed_at.single().ok().cloned().map(Picked::System)
+    };
+
+    // Nothing under the pointer is nothing to pick out, and nothing to let go
+    // of either. A click on empty sky is a gesture in its own right and
+    // [`super::selection::clear_when_nothing_is_clicked`] is what answers it.
+    let Some(picked) = picked else { return };
+
+    selection.pick(picked, gathering);
 }
 
 /// How long a second click may take to arrive and still make a double
@@ -271,20 +302,35 @@ fn select_on_click(
 /// two deliberate clicks on the same system are not read as one gesture.
 const DOUBLE_CLICK: f32 = 0.4;
 
-/// Fly the camera to a system the user double clicks
+/// Fly the camera to whatever the user double clicks
 ///
-/// One click says which system is meant and a second says to go there, so
+/// One click says which thing is meant and a second says to go there, so
 /// the map can be pointed at from where the user is without moving, and
 /// travelled with the same hand when they do want to move.
+///
+/// A system out in the sky and a body inside one alike. The gesture is the
+/// same gesture and means the same thing, and what differs is only how the
+/// thing aimed at says where it stands: a system carries a galactic position
+/// of its own, and a body is placed in metres from the middle of the system
+/// holding it, so it is asked through [`Placed`].
 ///
 /// A click is weighed by the same three questions everywhere on the map: the
 /// primary button, travel short enough to be a click rather than a drag, and
 /// the pointer's own business rather than the UI's. What is asked on top of
-/// those is that the click before it landed on the same system, recently.
+/// those is that the click before it landed on the same thing, recently.
+///
+/// The zoom is left where the user set it, as a move that only says where to
+/// look should. Flying to a body is then the camera coming to orbit it rather
+/// than the system around it, which is what makes the next scroll of the wheel
+/// go in towards the body instead of past it.
 fn fly_on_double_click(
     gesture: Gesture,
     dragged: Query<&DragDistance>,
-    pointed_at: Query<&System, With<PointedAt>>,
+    pointed_at: Query<(Entity, &System), With<PointedAt>>,
+    // Whatever inside a system is pointed at, which carries no galactic
+    // position of its own and is asked where it stands.
+    pointed_body: Query<Entity, (With<Body>, With<PointedAt>)>,
+    placed: Placed,
     time: Res<Time<Real>>,
     mut last: Local<LastClick>,
     mut camera: MessageWriter<MoveCamera>,
@@ -295,34 +341,47 @@ fn fly_on_double_click(
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
         return;
     }
-    let Ok(system) = pointed_at.single() else { return };
 
-    if last.doubled(system.address, time.elapsed_secs()) {
-        camera.write(MoveCamera {
-            position: Some(DVec3::from(system.position)),
-            framing: None,
-        });
+    // A body first, as a click on one means the body rather than the system
+    // holding it. Only one thing is ever pointed at, so the two queries
+    // cannot both answer, and the order is what it says rather than a choice
+    // being made.
+    let aimed = if let Ok(body) = pointed_body.single() {
+        placed.of(body).map(|at| (body, at))
+    } else if let Ok((entity, system)) = pointed_at.single() {
+        Some((entity, DVec3::from(system.position)))
+    } else {
+        None
+    };
+    let Some((what, position)) = aimed else { return };
+
+    if last.doubled(what, time.elapsed_secs()) {
+        camera.write(MoveCamera { position: Some(position), framing: None });
     }
 }
 
 /// The click a second one would be counted against
 ///
-/// Which system as well as when, so that two clicks a moment apart on two
+/// Which thing as well as when, so that two clicks a moment apart on two
 /// different stars are two answers rather than one gesture. Stars stand
 /// close together on screen at any distance, and picking one out after
 /// another is an ordinary thing to do quickly.
+///
+/// What was clicked rather than which system it was, since a body is
+/// something to be aimed at as much as the system holding it is, and the two
+/// have nothing in common to be named by but being entities on the map.
 #[derive(Default)]
-struct LastClick(Option<(i64, f32)>);
+struct LastClick(Option<(Entity, f32)>);
 
 impl LastClick {
-    /// Whether a click on `address` at `now` is the second of a pair
+    /// Whether a click on `what` at `now` is the second of a pair
     ///
     /// A double is spent as soon as it is answered, so a third click starts
     /// counting afresh rather than making a second pair with the second.
-    fn doubled(&mut self, address: i64, now: f32) -> bool {
+    fn doubled(&mut self, what: Entity, now: f32) -> bool {
         let doubled = matches!(self.0, Some((clicked, when))
-            if clicked == address && now - when <= DOUBLE_CLICK);
-        self.0 = if doubled { None } else { Some((address, now)) };
+            if clicked == what && now - when <= DOUBLE_CLICK);
+        self.0 = if doubled { None } else { Some((what, now)) };
         doubled
     }
 }
@@ -333,12 +392,11 @@ pub fn spawn(
     systems_query: Query<(Entity, &System)>,
     route_query: Query<(Entity, &Route)>,
     galaxy: Res<Galaxy>,
-    grids: Query<&Grid, With<BigSpace>>,
+    grids: Query<&Grid>,
     color_by: Res<ColorBy>,
     filters: Res<Filters>,
-    mesh: Res<SystemMesh>,
+    roundness: Res<Roundness>,
     materials: Res<SystemMaterials>,
-    invisible: Res<InvisibleMaterial>,
     time: Res<Time<Real>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
@@ -347,7 +405,7 @@ pub fn spawn(
     mut tasks: ResMut<FetchTasks>,
     mut plot: ResMut<Plot>,
 ) {
-    let Ok(grid) = grids.single() else { return };
+    let Ok(grid) = grids.get(galaxy.0) else { return };
 
     // Every row that arrived this frame, and when the last of them was asked
     // for. Put together first and handed over once, for the reason given at
@@ -430,9 +488,8 @@ pub fn spawn(
             &color_by,
             &filters,
             &mut commands,
-            &mesh,
+            &roundness,
             &materials,
-            &invisible,
             &time,
             &arrived_at,
         );
@@ -492,7 +549,7 @@ fn one_per_system(arrived: Vec<DbSystem>) -> Vec<DbSystem> {
 /// Create or refresh the entities for each row fetched
 ///
 /// A [`System`] carries the database row and the grid placement, and is what
-/// the rest of the map addresses. What is drawn hangs off it: a [`Star`]
+/// the rest of the map addresses. What is drawn hangs off it: a [`Shell`]
 /// today, and labels alongside. Nothing there inherits a size, so each is
 /// drawn at whatever size suits it.
 ///
@@ -511,9 +568,8 @@ pub fn spawn_systems(
     color_by: &Res<ColorBy>,
     filters: &Res<Filters>,
     commands: &mut Commands,
-    mesh: &Res<SystemMesh>,
+    roundness: &Res<Roundness>,
     materials: &Res<SystemMaterials>,
-    invisible: &Res<InvisibleMaterial>,
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
 ) {
@@ -547,11 +603,17 @@ pub fn spawn_systems(
             // by a command lands at the next sync point and the star would
             // be drawn once at full strength before it arrived.
             let excluded = !filters.admit(&system);
-            let drawn = star(&system, color_by, mesh, materials, excluded);
-            let target = pointer_target(mesh, invisible);
+            let drawn = star(&system, color_by, roundness, materials, excluded);
             let mut spawned = commands.spawn((
                 placement(&system, grid),
                 system,
+                // Fitted by `pointing::size_indicators` before the first
+                // draw, and what the pointer is tested against.
+                Indicator::default(),
+                // A system does not block what lies behind it, so a name
+                // drawn over one is reported as well and `pointing` can
+                // weigh the two.
+                Pickable { should_block_lower: false, is_hoverable: true },
                 // The star is what is shown or hidden; the mesh and any
                 // labels inherit that from it.
                 Visibility::default(),
@@ -563,49 +625,91 @@ pub fn spawn_systems(
             if excluded {
                 spawned.insert(Filtered);
             }
-            spawned.with_child(drawn).with_child(target);
+            spawned.with_child(drawn);
         }
     }
 }
 
-/// Carry a changed row, a changed color scheme or a changed filter onto what
-/// is drawn
+/// Carry a changed row onto where its star is drawn
 ///
-/// The two halves of a star are refreshed from different things. Its
-/// placement follows the row it was built from, and its material follows the
-/// row, [`ColorBy`] and whether the filters exclude it, so the second is
-/// checked against the star each mesh hangs off rather than a copy of it.
-///
-/// The material is decided afresh each frame and written only where it
-/// differs, as [`super::labels::tint_marked_names`] does, rather than being
-/// guarded by what has changed. A mark is applied by a command and so lands a
-/// frame after the filter that asked for it, which leaves nothing that both
-/// runs after the mark and can still see what changed.
+/// A row fetched again is written over the one already there, and the
+/// position it carries is free to differ from the one it replaces. What a
+/// star is drawn *in* follows the row as well, and [`shells`] settles that.
 fn update(
-    systems_query: Query<(Entity, Ref<System>, Has<Filtered>)>,
-    mut stars: Query<
-        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
-        With<Star>,
-    >,
-    grids: Query<&Grid, With<BigSpace>>,
-    color_by: Res<ColorBy>,
-    materials: Res<SystemMaterials>,
+    systems_query: Query<(Entity, Ref<System>)>,
+    galaxy: Res<Galaxy>,
+    grids: Query<&Grid>,
     mut commands: Commands,
 ) {
-    let Ok(grid) = grids.single() else { return };
+    let Ok(grid) = grids.get(galaxy.0) else { return };
 
-    for (entity, system, _) in &systems_query {
+    for (entity, system) in &systems_query {
         if system.is_changed() {
             commands.entity(entity).insert(placement(&system, grid));
         }
     }
+}
 
-    for (child_of, mut material) in &mut stars {
-        let Ok((_, system, filtered)) = systems_query.get(child_of.parent())
-        else {
+/// Decide how each shell is drawn, and whether it is drawn at all
+///
+/// Three things decide it and one of them has to write the material, so all
+/// three are settled here: the color scheme says which hue, the filters say
+/// how faintly, and how near the camera has come says how much of the shell is
+/// left at all.
+///
+/// A shell is a mark standing in for a system too small to see. It fades out
+/// as the camera closes and is gone by the time what is inside the system is
+/// drawn, which is what the camera came for. Past there the shell is a lit
+/// sphere around the camera, drawn from the galaxy's scale where a float has
+/// nothing left over at the size it is; and for a system that is one star and
+/// nothing else it sits all but exactly on that star's surface.
+///
+/// The fading shell is painted into a handle of its own, and one handle does
+/// because only one system is ever being closed on. Every other shell points
+/// at the shared handle for its hue, so nothing else is repainted by a fade.
+///
+/// Decided afresh each frame and written only where it differs, as
+/// [`super::labels::tint_marked_names`] is. A mark is applied by a command and
+/// so lands a frame after the filter that asked for it, which leaves nothing
+/// that both runs after the mark and can still see what changed.
+pub(super) fn shells(
+    systems: Query<(&System, Has<Filtered>)>,
+    seen_as: Res<super::bodies::spawn::Apparent>,
+    color_by: Res<ColorBy>,
+    dim: Res<DimTo>,
+    materials: Res<SystemMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+    mut shells: Query<
+        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility),
+        With<Shell>,
+    >,
+) {
+    for (child_of, mut material, mut visibility) in &mut shells {
+        let Ok((system, filtered)) = systems.get(child_of.parent()) else {
             continue;
         };
-        let wanted = materials.get(hue(&system, &color_by), filtered);
+        // Its own visibility rather than its system's. `super::visibility`
+        // owns that one, and a shell inherits it either way.
+        let standing = seen_as.standing(child_of.parent());
+        if standing <= 0. {
+            visibility.set_if_neq(Visibility::Hidden);
+            continue;
+        }
+        visibility.set_if_neq(Visibility::Inherited);
+
+        let hue = hue(system, &color_by);
+        let wanted = if standing < 1. {
+            // Dimmed by the filters first and by the fade after, so a shell
+            // the filters were drawing faintly does not come back to full
+            // strength on its way out.
+            let strength = if filtered { dim.0 } else { 1. };
+            if let Some(mut fading) = assets.get_mut(&materials.fading) {
+                *fading = star_material(hue.color(), strength * standing);
+            }
+            materials.fading.clone()
+        } else {
+            materials.get(hue, filtered)
+        };
         if material.0 != wanted {
             material.0 = wanted;
         }
@@ -633,61 +737,48 @@ fn redim(
     }
 }
 
-/// Where a star sits, as the galaxy's grid wants it
+/// Where a system sits, as the galaxy's grid wants it
 ///
 /// Split into the cell the position falls in and how far into that cell it
 /// sits. The cell is an integer, so it stays exact however far out the system
 /// is, and the transform left over is small enough to be carried without
 /// losing anything.
 ///
-/// The scale is left alone. This is the star's own transform, and everything
-/// hung off it is placed relative to a light year meaning a light year.
+/// A [`System`] holds its position in light years, which is what the database
+/// records and what every distance the map states is measured in. The grid is
+/// laid out in metres, so this is where the two meet — one of only two such
+/// places, the other being the camera's own cell.
+///
+/// The scale is left alone. This is the system's own transform, and everything
+/// hung off it is placed relative to a metre meaning a metre.
 fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
-    let (cell, translation) =
-        grid.translation_to_grid(DVec3::from(system.position));
+    let (cell, translation) = grid.translation_to_grid(crate::space::metres(
+        DVec3::from(system.position),
+    ));
 
     (cell, Transform::from_translation(translation))
 }
 
-/// What catches the pointer for a system
+/// The shell a system is drawn as
 ///
-/// Sized each frame by [`super::pointing`] to match the ring it draws, so a
-/// system is as easy to hit as the mark says it is. Sits at the system's own
-/// position and draws nothing.
-fn pointer_target(
-    mesh: &Res<SystemMesh>,
-    invisible: &Res<InvisibleMaterial>,
-) -> impl Bundle {
-    (
-        PointerTarget,
-        Mesh3d(mesh.0.clone()),
-        MeshMaterial3d(invisible.0.clone()),
-        // Fitted by `pointing::size_targets` before the first draw.
-        Transform::from_scale(Vec3::splat(UNFITTED_SCALE)),
-        NotShadowCaster,
-        // Mesh picking requires markers, see `plugin`. A star does not
-        // block what lies behind it, so a name drawn over one is reported
-        // as well and `pointing` can weigh the two.
-        Pickable { should_block_lower: false, is_hoverable: true },
-    )
-}
-
-/// The one star a system is drawn with
+/// Sits at the system's own position with an identity transform.
+/// [`super::scale`] writes a size onto it each frame, which is why it is a
+/// child: that size is an exaggeration, and scale is inherited.
 ///
-/// Sits at the system's own position with an identity transform, since there
-/// is nothing yet to tell one star of a system from another. [`super::scale`]
-/// writes a size onto it each frame, and picking hits land here rather than
-/// on the system, so [`fly_on_double_click`] reads through to the parent.
+/// Nothing aims at it. What answers the pointer is the system itself, over
+/// the mark [`super::pointing::Indicator`] holds, so a system is as easy to
+/// hit as the ring says it is however small the shell is drawn.
 fn star(
     system: &System,
     color_by: &Res<ColorBy>,
-    mesh: &Res<SystemMesh>,
+    roundness: &Res<Roundness>,
     materials: &Res<SystemMaterials>,
     dimmed: bool,
 ) -> impl Bundle {
     (
-        Star,
-        Mesh3d(mesh.0.clone()),
+        Shell,
+        // Fitted by `super::scale` before the first draw, as the size is.
+        Mesh3d(roundness.coarsest()),
         MeshMaterial3d(materials.get(hue(system, color_by), dimmed)),
         Transform::default(),
         NotShadowCaster,
@@ -703,11 +794,6 @@ fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     }
 }
 
-fn init_mesh(mut assets: ResMut<Assets<Mesh>>, mut commands: Commands) {
-    let handle = assets.add(Sphere::new(1.).mesh().ico(1).unwrap());
-    commands.insert_resource(SystemMesh(handle));
-}
-
 fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
     dim: Res<DimTo>,
@@ -719,15 +805,13 @@ fn init_materials(
             .map(|hue| assets.add(star_material(hue.color(), strength)))
             .collect()
     };
+    let bright = set(1.);
+    let dim = set(dim.0);
+    // Painted afresh every frame a shell is fading, so what it holds until
+    // then is only somewhere to start.
+    let fading = assets.add(star_material(Hue::Grey.color(), 1.));
 
-    commands
-        .insert_resource(SystemMaterials { bright: set(1.), dim: set(dim.0) });
-    commands.insert_resource(InvisibleMaterial(assets.add(StandardMaterial {
-        base_color: Color::NONE,
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    })));
+    commands.insert_resource(SystemMaterials { bright, dim, fading });
 }
 
 fn allegiance_hue(system: &System) -> Hue {
@@ -866,27 +950,32 @@ mod tests {
         assert!(one_per_system(Vec::new()).is_empty());
     }
 
+    /// A thing on the map to be clicked, told apart from the next by `which`
+    fn clickable(which: u32) -> Entity {
+        Entity::from_raw_u32(which).expect("an entity to click")
+    }
+
     /// One click on its own opens nothing
     #[test]
     fn a_single_click_is_not_a_double() {
         let mut last = LastClick::default();
-        assert!(!last.doubled(1, 0.));
+        assert!(!last.doubled(clickable(1), 0.));
     }
 
     /// Two clicks in quick succession on one system make a double
     #[test]
     fn two_quick_clicks_on_one_system_are_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(last.doubled(1, DOUBLE_CLICK));
+        last.doubled(clickable(1), 0.);
+        assert!(last.doubled(clickable(1), DOUBLE_CLICK));
     }
 
     /// Two clicks far enough apart are two singles
     #[test]
     fn two_slow_clicks_are_not_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(!last.doubled(1, DOUBLE_CLICK + 0.01));
+        last.doubled(clickable(1), 0.);
+        assert!(!last.doubled(clickable(1), DOUBLE_CLICK + 0.01));
     }
 
     /// Two clicks on different systems are two singles
@@ -897,8 +986,8 @@ mod tests {
     #[test]
     fn two_clicks_on_different_systems_are_not_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(!last.doubled(2, 0.1));
+        last.doubled(clickable(1), 0.);
+        assert!(!last.doubled(clickable(2), 0.1));
     }
 
     /// A third quick click does not make a second double
@@ -908,18 +997,18 @@ mod tests {
     #[test]
     fn a_third_quick_click_is_not_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        assert!(last.doubled(1, 0.1));
-        assert!(!last.doubled(1, 0.2));
+        last.doubled(clickable(1), 0.);
+        assert!(last.doubled(clickable(1), 0.1));
+        assert!(!last.doubled(clickable(1), 0.2));
     }
 
     /// A slow click after a double starts a fresh pair
     #[test]
     fn counting_starts_again_after_a_double() {
         let mut last = LastClick::default();
-        last.doubled(1, 0.);
-        last.doubled(1, 0.1);
-        assert!(!last.doubled(1, 0.2));
-        assert!(last.doubled(1, 0.3));
+        last.doubled(clickable(1), 0.);
+        last.doubled(clickable(1), 0.1);
+        assert!(!last.doubled(clickable(1), 0.2));
+        assert!(last.doubled(clickable(1), 0.3));
     }
 }
