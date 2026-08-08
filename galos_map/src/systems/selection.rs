@@ -467,7 +467,7 @@ fn clear_when_nothing_is_clicked(
 /// exclude stays selected, and a full strength ring around a faint star would
 /// read as the filter having let go of it.
 ///
-/// A stop the route reaches is left to [`super::pointing::ring`] while the map
+/// A stop a route reaches is left to [`super::pointing::ring`] while the map
 /// is holding a system, that being where every mark for a stop is drawn then
 /// and the only place they all land together.
 ///
@@ -523,7 +523,7 @@ fn ring(
     }
 
     for (entity, system, at, indicator, filtered, hop) in &selected {
-        // A stop the route reaches is ringed by [`super::pointing::ring`],
+        // A stop a route reaches is ringed by [`super::pointing::ring`],
         // in this same color, while the map is holding a system. Everything
         // drawn for a stop then is drawn where the camera can see it rather
         // than where the stop is, and a ring drawn here would be out at the

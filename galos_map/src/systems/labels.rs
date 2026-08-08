@@ -569,7 +569,7 @@ pub fn choose_names(
             let stands = seen_as.standing(entity) > 0.
                 && carried != Some(system.address);
 
-            // A stop the route reaches is named whatever else is set. It is
+            // A stop a route reaches is named whatever else is set. It is
             // one of two systems out of the whole sky that the viewer is being
             // told to look at, and a mark saying look there without saying
             // where there is is half an answer.
@@ -1067,7 +1067,7 @@ pub fn leaders(
         // Either ring answers, and a name the color of the ring it belongs
         // to has already said which star it came from.
         //
-        // A stop the route reaches is ringed as well, and carries the mark
+        // A stop a route reaches is ringed as well, and carries the mark
         // saying which way it lies between the ring and the name, which joins
         // the two of them more plainly than a line drawn under it could.
         if pointed_at || selected || hop {
