@@ -3,17 +3,18 @@ use crate::Run;
 use async_std::task;
 use chrono::{DateTime, Utc};
 use eddn::{subscribe, Message, URL};
-use elite_journal::body::Body as JournalBody;
+use elite_journal::body::{Body as JournalBody, Signal};
 use elite_journal::entry::incremental::exploration::ScanTarget;
 use elite_journal::entry::market::Market as JournalMarket;
 use elite_journal::entry::route::NavRoute;
 use elite_journal::entry::{Entry, Event};
 use elite_journal::station::Station as JournalStation;
-use elite_journal::system::System as JournalSystem;
 use elite_journal::system::Coordinate;
+use elite_journal::system::System as JournalSystem;
 use galos_db::{
-    barycenters::Barycenter, bodies::Body, markets::Market, stars::Star,
-    stations::Station, systems::System, Database,
+    barycenters::Barycenter, bodies::Body, body_signals::BodySignal,
+    codex_entries::CodexEntry, markets::Market, stars::Star, stations::Station,
+    system_signals::SystemSignal, systems::System, Database,
 };
 use std::time::Duration;
 use structopt::StructOpt;
@@ -94,13 +95,45 @@ async fn record_visit(
     }
 
     if let Some(station) = station {
-        match Station::from_journal(db, timestamp, user, station, system.address)
-            .await
+        match Station::from_journal(
+            db,
+            timestamp,
+            user,
+            station,
+            system.address,
+        )
+        .await
         {
             Ok(_) => info!(station = %station.name, "{}", what),
             Err(err) => {
                 warn!(station = %station.name, error = %err, "{}", what)
             }
+        }
+    }
+}
+
+/// Make sure a system is on record before something points at it
+///
+/// Signals and codex entries hang off a system by foreign key and routinely
+/// arrive for one nothing has heard of, since the honk that finds them is
+/// often the first thing ever sent about the place. Each carries a name and a
+/// position, which is all it takes to write the row they need.
+async fn ensure_system(
+    db: &Database,
+    timestamp: DateTime<Utc>,
+    user: &str,
+    address: i64,
+    name: &str,
+    position: Option<Coordinate>,
+) -> bool {
+    let mut system = JournalSystem::new(address, name);
+    system.pos = position;
+
+    match System::from_journal(db, timestamp, user, &system).await {
+        Ok(_) => true,
+        Err(err) => {
+            warn!(system = %name, error = %err, "system");
+            false
         }
     }
 }
@@ -134,6 +167,38 @@ async fn record_body_counts(
     .await
     {
         Ok(_) => info!(system = %name, bodies = body_count, "{}", what),
+        Err(err) => warn!(system = %name, error = %err, "{}", what),
+    }
+}
+
+/// Record what was found on a body's surface
+///
+/// The surface scan and the honk report the same kinds and counts, so both
+/// land here. `what` names which of them it was.
+#[allow(clippy::too_many_arguments)]
+async fn record_body_signals(
+    db: &Database,
+    timestamp: DateTime<Utc>,
+    user: &str,
+    address: i64,
+    name: &str,
+    position: Option<Coordinate>,
+    body_id: i16,
+    signals: &[Signal],
+    what: &str,
+) {
+    if !ensure_system(db, timestamp, user, address, name, position).await {
+        return;
+    }
+
+    match BodySignal::from_journal(
+        db, timestamp, user, address, body_id, signals,
+    )
+    .await
+    {
+        Ok(_) => {
+            info!(system = %name, body = body_id, signals = signals.len(), "{}", what)
+        }
         Err(err) => warn!(system = %name, error = %err, "{}", what),
     }
 }
@@ -321,6 +386,117 @@ fn process_message(
                         "nav beacon scan",
                     )
                     .await
+                }
+
+                // What is written on a body's surface. The surface scan and
+                // the honk report it in the same terms, so both land in the
+                // same place.
+                Event::SAASignalsFound(e) => {
+                    record_body_signals(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        e.system_address,
+                        &e.star_system,
+                        Some(e.star_pos),
+                        e.body_id,
+                        &e.signals,
+                        "saa signals found",
+                    )
+                    .await
+                }
+
+                Event::FssBodySignals(e) => {
+                    record_body_signals(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        e.system_address,
+                        &e.star_system,
+                        Some(e.star_pos),
+                        e.body_id,
+                        &e.signals,
+                        "fss body signals",
+                    )
+                    .await
+                }
+
+                // What hangs in a system without being a body. Arrives as a
+                // system's worth at a time.
+                Event::FssSignalDiscovered(e) => {
+                    // The schema only says the sender "should" add these, so
+                    // a batch may name no system at all. Nothing can be
+                    // created from one that does not, and the signals are
+                    // still worth writing if the system is already known.
+                    if let Some(ref name) = e.star_system {
+                        if !ensure_system(
+                            db,
+                            entry.timestamp,
+                            &user,
+                            e.system_address,
+                            name,
+                            e.star_pos,
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+
+                    match SystemSignal::from_journal(
+                        db,
+                        &user,
+                        e.system_address,
+                        &e.signals,
+                    )
+                    .await
+                    {
+                        Ok(_) => info!(
+                            system = %e.star_system.as_deref().unwrap_or("?"),
+                            signals = e.signals.len(),
+                            "fss signal discovered",
+                        ),
+                        Err(err) => warn!(
+                            system = %e.star_system.as_deref().unwrap_or("?"),
+                            error = %err,
+                            "fss signal discovered",
+                        ),
+                    }
+                }
+
+                Event::CodexEntry(e) => {
+                    if !ensure_system(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        e.system_address,
+                        &e.system_name,
+                        Some(e.star_pos),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+
+                    match CodexEntry::from_journal(
+                        db,
+                        entry.timestamp,
+                        &user,
+                        &e,
+                    )
+                    .await
+                    {
+                        Ok(_) => info!(
+                            system = %e.system_name,
+                            entry = e.entry_id,
+                            "codex entry",
+                        ),
+                        Err(err) => warn!(
+                            system = %e.system_name,
+                            error = %err,
+                            "codex entry",
+                        ),
+                    }
                 }
                 Event::Docked(e) => {
                     let system =
