@@ -345,8 +345,10 @@ pub struct Readout;
 /// numbers would swap between entities whenever an archetype moved, and a
 /// number that changes which mesh it is drawn from is a number that flickers.
 ///
-/// Pooled rather than made and unmade as what is located changes. A readout
-/// with nothing to say is hidden, and the pool only grows.
+/// As long as there is anything to say and no longer. It follows what is
+/// located rather than what was said about it, so a thing drifting onto the
+/// plane and off it again costs nothing, and a selection let go of gives its
+/// readouts back rather than leaving them resident for the session.
 #[derive(Resource, Default)]
 pub struct Readouts(Vec<Entity>);
 
@@ -424,11 +426,13 @@ fn spoken(
     for drop in &dropped.0 {
         says.push(placed(drop.foot, drop.at));
 
-        let Some(said) =
-            off_plane(drop.at.y - reading.at.y, reading.step, reading.unit)
-        else {
-            continue;
-        };
+        // A slot whether or not there is anything to put in it. A thing
+        // sitting on the plane says nothing about how far off it is, and a
+        // slot that came and went would slide every readout below it along one
+        // place, so a number would change which mesh it is drawn from as a
+        // selection drifted across the plane.
+        let said = off_plane(drop.at.y - reading.at.y, reading.step, reading.unit);
+        let silent = said.is_none();
         says.push(Says {
             from_eye: drop.middle,
             // Beside the line rather than over it, for the same reason a pair
@@ -437,8 +441,8 @@ fn spoken(
             hung: sideways * ASIDE,
             anchor: TextAnchor::CENTER_RIGHT,
             hue: plane.color,
-            said,
-            ink: INK * faded(drop.foot, reach),
+            said: said.unwrap_or_default(),
+            ink: if silent { 0. } else { INK * faded(drop.foot, reach) },
         });
     }
 
@@ -471,7 +475,7 @@ type Written = (
 #[derive(SystemParam)]
 pub(super) struct Standing<'w, 's> {
     planes: Query<'w, 's, (&'static Plane, &'static Reading, &'static Dropped)>,
-    eyes: Query<'w, 's, (Entity, Eye), NotARow>,
+    eyes: Query<'w, 's, Eye, NotARow>,
     pool: ResMut<'w, Readouts>,
     written: Query<'w, 's, Written, With<Readout>>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
@@ -493,9 +497,18 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
             mut materials,
             mut commands,
         } = it;
-        let seen = eyes.single().ok().and_then(|(entity, (at, camera))| {
+        // Which way the camera is standing, and what it can see. The first is
+        // its own transform and is always there; the second is the render
+        // target's to answer and is not. So how many readouts there are
+        // follows the first, and only where they stand waits on the second: a
+        // window that cannot say how large it is is a window with nothing
+        // drawn in it, not a reason to unmake what it is about.
+        let eye = eyes.single().ok();
+        let facing = eye.map(|(at, _)| at.rotation);
+        let seen = eye.and_then(|(at, camera)| {
             let viewport = camera.logical_viewport_size()?;
-            Some((entity, at.rotation, viewport, camera.clip_from_view().y_axis.y))
+            let cot_half_fov = camera.clip_from_view().y_axis.y;
+            Some((at.translation, at.rotation, viewport, cot_half_fov))
         });
 
         // Every plane at once, though only one is normally drawn. Two rulings on
@@ -503,7 +516,7 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
         // rules them to avoid; what is drawn over them follows what is drawn.
         let mut says = Vec::new();
         let mut inks = Vec::new();
-        if let Some((_, facing, ..)) = seen {
+        if let Some(facing) = facing {
             for (plane, reading, dropped) in &planes {
                 if reading.strength <= 0. {
                     continue;
@@ -516,15 +529,19 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
             }
         }
 
-        // Room for everything there is to say. One made now is not in the world
-        // until the commands are flushed, so it says nothing until the next frame;
-        // what is located changes far more slowly than the world is drawn.
-        if let Some((eye, ..)) = seen {
-            while pool.0.len() < says.len() {
-                pool.0.push(
-                    commands.spawn(readout(&mut materials, &face, eye)).id(),
-                );
-            }
+        // As many readouts as there is anything to say, and no more. One made
+        // now is not in the world until the commands are flushed, so it says
+        // nothing until the next frame; what is located changes far more slowly
+        // than the world is drawn.
+        //
+        // And the rest unmade, which is what gives back a selection's worth of
+        // meshes and materials when the selection goes. Held instead, a session
+        // would carry every readout the largest selection it ever had wanted.
+        while pool.0.len() < says.len() {
+            pool.0.push(commands.spawn(readout(&mut materials, &face)).id());
+        }
+        for entity in pool.0.drain(says.len()..) {
+            commands.entity(entity).despawn();
         }
 
         for (nth, entity) in pool.0.iter().enumerate() {
@@ -536,7 +553,7 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
             // Nothing to say, or a plane so far faded where it would have stood
             // that saying it would be saying it about nothing.
             let ink = inks.get(nth).copied().unwrap_or(0.);
-            let Some((says, (_, facing, viewport, cot_half_fov))) =
+            let Some((says, (eye, facing, viewport, cot_half_fov))) =
                 says.get(nth).zip(seen).filter(|_| ink > 0.)
             else {
                 visible.set_if_neq(Visibility::Hidden);
@@ -546,12 +563,15 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
 
             let depth = into_view(facing, says.from_eye).max(MIN_DEPTH);
             let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
-            // Onto the camera's own axes, the readout hanging off it. Turned no
-            // further than its parent it faces the camera, and a length written
-            // here is a length across the view.
-            place.translation = facing.inverse()
-                * (says.from_eye.as_vec3() + says.hung * per_pixel);
-            place.rotation = Quat::IDENTITY;
+            // In the world, from the eye, which is where the readout is about.
+            // The floating origin's own transform is its place in the frame
+            // everything is drawn in, so this is a world position and not an
+            // offset from one.
+            place.translation =
+                eye + says.from_eye.as_vec3() + says.hung * per_pixel;
+            // Facing the camera, a row of text read edge on being no row at
+            // all.
+            place.rotation = facing;
             // The line box is exactly `SIZE` tall, so this is the height the row
             // draws at, in pixels, whatever the camera is doing.
             place.scale = Vec3::splat(READS * per_pixel / SIZE);
@@ -578,11 +598,15 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
 /// A material apiece rather than a handful shared out. What a readout is drawn
 /// at follows how far the plane has faded where it stands, so no two of them
 /// are alike and a shared one would come out however the last to write it left
-/// it.
+/// it. Unmaking a readout drops its handle, and with it the material.
+///
+/// Standing on its own rather than hung off the camera. A readout is placed in
+/// the world every frame and has nothing to inherit, and a camera that went
+/// away would otherwise take every readout with it and leave the pool holding
+/// entities that are not there.
 fn readout(
     materials: &mut Assets<StandardMaterial>,
     face: &Face,
-    eye: Entity,
 ) -> impl Bundle {
     (
         Readout,
@@ -608,7 +632,6 @@ fn readout(
         // Nothing is said until `readouts` has been round.
         Visibility::Hidden,
         Transform::default(),
-        ChildOf(eye),
     )
 }
 
@@ -1038,5 +1061,86 @@ mod tests {
             (hung - Vec3::X * LIFT).length() < LIFT * 1e-6,
             "the row was hung {hung}"
         );
+    }
+
+    /// An app holding a plane, a camera and the systems that draw over it
+    ///
+    /// Everything `readouts` reads and nothing else. The face is empty: the
+    /// pool is what is being asked about, and no glyph is cut or set here.
+    fn drawing() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<Readouts>();
+
+        let (plane, reading) = looking(100.);
+        app.world_mut().spawn((plane, reading, Dropped::default()));
+        // With a viewport of its own. A camera answers nothing for its size
+        // otherwise, that being the render target's to say, and nothing here
+        // brings up a render target.
+        app.world_mut().spawn((
+            Camera {
+                viewport: Some(bevy::camera::Viewport {
+                    physical_size: UVec2::new(800, 600),
+                    ..default()
+                }),
+                ..default()
+            },
+            Transform::default(),
+            FloatingOrigin,
+            CellCoord::default(),
+        ));
+
+        app.add_systems(
+            Update,
+            readouts(Face { bytes: &[], family: "Hack" }),
+        );
+        app
+    }
+
+    /// How many readouts there are
+    fn pooled(app: &App) -> usize {
+        app.world().resource::<Readouts>().0.len()
+    }
+
+    /// What is located sets how many readouts there are, both ways
+    ///
+    /// Grown to what there is to say, and unmade when there is less. Held at
+    /// the largest a session ever asked for, a map would carry every readout a
+    /// selection wanted long after the selection went.
+    #[test]
+    fn the_readouts_follow_what_is_located() {
+        let mut app = drawing();
+        app.update();
+        // The middle of the view, and nothing located.
+        assert_eq!(pooled(&app), 1);
+
+        // Three things off the plane: a mark at each foot and how far off each
+        // went.
+        let (_, reading) = looking(100.);
+        let drop = || Drop {
+            top: DVec3::ONE,
+            foot: DVec3::X,
+            middle: DVec3::X,
+            at: reading.at + DVec3::ONE,
+        };
+        let mut planes = app.world_mut().query::<&mut Dropped>();
+        for mut dropped in planes.iter_mut(app.world_mut()) {
+            dropped.0 = (0..3).map(|_| drop()).collect();
+        }
+        app.update();
+        assert_eq!(pooled(&app), 7);
+
+        // And let go of again once they are.
+        let mut planes = app.world_mut().query::<&mut Dropped>();
+        for mut dropped in planes.iter_mut(app.world_mut()) {
+            dropped.0.clear();
+        }
+        app.update();
+        assert_eq!(pooled(&app), 1);
+        // And gone from the world, not merely dropped from the list. The
+        // material goes with the entity, one handle apiece.
+        let mut standing = app.world_mut().query::<&Readout>();
+        assert_eq!(standing.iter(app.world()).count(), 1);
     }
 }
