@@ -33,6 +33,15 @@ pub fn plugin(app: &mut App) {
 /// the camera passes over the point it is orbiting.
 const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 
+/// Where the camera stands when the map opens, as a share of a quarter turn
+///
+/// A third of one in each of the two angles. Level with the galactic plane the
+/// ruled plane is edge on and faded out entirely, so a map opening there opens
+/// with no ruler on it at all. Square to it the ruling runs straight up and
+/// down the screen, which reads as a frame over the view rather than as a floor
+/// under it. A third off in both shows the plane as a plane.
+const OPENS_AT: f32 = FRAC_PI_2 / 3.;
+
 /// Radians of orbit per pixel of pointer travel, at unit sensitivity
 const ORBIT_RATE: f32 = 5e-3;
 
@@ -372,10 +381,12 @@ impl Default for OrbitCamera {
             rotation: Quat::IDENTITY,
             radius: 1.,
             target_radius: 1.,
-            yaw: 0.,
-            target_yaw: 0.,
-            pitch: 0.,
-            target_pitch: 0.,
+            yaw: OPENS_AT,
+            target_yaw: OPENS_AT,
+            // Down onto the plane rather than up from under it, the map being
+            // read from above.
+            pitch: -OPENS_AT,
+            target_pitch: -OPENS_AT,
             orbit_smoothness: 0.1,
             pan_smoothness: 0.02,
             zoom_smoothness: 0.1,
@@ -738,7 +749,10 @@ mod tests {
 
         app.update();
 
-        assert!(facing(&mut app) != 0., "the map did not turn");
+        assert!(
+            facing(&mut app) != OrbitCamera::default().yaw,
+            "the map did not turn"
+        );
     }
 
     /// A drag that began on a control does not
@@ -751,7 +765,7 @@ mod tests {
 
         app.update();
 
-        assert_eq!(facing(&mut app), 0.);
+        assert_eq!(facing(&mut app), OrbitCamera::default().yaw);
     }
 
     /// Nor does one nobody has settled yet
@@ -772,7 +786,7 @@ mod tests {
 
         app.update();
 
-        assert_eq!(facing(&mut app), 0.);
+        assert_eq!(facing(&mut app), OrbitCamera::default().yaw);
     }
 
     /// Scrolling pulls the camera back

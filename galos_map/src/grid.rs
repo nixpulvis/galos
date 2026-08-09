@@ -2084,6 +2084,24 @@ mod tests {
         assert!(off_plane(0.6, 2., Unit::LightYears).is_some());
     }
 
+    /// The map opens on a view the ruled plane can be seen in
+    ///
+    /// Level with the plane the camera looks along it rather than at it, and
+    /// the ruling is faded out entirely below [`FADE_EDGE_ON`] of square on. A
+    /// map that opens there opens with no ruler on it, and a ruler that has to
+    /// be found by dragging is a ruler nobody knows is there.
+    #[test]
+    fn the_map_opens_looking_at_the_plane() {
+        // What the shader fades on: how much of the view ray runs across the
+        // plane rather than along it, which for the ray down the middle of the
+        // view is the pitch alone.
+        let square = OrbitCamera::default().pitch.sin().abs();
+        assert!(
+            square > FADE_EDGE_ON,
+            "opens {square} from square on, faded out under {FADE_EDGE_ON}"
+        );
+    }
+
     /// Left to the map, a space is said in its own unit at every zoom
     #[test]
     fn a_space_is_said_in_its_own_unit() {
