@@ -245,8 +245,14 @@ type Mark = (
 /// thirty seconds of a light year sits on one about a third of the time. Then
 /// it turns over and back as the camera swings.
 pub(super) fn locate(
-    mut planes: Query<(Entity, &Plane, &Reading, &CellCoord, &Transform, &mut Dropped)>,
-    eyes: Query<&Transform, With<FloatingOrigin>>,
+    mut planes: Query<(
+        Entity,
+        &Plane,
+        &Reading,
+        &CellCoord,
+        &Transform,
+        &mut Dropped,
+    )>,
     // Whether a thing is drawn as well as located. Something the caller has
     // hidden is not there to be located, and a line dropped from where it
     // would have stood is a line about nothing. Settled in `PostUpdate`, so
@@ -254,13 +260,9 @@ pub(super) fn locate(
     located: Query<Mark, With<Located>>,
     grids: Grids,
 ) {
-    let eye = eyes.single().ok().map(|it| it.translation.as_dvec3());
-
     for (entity, plane, reading, cell, transform, mut dropped) in &mut planes {
         dropped.0.clear();
-        let (Some(eye), Some(grid)) = (eye, grids.parent_grid(entity)) else {
-            continue;
-        };
+        let Some(grid) = grids.parent_grid(entity) else { continue };
         if reading.strength <= 0. || reading.unit.metres <= 0. {
             continue;
         }
@@ -280,7 +282,14 @@ pub(super) fn locate(
             let world = super::seen(grid, cell, transform);
             let at = (in_space + square * (world - stands)) / reading.unit.metres;
 
-            let top = world - eye;
+            // Measured from the eye through the reading rather than through
+            // the floating origin. `big_space` settles where each grid thinks
+            // the origin stands in `PostUpdate`, so in `Update` that answer is
+            // last frame's, and an offset taken from it against a camera that
+            // has moved this frame is an offset that swings as the camera
+            // does. It cancels out of `at`, both ends of that difference being
+            // crossed through the same one; it does not cancel here.
+            let top = reading.seen_from_eye(at);
             let foot = DVec3::new(top.x, reading.from_eye.y, top.z);
             dropped.0.push(Drop { top, foot, middle: (top + foot) / 2., at });
         }
@@ -333,6 +342,11 @@ struct Says {
     hung: Vec3,
     /// Which side of the place it stands on
     anchor: TextAnchor,
+    /// And what it is drawn in, being the plane's own
+    ///
+    /// A number over a ruling and a line of that ruling are one piece of
+    /// chrome. Drawn in two colours they read as two.
+    hue: Color,
     said: String,
     /// The ink it is written in, before the ruling's own strength and the
     /// caller's knob have had their say
@@ -368,6 +382,7 @@ fn spoken(
         // with no room for a third number in it anyway.
         hung: Vec3::NEG_Y * LIFT,
         anchor: TextAnchor::CENTER,
+        hue: plane.color,
         said: format!("{} {}", told(at, reading.step), reading.unit.mark),
         ink: INK * faded(from_eye, reach, edge_on),
     };
@@ -402,6 +417,7 @@ fn spoken(
             // through it is a number to be worked out rather than read.
             hung: sideways * ASIDE,
             anchor: TextAnchor::CENTER_RIGHT,
+            hue: plane.color,
             said,
             ink: INK * faded(drop.foot, reach, edge_on),
         });
@@ -409,6 +425,16 @@ fn spoken(
 
     says
 }
+
+/// Where the camera stands
+type Eye = (&'static Transform, &'static Camera);
+
+/// And what it is not
+///
+/// `Without<Readout>` is already true of any camera. It is spelled out so the
+/// scheduler can prove the query disjoint from the one that writes a readout's
+/// `Transform`, which it would otherwise take to overlap.
+type NotARow = (With<FloatingOrigin>, Without<Readout>);
 
 /// Everything one readout is written through
 ///
@@ -430,14 +456,14 @@ type Written = (
 #[allow(clippy::too_many_arguments)]
 pub(super) fn readouts(
     planes: Query<(&Plane, &Reading, &Dropped)>,
-    eyes: Query<(Entity, &Transform, &Camera), With<FloatingOrigin>>,
+    eyes: Query<(Entity, Eye), NotARow>,
     mut pool: ResMut<Readouts>,
     mut written: Query<Written, With<Readout>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     face: Res<Face>,
     mut commands: Commands,
 ) {
-    let seen = eyes.single().ok().and_then(|(entity, at, camera)| {
+    let seen = eyes.single().ok().and_then(|(entity, (at, camera))| {
         let viewport = camera.logical_viewport_size()?;
         Some((entity, at.rotation, viewport, camera.clip_from_view().y_axis.y))
     });
@@ -511,7 +537,7 @@ pub(super) fn readouts(
         }
 
         if let Some(mut painted) = materials.get_mut(&painted.0) {
-            painted.base_color = Color::WHITE.with_alpha(ink);
+            painted.base_color = says.hue.with_alpha(ink);
         }
     }
 }
@@ -920,5 +946,35 @@ mod tests {
 
         reading.middle = false;
         assert!(spoken(&plane, &reading, &Dropped::default(), Vec3::X).is_empty());
+    }
+
+    /// What is drawn over a plane can all be scheduled together
+    ///
+    /// A readout carries a `Transform`, and so does the camera it hangs off.
+    /// Nothing but a filter says the two queries cannot land on the one entity,
+    /// and bevy will not run a system whose parameters it cannot prove
+    /// disjoint. It says so on the first frame rather than at compile time, so
+    /// this asks at build time instead.
+    #[test]
+    fn what_is_drawn_over_a_plane_can_be_scheduled() {
+        let mut world = World::new();
+        IntoSystem::into_system(locate).initialize(&mut world);
+        IntoSystem::into_system(readouts).initialize(&mut world);
+        IntoSystem::into_system(marks).initialize(&mut world);
+        IntoSystem::into_system(stand_clear).initialize(&mut world);
+    }
+
+    /// A number over a plane is drawn in the plane's own color
+    ///
+    /// The lines, the numbers painted along them and the numbers standing over
+    /// them are one piece of chrome. Drawn in two colors they read as two.
+    #[test]
+    fn what_stands_over_a_plane_is_the_color_of_it() {
+        let (mut plane, reading) = looking(100.);
+        plane.color = Color::srgb(0.2, 0.4, 0.6);
+
+        for one in spoken(&plane, &reading, &Dropped::default(), Vec3::X) {
+            assert_eq!(one.hue, plane.color, "{} came out wrong", one.said);
+        }
     }
 }
