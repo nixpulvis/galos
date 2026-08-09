@@ -337,11 +337,6 @@ struct Placement<'a> {
 }
 
 impl Placement<'_> {
-    /// Where something in this space lies from the camera's eye, in metres
-    fn seen_from_eye(&self, place: DVec3) -> DVec3 {
-        (place - self.eye) * self.unit.metres
-    }
-
     /// How much of this space is drawn at all
     fn showing(&self) -> f32 {
         self.ruling.drawn * self.handed
@@ -350,8 +345,6 @@ impl Placement<'_> {
     /// What the numbers over this space say
     fn reading(&self, middle: bool, bright: f32) -> Reading {
         Reading {
-            from_eye: self.seen_from_eye(self.crossing),
-            middle_from_eye: self.seen_from_eye(self.at),
             at: self.at,
             eye: self.eye,
             step: self.step,

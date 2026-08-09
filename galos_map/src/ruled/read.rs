@@ -130,16 +130,13 @@ pub fn drawn_at(strength: f32, bright: f32) -> f32 {
 /// number standing over a ruling that has gone is a number about nothing.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Reading {
-    /// Where the two rulers cross, as an offset from the camera's eye, in
-    /// whatever the world is drawn in
-    pub from_eye: DVec3,
-    /// Where the camera is looking, likewise
+    /// Where the camera is looking, in [`Reading::unit`] along the plane's own
+    /// axes from its origin
     ///
     /// The middle of the view, which is where the plane hangs and where the
     /// three numbers of the place being looked at are said. Not snapped, so it
-    /// sits still while the plane slides under it.
-    pub middle_from_eye: DVec3,
-    /// And where that is, in [`Reading::unit`] from the plane's own origin
+    /// sits still while the plane slides under it. Its `y` is therefore the
+    /// altitude the plane itself is hung at.
     pub at: DVec3,
     /// Where the camera's eye is, likewise
     ///
@@ -160,8 +157,6 @@ pub struct Reading {
 impl Default for Reading {
     fn default() -> Self {
         Reading {
-            from_eye: DVec3::ZERO,
-            middle_from_eye: DVec3::ZERO,
             at: DVec3::ZERO,
             eye: DVec3::ZERO,
             step: 0.,
@@ -174,9 +169,22 @@ impl Default for Reading {
 }
 
 impl Reading {
-    /// Where something on this plane lies from the camera's eye
-    pub fn seen_from_eye(&self, place: DVec3) -> DVec3 {
-        (place - self.eye) * self.unit.metres
+    /// Where something on this plane lies from the camera's eye, in whatever
+    /// the world is drawn in and along the world's own axes
+    ///
+    /// `facing` is the plane's, [`Plane::facing`]. The rulers lie in the plane
+    /// and count along its axes; everything drawn stands in the world and is
+    /// placed along its. A plane lying flat makes the two the same, and one
+    /// tilted does not, so the turn is done here rather than left out.
+    pub fn seen_from_eye(&self, facing: Quat, place: DVec3) -> DVec3 {
+        facing.as_dquat() * ((place - self.eye) * self.unit.metres)
+    }
+
+    /// And where the middle of the view is, likewise
+    ///
+    /// The place the plane is hung through, which is on it by construction.
+    pub fn middle_from_eye(&self, facing: Quat) -> DVec3 {
+        self.seen_from_eye(facing, self.at)
     }
 }
 
@@ -266,12 +274,12 @@ pub(super) fn locate(
         if reading.strength <= 0. || reading.unit.metres <= 0. {
             continue;
         }
-        // Where the plane stands, in the frame everything is drawn in and in
-        // its own grid's. The second is the space its numbers count in: a
-        // plane sits at its space's origin sideways and at the ruled altitude
-        // in `y`.
+        // Where the plane stands, in the frame everything is drawn in, and
+        // where it stands in the space its own numbers count: at the origin
+        // sideways and at the ruled altitude in `y`, which is what makes a
+        // crossing count absolutely. `at.y` is that altitude.
         let stands = super::seen(grid, cell, transform);
-        let in_space = grid.cell_to_float(cell) + transform.translation.as_dvec3();
+        let hangs = DVec3::new(0., reading.at.y, 0.);
         let square = DMat3::from_quat(plane.facing.as_dquat().inverse());
 
         for (marked, cell, transform, shown) in &located {
@@ -280,7 +288,10 @@ pub(super) fn locate(
             }
             let Some(grid) = grids.parent_grid(marked) else { continue };
             let world = super::seen(grid, cell, transform);
-            let at = (in_space + square * (world - stands)) / reading.unit.metres;
+            // Onto the plane's own axes, which is what the rulers count along
+            // and so what the numbers are about.
+            let at = hangs
+                + square * (world - stands) / reading.unit.metres;
 
             // Measured from the eye through the reading rather than through
             // the floating origin. `big_space` settles where each grid thinks
@@ -289,8 +300,13 @@ pub(super) fn locate(
             // has moved this frame is an offset that swings as the camera
             // does. It cancels out of `at`, both ends of that difference being
             // crossed through the same one; it does not cancel here.
-            let top = reading.seen_from_eye(at);
-            let foot = DVec3::new(top.x, reading.from_eye.y, top.z);
+            let top = reading.seen_from_eye(plane.facing, at);
+            // Straight below it on the plane, which is the same place at the
+            // plane's own altitude. Said in the space rather than by dropping
+            // a component of the offset, because the two agree only while the
+            // plane lies flat.
+            let under = DVec3::new(at.x, reading.at.y, at.z);
+            let foot = reading.seen_from_eye(plane.facing, under);
             dropped.0.push(Drop { top, foot, middle: (top + foot) / 2., at });
         }
     }
@@ -380,7 +396,7 @@ fn spoken(
         // lines they are both about. Squared up on the plane it comes to
         // nothing on screen and the row sits on its own mark, which is a view
         // with no room for a third number in it anyway.
-        hung: Vec3::NEG_Y * LIFT,
+        hung: plane.facing * Vec3::NEG_Y * LIFT,
         anchor: TextAnchor::CENTER,
         hue: plane.color,
         said: format!("{} {}", told(at, reading.step), reading.unit.mark),
@@ -394,7 +410,7 @@ fn spoken(
     // slides under it, and said to the same step the plane is numbered in so
     // that it reads against those numbers.
     if reading.middle {
-        says.push(placed(reading.middle_from_eye, reading.at));
+        says.push(placed(reading.middle_from_eye(plane.facing), reading.at));
     }
 
     // And every line dropped to the plane, which is the same three numbers
@@ -632,17 +648,16 @@ pub(super) fn marks(
         };
 
         if reading.middle {
-            let left =
-                faded(reading.middle_from_eye, plane.reach, plane.edge_on);
-            let (at, arm, color) =
-                scratched(reading.middle_from_eye, INK * left);
-            cross(&mut gizmos, at, arm, color);
+            let middle = reading.middle_from_eye(plane.facing);
+            let left = faded(middle, plane.reach, plane.edge_on);
+            let (at, arm, color) = scratched(middle, INK * left);
+            cross(&mut gizmos, at, plane.facing, arm, color);
         }
 
         for drop in &dropped.0 {
             let left = faded(drop.foot, plane.reach, plane.edge_on);
             let (foot, arm, color) = scratched(drop.foot, INK * left);
-            cross(&mut gizmos, foot, arm, color);
+            cross(&mut gizmos, foot, plane.facing, arm, color);
             // The line at the ink the ruling's widest lines are drawn in, so
             // that it reads as one of the plane's rather than as something
             // laid over it.
@@ -661,10 +676,12 @@ pub(super) fn marks(
 /// Two arms along the plane's own axes, crossing at `at`
 ///
 /// Laid in the plane rather than across the screen, so a cross out towards the
-/// horizon is foreshortened the way the cells around it are.
-fn cross(gizmos: &mut Gizmos, at: Vec3, arm: f32, color: Color) {
+/// horizon is foreshortened the way the cells around it are, and a cross on a
+/// tilted plane lies in that plane.
+fn cross(gizmos: &mut Gizmos, at: Vec3, facing: Quat, arm: f32, color: Color) {
     for axis in [Vec3::X, Vec3::Z] {
-        gizmos.line(at - axis * arm, at + axis * arm, color);
+        let along = facing * axis * arm;
+        gizmos.line(at - along, at + along, color);
     }
 }
 
@@ -701,7 +718,7 @@ pub(super) fn stand_clear(
             && let Some(room) = reaches(plane.as_ref(), reading, seen)
             && let Some(crossing) = plane.crossing_near(
                 spoken,
-                reading.middle_from_eye.as_vec3(),
+                reading.middle_from_eye(plane.facing).as_vec3(),
                 room,
             )
         {
@@ -729,12 +746,8 @@ fn reaches(
     reading: &Reading,
     (facing, viewport, cot_half_fov): (Quat, Vec2, f32),
 ) -> Option<Vec2> {
-    let at = on_screen(
-        facing,
-        cot_half_fov,
-        viewport,
-        reading.middle_from_eye,
-    )?;
+    let middle = reading.middle_from_eye(plane.facing);
+    let at = on_screen(facing, cot_half_fov, viewport, middle)?;
 
     // One numbered spacing, in whatever the world is drawn in, which is the
     // length the axes are stepped by. Long enough that the two ends do not
@@ -751,7 +764,7 @@ fn reaches(
             facing,
             cot_half_fov,
             viewport,
-            reading.middle_from_eye + along.as_dvec3() * spacing,
+            middle + along.as_dvec3() * spacing,
         )?;
         // Pixels to a spacing, and a spacing is `apart / unit` of them.
         let pixels = (to - at).length() * unit / plane.numbers.apart;
@@ -824,20 +837,18 @@ mod tests {
     /// ink from another by.
     fn looking(back: f64) -> (Plane, Reading) {
         let square = 0.5_f64;
-        let middle_from_eye =
-            DVec3::new((1. - square * square).sqrt(), -square, 0.) * back;
+        let along = DVec3::new((1. - square * square).sqrt(), -square, 0.);
+        let at = DVec3::new(3., 1., -2.);
         // Painted at the ink a caller writing `drawn_at(INK * strength, bright)`
         // arrives at, with both of those whole.
         let plane = Plane {
-            reach: back * 6.,
+            reach: back * 6. * LIGHT_YEARS.metres,
             numbers: Painted { strength: INK, ..default() },
             ..Plane::default()
         };
         let reading = Reading {
-            from_eye: middle_from_eye,
-            middle_from_eye,
-            at: DVec3::new(3., 1., -2.),
-            eye: DVec3::ZERO,
+            at,
+            eye: at - along * back,
             step: 2.,
             unit: LIGHT_YEARS,
             strength: 1.,
@@ -891,8 +902,11 @@ mod tests {
         let middle = says.first().expect("the middle is said");
 
         let stood = drawn_at(middle.ink * reading.strength, reading.bright);
-        let left =
-            faded(reading.middle_from_eye, plane.reach, plane.edge_on);
+        let left = faded(
+            reading.middle_from_eye(plane.facing),
+            plane.reach,
+            plane.edge_on,
+        );
         assert!(left > 0. && left < 1., "nothing to tell apart at {left}");
         assert!(
             (stood - painted * left).abs() < 1e-6,
@@ -913,8 +927,9 @@ mod tests {
         // A step off the middle both ways, so that neither number reads as
         // nought and the offset is worth saying out loud.
         let at = reading.at + DVec3::new(reading.step, reading.step, 0.);
-        let top = reading.seen_from_eye(at);
-        let foot = DVec3::new(top.x, reading.from_eye.y, top.z);
+        let top = reading.seen_from_eye(plane.facing, at);
+        let under = DVec3::new(at.x, reading.at.y, at.z);
+        let foot = reading.seen_from_eye(plane.facing, under);
         let dropped = Dropped(vec![Drop {
             top,
             foot,
@@ -976,5 +991,38 @@ mod tests {
         for one in spoken(&plane, &reading, &Dropped::default(), Vec3::X) {
             assert_eq!(one.hue, plane.color, "{} came out wrong", one.said);
         }
+    }
+
+    /// A tilted plane is read along its own axes, not the world's
+    ///
+    /// The rulers lie in the plane and count along it. Everything drawn about
+    /// them stands in the world and is placed along its axes. A plane lying
+    /// flat makes the two the same and hides every place the turn was left
+    /// out, which is why this asks about one that does not.
+    #[test]
+    fn a_tilted_plane_is_read_along_its_own_axes() {
+        let (mut plane, reading) = looking(100.);
+        // On its side, so the plane's own `y` runs along the world's `x`.
+        plane.facing = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+
+        // A step above the plane in its own terms is a step along its normal
+        // in the world, and nothing at all up the world's own `y`.
+        let over = reading.at + DVec3::Y * reading.step;
+        let seen = reading.seen_from_eye(plane.facing, over)
+            - reading.middle_from_eye(plane.facing);
+        let step = reading.step * reading.unit.metres;
+        assert!(
+            (seen - DVec3::NEG_X * step).length() < step * 1e-6,
+            "a step off the plane came out {seen}"
+        );
+
+        // And the row of numbers is hung under the plane the same way, which
+        // is the other way along the same line.
+        let says = spoken(&plane, &reading, &Dropped::default(), Vec3::X);
+        let hung = says.first().expect("the middle is said").hung;
+        assert!(
+            (hung - Vec3::X * LIFT).length() < LIFT * 1e-6,
+            "the row was hung {hung}"
+        );
     }
 }
