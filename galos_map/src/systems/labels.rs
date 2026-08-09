@@ -16,11 +16,17 @@ use bevy_rich_text3d::{
 };
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_plugins(Text3dPlugin { load_system_fonts: false, ..default() });
-    app.insert_resource(LoadFonts {
-        font_embedded: vec![epaint_default_fonts::HACK_REGULAR],
-        ..default()
-    });
+    // Only if it is not already there, and appended rather than set. The
+    // ruled plane sets its own numbers in the same face and asks for it the
+    // same way, and whichever of the two is added first should not decide
+    // whether the other's face is loaded.
+    if !app.is_plugin_added::<Text3dPlugin>() {
+        app.add_plugins(Text3dPlugin { load_system_fonts: false, ..default() });
+    }
+    app.world_mut()
+        .get_resource_or_insert_with(LoadFonts::default)
+        .font_embedded
+        .push(epaint_default_fonts::HACK_REGULAR);
     app.insert_resource(NameRadius {
         follow_spyglass: true,
         radius: DEFAULT_NAME_RADIUS,

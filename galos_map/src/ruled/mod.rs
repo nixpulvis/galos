@@ -91,6 +91,7 @@ use bevy::render::view::{
 };
 use bevy::render::{Extract, Render, RenderApp, RenderSystems};
 use bevy::shader::Shader;
+use bevy_rich_text3d::Text3dPlugin;
 use big_space::prelude::*;
 
 /// How many spacings a plane may be ruled at once
@@ -766,16 +767,35 @@ impl Plugin for RuledPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "ruled.wgsl");
         app.register_type::<Ruled>().register_type::<Plane>();
-        app.insert_resource(self.face.clone());
+        // The face reaches everything that sets a character by being handed
+        // to it, so nothing here reads a font out of the world. What the world
+        // does have to carry is the text stack itself, which is a plugin and a
+        // list of faces to load rather than something that can be passed.
+        //
+        // Only if it is not already there. A caller that draws its own text in
+        // the same face has added it, and a plugin added twice is a panic.
+        if !app.is_plugin_added::<Text3dPlugin>() {
+            app.add_plugins(Text3dPlugin {
+                load_system_fonts: false,
+                ..default()
+            });
+        }
+        cut::wanted(app, self.face.bytes);
         app.init_resource::<read::Readouts>();
-        app.add_systems(Startup, cut::cut_lettering);
+        app.add_systems(Startup, cut::cut_lettering(self.face.clone()));
         // The text standing over a plane is built into meshes in `PostUpdate`
         // before the transforms are propagated, so where it stands has to be
         // settled before then. A transform written after it is a readout a
         // frame behind the plane it stands on.
         app.add_systems(
             Update,
-            (read::locate, read::readouts, read::marks).chain().after(Ruling),
+            (
+                read::locate,
+                read::readouts(self.face.clone()),
+                read::marks,
+            )
+                .chain()
+                .after(Ruling),
         );
         app.add_systems(PostUpdate, read::stand_clear.after(Placing));
         // After the transforms, which is where `big_space` settles where each

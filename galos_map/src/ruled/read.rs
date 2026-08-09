@@ -11,6 +11,7 @@
 use super::{
     BARE, Face, INK, MAJOR, NONE, Numbered, Plane, Unit, off_plane, told,
 };
+use bevy::ecs::system::SystemParam;
 use bevy::math::{DMat3, DVec3, Vec2};
 use bevy::prelude::*;
 use bevy_rich_text3d::{
@@ -466,96 +467,108 @@ type Written = (
     &'static MeshMaterial3d<StandardMaterial>,
 );
 
+/// Everything it takes to stand a plane's numbers over it
+#[derive(SystemParam)]
+pub(super) struct Standing<'w, 's> {
+    planes: Query<'w, 's, (&'static Plane, &'static Reading, &'static Dropped)>,
+    eyes: Query<'w, 's, (Entity, Eye), NotARow>,
+    pool: ResMut<'w, Readouts>,
+    written: Query<'w, 's, Written, With<Readout>>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+    commands: Commands<'w, 's>,
+}
+
 /// Stand the numbers each plane is worth over the places they are about
 ///
 /// Each is a child of the camera turned no further, which is what makes it
 /// face the camera however the camera swings, and held at [`READS`] pixels
 /// tall whatever it is standing over.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn readouts(
-    planes: Query<(&Plane, &Reading, &Dropped)>,
-    eyes: Query<(Entity, Eye), NotARow>,
-    mut pool: ResMut<Readouts>,
-    mut written: Query<Written, With<Readout>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    face: Res<Face>,
-    mut commands: Commands,
-) {
-    let seen = eyes.single().ok().and_then(|(entity, (at, camera))| {
-        let viewport = camera.logical_viewport_size()?;
-        Some((entity, at.rotation, viewport, camera.clip_from_view().y_axis.y))
-    });
+pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
+    move |it: Standing| {
+        let Standing {
+            planes,
+            eyes,
+            mut pool,
+            mut written,
+            mut materials,
+            mut commands,
+        } = it;
+        let seen = eyes.single().ok().and_then(|(entity, (at, camera))| {
+            let viewport = camera.logical_viewport_size()?;
+            Some((entity, at.rotation, viewport, camera.clip_from_view().y_axis.y))
+        });
 
-    // Every plane at once, though only one is normally drawn. Two rulings on
-    // screen together beat against each other, which is a thing for whoever
-    // rules them to avoid; what is drawn over them follows what is drawn.
-    let mut says = Vec::new();
-    let mut inks = Vec::new();
-    if let Some((_, facing, ..)) = seen {
-        for (plane, reading, dropped) in &planes {
-            if reading.strength <= 0. {
+        // Every plane at once, though only one is normally drawn. Two rulings on
+        // screen together beat against each other, which is a thing for whoever
+        // rules them to avoid; what is drawn over them follows what is drawn.
+        let mut says = Vec::new();
+        let mut inks = Vec::new();
+        if let Some((_, facing, ..)) = seen {
+            for (plane, reading, dropped) in &planes {
+                if reading.strength <= 0. {
+                    continue;
+                }
+                let sideways = facing * Vec3::X;
+                for one in spoken(plane, reading, dropped, sideways) {
+                    inks.push(drawn_at(one.ink * reading.strength, reading.bright));
+                    says.push(one);
+                }
+            }
+        }
+
+        // Room for everything there is to say. One made now is not in the world
+        // until the commands are flushed, so it says nothing until the next frame;
+        // what is located changes far more slowly than the world is drawn.
+        if let Some((eye, ..)) = seen {
+            while pool.0.len() < says.len() {
+                pool.0.push(
+                    commands.spawn(readout(&mut materials, &face, eye)).id(),
+                );
+            }
+        }
+
+        for (nth, entity) in pool.0.iter().enumerate() {
+            let Ok((mut place, mut text, mut styling, mut visible, painted)) =
+                written.get_mut(*entity)
+            else {
                 continue;
+            };
+            // Nothing to say, or a plane so far faded where it would have stood
+            // that saying it would be saying it about nothing.
+            let ink = inks.get(nth).copied().unwrap_or(0.);
+            let Some((says, (_, facing, viewport, cot_half_fov))) =
+                says.get(nth).zip(seen).filter(|_| ink > 0.)
+            else {
+                visible.set_if_neq(Visibility::Hidden);
+                continue;
+            };
+            visible.set_if_neq(Visibility::Inherited);
+
+            let depth = into_view(facing, says.from_eye).max(MIN_DEPTH);
+            let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
+            // Onto the camera's own axes, the readout hanging off it. Turned no
+            // further than its parent it faces the camera, and a length written
+            // here is a length across the view.
+            place.translation = facing.inverse()
+                * (says.from_eye.as_vec3() + says.hung * per_pixel);
+            place.rotation = Quat::IDENTITY;
+            // The line box is exactly `SIZE` tall, so this is the height the row
+            // draws at, in pixels, whatever the camera is doing.
+            place.scale = Vec3::splat(READS * per_pixel / SIZE);
+
+            // Both of these are read before they are written, so that a readout
+            // saying what it said last frame does not have its mesh rebuilt for
+            // it. Most frames say what the last one did.
+            if lettered(&text) != Some(says.said.as_str()) {
+                *text = Text3d::new(says.said.clone());
             }
-            let sideways = facing * Vec3::X;
-            for one in spoken(plane, reading, dropped, sideways) {
-                inks.push(drawn_at(one.ink * reading.strength, reading.bright));
-                says.push(one);
+            if styling.anchor.0 != says.anchor.0 {
+                styling.anchor = says.anchor;
             }
-        }
-    }
 
-    // Room for everything there is to say. One made now is not in the world
-    // until the commands are flushed, so it says nothing until the next frame;
-    // what is located changes far more slowly than the world is drawn.
-    if let Some((eye, ..)) = seen {
-        while pool.0.len() < says.len() {
-            pool.0.push(
-                commands.spawn(readout(&mut materials, &face, eye)).id(),
-            );
-        }
-    }
-
-    for (nth, entity) in pool.0.iter().enumerate() {
-        let Ok((mut place, mut text, mut styling, mut visible, painted)) =
-            written.get_mut(*entity)
-        else {
-            continue;
-        };
-        // Nothing to say, or a plane so far faded where it would have stood
-        // that saying it would be saying it about nothing.
-        let ink = inks.get(nth).copied().unwrap_or(0.);
-        let Some((says, (_, facing, viewport, cot_half_fov))) =
-            says.get(nth).zip(seen).filter(|_| ink > 0.)
-        else {
-            visible.set_if_neq(Visibility::Hidden);
-            continue;
-        };
-        visible.set_if_neq(Visibility::Inherited);
-
-        let depth = into_view(facing, says.from_eye).max(MIN_DEPTH);
-        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
-        // Onto the camera's own axes, the readout hanging off it. Turned no
-        // further than its parent it faces the camera, and a length written
-        // here is a length across the view.
-        place.translation = facing.inverse()
-            * (says.from_eye.as_vec3() + says.hung * per_pixel);
-        place.rotation = Quat::IDENTITY;
-        // The line box is exactly `SIZE` tall, so this is the height the row
-        // draws at, in pixels, whatever the camera is doing.
-        place.scale = Vec3::splat(READS * per_pixel / SIZE);
-
-        // Both of these are read before they are written, so that a readout
-        // saying what it said last frame does not have its mesh rebuilt for
-        // it. Most frames say what the last one did.
-        if lettered(&text) != Some(says.said.as_str()) {
-            *text = Text3d::new(says.said.clone());
-        }
-        if styling.anchor.0 != says.anchor.0 {
-            styling.anchor = says.anchor;
-        }
-
-        if let Some(mut painted) = materials.get_mut(&painted.0) {
-            painted.base_color = says.hue.with_alpha(ink);
+            if let Some(mut painted) = materials.get_mut(&painted.0) {
+                painted.base_color = says.hue.with_alpha(ink);
+            }
         }
     }
 }
@@ -972,9 +985,10 @@ mod tests {
     /// this asks at build time instead.
     #[test]
     fn what_is_drawn_over_a_plane_can_be_scheduled() {
+        let face = Face { bytes: &[], family: "Hack" };
         let mut world = World::new();
         IntoSystem::into_system(locate).initialize(&mut world);
-        IntoSystem::into_system(readouts).initialize(&mut world);
+        IntoSystem::into_system(readouts(face)).initialize(&mut world);
         IntoSystem::into_system(marks).initialize(&mut world);
         IntoSystem::into_system(stand_clear).initialize(&mut world);
     }
