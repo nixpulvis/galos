@@ -39,9 +39,11 @@
 //! in, and hand over as the camera moves between them. Nesting costs nothing —
 //! the crossing is done in `f64` by [`big_space`] itself before any of this
 //! reads it.
+pub(crate) mod cut;
 pub(crate) mod ladder;
 pub(crate) mod said;
 
+pub use cut::Face;
 pub use ladder::{
     CELLS_ACROSS, FIGURES_ACROSS, Ruling, numbering, ruling, snapped,
     snapped_to, tick_step,
@@ -97,13 +99,15 @@ pub const FAMILIES: usize = 4;
 /// What the lettering painted on a plane is drawn from, in the order an atlas
 /// must hold it
 ///
-/// Everything a coordinate is written with and nothing else. A caller
-/// rasterises these into one strip of equal cells and hands it over as
-/// [`Lettering`]; this module never reads a font, so it carries no assets of
-/// its own and can be lifted out whole.
+/// Everything a coordinate is written with and nothing else. [`cut`] rasterises
+/// these into one strip of equal cells from the face the caller handed over.
 ///
 /// Equal cells because the layout counts characters rather than measuring
 /// them, which is right for a monospaced face and wrong for any other.
+pub const LETTERS: [char; 14] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', ',', '.', 'e',
+];
+
 /// How far to the right of its crossing a pair of numbers is written, and how
 /// far above the line, in units of a fifth of a digit's height
 ///
@@ -120,10 +124,6 @@ pub const ABOVE: f32 = 1.;
 /// matters — a caller spacing its crossings by this can be sure no pair ever
 /// runs into the next.
 pub const SPAN: f32 = 96.;
-
-pub const LETTERS: [char; 14] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', ',', '.', 'e',
-];
 
 /// How many crossings may be left bare at once
 ///
@@ -156,11 +156,8 @@ pub const CHARS: usize = 18;
 
 /// The strip of glyphs a plane's numbers are painted from
 ///
-/// One row of [`LETTERS`] equal cells, in that order, each glyph drawn inside
-/// its own cell with room around it so that reading one does not pick up its
-/// neighbour. Single channel is enough; only coverage is wanted.
-///
-/// Nothing is painted until this is here.
+/// Cut by [`cut::cut_lettering`] at startup, from the face handed to
+/// [`RuledPlugin`]. Nothing is painted until it is here.
 #[derive(Resource, Clone)]
 pub struct Lettering(pub Handle<Image>);
 
@@ -724,12 +721,19 @@ pub struct Placing;
 /// A struct rather than the bare function the rest of this crate adds, because
 /// the pipeline is built in [`Plugin::finish`] rather than [`Plugin::build`],
 /// and a function has no `finish`.
-pub struct RuledPlugin;
+pub struct RuledPlugin {
+    /// The face a plane's numbers are painted in
+    ///
+    /// Monospaced. The strip is cut from it at startup; see [`cut`].
+    pub face: &'static [u8],
+}
 
 impl Plugin for RuledPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "ruled.wgsl");
         app.register_type::<Ruled>().register_type::<Plane>();
+        app.insert_resource(Face(self.face));
+        app.add_systems(Startup, cut::cut_lettering);
         // After the transforms, which is where `big_space` settles where each
         // grid thinks the floating origin is. Read any earlier and a plane is
         // ruled from where the camera stood last frame.

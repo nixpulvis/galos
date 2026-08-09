@@ -59,15 +59,9 @@ use crate::systems::labels::{
 };
 use crate::systems::selection::Selected;
 use crate::ruled::{
-    self, BARE, FIGURES_ACROSS, Family, INK, LETTERS, Lettering, MAJOR, NONE,
-    NUMBERED, Numbered, Painted, Plane, Ruling, RuledPlugin, Word, numbering,
-    off_plane, ruling, snapped_to, ticked, told,
-};
-use ab_glyph::{Font, FontRef, PxScale};
-use bevy::asset::RenderAssetUsages;
-use bevy::image::{Image, ImageSampler};
-use bevy::render::render_resource::{
-    Extent3d, TextureDimension, TextureFormat,
+    self, BARE, FIGURES_ACROSS, Family, INK, MAJOR, NONE, NUMBERED, Numbered,
+    Painted, Plane, Ruling, RuledPlugin, Word, numbering, off_plane, ruling,
+    snapped_to, ticked, told,
 };
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -77,7 +71,10 @@ use bevy_rich_text3d::{
 use big_space::prelude::*;
 
 pub fn plugin(app: &mut App) {
-    app.add_plugins(RuledPlugin);
+    // Cut from the face egui draws the bar in, which is the same face every
+    // name on the map is drawn in: a number on the plane and a number in the
+    // bar are then the one typeface.
+    app.add_plugins(RuledPlugin { face: epaint_default_fonts::HACK_REGULAR });
     app.insert_resource(ShowGrid(true));
     app.insert_resource(ShowMiddle(true));
     app.insert_resource(ShowPicked(true));
@@ -90,7 +87,6 @@ pub fn plugin(app: &mut App) {
     // After the map itself, which is what the galaxy's planes hang from. The
     // resource naming it is inserted through a command, so it is not there to
     // be read until the schedule that queued it has ended.
-    app.add_systems(Startup, cut_lettering);
     app.add_systems(PostStartup, spawn_planes);
     // In `Present`, which runs after `Camera` has settled where the camera is
     // standing. Everything here is worked out from that and nothing else.
@@ -476,99 +472,6 @@ impl Ruled {
     fn seen_from_eye(&self, place: DVec3) -> DVec3 {
         (place - self.eye) * self.unit.metres()
     }
-}
-
-/// How wide and tall a glyph's cell in the lettering strip is, in pixels
-///
-/// Three by five, the shape the plane lays a character out in, times sixteen.
-/// Enough that a number drawn larger than this reads as a letter rather than
-/// as a mosaic, and small enough that the whole strip is a few tens of
-/// kilobytes.
-const CELL_WIDE: u32 = 48;
-const CELL_TALL: u32 = 80;
-
-/// How much of a cell's height a digit fills
-///
-/// Short of the whole, so that a comma has somewhere below the line to hang
-/// and the card reading one glyph cannot pick up the one above.
-const FILLS: f32 = 0.78;
-
-/// And how much of the rest sits above it rather than below
-const AIR: f32 = 0.06;
-
-/// Cut the strip of glyphs the plane's numbers are painted from
-///
-/// Rasterised here rather than in [`ruled`], which reads no fonts and carries
-/// no assets, so that lifting it out is a move rather than a rewrite. Cut from
-/// the face egui draws the bar in, which is the same face every name on the
-/// map is drawn in: a number on the plane and a number in the bar are then the
-/// one typeface, and stay so when egui moves.
-///
-/// Monospaced, which is what makes a strip of equal cells the right shape for
-/// it. The plane counts characters rather than measuring them.
-fn cut_lettering(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    let Ok(face) = FontRef::try_from_slice(epaint_default_fonts::HACK_REGULAR)
-    else {
-        return;
-    };
-    let wide = CELL_WIDE as usize * LETTERS.len();
-    let mut strip = vec![0u8; wide * CELL_TALL as usize];
-
-    // How tall a digit comes out at a trial size, so that the real one can be
-    // chosen to fill the cell rather than guessed at from the face's ascent.
-    // A face's ascent leaves room for accents no digit has, and a glyph cut to
-    // it fills half the cell and is read as nothing at all.
-    let measure = |scale: PxScale| {
-        face.outline_glyph(face.glyph_id('0').with_scale(scale))
-            .map(|it| it.px_bounds())
-    };
-    let Some(trial) = measure(PxScale::from(CELL_TALL as f32)) else { return };
-    let scale = PxScale::from(
-        CELL_TALL as f32 * CELL_TALL as f32 * FILLS / trial.height(),
-    );
-    let Some(digit) = measure(scale) else { return };
-    // Where the line the letters stand on falls in the cell: a little air
-    // above the digits, and what a comma needs under them.
-    let base = CELL_TALL as f32 * AIR - digit.min.y;
-
-    for (nth, letter) in LETTERS.iter().enumerate() {
-        let glyph = face.glyph_id(*letter).with_scale(scale);
-        let Some(cut) = face.outline_glyph(glyph) else { continue };
-        let bounds = cut.px_bounds();
-        // Middle of its own cell across, on the line down.
-        let left = nth as f32 * CELL_WIDE as f32
-            + (CELL_WIDE as f32 - bounds.width()) / 2.;
-        cut.draw(|x, y, covered| {
-            let at = (
-                (left + x as f32).round() as i32,
-                (base + bounds.min.y + y as f32).round() as i32,
-            );
-            if at.0 < 0 || at.1 < 0 || at.0 as usize >= wide {
-                return;
-            }
-            if at.1 as u32 >= CELL_TALL {
-                return;
-            }
-            let ink = &mut strip[at.1 as usize * wide + at.0 as usize];
-            *ink = (*ink).max((covered * 255.) as u8);
-        });
-    }
-
-    let mut image = Image::new(
-        Extent3d {
-            width: wide as u32,
-            height: CELL_TALL,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        strip,
-        TextureFormat::R8Unorm,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    // Read smoothly, and never off the end of the strip.
-    image.sampler = ImageSampler::linear();
-
-    commands.insert_resource(Lettering(images.add(image)));
 }
 
 /// Create the two planes ruled in light years
