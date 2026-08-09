@@ -44,16 +44,13 @@ pub(crate) mod ladder;
 pub(crate) mod read;
 pub(crate) mod said;
 
+// What a caller has business with. The rest is how a ruling is laid out and
+// how far apart its figures stand, which is the module's own affair: a caller
+// asks for a plane rather than for the pixels between two numbers.
 pub use cut::Face;
-pub use ladder::{
-    CELLS_ACROSS, Decade, FIGURES_ACROSS, numbering, ruling, snapped,
-    snapped_to, tick_step,
-};
-pub use read::{
-    ASIDE, CROSS, CROWDS, EDGE_ON, LIFT, Located, READS, Reading, drawn_at,
-    faded,
-};
-pub use said::{RESOLVES, Unit, off_plane, power, ticked, told};
+pub use ladder::{Decade, FIGURES_ACROSS, numbering, ruling, snapped_to};
+pub use read::{EDGE_ON, Located, Reading, drawn_at, faded};
+pub use said::{Unit, off_plane, power, ticked, told};
 
 use bevy::asset::{AssetServer, Handle, embedded_asset, load_embedded_asset};
 use bevy::camera::visibility::{self, NoFrustumCulling, VisibilityClass};

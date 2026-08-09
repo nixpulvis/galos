@@ -324,9 +324,9 @@ const SIZE: f32 = 64.;
 
 /// The nearest a readout is sized against, in whatever the world is drawn in
 ///
-/// Size follows depth, so a place level with the camera would draw at nothing
-/// and one behind it at a mirrored negative. Anything this close is inside the
-/// near plane regardless.
+/// Size follows depth, so a place level with the camera would draw at nothing.
+/// Anything behind it is hidden outright; this is the floor for what is in
+/// front, and anything this close is inside the near plane regardless.
 const MIN_DEPTH: f32 = 1.;
 
 /// One of the numbers standing over a plane
@@ -559,10 +559,18 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
                 visible.set_if_neq(Visibility::Hidden);
                 continue;
             };
+            // A place behind the camera has nowhere on screen to be drawn, and
+            // a readout left standing there is a mesh built and a material
+            // written every frame for something nobody can see.
+            let depth = into_view(facing, says.from_eye);
+            if depth <= 0. {
+                visible.set_if_neq(Visibility::Hidden);
+                continue;
+            }
             visible.set_if_neq(Visibility::Inherited);
 
-            let depth = into_view(facing, says.from_eye).max(MIN_DEPTH);
-            let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
+            let per_pixel =
+                world_per_pixel(cot_half_fov, viewport.y, depth.max(MIN_DEPTH));
             // In the world, from the eye, which is where the readout is about.
             // The floating origin's own transform is its place in the frame
             // everything is drawn in, so this is a world position and not an

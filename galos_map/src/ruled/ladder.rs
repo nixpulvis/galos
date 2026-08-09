@@ -492,4 +492,18 @@ pub(crate) mod tests {
             );
         }
     }
+
+    /// Zero is a multiple of every step, so a crossing snapped anywhere near
+    /// the middle lands exactly on it
+    ///
+    /// Which is what puts a `0` at the middle of a ruler rather than a number
+    /// that happens to be small. The rulers are read against the crossing, so
+    /// where the crossing is off by a hair every number along them is.
+    #[test]
+    fn a_crossing_near_the_middle_lands_on_it() {
+        let step = 100.;
+        for along in [-49., -0.4, 0., 12., 49.9] {
+            assert_eq!(snapped(along, step), 0.);
+        }
+    }
 }

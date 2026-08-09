@@ -371,17 +371,23 @@ type Marked = (With<Selected>, Or<(With<System>, With<Body>)>);
 fn mark_out(
     showing: Res<ShowGrid>,
     picked_out: Res<ShowPicked>,
-    picked: Query<Entity, Marked>,
-    already: Query<Entity, With<Located>>,
+    // What wants marking and is not marked yet, and what is marked. Only the
+    // difference between the two is written: a mark put on every frame is a
+    // command apiece every frame, and a component said to have changed when
+    // nothing about it has.
+    fresh: Query<Entity, (Marked, Without<Located>)>,
+    marked: Query<Entity, With<Located>>,
+    // And whether something already marked is still worth marking.
+    picked: Query<(), Marked>,
     mut commands: Commands,
 ) {
     let wanted = showing.0 && picked_out.0;
-    for entity in &picked {
-        if wanted {
+    if wanted {
+        for entity in &fresh {
             commands.entity(entity).insert(Located);
         }
     }
-    for entity in &already {
+    for entity in &marked {
         if !wanted || picked.get(entity).is_err() {
             commands.entity(entity).remove::<Located>();
         }
@@ -647,7 +653,6 @@ fn rule(
 mod tests {
     use super::*;
     use crate::ruled::ladder::tests::zooms;
-    use crate::ruled::snapped;
 
     /// The two spaces are never ruled at the same time
     ///
@@ -740,20 +745,6 @@ mod tests {
                     NUMBERED / 2
                 );
             }
-        }
-    }
-
-    /// Zero is a multiple of every step, so a crossing snapped anywhere near
-    /// the middle lands exactly on it
-    ///
-    /// Which is what puts a `0` at the middle of a ruler rather than a number
-    /// that happens to be small. The rulers are read against the crossing, so
-    /// where the crossing is off by a hair every number along them is.
-    #[test]
-    fn a_crossing_near_the_middle_lands_on_it() {
-        let step = 100.;
-        for along in [-49., -0.4, 0., 12., 49.9] {
-            assert_eq!(snapped(along, step), 0.);
         }
     }
 
