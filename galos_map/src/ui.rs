@@ -13,6 +13,7 @@
 //! runs between is what is picked out on the map.
 
 use crate::camera::{MoveCamera, OrbitCamera};
+use crate::grid::{Bright, Said, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
@@ -481,6 +482,11 @@ pub struct Knobs<'w> {
     name_radius: ResMut<'w, NameRadius>,
     show_orbits: ResMut<'w, ShowOrbits>,
     show_body_names: ResMut<'w, ShowBodyNames>,
+    show_grid: ResMut<'w, ShowGrid>,
+    said: ResMut<'w, Said>,
+    show_middle: ResMut<'w, ShowMiddle>,
+    show_picked: ResMut<'w, ShowPicked>,
+    bright: ResMut<'w, Bright>,
     despawner: MessageWriter<'w, Despawn>,
 }
 
@@ -600,6 +606,72 @@ pub fn chrome(
                 knobs.despawner.write(Despawn);
             }
         });
+
+        // Its own section rather than a row under either view, because it is
+        // the one thing on the pane that belongs to both: the same ruled plane
+        // carries the map from light years out among the systems to light
+        // seconds inside one, and a switch filed under either would read as
+        // turning off only that half of it.
+        heading(ui, "Scale", true);
+        ui.checkbox(&mut knobs.show_grid.0, "Grid");
+        if knobs.show_grid.0 {
+            // Indented under what turns them on, the same as the names are,
+            // since a unit for a ruler that is not drawn is a choice about
+            // nothing. Left to the map by default, which turns the ruler over
+            // as it descends into a system; pinned either way for reading a
+            // system's distances in light years or a neighbourhood's in light
+            // seconds.
+            ui.indent("said", |ui| {
+                ui.checkbox(&mut knobs.show_middle.0, "Show Center Position");
+                ui.checkbox(
+                    &mut knobs.show_picked.0,
+                    "Show Selected Positions",
+                );
+                ui.add_space(FIELD_GAP);
+                // How loudly the whole ruling is drawn, lines and numbers
+                // together. Past a hundred for a ruler that has to be read off
+                // a bright field, under it for one that should stay out of the
+                // way of a busy sky.
+                ui.label("Brightness (%)");
+                let mut bright = knobs.bright.0 * 100.;
+                fill_width(ui);
+                let slider = ui
+                    .horizontal(|ui| {
+                        let rail = ui.add(
+                            egui::Slider::new(&mut bright, 0.0..=100.)
+                                .step_by(5.)
+                                .show_value(false),
+                        );
+                        let typed = value_box(
+                            ui,
+                            egui::DragValue::new(&mut bright)
+                                .range(0.0..=100.)
+                                .suffix("%"),
+                        );
+                        rail | typed
+                    })
+                    .inner;
+                // Only on a change. Written every frame it would mark the
+                // resource changed every frame, and the planes are rebuilt
+                // from it.
+                if slider.changed() {
+                    knobs.bright.0 = bright / 100.;
+                }
+                ui.add_space(FIELD_GAP);
+                ui.label("Units");
+                ui.radio_value(&mut *knobs.said, Said::Whichever, "Automatic");
+                ui.radio_value(
+                    &mut *knobs.said,
+                    Said::LightYears,
+                    "Light Years",
+                );
+                ui.radio_value(
+                    &mut *knobs.said,
+                    Said::LightSeconds,
+                    "Light Seconds",
+                );
+            });
+        }
 
         heading(ui, "Galaxy View", true);
         // Whether a system is named is a choice about what the map draws, the

@@ -16,11 +16,17 @@ use bevy_rich_text3d::{
 };
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_plugins(Text3dPlugin { load_system_fonts: false, ..default() });
-    app.insert_resource(LoadFonts {
-        font_embedded: vec![epaint_default_fonts::HACK_REGULAR],
-        ..default()
-    });
+    // Only if it is not already there, and appended rather than set. The
+    // ruled plane sets its own numbers in the same face and asks for it the
+    // same way, and whichever of the two is added first should not decide
+    // whether the other's face is loaded.
+    if !app.is_plugin_added::<Text3dPlugin>() {
+        app.add_plugins(Text3dPlugin { load_system_fonts: false, ..default() });
+    }
+    app.world_mut()
+        .get_resource_or_insert_with(LoadFonts::default)
+        .font_embedded
+        .push(epaint_default_fonts::HACK_REGULAR);
     app.insert_resource(NameRadius {
         follow_spyglass: true,
         radius: DEFAULT_NAME_RADIUS,
@@ -73,8 +79,11 @@ pub(crate) fn plugin(app: &mut App) {
     );
 }
 
-/// World size of a label at unit scale
-const SIZE: f32 = 64.;
+/// World size of a run of text at unit scale
+///
+/// The line box a text mesh is built at, which whoever places it scales down
+/// to the height they want it drawn at.
+pub(crate) const SIZE: f32 = 64.;
 
 /// Depth floor for the label size, in metres
 ///
@@ -84,7 +93,7 @@ const SIZE: f32 = 64.;
 ///
 /// A metre. What it guards against is the sign, not any particular distance,
 /// and the camera cannot be pulled nearer than this to what it looks at.
-const MIN_DEPTH: f32 = 1.;
+pub(crate) const MIN_DEPTH: f32 = 1.;
 
 /// How far a name is drawn from what the camera looks at, to begin with
 ///
@@ -154,7 +163,7 @@ const RISE: f32 = 1.0;
 /// The same face egui draws the chrome in, so a name on the map and the same
 /// name in the bar are the one typeface. Monospaced, which is what [`ADVANCE`]
 /// rests on.
-const FONT: &str = "Hack";
+pub(crate) const FONT: &str = "Hack";
 
 /// Color of the line joining a star to its name
 ///
@@ -349,7 +358,7 @@ pub(super) fn depth(camera: &OrbitCamera, point: DVec3) -> f32 {
 /// from the floating origin, which is the camera, and it is exact near it.
 ///
 /// Answers in whatever unit `offset` is given in.
-pub(super) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
+pub(crate) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
     let forward = (camera.rotation * Vec3::NEG_Z).as_dvec3();
     offset.dot(forward) as f32
 }
@@ -365,7 +374,7 @@ pub(super) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
 /// with `1 / tan(fov_y / 2)`. The vertical field of view is what the
 /// viewport's height is divided into; aspect ratio lives in the matrix's x
 /// axis and does not enter.
-pub(super) fn world_per_pixel(
+pub(crate) fn world_per_pixel(
     cot_half_fov: f32,
     viewport_height: f32,
     depth: f32,
@@ -399,7 +408,7 @@ pub(super) fn screen_position(
 /// The unit does not matter so long as it is one unit: a place on screen is a
 /// length over a length, and the two cancel. So a system may ask in light
 /// years and a body in metres, and both are answered in pixels.
-pub(super) fn screen_offset(
+pub(crate) fn screen_offset(
     camera: &OrbitCamera,
     cot_half_fov: f32,
     viewport: Vec2,

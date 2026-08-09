@@ -9,6 +9,7 @@ inspector = ["bevy-inspector-egui"]
 tracy = ["bevy/trace_tracy"]
 
 [dependencies]
+ab_glyph = "0.2"
 async-std = "*"
 bevy = "0.19"
 bevy-inspector-egui = { version = "0.37", optional = true }
