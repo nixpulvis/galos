@@ -13,7 +13,7 @@
 //! runs between is what is picked out on the map.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::grid::ShowGrid;
+use crate::grid::{Said, ShowGrid, ShowMiddle};
 use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
@@ -483,6 +483,8 @@ pub struct Knobs<'w> {
     show_orbits: ResMut<'w, ShowOrbits>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
+    said: ResMut<'w, Said>,
+    show_middle: ResMut<'w, ShowMiddle>,
     despawner: MessageWriter<'w, Despawn>,
 }
 
@@ -610,6 +612,26 @@ pub fn chrome(
         // turning off only that half of it.
         heading(ui, "Scale", true);
         ui.checkbox(&mut knobs.show_grid.0, "Grid");
+        if knobs.show_grid.0 {
+            // Indented under what turns them on, the same as the names are,
+            // since a unit for a ruler that is not drawn is a choice about
+            // nothing. Left to the map by default, which turns the ruler over
+            // as it descends into a system; pinned either way for reading a
+            // system's distances in light years or a neighbourhood's in light
+            // seconds.
+            ui.indent("said", |ui| {
+                ui.checkbox(&mut knobs.show_middle.0, "Show Position");
+                ui.add_space(FIELD_GAP);
+                ui.label("Units");
+                ui.radio_value(&mut *knobs.said, Said::Whichever, "Automatic");
+                ui.radio_value(&mut *knobs.said, Said::LightYears, "Light Years");
+                ui.radio_value(
+                    &mut *knobs.said,
+                    Said::LightSeconds,
+                    "Light Seconds",
+                );
+            });
+        }
 
         heading(ui, "Galaxy View", true);
         // Whether a system is named is a choice about what the map draws, the

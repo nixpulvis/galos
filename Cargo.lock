@@ -3688,6 +3688,7 @@ dependencies = [
 name = "galos_map"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "async-std",
  "bevy",
  "bevy-inspector-egui",
