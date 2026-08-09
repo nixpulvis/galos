@@ -73,8 +73,11 @@ pub(crate) fn plugin(app: &mut App) {
     );
 }
 
-/// World size of a label at unit scale
-const SIZE: f32 = 64.;
+/// World size of a run of text at unit scale
+///
+/// The line box a text mesh is built at, which whoever places it scales down
+/// to the height they want it drawn at.
+pub(crate) const SIZE: f32 = 64.;
 
 /// Depth floor for the label size, in metres
 ///
@@ -84,7 +87,7 @@ const SIZE: f32 = 64.;
 ///
 /// A metre. What it guards against is the sign, not any particular distance,
 /// and the camera cannot be pulled nearer than this to what it looks at.
-const MIN_DEPTH: f32 = 1.;
+pub(crate) const MIN_DEPTH: f32 = 1.;
 
 /// How far a name is drawn from what the camera looks at, to begin with
 ///
@@ -154,7 +157,7 @@ const RISE: f32 = 1.0;
 /// The same face egui draws the chrome in, so a name on the map and the same
 /// name in the bar are the one typeface. Monospaced, which is what [`ADVANCE`]
 /// rests on.
-const FONT: &str = "Hack";
+pub(crate) const FONT: &str = "Hack";
 
 /// Color of the line joining a star to its name
 ///

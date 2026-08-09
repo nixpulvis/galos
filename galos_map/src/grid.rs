@@ -26,6 +26,14 @@
 //! hangs, how strongly it is drawn and what any of it is called are worked out
 //! here and written onto it every frame.
 //!
+//! # What draws the numbers standing over it
+//!
+//! The three numbers about a place are text meshes hung in the world, and the
+//! crosses that mark the place are gizmos. Both go through the same pass the
+//! plane does, so an ink asked for here comes out the same whether it is
+//! painted into the ruling or stood over it, and a star in front of a number
+//! hides it the way it hides a line.
+//!
 //! # Two planes, and what stands between them
 //!
 //! One hangs in the galaxy's grid and one inside whatever system the camera
@@ -46,7 +54,9 @@ use crate::schedule::MapSet;
 use crate::space::{self, Map};
 use crate::systems::System;
 use crate::systems::bodies::spawn::{Apparent, Body};
-use crate::systems::labels::screen_offset;
+use crate::systems::labels::{
+    FONT, MIN_DEPTH, SIZE, depth_of, screen_offset, world_per_pixel,
+};
 use crate::systems::selection::Selected;
 use crate::ruled::{
     self, BARE, Family, LETTERS, Lettering, NONE, NUMBERED, Numbered, Painted,
@@ -58,11 +68,10 @@ use bevy::image::{Image, ImageSampler};
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_egui::{
-    EguiContexts, EguiPostUpdateSet, EguiPrimaryContextPass, egui,
+use bevy_rich_text3d::{
+    Text3d, Text3dSegment, Text3dStyling, TextAnchor, TextAtlas,
 };
 use big_space::prelude::*;
 
@@ -76,6 +85,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<Reading>();
     app.init_resource::<Descended>();
     app.init_resource::<Dropped>();
+    app.init_resource::<Readouts>();
     // After the map itself, which is what the galaxy's planes hang from. The
     // resource naming it is inserted through a command, so it is not there to
     // be read until the schedule that queued it has ended.
@@ -83,35 +93,25 @@ pub fn plugin(app: &mut App) {
     app.add_systems(PostStartup, spawn_planes);
     // In `Present`, which runs after `Camera` has settled where the camera is
     // standing. Everything here is worked out from that and nothing else.
-    app.add_systems(Update, rule.in_set(MapSet::Present));
-    // The lines dropped to the plane read where the plane ended up rather than
-    // deciding it, and a `GlobalTransform` under a floating origin is not
-    // computed until `PostUpdate`. Reading it any earlier drops a line to
-    // where the plane was last frame, which at these speeds is a line that
-    // misses. Same reason [`crate::systems::labels::leaders`] runs here.
+    //
+    // All three in `Update` rather than later, because the readouts are text
+    // meshes: their meshes are built and their transforms propagated in
+    // `PostUpdate`, so a transform written after that is a readout a frame
+    // behind the plane it stands on, which slides around while the camera
+    // moves and only lands once it stops.
+    app.add_systems(
+        Update,
+        (rule, locate, readouts).chain().in_set(MapSet::Present),
+    );
     // After the plane has been told where it stands, which is what turns the
     // middle of the view into a crossing.
     app.add_systems(PostUpdate, stand_clear.after(ruled::Placing));
-    app.add_systems(
-        PostUpdate,
-        drop_lines
-            .after(TransformSystems::Propagate)
-            .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible)
-            // And before egui's pass, which is run from a system in this same
-            // schedule with no ordering of its own against the transforms.
-            // [`numbers`] writes what this leaves behind, so left unordered it
-            // writes it a frame late, and a number a frame behind the line it
-            // is about slides around while the camera moves and only lands
-            // once it stops.
-            .before(EguiPostUpdateSet::EndPass),
-    );
-    // The numbers are egui's, and egui draws in a pass of its own after
-    // `Update`, so what they are drawn from is this frame's answer rather than
-    // last frame's.
-    app.add_systems(
-        EguiPrimaryContextPass,
-        numbers.after(crate::ui::lettering),
-    );
+    // The gizmos are drawn where the world is, and a `GlobalTransform` under a
+    // floating origin is not computed until `PostUpdate`. Read any earlier the
+    // camera's is last frame's, and a line drawn from this frame's offset to
+    // last frame's eye is a line that misses. Same reason
+    // [`crate::systems::labels::leaders`] runs here.
+    app.add_systems(PostUpdate, marks.after(TransformSystems::Propagate));
 }
 
 /// Whether the ruled plane is drawn
@@ -232,23 +232,11 @@ const MAJOR: f32 = 0.13;
 ///
 /// Above the ruling's lines, being the part of it that is actually read.
 ///
-/// What the map writes over the plane in [`numbers`], which is drawn onto the
-/// screen after the map has been tonemapped and bloomed.
+/// The one figure for all of them: the numbers the plane paints along its own
+/// lines and the numbers [`readouts`] stands over it. Both are drawn into the
+/// same pass and so come out at the same strength for the same ink, and both
+/// take the same fade on top of it.
 const INK: f32 = 0.75;
-
-/// And the ink the plane paints its own numbers in
-///
-/// The same numbers about the same plane, and under [`INK`] all the same,
-/// because the two are drawn in different passes and an equal ink does not
-/// reach the eye equally. The plane draws into the high dynamic range buffer
-/// and then goes through `Bloom` and tonemapping, both of which lift it; what
-/// [`numbers`] writes is painted on afterwards and goes through neither. So a
-/// number painted at the ink a number is written at arrives brighter, with a
-/// glow around it besides.
-///
-/// The one number to move if the two still do not land together, and the fade
-/// they take on top of it is the same for both.
-const PAINTED: f32 = 0.55;
 
 /// How many digits tall the view is
 ///
@@ -264,12 +252,24 @@ const PAINTED: f32 = 0.55;
 /// will take half that and stay crisp; a drawn one will not.
 const FIGURES_ACROSS: f64 = 34.;
 
-/// How long each arm of the cross at the middle of the view is, in pixels
+/// How long each arm of a cross marking a place on the plane is, in pixels
 ///
 /// The numbers at the middle are about one point on the plane, and a number
 /// written over a plane with nothing under it is a number floating loose. So
 /// the point is marked, along the plane's own axes, and they stand beside it.
+///
+/// The arms are laid in the plane rather than across the screen, so a cross
+/// out towards the horizon is foreshortened the way the cells around it are.
+/// It is a mark scratched on the plane and not a pointer laid over it.
 const CROSS: f32 = 11.;
+
+/// How tall a number standing over the plane draws, in logical pixels
+///
+/// The line box, which for one line of text is the size the face is set at.
+/// The size the chrome's smallest lettering is set at: these are read at a
+/// glance off a map rather than pored over, and there are up to a dozen of
+/// them on screen at once.
+const READS: f32 = 8.;
 
 /// How far off the plane the middle's numbers are hung, in pixels
 ///
@@ -282,7 +282,12 @@ const CROSS: f32 = 11.;
 /// a pair on the plane is written on. The two are then on either side of the
 /// lines they are both about, and the middle is read against a clear row rather
 /// than into a number.
-const LIFT: f32 = 16.;
+///
+/// Far enough down to clear what is drawn around the place itself. The arms of
+/// the cross reach [`CROSS`] from it and the ring around a thing picked out
+/// reaches further still, so a row hung to clear the cross alone lands inside
+/// the ring of a selection the camera is looking straight at.
+const LIFT: f32 = 24.;
 
 /// And how far to the side of a dropped line its own number stands, in pixels
 ///
@@ -306,25 +311,20 @@ const ASIDE: f32 = 6.;
 /// still the ruler's own, one power and a couple of places.
 const RESOLVES: f64 = 10.;
 
-/// How far from the edge of the view a number is dropped
-///
-/// A number half off the screen reads as a different number.
-const MARGIN: f32 = 30.;
-
 /// How far a row of numbers reaches around the point it is about, in pixels
 ///
 /// About the row the map writes there: three numbers each with its own power, a
-/// unit and two commas comes to some forty characters of an eight pixel
+/// unit and two commas comes to some forty characters of a [`READS`] tall
 /// monospaced face, centred on the point, so it runs about ninety five either
 /// side. Across it the [`LIFT`] that hangs it off the plane and half its own
 /// height.
 ///
-/// In pixels rather than in the plane's own units because the row is drawn in
-/// pixels and the plane is not. A unit of plane covers most of a digit's width
-/// on screen with the camera overhead and a fraction of one with the camera
-/// down near the plane, so a reach fixed in units is a reach that means
-/// something different at every pitch. [`stand_clear`] converts.
-const CROWDS: Vec2 = Vec2::new(96., 22.);
+/// In pixels rather than in the plane's own units because the row holds one
+/// size on screen and the plane does not. A unit of plane covers most of a
+/// digit's width on screen with the camera overhead and a fraction of one with
+/// the camera down near the plane, so a reach fixed in units is a reach that
+/// means something different at every pitch. [`stand_clear`] converts.
+const CROWDS: Vec2 = Vec2::new(96., 30.);
 
 /// One of the two ruled planes
 ///
@@ -742,19 +742,22 @@ fn off_plane(high: f64, step: f64, unit: Unit) -> Option<String> {
 ///
 /// One entry for each thing picked out.
 ///
-/// Held rather than worked out twice because the two halves run in different
-/// passes. [`drop_lines`] draws the lines in `PostUpdate`, where a
-/// `GlobalTransform` under a floating origin has settled; [`numbers`] writes
-/// them in egui's own pass, which is run from `PostUpdate` with no ordering
-/// against the transforms at all, so reading one there would be reading it
-/// whenever.
+/// Worked out by [`locate`] in `Update`, where the reading it is measured
+/// against has just been settled, and read twice afterwards: by [`readouts`],
+/// which writes the numbers, and by [`marks`], which draws the lines
+/// themselves once the world has finished moving.
 #[derive(Resource, Default)]
 struct Dropped(Vec<Drop>);
 
 /// One line dropped to the plane, and what it is about
 struct Drop {
-    /// Where its foot stands on the plane, as an offset from the camera's eye,
-    /// in metres
+    /// Where the thing itself stands, as an offset from the camera's eye, in
+    /// metres
+    ///
+    /// The head of the line, the other end being straight below it on the
+    /// plane.
+    top: DVec3,
+    /// Where its foot stands on the plane, likewise
     ///
     /// Where the thing is marked and where the two numbers the plane can locate
     /// it by are written.
@@ -767,10 +770,10 @@ struct Drop {
 
 /// What the numbers along the rulers say
 ///
-/// Settled by [`rule`], where the planes are placed, and read by [`numbers`]
-/// and [`drop_lines`], which letter them and draw to them. Held rather than
-/// worked out three times over, the three running in three different passes,
-/// one of which is egui's.
+/// Settled by [`rule`], where the planes are placed, and read by everything
+/// that locates a place on the plane, letters it or draws to it. Held rather
+/// than worked out once per reader, some of them running in a later schedule
+/// than the one that decides it.
 ///
 /// Nothing while the grid is switched off, or while there is no camera to have
 /// worked any of it out from, or while nothing is drawn strongly enough to be
@@ -804,6 +807,12 @@ struct Ruled {
     /// in absolute galactic light years too, and this is what says it in the
     /// same terms the rulers do.
     from: DVec3,
+    /// Where the camera's eye is, in [`Ruled::unit`] and measured from
+    /// [`Ruled::from`]
+    ///
+    /// What turns a place in this space into an offset from the eye, which is
+    /// where everything the map draws about the plane is hung.
+    eye: DVec3,
     /// How far apart two numbers are, in [`Ruled::unit`]
     step: f64,
     unit: Unit,
@@ -817,6 +826,13 @@ struct Ruled {
     /// What [`faded`] measures a point against, and the plane's own
     /// [`Plane::reach`] said in the unit a reading is held in.
     reach: f64,
+}
+
+impl Ruled {
+    /// Where something in this space lies from the camera's eye, in metres
+    fn seen_from_eye(&self, place: DVec3) -> DVec3 {
+        (place - self.eye) * self.unit.metres()
+    }
 }
 
 /// How wide and tall a glyph's cell in the lettering strip is, in pixels
@@ -996,6 +1012,7 @@ impl Placement<'_> {
             middle_from_eye: self.seen_from_eye(self.at),
             at: self.at,
             from: self.from,
+            eye: self.eye,
             step: self.step,
             unit: self.unit,
             strength: self.showing(),
@@ -1229,7 +1246,7 @@ fn rule(
                 apart: (space.step / space.ruling.fine) as f32,
                 tall: (space.across / space.ruling.fine / FIGURES_ACROSS)
                     as f32,
-                strength: drawn_at(PAINTED * space.showing(), bright.0),
+                strength: drawn_at(INK * space.showing(), bright.0),
                 // Written by `ruled::place`, which settles where the ruling is
                 // measured from and which way the camera is standing.
                 from: plane.numbers.from,
@@ -1250,8 +1267,8 @@ fn rule(
         // And what each of those crossings says, written out here rather than
         // worked out on the card. What a crossing is worth, which thousand it
         // is called and how many places it is said to are questions about the
-        // map's own units, and the answers are the same ones [`numbers`] writes
-        // at the middle of the view.
+        // map's own units, and the answers are the same ones [`readouts`]
+        // writes at the middle of the view.
         //
         // About the crossing the view is centred on, that being where the
         // numbers worth reading are. The window reaches further than the ruling
@@ -1309,12 +1326,10 @@ type Marked = (With<Selected>, Or<(With<System>, With<Body>)>);
 
 /// Everything a marked thing is asked for
 ///
-/// Where it is drawn, where it is placed, whether it is drawn at all, and what
-/// its position is measured from — a system carrying its own and a body
-/// carrying its star's.
+/// Where it is placed, whether it is drawn at all, and what its position is
+/// measured from. A system carries its own and a body carries its star's.
 type Mark = (
     Entity,
-    &'static GlobalTransform,
     &'static CellCoord,
     &'static Transform,
     &'static ViewVisibility,
@@ -1414,23 +1429,28 @@ fn reaches(
     ))
 }
 
-/// Drop a line to the plane from whatever is worth locating
+/// Work out what the plane is worth marking, and where those places stand
 ///
-/// The two rulers give a place on the plane, and this gives the height above
-/// it — the third of the three numbers, and the one a plane on its own cannot
-/// say. Dropped from the point the camera is looking at, and from everything
-/// picked out.
+/// The two rulers give a place on the plane, and a line dropped to it gives
+/// the height above it. That is the third of the three numbers and the one a
+/// plane on its own cannot say. Dropped from everything picked out; the point
+/// the camera is looking at needs none, the plane running through it.
 ///
-/// Gizmos rather than meshes, both ends of every line moving every frame.
-#[allow(clippy::too_many_arguments)]
-fn drop_lines(
+/// Where a thing stands is asked of the thing itself rather than measured out
+/// from the camera. A cell is an `i64` count and a transform is the offset
+/// inside it, so this is the position and has nothing of the camera in it.
+///
+/// Measured out from the camera it would have: the camera is at one float's
+/// remove and the thing at another, and neither remove cancels the other. It
+/// comes to a ten thousandth of the last place written, which is nothing at all
+/// until the number sits on a rounding boundary — and a coordinate stored in
+/// thirty seconds of a light year sits on one about a third of the time. Then
+/// it turns over and back as the camera swings.
+fn locate(
     showing: Res<ShowGrid>,
-    bright: Res<Bright>,
     picked_out: Res<ShowPicked>,
     reading: Res<Reading>,
-    mut gizmos: Gizmos,
     mut dropped: ResMut<Dropped>,
-    cameras: Query<&GlobalTransform, With<Camera>>,
     // Whatever is picked out, which out among the systems is a system and
     // inside one is a body. Both stand off the plane and both are asked the
     // same question by it, so both are answered.
@@ -1438,7 +1458,9 @@ fn drop_lines(
     // Whether it is drawn as well as picked out. A system the map has hidden,
     // because a filter excluded it or because the camera has come down into it
     // and its bodies have taken over, is not there to be located; a line
-    // dropped from where it would have stood is a line about nothing.
+    // dropped from where it would have stood is a line about nothing. Settled
+    // in `PostUpdate`, so this is last frame's answer, which is a frame of a
+    // line about something that has only just gone.
     picked: Query<Mark, Marked>,
     // Whatever a body is hanging in, for the star it is measured from.
     stars: Query<&System>,
@@ -1449,50 +1471,13 @@ fn drop_lines(
         return;
     }
     let Some(ruled) = &reading.0 else { return };
-    let Ok(eye) = cameras.single() else { return };
 
-    // How high the plane the numbers are about stands, which is the one thing
-    // a line dropped to it has to know. Taken from the same reading the
-    // numbers come from rather than off whichever plane is drawn: the rulers
-    // cross on the plane, so how far the crossing stands from the eye is how
-    // far the plane does.
-    let altitude = eye.translation().y + ruled.from_eye.y as f32;
-
-
-    // Only what is picked out. The plane runs through what the camera is
-    // looking at, so a line dropped from there would have no length; how far
-    // off it something else stands is the question a plane cannot answer by
-    // being ruled.
-    for (entity, at, cell, transform, shown, own, under) in &picked {
+    for (entity, cell, transform, shown, own, under) in &picked {
         if !shown.get() {
             continue;
         }
         let Some(grid) = grids.parent_grid(entity) else { continue };
-        let from = at.translation();
-        let seen = (from - eye.translation()).as_dvec3();
-        let foot = DVec3::new(seen.x, ruled.from_eye.y, seen.z);
-        gizmos.line(
-            from,
-            Vec3::new(from.x, altitude, from.z),
-            LINE.with_alpha(drawn_at(
-                MAJOR * ruled.strength * faded(foot, ruled.reach),
-                bright.0,
-            )),
-        );
 
-        // Where it stands, asked of the thing itself rather than measured out
-        // from the camera. A cell is an `i64` count and a transform is the
-        // offset inside it, so this is the position and has nothing of the
-        // camera in it.
-        //
-        // Measured out from the camera it would have: the camera is at one
-        // float's remove and the thing at another, and neither remove cancels
-        // the other. It comes to a ten thousandth of the last place written,
-        // which is nothing at all until the number sits on a rounding
-        // boundary — and a coordinate stored in thirty seconds of a light year
-        // sits on one about a third of the time. Then it turns over and back
-        // as the camera swings.
-        //
         // In absolute galactic light years first, because what a grid places a
         // thing from is not what the numbers are measured from. A system hangs
         // in the galaxy's grid and is placed from the galactic centre, and the
@@ -1515,136 +1500,93 @@ fn drop_lines(
                         / space::LIGHT_YEAR
             }
         };
-        let place =
+        let at =
             (absolute - ruled.from) * space::LIGHT_YEAR / ruled.unit.metres();
 
-        // Only where it goes on screen is measured from the eye, where a
-        // float's worth of slack is a fraction of a pixel.
-        dropped.0.push(Drop {
-            foot,
-            middle: DVec3::new(seen.x, (seen.y + ruled.from_eye.y) / 2., seen.z),
-            at: place,
-        });
+        let top = ruled.seen_from_eye(at);
+        let foot = DVec3::new(top.x, ruled.from_eye.y, top.z);
+        dropped.0.push(Drop { top, foot, middle: (top + foot) / 2., at });
     }
 }
 
-/// Paint the plane's lines with their own numbers, and say where the view is
+/// One of the numbers the map stands over the plane
 ///
-/// Painted onto egui's background layer, which takes no pointer input: these
-/// are numbers written over the map rather than chrome standing in front of
-/// it, and a wheel turned over one belongs to the map underneath.
-fn numbers(
-    mut contexts: EguiContexts,
-    showing: Res<ShowGrid>,
-    bright: Res<Bright>,
-    middle: Res<ShowMiddle>,
-    reading: Res<Reading>,
-    dropped: Res<Dropped>,
-    cameras: Query<(&OrbitCamera, &Camera)>,
-) -> Result {
-    if !showing.0 {
-        return Ok(());
-    }
-    let Some(ruled) = &reading.0 else { return Ok(()) };
-    let Ok((orbit, camera)) = cameras.single() else { return Ok(()) };
-    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
-    let cot_half_fov = camera.clip_from_view().y_axis.y;
+/// Text in the world rather than painted on the screen afterwards, so that a
+/// number is drawn into the same pass the plane is, goes through the same
+/// tonemapping, and comes out at the strength it was asked for. It is also
+/// what lets a star stand in front of one.
+#[derive(Component)]
+struct Readout;
 
-    let ctx = contexts.ctx_mut()?;
-    let font = egui::TextStyle::Small.resolve(&ctx.global_style());
-    let painter = ctx.layer_painter(egui::LayerId::background());
-    // The colour the plane is ruled in, read from the one place it is said.
-    // Egui is handed colours rather than asked for them, so this is where the
-    // map's own is spoken into its.
-    let hue = LINE.to_srgba();
-    // Faded where it is written rather than all at one strength, so that a
-    // number over the plane goes as the plane under it goes. Which is the
-    // whole of what tells a reader the ruling has run out.
-    // How much of the plane is left where a thing is written is the caller's
-    // to say. What is added here is what the ruling as a whole is worth: how
-    // much of it is drawn at this zoom, and how loudly the bar asks for it.
-    let ink = |loud: f32| {
-        egui::Color32::from_rgba_unmultiplied(
-            (hue.red * 255.) as u8,
-            (hue.green * 255.) as u8,
-            (hue.blue * 255.) as u8,
-            (255. * drawn_at(loud * ruled.strength, bright.0)) as u8,
-        )
+/// The readouts there are, in the order they are handed work
+///
+/// An ordered list rather than a query, so that the same readout goes on
+/// saying the same thing from one frame to the next. Walked in query order the
+/// numbers would swap between entities whenever an archetype moved, and a
+/// number that changes which mesh it is drawn from is a number that flickers.
+///
+/// Pooled rather than made and unmade with the selection. A readout with
+/// nothing to say is hidden, and the pool only grows.
+#[derive(Resource, Default)]
+struct Readouts(Vec<Entity>);
+
+/// One number standing over the plane, and where it stands
+struct Says {
+    /// The place it is about, as an offset from the camera's eye, in metres
+    from_eye: DVec3,
+    /// Which way it is hung off that place, and how far, in pixels
+    ///
+    /// A direction through the world and a length on screen. What the length
+    /// comes to in the world is worked out where the readout is placed, from
+    /// how deep into the view the place lies.
+    hung: Vec3,
+    /// Which side of the place it stands on
+    anchor: TextAnchor,
+    said: String,
+    /// The ink it is written in, before [`Bright`] and the ruling's own
+    /// strength have had their say
+    ink: f32,
+}
+
+/// Everything the map has to say about the plane this frame
+///
+/// The middle of the view first, then each thing picked out: where it stands,
+/// and how far off the plane it went. In a settled order, so that a readout
+/// goes on saying what it said last frame while nothing has changed.
+///
+/// `sideways` is which way the right of the view runs through the world.
+fn spoken(
+    ruled: &Ruled,
+    dropped: &Dropped,
+    middle: bool,
+    sideways: Vec3,
+) -> Vec<Says> {
+    // What the plane can say about one place on it, hung under the mark there.
+    // The middle of the view and the foot of every dropped line are the same
+    // kind of thing, a place on the plane worth locating, so they are said the
+    // same way.
+    let placed = |from_eye: DVec3, at: DVec3| Says {
+        from_eye,
+        // Along the one direction neither ruler runs in, and under the plane
+        // rather than over it, which is the opposite side from the one a pair
+        // on the plane is written on. The two are then on either side of the
+        // lines they are both about. Squared up on the plane it comes to
+        // nothing on screen and the row sits on its own mark, which is a view
+        // with no room for a third number in it anyway.
+        hung: Vec3::NEG_Y * LIFT,
+        anchor: TextAnchor::CENTER,
+        said: format!("{} {}", told(at, ruled.step), ruled.unit.mark()),
+        ink: INK * faded(from_eye, ruled.reach),
     };
 
-    // Where a number may be written without half of it falling off the edge.
-    let room = egui::Rect::from_min_max(
-        egui::pos2(MARGIN, MARGIN),
-        egui::pos2(viewport.x - MARGIN, viewport.y - MARGIN),
-    );
-
-    // Which way the plane's own axes and its normal run on screen. The two
-    // axes are what the cross at the middle is drawn along; the normal is the
-    // one direction neither of them runs in, and so where anything written
-    // about the plane goes rather than on it.
-    //
-    // The plane's own numbers are not written here at all. They are painted
-    // into the ruling by [`ruled`], lying in the plane and turning, shrinking
-    // and going with it, which is what a number on a ruler does.
-    let metres = ruled.unit.metres();
-    let toward = |from: DVec3, axis: DVec3| -> Vec2 {
-        let (Some(at), Some(along)) = (
-            screen_offset(orbit, cot_half_fov, viewport, from),
-            screen_offset(orbit, cot_half_fov, viewport, from + axis * ruled.step * metres),
-        ) else {
-            return Vec2::ZERO;
-        };
-        (along - at).normalize_or_zero()
-    };
-    // A point on the plane, marked where its own two axes cross and with what
-    // the plane can say about it hung underneath. The middle of the view and
-    // the foot of every dropped line are the same kind of thing — a place on
-    // the plane worth locating — so they are marked the same way.
-    let mark = |at: DVec3, said: String, loud: f32| {
-        let Some(seen) = screen_offset(orbit, cot_half_fov, viewport, at)
-        else {
-            return;
-        };
-        let ink = ink(loud);
-        let seen = egui::pos2(seen.x, seen.y);
-        if room.contains(seen) {
-            for axis in [DVec3::X, DVec3::Z] {
-                let arm = toward(at, axis) * CROSS;
-                let arm = egui::vec2(arm.x, arm.y);
-                painter.line_segment(
-                    [seen - arm, seen + arm],
-                    egui::Stroke::new(1_f32, ink),
-                );
-            }
-        }
-
-        // Hung off the plane along the one direction on screen that neither
-        // ruler runs in, and under it rather than over it, which is the
-        // opposite side from the one a pair on the plane is written on.
-        let hung = -toward(at, DVec3::Y) * LIFT;
-        let place = egui::pos2(seen.x + hung.x, seen.y + hung.y);
-        if room.contains(place) {
-            painter.text(
-                place,
-                egui::Align2::CENTER_CENTER,
-                said,
-                font.clone(),
-                ink,
-            );
-        }
-    };
+    let mut says = Vec::new();
 
     // The place the camera is looking at, all three of it, held at the middle
     // of the view. Not snapped to anything, so it sits still while the plane
-    // slides under it, and rounded to the same step the plane is numbered in
-    // so that it reads against those numbers.
-    //
-    if middle.0 {
-        mark(
-            ruled.middle_from_eye,
-            format!("{} {}", told(ruled.at, ruled.step), ruled.unit.mark()),
-            INK * faded(ruled.middle_from_eye, ruled.reach),
-        );
+    // slides under it, and said to the same step the plane is numbered in so
+    // that it reads against those numbers.
+    if middle {
+        says.push(placed(ruled.middle_from_eye, ruled.at));
     }
 
     // And every line dropped to the plane, which is the same three numbers
@@ -1653,35 +1595,244 @@ fn numbers(
     // them; the line itself carries only how far off the plane it went, which
     // is the one thing about it neither ruler nor mark can show.
     for drop in &dropped.0 {
-        mark(
-            drop.foot,
-            format!("{} {}", told(drop.at, ruled.step), ruled.unit.mark()),
-            INK * faded(drop.foot, ruled.reach),
-        );
+        says.push(placed(drop.foot, drop.at));
 
         let Some(said) =
             off_plane(drop.at.y - ruled.at.y, ruled.step, ruled.unit)
         else {
             continue;
         };
-        let Some(place) =
-            screen_offset(orbit, cot_half_fov, viewport, drop.middle)
-        else {
-            continue;
-        };
-        let place = egui::pos2(place.x + ASIDE, place.y);
-        if room.contains(place) {
-            painter.text(
-                place,
-                egui::Align2::LEFT_CENTER,
-                said,
-                font.clone(),
-                ink(INK * faded(drop.foot, ruled.reach)),
-            );
+        says.push(Says {
+            from_eye: drop.middle,
+            // Beside the line rather than over it, for the same reason a pair
+            // on the plane stands beside its crossing: a number with a rule
+            // through it is a number to be worked out rather than read.
+            hung: sideways * ASIDE,
+            anchor: TextAnchor::CENTER_RIGHT,
+            said,
+            ink: INK * faded(drop.foot, ruled.reach),
+        });
+    }
+
+    says
+}
+
+/// Everything one readout is written through
+///
+/// Where it stands, what it says, which side of its place it says it on,
+/// whether it says anything at all, and what it is drawn in.
+type Written = (
+    &'static mut Transform,
+    &'static mut Text3d,
+    &'static mut Text3dStyling,
+    &'static mut Visibility,
+    &'static MeshMaterial3d<StandardMaterial>,
+);
+
+/// Stand the numbers the plane is worth over the places they are about
+///
+/// Each is a child of the camera turned no further, which is what makes it
+/// face the camera however the camera swings, and held at [`READS`] pixels
+/// tall whatever it is standing over.
+#[allow(clippy::too_many_arguments)]
+fn readouts(
+    showing: Res<ShowGrid>,
+    middle: Res<ShowMiddle>,
+    bright: Res<Bright>,
+    reading: Res<Reading>,
+    dropped: Res<Dropped>,
+    mut pool: ResMut<Readouts>,
+    cameras: Query<(Entity, &OrbitCamera, &Camera)>,
+    mut written: Query<Written, With<Readout>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+) {
+    let seen = cameras.single().ok().and_then(|(eye, orbit, camera)| {
+        let viewport = camera.logical_viewport_size()?;
+        Some((eye, orbit, viewport, camera.clip_from_view().y_axis.y))
+    });
+
+    let mut says = Vec::new();
+    let mut strength = 0.;
+    if let (true, Some(ruled), Some((_, orbit, ..))) =
+        (showing.0, reading.0.as_ref(), seen)
+    {
+        strength = ruled.strength;
+        says = spoken(ruled, &dropped, middle.0, orbit.rotation * Vec3::X);
+    }
+
+    // Room for everything there is to say. One made now is not in the world
+    // until the commands are flushed, so it says nothing until the next frame;
+    // what is picked out changes far more slowly than the map is drawn.
+    if let Some((eye, ..)) = seen {
+        while pool.0.len() < says.len() {
+            pool.0.push(commands.spawn(readout(&mut materials, eye)).id());
         }
     }
 
-    Ok(())
+    for (nth, entity) in pool.0.iter().enumerate() {
+        let Ok((mut place, mut text, mut styling, mut visible, painted)) =
+            written.get_mut(*entity)
+        else {
+            continue;
+        };
+        let seen = says.get(nth).zip(seen);
+        // Nothing to say, or a plane so far faded where it would have stood
+        // that saying it would be saying it about nothing.
+        let ink = seen
+            .map_or(0., |(says, _)| drawn_at(says.ink * strength, bright.0));
+        let Some((says, (_, orbit, viewport, cot_half_fov))) =
+            seen.filter(|_| ink > 0.)
+        else {
+            visible.set_if_neq(Visibility::Hidden);
+            continue;
+        };
+        visible.set_if_neq(Visibility::Inherited);
+
+        let into_view = depth_of(orbit, says.from_eye).max(MIN_DEPTH);
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
+        // Onto the camera's own axes, the readout hanging off it. Turned no
+        // further than its parent it faces the camera, and a length written
+        // here is a length across the view.
+        place.translation = orbit.rotation.inverse()
+            * (says.from_eye.as_vec3() + says.hung * per_pixel);
+        place.rotation = Quat::IDENTITY;
+        // The line box is exactly `SIZE` tall, so this is the height the row
+        // draws at, in pixels, whatever the camera is doing.
+        place.scale = Vec3::splat(READS * per_pixel / SIZE);
+
+        // Both of these are read before they are written, so that a readout
+        // saying what it said last frame does not have its mesh rebuilt for
+        // it. Most frames say what the last one did.
+        if lettered(&text) != Some(says.said.as_str()) {
+            *text = Text3d::new(says.said.clone());
+        }
+        if styling.anchor.0 != says.anchor.0 {
+            styling.anchor = says.anchor;
+        }
+
+        if let Some(mut painted) = materials.get_mut(&painted.0) {
+            painted.base_color = LINE.with_alpha(ink);
+        }
+    }
+}
+
+/// What one readout is made of
+///
+/// A material apiece rather than a handful shared out. What a readout is drawn
+/// at follows how far the plane has faded where it stands, so no two of them
+/// are alike and a shared one would come out however the last to write it left
+/// it.
+fn readout(
+    materials: &mut Assets<StandardMaterial>,
+    eye: Entity,
+) -> impl Bundle {
+    (
+        Readout,
+        Text3d::new(String::new()),
+        Text3dStyling {
+            size: SIZE,
+            font: FONT.into(),
+            color: Srgba::WHITE,
+            anchor: TextAnchor::CENTER,
+            ..default()
+        },
+        Mesh3d::default(),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: LINE.with_alpha(0.),
+            // The glyphs are drawn white and unlit, so the base color
+            // multiplies straight through them and is what a readout comes
+            // out.
+            base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        })),
+        // Nothing is said until [`readouts`] has been round.
+        Visibility::Hidden,
+        Transform::default(),
+        ChildOf(eye),
+    )
+}
+
+/// What a readout says, if it says anything this wrote
+///
+/// A readout is one run of text, [`readout`] having set it that way, and
+/// anything else is not a readout this put up.
+fn lettered(text: &Text3d) -> Option<&str> {
+    match text.segments.as_slice() {
+        [(Text3dSegment::String(said), _)] => Some(said),
+        _ => None,
+    }
+}
+
+/// Scratch the plane where a place on it is worth locating
+///
+/// A cross at the middle of the view and at the foot of every dropped line,
+/// laid along the plane's own axes, and the dropped lines themselves. A number
+/// written over a plane with nothing under it is a number floating loose.
+///
+/// Gizmos rather than meshes, every one of them moving every frame. Which puts
+/// them in the same pass as the plane, so a line dropped to the ruling is
+/// drawn exactly as the ruling's own lines are.
+fn marks(
+    showing: Res<ShowGrid>,
+    middle: Res<ShowMiddle>,
+    bright: Res<Bright>,
+    reading: Res<Reading>,
+    dropped: Res<Dropped>,
+    mut gizmos: Gizmos,
+    cameras: Query<(&OrbitCamera, &Camera, &GlobalTransform)>,
+) {
+    if !showing.0 {
+        return;
+    }
+    let Some(ruled) = &reading.0 else { return };
+    let Ok((orbit, camera, at)) = cameras.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+    let eye = at.translation();
+
+    // Where a place on the plane is in the world, how long an arm of its cross
+    // comes to there, and what the two are drawn in.
+    let scratched = |from_eye: DVec3, ink: f32| {
+        let into_view = depth_of(orbit, from_eye).max(MIN_DEPTH);
+        (
+            eye + from_eye.as_vec3(),
+            CROSS * world_per_pixel(cot_half_fov, viewport.y, into_view),
+            LINE.with_alpha(drawn_at(ink * ruled.strength, bright.0)),
+        )
+    };
+
+    if middle.0 {
+        let ink = INK * faded(ruled.middle_from_eye, ruled.reach);
+        let (at, arm, color) = scratched(ruled.middle_from_eye, ink);
+        cross(&mut gizmos, at, arm, color);
+    }
+
+    for drop in &dropped.0 {
+        let left = faded(drop.foot, ruled.reach);
+        let (foot, arm, color) = scratched(drop.foot, INK * left);
+        cross(&mut gizmos, foot, arm, color);
+        // The line at the ink the ruling's widest lines are drawn in, so that
+        // it reads as one of the plane's rather than as something laid over
+        // it.
+        gizmos.line(
+            eye + drop.top.as_vec3(),
+            foot,
+            LINE.with_alpha(drawn_at(MAJOR * ruled.strength * left, bright.0)),
+        );
+    }
+}
+
+/// Two arms along the plane's own axes, crossing at `at`
+///
+/// Laid in the plane rather than across the screen, so a cross out towards the
+/// horizon is foreshortened the way the cells around it are.
+fn cross(gizmos: &mut Gizmos, at: Vec3, arm: f32, color: Color) {
+    for axis in [Vec3::X, Vec3::Z] {
+        gizmos.line(at - axis * arm, at + axis * arm, color);
+    }
 }
 
 #[cfg(test)]
@@ -2321,6 +2472,90 @@ mod tests {
         let (lines, numbers) = drawn(&mut app);
         assert_eq!(lines, 1.);
         assert_eq!(numbers, 1.);
+    }
+
+    /// A number standing over the plane is the ink the plane paints its own in
+    ///
+    /// The same numbers about the same plane, and now drawn into the same pass
+    /// as it, so an equal ink reaches the eye equally. What is left between
+    /// them is where each stands: the plane's are painted all over it and fade
+    /// wherever they lie, and one standing over it takes the fade at its own
+    /// place. Nothing else.
+    #[test]
+    fn what_stands_over_the_plane_is_the_ink_painted_on_it() {
+        let mut app = looking(100.);
+        // Standing back and up from what it is looking at, so that the plane
+        // is neither square on nor edge on and there is a fade in it to tell
+        // the two apart by.
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        for mut orbit in cameras.iter_mut(app.world_mut()) {
+            orbit.eye = DVec3::new(0., 50., 75_f64.sqrt() * 10.);
+        }
+        app.update();
+        let (_, painted) = drawn(&mut app);
+
+        let bright = app.world().resource::<Bright>().0;
+        let reading = app.world().resource::<Reading>();
+        let ruled = reading.0.as_ref().expect("a reading to write");
+        let says = spoken(ruled, &Dropped::default(), true, Vec3::X);
+        let middle = says.first().expect("the middle is said");
+
+        let stood = drawn_at(middle.ink * ruled.strength, bright);
+        let left = faded(ruled.middle_from_eye, ruled.reach);
+        assert!(left > 0. && left < 1., "nothing to tell apart at {left}");
+        assert!(
+            (stood - painted * left).abs() < 1e-6,
+            "stood at {stood}, painted {painted} with {left} of the plane left"
+        );
+    }
+
+    /// A thing off the plane is said at its foot and again on its line
+    ///
+    /// Three numbers under the mark where the line meets the plane, which is
+    /// where the two rulers can be read against them, and how far off the
+    /// plane it went beside the line itself. That last is the one thing about
+    /// it neither ruler nor mark can show.
+    #[test]
+    fn a_dropped_line_is_said_at_both_ends() {
+        let mut app = looking(100.);
+        app.update();
+        let reading = app.world().resource::<Reading>();
+        let ruled = reading.0.as_ref().expect("a reading to write");
+
+        // A step off the middle both ways, so that neither number reads as
+        // nought and the offset is worth saying out loud.
+        let at = ruled.at + DVec3::new(ruled.step, ruled.step, 0.);
+        let top = ruled.seen_from_eye(at);
+        let foot = DVec3::new(top.x, ruled.from_eye.y, top.z);
+        let dropped =
+            Dropped(vec![Drop { top, foot, middle: (top + foot) / 2., at }]);
+
+        let says = spoken(ruled, &dropped, true, Vec3::X);
+        assert_eq!(says.len(), 3, "the middle, the foot and the offset");
+        // The foot says all three, and it says them where the foot stands.
+        assert_eq!(says[1].from_eye, foot);
+        assert_eq!(says[1].said.matches(',').count(), 2);
+        // The line says only how far off the plane it went, and says it
+        // halfway up itself where there is a line to stand beside.
+        assert_eq!(says[2].from_eye, (top + foot) / 2.);
+        assert!(
+            says[2].said.starts_with('+'),
+            "a step above the plane came out {}",
+            says[2].said
+        );
+        assert!(says[2].said.ends_with(ruled.unit.mark()));
+    }
+
+    /// And nothing is said about the middle when the middle is switched off
+    #[test]
+    fn the_middle_goes_quiet_when_it_is_not_asked_for() {
+        let mut app = looking(100.);
+        app.update();
+        let reading = app.world().resource::<Reading>();
+        let ruled = reading.0.as_ref().expect("a reading to write");
+
+        assert!(spoken(ruled, &Dropped::default(), false, Vec3::X).is_empty());
+        assert_eq!(spoken(ruled, &Dropped::default(), true, Vec3::X).len(), 1);
     }
 
     /// How strongly the plane's widest drawn row and its numbers come out
