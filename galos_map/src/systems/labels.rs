@@ -349,7 +349,7 @@ pub(super) fn depth(camera: &OrbitCamera, point: DVec3) -> f32 {
 /// from the floating origin, which is the camera, and it is exact near it.
 ///
 /// Answers in whatever unit `offset` is given in.
-pub(super) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
+pub(crate) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
     let forward = (camera.rotation * Vec3::NEG_Z).as_dvec3();
     offset.dot(forward) as f32
 }
@@ -365,7 +365,7 @@ pub(super) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
 /// with `1 / tan(fov_y / 2)`. The vertical field of view is what the
 /// viewport's height is divided into; aspect ratio lives in the matrix's x
 /// axis and does not enter.
-pub(super) fn world_per_pixel(
+pub(crate) fn world_per_pixel(
     cot_half_fov: f32,
     viewport_height: f32,
     depth: f32,

@@ -280,7 +280,7 @@ fn fragment(in: FullscreenVertexOutput) -> FragmentOutput {
     // The lines, widest family first. Each is drawn into what the wider ones
     // have left, so a line two families both fall on is drawn once, at the
     // stronger of the two, rather than twice into the one pixel.
-    var ink = 0.0;
+    var lines = 0.0;
     for (var i = 0u; i < FAMILIES; i++) {
         let apart = plane.families[i].x;
         let strength = plane.families[i].y;
@@ -293,14 +293,8 @@ fn fragment(in: FullscreenVertexOutput) -> FragmentOutput {
         // loses it as the cells close up towards the horizon rather than
         // letting them turn to moire.
         let off = abs(fract(cells - 0.5) - 0.5) / fwidth(cells);
-        ink += (1.0 - min(min(off.x, off.y), 1.0)) * strength * (1.0 - ink);
+        lines += (1.0 - min(min(off.x, off.y), 1.0)) * strength * (1.0 - lines);
     }
-    // The numbers over the lines, being the part of the ruling that is read.
-    ink = ink + painted(at) * plane.numbers.z * (1.0 - ink);
-    if ink <= 0.0 {
-        discard;
-    }
-
     // Out at the horizon the ruling is edge on whatever the camera is doing,
     // and a plane the camera has come level with is a line across the sky.
     // Both are faded rather than drawn.
@@ -308,6 +302,16 @@ fn fragment(in: FullscreenVertexOutput) -> FragmentOutput {
     let fade =
         mix(clamp(1.0 - t / plane.reach, 0.0, 1.0), 1.0, square)
         * min(square / plane.edge_on, 1.0);
+
+    // The numbers over the lines, being the part of the ruling that is read.
+    // Faded with them and by the same amount: the fade is what is left of the
+    // plane here, and everything drawn on it is drawn into what is left. What
+    // sets a number apart from a line is the ink it starts in, `numbers.z`
+    // against a family's own strength, and nothing else.
+    let ink = lines + painted(at) * plane.numbers.z * (1.0 - lines);
+    if ink <= 0.0 {
+        discard;
+    }
 
     // How deep the meeting point is, for the depth buffer, which is the one
     // place the world's own unit is wanted. `clip_from_view[3][2]` is the near

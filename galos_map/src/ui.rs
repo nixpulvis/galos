@@ -13,7 +13,7 @@
 //! runs between is what is picked out on the map.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::grid::{Said, ShowGrid, ShowMiddle, ShowPicked};
+use crate::grid::{Bright, Said, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
@@ -486,6 +486,7 @@ pub struct Knobs<'w> {
     said: ResMut<'w, Said>,
     show_middle: ResMut<'w, ShowMiddle>,
     show_picked: ResMut<'w, ShowPicked>,
+    bright: ResMut<'w, Bright>,
     despawner: MessageWriter<'w, Despawn>,
 }
 
@@ -626,6 +627,36 @@ pub fn chrome(
                     &mut knobs.show_picked.0,
                     "Show Selected Positions",
                 );
+                ui.add_space(FIELD_GAP);
+                // How loudly the whole ruling is drawn, lines and numbers
+                // together. Past a hundred for a ruler that has to be read off
+                // a bright field, under it for one that should stay out of the
+                // way of a busy sky.
+                ui.label("Brightness (%)");
+                let mut bright = knobs.bright.0 * 100.;
+                fill_width(ui);
+                let slider = ui
+                    .horizontal(|ui| {
+                        let rail = ui.add(
+                            egui::Slider::new(&mut bright, 0.0..=100.)
+                                .step_by(5.)
+                                .show_value(false),
+                        );
+                        let typed = value_box(
+                            ui,
+                            egui::DragValue::new(&mut bright)
+                                .range(0.0..=100.)
+                                .suffix("%"),
+                        );
+                        rail | typed
+                    })
+                    .inner;
+                // Only on a change. Written every frame it would mark the
+                // resource changed every frame, and the planes are rebuilt
+                // from it.
+                if slider.changed() {
+                    knobs.bright.0 = bright / 100.;
+                }
                 ui.add_space(FIELD_GAP);
                 ui.label("Units");
                 ui.radio_value(&mut *knobs.said, Said::Whichever, "Automatic");

@@ -71,6 +71,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(ShowGrid(true));
     app.insert_resource(ShowMiddle(true));
     app.insert_resource(ShowPicked(true));
+    app.init_resource::<Bright>();
     app.init_resource::<Said>();
     app.init_resource::<Reading>();
     app.init_resource::<Descended>();
@@ -124,6 +125,30 @@ pub struct ShowGrid(pub bool);
 /// which is the one of the three a line cannot carry.
 #[derive(Resource)]
 pub struct ShowMiddle(pub bool);
+
+/// How strongly the ruling is drawn, against what the map settles on for it
+///
+/// One for the lines, which is what the map was tuned at. Under one for a
+/// ruling that stays out of the way of a busy sky, and over one for one that
+/// has to be read off a bright field or a screen in daylight.
+///
+/// Everything the ruling draws follows it together: the lines, the numbers
+/// painted along them, the lines dropped to the plane and the numbers written
+/// over it. They are one thing seen at once, and a ruler whose lines dimmed
+/// while its numbers did not would read as two.
+#[derive(Resource)]
+pub struct Bright(pub f32);
+
+impl Default for Bright {
+    /// Short of the brightest it goes
+    ///
+    /// The ruling crosses the whole map and is meant to be glanced at rather
+    /// than looked at, so it opens quieter than its own ceiling and leaves the
+    /// top of the range for a sky it has to be read off.
+    fn default() -> Self {
+        Bright(0.7)
+    }
+}
 
 /// And whether the places of the things picked out are
 ///
@@ -203,10 +228,27 @@ const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
 const MINOR: f32 = 0.05;
 const MAJOR: f32 = 0.13;
 
-/// How strongly the numbers and the lines dropped to the plane are drawn
+/// How strongly the numbers are drawn
 ///
-/// Above the ruling, being the part of it that is actually read.
+/// Above the ruling's lines, being the part of it that is actually read.
+///
+/// What the map writes over the plane in [`numbers`], which is drawn onto the
+/// screen after the map has been tonemapped and bloomed.
 const INK: f32 = 0.75;
+
+/// And the ink the plane paints its own numbers in
+///
+/// The same numbers about the same plane, and under [`INK`] all the same,
+/// because the two are drawn in different passes and an equal ink does not
+/// reach the eye equally. The plane draws into the high dynamic range buffer
+/// and then goes through `Bloom` and tonemapping, both of which lift it; what
+/// [`numbers`] writes is painted on afterwards and goes through neither. So a
+/// number painted at the ink a number is written at arrives brighter, with a
+/// glow around it besides.
+///
+/// The one number to move if the two still do not land together, and the fade
+/// they take on top of it is the same for both.
+const PAINTED: f32 = 0.55;
 
 /// How many digits tall the view is
 ///
@@ -770,6 +812,11 @@ struct Ruled {
     /// A number standing over a plane that has faded out is a number about
     /// nothing.
     strength: f32,
+    /// How far the ruling reaches before it has faded out, in metres
+    ///
+    /// What [`faded`] measures a point against, and the plane's own
+    /// [`Plane::reach`] said in the unit a reading is held in.
+    reach: f64,
 }
 
 /// How wide and tall a glyph's cell in the lettering strip is, in pixels
@@ -924,6 +971,8 @@ struct Placement<'a> {
     /// has descended into one. What turns anything else on the map into a
     /// position this space can say.
     from: DVec3,
+    /// How far its ruling reaches before it has faded out, in metres
+    reach: f64,
     /// How much of this space's ruling is drawn, as the descent hands the map
     /// from one space to the other
     handed: f32,
@@ -950,6 +999,7 @@ impl Placement<'_> {
             step: self.step,
             unit: self.unit,
             strength: self.showing(),
+            reach: self.reach,
         }
     }
 }
@@ -1006,6 +1056,10 @@ fn placed<'a>(
         step,
         eye: spoken(orbit.eye),
         from,
+        // In metres, being a distance out through the world rather than a
+        // distance across the plane. Past the far side of the view, so that
+        // what fades is the horizon rather than what is looked at.
+        reach: orbit.radius as f64 * space::LIGHT_YEAR * FADE_BEYOND,
         handed,
     }
 }
@@ -1017,6 +1071,7 @@ fn placed<'a>(
 #[allow(clippy::too_many_arguments)]
 fn rule(
     showing: Res<ShowGrid>,
+    bright: Res<Bright>,
     cameras: Query<(&OrbitCamera, Option<&Projection>)>,
     held: Res<Apparent>,
     // The system the camera has descended into, if it has. It is the one
@@ -1125,7 +1180,6 @@ fn rule(
     };
     reading.0 = louder.filter(|it| it.showing() > 0.).map(Placement::reading);
 
-    let radius = orbit.map_or(0., |orbit| orbit.radius) as f64;
     for (
         _,
         ruler,
@@ -1164,7 +1218,10 @@ fn rule(
 
         *plane = Plane {
             cell: space.ruling.fine * space.unit.metres(),
-            families: space.ruling.rows(space.handed),
+            families: space.ruling.rows(space.handed).map(|row| Family {
+                strength: drawn_at(row.strength, bright.0),
+                ..row
+            }),
             numbers: Painted {
                 // The crossings that carry a number are the ones the numbers
                 // were already stepped by, so a number falls on a line and
@@ -1172,7 +1229,7 @@ fn rule(
                 apart: (space.step / space.ruling.fine) as f32,
                 tall: (space.across / space.ruling.fine / FIGURES_ACROSS)
                     as f32,
-                strength: INK * space.showing(),
+                strength: drawn_at(PAINTED * space.showing(), bright.0),
                 // Written by `ruled::place`, which settles where the ruling is
                 // measured from and which way the camera is standing.
                 from: plane.numbers.from,
@@ -1182,10 +1239,7 @@ fn rule(
                 // once the names have settled which of them are drawn.
                 bare: plane.numbers.bare,
             },
-            // In metres, being a distance out through the world rather than a
-            // distance across the plane. Past the far side of the view, so
-            // that what fades is the horizon rather than what is looked at.
-            reach: radius * space::LIGHT_YEAR * FADE_BEYOND,
+            reach: space.reach,
             edge_on: FADE_EDGE_ON,
             color: LINE,
             // Written by [`ruled::place`], which runs later in the frame.
@@ -1216,6 +1270,38 @@ fn rule(
             spoken.across[into] = Word::say(&ticked(across, space.step));
         }
     }
+}
+
+/// How much of the plane is left at a point on it, as the ruling fades
+///
+/// The plane's own fade, worked out for one point rather than for every pixel:
+/// how far out it stands, softened towards nothing as the view squares up on
+/// the plane, and how edge on the plane is there. `ruled.wgsl` does the same
+/// arithmetic per fragment, and what is written over the plane by hand has to
+/// carry it too or it goes on standing over a ruling that has gone.
+///
+/// Everything drawn on the plane takes it, lines and numbers alike and by the
+/// same amount: what is left of the plane here is what anything on it is drawn
+/// into. What sets a number apart from a line is the ink it starts in and
+/// nothing else — [`INK`] against [`MINOR`] or [`MAJOR`] — so the numbers hold
+/// on well after the lines have gone, which is the right way round, a ruler
+/// being read off its numbers.
+fn faded(from_eye: DVec3, reach: f64) -> f32 {
+    let far = from_eye.length();
+    if far <= 0. || reach <= 0. {
+        return 1.;
+    }
+    let square = (from_eye.y.abs() / far) as f32;
+    let near = (1. - far / reach).clamp(0., 1.) as f32;
+    (near + (1. - near) * square) * (square / FADE_EDGE_ON).min(1.)
+}
+
+/// How strongly something the ruling draws comes out, once [`Bright`] has had
+/// its say
+///
+/// Never past whole, an alpha having nowhere above one to go.
+fn drawn_at(strength: f32, bright: f32) -> f32 {
+    (strength * bright).clamp(0., 1.)
 }
 
 /// What wears a mark, of the two kinds of thing that can
@@ -1339,6 +1425,7 @@ fn reaches(
 #[allow(clippy::too_many_arguments)]
 fn drop_lines(
     showing: Res<ShowGrid>,
+    bright: Res<Bright>,
     picked_out: Res<ShowPicked>,
     reading: Res<Reading>,
     mut gizmos: Gizmos,
@@ -1371,7 +1458,6 @@ fn drop_lines(
     // far the plane does.
     let altitude = eye.translation().y + ruled.from_eye.y as f32;
 
-    let color = LINE.with_alpha(INK * ruled.strength);
 
     // Only what is picked out. The plane runs through what the camera is
     // looking at, so a line dropped from there would have no length; how far
@@ -1383,7 +1469,16 @@ fn drop_lines(
         }
         let Some(grid) = grids.parent_grid(entity) else { continue };
         let from = at.translation();
-        gizmos.line(from, Vec3::new(from.x, altitude, from.z), color);
+        let seen = (from - eye.translation()).as_dvec3();
+        let foot = DVec3::new(seen.x, ruled.from_eye.y, seen.z);
+        gizmos.line(
+            from,
+            Vec3::new(from.x, altitude, from.z),
+            LINE.with_alpha(drawn_at(
+                MAJOR * ruled.strength * faded(foot, ruled.reach),
+                bright.0,
+            )),
+        );
 
         // Where it stands, asked of the thing itself rather than measured out
         // from the camera. A cell is an `i64` count and a transform is the
@@ -1425,9 +1520,8 @@ fn drop_lines(
 
         // Only where it goes on screen is measured from the eye, where a
         // float's worth of slack is a fraction of a pixel.
-        let seen = (from - eye.translation()).as_dvec3();
         dropped.0.push(Drop {
-            foot: DVec3::new(seen.x, ruled.from_eye.y, seen.z),
+            foot,
             middle: DVec3::new(seen.x, (seen.y + ruled.from_eye.y) / 2., seen.z),
             at: place,
         });
@@ -1442,6 +1536,7 @@ fn drop_lines(
 fn numbers(
     mut contexts: EguiContexts,
     showing: Res<ShowGrid>,
+    bright: Res<Bright>,
     middle: Res<ShowMiddle>,
     reading: Res<Reading>,
     dropped: Res<Dropped>,
@@ -1462,12 +1557,20 @@ fn numbers(
     // Egui is handed colours rather than asked for them, so this is where the
     // map's own is spoken into its.
     let hue = LINE.to_srgba();
-    let ink = egui::Color32::from_rgba_unmultiplied(
-        (hue.red * 255.) as u8,
-        (hue.green * 255.) as u8,
-        (hue.blue * 255.) as u8,
-        (255. * INK * ruled.strength.clamp(0., 1.)) as u8,
-    );
+    // Faded where it is written rather than all at one strength, so that a
+    // number over the plane goes as the plane under it goes. Which is the
+    // whole of what tells a reader the ruling has run out.
+    // How much of the plane is left where a thing is written is the caller's
+    // to say. What is added here is what the ruling as a whole is worth: how
+    // much of it is drawn at this zoom, and how loudly the bar asks for it.
+    let ink = |loud: f32| {
+        egui::Color32::from_rgba_unmultiplied(
+            (hue.red * 255.) as u8,
+            (hue.green * 255.) as u8,
+            (hue.blue * 255.) as u8,
+            (255. * drawn_at(loud * ruled.strength, bright.0)) as u8,
+        )
+    };
 
     // Where a number may be written without half of it falling off the edge.
     let room = egui::Rect::from_min_max(
@@ -1497,11 +1600,12 @@ fn numbers(
     // the plane can say about it hung underneath. The middle of the view and
     // the foot of every dropped line are the same kind of thing — a place on
     // the plane worth locating — so they are marked the same way.
-    let mark = |at: DVec3, said: String| {
+    let mark = |at: DVec3, said: String, loud: f32| {
         let Some(seen) = screen_offset(orbit, cot_half_fov, viewport, at)
         else {
             return;
         };
+        let ink = ink(loud);
         let seen = egui::pos2(seen.x, seen.y);
         if room.contains(seen) {
             for axis in [DVec3::X, DVec3::Z] {
@@ -1539,6 +1643,7 @@ fn numbers(
         mark(
             ruled.middle_from_eye,
             format!("{} {}", told(ruled.at, ruled.step), ruled.unit.mark()),
+            INK * faded(ruled.middle_from_eye, ruled.reach),
         );
     }
 
@@ -1551,6 +1656,7 @@ fn numbers(
         mark(
             drop.foot,
             format!("{} {}", told(drop.at, ruled.step), ruled.unit.mark()),
+            INK * faded(drop.foot, ruled.reach),
         );
 
         let Some(said) =
@@ -1570,7 +1676,7 @@ fn numbers(
                 egui::Align2::LEFT_CENTER,
                 said,
                 font.clone(),
-                ink,
+                ink(INK * faded(drop.foot, ruled.reach)),
             );
         }
     }
@@ -2153,6 +2259,82 @@ mod tests {
         assert!(off_plane(0.06, 2., Unit::LightYears).is_some());
     }
 
+    /// What is drawn over the plane fades the way the plane fades
+    ///
+    /// The same arithmetic `ruled.wgsl` does per fragment, worked out here for
+    /// one point, so that what is drawn over the plane by hand goes as what is
+    /// drawn into it goes.
+    #[test]
+    fn what_is_written_fades_with_what_it_is_written_over() {
+        let reach = 60.;
+        // Straight down onto the plane, which is where nothing fades: the
+        // distance term is softened away entirely as the view squares up.
+        assert_eq!(faded(DVec3::new(0., -10., 0.), reach), 1.);
+        // And level with it, where the plane is a line across the sky.
+        assert_eq!(faded(DVec3::new(10., 0., 0.), reach), 0.);
+        // Between the two it carries both terms. Half of `FADE_EDGE_ON` from
+        // the plane, ten out of sixty along, comes to five sixths of the
+        // distance left and half of that for being edge on.
+        let square = f64::from(FADE_EDGE_ON) / 2.;
+        let low = DVec3::new((1. - square * square).sqrt(), -square, 0.) * 10.;
+        assert!(
+            (faded(low, reach) - 0.427_08).abs() < 1e-4,
+            "came out {}",
+            faded(low, reach)
+        );
+        // Out at the reach the distance term has run out, and what is left is
+        // what squaring up put back.
+        let out = DVec3::new(0., -reach, 0.);
+        assert_eq!(faded(out, reach), 1.);
+    }
+
+    /// Everything the ruling draws follows the one knob
+    ///
+    /// The lines and the numbers along them are one thing seen at once, and a
+    /// ruler whose lines dimmed while its numbers did not would read as two.
+    #[test]
+    fn the_whole_ruling_dims_together() {
+        let mut app = looking(100.);
+        app.insert_resource(Bright(1.));
+        app.update();
+        let (lines, numbers) = drawn(&mut app);
+
+        app.insert_resource(Bright(0.5));
+        app.update();
+        let (dimmer, fainter) = drawn(&mut app);
+
+        assert!((dimmer - lines / 2.).abs() < 1e-6, "lines came out {dimmer}");
+        assert!(
+            (fainter - numbers / 2.).abs() < 1e-6,
+            "numbers came out {fainter}"
+        );
+    }
+
+    /// And none of it past whole, an alpha having nowhere above one to go
+    #[test]
+    fn the_ruling_does_not_brighten_past_whole() {
+        let mut app = looking(100.);
+
+        app.insert_resource(Bright(1e3));
+        app.update();
+
+        let (lines, numbers) = drawn(&mut app);
+        assert_eq!(lines, 1.);
+        assert_eq!(numbers, 1.);
+    }
+
+    /// How strongly the plane's widest drawn row and its numbers come out
+    fn drawn(app: &mut App) -> (f32, f32) {
+        let mut planes = app.world_mut().query::<&Plane>();
+        let plane = planes.iter(app.world()).next().expect("the plane");
+        let lines = plane
+            .families
+            .iter()
+            .map(|row| row.strength)
+            .fold(0., f32::max);
+        (lines, plane.numbers.strength)
+    }
+
     /// The map opens on a view the ruled plane can be seen in
     ///
     /// Level with the plane the camera looks along it rather than at it, and
@@ -2227,6 +2409,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(ShowGrid(true));
         app.insert_resource(ShowMiddle(true));
+        app.init_resource::<Bright>();
         app.init_resource::<Apparent>();
         app.init_resource::<Reading>();
         app.init_resource::<Descended>();
