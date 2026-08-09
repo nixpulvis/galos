@@ -5,9 +5,9 @@
 //! the lines dropped to it from whatever is off it, and the three numbers about
 //! each of those places.
 //!
-//! Everything here fades with the plane under it. [`faded`] is the arithmetic
-//! `ruled.wgsl` does per fragment, worked out for one point, so a number over
-//! the plane goes as the plane goes.
+//! Everything here fades out towards the plane's horizon with the ruling, so a
+//! number standing over the plane goes as the plane goes. What it does not do
+//! is follow the pitch: see [`faded`].
 use super::{
     BARE, Face, INK, MAJOR, NONE, Numbered, Plane, Unit, off_plane, told,
 };
@@ -22,7 +22,8 @@ use big_space::prelude::*;
 ///
 /// The cosine below which the ruling has gone entirely, which loses the plane
 /// as the camera comes level with it. What [`super::Plane::edge_on`] is set to
-/// unless a caller says otherwise, and what [`faded`] weighs a place against.
+/// unless a caller says otherwise, and the shader's own term. Nothing standing
+/// over the plane takes it; see [`faded`].
 pub const EDGE_ON: f32 = 0.25;
 
 /// How long each arm of a cross marking a place on the plane is, in pixels
@@ -84,29 +85,31 @@ pub const ASIDE: f32 = 6.;
 /// means something different at every pitch. [`stand_clear`] converts.
 pub const CROWDS: Vec2 = Vec2::new(96., 30.);
 
-/// How much of the plane is left at a point on it, as the ruling fades
+/// How much is left at a point on the plane, as the ruling fades out
 ///
-/// The plane's own fade, worked out for one point rather than for every pixel:
-/// how far out it stands, softened towards nothing as the view squares up on
-/// the plane, and how edge on the plane is there. `ruled.wgsl` does the same
-/// arithmetic per fragment, and what is written over the plane by hand has to
-/// carry it too or it goes on standing over a ruling that has gone.
+/// The plane is unbounded, so everything on it fades away towards its horizon.
+/// `reach` is how far that runs. Whatever stands over the plane carries the
+/// same fade or it goes on standing over a ruling that has gone.
 ///
-/// Everything drawn on the plane takes it, lines and numbers alike and by the
-/// same amount: what is left of the plane here is what anything on it is drawn
-/// into. What sets a number apart from a line is the ink it starts in and
-/// nothing else, [`super::INK`] against [`super::MINOR`] or
-/// [`super::MAJOR`], so the numbers hold
-/// on well after the lines have gone, which is the right way round, a ruler
-/// being read off its numbers.
-pub fn faded(from_eye: DVec3, reach: f64, edge_on: f32) -> f32 {
+/// What sets a number apart from a line is the ink it starts in and nothing
+/// else, [`super::INK`] against [`super::MINOR`] or [`super::MAJOR`], so the
+/// numbers hold on well after the lines have gone. Which is the right way
+/// round, a ruler being read off its numbers.
+///
+/// The pitch does not enter. The lines themselves are lost as the plane is
+/// turned edge on, because a ruling at a grazing angle is moire rather than
+/// lines, and [`EDGE_ON`] is where the shader gives up on them. Nothing here
+/// has that trouble: a number is drawn facing the camera and a dropped line
+/// stands across the plane rather than along it. Fading them with the lines
+/// would take the numbers away exactly when the view is too flat to read
+/// anything else off the plane, which is when they are the only thing left
+/// worth reading.
+pub fn faded(from_eye: DVec3, reach: f64) -> f32 {
     let far = from_eye.length();
     if far <= 0. || reach <= 0. {
         return 1.;
     }
-    let square = (from_eye.y.abs() / far) as f32;
-    let near = (1. - far / reach).clamp(0., 1.) as f32;
-    (near + (1. - near) * square) * (square / edge_on).min(1.)
+    (1. - far / reach).clamp(0., 1.) as f32
 }
 
 /// How strongly something the ruling draws comes out, once the caller has had
@@ -383,7 +386,6 @@ fn spoken(
     sideways: Vec3,
 ) -> Vec<Says> {
     let reach = plane.reach;
-    let edge_on = plane.edge_on;
     // What the plane can say about one place on it, hung under the mark there.
     // The middle of the view and the foot of every dropped line are the same
     // kind of thing, a place on the plane worth locating, so they are said the
@@ -400,7 +402,7 @@ fn spoken(
         anchor: TextAnchor::CENTER,
         hue: plane.color,
         said: format!("{} {}", told(at, reading.step), reading.unit.mark),
-        ink: INK * faded(from_eye, reach, edge_on),
+        ink: INK * faded(from_eye, reach),
     };
 
     let mut says = Vec::new();
@@ -435,7 +437,7 @@ fn spoken(
             anchor: TextAnchor::CENTER_RIGHT,
             hue: plane.color,
             said,
-            ink: INK * faded(drop.foot, reach, edge_on),
+            ink: INK * faded(drop.foot, reach),
         });
     }
 
@@ -649,13 +651,13 @@ pub(super) fn marks(
 
         if reading.middle {
             let middle = reading.middle_from_eye(plane.facing);
-            let left = faded(middle, plane.reach, plane.edge_on);
+            let left = faded(middle, plane.reach);
             let (at, arm, color) = scratched(middle, INK * left);
             cross(&mut gizmos, at, plane.facing, arm, color);
         }
 
         for drop in &dropped.0 {
-            let left = faded(drop.foot, plane.reach, plane.edge_on);
+            let left = faded(drop.foot, plane.reach);
             let (foot, arm, color) = scratched(drop.foot, INK * left);
             cross(&mut gizmos, foot, plane.facing, arm, color);
             // The line at the ink the ruling's widest lines are drawn in, so
@@ -858,33 +860,35 @@ mod tests {
         (plane, reading)
     }
 
-    /// What is drawn over the plane fades the way the plane fades
+    /// What is drawn over the plane fades out towards the plane's horizon
     ///
-    /// The same arithmetic `ruled.wgsl` does per fragment, worked out here for
-    /// one point, so that what is drawn over the plane by hand goes as what is
-    /// drawn into it goes.
+    /// Whole where the camera stands, gone at the reach, and evenly between.
     #[test]
-    fn what_is_written_fades_with_what_it_is_written_over() {
+    fn what_is_written_fades_out_towards_the_horizon() {
         let reach = 60.;
-        // Straight down onto the plane, which is where nothing fades: the
-        // distance term is softened away entirely as the view squares up.
-        assert_eq!(faded(DVec3::new(0., -10., 0.), reach, EDGE_ON), 1.);
-        // And level with it, where the plane is a line across the sky.
-        assert_eq!(faded(DVec3::new(10., 0., 0.), reach, EDGE_ON), 0.);
-        // Between the two it carries both terms. Half of `EDGE_ON` from the
-        // plane, ten out of sixty along, comes to five sixths of the distance
-        // left and half of that for being edge on.
-        let square = f64::from(EDGE_ON) / 2.;
-        let low = DVec3::new((1. - square * square).sqrt(), -square, 0.) * 10.;
-        assert!(
-            (faded(low, reach, EDGE_ON) - 0.427_08).abs() < 1e-4,
-            "came out {}",
-            faded(low, reach, EDGE_ON)
-        );
-        // Out at the reach the distance term has run out, and what is left is
-        // what squaring up put back.
-        let out = DVec3::new(0., -reach, 0.);
-        assert_eq!(faded(out, reach, EDGE_ON), 1.);
+        assert_eq!(faded(DVec3::ZERO, reach), 1.);
+        assert_eq!(faded(DVec3::new(0., -reach, 0.), reach), 0.);
+        assert_eq!(faded(DVec3::new(0., -reach / 2., 0.), reach), 0.5);
+        // And nothing is left past it.
+        assert_eq!(faded(DVec3::new(0., -reach * 2., 0.), reach), 0.);
+    }
+
+    /// And not by how the plane is pitched
+    ///
+    /// The lines go as the plane is turned edge on, a ruling at a grazing
+    /// angle being moire rather than lines. Nothing standing over it has that
+    /// trouble, and fading it with them would take the numbers away exactly
+    /// when the view is too flat to read anything else off the plane.
+    #[test]
+    fn what_is_written_does_not_fade_by_pitch() {
+        let reach = 60.;
+        let far = 10.;
+        // Straight down onto the plane, and along it as near as makes no
+        // difference, at the one distance.
+        let square = faded(DVec3::new(0., -far, 0.), reach);
+        let grazing = faded(DVec3::new(far, 0., 0.), reach);
+        assert_eq!(square, grazing);
+        assert!(square > 0., "nothing was left to tell apart");
     }
 
     /// A number standing over the plane is the ink the plane paints its own in
@@ -902,11 +906,7 @@ mod tests {
         let middle = says.first().expect("the middle is said");
 
         let stood = drawn_at(middle.ink * reading.strength, reading.bright);
-        let left = faded(
-            reading.middle_from_eye(plane.facing),
-            plane.reach,
-            plane.edge_on,
-        );
+        let left = faded(reading.middle_from_eye(plane.facing), plane.reach);
         assert!(left > 0. && left < 1., "nothing to tell apart at {left}");
         assert!(
             (stood - painted * left).abs() < 1e-6,
