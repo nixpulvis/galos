@@ -140,13 +140,13 @@ pub struct ShowMiddle(pub bool);
 pub struct Bright(pub f32);
 
 impl Default for Bright {
-    /// Short of the brightest it goes
+    /// Half of the brightest it goes
     ///
     /// The ruling crosses the whole map and is meant to be glanced at rather
-    /// than looked at, so it opens quieter than its own ceiling and leaves the
+    /// than looked at, so it opens well short of its own ceiling and leaves the
     /// top of the range for a sky it has to be read off.
     fn default() -> Self {
-        Bright(0.7)
+        Bright(0.5)
     }
 }
 
