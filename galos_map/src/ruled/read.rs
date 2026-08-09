@@ -9,7 +9,7 @@
 //! number standing over the plane goes as the plane goes. What it does not do
 //! is follow the pitch: see [`faded`].
 use super::{
-    BARE, Face, INK, MAJOR, NONE, Numbered, Plane, Unit, off_plane, told,
+    Face, INK, MAJOR, Plane, Unit, off_plane, told,
 };
 use bevy::ecs::system::SystemParam;
 use bevy::math::{DMat3, DVec3, Vec2};
@@ -71,20 +71,18 @@ pub const LIFT: f32 = 24.;
 /// be worked out rather than read.
 pub const ASIDE: f32 = 6.;
 
-/// How far a row of numbers reaches around the point it is about, in pixels
+/// How near one row of numbers may come to another before it gives way, in
+/// pixels
 ///
-/// About the row the map writes there: three numbers each with its own power, a
-/// unit and two commas comes to some forty characters of a [`READS`] tall
-/// monospaced face, centred on the point, so it runs about ninety five either
-/// side. Across it the [`LIFT`] that hangs it off the plane and half its own
-/// height.
+/// About the rows themselves: three numbers each with its own power, a unit and
+/// two commas comes to some forty characters of a [`READS`] tall monospaced
+/// face, centred on the point, so it runs about ninety five either side and
+/// half a line above and below. Two rows nearer than that are written through
+/// each other and neither can be read.
 ///
-/// In pixels rather than in the plane's own units because the row holds one
-/// size on screen and the plane does not. A unit of plane covers most of a
-/// digit's width on screen with the camera overhead and a fraction of one with
-/// the camera down near the plane, so a reach fixed in units is a reach that
-/// means something different at every pitch. [`stand_clear`] converts.
-pub const CROWDS: Vec2 = Vec2::new(96., 30.);
+/// In pixels because a row holds one size on screen whatever the plane under it
+/// is doing.
+const CROWDS: Vec2 = Vec2::new(96., 10.);
 
 /// How much is left at a point on the plane, as the ruling fades out
 ///
@@ -364,6 +362,12 @@ struct Says {
     hung: Vec3,
     /// Which side of the place it stands on
     anchor: TextAnchor,
+    /// Whether it stands aside for the middle of the view
+    ///
+    /// The middle is said wherever the camera looks and is the one row always
+    /// there, so everything else gives way to it rather than the other way
+    /// about.
+    gives_way: bool,
     /// And what it is drawn in, being the plane's own
     ///
     /// A number over a ruling and a line of that ruling are one piece of
@@ -393,7 +397,7 @@ fn spoken(
     // The middle of the view and the foot of every dropped line are the same
     // kind of thing, a place on the plane worth locating, so they are said the
     // same way.
-    let placed = |from_eye: DVec3, at: DVec3| Says {
+    let placed = |from_eye: DVec3, at: DVec3, gives_way: bool| Says {
         from_eye,
         // Along the one direction neither ruler runs in, and under the plane
         // rather than over it, which is the opposite side from the one a pair
@@ -403,6 +407,7 @@ fn spoken(
         // with no room for a third number in it anyway.
         hung: plane.facing * Vec3::NEG_Y * LIFT,
         anchor: TextAnchor::CENTER,
+        gives_way,
         hue: plane.color,
         said: format!("{} {}", told(at, reading.step), reading.unit.mark),
         ink: INK * faded(from_eye, reach),
@@ -415,7 +420,7 @@ fn spoken(
     // slides under it, and said to the same step the plane is numbered in so
     // that it reads against those numbers.
     if reading.middle {
-        says.push(placed(reading.middle_from_eye(plane.facing), reading.at));
+        says.push(placed(reading.middle_from_eye(plane.facing), reading.at, false));
     }
 
     // And every line dropped to the plane, which is the same three numbers
@@ -424,7 +429,7 @@ fn spoken(
     // them; the line itself carries only how far off the plane it went, which
     // is the one thing about it neither ruler nor mark can show.
     for drop in &dropped.0 {
-        says.push(placed(drop.foot, drop.at));
+        says.push(placed(drop.foot, drop.at, true));
 
         // A slot whether or not there is anything to put in it. A thing
         // sitting on the plane says nothing about how far off it is, and a
@@ -440,6 +445,7 @@ fn spoken(
             // through it is a number to be worked out rather than read.
             hung: sideways * ASIDE,
             anchor: TextAnchor::CENTER_RIGHT,
+            gives_way: true,
             hue: plane.color,
             said: said.unwrap_or_default(),
             ink: if silent { 0. } else { INK * faded(drop.foot, reach) },
@@ -529,6 +535,17 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
             }
         }
 
+        // Where the middle of the view is written, which everything else
+        // stands clear of. Only the row that is drawn: a middle switched off or
+        // faded out asks nothing of anybody.
+        let middle = seen.and_then(|(_, facing, viewport, cot_half_fov)| {
+            let (one, _) = says
+                .iter()
+                .zip(&inks)
+                .find(|(one, ink)| !one.gives_way && **ink > 0.)?;
+            where_drawn(one, facing, viewport, cot_half_fov)
+        });
+
         // As many readouts as there is anything to say, and no more. One made
         // now is not in the world until the commands are flushed, so it says
         // nothing until the next frame; what is located changes far more slowly
@@ -564,6 +581,20 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
             // written every frame for something nobody can see.
             let depth = into_view(facing, says.from_eye);
             if depth <= 0. {
+                visible.set_if_neq(Visibility::Hidden);
+                continue;
+            }
+            // Out of the middle's way. Two rows written through each other
+            // are two rows neither of which can be read, and of the pair it is
+            // the middle that is worth keeping: it is said wherever the camera
+            // looks, where the other is about something the camera can simply
+            // be pointed at instead.
+            if says.gives_way
+                && let Some(middle) = middle
+                && let Some(here) =
+                    where_drawn(says, facing, viewport, cot_half_fov)
+                && crowded(here, middle)
+            {
                 visible.set_if_neq(Visibility::Hidden);
                 continue;
             }
@@ -731,96 +762,35 @@ fn cross(gizmos: &mut Gizmos, at: Vec3, facing: Quat, arm: f32, color: Color) {
     }
 }
 
-/// Give up the crossing the middle of the view is written over
+/// Whether a row stands too near the middle's to be read beside it
 ///
-/// The three numbers said at the middle are the same two the crossing beneath
-/// them would be, and better: they carry the third, and they are not rounded
-/// to a crossing. So where the two would land on each other the crossing gives
-/// way.
-///
-/// The one it is written over, and only while it is. Each crossing owns a block
-/// of the plane and the blocks tile it, so the middle stands in one of them and
-/// that one gives way. Away from a row of lettering it stands in none and the
-/// plane is left whole.
-///
-/// Nothing else is asked about. A plane that gave up a crossing for everything
-/// a caller draws over the same sky would be a plane pocked with holes wherever
-/// that sky is busy, which is where its numbers are most wanted, and what a
-/// name needs is to stand out rather than for everything else to move.
-pub(super) fn stand_clear(
-    mut planes: Query<(&mut Plane, &Numbered, &Reading)>,
-    eyes: Query<(&Transform, &Camera), With<FloatingOrigin>>,
-) {
-    let seen = eyes.single().ok().and_then(|(at, camera)| {
-        let viewport = camera.logical_viewport_size()?;
-        Some((at.rotation, viewport, camera.clip_from_view().y_axis.y))
-    });
-
-    for (mut plane, spoken, reading) in &mut planes {
-        let mut bare = [NONE; BARE];
-
-        if reading.middle
-            && let Some(seen) = seen
-            && let Some(room) = reaches(plane.as_ref(), reading, seen)
-            && let Some(crossing) = plane.crossing_near(
-                spoken,
-                reading.middle_from_eye(plane.facing).as_vec3(),
-                room,
-            )
-        {
-            bare[0] = crossing;
-        }
-
-        if plane.numbers.bare != bare {
-            plane.numbers.bare = bare;
-        }
-    }
+/// Both in logical pixels from the same corner. [`CROWDS`] is how far a row
+/// runs either way about the place it is written.
+fn crowded(here: Vec2, middle: Vec2) -> bool {
+    (here - middle).abs().cmplt(CROWDS).all()
 }
 
-/// [`CROWDS`] in the units `plane`'s lettering is laid out in
+/// Where a row is drawn on screen, in logical pixels
 ///
-/// Measured at the middle of the view, by stepping a whole spacing along each
-/// of the plane's own axes and seeing how far that carries on screen. Which
-/// takes the pitch with it: the axis running away towards the horizon is
-/// squashed to nothing as the camera comes down level with the plane, and a
-/// row of pixels there covers a great many units of plane.
+/// The place it is about, carried off the plane by however far it is hung, so
+/// this is where the lettering lands rather than where the mark under it does.
 ///
-/// Nothing while the plane has no lettering to measure, or while the middle is
-/// somewhere neither axis can be projected from.
-fn reaches(
-    plane: &Plane,
-    reading: &Reading,
-    (facing, viewport, cot_half_fov): (Quat, Vec2, f32),
+/// Nothing for a row about a place behind the camera, which has nowhere on
+/// screen to be.
+fn where_drawn(
+    says: &Says,
+    facing: Quat,
+    viewport: Vec2,
+    cot_half_fov: f32,
 ) -> Option<Vec2> {
-    let middle = reading.middle_from_eye(plane.facing);
-    let at = on_screen(facing, cot_half_fov, viewport, middle)?;
-
-    // One numbered spacing, in whatever the world is drawn in, which is the
-    // length the axes are stepped by. Long enough that the two ends do not
-    // land on the same float out at the rim, and short enough to stay inside
-    // the view.
-    let spacing = plane.numbers.apart as f64 * plane.cell;
-    let unit = plane.numbers.tall / 5.;
-    if !spacing.is_finite() || spacing <= 0. || unit <= 0. {
+    let depth = into_view(facing, says.from_eye);
+    if depth <= 0. {
         return None;
     }
-    let across = |axis: Vec2| -> Option<f32> {
-        let along = plane.facing * Vec3::new(axis.x, 0., axis.y);
-        let to = on_screen(
-            facing,
-            cot_half_fov,
-            viewport,
-            middle + along.as_dvec3() * spacing,
-        )?;
-        // Pixels to a spacing, and a spacing is `apart / unit` of them.
-        let pixels = (to - at).length() * unit / plane.numbers.apart;
-        (pixels > 0.).then_some(pixels)
-    };
-
-    Some(Vec2::new(
-        CROWDS.x / across(plane.numbers.upright)?,
-        CROWDS.y / across(plane.numbers.downward)?,
-    ))
+    let per_pixel =
+        world_per_pixel(cot_half_fov, viewport.y, depth.max(MIN_DEPTH));
+    let hung = (says.hung * per_pixel).as_dvec3();
+    on_screen(facing, cot_half_fov, viewport, says.from_eye + hung)
 }
 
 /// How far in front of a camera facing `facing` something `offset` from its eye
@@ -883,7 +853,10 @@ mod tests {
     /// ink from another by.
     fn looking(back: f64) -> (Plane, Reading) {
         let square = 0.5_f64;
-        let along = DVec3::new((1. - square * square).sqrt(), -square, 0.);
+        // Down the view and below it, so the middle falls in front of a camera
+        // looking along its own negative `z` and the plane is neither square on
+        // nor edge on.
+        let along = DVec3::new(0., -square, -(1. - square * square).sqrt());
         let at = DVec3::new(3., 1., -2.);
         // Painted at the ink a caller writing `drawn_at(INK * strength, bright)`
         // arrives at, with both of those whole.
@@ -1021,7 +994,6 @@ mod tests {
         IntoSystem::into_system(locate).initialize(&mut world);
         IntoSystem::into_system(readouts(face)).initialize(&mut world);
         IntoSystem::into_system(marks).initialize(&mut world);
-        IntoSystem::into_system(stand_clear).initialize(&mut world);
     }
 
     /// A number over a plane is drawn in the plane's own color
@@ -1150,5 +1122,48 @@ mod tests {
         // material goes with the entity, one handle apiece.
         let mut standing = app.world_mut().query::<&Readout>();
         assert_eq!(standing.iter(app.world()).count(), 1);
+    }
+
+    /// A place located under the middle of the view gives way to it
+    ///
+    /// Two rows written through each other are two rows neither of which can
+    /// be read. Of the pair the middle is the one worth keeping: it is said
+    /// wherever the camera looks, where the other is about something the
+    /// camera can be pointed at instead.
+    ///
+    /// Asked of the arithmetic rather than of an app. Where a row lands is a
+    /// place on screen, and a camera with no render target behind it cannot say
+    /// how large its screen is.
+    #[test]
+    fn a_row_over_the_middle_stands_aside() {
+        let (plane, reading) = looking(100.);
+        let viewport = Vec2::new(800., 600.);
+
+        let rows = |at: DVec3| {
+            let under = DVec3::new(at.x, reading.at.y, at.z);
+            let top = reading.seen_from_eye(plane.facing, at);
+            let foot = reading.seen_from_eye(plane.facing, under);
+            let dropped =
+                Dropped(vec![Drop { top, foot, middle: (top + foot) / 2., at }]);
+            spoken(&plane, &reading, &dropped, Vec3::X)
+        };
+        let place = |says: &Says| {
+            where_drawn(says, Quat::IDENTITY, viewport, 1.)
+                .expect("the middle of the view is in front of the camera")
+        };
+
+        // The middle is the one that never stands aside, and the mark at a
+        // dropped line's foot is one that does.
+        let says = rows(reading.at);
+        assert!(!says[0].gives_way);
+        assert!(says[1].gives_way);
+
+        // Standing exactly where the camera is looking, the two are written in
+        // the same place.
+        assert!(crowded(place(&says[1]), place(&says[0])));
+
+        // And well clear of it, where both can be read.
+        let says = rows(reading.at + DVec3::X * reading.step * 40.);
+        assert!(!crowded(place(&says[1]), place(&says[0])));
     }
 }

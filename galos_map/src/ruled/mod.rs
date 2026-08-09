@@ -794,7 +794,6 @@ impl Plugin for RuledPlugin {
                 .chain()
                 .after(Ruling),
         );
-        app.add_systems(PostUpdate, read::stand_clear.after(Placing));
         // After the transforms, which is where `big_space` settles where each
         // grid thinks the floating origin is. Read any earlier and a plane is
         // ruled from where the camera stood last frame.
