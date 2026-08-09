@@ -13,7 +13,7 @@
 //! runs between is what is picked out on the map.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::grid::{Said, ShowGrid, ShowMiddle};
+use crate::grid::{Said, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
@@ -485,6 +485,7 @@ pub struct Knobs<'w> {
     show_grid: ResMut<'w, ShowGrid>,
     said: ResMut<'w, Said>,
     show_middle: ResMut<'w, ShowMiddle>,
+    show_picked: ResMut<'w, ShowPicked>,
     despawner: MessageWriter<'w, Despawn>,
 }
 
@@ -620,7 +621,11 @@ pub fn chrome(
             // system's distances in light years or a neighbourhood's in light
             // seconds.
             ui.indent("said", |ui| {
-                ui.checkbox(&mut knobs.show_middle.0, "Show Position");
+                ui.checkbox(&mut knobs.show_middle.0, "Show Center Position");
+                ui.checkbox(
+                    &mut knobs.show_picked.0,
+                    "Show Selected Positions",
+                );
                 ui.add_space(FIELD_GAP);
                 ui.label("Units");
                 ui.radio_value(&mut *knobs.said, Said::Whichever, "Automatic");

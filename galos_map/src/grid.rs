@@ -61,16 +61,20 @@ use bevy::render::render_resource::{
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use bevy_egui::{
+    EguiContexts, EguiPostUpdateSet, EguiPrimaryContextPass, egui,
+};
 use big_space::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(RuledPlugin);
     app.insert_resource(ShowGrid(true));
     app.insert_resource(ShowMiddle(true));
+    app.insert_resource(ShowPicked(true));
     app.init_resource::<Said>();
     app.init_resource::<Reading>();
     app.init_resource::<Descended>();
+    app.init_resource::<Dropped>();
     // After the map itself, which is what the galaxy's planes hang from. The
     // resource naming it is inserted through a command, so it is not there to
     // be read until the schedule that queued it has ended.
@@ -91,7 +95,14 @@ pub fn plugin(app: &mut App) {
         PostUpdate,
         drop_lines
             .after(TransformSystems::Propagate)
-            .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
+            .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible)
+            // And before egui's pass, which is run from a system in this same
+            // schedule with no ordering of its own against the transforms.
+            // [`numbers`] writes what this leaves behind, so left unordered it
+            // writes it a frame late, and a number a frame behind the line it
+            // is about slides around while the camera moves and only lands
+            // once it stops.
+            .before(EguiPostUpdateSet::EndPass),
     );
     // The numbers are egui's, and egui draws in a pass of its own after
     // `Update`, so what they are drawn from is this frame's answer rather than
@@ -106,13 +117,22 @@ pub fn plugin(app: &mut App) {
 #[derive(Resource)]
 pub struct ShowGrid(pub bool);
 
-/// Whether the place the camera is looking at is said at the middle of the view
+/// Whether the place the camera is looking at is marked at the middle of the
+/// view
 ///
-/// The plane's own numbers say where its lines are; this says where the view
-/// is, which is the only one of the three that a line cannot carry. Turned off
-/// for a plane with nothing written at its middle.
+/// The plane's own numbers say where its lines are; this says where the view is,
+/// which is the one of the three a line cannot carry.
 #[derive(Resource)]
 pub struct ShowMiddle(pub bool);
+
+/// And whether the places of the things picked out are
+///
+/// Each marked where its line meets the plane, with a line standing off it
+/// saying how far off it is. A separate switch from the middle's: the middle is
+/// one mark wherever the camera goes, and this is one for everything selected,
+/// which is as busy as the selection is.
+#[derive(Resource)]
+pub struct ShowPicked(pub bool);
 
 /// How many cells the finer of the two planes lays across the view
 ///
@@ -222,59 +242,32 @@ const CROSS: f32 = 11.;
 /// than into a number.
 const LIFT: f32 = 16.;
 
-/// How finely the middle's numbers are said, as a share of the plane's step
+/// And how far to the side of a dropped line its own number stands, in pixels
 ///
-/// A hundredth of it. The plane's own numbers are written to the places their
-/// own step carries, which is what a ruler wants: they are read against each
-/// other and a column of noughts says nothing. The middle stands between them
-/// and is read as it moves, so it is said a hundred times as finely and turns
-/// over in its last figure as the view goes.
-///
-/// A share of the step rather than a count of figures. A count does not scale:
-/// three figures is a hundredth of a light year at Sol and a hundred light
-/// years out at the rim, and a number that turns over only once the view has
-/// crossed a hundred light years is a number standing still. The step follows
-/// the zoom, which is what the reading is about.
-///
-/// A hundredth and no finer. A step spans about a fifth of the view, so this is
-/// a couple of pixels of movement on a normal window, and figures past it turn
-/// over faster than the screen can show them going.
-const RESOLVES: f64 = 100.;
-
-/// And how many figures it is said in, at the most
-///
-/// Five, which is a number the eye takes in whole. What it takes to say where
-/// the view is, is how far the middle stands from the space's origin over how
-/// finely it is being read, and out among the systems at a zoom fine enough for
-/// light seconds that ratio runs to seven figures or more. So this stands over
-/// [`RESOLVES`], and where the two disagree the reading stops resolving: the
-/// last figure then turns over on a longer drag rather than on a shorter one.
-///
-/// Which is the trade, and it is the only one there is. No way of writing a
-/// number makes it take fewer figures to say a fine position far from where it
-/// is measured from. What can be done is to measure from somewhere nearer.
-const FIGURES: usize = 5;
+/// Beside the line rather than over it, for the same reason a pair on the plane
+/// stands beside its crossing: a number with a rule through it is a number to
+/// be worked out rather than read.
+const ASIDE: f32 = 6.;
 
 /// How far from the edge of the view a number is dropped
 ///
 /// A number half off the screen reads as a different number.
 const MARGIN: f32 = 30.;
 
-/// How far the middle's numbers reach around the point they are about
+/// How far a row of numbers reaches around the point it is about, in pixels
 ///
-/// How far the middle's row reaches around the point it is about, in pixels
-///
-/// About the row the map writes there: three numbers, a scale, a unit and two
-/// commas comes to about thirty characters of an eight pixel monospaced face,
-/// centred on the point, so it runs some seventy five either side. Across it
-/// the [`LIFT`] that hangs it off the plane and half its own height.
+/// About the row the map writes there: three numbers each with its own power, a
+/// unit and two commas comes to some forty characters of an eight pixel
+/// monospaced face, centred on the point, so it runs about ninety five either
+/// side. Across it the [`LIFT`] that hangs it off the plane and half its own
+/// height.
 ///
 /// In pixels rather than in the plane's own units because the row is drawn in
 /// pixels and the plane is not. A unit of plane covers most of a digit's width
 /// on screen with the camera overhead and a fraction of one with the camera
 /// down near the plane, so a reach fixed in units is a reach that means
 /// something different at every pitch. [`stand_clear`] converts.
-const CROWDS: Vec2 = Vec2::new(76., 22.);
+const CROWDS: Vec2 = Vec2::new(96., 22.);
 
 /// One of the two ruled planes
 ///
@@ -638,54 +631,77 @@ fn ticked(value: f64, step: f64) -> String {
     }
 }
 
-/// How the three numbers at the middle of the view are said
+/// How the three numbers about one place are said
 ///
-/// In one power, taken from the largest of them and said once after all three.
-/// The three then share a scale, so a position reads as one place rather than
-/// as three magnitudes each rounded to its own convenience, and the scale takes
-/// three characters of the row rather than nine. What is left is a plain count
-/// of figures, so [`FIGURES`] of them is a thing that can be asked for.
+/// Each in its own power, written onto the number itself. Shared, the smaller
+/// of them are written at the largest's scale and come out as a row of noughts
+/// — a view sixty light years out reads `0.0690, 2.0910, -2.2090 e9`, where the
+/// first says nothing and says it at a scale that is not its own.
 ///
-/// That last is what makes the length something that can be chosen at all. How
-/// many figures it takes to say where the view is, is how far the middle stands
-/// from the space's origin over how finely it is being read — out at a system
-/// sixty light years away, ruled in light seconds, that is seven figures before
-/// anything is written down. So the count is capped and the reading stops
-/// resolving rather than running on.
-///
-/// The same [`power`] the plane's own numbers take, so a label and the reading
-/// at the middle are two readings of the same place written the same way. Left
-/// off entirely for numbers a person reads without help: `2.4e0` is a worse way
-/// of writing `2.4`.
+/// To the same places as the plane's own numbers, by the same [`ticked`] and
+/// the same step. A position and the numbers on the ruler beside it are read
+/// against each other, so they are written the same way; and a power carries
+/// the magnitude, which is what a ruler used a column of figures for.
 fn told(at: DVec3, step: f64) -> String {
-    let largest = at.abs().max_element();
-    let raw = if largest > 0. { largest.log10().floor() as i32 } else { 0 };
-    let shown = power(largest.max(step));
-    let under = 10f64.powi(shown);
+    format!(
+        "{}, {}, {}",
+        ticked(at.x, step),
+        ticked(at.y, step),
+        ticked(at.z, step)
+    )
+}
 
-    // As many places as [`RESOLVES`] of the plane's step carries, and no more
-    // figures than can be read at a glance.
-    let wanted = -(step / RESOLVES / under).log10().floor();
-    let places = if wanted.is_finite() {
-        wanted.clamp(0., 12.) as usize
-    } else {
-        0
-    };
-    // What is left of the count once the figures before the point have had
-    // theirs. In a power of ten that is the one figure the mantissa carries.
-    let over = (FIGURES as i32 - 1 - (raw - shown)).max(0) as usize;
-    let places = places.min(over);
+/// How far off the plane something standing off it is, said out loud
+///
+/// The third number, and the one a ruler lying in the plane cannot carry. Which
+/// way it went is said with a sign rather than left to the line to show: a line
+/// dropped from above the plane and one dropped from below are drawn the same
+/// way round on a screen, and which of the two it is, is half the answer.
+///
+/// Nothing at all for something standing on the plane, or near enough that the
+/// number would read as nought. The line is already as short as it can be
+/// there, and a `+0.0` beside it says less than the line does.
+fn off_plane(high: f64, step: f64, unit: Unit) -> Option<String> {
+    let said = ticked(high, step);
+    if said == ticked(0., step) {
+        return None;
+    }
+    // Marked with its unit, unlike the numbers on the plane. Those are read
+    // against the rulers they are painted on; this one stands wherever the
+    // thing it is about stands, with nothing beside it to say what it counts.
+    //
+    // The offset alone. Where the thing stands is said in full under the mark
+    // at the line's foot, and a number said twice on one screen is a number to
+    // be checked against itself.
+    let sign = if high > 0. { "+" } else { "" };
+    Some(format!("{sign}{said} {}", unit.mark()))
+}
 
-    let say = |value: f64| {
-        let said = format!("{:.places$}", value / under);
-        if said.trim_start_matches('-').trim_matches(['0', '.']).is_empty() {
-            format!("{:.places$}", 0.)
-        } else {
-            said
-        }
-    };
-    let row = format!("{}, {}, {}", say(at.x), say(at.y), say(at.z));
-    if shown == 0 { row } else { format!("{row} e{shown}") }
+/// What the lines dropped to the plane are about
+///
+/// One entry for each thing picked out.
+///
+/// Held rather than worked out twice because the two halves run in different
+/// passes. [`drop_lines`] draws the lines in `PostUpdate`, where a
+/// `GlobalTransform` under a floating origin has settled; [`numbers`] writes
+/// them in egui's own pass, which is run from `PostUpdate` with no ordering
+/// against the transforms at all, so reading one there would be reading it
+/// whenever.
+#[derive(Resource, Default)]
+struct Dropped(Vec<Drop>);
+
+/// One line dropped to the plane, and what it is about
+struct Drop {
+    /// Where its foot stands on the plane, as an offset from the camera's eye,
+    /// in metres
+    ///
+    /// Where the thing is marked and where the two numbers the plane can locate
+    /// it by are written.
+    foot: DVec3,
+    /// And where its middle stands, likewise, which is where the third is
+    middle: DVec3,
+    /// Where the thing stands, in whatever the numbers are being said in
+    at: DVec3,
 }
 
 /// What the numbers along the rulers say
@@ -1272,17 +1288,30 @@ fn reaches(
 /// picked out.
 ///
 /// Gizmos rather than meshes, both ends of every line moving every frame.
+#[allow(clippy::too_many_arguments)]
 fn drop_lines(
     showing: Res<ShowGrid>,
+    picked_out: Res<ShowPicked>,
     reading: Res<Reading>,
     mut gizmos: Gizmos,
+    mut dropped: ResMut<Dropped>,
     cameras: Query<&GlobalTransform, With<Camera>>,
     // Whatever is picked out, which out among the systems is a system and
     // inside one is a body. Both stand off the plane and both are asked the
     // same question by it, so both are answered.
-    picked: Query<&GlobalTransform, Marked>,
+    //
+    // Whether it is drawn as well as picked out. A system the map has hidden,
+    // because a filter excluded it or because the camera has come down into it
+    // and its bodies have taken over, is not there to be located; a line
+    // dropped from where it would have stood is a line about nothing.
+    picked: Query<
+        (Entity, &GlobalTransform, &CellCoord, &Transform, &ViewVisibility),
+        Marked,
+    >,
+    grids: Grids,
 ) {
-    if !showing.0 {
+    dropped.0.clear();
+    if !showing.0 || !picked_out.0 {
         return;
     }
     let Some(ruled) = &reading.0 else { return };
@@ -1296,16 +1325,43 @@ fn drop_lines(
     let altitude = eye.translation().y + ruled.from_eye.y as f32;
 
     let color = LINE.with_alpha(INK * ruled.strength);
-    let mut drop = |from: Vec3| {
-        gizmos.line(from, Vec3::new(from.x, altitude, from.z), color);
-    };
 
     // Only what is picked out. The plane runs through what the camera is
     // looking at, so a line dropped from there would have no length; how far
     // off it something else stands is the question a plane cannot answer by
     // being ruled.
-    for at in &picked {
-        drop(at.translation());
+    for (entity, at, cell, transform, shown) in &picked {
+        if !shown.get() {
+            continue;
+        }
+        let Some(grid) = grids.parent_grid(entity) else { continue };
+        let from = at.translation();
+        gizmos.line(from, Vec3::new(from.x, altitude, from.z), color);
+
+        // Where it stands, asked of the grid that places it rather than
+        // measured out from the camera. A cell is an `i64` count and a
+        // transform is the offset inside it, so this is the position itself
+        // and has nothing of the camera in it.
+        //
+        // Measured out from the camera it would have: the camera is at one
+        // float's remove and the thing at another, and neither remove cancels
+        // the other. It comes to a ten thousandth of the last place written,
+        // which is nothing at all until the number sits on a rounding
+        // boundary — and a coordinate stored in thirty seconds of a light year
+        // sits on one about a third of the time. Then it turns over and back
+        // as the camera swings.
+        let place = (grid.cell_to_float(cell)
+            + transform.translation.as_dvec3())
+            / ruled.unit.metres();
+
+        // Only where it goes on screen is measured from the eye, where a
+        // float's worth of slack is a fraction of a pixel.
+        let seen = (from - eye.translation()).as_dvec3();
+        dropped.0.push(Drop {
+            foot: DVec3::new(seen.x, ruled.from_eye.y, seen.z),
+            middle: DVec3::new(seen.x, (seen.y + ruled.from_eye.y) / 2., seen.z),
+            at: place,
+        });
     }
 }
 
@@ -1319,6 +1375,7 @@ fn numbers(
     showing: Res<ShowGrid>,
     middle: Res<ShowMiddle>,
     reading: Res<Reading>,
+    dropped: Res<Dropped>,
     cameras: Query<(&OrbitCamera, &Camera)>,
 ) -> Result {
     if !showing.0 {
@@ -1367,7 +1424,42 @@ fn numbers(
         };
         (along - at).normalize_or_zero()
     };
-    let off_plane = toward(ruled.middle_from_eye, DVec3::Y);
+    // A point on the plane, marked where its own two axes cross and with what
+    // the plane can say about it hung underneath. The middle of the view and
+    // the foot of every dropped line are the same kind of thing — a place on
+    // the plane worth locating — so they are marked the same way.
+    let mark = |at: DVec3, said: String| {
+        let Some(seen) = screen_offset(orbit, cot_half_fov, viewport, at)
+        else {
+            return;
+        };
+        let seen = egui::pos2(seen.x, seen.y);
+        if room.contains(seen) {
+            for axis in [DVec3::X, DVec3::Z] {
+                let arm = toward(at, axis) * CROSS;
+                let arm = egui::vec2(arm.x, arm.y);
+                painter.line_segment(
+                    [seen - arm, seen + arm],
+                    egui::Stroke::new(1_f32, ink),
+                );
+            }
+        }
+
+        // Hung off the plane along the one direction on screen that neither
+        // ruler runs in, and under it rather than over it, which is the
+        // opposite side from the one a pair on the plane is written on.
+        let hung = -toward(at, DVec3::Y) * LIFT;
+        let place = egui::pos2(seen.x + hung.x, seen.y + hung.y);
+        if room.contains(place) {
+            painter.text(
+                place,
+                egui::Align2::CENTER_CENTER,
+                said,
+                font.clone(),
+                ink,
+            );
+        }
+    };
 
     // The place the camera is looking at, all three of it, held at the middle
     // of the view. Not snapped to anything, so it sits still while the plane
@@ -1377,30 +1469,39 @@ fn numbers(
     // Drawn at full strength rather than faded like the plane's own: the
     // others fade with how far off they are because that is what they are
     // about, and this one is about where the view is, which is never far off.
-    if middle.0
-        && let Some(at) =
-            screen_offset(orbit, cot_half_fov, viewport, ruled.middle_from_eye)
-    {
-        let at = egui::pos2(at.x, at.y);
-        if room.contains(at) {
-            for axis in [DVec3::X, DVec3::Z] {
-                let arm = toward(ruled.middle_from_eye, axis) * CROSS;
-                let arm = egui::vec2(arm.x, arm.y);
-                painter.line_segment(
-                    [at - arm, at + arm],
-                    egui::Stroke::new(1_f32, ink),
-                );
-            }
-        }
+    if middle.0 {
+        mark(
+            ruled.middle_from_eye,
+            format!("{} {}", told(ruled.at, ruled.step), ruled.unit.mark()),
+        );
+    }
 
-        let hung = -off_plane * LIFT;
-        let said =
-            format!("{} {}", told(ruled.at, ruled.step), ruled.unit.mark());
-        let place = egui::pos2(at.x + hung.x, at.y + hung.y);
+    // And every line dropped to the plane, which is the same three numbers
+    // about something that is not at the middle. They are said in full under
+    // the mark at the line's foot, where the two rulers can be read against
+    // them; the line itself carries only how far off the plane it went, which
+    // is the one thing about it neither ruler nor mark can show.
+    for drop in &dropped.0 {
+        mark(
+            drop.foot,
+            format!("{} {}", told(drop.at, ruled.step), ruled.unit.mark()),
+        );
+
+        let Some(said) =
+            off_plane(drop.at.y - ruled.at.y, ruled.step, ruled.unit)
+        else {
+            continue;
+        };
+        let Some(place) =
+            screen_offset(orbit, cot_half_fov, viewport, drop.middle)
+        else {
+            continue;
+        };
+        let place = egui::pos2(place.x + ASIDE, place.y);
         if room.contains(place) {
             painter.text(
                 place,
-                egui::Align2::CENTER_CENTER,
+                egui::Align2::LEFT_CENTER,
                 said,
                 font.clone(),
                 ink,
@@ -1801,39 +1902,50 @@ mod tests {
     fn the_middle_moves_when_the_view_does() {
         for across in steps() {
             let step = numbering(across);
-            // A twentieth of the way from one of the plane's numbers to the
-            // next, which is about ten pixels of dragging. Measured against
-            // the step rather than against [`RESOLVES`], which is the thing
-            // under test.
-            let nudge = step / 20.;
             for at in near(across) {
                 assert_ne!(
                     told(at, step),
-                    told(at + DVec3::X * nudge, step),
-                    "{across} across reads the same at {at} and {nudge} along"
+                    told(at + DVec3::X * step, step),
+                    "{across} across reads the same at {at} and one step along"
                 );
             }
         }
     }
 
-    /// Until it stands too far from the space's origin to be said that finely
+    /// And no finer than the numbers on the ruler beside it
     ///
-    /// The one trade in the reading, named here so that it is a thing that was
-    /// chosen. How many figures it takes to say where the view is, is how far
-    /// the middle stands from the origin over how finely it is read, and out
-    /// among the systems at a zoom fine enough for light seconds that runs past
-    /// [`FIGURES`]. The reading stays short and gives up the last figure, which
-    /// then turns over on a longer drag.
+    /// A position and a label are read against each other. One written to two
+    /// more places than the other reads as a different kind of number, and the
+    /// places past the label's own say nothing a power has not already said.
+    ///
+    /// Held on the last place written rather than on what a nudge does to it: a
+    /// number sitting on a rounding boundary turns over for a hair whatever it
+    /// is written to.
     #[test]
-    fn a_middle_far_from_the_origin_stops_resolving() {
-        // Sixty light years out, ruled in light seconds, which is where the
-        // map puts a camera that has flown out to a system and zoomed in.
-        let across = 5e5;
-        let step = numbering(across);
-        let at = DVec3::new(2.0996e9, 0.9211e9, 1.0947e9);
-
-        assert_eq!(told(at, step), "2.0996, 0.9211, 1.0947 e9");
-        assert_eq!(told(at, step), told(at + DVec3::X * step / 20., step));
+    fn the_middle_is_said_no_finer_than_the_ruler() {
+        for across in steps() {
+            let step = numbering(across);
+            for at in wheres(across) {
+                for said in told(at, step).split(", ") {
+                    let (figures, power) =
+                        said.split_once('e').unwrap_or((said, "0"));
+                    let places = figures
+                        .split_once('.')
+                        .map_or(0, |(_, places)| places.len());
+                    let last = 10f64
+                        .powi(power.parse::<i32>().unwrap() - places as i32);
+                    // A step of one is written to its own last place and a
+                    // step of five to a fifth of it, the places being whole.
+                    // Or to no places at all, which is where [`ticked`] stops
+                    // however coarse the step is.
+                    assert!(
+                        places == 0 || last >= step / 10.,
+                        "{across} across says {said} at {at}, to {last} \
+                         against a step of {step}"
+                    );
+                }
+            }
+        }
     }
 
     /// And says it in a handful of figures
@@ -1856,33 +1968,20 @@ mod tests {
         }
     }
 
-    /// And says all three in the one scale, written once
+    /// And every number in its own scale, written onto the number itself
     ///
-    /// A position is one place. Left to choose for themselves the three come
-    /// out at different scales wherever one axis is far from the origin and
-    /// another is near it, which is three magnitudes to be worked out rather
-    /// than a place to be read.
+    /// Shared, the smaller of them are written at the largest's scale and come
+    /// out as a row of noughts, which is a number that says nothing and says it
+    /// at a scale that is not its own.
     #[test]
-    fn the_middle_says_one_scale() {
-        for across in steps() {
-            let step = numbering(across);
-            for at in wheres(across) {
-                let said = told(at, step);
-                let (numbers, power) =
-                    said.split_once(" e").unwrap_or((said.as_str(), ""));
-                assert!(
-                    numbers
-                        .chars()
-                        .all(|it| it.is_ascii_digit() || ",.- ".contains(it)),
-                    "{across} across says {said}, scaled inside the numbers"
-                );
-                assert!(
-                    power.is_empty() || power.parse::<i32>().is_ok(),
-                    "{across} across says {said}, whose scale is not a power"
-                );
-                assert_eq!(numbers.split(", ").count(), 3, "{said}");
-            }
-        }
+    fn every_number_carries_its_own_scale() {
+        // Sixty light years out, ruled in light seconds, where one axis stands
+        // decades under the others.
+        let at = DVec3::new(6.9e7, 2.091e9, -2.209e9);
+        assert_eq!(told(at, 5e7), "7e7, 2.09e9, -2.21e9");
+
+        // And no scale at all on numbers a person reads unaided.
+        assert_eq!(told(DVec3::new(2.19, 6.62, -7.), 0.02), "2.19, 6.62, -7.00");
     }
 
     /// Somewhere a few views out from where the map is measured from, for a
@@ -1907,14 +2006,14 @@ mod tests {
         near(across).into_iter().chain(far(across))
     }
 
-    /// The zooms whose step the middle can be said to the whole of
+    /// The zooms whose step a number can be said to the whole of
     ///
-    /// [`ticked`] stops at six places, so a step finer than a millionth of
-    /// whichever thousand it is written in is said as finely as it can be
-    /// rather than as finely as [`RESOLVES`] asks. The ladder does not reach
-    /// there in either unit unless the bar pins it.
+    /// [`ticked`] stops at six places, so a number a million times its own step
+    /// away from the origin is said as finely as it can be rather than as
+    /// finely as the step asks. The ladder does not reach there unless the bar
+    /// pins a unit the space is not measured in.
     fn steps() -> impl Iterator<Item = f64> {
-        zooms().filter(|across| numbering(*across) / RESOLVES >= 1e-6)
+        zooms().filter(|across| numbering(*across) >= 1e-6)
     }
 
     /// A number is written to as many places as its step has
@@ -1949,6 +2048,40 @@ mod tests {
     fn zero_is_never_written_as_minus_zero() {
         assert_eq!(ticked(-0.0, 1.), "0");
         assert_eq!(ticked(-1e-9, 0.1), "0.0");
+    }
+
+    /// A line dropped to the plane says which way it went
+    ///
+    /// A line dropped from above the plane and one dropped from below are drawn
+    /// the same way round on a screen, so the sign carries the half of the
+    /// answer the line cannot.
+    #[test]
+    fn a_dropped_line_says_which_way_it_went() {
+        assert_eq!(
+            off_plane(7., 2., Unit::LightYears).as_deref(),
+            Some("+7 Ly")
+        );
+        assert_eq!(
+            off_plane(-7., 2., Unit::LightYears).as_deref(),
+            Some("-7 Ly")
+        );
+        // And in whatever the numbers are being said in.
+        assert_eq!(
+            off_plane(-1500., 500., Unit::LightSeconds).as_deref(),
+            Some("-1.5e3 Ls")
+        );
+    }
+
+    /// And says nothing at all where it has no length to speak of
+    ///
+    /// The line is already as short as it can be there, and a `+0.0` beside it
+    /// says less than the line does.
+    #[test]
+    fn a_line_dropped_nowhere_says_nothing() {
+        assert_eq!(off_plane(0., 2., Unit::LightYears), None);
+        // Under half of the last place it is written to, which reads as nought.
+        assert_eq!(off_plane(0.4, 2., Unit::LightYears), None);
+        assert!(off_plane(0.6, 2., Unit::LightYears).is_some());
     }
 
     /// Left to the map, a space is said in its own unit at every zoom
@@ -2050,8 +2183,8 @@ mod tests {
         (*visible, plane.cell / space::LIGHT_YEAR, transform.translation.y)
     }
 
-    /// How strongly the plane's row of lines `apart` cells apart is drawn
-    fn row(app: &mut App, apart: f32) -> f32 {
+    /// How strongly the plane's family of lines `apart` cells apart is drawn
+    fn family(app: &mut App, apart: f32) -> f32 {
         let mut planes = app.world_mut().query::<&Plane>();
         let plane = planes.iter(app.world()).next().expect("the plane");
         plane
@@ -2088,7 +2221,7 @@ mod tests {
 
         for apart in [1., 10., 100.] {
             assert!(
-                row(&mut app, apart) > 0.,
+                family(&mut app, apart) > 0.,
                 "nothing was drawn {apart} cells apart"
             );
         }
@@ -2242,6 +2375,8 @@ mod tests {
         );
     }
 }
+
+
 
 
 
