@@ -46,11 +46,12 @@ pub(crate) mod said;
 
 pub use cut::Face;
 pub use ladder::{
-    CELLS_ACROSS, FIGURES_ACROSS, Ruling, numbering, ruling, snapped,
+    CELLS_ACROSS, Decade, FIGURES_ACROSS, numbering, ruling, snapped,
     snapped_to, tick_step,
 };
 pub use read::{
-    ASIDE, CROSS, CROWDS, EDGE_ON, LIFT, READS, drawn_at, faded,
+    ASIDE, CROSS, CROWDS, EDGE_ON, LIFT, Located, READS, Reading, drawn_at,
+    faded,
 };
 pub use said::{RESOLVES, Unit, off_plane, power, ticked, told};
 
@@ -297,6 +298,8 @@ pub fn finest(grid: &Grid) -> f64 {
 #[derive(Component, Default, Reflect, Copy, Clone, Debug)]
 #[reflect(Component, Default)]
 #[require(
+    read::Reading,
+    read::Dropped,
     Plane,
     Numbered,
     Transform,
@@ -653,6 +656,24 @@ fn place(
     }
 }
 
+/// Where something placed by `grid` stands, from the cell the floating origin
+/// is in
+///
+/// The frame everything drawn is measured in. Exact: the cell difference is an
+/// `i64` count and the remainders are the positions the world holds, so nothing
+/// is lost that was ever there. What `Grid::global_transform` works out and
+/// then spends on an `f32` on its last line.
+///
+/// Which is what lets a thing in one grid be located against a plane in
+/// another: both are crossed into this frame in `f64` and subtracted there.
+pub fn seen(grid: &Grid, cell: &CellCoord, transform: &Transform) -> DVec3 {
+    let origin = grid.local_floating_origin();
+    origin.grid_transform().transform_point3(
+        grid.cell_to_float(&(*cell - origin.cell()))
+            + transform.translation.as_dvec3(),
+    )
+}
+
 /// Round `value` onto the nearest multiple of `step`
 fn round_to(value: f64, step: f64) -> f64 {
     if step > 0. && step.is_finite() { (value / step).round() * step } else { value }
@@ -720,24 +741,43 @@ impl PlaneUniform {
 #[derive(SystemSet, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Placing;
 
+/// And when a caller says what its planes are ruled in
+///
+/// Everything drawn over a plane reads its [`Reading`], so whatever writes one
+/// belongs in here. In `Update`, which is early enough for the text meshes to
+/// be built and placed in the same frame.
+#[derive(SystemSet, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Ruling;
+
 /// Everything it takes to draw a [`Ruled`] plane
 ///
 /// A struct rather than the bare function the rest of this crate adds, because
 /// the pipeline is built in [`Plugin::finish`] rather than [`Plugin::build`],
 /// and a function has no `finish`.
 pub struct RuledPlugin {
-    /// The face a plane's numbers are painted in
+    /// The face a plane's numbers are painted in, and what it is called
     ///
-    /// Monospaced. The strip is cut from it at startup; see [`cut`].
-    pub face: &'static [u8],
+    /// Monospaced. The strip painted onto a plane is cut from it at startup,
+    /// see [`cut`], and the numbers standing over the plane are set in it.
+    pub face: Face,
 }
 
 impl Plugin for RuledPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "ruled.wgsl");
         app.register_type::<Ruled>().register_type::<Plane>();
-        app.insert_resource(Face(self.face));
+        app.insert_resource(self.face.clone());
+        app.init_resource::<read::Readouts>();
         app.add_systems(Startup, cut::cut_lettering);
+        // The text standing over a plane is built into meshes in `PostUpdate`
+        // before the transforms are propagated, so where it stands has to be
+        // settled before then. A transform written after it is a readout a
+        // frame behind the plane it stands on.
+        app.add_systems(
+            Update,
+            (read::locate, read::readouts, read::marks).chain().after(Ruling),
+        );
+        app.add_systems(PostUpdate, read::stand_clear.after(Placing));
         // After the transforms, which is where `big_space` settles where each
         // grid thinks the floating origin is. Read any earlier and a plane is
         // ruled from where the camera stood last frame.

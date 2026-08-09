@@ -14,10 +14,19 @@ use bevy::render::render_resource::{
 
 /// The face a plane's numbers are painted in
 ///
-/// Handed over by whoever adds [`super::RuledPlugin`], in any format
-/// `ab_glyph` reads. Monospaced; see [`cut_lettering`].
+/// Handed over by whoever adds [`super::RuledPlugin`]. Monospaced; see
+/// [`cut_lettering`].
 #[derive(Resource, Clone)]
-pub struct Face(pub &'static [u8]);
+pub struct Face {
+    /// The face itself, in any format `ab_glyph` reads
+    ///
+    /// What the strip painted onto a plane is cut from.
+    pub bytes: &'static [u8],
+    /// And what the same face is called, for the text meshes standing over it
+    ///
+    /// A number on a plane and a number over it are then the one typeface.
+    pub family: &'static str,
+}
 
 /// How wide and tall a glyph's cell in the lettering strip is, in pixels
 ///
@@ -52,7 +61,7 @@ pub(super) fn cut_lettering(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Ok(face) = FontRef::try_from_slice(face.0) else {
+    let Ok(face) = FontRef::try_from_slice(face.bytes) else {
         return;
     };
     let wide = CELL_WIDE as usize * LETTERS.len();

@@ -53,14 +53,14 @@ pub fn rung(across: f64) -> (f64, f32) {
     (decade, (ladder - decade) as f32)
 }
 
-/// Which cells the two planes of a space are ruled in, and how strongly each
+/// Which cells a space is ruled in over one decade, and how strongly each row
 /// is drawn
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Ruling {
+pub struct Decade {
     /// The finer plane's cell, in whatever unit it was asked in
     pub fine: f64,
     pub fine_strength: f32,
-    /// The coarser plane's cell, a decade above [`Ruling::fine`]
+    /// The coarser plane's cell, a decade above [`Decade::fine`]
     pub coarse: f64,
     pub coarse_strength: f32,
     /// How much of this ruling is drawn at all
@@ -74,8 +74,8 @@ pub struct Ruling {
     pub drawn: f32,
 }
 
-impl Ruling {
-    /// The rows of lines this comes to, in cells of [`Ruling::fine`]
+impl Decade {
+    /// The rows of lines this comes to, in cells of [`Decade::fine`]
     ///
     /// Three rows rather than four: the finer cell's tenth lines and the
     /// coarser cell's own lines fall in the same places, so they are the one
@@ -120,7 +120,7 @@ impl Ruling {
 /// Where the view has come in nearer than a single cell, both go. A ruling
 /// with no lines left in it is chrome standing in front of the map for
 /// nothing.
-pub fn ruling(across: f64, finest: f64) -> Ruling {
+pub fn ruling(across: f64, finest: f64) -> Decade {
     let (decade, through) = rung(across);
     let floor = finest.log10().round();
     let held = decade < floor;
@@ -131,7 +131,7 @@ pub fn ruling(across: f64, finest: f64) -> Ruling {
     // onto a body loses the plane rather than having it vanish.
     let showing = ((across / fine) - 1.).clamp(0., 1.) as f32;
 
-    Ruling {
+    Decade {
         drawn: showing,
         fine,
         // Held at the floor there is no decade left to cross to, so the fine
@@ -345,7 +345,7 @@ pub(crate) mod tests {
     fn a_decade_turns_over_without_a_line_moving() {
         // What is drawn, as how far apart the lines really are and how
         // strongly, faintest rows dropped as being nothing on screen.
-        let drawn = |ruled: &Ruling| {
+        let drawn = |ruled: &Decade| {
             let mut rows: Vec<(f64, f32)> = ruled
                 .rows(1.)
                 .into_iter()
