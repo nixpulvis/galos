@@ -95,7 +95,6 @@ impl Decade {
             Family::default(),
         ]
     }
-
 }
 
 /// How to rule a space with `across` of it on screen

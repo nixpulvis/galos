@@ -43,17 +43,16 @@
 //! the galaxy's grid has run out of places to put a line, and the system's has
 //! not yet been reached.
 use crate::camera::OrbitCamera;
+use crate::ruled::{
+    self, Decade, EDGE_ON, FIGURES_ACROSS, Family, INK, Located, NUMBERED,
+    Numbered, Painted, Plane, Reading, RuledPlugin, Unit, Word, drawn_at,
+    numbering, ruling, snapped_to, ticked,
+};
 use crate::schedule::MapSet;
 use crate::space::{self, Map};
 use crate::systems::System;
 use crate::systems::bodies::spawn::{Apparent, Body};
 use crate::systems::selection::Selected;
-use crate::ruled::{
-    self,
-    Decade, EDGE_ON, FIGURES_ACROSS, Family, INK, Located, NUMBERED, Numbered,
-    Painted, Plane, Reading, RuledPlugin, Unit, Word, drawn_at, numbering,
-    ruling, snapped_to, ticked,
-};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
@@ -612,9 +611,6 @@ fn rule(
                 from: plane.numbers.from,
                 upright: plane.numbers.upright,
                 downward: plane.numbers.downward,
-                // Written by `stand_clear`, which runs later in the frame,
-                // once the names have settled which of them are drawn.
-                bare: plane.numbers.bare,
             },
             reach: space.reach,
             edge_on: EDGE_ON,
@@ -709,7 +705,6 @@ mod tests {
         assert_eq!(ruled.drawn, 0.);
     }
 
-
     /// Every crossing the ruling reaches has a number written for it
     ///
     /// [`NUMBERED`] is a fixed window and the map zooms over twenty decades, so
@@ -795,11 +790,8 @@ mod tests {
     fn drawn(app: &mut App) -> (f32, f32) {
         let mut planes = app.world_mut().query::<&Plane>();
         let plane = planes.iter(app.world()).next().expect("the plane");
-        let lines = plane
-            .families
-            .iter()
-            .map(|row| row.strength)
-            .fold(0., f32::max);
+        let lines =
+            plane.families.iter().map(|row| row.strength).fold(0., f32::max);
         (lines, plane.numbers.strength)
     }
 
@@ -824,14 +816,8 @@ mod tests {
     /// Left to the map, a space is said in its own unit at every zoom
     #[test]
     fn a_space_is_said_in_its_own_unit() {
-        assert_eq!(
-            said_in(LIGHT_YEARS, Said::Whichever),
-            LIGHT_YEARS
-        );
-        assert_eq!(
-            said_in(LIGHT_SECONDS, Said::Whichever),
-            LIGHT_SECONDS
-        );
+        assert_eq!(said_in(LIGHT_YEARS, Said::Whichever), LIGHT_YEARS);
+        assert_eq!(said_in(LIGHT_SECONDS, Said::Whichever), LIGHT_SECONDS);
         // And either may be pinned from the bar.
         assert_eq!(said_in(LIGHT_SECONDS, Said::LightYears), LIGHT_YEARS);
         assert_eq!(said_in(LIGHT_YEARS, Said::LightSeconds), LIGHT_SECONDS);
@@ -1110,9 +1096,3 @@ mod tests {
         );
     }
 }
-
-
-
-
-
-

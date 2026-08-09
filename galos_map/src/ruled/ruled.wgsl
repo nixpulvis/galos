@@ -62,9 +62,6 @@ struct Plane {
     counted: vec2<i32>,
     /// And which crossing the first word of each ruler below is
     base: vec2<i32>,
-    /// Which crossings are not to be numbered, because something else is
-    /// already written over them. Anything past the end is `BARE_NONE`.
-    bare: array<vec4<i32>, BARE>,
     /// What each numbered crossing says, along the lettering and down it
     ///
     /// Written out on the processor and read here as characters. Which decade a
@@ -80,12 +77,6 @@ struct Plane {
 /// One row of equal cells, one glyph to a cell, in `LETTERS` order
 @group(1) @binding(1) var lettering: texture_2d<f32>;
 @group(1) @binding(2) var reader: sampler;
-
-/// How many crossings may be left bare at once
-const BARE: u32 = 16u;
-
-/// What stands in an unused place in that list
-const BARE_NONE: i32 = 2147483647;
 
 /// How many glyphs the lettering strip holds
 ///
@@ -170,17 +161,6 @@ fn painted(at: vec2<f32>) -> f32 {
     // Which crossing this is, counted from the space's own origin.
     let nx = plane.counted.x + i32(round(which.x));
     let nz = plane.counted.y + i32(round(which.y));
-
-    // Unless something else is already written there. A number under a name
-    // is a number nobody can read, and the name is the one that was asked for.
-    for (var i = 0u; i < BARE; i++) {
-        if plane.bare[i].x == BARE_NONE {
-            break;
-        }
-        if plane.bare[i].x == nx && plane.bare[i].y == nz {
-            return 0.0;
-        }
-    }
 
     // And what it says. Outside the window nothing was written for it, which
     // is a crossing out past where a number is still worth reading.

@@ -8,10 +8,10 @@ use ab_glyph::{Font, FontRef, PxScale};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{Image, ImageSampler};
 use bevy::prelude::*;
-use bevy_rich_text3d::LoadFonts;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
+use bevy_rich_text3d::LoadFonts;
 
 /// The face a plane's numbers are painted in
 ///
@@ -89,7 +89,9 @@ pub(super) fn cut_lettering(
             face.outline_glyph(face.glyph_id('0').with_scale(scale))
                 .map(|it| it.px_bounds())
         };
-        let Some(trial) = measure(PxScale::from(CELL_TALL as f32)) else { return };
+        let Some(trial) = measure(PxScale::from(CELL_TALL as f32)) else {
+            return;
+        };
         let scale = PxScale::from(
             CELL_TALL as f32 * CELL_TALL as f32 * FILLS / trial.height(),
         );

@@ -660,7 +660,11 @@ pub fn chrome(
                 ui.add_space(FIELD_GAP);
                 ui.label("Units");
                 ui.radio_value(&mut *knobs.said, Said::Whichever, "Automatic");
-                ui.radio_value(&mut *knobs.said, Said::LightYears, "Light Years");
+                ui.radio_value(
+                    &mut *knobs.said,
+                    Said::LightYears,
+                    "Light Years",
+                );
                 ui.radio_value(
                     &mut *knobs.said,
                     Said::LightSeconds,

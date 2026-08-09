@@ -146,8 +146,8 @@ pub fn off_plane(high: f64, step: f64, unit: Unit) -> Option<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::*;
     use super::super::ladder::{numbering, tests::zooms};
+    use super::*;
 
     const LIGHT_YEARS: Unit = Unit { metres: 9.4607304725808e15, mark: "Ly" };
     const LIGHT_SECONDS: Unit = Unit { metres: 2.99792458e8, mark: "Ls" };
@@ -159,10 +159,7 @@ pub(crate) mod tests {
     /// position at the rim is tens of thousands of light years along one axis
     /// and tens above the plane.
     fn near(across: f64) -> [DVec3; 2] {
-        [
-            DVec3::ZERO,
-            DVec3::new(across * 7., across * 0.31, -across * 3.),
-        ]
+        [DVec3::ZERO, DVec3::new(across * 7., across * 0.31, -across * 3.)]
     }
 
     /// And somewhere far enough out to run the reading out of figures
@@ -324,14 +321,8 @@ pub(crate) mod tests {
     /// answer the line cannot.
     #[test]
     fn a_dropped_line_says_which_way_it_went() {
-        assert_eq!(
-            off_plane(7., 2., LIGHT_YEARS).as_deref(),
-            Some("+7.0 Ly")
-        );
-        assert_eq!(
-            off_plane(-7., 2., LIGHT_YEARS).as_deref(),
-            Some("-7.0 Ly")
-        );
+        assert_eq!(off_plane(7., 2., LIGHT_YEARS).as_deref(), Some("+7.0 Ly"));
+        assert_eq!(off_plane(-7., 2., LIGHT_YEARS).as_deref(), Some("-7.0 Ly"));
         // And in whatever the numbers are being said in.
         assert_eq!(
             off_plane(-1500., 500., LIGHT_SECONDS).as_deref(),

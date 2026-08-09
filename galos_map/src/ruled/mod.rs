@@ -60,28 +60,28 @@ use bevy::core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d};
 use bevy::ecs::query::ROQueryItem;
 use bevy::ecs::system::SystemParamItem;
 use bevy::ecs::system::lifetimeless::{Read, SRes};
+use bevy::image::Image;
 use bevy::math::{DMat3, DVec2, DVec3};
 use bevy::prelude::*;
-use bevy::image::Image;
 use bevy::render::camera::ExtractedCamera;
 use bevy::render::render_asset::RenderAssets;
-use bevy::render::texture::GpuImage;
 use bevy::render::render_phase::{
-    AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
-    RenderCommandResult, SetItemPipeline, TrackedRenderPass,
+    AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex,
+    RenderCommand, RenderCommandResult, SetItemPipeline, TrackedRenderPass,
     ViewSortedRenderPhases,
 };
 use bevy::render::render_resource::{
-    BindGroup, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
-    BlendState, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState,
-    DynamicUniformBuffer, FragmentState, MultisampleState, PipelineCache,
-    PrimitiveState, RenderPipelineDescriptor, SamplerBindingType, ShaderStages,
-    ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines,
-    TextureFormat, TextureSampleType,
+    BindGroup, BindGroupEntries, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntries, BlendState, ColorTargetState, ColorWrites,
+    CompareFunction, DepthStencilState, DynamicUniformBuffer, FragmentState,
+    MultisampleState, PipelineCache, PrimitiveState, RenderPipelineDescriptor,
+    SamplerBindingType, ShaderStages, ShaderType, SpecializedRenderPipeline,
+    SpecializedRenderPipelines, TextureFormat, TextureSampleType,
     binding_types::{sampler, texture_2d, uniform_buffer},
 };
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::sync_world::{RenderEntity, SyncToRenderWorld};
+use bevy::render::texture::GpuImage;
 use bevy::render::view::{
     ExtractedView, RenderVisibleEntities, ViewUniform, ViewUniformOffset,
     ViewUniforms,
@@ -107,39 +107,18 @@ pub const FAMILIES: usize = 4;
 ///
 /// Equal cells because the layout counts characters rather than measuring
 /// them, which is right for a monospaced face and wrong for any other.
-pub const LETTERS: [char; 14] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', ',', '.', 'e',
-];
+pub const LETTERS: [char; 14] =
+    ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', ',', '.', 'e'];
 
-/// How far to the right of its crossing a pair of numbers is written, and how
-/// far above the line, in units of a fifth of a digit's height
+/// How wide a pair of numbers can run, in units of a fifth of a digit's height
 ///
-/// The shader's own, said here as well because working out whether a pair
-/// would be written over something wants both.
-pub const BESIDE: f32 = 2.;
-pub const ABOVE: f32 = 1.;
-
-/// And the widest it can run, likewise
-///
-/// Twenty four characters at four units apiece: a sign, a figure, a point and
+/// The shader's own, said here as well because how far apart to space the
+/// crossings wants it. Twenty four characters at four units apiece: a sign, a figure, a point and
 /// three places, then an `e` and a signed power, twice over with a comma
 /// between. Longer than most pairs come out, and it is the longest that
 /// matters — a caller spacing its crossings by this can be sure no pair ever
 /// runs into the next.
 pub const SPAN: f32 = 96.;
-
-/// How many crossings may be left bare at once
-///
-/// The plane carries a few numbers on screen at a time, so this is a cap on
-/// how many of them can be asked to give way rather than on how many names
-/// are drawn: forty names crowded around one star fall in the one crossing
-/// and ask for it once.
-pub const BARE: usize = 16;
-
-/// A crossing that is not to be numbered
-///
-/// Anything past the end of the list is this, which no real crossing is.
-pub const NONE: IVec2 = IVec2::MAX;
 
 /// How many crossings along each ruler carry a number that has been written out
 ///
@@ -246,30 +225,6 @@ impl Default for Numbered {
             along: [Word::default(); NUMBERED],
             across: [Word::default(); NUMBERED],
         }
-    }
-}
-
-impl Numbered {
-    /// How far the pair at crossing `at` runs, in the lettering's own units
-    ///
-    /// Nothing for a crossing outside the window, or one either of whose
-    /// numbers was left unwritten. Neither is painted, so neither takes up any
-    /// room.
-    pub fn written(&self, at: IVec2) -> Option<f32> {
-        let along = self.word(&self.along, at.x - self.base.x)?.letters();
-        let across = self.word(&self.across, at.y - self.base.y)?.letters();
-        if along == 0 || across == 0 {
-            return None;
-        }
-        // Four units to a character, less the air after the last of them, and
-        // a comma between the two numbers and nothing else. A space after it
-        // is a gap the eye reads as the end of one thing rather than the join
-        // of two.
-        Some((along + 1 + across) as f32 * 4. - 1.)
-    }
-
-    fn word<'a>(&self, ruler: &'a [Word; NUMBERED], into: i32) -> Option<&'a Word> {
-        ruler.get(usize::try_from(into).ok()?)
     }
 }
 
@@ -383,7 +338,7 @@ pub struct Plane {
 /// Part of the ruling rather than laid over it: they lie in the plane, turn
 /// with it, shrink with it and go the way it goes. What each says is a [`Word`]
 /// out of [`Numbered`], written on the processor.
-#[derive(Reflect, Copy, Clone, Debug, PartialEq)]
+#[derive(Reflect, Copy, Clone, Debug, Default, PartialEq)]
 pub struct Painted {
     /// How far apart the numbered crossings are, in cells
     ///
@@ -411,33 +366,6 @@ pub struct Painted {
     /// down turns over as the camera crosses the plane, and a plane seen from
     /// underneath would have its lettering upside down. Written by [`place`].
     pub downward: Vec2,
-    /// Which crossings are to be left bare, [`NONE`] for the rest
-    ///
-    /// A plane knows nothing of what else is drawn over the same sky, and a
-    /// number written under a name is a number nobody can read. So whoever
-    /// draws the names says which crossings they have taken, and the ruling
-    /// gives those up. [`Plane::crossing_near`] is how a caller works out
-    /// which.
-    pub bare: [IVec2; BARE],
-}
-
-impl Default for Painted {
-    /// Nothing numbered, and every crossing left to be numbered
-    ///
-    /// Written out rather than derived because an empty list of crossings to
-    /// give up is [`NONE`] throughout, and a derived one is nought throughout,
-    /// which is a list asking for the crossing at the origin to be left bare.
-    fn default() -> Self {
-        Painted {
-            apart: 0.,
-            tall: 0.,
-            strength: 0.,
-            from: IVec2::ZERO,
-            upright: Vec2::ZERO,
-            downward: Vec2::ZERO,
-            bare: [NONE; BARE],
-        }
-    }
 }
 
 impl Default for Plane {
@@ -461,88 +389,6 @@ impl Default for Plane {
 }
 
 impl Plane {
-    /// The one crossing whose pair a thing standing `from_camera` is written
-    /// over, counted from the space's own origin
-    ///
-    /// `room` is how far the thing reaches around itself, along the lettering
-    /// and across it, in the units the lettering is laid out in: four to a
-    /// character and five to a digit's height. A pair within that gives way;
-    /// nothing else does.
-    ///
-    /// One at most, because a pair is not written where it is drawn. It stands
-    /// up and to the right of its own crossing and runs on from there, so each
-    /// crossing owns a block of the plane and the blocks tile it. A point falls
-    /// in the writing of one block, or in the air after one pair and before the
-    /// next, and the air belongs to whichever of the two it is nearer.
-    ///
-    /// Measured against what a pair actually runs to, from
-    /// [`Numbered::written`], rather than against the block it is written in. A
-    /// block is as wide as the crossings are spaced and a pair is usually a
-    /// fraction of that, so bounding by the block holds a number given up for
-    /// the whole width of its block to the right of it and gives it back at
-    /// once to the left.
-    pub fn crossing_near(
-        &self,
-        said: &Numbered,
-        from_camera: Vec3,
-        room: Vec2,
-    ) -> Option<IVec2> {
-        let unit = self.numbers.tall / 5.;
-        if self.numbers.apart <= 0. || unit <= 0. {
-            return None;
-        }
-        // Everything below is in the lettering's own units, which is what
-        // `room`, the writing and the spacing are all said in.
-        let step = self.numbers.apart / unit;
-
-        let over = self.facing.inverse() * from_camera;
-        let cells = self.eye + over / self.cell as f32;
-        let flat = Vec2::new(cells.x, cells.z) / unit;
-        let along = flat.dot(self.numbers.upright);
-        let across = flat.dot(self.numbers.downward);
-
-        // Across the lettering the rows stand a whole spacing apart, so the
-        // nearest row is the only one within reach of anything.
-        let row = (across / step).round();
-        let line = across - row * step;
-        let off = (-(ABOVE + 5.) - line).max(line + ABOVE).max(0.);
-        if off > room.y {
-            return None;
-        }
-
-        // And along it, which block the point is in and how far it is from the
-        // writing: none while it is on it, and otherwise the shorter of the way
-        // back to the end of this pair and the way on to the start of the next.
-        let blocks = (along - BESIDE) / step;
-        let mut which = blocks.floor();
-        let column = (blocks - which) * step;
-        let after =
-            column - said.written(self.counted(which, row)).unwrap_or(0.);
-        let before = step - column;
-        let outside = if after <= 0. {
-            0.
-        } else if after <= before {
-            after
-        } else {
-            which += 1.;
-            before
-        };
-        if outside > room.x {
-            return None;
-        }
-
-        Some(self.counted(which, row))
-    }
-
-    /// The crossing `along` blocks along the lettering and `across` rows down
-    /// it, counted from the space's own origin
-    fn counted(&self, along: f32, across: f32) -> IVec2 {
-        let which =
-            self.numbers.upright * along + self.numbers.downward * across;
-        self.numbers.from
-            + IVec2::new(which.x.round() as i32, which.y.round() as i32)
-    }
-
     /// The widest spacing drawn, as a multiple of a cell
     ///
     /// What the ruling's origin is laid on. Snapped to anything finer, the
@@ -562,7 +408,13 @@ impl Plane {
 /// The one piece of arithmetic that has to be exact, and the reason this is a
 /// module rather than a shader. See [`finest`] for what bounds it.
 fn place(
-    mut planes: Query<(Entity, &mut Plane, &CellCoord, &Transform, &GlobalTransform)>,
+    mut planes: Query<(
+        Entity,
+        &mut Plane,
+        &CellCoord,
+        &Transform,
+        &GlobalTransform,
+    )>,
     eyes: Query<&Transform, With<FloatingOrigin>>,
     grids: Grids,
 ) {
@@ -604,9 +456,9 @@ fn place(
         // would have fallen wherever the camera has since wandered — and of
         // the numbered crossings too, which is what makes which crossing the
         // origin is a whole number.
-        let step =
-            plane.cell * plane.widest().max(plane.numbers.apart as f64);
-        let origin = DVec3::new(round_to(over.x, step), 0., round_to(over.z, step));
+        let step = plane.cell * plane.widest().max(plane.numbers.apart as f64);
+        let origin =
+            DVec3::new(round_to(over.x, step), 0., round_to(over.z, step));
 
         plane.eye = ((over - origin) / plane.cell).as_vec3();
         plane.facing = facing;
@@ -674,7 +526,11 @@ pub fn seen(grid: &Grid, cell: &CellCoord, transform: &Transform) -> DVec3 {
 
 /// Round `value` onto the nearest multiple of `step`
 fn round_to(value: f64, step: f64) -> f64 {
-    if step > 0. && step.is_finite() { (value / step).round() * step } else { value }
+    if step > 0. && step.is_finite() {
+        (value / step).round() * step
+    } else {
+        value
+    }
 }
 
 /// What the shader is handed, per plane
@@ -682,7 +538,6 @@ fn round_to(value: f64, step: f64) -> f64 {
 /// Field order is the WGSL struct's, which is what makes the two agree.
 #[derive(Debug, ShaderType)]
 struct PlaneUniform {
-
     eye: Vec3,
     reach: f32,
     rot: Mat3,
@@ -695,7 +550,6 @@ struct PlaneUniform {
     downward: Vec2,
     from: IVec2,
     base: IVec2,
-    bare: [IVec4; BARE],
     along: [UVec4; NUMBERED],
     across: [UVec4; NUMBERED],
 }
@@ -725,7 +579,6 @@ impl PlaneUniform {
             base: said.base,
             // A `vec2` in an array is padded out to sixteen bytes anyway, so
             // it is said as a `vec4` rather than left to look like a mistake.
-            bare: plane.numbers.bare.map(|it| IVec4::new(it.x, it.y, 0, 0)),
             along: said.along.map(|it| it.packed()),
             across: said.across.map(|it| it.packed()),
         }
@@ -786,11 +639,7 @@ impl Plugin for RuledPlugin {
         // frame behind the plane it stands on.
         app.add_systems(
             Update,
-            (
-                read::locate,
-                read::readouts(self.face.clone()),
-                read::marks,
-            )
+            (read::locate, read::readouts(self.face.clone()), read::marks)
                 .chain()
                 .after(Ruling),
         );
@@ -815,10 +664,14 @@ impl Plugin for RuledPlugin {
             .init_resource::<SpecializedRenderPipelines<RuledPipeline>>()
             .add_render_command::<Transparent3d, DrawRuled>()
             .add_systems(ExtractSchedule, (extract, extract_lettering))
-            .add_systems(Render, prepare.in_set(RenderSystems::PrepareResources))
             .add_systems(
                 Render,
-                (bind_planes, bind_views).in_set(RenderSystems::PrepareBindGroups),
+                prepare.in_set(RenderSystems::PrepareResources),
+            )
+            .add_systems(
+                Render,
+                (bind_planes, bind_views)
+                    .in_set(RenderSystems::PrepareBindGroups),
             )
             .add_systems(Render, queue.in_set(RenderSystems::Queue));
     }
@@ -885,8 +738,7 @@ fn bind_planes(
     let Some(binding) = uniforms.uniforms.binding() else { return };
     // Nothing is drawn until the lettering is on the card. It is made once at
     // startup and never changes, so this is a frame or two and then never.
-    let Some(letters) =
-        lettering.and_then(|it| images.get(&it.0).cloned())
+    let Some(letters) = lettering.and_then(|it| images.get(&it.0).cloned())
     else {
         commands.remove_resource::<PlaneBindGroup>();
         return;
@@ -912,11 +764,13 @@ fn bind_views(
 ) {
     let Some(binding) = uniforms.uniforms.binding() else { return };
     for entity in views.iter() {
-        commands.entity(entity).insert(ViewBindGroup(device.create_bind_group(
-            "ruled_view_bind_group",
-            &cache.get_bind_group_layout(&pipeline.view_layout),
-            &BindGroupEntries::single(binding.clone()),
-        )));
+        commands.entity(entity).insert(ViewBindGroup(
+            device.create_bind_group(
+                "ruled_view_bind_group",
+                &cache.get_bind_group_layout(&pipeline.view_layout),
+                &BindGroupEntries::single(binding.clone()),
+            ),
+        ));
     }
 }
 
@@ -926,7 +780,10 @@ fn queue(
     pipeline: Res<RuledPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<RuledPipeline>>,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
-    views: Query<(&ExtractedView, &RenderVisibleEntities, &Msaa), With<ExtractedCamera>>,
+    views: Query<
+        (&ExtractedView, &RenderVisibleEntities, &Msaa),
+        With<ExtractedCamera>,
+    >,
 ) {
     let Some(function) = functions.read().get_id::<DrawRuled>() else {
         return;
@@ -1017,7 +874,9 @@ impl FromWorld for RuledPipeline {
                     ShaderStages::FRAGMENT,
                     (
                         uniform_buffer::<PlaneUniform>(true),
-                        texture_2d(TextureSampleType::Float { filterable: true }),
+                        texture_2d(TextureSampleType::Float {
+                            filterable: true,
+                        }),
                         sampler(SamplerBindingType::Filtering),
                     ),
                 ),
@@ -1258,7 +1117,8 @@ mod tests {
     fn the_lines_stay_where_they_fall() {
         let (_, _, edge) = tower(2);
         let cell = edge / NEST * 0. + edge * RULED;
-        for (step, want) in [(0., -ASIDE), (0.25, 0.), (2.5, 2.25), (9.75, 1.5)] {
+        for (step, want) in [(0., -ASIDE), (0.25, 0.), (2.5, 2.25), (9.75, 1.5)]
+        {
             let (mut app, grids, edge) = tower(2);
             let plane = plane_at_rest(&mut app, grids[1], edge);
             eye_at(
@@ -1280,169 +1140,6 @@ mod tests {
                 eye.x
             );
         }
-    }
-
-    /// A plane whose lettering is a fifth of a cell to the unit, with its
-    /// crossings a hundred units apart
-    ///
-    /// So the pair at the crossing `from` reads `0,0`, eleven units of writing
-    /// running from two fifths of a cell along to two and three fifths, on a
-    /// row lying between a fifth of a cell back and one and a fifth.
-    fn lettered(from: IVec2) -> Plane {
-        Plane {
-            cell: 1.,
-            numbers: Painted {
-                apart: 20.,
-                tall: 1.,
-                upright: Vec2::X,
-                downward: Vec2::Y,
-                from,
-                ..default()
-            },
-            ..default()
-        }
-    }
-
-    /// And what its rulers say: every crossing counted out from `base`, which
-    /// is what a plane ruled in whole numbers from its own origin comes to
-    fn counting(base: IVec2) -> Numbered {
-        let mut said = Numbered { base, ..default() };
-        for into in 0..NUMBERED {
-            said.along[into] = Word::say(&format!("{}", base.x + into as i32));
-            said.across[into] = Word::say(&format!("{}", base.y + into as i32));
-        }
-        said
-    }
-
-    /// The crossing given up is the one the thing is written over
-    ///
-    /// One at most, and that one only while it is written on. A pair stands up
-    /// and to the right of its own crossing and runs on from there, so what a
-    /// point falls in is the writing rather than the crossing.
-    #[test]
-    fn the_crossing_a_thing_is_written_over_gives_way() {
-        let plane = lettered(IVec2::ZERO);
-        let said = counting(IVec2::ZERO);
-
-        // Half way along the writing of the pair at the origin, with no room
-        // asked for at all.
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(1.5, 0., -0.5), Vec2::ZERO),
-            Some(IVec2::ZERO)
-        );
-    }
-
-    /// And nothing gives way where nothing is written
-    #[test]
-    fn a_thing_clear_of_the_lettering_takes_no_crossing() {
-        let plane = lettered(IVec2::ZERO);
-        let said = counting(IVec2::ZERO);
-
-        // Between two rows of lettering, which is most of the plane.
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(1.5, 0., 2.), CLOSE),
-            None
-        );
-        // Along a row but past the end of the pair, with nothing reaching.
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(3., 0., -0.5), Vec2::ZERO),
-            None
-        );
-        // And in the air between two pairs, out of reach of either.
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(12.4, 0., -0.5), CLOSE),
-            None
-        );
-    }
-
-    /// A pair is given up as far after it as before it
-    ///
-    /// What bounds it is the writing, which runs eleven units here, rather than
-    /// the block, which is the hundred the crossings are spaced by. Bounded by
-    /// the block a pair is given up for the whole width of it to the right and
-    /// handed back at once to the left, which reads as a number that goes out
-    /// one way and not the other.
-    #[test]
-    fn a_pair_is_given_up_as_far_after_it_as_before_it() {
-        let plane = lettered(IVec2::ZERO);
-        let said = counting(IVec2::ZERO);
-        let reach = Vec2::new(6., 5.);
-
-        // The first pair ends at two and three fifths of a cell along, so six
-        // units past it is three and four fifths and seven units is four.
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(3.8, 0., -0.5), reach),
-            Some(IVec2::ZERO)
-        );
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(4., 0., -0.5), reach),
-            None
-        );
-
-        // The second starts at twenty and two fifths, so six units before it is
-        // nineteen and a fifth and seven is nineteen.
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(19.2, 0., -0.5), reach),
-            Some(IVec2::X)
-        );
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(19., 0., -0.5), reach),
-            None
-        );
-    }
-
-    /// And how far it reaches follows what it says
-    #[test]
-    fn a_longer_pair_reaches_further() {
-        // `12,34` rather than `0,0`, which is two more characters of writing.
-        let far = lettered(IVec2::new(12, 34));
-        assert_eq!(
-            far.crossing_near(
-                &counting(IVec2::new(12, 34)),
-                Vec3::new(3.4, 0., -0.5),
-                Vec2::ZERO
-            ),
-            Some(IVec2::new(12, 34))
-        );
-
-        let near = lettered(IVec2::ZERO);
-        assert_eq!(
-            near.crossing_near(
-                &counting(IVec2::ZERO),
-                Vec3::new(3.4, 0., -0.5),
-                Vec2::ZERO
-            ),
-            None
-        );
-    }
-
-    /// A crossing nothing was written for takes up no room
-    ///
-    /// The window reaches past what the ruling does, so this is the horizon
-    /// rather than anywhere a number is read. Nothing is painted there and so
-    /// nothing there can be crowded.
-    #[test]
-    fn a_crossing_outside_the_window_is_written_nothing() {
-        let plane = lettered(IVec2::ZERO);
-        let said = Numbered { base: IVec2::splat(1000), ..default() };
-
-        assert_eq!(said.written(IVec2::ZERO), None);
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(1.5, 0., -0.5), Vec2::ZERO),
-            None
-        );
-    }
-
-    /// And it is counted from the space's own origin
-    #[test]
-    fn the_crossing_given_up_is_counted_from_the_space() {
-        let plane = lettered(IVec2::new(5, -3));
-        let said = counting(IVec2::new(5, -3));
-
-        assert_eq!(
-            plane.crossing_near(&said, Vec3::new(1.5, 0., -0.5), Vec2::ZERO),
-            Some(IVec2::new(5, -3))
-        );
     }
 
     /// A number is said in the alphabet the plane paints from
@@ -1469,10 +1166,6 @@ mod tests {
         assert_eq!(packed.y & 31, 7);
         assert_eq!(packed.z, 0);
     }
-
-    /// About what a thing standing at the middle of a view reaches, in the
-    /// lettering's own units
-    const CLOSE: Vec2 = Vec2::new(20., 5.);
 
     /// How finely a grid may be ruled follows its own cells
     ///

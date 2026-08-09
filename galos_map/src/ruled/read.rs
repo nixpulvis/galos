@@ -8,9 +8,7 @@
 //! Everything here fades out towards the plane's horizon with the ruling, so a
 //! number standing over the plane goes as the plane goes. What it does not do
 //! is follow the pitch: see [`faded`].
-use super::{
-    Face, INK, MAJOR, Plane, Unit, off_plane, told,
-};
+use super::{Face, INK, MAJOR, Plane, Unit, off_plane, told};
 use bevy::ecs::system::SystemParam;
 use bevy::math::{DMat3, DVec3, Vec2};
 use bevy::prelude::*;
@@ -230,12 +228,8 @@ struct Drop {
 }
 
 /// Everything a located thing is asked for
-type Mark = (
-    Entity,
-    &'static CellCoord,
-    &'static Transform,
-    &'static ViewVisibility,
-);
+type Mark =
+    (Entity, &'static CellCoord, &'static Transform, &'static ViewVisibility);
 
 /// Work out what each plane is worth marking, and where those places stand
 ///
@@ -292,8 +286,7 @@ pub(super) fn locate(
             let world = super::seen(grid, cell, transform);
             // Onto the plane's own axes, which is what the rulers count along
             // and so what the numbers are about.
-            let at = hangs
-                + square * (world - stands) / reading.unit.metres;
+            let at = hangs + square * (world - stands) / reading.unit.metres;
 
             // Measured from the eye through the reading rather than through
             // the floating origin. `big_space` settles where each grid thinks
@@ -420,7 +413,11 @@ fn spoken(
     // slides under it, and said to the same step the plane is numbered in so
     // that it reads against those numbers.
     if reading.middle {
-        says.push(placed(reading.middle_from_eye(plane.facing), reading.at, false));
+        says.push(placed(
+            reading.middle_from_eye(plane.facing),
+            reading.at,
+            false,
+        ));
     }
 
     // And every line dropped to the plane, which is the same three numbers
@@ -436,7 +433,8 @@ fn spoken(
         // slot that came and went would slide every readout below it along one
         // place, so a number would change which mesh it is drawn from as a
         // selection drifted across the plane.
-        let said = off_plane(drop.at.y - reading.at.y, reading.step, reading.unit);
+        let said =
+            off_plane(drop.at.y - reading.at.y, reading.step, reading.unit);
         let silent = said.is_none();
         says.push(Says {
             from_eye: drop.middle,
@@ -529,7 +527,10 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
                 }
                 let sideways = facing * Vec3::X;
                 for one in spoken(plane, reading, dropped, sideways) {
-                    inks.push(drawn_at(one.ink * reading.strength, reading.bright));
+                    inks.push(drawn_at(
+                        one.ink * reading.strength,
+                        reading.bright,
+                    ));
                     says.push(one);
                 }
             }
@@ -947,12 +948,8 @@ mod tests {
         let top = reading.seen_from_eye(plane.facing, at);
         let under = DVec3::new(at.x, reading.at.y, at.z);
         let foot = reading.seen_from_eye(plane.facing, under);
-        let dropped = Dropped(vec![Drop {
-            top,
-            foot,
-            middle: (top + foot) / 2.,
-            at,
-        }]);
+        let dropped =
+            Dropped(vec![Drop { top, foot, middle: (top + foot) / 2., at }]);
 
         let says = spoken(&plane, &reading, &dropped, Vec3::X);
         assert_eq!(says.len(), 3, "the middle, the foot and the offset");
@@ -974,10 +971,15 @@ mod tests {
     #[test]
     fn the_middle_goes_quiet_when_it_is_not_asked_for() {
         let (plane, mut reading) = looking(100.);
-        assert_eq!(spoken(&plane, &reading, &Dropped::default(), Vec3::X).len(), 1);
+        assert_eq!(
+            spoken(&plane, &reading, &Dropped::default(), Vec3::X).len(),
+            1
+        );
 
         reading.middle = false;
-        assert!(spoken(&plane, &reading, &Dropped::default(), Vec3::X).is_empty());
+        assert!(
+            spoken(&plane, &reading, &Dropped::default(), Vec3::X).is_empty()
+        );
     }
 
     /// What is drawn over a plane can all be scheduled together
@@ -1071,10 +1073,7 @@ mod tests {
             CellCoord::default(),
         ));
 
-        app.add_systems(
-            Update,
-            readouts(Face { bytes: &[], family: "Hack" }),
-        );
+        app.add_systems(Update, readouts(Face { bytes: &[], family: "Hack" }));
         app
     }
 
@@ -1143,8 +1142,12 @@ mod tests {
             let under = DVec3::new(at.x, reading.at.y, at.z);
             let top = reading.seen_from_eye(plane.facing, at);
             let foot = reading.seen_from_eye(plane.facing, under);
-            let dropped =
-                Dropped(vec![Drop { top, foot, middle: (top + foot) / 2., at }]);
+            let dropped = Dropped(vec![Drop {
+                top,
+                foot,
+                middle: (top + foot) / 2.,
+                at,
+            }]);
             spoken(&plane, &reading, &dropped, Vec3::X)
         };
         let place = |says: &Says| {
