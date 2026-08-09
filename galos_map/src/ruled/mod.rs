@@ -39,6 +39,15 @@
 //! in, and hand over as the camera moves between them. Nesting costs nothing —
 //! the crossing is done in `f64` by [`big_space`] itself before any of this
 //! reads it.
+pub(crate) mod ladder;
+pub(crate) mod said;
+
+pub use ladder::{
+    CELLS_ACROSS, FIGURES_ACROSS, Ruling, numbering, ruling, snapped,
+    snapped_to, tick_step,
+};
+pub use said::{RESOLVES, off_plane, power, ticked, told};
+
 use bevy::asset::{AssetServer, Handle, embedded_asset, load_embedded_asset};
 use bevy::camera::visibility::{self, NoFrustumCulling, VisibilityClass};
 use bevy::color::ColorToComponents;
@@ -215,9 +224,10 @@ impl Word {
 /// counting from [`Numbered::base`]. The pair painted at a crossing is the two
 /// looked up with a comma between them.
 ///
-/// Filled by whoever owns the plane. This module knows how to paint characters
-/// at crossings and nothing at all about what a crossing is worth, which is
-/// where the decades, the thousands and the places a number is said to belong.
+/// Filled by whoever owns the plane, from [`said::ticked`] and the step
+/// [`ladder::numbering`] chose. What the shader is handed is characters to lay
+/// out; which power a crossing is said in and how many places it runs to are
+/// worked out before they ever reach it.
 #[derive(Component, Clone)]
 pub struct Numbered {
     /// Which crossing the first word of each ruler is, counted from the space's
@@ -297,6 +307,26 @@ pub fn finest(grid: &Grid) -> f64 {
 )]
 #[component(on_add = visibility::add_visibility_class::<Ruled>)]
 pub struct Ruled;
+
+/// How strongly a cell's lines and its tenth lines are drawn
+///
+/// Faint, both of them, and fainter than what a caller is likely to draw in the
+/// sky rather than under it. A ruling crosses the whole of whatever it is laid
+/// over and is meant to be glanced at rather than looked at, so anything it
+/// competes with wins.
+///
+/// The numbers are not dropped with them. They are the part of the ruling that
+/// is actually read, and they are already as small as a drawn face will go.
+pub const MINOR: f32 = 0.05;
+pub const MAJOR: f32 = 0.13;
+
+/// And how strongly the numbers are
+///
+/// Above the lines, being the part of a ruling that is actually read. The one
+/// figure for all of them: the numbers painted along a plane's own lines and
+/// the numbers standing over it. Both are drawn into the same pass and so come
+/// out at the same strength for the same ink.
+pub const INK: f32 = 0.75;
 
 /// One row of lines across a [`Plane`]
 #[derive(Reflect, Copy, Clone, Debug, Default, PartialEq)]
