@@ -60,7 +60,8 @@ use crate::systems::labels::{
 use crate::systems::selection::Selected;
 use crate::ruled::{
     self, BARE, FIGURES_ACROSS, Family, INK, MAJOR, NONE, NUMBERED, Numbered,
-    Painted, Plane, Ruling, RuledPlugin, Word, numbering, off_plane, ruling,
+    ASIDE, CROSS, CROWDS, EDGE_ON, LIFT, Painted, Plane, READS, Ruling,
+    RuledPlugin, Unit, Word, drawn_at, faded, numbering, off_plane, ruling,
     snapped_to, ticked, told,
 };
 use bevy::math::DVec3;
@@ -181,77 +182,11 @@ const FINEST_SYSTEM_CELL: f64 = 1e-3;
 /// what fades is the horizon rather than anything being looked at.
 const FADE_BEYOND: f64 = 6.;
 
-/// How sharply the plane goes as it is turned edge on
-///
-/// The shader's own term, weighing how square the plane is to the eye. Left at
-/// the default it ships with, which loses the plane as the camera comes level
-/// with it.
-const FADE_EDGE_ON: f32 = 0.25;
-
 /// What the ruling is drawn in
 ///
 /// Cold and unsaturated, so that it reads as chrome laid over the sky rather
 /// than as more of the sky. Every star on the map is warmer than this.
 const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
-
-/// How long each arm of a cross marking a place on the plane is, in pixels
-///
-/// The numbers at the middle are about one point on the plane, and a number
-/// written over a plane with nothing under it is a number floating loose. So
-/// the point is marked, along the plane's own axes, and they stand beside it.
-///
-/// The arms are laid in the plane rather than across the screen, so a cross
-/// out towards the horizon is foreshortened the way the cells around it are.
-/// It is a mark scratched on the plane and not a pointer laid over it.
-const CROSS: f32 = 11.;
-
-/// How tall a number standing over the plane draws, in logical pixels
-///
-/// The line box, which for one line of text is the size the face is set at.
-/// The size the chrome's smallest lettering is set at: these are read at a
-/// glance off a map rather than pored over, and there are up to a dozen of
-/// them on screen at once.
-const READS: f32 = 8.;
-
-/// How far off the plane the middle's numbers are hung, in pixels
-///
-/// The two rulers lie in the plane and their numbers run along them. The third
-/// is about the plane itself, so it is hung along the one direction on screen
-/// that neither ruler runs in. Drawn where they cross it reads as one more
-/// number in the row.
-///
-/// Under the plane rather than over it, which is the opposite side from the one
-/// a pair on the plane is written on. The two are then on either side of the
-/// lines they are both about, and the middle is read against a clear row rather
-/// than into a number.
-///
-/// Far enough down to clear what is drawn around the place itself. The arms of
-/// the cross reach [`CROSS`] from it and the ring around a thing picked out
-/// reaches further still, so a row hung to clear the cross alone lands inside
-/// the ring of a selection the camera is looking straight at.
-const LIFT: f32 = 24.;
-
-/// And how far to the side of a dropped line its own number stands, in pixels
-///
-/// Beside the line rather than over it, for the same reason a pair on the plane
-/// stands beside its crossing: a number with a rule through it is a number to
-/// be worked out rather than read.
-const ASIDE: f32 = 6.;
-
-/// How far a row of numbers reaches around the point it is about, in pixels
-///
-/// About the row the map writes there: three numbers each with its own power, a
-/// unit and two commas comes to some forty characters of a [`READS`] tall
-/// monospaced face, centred on the point, so it runs about ninety five either
-/// side. Across it the [`LIFT`] that hangs it off the plane and half its own
-/// height.
-///
-/// In pixels rather than in the plane's own units because the row holds one
-/// size on screen and the plane does not. A unit of plane covers most of a
-/// digit's width on screen with the camera overhead and a fraction of one with
-/// the camera down near the plane, so a reach fixed in units is a reach that
-/// means something different at every pitch. [`stand_clear`] converts.
-const CROWDS: Vec2 = Vec2::new(96., 30.);
 
 /// One of the two ruled planes
 ///
@@ -275,48 +210,20 @@ struct Ruler {
 #[derive(Resource, Default)]
 struct Descended(Option<Entity>);
 
-/// What a plane's numbers are said in
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Unit {
-    /// Out among the systems
-    LightYears,
-    /// Once the camera has descended into one
-    LightSeconds,
-}
+/// What a plane's numbers are said in, out among the systems
+const LIGHT_YEARS: Unit = Unit { metres: space::LIGHT_YEAR, mark: "Ly" };
 
-impl Unit {
-    /// What the numbers are marked with
-    fn mark(self) -> &'static str {
-        match self {
-            Unit::LightYears => "Ly",
-            Unit::LightSeconds => "Ls",
-        }
-    }
+/// And once the camera has descended into one
+const LIGHT_SECONDS: Unit = Unit { metres: space::LIGHT_SECOND, mark: "Ls" };
 
-    /// How many metres one of these comes to
-    ///
-    /// The map is drawn in metres wherever it is drawn — that is what
-    /// [`crate::space`] settles — so this is what turns a number said out loud
-    /// into a distance across the plane.
-    fn metres(self) -> f64 {
-        match self {
-            Unit::LightYears => space::LIGHT_YEAR,
-            Unit::LightSeconds => space::LIGHT_SECOND,
-        }
-    }
-
-    /// The finest cell a plane hanging in `grid` may be ruled in, said in this
-    ///
-    /// Where the ladder stops. For the galaxy that is arithmetic — the grid
-    /// runs out of places to put a line, [`ruled::finest`] — and for a system
-    /// it is taste, the grid having room to spare.
-    fn finest(self, grid: &Grid) -> f64 {
-        let placed = ruled::finest(grid) * STEADY / self.metres();
-        match self {
-            Unit::LightYears => placed,
-            Unit::LightSeconds => placed.max(FINEST_SYSTEM_CELL),
-        }
-    }
+/// The finest cell a plane hanging in `grid` may be ruled in, said in `unit`
+///
+/// Where the ladder stops. Out among the systems that is arithmetic, the grid
+/// running out of places to put a line, [`ruled::finest`]. Inside one it is
+/// taste, the grid having room to spare.
+fn finest(unit: Unit, grid: &Grid) -> f64 {
+    let placed = ruled::finest(grid) * STEADY / unit.metres;
+    if unit == LIGHT_SECONDS { placed.max(FINEST_SYSTEM_CELL) } else { placed }
 }
 
 /// What the numbers are asked to be said in
@@ -357,8 +264,8 @@ pub enum Said {
 /// asked.
 fn said_in(own: Unit, asked: Said) -> Unit {
     match asked {
-        Said::LightYears => Unit::LightYears,
-        Said::LightSeconds => Unit::LightSeconds,
+        Said::LightYears => LIGHT_YEARS,
+        Said::LightSeconds => LIGHT_SECONDS,
         Said::Whichever => own,
     }
 }
@@ -470,7 +377,7 @@ struct Ruled {
 impl Ruled {
     /// Where something in this space lies from the camera's eye, in metres
     fn seen_from_eye(&self, place: DVec3) -> DVec3 {
-        (place - self.eye) * self.unit.metres()
+        (place - self.eye) * self.unit.metres
     }
 }
 
@@ -543,7 +450,7 @@ struct Placement<'a> {
 impl Placement<'_> {
     /// Where something in this space lies from the camera's eye, in metres
     fn seen_from_eye(&self, place: DVec3) -> DVec3 {
-        (place - self.eye) * self.unit.metres()
+        (place - self.eye) * self.unit.metres
     }
 
     /// How much of this space is drawn at all
@@ -585,10 +492,10 @@ fn placed<'a>(
     // whatever is being looked at, so it is spoken into the space's own unit
     // once, here, and not thought about again.
     let spoken =
-        |place: DVec3| (place - from) * space::LIGHT_YEAR / unit.metres();
-    let across = across * space::LIGHT_YEAR / unit.metres();
+        |place: DVec3| (place - from) * space::LIGHT_YEAR / unit.metres;
+    let across = across * space::LIGHT_YEAR / unit.metres;
 
-    let ruling = ruling(across, unit.finest(grid));
+    let ruling = ruling(across, finest(unit, grid));
     let looking = spoken(orbit.center);
     let step = numbering(across);
 
@@ -709,7 +616,7 @@ fn rule(
         .filter(|_| out_there > 0.)
         .map(|(grid, orbit)| {
             placed(
-                said_in(Unit::LightYears, *said),
+                said_in(LIGHT_YEARS, *said),
                 grid,
                 DVec3::ZERO,
                 across,
@@ -724,7 +631,7 @@ fn rule(
         .filter(|_| down_here > 0.)
         .map(|((_, system, grid), orbit)| {
             placed(
-                said_in(Unit::LightSeconds, *said),
+                said_in(LIGHT_SECONDS, *said),
                 grid,
                 system.position(),
                 across,
@@ -773,14 +680,14 @@ fn rule(
         // itself has no reason to move sideways and every reason not to.
         let (at_cell, at) = space.grid.translation_to_grid(DVec3::new(
             0.,
-            space.at.y * space.unit.metres(),
+            space.at.y * space.unit.metres,
             0.,
         ));
         cell.set_if_neq(at_cell);
         transform.translation = at;
 
         *plane = Plane {
-            cell: space.ruling.fine * space.unit.metres(),
+            cell: space.ruling.fine * space.unit.metres,
             families: space.ruling.rows(space.handed).map(|row| Family {
                 strength: drawn_at(row.strength, bright.0),
                 ..row
@@ -803,7 +710,7 @@ fn rule(
                 bare: plane.numbers.bare,
             },
             reach: space.reach,
-            edge_on: FADE_EDGE_ON,
+            edge_on: EDGE_ON,
             color: LINE,
             // Written by [`ruled::place`], which runs later in the frame.
             eye: plane.eye,
@@ -833,38 +740,6 @@ fn rule(
             spoken.across[into] = Word::say(&ticked(across, space.step));
         }
     }
-}
-
-/// How much of the plane is left at a point on it, as the ruling fades
-///
-/// The plane's own fade, worked out for one point rather than for every pixel:
-/// how far out it stands, softened towards nothing as the view squares up on
-/// the plane, and how edge on the plane is there. `ruled.wgsl` does the same
-/// arithmetic per fragment, and what is written over the plane by hand has to
-/// carry it too or it goes on standing over a ruling that has gone.
-///
-/// Everything drawn on the plane takes it, lines and numbers alike and by the
-/// same amount: what is left of the plane here is what anything on it is drawn
-/// into. What sets a number apart from a line is the ink it starts in and
-/// nothing else — [`INK`] against [`MINOR`] or [`MAJOR`] — so the numbers hold
-/// on well after the lines have gone, which is the right way round, a ruler
-/// being read off its numbers.
-fn faded(from_eye: DVec3, reach: f64) -> f32 {
-    let far = from_eye.length();
-    if far <= 0. || reach <= 0. {
-        return 1.;
-    }
-    let square = (from_eye.y.abs() / far) as f32;
-    let near = (1. - far / reach).clamp(0., 1.) as f32;
-    (near + (1. - near) * square) * (square / FADE_EDGE_ON).min(1.)
-}
-
-/// How strongly something the ruling draws comes out, once [`Bright`] has had
-/// its say
-///
-/// Never past whole, an alpha having nowhere above one to go.
-fn drawn_at(strength: f32, bright: f32) -> f32 {
-    (strength * bright).clamp(0., 1.)
 }
 
 /// What wears a mark, of the two kinds of thing that can
@@ -1047,7 +922,7 @@ fn locate(
             }
         };
         let at =
-            (absolute - ruled.from) * space::LIGHT_YEAR / ruled.unit.metres();
+            (absolute - ruled.from) * space::LIGHT_YEAR / ruled.unit.metres;
 
         let top = ruled.seen_from_eye(at);
         let foot = DVec3::new(top.x, ruled.from_eye.y, top.z);
@@ -1121,8 +996,8 @@ fn spoken(
         // with no room for a third number in it anyway.
         hung: Vec3::NEG_Y * LIFT,
         anchor: TextAnchor::CENTER,
-        said: format!("{} {}", told(at, ruled.step), ruled.unit.mark()),
-        ink: INK * faded(from_eye, ruled.reach),
+        said: format!("{} {}", told(at, ruled.step), ruled.unit.mark),
+        ink: INK * faded(from_eye, ruled.reach, EDGE_ON),
     };
 
     let mut says = Vec::new();
@@ -1144,7 +1019,7 @@ fn spoken(
         says.push(placed(drop.foot, drop.at));
 
         let Some(said) =
-            off_plane(drop.at.y - ruled.at.y, ruled.step, ruled.unit.mark())
+            off_plane(drop.at.y - ruled.at.y, ruled.step, ruled.unit)
         else {
             continue;
         };
@@ -1156,7 +1031,7 @@ fn spoken(
             hung: sideways * ASIDE,
             anchor: TextAnchor::CENTER_RIGHT,
             said,
-            ink: INK * faded(drop.foot, ruled.reach),
+            ink: INK * faded(drop.foot, ruled.reach, EDGE_ON),
         });
     }
 
@@ -1351,13 +1226,13 @@ fn marks(
     };
 
     if middle.0 {
-        let ink = INK * faded(ruled.middle_from_eye, ruled.reach);
+        let ink = INK * faded(ruled.middle_from_eye, ruled.reach, EDGE_ON);
         let (at, arm, color) = scratched(ruled.middle_from_eye, ink);
         cross(&mut gizmos, at, arm, color);
     }
 
     for drop in &dropped.0 {
-        let left = faded(drop.foot, ruled.reach);
+        let left = faded(drop.foot, ruled.reach, EDGE_ON);
         let (foot, arm, color) = scratched(drop.foot, INK * left);
         cross(&mut gizmos, foot, arm, color);
         // The line at the ink the ruling's widest lines are drawn in, so that
@@ -1422,7 +1297,7 @@ mod tests {
     /// stopped subdividing.
     #[test]
     fn the_ladder_stops_at_the_finest_cell() {
-        let finest = Unit::LightYears.finest(&crate::space::galaxy_grid());
+        let finest = finest(LIGHT_YEARS, &crate::space::galaxy_grid());
         for across in zooms().filter(|across| *across < finest) {
             let ruled = ruling(across, finest);
             assert!(
@@ -1436,7 +1311,7 @@ mod tests {
     /// And having stopped, it fades out rather than standing there empty
     #[test]
     fn a_cell_wider_than_the_view_is_not_drawn() {
-        let finest = Unit::LightYears.finest(&crate::space::galaxy_grid());
+        let finest = finest(LIGHT_YEARS, &crate::space::galaxy_grid());
         let ruled = ruling(finest / 100., finest);
 
         assert_eq!(ruled.drawn, 0.);
@@ -1505,23 +1380,23 @@ mod tests {
         let reach = 60.;
         // Straight down onto the plane, which is where nothing fades: the
         // distance term is softened away entirely as the view squares up.
-        assert_eq!(faded(DVec3::new(0., -10., 0.), reach), 1.);
+        assert_eq!(faded(DVec3::new(0., -10., 0.), reach, EDGE_ON), 1.);
         // And level with it, where the plane is a line across the sky.
-        assert_eq!(faded(DVec3::new(10., 0., 0.), reach), 0.);
-        // Between the two it carries both terms. Half of `FADE_EDGE_ON` from
+        assert_eq!(faded(DVec3::new(10., 0., 0.), reach, EDGE_ON), 0.);
+        // Between the two it carries both terms. Half of `EDGE_ON` from
         // the plane, ten out of sixty along, comes to five sixths of the
         // distance left and half of that for being edge on.
-        let square = f64::from(FADE_EDGE_ON) / 2.;
+        let square = f64::from(EDGE_ON) / 2.;
         let low = DVec3::new((1. - square * square).sqrt(), -square, 0.) * 10.;
         assert!(
-            (faded(low, reach) - 0.427_08).abs() < 1e-4,
+            (faded(low, reach, EDGE_ON) - 0.427_08).abs() < 1e-4,
             "came out {}",
-            faded(low, reach)
+            faded(low, reach, EDGE_ON)
         );
         // Out at the reach the distance term has run out, and what is left is
         // what squaring up put back.
         let out = DVec3::new(0., -reach, 0.);
-        assert_eq!(faded(out, reach), 1.);
+        assert_eq!(faded(out, reach, EDGE_ON), 1.);
     }
 
     /// Everything the ruling draws follows the one knob
@@ -1586,7 +1461,7 @@ mod tests {
         let middle = says.first().expect("the middle is said");
 
         let stood = drawn_at(middle.ink * ruled.strength, bright);
-        let left = faded(ruled.middle_from_eye, ruled.reach);
+        let left = faded(ruled.middle_from_eye, ruled.reach, EDGE_ON);
         assert!(left > 0. && left < 1., "nothing to tell apart at {left}");
         assert!(
             (stood - painted * left).abs() < 1e-6,
@@ -1628,7 +1503,7 @@ mod tests {
             "a step above the plane came out {}",
             says[2].said
         );
-        assert!(says[2].said.ends_with(ruled.unit.mark()));
+        assert!(says[2].said.ends_with(ruled.unit.mark));
     }
 
     /// And nothing is said about the middle when the middle is switched off
@@ -1658,7 +1533,7 @@ mod tests {
     /// The map opens on a view the ruled plane can be seen in
     ///
     /// Level with the plane the camera looks along it rather than at it, and
-    /// the ruling is faded out entirely below [`FADE_EDGE_ON`] of square on. A
+    /// the ruling is faded out entirely below [`EDGE_ON`] of square on. A
     /// map that opens there opens with no ruler on it, and a ruler that has to
     /// be found by dragging is a ruler nobody knows is there.
     #[test]
@@ -1668,8 +1543,8 @@ mod tests {
         // view is the pitch alone.
         let square = OrbitCamera::default().pitch.sin().abs();
         assert!(
-            square > FADE_EDGE_ON,
-            "opens {square} from square on, faded out under {FADE_EDGE_ON}"
+            square > EDGE_ON,
+            "opens {square} from square on, faded out under {EDGE_ON}"
         );
     }
 
@@ -1677,16 +1552,16 @@ mod tests {
     #[test]
     fn a_space_is_said_in_its_own_unit() {
         assert_eq!(
-            said_in(Unit::LightYears, Said::Whichever),
-            Unit::LightYears
+            said_in(LIGHT_YEARS, Said::Whichever),
+            LIGHT_YEARS
         );
         assert_eq!(
-            said_in(Unit::LightSeconds, Said::Whichever),
-            Unit::LightSeconds
+            said_in(LIGHT_SECONDS, Said::Whichever),
+            LIGHT_SECONDS
         );
         // And either may be pinned from the bar.
-        assert_eq!(said_in(Unit::LightSeconds, Said::LightYears), Unit::LightYears);
-        assert_eq!(said_in(Unit::LightYears, Said::LightSeconds), Unit::LightSeconds);
+        assert_eq!(said_in(LIGHT_SECONDS, Said::LightYears), LIGHT_YEARS);
+        assert_eq!(said_in(LIGHT_YEARS, Said::LightSeconds), LIGHT_SECONDS);
     }
 
     /// So the cells never change size but by a decade
@@ -1698,13 +1573,13 @@ mod tests {
     /// about three, in one frame, and the ruler stops being a ruler.
     #[test]
     fn the_cells_never_change_size_but_by_a_decade() {
-        for space in [Unit::LightYears, Unit::LightSeconds] {
+        for space in [LIGHT_YEARS, LIGHT_SECONDS] {
             for across in zooms() {
                 let unit = said_in(space, Said::Whichever);
-                let seen = across * space::LIGHT_YEAR / unit.metres();
-                let cell = ruling(seen, 0.).fine * unit.metres();
+                let seen = across * space::LIGHT_YEAR / unit.metres;
+                let cell = ruling(seen, 0.).fine * unit.metres;
                 // In the space's own unit, whatever it was said in.
-                let decades = (cell / space.metres()).log10();
+                let decades = (cell / space.metres).log10();
                 assert!(
                     (decades - decades.round()).abs() < 1e-9,
                     "{across} across in {space:?} rules cells of {cell}m, \
@@ -1824,7 +1699,7 @@ mod tests {
 
         let reading = app.world().resource::<Reading>();
         let ruled = reading.0.as_ref().expect("nothing was left to read");
-        assert_eq!(ruled.unit, Unit::LightYears);
+        assert_eq!(ruled.unit, LIGHT_YEARS);
         assert!(ruled.strength > 0.);
         // A hundred back takes in about thirty eight light years. Ten apart
         // is what the ladder alone would give, and the widest a pair can be is
@@ -1942,9 +1817,9 @@ mod tests {
     /// The two units are marked apart
     #[test]
     fn the_units_are_marked() {
-        assert_eq!(Unit::LightYears.mark(), "Ly");
-        assert_eq!(Unit::LightSeconds.mark(), "Ls");
-        assert!(Unit::LightSeconds.metres() < Unit::LightYears.metres());
+        assert_eq!(LIGHT_YEARS.mark, "Ly");
+        assert_eq!(LIGHT_SECONDS.mark, "Ls");
+        assert!(LIGHT_SECONDS.metres < LIGHT_YEARS.metres);
     }
 
     /// A system's plane is ruled far finer than the galaxy's can be
@@ -1954,10 +1829,10 @@ mod tests {
     /// after it has stopped being able to.
     #[test]
     fn a_system_rules_finer_than_the_galaxy() {
-        let galaxy = Unit::LightYears.finest(&crate::space::galaxy_grid())
-            * Unit::LightYears.metres();
-        let system = Unit::LightSeconds.finest(&crate::space::system_grid())
-            * Unit::LightSeconds.metres();
+        let galaxy = finest(LIGHT_YEARS, &crate::space::galaxy_grid())
+            * LIGHT_YEARS.metres;
+        let system = finest(LIGHT_SECONDS, &crate::space::system_grid())
+            * LIGHT_SECONDS.metres;
 
         assert!(
             system < galaxy / 1e3,

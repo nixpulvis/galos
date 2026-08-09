@@ -41,6 +41,7 @@
 //! reads it.
 pub(crate) mod cut;
 pub(crate) mod ladder;
+pub(crate) mod read;
 pub(crate) mod said;
 
 pub use cut::Face;
@@ -48,7 +49,10 @@ pub use ladder::{
     CELLS_ACROSS, FIGURES_ACROSS, Ruling, numbering, ruling, snapped,
     snapped_to, tick_step,
 };
-pub use said::{RESOLVES, off_plane, power, ticked, told};
+pub use read::{
+    ASIDE, CROSS, CROWDS, EDGE_ON, LIFT, READS, drawn_at, faded,
+};
+pub use said::{RESOLVES, Unit, off_plane, power, ticked, told};
 
 use bevy::asset::{AssetServer, Handle, embedded_asset, load_embedded_asset};
 use bevy::camera::visibility::{self, NoFrustumCulling, VisibilityClass};
@@ -446,7 +450,7 @@ impl Default for Plane {
                 Family::default(),
             ],
             reach: 1e3,
-            edge_on: 0.25,
+            edge_on: read::EDGE_ON,
             color: Color::WHITE,
             eye: Vec3::ZERO,
             facing: Quat::IDENTITY,

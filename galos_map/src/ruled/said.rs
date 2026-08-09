@@ -10,6 +10,20 @@
 //! arithmetic, and the shader is left with characters to lay out.
 use bevy::math::DVec3;
 
+/// What a plane's numbers are said in
+///
+/// A length and what to call it. Everything else here counts in whatever the
+/// caller is counting in and never asks what that is; this is only for the
+/// numbers that stand away from a ruler, with nothing beside them to say what
+/// they count.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Unit {
+    /// How many of whatever the world is drawn in one of these comes to
+    pub metres: f64,
+    /// And what a number said in it is marked with
+    pub mark: &'static str,
+}
+
 /// How many parts of a step a position is said to
 ///
 /// A tenth of one. Written to exactly the places its own step carries, a
@@ -113,7 +127,7 @@ pub fn told(at: DVec3, step: f64) -> String {
 /// Nothing at all for something standing on the plane, or near enough that the
 /// number would read as nought. The line is already as short as it can be
 /// there, and a `+0.0` beside it says less than the line does.
-pub fn off_plane(high: f64, step: f64, mark: &str) -> Option<String> {
+pub fn off_plane(high: f64, step: f64, unit: Unit) -> Option<String> {
     let fine = step / RESOLVES;
     let said = ticked(high, fine);
     if said == ticked(0., fine) {
@@ -127,13 +141,16 @@ pub fn off_plane(high: f64, step: f64, mark: &str) -> Option<String> {
     // at the line's foot, and a number said twice on one screen is a number to
     // be checked against itself.
     let sign = if high > 0. { "+" } else { "" };
-    Some(format!("{sign}{said} {mark}"))
+    Some(format!("{sign}{said} {}", unit.mark))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use super::super::ladder::{numbering, tests::zooms};
+
+    const LIGHT_YEARS: Unit = Unit { metres: 9.4607304725808e15, mark: "Ly" };
+    const LIGHT_SECONDS: Unit = Unit { metres: 2.99792458e8, mark: "Ls" };
 
     /// Somewhere a few views out from where the map is measured from, for a
     /// view `across` wide
@@ -308,16 +325,16 @@ pub(crate) mod tests {
     #[test]
     fn a_dropped_line_says_which_way_it_went() {
         assert_eq!(
-            off_plane(7., 2., "Ly").as_deref(),
+            off_plane(7., 2., LIGHT_YEARS).as_deref(),
             Some("+7.0 Ly")
         );
         assert_eq!(
-            off_plane(-7., 2., "Ly").as_deref(),
+            off_plane(-7., 2., LIGHT_YEARS).as_deref(),
             Some("-7.0 Ly")
         );
         // And in whatever the numbers are being said in.
         assert_eq!(
-            off_plane(-1500., 500., "Ls").as_deref(),
+            off_plane(-1500., 500., LIGHT_SECONDS).as_deref(),
             Some("-1.50e3 Ls")
         );
     }
@@ -328,9 +345,9 @@ pub(crate) mod tests {
     /// says less than the line does.
     #[test]
     fn a_line_dropped_nowhere_says_nothing() {
-        assert_eq!(off_plane(0., 2., "Ly"), None);
+        assert_eq!(off_plane(0., 2., LIGHT_YEARS), None);
         // Under half of the last place it is written to, which reads as nought.
-        assert_eq!(off_plane(0.04, 2., "Ly"), None);
-        assert!(off_plane(0.06, 2., "Ly").is_some());
+        assert_eq!(off_plane(0.04, 2., LIGHT_YEARS), None);
+        assert!(off_plane(0.06, 2., LIGHT_YEARS).is_some());
     }
 }
