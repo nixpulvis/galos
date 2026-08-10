@@ -18,7 +18,7 @@
 
 use crate::Db;
 use crate::schedule::MapSet;
-use crate::search::Asking;
+use crate::search::Pending;
 use crate::systems::System;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
@@ -29,10 +29,10 @@ use galos_db::systems::System as DbSystem;
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
     app.init_resource::<DimTo>();
-    app.init_resource::<Asked>();
+    app.init_resource::<LookupNote>();
     app.init_resource::<Resolving>();
     app.init_resource::<FactionResults>();
-    app.add_message::<Wanted>();
+    app.add_message::<Lookup>();
     // Answering what the user asked for, so with the rest of that.
     app.add_systems(Update, resolve.in_set(MapSet::Search));
     // After the systems it marks exist. A system spawned this frame is
@@ -200,23 +200,23 @@ impl Filter {
     }
 }
 
-/// A name the user has typed, to be looked up
+/// A name to be resolved into the id a filter tests against
 ///
 /// What is typed is part of a name and what a filter tests against is an id,
 /// so something has to find the one from the other. That is a database
 /// question, asked here rather than in the bar, which draws during egui's own
 /// pass and has no business waiting on anything.
 ///
-/// Its own message rather than a [`crate::search::Searched`]: asking for a
+/// Its own message rather than a [`crate::search::Search`]: asking for a
 /// filter is not searching the map. It goes nowhere, fetches nothing in
 /// particular, and picks nothing out.
 #[derive(Message, Debug, Clone)]
-pub enum Wanted {
+pub enum Lookup {
     /// Factions whose names hold this
     Faction { name: String },
 }
 
-/// What became of the last name the filter's field was asked about
+/// What became of the last name looked up
 ///
 /// What was found is a list rather than a state, so this says only what a
 /// list cannot: that a name matched nothing at all. Nothing on screen is what
@@ -229,12 +229,12 @@ pub enum Wanted {
 /// a system that was never found, and the note about a faction would be read
 /// out under the box that has nothing to do with it.
 #[derive(Resource, Default, Debug, PartialEq, Eq)]
-pub enum Asked {
+pub enum LookupNote {
     /// Nothing has been asked about, or what was found is standing in a list
     #[default]
     Nothing,
     /// Why there is no list
-    Trouble(String),
+    Failed(String),
 }
 
 /// How many factions a search answers with
@@ -247,7 +247,7 @@ const FACTIONS: i64 = 25;
 /// One at a time: the field asks about one name and holds what was typed
 /// until it is answered, so a second ask is the user having changed their
 /// mind rather than a second question.
-pub type Resolving = Asking<String, Vec<DbFaction>>;
+pub type Resolving = Pending<String, Vec<DbFaction>>;
 
 /// The factions the last search found, for the bar to draw
 ///
@@ -286,18 +286,18 @@ impl FactionResults {
 /// question only the user can answer, so the list is offered and a click
 /// chooses, exactly as a search for a system is answered.
 fn resolve(
-    mut wanted: MessageReader<Wanted>,
+    mut lookups: MessageReader<Lookup>,
     mut resolving: ResMut<Resolving>,
     mut results: ResMut<FactionResults>,
-    mut answer: ResMut<Asked>,
+    mut note: ResMut<LookupNote>,
     time: Res<Time<Real>>,
     db: Res<Db>,
 ) {
     let now = time.last_update().unwrap_or(time.startup());
     let pool = AsyncComputeTaskPool::get();
 
-    for asked in wanted.read() {
-        let Wanted::Faction { name } = asked;
+    for lookup in lookups.read() {
+        let Lookup::Faction { name } = lookup;
         let db = db.0.clone();
         let asked = name.clone();
         resolving.ask(
@@ -313,10 +313,10 @@ fn resolve(
 
     if let Some((name, found)) = resolving.answered(now) {
         results.0 = found;
-        *answer = if results.is_empty() {
-            Asked::Trouble(format!("No faction named {name}"))
+        *note = if results.is_empty() {
+            LookupNote::Failed(format!("No faction named {name}"))
         } else {
-            Asked::Nothing
+            LookupNote::Nothing
         };
     }
 }
@@ -326,14 +326,14 @@ fn resolve(
 /// Off without being taken away, so that one can be lifted to see what it was
 /// hiding and put back without being typed in again.
 #[derive(Debug, Clone)]
-pub struct Active {
+pub struct Entry {
     pub filter: Filter,
     pub enabled: bool,
 }
 
 /// Every filter the user has added
 #[derive(Resource, Default)]
-pub struct Filters(Vec<Active>);
+pub struct Filters(Vec<Entry>);
 
 impl Filters {
     /// Whether any enabled filter admits `system`
@@ -364,7 +364,7 @@ impl Filters {
         if self.0.iter().any(|active| active.filter == filter) {
             return;
         }
-        self.0.push(Active { filter, enabled: true });
+        self.0.push(Entry { filter, enabled: true });
     }
 
     /// Stop asking the filter at `index`
@@ -375,7 +375,7 @@ impl Filters {
     }
 
     /// The filters in the order they were added
-    pub fn iter(&self) -> impl Iterator<Item = &Active> {
+    pub fn iter(&self) -> impl Iterator<Item = &Entry> {
         self.0.iter()
     }
 
@@ -405,7 +405,7 @@ impl Filters {
     }
 
     /// The filter standing in the `index`th place
-    pub fn get(&self, index: usize) -> Option<&Active> {
+    pub fn get(&self, index: usize) -> Option<&Entry> {
         self.0.get(index)
     }
 
@@ -454,22 +454,22 @@ impl Filters {
     /// Nothing where they admit everything, which is where none of them is
     /// turned on. A query narrowed by two empty lists answers with nothing at
     /// all, where what is meant is the whole sky.
-    pub fn admitting(&self) -> Option<Admitting> {
-        let mut admitting = Admitting::default();
+    pub fn admitted(&self) -> Option<Admitted> {
+        let mut admitted = Admitted::default();
         let mut asked = false;
 
         for active in self.0.iter().filter(|active| active.enabled) {
             asked = true;
             match &active.filter {
-                Filter::Faction { id, .. } => admitting.factions.push(*id),
+                Filter::Faction { id, .. } => admitted.factions.push(*id),
                 Filter::Route { systems, .. }
                 | Filter::Systems { systems, .. } => {
-                    admitting.systems.extend(systems.iter().copied())
+                    admitted.systems.extend(systems.iter().copied())
                 }
             }
         }
 
-        asked.then_some(admitting)
+        asked.then_some(admitted)
     }
 }
 
@@ -483,7 +483,7 @@ impl Filters {
 /// admitting different things are different questions. Hence [`Eq`] and
 /// [`Hash`]: what tells those questions apart is these lists.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub struct Admitting {
+pub struct Admitted {
     /// The factions asked for, by id
     pub factions: Vec<i32>,
     /// The systems asked for outright, by address
@@ -527,7 +527,7 @@ impl DimTo {
     ///
     /// For what is painted straight rather than through a material: the two
     /// rings are gizmos, and a gizmo takes its color at the call.
-    pub fn against(&self, color: Srgba, filtered: bool) -> Srgba {
+    pub fn as_drawn(&self, color: Srgba, filtered: bool) -> Srgba {
         if filtered {
             Srgba { alpha: color.alpha * self.0, ..color }
         } else {
@@ -596,7 +596,7 @@ mod tests {
     /// what it has to look like again once one has been.
     #[test]
     fn nothing_asked_says_nothing() {
-        assert_eq!(Asked::default(), Asked::Nothing);
+        assert_eq!(LookupNote::default(), LookupNote::Nothing);
     }
 
     /// With nothing asked, everything passes
@@ -718,22 +718,22 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(faction(7));
 
-        let admitting = filters.admitting().expect("something asked for");
+        let admitted = filters.admitted().expect("something asked for");
 
-        assert_eq!(admitting.factions, vec![7]);
-        assert!(admitting.systems.is_empty());
+        assert_eq!(admitted.factions, vec![7]);
+        assert!(admitted.systems.is_empty());
     }
 
     /// A hand-picked set says its systems outright
     #[test]
     fn a_gathered_filter_admits_by_address() {
         let mut filters = Filters::default();
-        filters.add(gathered(&[1, 2, 3]));
+        filters.add(systems(&[1, 2, 3]));
 
-        let admitting = filters.admitting().expect("something asked for");
+        let admitted = filters.admitted().expect("something asked for");
 
-        assert_eq!(admitting.systems, vec![1, 2, 3]);
-        assert!(admitting.factions.is_empty());
+        assert_eq!(admitted.systems, vec![1, 2, 3]);
+        assert!(admitted.factions.is_empty());
     }
 
     /// Several of them are gathered into the two lists between them
@@ -745,12 +745,12 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(faction(7));
         filters.add(faction(9));
-        filters.add(gathered(&[1, 2]));
+        filters.add(systems(&[1, 2]));
 
-        let admitting = filters.admitting().expect("something asked for");
+        let admitted = filters.admitted().expect("something asked for");
 
-        assert_eq!(admitting.factions, vec![7, 9]);
-        assert_eq!(admitting.systems, vec![1, 2]);
+        assert_eq!(admitted.factions, vec![7, 9]);
+        assert_eq!(admitted.systems, vec![1, 2]);
     }
 
     /// A filter turned off asks for nothing, and is not asked for
@@ -760,7 +760,7 @@ mod tests {
         filters.add(faction(7));
         filters.toggle(0);
 
-        assert_eq!(filters.admitting(), None);
+        assert_eq!(filters.admitted(), None);
     }
 
     /// Nothing held admits the whole sky rather than none of it
@@ -769,7 +769,7 @@ mod tests {
     /// what is meant is everything, so there is nothing to narrow it by.
     #[test]
     fn no_filters_admit_everything() {
-        assert_eq!(Filters::default().admitting(), None);
+        assert_eq!(Filters::default().admitted(), None);
     }
 
     /// A filter that admits nothing asks for nothing, and means it
@@ -787,7 +787,7 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(route(&[]));
 
-        assert_eq!(filters.admitting(), Some(Admitting::default()));
+        assert_eq!(filters.admitted(), Some(Admitted::default()));
         assert!(!filters.admit(&member(1, &[7])));
     }
 
@@ -804,7 +804,7 @@ mod tests {
     }
 
     /// A hand-picked set holding the systems at `addresses`
-    fn gathered(addresses: &[i64]) -> Filter {
+    fn systems(addresses: &[i64]) -> Filter {
         Filter::Systems {
             label: format!("{} systems", addresses.len()),
             systems: addresses.to_vec(),
@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn a_gathered_set_admits_what_was_picked() {
         let mut filters = Filters::default();
-        filters.add(gathered(&[7, 3]));
+        filters.add(systems(&[7, 3]));
 
         assert!(filters.admit(&member(3, &[])));
         assert!(filters.admit(&member(7, &[])));
@@ -829,8 +829,8 @@ mod tests {
     /// worth holding a list to.
     #[test]
     fn a_gathered_set_has_no_order_of_its_own() {
-        assert!(!gathered(&[7, 3]).ordered());
-        assert_eq!(gathered(&[7, 3]).place_of(3), None);
+        assert!(!systems(&[7, 3]).ordered());
+        assert_eq!(systems(&[7, 3]).place_of(3), None);
     }
 
     /// A route between the systems at `addresses`
@@ -908,7 +908,7 @@ mod tests {
         assert_eq!(route(&[1, 2, 3, 4]).hops(), Some(3));
         assert_eq!(route(&[]).hops(), None);
         assert_eq!(faction(7).hops(), None);
-        assert_eq!(gathered(&[1, 2]).hops(), None);
+        assert_eq!(systems(&[1, 2]).hops(), None);
     }
 
     /// A second route stands beside the first

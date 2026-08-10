@@ -33,7 +33,7 @@
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{Apparent, Body};
+use crate::systems::bodies::spawn::{ApparentSize, Body};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_POINTS,
@@ -181,38 +181,38 @@ impl Picked {
 pub struct Selection(Vec<Picked>);
 
 impl Selection {
-    /// Pick `what` out, alongside the rest or in place of them
+    /// Pick `picked` out, alongside the rest or in place of them
     ///
     /// What a click means, wherever the click landed and whatever it landed
     /// on. A star in the sky, a planet inside one and the line naming a system
     /// in what a search found are all picked out by the one gesture and
-    /// through the one call: `gathering` is whether the user held the modifier
+    /// through the one call: `gathering` is whether the user held the key
     /// that means as well as rather than instead.
-    pub fn pick(&mut self, what: Picked, gathering: bool) {
+    pub fn pick(&mut self, picked: Picked, gathering: bool) {
         if gathering {
-            self.toggle(what);
+            self.toggle(picked);
         } else {
-            self.set(what);
+            self.set(picked);
         }
     }
 
-    /// Pick out `what` alone, in place of whatever was picked out before
-    pub fn set(&mut self, what: Picked) {
+    /// Pick out `picked` alone, in place of whatever was picked out before
+    pub fn set(&mut self, picked: Picked) {
         self.0.clear();
-        self.0.push(what);
+        self.0.push(picked);
     }
 
-    /// Pick `what` out alongside the rest, or let go of it if it is already
+    /// Pick `picked` out alongside the rest, or let go of it if it is already
     ///
     /// One gesture that builds a set and takes it apart again, so that
     /// something added by mistake is undone by doing the same thing twice
     /// rather than by starting over.
-    pub fn toggle(&mut self, what: Picked) {
-        match self.0.iter().position(|held| held.same(&what)) {
+    pub fn toggle(&mut self, picked: Picked) {
+        match self.0.iter().position(|one| one.same(&picked)) {
             Some(at) => {
                 self.0.remove(at);
             }
-            None => self.0.push(what),
+            None => self.0.push(picked),
         }
     }
 
@@ -266,7 +266,7 @@ impl Selection {
     /// them. What asks this is asking about places: a filter admits systems, a
     /// route runs between two of them, and a body is neither.
     pub fn systems(&self) -> impl Iterator<Item = &System> {
-        self.0.iter().filter_map(|held| match held {
+        self.0.iter().filter_map(|one| match one {
             Picked::System(system) => Some(system),
             Picked::Body(_) => None,
         })
@@ -342,10 +342,10 @@ fn follow_selection(
     let mut settled = vec![false; selection.0.len()];
 
     for (entity, system) in &marked {
-        let held = selection.0.iter().position(|held| {
-            held.address() == system.address && held.id().is_none()
+        let at = selection.0.iter().position(|one| {
+            one.address() == system.address && one.id().is_none()
         });
-        match held {
+        match at {
             Some(at) => {
                 settled[at] = true;
                 if system.is_changed() {
@@ -359,10 +359,10 @@ fn follow_selection(
     }
 
     for (entity, body) in &marked_bodies {
-        let held = selection.0.iter().position(|held| {
-            held.address() == body.address && held.id() == Some(body.id)
+        let at = selection.0.iter().position(|one| {
+            one.address() == body.address && one.id() == Some(body.id)
         });
-        match held {
+        match at {
             Some(at) => settled[at] = true,
             None => {
                 commands.entity(entity).remove::<Selected>();
@@ -377,10 +377,10 @@ fn follow_selection(
     // One sweep for however many are still missing, rather than one each.
     // The sky runs to thousands of systems and the selection to a handful.
     for (entity, system) in &systems {
-        let held = selection.0.iter().position(|held| {
-            held.address() == system.address && held.id().is_none()
+        let found = selection.0.iter().position(|one| {
+            one.address() == system.address && one.id().is_none()
         });
-        let Some(at) = held else { continue };
+        let Some(at) = found else { continue };
         if settled[at] {
             continue;
         }
@@ -393,10 +393,10 @@ fn follow_selection(
     }
 
     for (entity, body) in &bodies {
-        let held = selection.0.iter().position(|held| {
-            held.address() == body.address && held.id() == Some(body.id)
+        let found = selection.0.iter().position(|one| {
+            one.address() == body.address && one.id() == Some(body.id)
         });
-        let Some(at) = held else { continue };
+        let Some(at) = found else { continue };
         if settled[at] {
             continue;
         }
@@ -414,8 +414,8 @@ fn follow_selection(
         .any(|(at, found)| !found && selection.0[at].id().is_some());
     if dropping {
         let mut at = 0;
-        selection.0.retain(|held| {
-            let keep = settled[at] || held.id().is_none();
+        selection.0.retain(|one| {
+            let keep = settled[at] || one.id().is_none();
             at += 1;
             keep
         });
@@ -479,7 +479,7 @@ fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
     spyglass: Res<Spyglass>,
-    seen_as: Res<Apparent>,
+    seen_as: Res<ApparentSize>,
     selected: Query<
         (
             Entity,
@@ -542,7 +542,7 @@ fn ring(
         if !spyglass.reaches(orbit.center, position) {
             continue;
         }
-        let standing = seen_as.standing(entity);
+        let standing = seen_as.standing_for(entity);
         if standing <= 0. {
             continue;
         }
@@ -591,7 +591,7 @@ fn ringed(dim: &DimTo, filtered: bool) -> Srgba {
     if filtered && dim.0 == 0. {
         SELECTION
     } else {
-        dim.against(SELECTION, filtered)
+        dim.as_drawn(SELECTION, filtered)
     }
 }
 
@@ -600,7 +600,7 @@ mod tests {
     use super::*;
     use crate::systems::pointing::PRIMARY;
     use crate::systems::tests::system;
-    use crate::ui::Grasp;
+    use crate::ui::PressOwner;
 
     /// A system picked out, which is what most of these are about
     fn picked(address: i64) -> Picked {
@@ -714,7 +714,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
-        app.init_resource::<Grasp>();
+        app.init_resource::<PressOwner>();
 
         let mut selection = Selection::default();
         selection.set(picked(1));
@@ -744,7 +744,7 @@ mod tests {
 
         let world = app.world_mut();
         let buttons = world.resource::<ButtonInput<MouseButton>>().clone();
-        world.resource_mut::<Grasp>().settle(&buttons, wanted);
+        world.resource_mut::<PressOwner>().settle(&buttons, wanted);
     }
 
     /// Whether anything is still held

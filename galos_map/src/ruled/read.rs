@@ -8,7 +8,7 @@
 //! Everything here fades out towards the plane's horizon with the ruling, so a
 //! number standing over the plane goes as the plane goes. What it does not do
 //! is follow the pitch: see [`faded`].
-use super::{Face, INK, MAJOR, Plane, Unit, off_plane, told};
+use super::{DistanceUnit, Face, INK, MAJOR, Plane, off_plane, told};
 use bevy::ecs::system::SystemParam;
 use bevy::math::{DMat3, DVec3, Vec2};
 use bevy::prelude::*;
@@ -145,7 +145,7 @@ pub struct Reading {
     pub eye: DVec3,
     /// How far apart two numbers are, in [`Reading::unit`]
     pub step: f64,
-    pub unit: Unit,
+    pub unit: DistanceUnit,
     /// How much of the ruling is drawn, which everything over it follows
     pub strength: f32,
     /// How loudly the whole of it is asked for, over that
@@ -160,7 +160,7 @@ impl Default for Reading {
             at: DVec3::ZERO,
             eye: DVec3::ZERO,
             step: 0.,
-            unit: Unit { metres: 1., mark: "m" },
+            unit: DistanceUnit { metres: 1., mark: "m" },
             strength: 0.,
             bright: 1.,
             middle: false,
@@ -207,10 +207,10 @@ pub struct Located;
 /// and read by [`readouts`], which writes the numbers, and [`marks`], which
 /// draws the lines.
 #[derive(Component, Default)]
-pub struct Dropped(Vec<Drop>);
+pub struct Plumbs(Vec<Plumb>);
 
 /// One line dropped to the plane, and what it is about
-struct Drop {
+struct Plumb {
     /// Where the thing itself stands, as an offset from the camera's eye
     ///
     /// The head of the line, the other end being straight below it on the
@@ -255,7 +255,7 @@ pub(super) fn locate(
         &Reading,
         &CellCoord,
         &Transform,
-        &mut Dropped,
+        &mut Plumbs,
     )>,
     // Whether a thing is drawn as well as located. Something the caller has
     // hidden is not there to be located, and a line dropped from where it
@@ -264,8 +264,8 @@ pub(super) fn locate(
     located: Query<Mark, With<Located>>,
     grids: Grids,
 ) {
-    for (entity, plane, reading, cell, transform, mut dropped) in &mut planes {
-        dropped.0.clear();
+    for (entity, plane, reading, cell, transform, mut plumbs) in &mut planes {
+        plumbs.0.clear();
         let Some(grid) = grids.parent_grid(entity) else { continue };
         if reading.strength <= 0. || reading.unit.metres <= 0. {
             continue;
@@ -302,7 +302,7 @@ pub(super) fn locate(
             // plane lies flat.
             let under = DVec3::new(at.x, reading.at.y, at.z);
             let foot = reading.seen_from_eye(plane.facing, under);
-            dropped.0.push(Drop { top, foot, middle: (top + foot) / 2., at });
+            plumbs.0.push(Plumb { top, foot, middle: (top + foot) / 2., at });
         }
     }
 }
@@ -344,7 +344,7 @@ pub struct Readout;
 pub struct Readouts(Vec<Entity>);
 
 /// One number standing over a plane, and where it stands
-struct Says {
+struct ReadoutText {
     /// The place it is about, as an offset from the camera's eye
     from_eye: DVec3,
     /// Which way it is hung off that place, and how far, in pixels
@@ -382,15 +382,15 @@ struct Says {
 fn spoken(
     plane: &Plane,
     reading: &Reading,
-    dropped: &Dropped,
+    plumbs: &Plumbs,
     sideways: Vec3,
-) -> Vec<Says> {
+) -> Vec<ReadoutText> {
     let reach = plane.reach;
     // What the plane can say about one place on it, hung under the mark there.
     // The middle of the view and the foot of every dropped line are the same
     // kind of thing, a place on the plane worth locating, so they are said the
     // same way.
-    let placed = |from_eye: DVec3, at: DVec3, gives_way: bool| Says {
+    let placed = |from_eye: DVec3, at: DVec3, gives_way: bool| ReadoutText {
         from_eye,
         // Along the one direction neither ruler runs in, and under the plane
         // rather than over it, which is the opposite side from the one a pair
@@ -425,8 +425,8 @@ fn spoken(
     // the mark at the line's foot, where the two rulers can be read against
     // them; the line itself carries only how far off the plane it went, which
     // is the one thing about it neither ruler nor mark can show.
-    for drop in &dropped.0 {
-        says.push(placed(drop.foot, drop.at, true));
+    for plumb in &plumbs.0 {
+        says.push(placed(plumb.foot, plumb.at, true));
 
         // A slot whether or not there is anything to put in it. A thing
         // sitting on the plane says nothing about how far off it is, and a
@@ -434,10 +434,10 @@ fn spoken(
         // place, so a number would change which mesh it is drawn from as a
         // selection drifted across the plane.
         let said =
-            off_plane(drop.at.y - reading.at.y, reading.step, reading.unit);
+            off_plane(plumb.at.y - reading.at.y, reading.step, reading.unit);
         let silent = said.is_none();
-        says.push(Says {
-            from_eye: drop.middle,
+        says.push(ReadoutText {
+            from_eye: plumb.middle,
             // Beside the line rather than over it, for the same reason a pair
             // on the plane stands beside its crossing: a number with a rule
             // through it is a number to be worked out rather than read.
@@ -446,7 +446,7 @@ fn spoken(
             gives_way: true,
             hue: plane.color,
             said: said.unwrap_or_default(),
-            ink: if silent { 0. } else { INK * faded(drop.foot, reach) },
+            ink: if silent { 0. } else { INK * faded(plumb.foot, reach) },
         });
     }
 
@@ -456,17 +456,19 @@ fn spoken(
 /// Where the camera stands
 type Eye = (&'static Transform, &'static Camera);
 
-/// And what it is not
+/// And which one it is: the camera the world is drawn around
 ///
-/// `Without<Readout>` is already true of any camera. It is spelled out so the
-/// scheduler can prove the query disjoint from the one that writes a readout's
-/// `Transform`, which it would otherwise take to overlap.
-type NotARow = (With<FloatingOrigin>, Without<Readout>);
+/// `Without<Readout>` is already true of any camera, and adds nothing to what
+/// this picks. It is spelled out so the scheduler can prove the query disjoint
+/// from the one that writes a readout's `Transform`, which it would otherwise
+/// take to overlap.
+type AtOrigin = (With<FloatingOrigin>, Without<Readout>);
 
 /// Everything one readout is written through
 ///
 /// Where it stands, what it says, which side of its place it says it on,
-/// whether it says anything at all, and what it is drawn in.
+/// whether it says anything at all, and what it is drawn in. Whatever it
+/// says: a place on the plane, or how far off it something stands.
 type Written = (
     &'static mut Transform,
     &'static mut Text3d,
@@ -478,8 +480,8 @@ type Written = (
 /// Everything it takes to stand a plane's numbers over it
 #[derive(SystemParam)]
 pub(super) struct Standing<'w, 's> {
-    planes: Query<'w, 's, (&'static Plane, &'static Reading, &'static Dropped)>,
-    eyes: Query<'w, 's, Eye, NotARow>,
+    planes: Query<'w, 's, (&'static Plane, &'static Reading, &'static Plumbs)>,
+    eyes: Query<'w, 's, Eye, AtOrigin>,
     pool: ResMut<'w, Readouts>,
     written: Query<'w, 's, Written, With<Readout>>,
     materials: ResMut<'w, Assets<StandardMaterial>>,
@@ -521,12 +523,12 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
         let mut says = Vec::new();
         let mut inks = Vec::new();
         if let Some(facing) = facing {
-            for (plane, reading, dropped) in &planes {
+            for (plane, reading, plumbs) in &planes {
                 if reading.strength <= 0. {
                     continue;
                 }
                 let sideways = facing * Vec3::X;
-                for one in spoken(plane, reading, dropped, sideways) {
+                for one in spoken(plane, reading, plumbs, sideways) {
                     inks.push(drawn_at(
                         one.ink * reading.strength,
                         reading.bright,
@@ -696,7 +698,7 @@ fn lettered(text: &Text3d) -> Option<&str> {
 /// them in the same pass as the plane, so a line dropped to the ruling is drawn
 /// exactly as the ruling's own lines are.
 pub(super) fn marks(
-    planes: Query<(&Plane, &Reading, &Dropped)>,
+    planes: Query<(&Plane, &Reading, &Plumbs)>,
     eyes: Query<(&Transform, &Camera), With<FloatingOrigin>>,
     mut gizmos: Gizmos,
 ) {
@@ -706,7 +708,7 @@ pub(super) fn marks(
     let facing = at.rotation;
     let eye = at.translation;
 
-    for (plane, reading, dropped) in &planes {
+    for (plane, reading, plumbs) in &planes {
         if reading.strength <= 0. {
             continue;
         }
@@ -732,15 +734,15 @@ pub(super) fn marks(
             cross(&mut gizmos, at, plane.facing, arm, color);
         }
 
-        for drop in &dropped.0 {
-            let left = faded(drop.foot, plane.reach);
-            let (foot, arm, color) = scratched(drop.foot, INK * left);
+        for plumb in &plumbs.0 {
+            let left = faded(plumb.foot, plane.reach);
+            let (foot, arm, color) = scratched(plumb.foot, INK * left);
             cross(&mut gizmos, foot, plane.facing, arm, color);
             // The line at the ink the ruling's widest lines are drawn in, so
             // that it reads as one of the plane's rather than as something
             // laid over it.
             gizmos.line(
-                eye + drop.top.as_vec3(),
+                eye + plumb.top.as_vec3(),
                 foot,
                 hue.with_alpha(drawn_at(
                     MAJOR * reading.strength * left,
@@ -779,7 +781,7 @@ fn crowded(here: Vec2, middle: Vec2) -> bool {
 /// Nothing for a row about a place behind the camera, which has nowhere on
 /// screen to be.
 fn where_drawn(
-    says: &Says,
+    says: &ReadoutText,
     facing: Quat,
     viewport: Vec2,
     cot_half_fov: f32,
@@ -846,7 +848,8 @@ mod tests {
     use super::super::Painted;
     use super::*;
 
-    const LIGHT_YEARS: Unit = Unit { metres: 9.4607304725808e15, mark: "Ly" };
+    const LIGHT_YEARS: DistanceUnit =
+        DistanceUnit { metres: 9.4607304725808e15, mark: "Ly" };
 
     /// A plane and a reading of it, standing `back` off what it is looking at
     ///
@@ -920,7 +923,7 @@ mod tests {
         let (plane, reading) = looking(100.);
         let painted = plane.numbers.strength;
 
-        let says = spoken(&plane, &reading, &Dropped::default(), Vec3::X);
+        let says = spoken(&plane, &reading, &Plumbs::default(), Vec3::X);
         let middle = says.first().expect("the middle is said");
 
         let stood = drawn_at(middle.ink * reading.strength, reading.bright);
@@ -948,10 +951,10 @@ mod tests {
         let top = reading.seen_from_eye(plane.facing, at);
         let under = DVec3::new(at.x, reading.at.y, at.z);
         let foot = reading.seen_from_eye(plane.facing, under);
-        let dropped =
-            Dropped(vec![Drop { top, foot, middle: (top + foot) / 2., at }]);
+        let plumbs =
+            Plumbs(vec![Plumb { top, foot, middle: (top + foot) / 2., at }]);
 
-        let says = spoken(&plane, &reading, &dropped, Vec3::X);
+        let says = spoken(&plane, &reading, &plumbs, Vec3::X);
         assert_eq!(says.len(), 3, "the middle, the foot and the offset");
         // The foot says all three, and it says them where the foot stands.
         assert_eq!(says[1].from_eye, foot);
@@ -972,13 +975,13 @@ mod tests {
     fn the_middle_goes_quiet_when_it_is_not_asked_for() {
         let (plane, mut reading) = looking(100.);
         assert_eq!(
-            spoken(&plane, &reading, &Dropped::default(), Vec3::X).len(),
+            spoken(&plane, &reading, &Plumbs::default(), Vec3::X).len(),
             1
         );
 
         reading.middle = false;
         assert!(
-            spoken(&plane, &reading, &Dropped::default(), Vec3::X).is_empty()
+            spoken(&plane, &reading, &Plumbs::default(), Vec3::X).is_empty()
         );
     }
 
@@ -1007,7 +1010,7 @@ mod tests {
         let (mut plane, reading) = looking(100.);
         plane.color = Color::srgb(0.2, 0.4, 0.6);
 
-        for one in spoken(&plane, &reading, &Dropped::default(), Vec3::X) {
+        for one in spoken(&plane, &reading, &Plumbs::default(), Vec3::X) {
             assert_eq!(one.hue, plane.color, "{} came out wrong", one.said);
         }
     }
@@ -1037,7 +1040,7 @@ mod tests {
 
         // And the row of numbers is hung under the plane the same way, which
         // is the other way along the same line.
-        let says = spoken(&plane, &reading, &Dropped::default(), Vec3::X);
+        let says = spoken(&plane, &reading, &Plumbs::default(), Vec3::X);
         let hung = says.first().expect("the middle is said").hung;
         assert!(
             (hung - Vec3::X * LIFT).length() < LIFT * 1e-6,
@@ -1056,7 +1059,7 @@ mod tests {
         app.init_resource::<Readouts>();
 
         let (plane, reading) = looking(100.);
-        app.world_mut().spawn((plane, reading, Dropped::default()));
+        app.world_mut().spawn((plane, reading, Plumbs::default()));
         // With a viewport of its own. A camera answers nothing for its size
         // otherwise, that being the render target's to say, and nothing here
         // brings up a render target.
@@ -1097,23 +1100,23 @@ mod tests {
         // Three things off the plane: a mark at each foot and how far off each
         // went.
         let (_, reading) = looking(100.);
-        let drop = || Drop {
+        let plumb = || Plumb {
             top: DVec3::ONE,
             foot: DVec3::X,
             middle: DVec3::X,
             at: reading.at + DVec3::ONE,
         };
-        let mut planes = app.world_mut().query::<&mut Dropped>();
-        for mut dropped in planes.iter_mut(app.world_mut()) {
-            dropped.0 = (0..3).map(|_| drop()).collect();
+        let mut planes = app.world_mut().query::<&mut Plumbs>();
+        for mut plumbs in planes.iter_mut(app.world_mut()) {
+            plumbs.0 = (0..3).map(|_| plumb()).collect();
         }
         app.update();
         assert_eq!(pooled(&app), 7);
 
         // And let go of again once they are.
-        let mut planes = app.world_mut().query::<&mut Dropped>();
-        for mut dropped in planes.iter_mut(app.world_mut()) {
-            dropped.0.clear();
+        let mut planes = app.world_mut().query::<&mut Plumbs>();
+        for mut plumbs in planes.iter_mut(app.world_mut()) {
+            plumbs.0.clear();
         }
         app.update();
         assert_eq!(pooled(&app), 1);
@@ -1142,15 +1145,15 @@ mod tests {
             let under = DVec3::new(at.x, reading.at.y, at.z);
             let top = reading.seen_from_eye(plane.facing, at);
             let foot = reading.seen_from_eye(plane.facing, under);
-            let dropped = Dropped(vec![Drop {
+            let plumbs = Plumbs(vec![Plumb {
                 top,
                 foot,
                 middle: (top + foot) / 2.,
                 at,
             }]);
-            spoken(&plane, &reading, &dropped, Vec3::X)
+            spoken(&plane, &reading, &plumbs, Vec3::X)
         };
-        let place = |says: &Says| {
+        let place = |says: &ReadoutText| {
             where_drawn(says, Quat::IDENTITY, viewport, 1.)
                 .expect("the middle of the view is in front of the camera")
         };

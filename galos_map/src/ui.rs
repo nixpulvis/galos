@@ -13,14 +13,14 @@
 //! runs between is what is picked out on the map.
 
 use crate::camera::{MoveCamera, OrbitCamera};
-use crate::grid::{Bright, Said, ShowGrid, ShowMiddle, ShowPicked};
-use crate::search::{Plot, SearchNote, SearchResults, Searched, Searching};
+use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
+use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
-    Asked, DimTo, FactionResults, Filter, Filters, Resolving, Wanted,
+    DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
 };
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
@@ -41,7 +41,7 @@ use galos_db::systems::System as DbSystem;
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
     app.init_resource::<SettingsOpen>();
-    app.init_resource::<Grasp>();
+    app.init_resource::<PressOwner>();
     app.init_resource::<BarFields>();
     // The lettering leads, being what everything after it is drawn in.
     app.add_systems(EguiPrimaryContextPass, (lettering, chrome).chain());
@@ -112,7 +112,7 @@ pub(crate) fn styled(style: &mut egui::Style) {
 ///
 /// Where the pointer is now, which is the question a wheel asks: a scroll
 /// belongs to no press and so has no owner to be asked about. What a press
-/// belongs to is [`Grasp`], and everything weighing a click or a drag asks
+/// belongs to is [`PressOwner`], and everything weighing a click or a drag asks
 /// that instead.
 ///
 /// Egui lays out during its own pass, so this is what the last frame's layout
@@ -137,7 +137,8 @@ pub struct SettingsOpen(bool);
 /// lasts, wherever the pointer wanders, and a press that shut the bar's form
 /// is the form's even though it landed on the sky.
 /// Never named outside this module. What the rest of the map asks is whose a
-/// press is, and every answer to that is a `bool` on [`Grasp`] or [`Gesture`].
+/// press is, and every answer to that is a `bool` on [`PressOwner`] or
+/// [`Gesture`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Owner {
     /// The pointer was over a control, or the press was spent on one
@@ -157,9 +158,9 @@ enum Owner {
 /// Reached through [`Gesture`] rather than read directly, that being where the
 /// one case this cannot answer straight away is handled.
 #[derive(Resource, Default)]
-pub struct Grasp {
+pub struct PressOwner {
     /// Whose the press under way is, while a button is down
-    held: Option<Owner>,
+    owner: Option<Owner>,
     /// Whose a press was that came up in the same frame it went down
     ///
     /// A frame long enough to hold a whole click puts the map's reading of it
@@ -169,10 +170,10 @@ pub struct Grasp {
     /// A second whole click in that next frame takes its place and the first
     /// goes unanswered. Two entire clicks inside two frames is a frame rate
     /// with troubles this cannot help with.
-    held_over: Option<Owner>,
+    carried_over: Option<Owner>,
 }
 
-impl Grasp {
+impl PressOwner {
     /// Every button the map answers to
     ///
     /// One owner for the pointer rather than one per button. The pointer is
@@ -198,18 +199,18 @@ impl Grasp {
     /// wanted out of a resource rather than off the end of drawing.
     pub fn settle(&mut self, buttons: &ButtonInput<MouseButton>, wanted: bool) {
         // Last frame's, which has now been read by everything that reads it.
-        self.held_over = None;
+        self.carried_over = None;
 
         let began = buttons.any_just_pressed(Self::BUTTONS);
-        if began && self.held.is_none() {
-            self.held = Some(if wanted { Owner::Ui } else { Owner::Map });
+        if began && self.owner.is_none() {
+            self.owner = Some(if wanted { Owner::Ui } else { Owner::Map });
         }
 
         if !buttons.any_pressed(Self::BUTTONS) {
             if began && buttons.just_released(PRIMARY) {
-                self.held_over = self.held;
+                self.carried_over = self.owner;
             }
-            self.held = None;
+            self.owner = None;
         }
     }
 
@@ -221,7 +222,7 @@ impl Grasp {
     /// map would be a worse answer than one picked out during a gesture the
     /// UI turned out to want.
     pub fn taken_by_ui(&self) -> bool {
-        self.held == Some(Owner::Ui)
+        self.owner == Some(Owner::Ui)
     }
 }
 
@@ -230,11 +231,11 @@ impl Grasp {
 /// The one question every system weighing a click asks, so that none of them
 /// works out an answer of its own from the button and where the pointer was.
 /// Both halves are needed together: the button says what happened this frame
-/// and [`Grasp`] says whose it was.
+/// and [`PressOwner`] says whose it was.
 #[derive(SystemParam)]
 pub struct Gesture<'w> {
     buttons: Res<'w, ButtonInput<MouseButton>>,
-    grasp: Res<'w, Grasp>,
+    press: Res<'w, PressOwner>,
 }
 
 impl Gesture<'_> {
@@ -245,7 +246,7 @@ impl Gesture<'_> {
     /// turning yet, against a frame of one that turns under a press meant for
     /// a slider.
     pub fn dragging_map(&self) -> bool {
-        self.grasp.held == Some(Owner::Map)
+        self.press.owner == Some(Owner::Map)
     }
 
     /// Whether `button` is down
@@ -263,13 +264,14 @@ impl Gesture<'_> {
     ///
     /// On the release, where the press landed in an earlier frame and the
     /// owner is already standing. A frame holding the whole click answers a
-    /// frame later, through [`Grasp::held_over`], which is the one place that
+    /// frame later, through [`PressOwner::carried_over`], which is the one
+    /// place that
     /// wait is spelled out.
     pub fn on_map(&self) -> bool {
         if self.buttons.just_released(PRIMARY) {
-            return self.grasp.held == Some(Owner::Map);
+            return self.press.owner == Some(Owner::Map);
         }
-        self.grasp.held_over == Some(Owner::Map)
+        self.press.carried_over == Some(Owner::Map)
     }
 }
 
@@ -469,9 +471,9 @@ pub struct BarFields {
 /// Everything the settings pane sets
 ///
 /// One parameter rather than nine. A system may take only sixteen, and these
-/// are all the same thing: the knobs the pane is a pane of.
+/// are all the same thing: what the pane is a pane of.
 #[derive(SystemParam)]
-pub struct Knobs<'w> {
+pub struct Settings<'w> {
     spyglass: ResMut<'w, Spyglass>,
     view: ResMut<'w, View>,
     color_by: ResMut<'w, ColorBy>,
@@ -483,7 +485,7 @@ pub struct Knobs<'w> {
     show_orbits: ResMut<'w, ShowOrbits>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
-    said: ResMut<'w, Said>,
+    unit: ResMut<'w, RulerUnit>,
     show_middle: ResMut<'w, ShowMiddle>,
     show_picked: ResMut<'w, ShowPicked>,
     bright: ResMut<'w, Bright>,
@@ -492,7 +494,8 @@ pub struct Knobs<'w> {
 
 /// The whole of the bar's filter section
 ///
-/// One parameter for the same reason [`Knobs`] is one: a system may take only
+/// One parameter for the same reason [`Settings`] is one: a system may take
+/// only
 /// sixteen. Grouped by what it is about rather than by where it is drawn,
 /// since the bar's three sections have little to say to each other and this
 /// way none of them can reach into another's state by accident.
@@ -515,44 +518,45 @@ pub struct FilterBar<'w, 's> {
     ///
     /// Here rather than among the bar's other fields, so that nothing about a
     /// filter is reachable through the search's state or the route's.
-    field: Local<'s, Option<String>>,
+    input: Local<'s, Option<String>>,
     /// Where a filter the user has typed is sent to be looked up
-    wanted: MessageWriter<'w, Wanted>,
+    lookup: MessageWriter<'w, Lookup>,
     /// What became of the last one asked for
-    asked: ResMut<'w, Asked>,
+    note: ResMut<'w, LookupNote>,
     /// The factions the last name typed might have meant
     found: ResMut<'w, FactionResults>,
     /// Whether the name typed into it is still being looked up
-    asking: Res<'w, Resolving>,
+    pending: Res<'w, Resolving>,
     /// How faintly what they exclude is drawn
     dim: ResMut<'w, DimTo>,
 }
 
 pub fn chrome(
     mut contexts: EguiContexts,
-    mut knobs: Knobs,
+    mut settings: Settings,
     mut bar: SearchBar,
     mut over_ui: ResMut<PointerOverUi>,
-    mut settings: ResMut<SettingsOpen>,
+    mut open: ResMut<SettingsOpen>,
     mut search: ResMut<BarFields>,
     mut selection: ResMut<Selection>,
     contents: Res<Contents>,
     mut camera: MessageWriter<MoveCamera>,
     orbit: Query<&OrbitCamera>,
     buttons: Res<ButtonInput<MouseButton>>,
-    mut grasp: ResMut<Grasp>,
+    mut press: ResMut<PressOwner>,
     mut panels: ResMut<Panels>,
     mut filter: FilterBar,
 ) -> Result {
-    // Giving up here takes [`Grasp::settle`] at the end with it, and nothing
+    // Giving up here takes [`PressOwner::settle`] at the end with it, and
+    // nothing
     // else settles a press. See what that says about the frame it is missed
     // on.
     let ctx = contexts.ctx_mut()?;
 
     // The pane first, since where it has reached is where the gear stands.
-    let edge = settings_pane(ctx, settings.0, |ui| {
+    let edge = settings_pane(ctx, open.0, |ui| {
         heading(ui, "Spyglass", false);
-        ui.checkbox(&mut knobs.spyglass.follow_camera, "Follow Camera");
+        ui.checkbox(&mut settings.spyglass.follow_camera, "Follow Camera");
         ui.add_space(FIELD_GAP);
         ui.label("Radius (Ly)");
         // Shown either way, since the reach is what the bar's count is
@@ -560,15 +564,15 @@ pub fn chrome(
         // nowhere to read. Greyed while the camera sets it: dragging it would
         // be overwritten on the next frame, and a control that springs back is
         // worse than one that says it is not yours to move.
-        ui.add_enabled_ui(!knobs.spyglass.follow_camera, |ui| {
-            radius_slider(ui, &mut knobs.spyglass.radius, Spyglass::CEILING);
+        ui.add_enabled_ui(!settings.spyglass.follow_camera, |ui| {
+            radius_slider(ui, &mut settings.spyglass.radius, Spyglass::CEILING);
         });
         // The camera cannot both be told where to stand and be asked where it
         // is standing, so the one that reads the camera hides the one that
         // writes it.
-        if !knobs.spyglass.follow_camera {
+        if !settings.spyglass.follow_camera {
             ui.add_space(FIELD_GAP);
-            ui.checkbox(&mut knobs.spyglass.lock_camera, "Lock Camera");
+            ui.checkbox(&mut settings.spyglass.lock_camera, "Lock Camera");
         }
 
         // Folded away under what it is about. Everything in here is the
@@ -583,8 +587,8 @@ pub fn chrome(
             //
             // Named for the halves alone. Standing inside the spyglass's own
             // section, a name saying so again would be saying it twice.
-            ui.checkbox(&mut knobs.spyglass.fetch, "Fetch");
-            if knobs.spyglass.fetch {
+            ui.checkbox(&mut settings.spyglass.fetch, "Fetch");
+            if settings.spyglass.fetch {
                 // The throttle first, being the wait before asking about
                 // somewhere new, which is what moving the camera does and so
                 // what the map spends its time doing. The poll is the wait
@@ -593,17 +597,17 @@ pub fn chrome(
                 ui.horizontal(|ui| {
                     field_name(ui, "Throttle");
                     ui.add(
-                        egui::DragValue::new(&mut knobs.throttle.0)
+                        egui::DragValue::new(&mut settings.throttle.0)
                             .suffix(" ms"),
                     );
                 });
-                ui.horizontal(|ui| poll_value(ui, &mut knobs.poll.0));
+                ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
             }
             ui.add_space(FIELD_GAP);
-            ui.checkbox(&mut knobs.spyglass.clear, "Clear");
+            ui.checkbox(&mut settings.spyglass.clear, "Clear");
             ui.add_space(FIELD_GAP);
             if ui.button("Despawn Systems").clicked() {
-                knobs.despawner.write(Despawn);
+                settings.despawner.write(Despawn);
             }
         });
 
@@ -613,8 +617,8 @@ pub fn chrome(
         // seconds inside one, and a switch filed under either would read as
         // turning off only that half of it.
         heading(ui, "Scale", true);
-        ui.checkbox(&mut knobs.show_grid.0, "Grid");
-        if knobs.show_grid.0 {
+        ui.checkbox(&mut settings.show_grid.0, "Grid");
+        if settings.show_grid.0 {
             // Indented under what turns them on, the same as the names are,
             // since a unit for a ruler that is not drawn is a choice about
             // nothing. Left to the map by default, which turns the ruler over
@@ -622,9 +626,12 @@ pub fn chrome(
             // system's distances in light years or a neighbourhood's in light
             // seconds.
             ui.indent("said", |ui| {
-                ui.checkbox(&mut knobs.show_middle.0, "Show Center Position");
                 ui.checkbox(
-                    &mut knobs.show_picked.0,
+                    &mut settings.show_middle.0,
+                    "Show Center Position",
+                );
+                ui.checkbox(
+                    &mut settings.show_picked.0,
                     "Show Selected Positions",
                 );
                 ui.add_space(FIELD_GAP);
@@ -633,7 +640,7 @@ pub fn chrome(
                 // a bright field, under it for one that should stay out of the
                 // way of a busy sky.
                 ui.label("Brightness (%)");
-                let mut bright = knobs.bright.0 * 100.;
+                let mut bright = settings.bright.0 * 100.;
                 fill_width(ui);
                 let slider = ui
                     .horizontal(|ui| {
@@ -655,19 +662,23 @@ pub fn chrome(
                 // resource changed every frame, and the planes are rebuilt
                 // from it.
                 if slider.changed() {
-                    knobs.bright.0 = bright / 100.;
+                    settings.bright.0 = bright / 100.;
                 }
                 ui.add_space(FIELD_GAP);
                 ui.label("Units");
-                ui.radio_value(&mut *knobs.said, Said::Whichever, "Automatic");
                 ui.radio_value(
-                    &mut *knobs.said,
-                    Said::LightYears,
+                    &mut *settings.unit,
+                    RulerUnit::Automatic,
+                    "Automatic",
+                );
+                ui.radio_value(
+                    &mut *settings.unit,
+                    RulerUnit::LightYears,
                     "Light Years",
                 );
                 ui.radio_value(
-                    &mut *knobs.said,
-                    Said::LightSeconds,
+                    &mut *settings.unit,
+                    RulerUnit::LightSeconds,
                     "Light Seconds",
                 );
             });
@@ -677,52 +688,63 @@ pub fn chrome(
         // Whether a system is named is a choice about what the map draws, the
         // same as which color a star comes out and how large it is, so it
         // stands with those rather than alone.
-        ui.checkbox(&mut knobs.show_names.0, "Show Labels");
-        if knobs.show_names.0 {
+        ui.checkbox(&mut settings.show_names.0, "Show Labels");
+        if settings.show_names.0 {
             // Indented under what turns them on, since neither means anything
             // without it. The rule egui draws down the side of an indent says
             // as much, and says it without a heading standing over nothing
             // whenever the box is unchecked.
             ui.indent("names", |ui| {
                 ui.checkbox(
-                    &mut knobs.name_radius.follow_spyglass,
+                    &mut settings.name_radius.follow_spyglass,
                     "Names Follow Spyglass",
                 );
-                if !knobs.name_radius.follow_spyglass {
+                if !settings.name_radius.follow_spyglass {
                     // A name can only be drawn for a system that is drawn,
                     // and the spyglass decides that. One that is not clearing
                     // draws everything loaded, and then names may be asked
                     // for beyond its reach.
-                    let ceiling = if knobs.spyglass.clear {
-                        knobs.spyglass.radius
+                    let ceiling = if settings.spyglass.clear {
+                        settings.spyglass.radius
                     } else {
                         Spyglass::CEILING
                     };
                     ui.label("Name Radius (Ly)");
-                    radius_slider(ui, &mut knobs.name_radius.radius, ceiling);
+                    radius_slider(
+                        ui,
+                        &mut settings.name_radius.radius,
+                        ceiling,
+                    );
                 }
             });
         }
 
         ui.add_space(FIELD_GAP);
-        ui.radio_value(&mut *knobs.view, View::Systems, "Systems");
-        ui.radio_value(&mut *knobs.view, View::Stars, "Stars");
-        if *knobs.view == View::Systems {
+        ui.radio_value(&mut *settings.view, View::Systems, "Systems");
+        ui.radio_value(&mut *settings.view, View::Stars, "Stars");
+        if *settings.view == View::Systems {
             ui.add_space(FIELD_GAP);
             ui.label("Color By");
             ui.radio_value(
-                &mut *knobs.color_by,
+                &mut *settings.color_by,
                 ColorBy::Allegiance,
                 "Allegiance",
             );
             ui.radio_value(
-                &mut *knobs.color_by,
+                &mut *settings.color_by,
                 ColorBy::Government,
                 "Government",
             );
-            ui.radio_value(&mut *knobs.color_by, ColorBy::Security, "Security");
+            ui.radio_value(
+                &mut *settings.color_by,
+                ColorBy::Security,
+                "Security",
+            );
             ui.add_space(FIELD_GAP);
-            ui.checkbox(&mut knobs.population_scale.0, "Scale w/ Population");
+            ui.checkbox(
+                &mut settings.population_scale.0,
+                "Scale w/ Population",
+            );
         }
 
         // What is drawn once the camera is inside a system, rather than what
@@ -730,8 +752,8 @@ pub fn chrome(
         // under the view above it: which of the two ways the sky is drawn says
         // nothing about what a system looks like from within.
         heading(ui, "System View", true);
-        ui.checkbox(&mut knobs.show_body_names.0, "Show Labels");
-        ui.checkbox(&mut knobs.show_orbits.0, "Orbit Lines");
+        ui.checkbox(&mut settings.show_body_names.0, "Show Labels");
+        ui.checkbox(&mut settings.show_orbits.0, "Orbit Lines");
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
@@ -780,9 +802,9 @@ pub fn chrome(
         // Whether the search box's answer is late enough to say so. Settled
         // where the clock is, which is the system that put the question; the
         // bar draws during egui's own pass and has no clock of its own.
-        bar.asking.waiting(),
+        bar.pending.waiting(),
         &mut search,
-        &mut bar.searched,
+        &mut bar.search,
         &mut bar.note,
         &mut bar.results,
         &mut selection,
@@ -793,7 +815,7 @@ pub fn chrome(
         &mut bar.plot,
         &mut filter,
     );
-    gear(ctx, edge, middle, &mut settings.0);
+    gear(ctx, edge, middle, &mut open.0);
 
     // `egui_wants_pointer_input` covers a drag that began on a control and
     // has since been pulled off it, which being over one does not.
@@ -803,7 +825,7 @@ pub fn chrome(
     // of it. A press spent shutting the form counts as the UI's even where it
     // landed on the sky, that being what shutting a form by pressing off it
     // means.
-    grasp.settle(&buttons, over_ui.0 || shut);
+    press.settle(&buttons, over_ui.0 || shut);
 
     Ok(())
 }
@@ -933,7 +955,7 @@ fn main_bar(
     left: f32,
     asking: bool,
     search: &mut BarFields,
-    searched: &mut MessageWriter<Searched>,
+    searched: &mut MessageWriter<Search>,
     note: &mut SearchNote,
     results: &mut SearchResults,
     selection: &mut Selection,
@@ -998,7 +1020,7 @@ fn main_bar(
                         && let Some(name) =
                             typed(&search.system).map(str::to_owned)
                     {
-                        searched.write(Searched::System { name });
+                        searched.write(Search::System { name });
                     }
 
                     // Both, and in this order: the note answers the query
@@ -1105,8 +1127,8 @@ fn main_bar(
     // can undo the other. A field goes on holding focus after the press that
     // shut the form, and asking whether it holds focus would open the form
     // again the very next frame.
-    let (took, middle) = bar.inner;
-    if took {
+    let (took_focus, middle) = bar.inner;
+    if took_focus {
         search.expanded = true;
     }
     if dismissed {
@@ -1123,13 +1145,13 @@ fn main_bar(
 #[derive(SystemParam)]
 pub struct SearchBar<'w> {
     /// Where a name typed into a field is sent to be looked up
-    searched: MessageWriter<'w, Searched>,
+    search: MessageWriter<'w, Search>,
     /// What to say about a name that found nothing
     note: ResMut<'w, SearchNote>,
     /// The systems the search box found
     results: ResMut<'w, SearchResults>,
     /// What the search box has out
-    asking: Res<'w, Searching>,
+    pending: Res<'w, Searching>,
     /// How the route last asked for is getting on
     plot: ResMut<'w, Plot>,
 }
@@ -1232,14 +1254,14 @@ fn cleared(
 /// sky the answer is about.
 const OFFERED: usize = 5;
 
-/// What a click on a system's line in a list asked for
+/// What the map can be asked to do with one system
 ///
 /// The same ones the map itself answers, wherever the line was drawn: one
 /// click says which system is meant, a modifier held with it says as well as
 /// the rest, and a second click says to go there. Shared by every list of
 /// systems the map draws, so that reaching one through a search and reaching
 /// one through a filter are the same gesture rather than two to be learned.
-pub(crate) enum Chose {
+pub(crate) enum SystemAction {
     /// Pick the system out, as clicking a star does
     ///
     /// `gathering` holds the modifier rather than a variant of its own,
@@ -1253,17 +1275,19 @@ pub(crate) enum Chose {
     Describe,
 }
 
-/// Whether a modifier is held down, asking for as well as rather than instead
+/// Whether a key is down asking for as well as rather than instead
 ///
 /// The same gesture the sky answers, so that a line in the list and the star
 /// it names are picked out the same way. Command covers control where the
 /// user came from Windows or Linux and the cloverleaf where they came from a
 /// Mac, and shift stands beside them as the one no platform reads as asking
 /// for something else.
+///
+/// The same three [`crate::systems::spawn`] asks the keyboard for directly.
 fn gathering(ui: &Ui) -> bool {
     ui.input(|input| {
-        let held = input.modifiers;
-        held.command || held.ctrl || held.shift
+        let keys = input.modifiers;
+        keys.command || keys.ctrl || keys.shift
     })
 }
 
@@ -1272,8 +1296,8 @@ fn gathering(ui: &Ui) -> bool {
 /// Apart from the drawing, since a list draws every line before any of them
 /// is acted on: picking one out changes what the lines are drawn from. Which
 /// makes it the piece worth asking about on its own.
-fn took(
-    chose: Chose,
+fn act_on(
+    action: SystemAction,
     system: &DbSystem,
     selection: &mut Selection,
     travelled: &mut Option<DVec3>,
@@ -1283,14 +1307,16 @@ fn took(
     // is the same question asked twice and the second asking has nothing to
     // report.
     let placed = crate::systems::System::try_from(system).ok();
-    match chose {
-        Chose::Select { gathering } => {
+    match action {
+        SystemAction::Select { gathering } => {
             if let Some(system) = placed {
                 selection.pick(Picked::System(system), gathering);
             }
         }
-        Chose::Travel => *travelled = crate::systems::system_to_vec(system),
-        Chose::Describe => *described = placed,
+        SystemAction::Travel => {
+            *travelled = crate::systems::system_to_vec(system)
+        }
+        SystemAction::Describe => *described = placed,
     }
 }
 
@@ -1354,12 +1380,12 @@ fn found(
         return;
     }
 
-    let Some((system, chose)) =
+    let Some((system, action)) =
         system_list(ui, results.iter(), center, "result")
     else {
         return;
     };
-    took(chose, system, selection, travelled, described);
+    act_on(action, system, selection, travelled, described);
 }
 
 /// A list of systems, and what a click asked of one of them
@@ -1387,7 +1413,7 @@ pub(crate) fn system_list<'a>(
     systems: impl Iterator<Item = &'a DbSystem>,
     center: Option<DVec3>,
     salt: &str,
-) -> Option<(&'a DbSystem, Chose)> {
+) -> Option<(&'a DbSystem, SystemAction)> {
     // Nothing found is nothing drawn, rather than an empty list taking a
     // line's worth of room under the field that has yet to be asked.
     let mut systems = systems.peekable();
@@ -1455,14 +1481,16 @@ pub(crate) fn system_list<'a>(
 /// question by covering up what it is about.
 ///
 /// The summary line above them is drawn only while more than one is picked
-/// out, and carries [`gathered`]'s controls. One system picked out is the case
+/// out, and carries [`whole_selection`]'s controls. One system picked out is
+/// the case
 /// the rows already read well, and a line saying "1 system" over a row naming
 /// it says the same thing twice.
 /// `travelled` is where a row asked the camera to go, which the caller writes
 /// rather than this, as [`found`] does and for the same reason.
 ///
 /// Answers whether a route between what is picked out was asked for, which is
-/// [`gathered`]'s to say and the caller's to act on: the form that answers it
+/// [`whole_selection`]'s to say and the caller's to act on: the form that
+/// answers it
 /// is drawn further down the bar.
 fn selected(
     ui: &mut Ui,
@@ -1486,7 +1514,8 @@ fn selected(
     // it is counted from. See the end of this function.
     let from = *place;
 
-    let routing = selection.len() > 1 && gathered(ui, selection, filters);
+    let routing =
+        selection.len() > 1 && whole_selection(ui, selection, filters);
 
     let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
         + (ROW_PADDING + ROW_MARGIN) * 2.
@@ -1531,7 +1560,7 @@ fn selected(
                     )
             });
 
-            let marks = lay_out_marks(ui);
+            let buttons = lay_out_buttons(ui);
             let name = held.name();
 
             // Whatever the dot, the distance and the marks leave the name.
@@ -1542,7 +1571,7 @@ fn selected(
                 - ROW_PADDING * 2.
                 - DOT
                 - gap
-                - marks_width(&marks, gap)
+                - buttons_width(&buttons, gap)
                 - away.as_ref().map_or(0., |away| away.size().x + gap);
             let name =
                 egui::WidgetText::from(egui::RichText::new(name).strong())
@@ -1594,14 +1623,14 @@ fn selected(
                 x += size.x + gap;
             }
 
-            let Marks { info, close } = place_marks(ui, rect, marks, of);
+            let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
 
             if close.clicked() {
-                chose = Some((index, Held::LetGo));
+                chose = Some((index, SelectionAction::LetGo));
             } else if info.is_some_and(|info| info.clicked()) {
-                chose = Some((index, Held::Describe));
+                chose = Some((index, SelectionAction::Describe));
             } else if row.clicked() {
-                chose = Some((index, Held::Travel));
+                chose = Some((index, SelectionAction::Travel));
             }
             row.on_hover_cursor(egui::CursorIcon::PointingHand);
         }
@@ -1633,14 +1662,14 @@ fn selected(
     // drawn outside it.
     *place = from + selection.len().min(SELECTED);
 
-    if let Some((index, chose)) = chose {
-        match chose {
-            Held::Travel => *travelled = selection.position(index),
+    if let Some((index, action)) = chose {
+        match action {
+            SelectionAction::Travel => *travelled = selection.position(index),
             // Whatever the row is about. A system is described from the row
             // the bar holds; what is inside one is described from the rows the
             // map is holding, which it has for as long as the thing is drawn,
             // and a row for one is only held for that long either.
-            Held::Describe => match selection.get(index) {
+            SelectionAction::Describe => match selection.get(index) {
                 Some(Picked::System(system)) => {
                     panels.open_system(system.clone())
                 }
@@ -1653,18 +1682,18 @@ fn selected(
                 }
                 None => {}
             },
-            Held::LetGo => selection.remove(index),
+            SelectionAction::LetGo => selection.remove(index),
         }
     }
 
     routing
 }
 
-/// What a click on a selected system's row asked for
+/// What the bar can be asked to do with one selected system
 ///
-/// The same three the row has always answered, now said by index because
-/// several rows stand at once and each is about one of them.
-enum Held {
+/// Said by index, several rows standing at once and each being about one of
+/// them.
+enum SelectionAction {
     /// Send the camera to it, as the one row always did
     Travel,
     /// Open the panel describing it
@@ -1676,7 +1705,10 @@ enum Held {
 /// How many selected systems the bar shows before the rows start scrolling
 const SELECTED: usize = 5;
 
-/// Say how many are picked out, and offer to bring the map to bear on them
+/// One row standing for everything picked out, and what it offers
+///
+/// Says how many there are and offers to bring the map to bear on them.
+/// [`whole_set`] is the same shape over the filter rows.
 ///
 /// The set is left alone once it has been filtered on. The filter took a copy
 /// of the addresses, so letting go of the rings and the rows afterwards
@@ -1691,17 +1723,21 @@ const SELECTED: usize = 5;
 ///
 /// It reaches the form rather than plotting, since a route still wants a jump
 /// range and there is nowhere here to say one.
-fn gathered(ui: &mut Ui, selection: &Selection, filters: &mut Filters) -> bool {
-    // The systems alone, as a filter admits systems and nothing else. A body
-    // is counted among what is picked out and not among what can be filtered
-    // on.
-    let held = selection.systems().count();
+fn whole_selection(
+    ui: &mut Ui,
+    selection: &Selection,
+    filters: &mut Filters,
+) -> bool {
+    // The systems alone, [`Filter`] naming systems by address and testing a
+    // [`System`]. A body is counted among what is picked out, and there is as
+    // yet no filter for it to build.
+    let picked = selection.systems().count();
     let mut routing = false;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("{held} systems")).weak());
+        ui.label(egui::RichText::new(format!("{picked} systems")).weak());
         if ui.button("Filter").clicked() {
             filters.add(Filter::Systems {
-                label: format!("{held} systems"),
+                label: format!("{picked} systems"),
                 systems: selection.addresses(),
             });
         }
@@ -1933,7 +1969,7 @@ fn route_section(
     ui: &mut Ui,
     search: &mut BarFields,
     selection: &Selection,
-    searched: &mut MessageWriter<Searched>,
+    searched: &mut MessageWriter<Search>,
     plot: &mut Plot,
     asked_for: bool,
 ) -> bool {
@@ -1975,7 +2011,7 @@ fn route_section(
     // What came back of the last route asked for answers the field as it was
     // then, so it goes as soon as it is not. Work still under way is not an
     // answer to anything yet, and stays.
-    if range.changed() && matches!(*plot, Plot::Trouble(_)) {
+    if range.changed() && matches!(*plot, Plot::Failed(_)) {
         *plot = Plot::Nothing;
     }
 
@@ -1983,7 +2019,7 @@ fn route_section(
     // was asked for: a field being typed into is not an attempt at
     // anything, and a form that answers back before it has been submitted
     // is a form scolding whoever fills it in.
-    if let Plot::Trouble(trouble) = &*plot {
+    if let Plot::Failed(trouble) = &*plot {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }
@@ -2021,7 +2057,7 @@ fn route_section(
     {
         *plot = match jump_range(range) {
             Ok(range) => {
-                searched.write(Searched::Route {
+                searched.write(Search::Route {
                     start: start.to_owned(),
                     end: end.to_owned(),
                     // Back to text, since a route is fetched under a key
@@ -2031,7 +2067,7 @@ fn route_section(
                 });
                 Plot::Working
             }
-            Err(trouble) => Plot::Trouble(trouble.to_owned()),
+            Err(trouble) => Plot::Failed(trouble.to_owned()),
         };
     }
 
@@ -2120,8 +2156,8 @@ fn applied(
         panels.open_filter(filter);
     }
     match whole {
-        Some((Whole::Toggle, rows)) => filters.toggle_all(&rows),
-        Some((Whole::LetGo, rows)) => filters.clear(&rows),
+        Some((FilterAction::Toggle, rows)) => filters.toggle_all(&rows),
+        Some((FilterAction::LetGo, rows)) => filters.clear(&rows),
         None => {}
     }
 }
@@ -2173,15 +2209,15 @@ impl Section {
             .any(|active| active.enabled)
     }
 
-    /// What a row standing over `held` of them says
-    fn said(&self, held: usize) -> String {
+    /// What a row standing over `count` of them says
+    fn said(&self, count: usize) -> String {
         match self {
-            Section::Filters => format!("{held} filters"),
+            Section::Filters => format!("{count} filters"),
             Section::Routes => {
-                if held == 1 {
+                if count == 1 {
                     "1 route".to_owned()
                 } else {
-                    format!("{held} routes")
+                    format!("{count} routes")
                 }
             }
         }
@@ -2224,7 +2260,7 @@ fn section_rows(
                 )
         });
 
-        let marks = lay_out_marks(ui);
+        let buttons = lay_out_buttons(ui);
 
         // Whatever the dot, the hops and the marks leave. Faction names run
         // long, and one laid out against no bound is painted out past the
@@ -2233,7 +2269,7 @@ fn section_rows(
             - ROW_PADDING * 2.
             - DOT
             - gap
-            - marks_width(&marks, gap)
+            - buttons_width(&buttons, gap)
             - hops.as_ref().map_or(0., |hops| hops.size().x + gap);
         // Cut here rather than left to the layout below, which cuts from the
         // right hand end and would take the far end of a route with it.
@@ -2305,7 +2341,7 @@ fn section_rows(
             x += size.x + gap;
         }
 
-        let Marks { info, close } = place_marks(ui, rect, marks, of);
+        let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
 
         if close.clicked() {
             *removing = Some(index);
@@ -2364,8 +2400,8 @@ fn reaching(ui: &mut Ui, in_reach: &InReach, dimming: bool) {
     ui.label(egui::RichText::new(said).weak());
 }
 
-/// What a click on the row standing for the whole set asked for
-enum Whole {
+/// What the bar can be asked to do with the filters as a set
+enum FilterAction {
     /// Turn every filter off, or every one back on
     Toggle,
     /// Take them all away
@@ -2396,15 +2432,15 @@ fn whole_set(
     said: &str,
     on: bool,
     place: &mut usize,
-) -> Option<Whole> {
+) -> Option<FilterAction> {
     let gap = ui.spacing().item_spacing.x;
-    let marks = lay_out_close(ui);
+    let buttons = lay_out_close(ui);
 
     let room = ui.available_width()
         - ROW_PADDING * 2.
         - DOT
         - gap
-        - marks_width(&marks, gap);
+        - buttons_width(&buttons, gap);
     let text = egui::RichText::new(said);
     let name =
         egui::WidgetText::from(if on { text.strong() } else { text.weak() })
@@ -2458,12 +2494,12 @@ fn whole_set(
         egui::Color32::PLACEHOLDER,
     );
 
-    let Marks { close, .. } = place_marks(ui, rect, marks, of);
+    let Buttons { close, .. } = place_buttons(ui, rect, buttons, of);
 
     let asked = if close.clicked() {
-        Some(Whole::LetGo)
+        Some(FilterAction::LetGo)
     } else if row.clicked() {
-        Some(Whole::Toggle)
+        Some(FilterAction::Toggle)
     } else {
         None
     };
@@ -2489,26 +2525,26 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 
     let response = singleline(
         ui,
-        &mut filter.field,
+        &mut filter.input,
         "Faction Name",
         0.,
-        filter.asking.waiting(),
+        filter.pending.waiting(),
     );
     // Both answer a name, so neither is any answer at all once that name is
     // being typed over.
     if response.changed() {
-        *filter.asked = Asked::Nothing;
+        *filter.note = LookupNote::Nothing;
         filter.found.clear();
     }
     if entered(&response, ui)
-        && let Some(name) = typed(&filter.field).map(str::to_owned)
+        && let Some(name) = typed(&filter.input).map(str::to_owned)
     {
-        filter.wanted.write(Wanted::Faction { name });
+        filter.lookup.write(Lookup::Faction { name });
     }
 
-    if let Asked::Trouble(trouble) = &*filter.asked {
+    if let LookupNote::Failed(why) = &*filter.note {
         ui.add_space(FIELD_GAP);
-        ui.colored_label(egui::Color32::LIGHT_RED, trouble);
+        ui.colored_label(egui::Color32::LIGHT_RED, why);
     }
 
     // A click chooses, as it does in every other list the map draws. The
@@ -2523,7 +2559,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
             id: faction.id,
             name: faction.name.clone(),
         });
-        *filter.field = None;
+        *filter.input = None;
         filter.found.clear();
     }
 
@@ -2634,36 +2670,36 @@ fn row_of(
     (rect, row)
 }
 
-/// The two marks a row in the bar ends with
+/// The two buttons a row in the bar ends with
 ///
 /// Info opens a panel about whatever the row names, and close lets go of it.
 /// Close stands outermost, where a window's own close button stands, so that
 /// the gesture is in the same place wherever it is offered.
-struct Marks {
+struct Buttons {
     /// Nothing where the row names nothing a panel could describe
     info: Option<Response>,
     close: Response,
 }
 
-/// The glyphs those marks are drawn with, outermost first
-const MARKS: [&str; 2] = [CLOSE, INFO];
+/// The glyphs those buttons are drawn with, outermost first
+const GLYPHS: [&str; 2] = [CLOSE, INFO];
 
-/// Lay the marks out without placing them
+/// Lay the buttons out without placing them
 ///
 /// A row needs their width before it can be allocated, since what is left is
 /// the room its name has, and it cannot be painted into before it exists. So
-/// they are measured here and placed by [`place_marks`] once there is a row
+/// they are measured here and placed by [`place_buttons`] once there is a row
 /// to place them in.
-fn lay_out_marks(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
-    lay_out(ui, &MARKS)
+fn lay_out_buttons(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
+    lay_out(ui, &GLYPHS)
 }
 
-/// The close mark alone, for a row with nothing to describe
+/// The close button alone, for a row with nothing to describe
 ///
 /// Close is outermost, so a row that ends here ends where every other row
-/// ends and the column of marks reads straight down.
+/// ends and the column of buttons reads straight down.
 fn lay_out_close(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
-    lay_out(ui, &MARKS[..1])
+    lay_out(ui, &GLYPHS[..1])
 }
 
 fn lay_out(ui: &Ui, glyphs: &[&str]) -> Vec<std::sync::Arc<egui::Galley>> {
@@ -2686,28 +2722,28 @@ fn lay_out(ui: &Ui, glyphs: &[&str]) -> Vec<std::sync::Arc<egui::Galley>> {
         .collect()
 }
 
-/// How much room the marks take at the end of a row, gaps included
-fn marks_width(marks: &[std::sync::Arc<egui::Galley>], gap: f32) -> f32 {
-    marks.iter().map(|mark| mark.size().x + gap).sum()
+/// How much room the buttons take at the end of a row, gaps included
+fn buttons_width(buttons: &[std::sync::Arc<egui::Galley>], gap: f32) -> f32 {
+    buttons.iter().map(|button| button.size().x + gap).sum()
 }
 
-/// Paint the marks into the right hand end of `rect` and answer for each
+/// Paint the buttons into the right hand end of `rect` and answer for each
 ///
 /// Asked about after the row they sit in, so that they are the ones answering
 /// where they overlap it. Under it the row would have to work out what it was
 /// not being clicked on.
-fn place_marks(
+fn place_buttons(
     ui: &mut Ui,
     rect: egui::Rect,
-    marks: Vec<std::sync::Arc<egui::Galley>>,
+    buttons: Vec<std::sync::Arc<egui::Galley>>,
     of: impl std::hash::Hash,
-) -> Marks {
+) -> Buttons {
     let middle = rect.center().y;
     let gap = ui.spacing().item_spacing.x;
     let mut right = rect.right() - ROW_PADDING;
     let mut answers = Vec::new();
 
-    for (which, galley) in marks.into_iter().enumerate() {
+    for (which, galley) in buttons.into_iter().enumerate() {
         let width = galley.size().x;
         let at = egui::Rect::from_min_max(
             egui::pos2(right - width, rect.top()),
@@ -2715,7 +2751,7 @@ fn place_marks(
         );
         let response = ui.interact(
             at,
-            ui.id().with((&of, "row-mark", which)),
+            ui.id().with((&of, "row-button", which)),
             egui::Sense::click(),
         );
         // Lit for the pointer resting on it and for the keyboard reaching it
@@ -2743,11 +2779,11 @@ fn place_marks(
     }
 
     let mut answers = answers.into_iter();
-    // In `MARKS` order, which is close first. A row laid out with the close
-    // mark alone ends there.
-    let close = answers.next().expect("a close mark");
+    // In `GLYPHS` order, which is close first. A row laid out with the close
+    // button alone ends there.
+    let close = answers.next().expect("a close button");
     let info = answers.next();
-    Marks { info, close }
+    Buttons { info, close }
 }
 
 /// How far a line in a list holds its text off its own edge
@@ -2839,7 +2875,7 @@ pub(crate) fn system_line(
     trailing: Option<String>,
     reachable: bool,
     salt: impl std::hash::Hash,
-) -> Option<Chose> {
+) -> Option<SystemAction> {
     let gap = ui.spacing().item_spacing.x;
     let trailing = trailing.map(|text| {
         egui::WidgetText::from(egui::RichText::new(text).weak()).into_galley(
@@ -2924,11 +2960,11 @@ pub(crate) fn system_line(
     // already been picked out by the time this is asked, which is what the
     // first click of the pair was for.
     if describing.is_some_and(|(_, mark)| mark.clicked()) {
-        Some(Chose::Describe)
+        Some(SystemAction::Describe)
     } else if answer.double_clicked() {
-        Some(Chose::Travel)
+        Some(SystemAction::Travel)
     } else if answer.clicked() {
-        Some(Chose::Select { gathering: gathering(ui) })
+        Some(SystemAction::Select { gathering: gathering(ui) })
     } else {
         None
     }
@@ -3334,8 +3370,8 @@ mod tests {
     fn picked(gathering: bool, system: &DbSystem, selection: &mut Selection) {
         let mut travelled = None;
         let mut described = None;
-        took(
-            Chose::Select { gathering },
+        act_on(
+            SystemAction::Select { gathering },
             system,
             selection,
             &mut travelled,
@@ -3471,8 +3507,8 @@ mod tests {
     /// What the bar says about `picked` being picked out
     fn rows_said(picked: &[Picked]) -> Vec<String> {
         let mut selection = Selection::default();
-        for held in picked {
-            selection.toggle(held.clone());
+        for one in picked {
+            selection.toggle(one.clone());
         }
 
         words(|ui| {
@@ -4780,13 +4816,15 @@ mod tests {
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(80., 20.));
 
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let marks = lay_out_marks(ui);
-            first =
-                Some(place_marks(ui, at, marks, ("filter-row", 7)).close.id);
+            let buttons = lay_out_buttons(ui);
+            first = Some(
+                place_buttons(ui, at, buttons, ("filter-row", 7)).close.id,
+            );
             ui.label("a note that comes and goes");
-            let marks = lay_out_marks(ui);
-            moved =
-                Some(place_marks(ui, at, marks, ("filter-row", 7)).close.id);
+            let buttons = lay_out_buttons(ui);
+            moved = Some(
+                place_buttons(ui, at, buttons, ("filter-row", 7)).close.id,
+            );
         });
 
         assert_eq!(first, moved);
@@ -5052,8 +5090,8 @@ mod tests {
             egui::pos2(row.right() - ROW_PADDING - 1., row.center().y);
 
         let painted = under_pointer(on_the_mark, |ui| {
-            let marks = lay_out_marks(ui);
-            place_marks(ui, row, marks, "row");
+            let buttons = lay_out_buttons(ui);
+            place_buttons(ui, row, buttons, "row");
         });
 
         // The mark answered the pointer, which is what leaves the assertion

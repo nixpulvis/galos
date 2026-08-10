@@ -40,17 +40,17 @@
 //! the crossing is done in `f64` by [`big_space`] itself before any of this
 //! reads it.
 pub(crate) mod cut;
+pub(crate) mod label;
 pub(crate) mod ladder;
 pub(crate) mod read;
-pub(crate) mod said;
 
 // What a caller has business with. The rest is how a ruling is laid out and
 // how far apart its figures stand, which is the module's own affair: a caller
 // asks for a plane rather than for the pixels between two numbers.
 pub use cut::Face;
+pub use label::{DistanceUnit, off_plane, power, ticked, told};
 pub use ladder::{Decade, FIGURES_ACROSS, numbering, ruling, snapped_to};
 pub use read::{EDGE_ON, Located, Reading, drawn_at, faded};
-pub use said::{Unit, off_plane, power, ticked, told};
 
 use bevy::asset::{AssetServer, Handle, embedded_asset, load_embedded_asset};
 use bevy::camera::visibility::{self, NoFrustumCulling, VisibilityClass};
@@ -150,30 +150,30 @@ pub struct Lettering(pub Handle<Image>);
 /// characters and lays them out; nothing in it knows about decades or thousands
 /// or where a point goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Word {
+pub struct Number {
     codes: [u8; CHARS],
     letters: u8,
 }
 
-impl Word {
+impl Number {
     /// What `text` comes to, taking each character it has in [`LETTERS`]
     ///
     /// Anything else is passed over, and anything past [`CHARS`] is dropped.
     /// The alphabet is the whole of what a plane can paint, so a caller writing
     /// outside it is asking for a character that does not exist.
-    pub fn say(text: &str) -> Word {
-        let mut word = Word::default();
+    pub fn say(text: &str) -> Number {
+        let mut number = Number::default();
         for letter in text.chars() {
             let Some(code) = LETTERS.iter().position(|it| *it == letter) else {
                 continue;
             };
-            if word.letters as usize >= CHARS {
+            if number.letters as usize >= CHARS {
                 break;
             }
-            word.codes[word.letters as usize] = code as u8;
-            word.letters += 1;
+            number.codes[number.letters as usize] = code as u8;
+            number.letters += 1;
         }
-        word
+        number
     }
 
     /// How many characters it takes
@@ -199,31 +199,31 @@ impl Word {
 
 /// What the numbers along a plane's two rulers say
 ///
-/// One [`Word`] to a numbered crossing, [`NUMBERED`] of them along each ruler
+/// One [`Number`] to a numbered crossing, [`NUMBERED`] of them along each ruler
 /// counting from [`Numbered::base`]. The pair painted at a crossing is the two
 /// looked up with a comma between them.
 ///
-/// Filled by whoever owns the plane, from [`said::ticked`] and the step
+/// Filled by whoever owns the plane, from [`label::ticked`] and the step
 /// [`ladder::numbering`] chose. What the shader is handed is characters to lay
 /// out; which power a crossing is said in and how many places it runs to are
 /// worked out before they ever reach it.
 #[derive(Component, Clone)]
 pub struct Numbered {
-    /// Which crossing the first word of each ruler is, counted from the space's
-    /// own origin
+    /// Which crossing the first number of each ruler is, counted from the
+    /// space's own origin
     pub base: IVec2,
-    /// What is written along the lettering, one word to a crossing
-    pub along: [Word; NUMBERED],
+    /// What is written along the lettering, one number to a crossing
+    pub along: [Number; NUMBERED],
     /// And what is written down it
-    pub across: [Word; NUMBERED],
+    pub across: [Number; NUMBERED],
 }
 
 impl Default for Numbered {
     fn default() -> Self {
         Numbered {
             base: IVec2::ZERO,
-            along: [Word::default(); NUMBERED],
-            across: [Word::default(); NUMBERED],
+            along: [Number::default(); NUMBERED],
+            across: [Number::default(); NUMBERED],
         }
     }
 }
@@ -252,7 +252,7 @@ pub fn finest(grid: &Grid) -> f64 {
 #[reflect(Component, Default)]
 #[require(
     read::Reading,
-    read::Dropped,
+    read::Plumbs,
     Plane,
     Numbered,
     Transform,
@@ -336,7 +336,7 @@ pub struct Plane {
 /// Numbers painted onto a [`Plane`], at the crossings of its lines
 ///
 /// Part of the ruling rather than laid over it: they lie in the plane, turn
-/// with it, shrink with it and go the way it goes. What each says is a [`Word`]
+/// with it, shrink with it and go the way it goes. What each says is a [`Number`]
 /// out of [`Numbered`], written on the processor.
 #[derive(Reflect, Copy, Clone, Debug, Default, PartialEq)]
 pub struct Painted {
@@ -1144,20 +1144,20 @@ mod tests {
 
     /// A number is said in the alphabet the plane paints from
     #[test]
-    fn a_word_is_the_places_of_its_letters() {
-        let word = Word::say("-1.5e3");
-        assert_eq!(word.letters(), 6);
+    fn a_number_is_the_places_of_its_letters() {
+        let number = Number::say("-1.5e3");
+        assert_eq!(number.letters(), 6);
         // Minus, one, point, five, e, three, in `LETTERS` order.
-        assert_eq!(word.codes[..6], [10, 1, 12, 5, 13, 3]);
+        assert_eq!(number.codes[..6], [10, 1, 12, 5, 13, 3]);
         // And nothing outside the alphabet is taken.
-        assert_eq!(Word::say("1 2").letters(), 2);
-        assert_eq!(Word::say("").letters(), 0);
+        assert_eq!(Number::say("1 2").letters(), 2);
+        assert_eq!(Number::say("").letters(), 0);
     }
 
     /// And packed six characters to a word, with the count in the fourth
     #[test]
-    fn a_word_packs_six_letters_to_a_word() {
-        let packed = Word::say("1234567").packed();
+    fn a_number_packs_six_letters_to_a_word() {
+        let packed = Number::say("1234567").packed();
         assert_eq!(packed.w, 7);
         // The first six, five bits apiece, lowest first.
         assert_eq!(packed.x & 31, 1);

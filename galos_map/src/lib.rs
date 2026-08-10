@@ -117,7 +117,7 @@ pub(crate) mod tests {
             // Poisoning says some other test panicked mid-pass, which is that
             // test's news to break rather than this one's.
             let mut heard =
-                HEARD.lock().unwrap_or_else(|held| held.into_inner());
+                HEARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             act(heard
                 .get_or_insert_with(HashMap::new)
                 .entry(thread)

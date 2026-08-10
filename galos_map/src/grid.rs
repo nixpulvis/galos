@@ -44,14 +44,14 @@
 //! not yet been reached.
 use crate::camera::OrbitCamera;
 use crate::ruled::{
-    self, Decade, EDGE_ON, FIGURES_ACROSS, Family, INK, Located, NUMBERED,
-    Numbered, Painted, Plane, Reading, RuledPlugin, Unit, Word, drawn_at,
+    self, Decade, DistanceUnit, EDGE_ON, FIGURES_ACROSS, Family, INK, Located,
+    NUMBERED, Number, Numbered, Painted, Plane, Reading, RuledPlugin, drawn_at,
     numbering, ruling, snapped_to, ticked,
 };
 use crate::schedule::MapSet;
 use crate::space::{self, Map};
 use crate::systems::System;
-use crate::systems::bodies::spawn::{Apparent, Body};
+use crate::systems::bodies::spawn::{ApparentSize, Body};
 use crate::systems::selection::Selected;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -71,8 +71,8 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(ShowMiddle(true));
     app.insert_resource(ShowPicked(true));
     app.init_resource::<Bright>();
-    app.init_resource::<Said>();
-    app.init_resource::<Descended>();
+    app.init_resource::<RulerUnit>();
+    app.init_resource::<RuledSystem>();
     // After the map itself, which is what the galaxy's planes hang from. The
     // resource naming it is inserted through a command, so it is not there to
     // be read until the schedule that queued it has ended.
@@ -168,7 +168,7 @@ const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
 ///
 /// Where it hangs, how it is ruled, what its crossings are called, what can be
 /// read off it and whether it is drawn at all.
-type Ruled = (
+type PlaneParts = (
     Entity,
     &'static Ruler,
     &'static mut Transform,
@@ -199,33 +199,35 @@ struct Ruler {
 /// they were made for is remembered here, and they are made afresh whenever
 /// the answer changes.
 #[derive(Resource, Default)]
-struct Descended(Option<Entity>);
+struct RuledSystem(Option<Entity>);
 
 /// What a plane's numbers are said in, out among the systems
-const LIGHT_YEARS: Unit = Unit { metres: space::LIGHT_YEAR, mark: "Ly" };
+const LIGHT_YEARS: DistanceUnit =
+    DistanceUnit { metres: space::LIGHT_YEAR, mark: "Ly" };
 
 /// And once the camera has descended into one
-const LIGHT_SECONDS: Unit = Unit { metres: space::LIGHT_SECOND, mark: "Ls" };
+const LIGHT_SECONDS: DistanceUnit =
+    DistanceUnit { metres: space::LIGHT_SECOND, mark: "Ls" };
 
 /// The finest cell a plane hanging in `grid` may be ruled in, said in `unit`
 ///
 /// Where the ladder stops. Out among the systems that is arithmetic, the grid
 /// running out of places to put a line, [`ruled::finest`]. Inside one it is
 /// taste, the grid having room to spare.
-fn finest(unit: Unit, grid: &Grid) -> f64 {
+fn finest(unit: DistanceUnit, grid: &Grid) -> f64 {
     let placed = ruled::finest(grid) * STEADY / unit.metres;
     if unit == LIGHT_SECONDS { placed.max(FINEST_SYSTEM_CELL) } else { placed }
 }
 
-/// What the numbers are asked to be said in
+/// The unit a plane's numbers are read in
 ///
 /// Left to the map by default, which turns the ruler over as it descends into
 /// a system. Pinned either way from the bar, for reading a system's distances
 /// in light years or a neighbourhood's in light seconds.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Said {
+pub enum RulerUnit {
     #[default]
-    Whichever,
+    Automatic,
     LightYears,
     LightSeconds,
 }
@@ -253,11 +255,11 @@ pub enum Said {
 ///
 /// Either may still be pinned from the bar, which moves the lines once, when
 /// asked.
-fn said_in(own: Unit, asked: Said) -> Unit {
+fn unit_for(own: DistanceUnit, asked: RulerUnit) -> DistanceUnit {
     match asked {
-        Said::LightYears => LIGHT_YEARS,
-        Said::LightSeconds => LIGHT_SECONDS,
-        Said::Whichever => own,
+        RulerUnit::LightYears => LIGHT_YEARS,
+        RulerUnit::LightSeconds => LIGHT_SECONDS,
+        RulerUnit::Automatic => own,
     }
 }
 
@@ -268,11 +270,14 @@ fn said_in(own: Unit, asked: Said) -> Unit {
 /// which share no cell size are never on screen together, and between them is
 /// a moment with nothing ruled at all.
 ///
-/// `held` is how much of the mark standing for the system is left, which is
-/// what the map fades its contents in against. Following it means the ruler
+/// `standing` is how much of the mark standing for the system is left, which
+/// is what the map fades its contents in against. Following it means the ruler
 /// changes hands on the same figure the sky does.
-fn handover(held: f32) -> (f32, f32) {
-    (((held - 0.5) * 2.).clamp(0., 1.), ((0.5 - held) * 2.).clamp(0., 1.))
+fn handover(standing: f32) -> (f32, f32) {
+    (
+        ((standing - 0.5) * 2.).clamp(0., 1.),
+        ((0.5 - standing) * 2.).clamp(0., 1.),
+    )
 }
 
 /// Create the two planes ruled in light years
@@ -283,7 +288,7 @@ fn handover(held: f32) -> (f32, f32) {
 ///
 /// The two ruled in light seconds are not made here. They hang inside whatever
 /// system the camera has descended into, and there is none at startup — see
-/// [`Descended`].
+/// [`RuledSystem`].
 fn spawn_planes(mut commands: Commands, map: Res<Map>) {
     commands.spawn((
         ruled::Ruled,
@@ -306,11 +311,11 @@ fn spawn_planes(mut commands: Commands, map: Res<Map>) {
 /// which is what carries the ruling from light years to light seconds without
 /// either of them appearing out of nowhere.
 struct Placement<'a> {
-    unit: Unit,
+    unit: DistanceUnit,
     /// The grid the planes of this space hang in, which splits a position into
     /// a cell and a remainder
     grid: &'a Grid,
-    ruling: Decade,
+    decade: Decade,
     /// Where the planes sit, in [`Placement::unit`], measured from whatever
     /// the space is measured from
     at: DVec3,
@@ -332,13 +337,13 @@ struct Placement<'a> {
     reach: f64,
     /// How much of this space's ruling is drawn, as the descent hands the map
     /// from one space to the other
-    handed: f32,
+    share: f32,
 }
 
 impl Placement<'_> {
     /// How much of this space is drawn at all
     fn showing(&self) -> f32 {
-        self.ruling.drawn * self.handed
+        self.decade.drawn * self.share
     }
 
     /// What the numbers over this space say
@@ -400,12 +405,12 @@ fn mark_out(
 /// system. `across` is how much of the sky is on screen, in light years, which
 /// is the one figure the whole ruling follows.
 fn placed<'a>(
-    unit: Unit,
+    unit: DistanceUnit,
     grid: &'a Grid,
     from: DVec3,
     across: f64,
     orbit: &OrbitCamera,
-    handed: f32,
+    share: f32,
 ) -> Placement<'a> {
     // Everything from here is in `unit`. The view is measured in light years
     // whatever is being looked at, so it is spoken into the space's own unit
@@ -414,7 +419,7 @@ fn placed<'a>(
         |place: DVec3| (place - from) * space::LIGHT_YEAR / unit.metres;
     let across = across * space::LIGHT_YEAR / unit.metres;
 
-    let ruling = ruling(across, finest(unit, grid));
+    let decade = ruling(across, finest(unit, grid));
     let looking = spoken(orbit.center);
     let step = numbering(across);
 
@@ -438,7 +443,7 @@ fn placed<'a>(
     Placement {
         unit,
         grid,
-        ruling,
+        decade,
         at,
         crossing,
         across,
@@ -448,7 +453,7 @@ fn placed<'a>(
         // distance across the plane. Past the far side of the view, so that
         // what fades is the horizon rather than what is looked at.
         reach: orbit.radius as f64 * space::LIGHT_YEAR * FADE_BEYOND,
-        handed,
+        share,
     }
 }
 
@@ -461,17 +466,17 @@ fn rule(
     showing: Res<ShowGrid>,
     bright: Res<Bright>,
     cameras: Query<(&OrbitCamera, Option<&Projection>)>,
-    held: Res<Apparent>,
+    seen_as: Res<ApparentSize>,
     // The system the camera has descended into, if it has. It is the one
     // carrying a grid of its own, which it does only while its contents are
     // drawn. Its cells are a metre, which is what lets a plane be ruled in
     // light seconds at all.
     inside: Query<(Entity, &System, &Grid), Without<BigSpace>>,
     outside: Query<&Grid, With<BigSpace>>,
-    mut planes: Query<Ruled>,
-    said: Res<Said>,
+    mut planes: Query<PlaneParts>,
+    asked: Res<RulerUnit>,
     middle: Res<ShowMiddle>,
-    mut descended: ResMut<Descended>,
+    mut descended: ResMut<RuledSystem>,
     mut commands: Commands,
 ) {
     // Which system the planes ruled in light seconds should be hanging in.
@@ -513,7 +518,7 @@ fn rule(
     // How far the descent has got. The map fades a system's contents in over
     // this same stretch, so ruling the two spaces by it hands the ruler over
     // exactly as the sky changes hands.
-    let out_among_them = held.held();
+    let out_among_them = seen_as.standing();
 
     // The one is spent before the other begins, so that two ladders which
     // share no cell size are never on screen together.
@@ -526,7 +531,7 @@ fn rule(
         .filter(|_| out_there > 0.)
         .map(|(grid, orbit)| {
             placed(
-                said_in(LIGHT_YEARS, *said),
+                unit_for(LIGHT_YEARS, *asked),
                 grid,
                 DVec3::ZERO,
                 across,
@@ -541,7 +546,7 @@ fn rule(
         .filter(|_| down_here > 0.)
         .map(|((_, system, grid), orbit)| {
             placed(
-                said_in(LIGHT_SECONDS, *said),
+                unit_for(LIGHT_SECONDS, *asked),
                 grid,
                 system.position(),
                 across,
@@ -593,8 +598,8 @@ fn rule(
         transform.translation = at;
 
         *plane = Plane {
-            cell: space.ruling.fine * space.unit.metres,
-            families: space.ruling.rows(space.handed).map(|row| Family {
+            cell: space.decade.fine * space.unit.metres,
+            families: space.decade.rows(space.share).map(|row| Family {
                 strength: drawn_at(row.strength, bright.0),
                 ..row
             }),
@@ -602,8 +607,8 @@ fn rule(
                 // The crossings that carry a number are the ones the numbers
                 // were already stepped by, so a number falls on a line and
                 // there are about as many across the view as fit.
-                apart: (space.step / space.ruling.fine) as f32,
-                tall: (space.across / space.ruling.fine / FIGURES_ACROSS)
+                apart: (space.step / space.decade.fine) as f32,
+                tall: (space.across / space.decade.fine / FIGURES_ACROSS)
                     as f32,
                 strength: drawn_at(INK * space.showing(), bright.0),
                 // Written by `ruled::place`, which settles where the ruling is
@@ -639,8 +644,8 @@ fn rule(
         for into in 0..NUMBERED {
             let along = f64::from(base.x + into as i32) * space.step;
             let across = f64::from(base.y + into as i32) * space.step;
-            spoken.along[into] = Word::say(&ticked(along, space.step));
-            spoken.across[into] = Word::say(&ticked(across, space.step));
+            spoken.along[into] = Number::say(&ticked(along, space.step));
+            spoken.across[into] = Number::say(&ticked(across, space.step));
         }
     }
 }
@@ -659,11 +664,12 @@ mod tests {
     #[test]
     fn only_one_space_is_ever_ruled() {
         for step in 0..=200 {
-            let held = step as f32 / 200.;
-            let (out, down) = handover(held);
+            let standing = step as f32 / 200.;
+            let (out, down) = handover(standing);
             assert!(
                 out == 0. || down == 0.,
-                "at {held} the galaxy was drawn at {out} and a system at {down}"
+                "at {standing} the galaxy was drawn at {out} \
+                 and a system at {down}"
             );
         }
     }
@@ -816,11 +822,17 @@ mod tests {
     /// Left to the map, a space is said in its own unit at every zoom
     #[test]
     fn a_space_is_said_in_its_own_unit() {
-        assert_eq!(said_in(LIGHT_YEARS, Said::Whichever), LIGHT_YEARS);
-        assert_eq!(said_in(LIGHT_SECONDS, Said::Whichever), LIGHT_SECONDS);
+        assert_eq!(unit_for(LIGHT_YEARS, RulerUnit::Automatic), LIGHT_YEARS);
+        assert_eq!(
+            unit_for(LIGHT_SECONDS, RulerUnit::Automatic),
+            LIGHT_SECONDS
+        );
         // And either may be pinned from the bar.
-        assert_eq!(said_in(LIGHT_SECONDS, Said::LightYears), LIGHT_YEARS);
-        assert_eq!(said_in(LIGHT_YEARS, Said::LightSeconds), LIGHT_SECONDS);
+        assert_eq!(unit_for(LIGHT_SECONDS, RulerUnit::LightYears), LIGHT_YEARS);
+        assert_eq!(
+            unit_for(LIGHT_YEARS, RulerUnit::LightSeconds),
+            LIGHT_SECONDS
+        );
     }
 
     /// So the cells never change size but by a decade
@@ -834,7 +846,7 @@ mod tests {
     fn the_cells_never_change_size_but_by_a_decade() {
         for space in [LIGHT_YEARS, LIGHT_SECONDS] {
             for across in zooms() {
-                let unit = said_in(space, Said::Whichever);
+                let unit = unit_for(space, RulerUnit::Automatic);
                 let seen = across * space::LIGHT_YEAR / unit.metres;
                 let cell = ruling(seen, 0.).fine * unit.metres;
                 // In the space's own unit, whatever it was said in.
@@ -864,8 +876,8 @@ mod tests {
         app.insert_resource(ShowGrid(true));
         app.insert_resource(ShowMiddle(true));
         app.init_resource::<Bright>();
-        app.init_resource::<Apparent>();
-        app.init_resource::<Descended>();
+        app.init_resource::<ApparentSize>();
+        app.init_resource::<RuledSystem>();
 
         let map = app
             .world_mut()
@@ -882,7 +894,7 @@ mod tests {
             CellCoord::default(),
             Transform::default(),
         ));
-        app.init_resource::<Said>();
+        app.init_resource::<RulerUnit>();
         app.world_mut().spawn((
             ruled::Ruled,
             Ruler { inside: false },

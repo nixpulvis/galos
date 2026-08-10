@@ -35,8 +35,8 @@ use galos_db::stars::Star as DbStar;
 use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<Drawn>();
-    app.init_resource::<Apparent>();
+    app.init_resource::<DrawnContents>();
+    app.init_resource::<ApparentSize>();
     app.insert_resource(ShowOrbits(true));
     app.add_systems(Startup, init_materials);
     // After the rows have been taken in, so that a system's contents can be
@@ -127,15 +127,15 @@ const WORTH_HIDING: f32 = 0.05;
 /// One system at a time, as the drawing is, and nothing at all until there is
 /// one in hand whose reach the map can say.
 #[derive(Resource, Default)]
-pub struct Apparent(Option<(Entity, f32)>);
+pub struct ApparentSize(Option<(Entity, f32)>);
 
-impl Apparent {
+impl ApparentSize {
     /// How much of the mark standing for `system` is left, from one to nothing
     ///
     /// The whole of it for every system but the one being held, none of it
     /// once the camera is inside that one, and the way between over
     /// [`WORTH_MARKING`] to [`WORTH_HIDING`].
-    pub fn standing(&self, system: Entity) -> f32 {
+    pub fn standing_for(&self, system: Entity) -> f32 {
         let Some((held, seen)) = self.0 else { return 1. };
         if held != system {
             return 1.;
@@ -155,12 +155,12 @@ impl Apparent {
 
     /// How much of the mark is left for whatever the map is holding
     ///
-    /// The same figure without having to name the system, for whoever is drawn
-    /// across the whole sky rather than at one place in it. One while the
-    /// camera is out among the systems, and nothing once it has descended into
-    /// one of them.
-    pub fn held(&self) -> f32 {
-        self.0.map_or(1., |(system, _)| self.standing(system))
+    /// [`Self::standing_for`] without having to name the system, for whoever
+    /// is drawn across the whole sky rather than at one place in it. One while
+    /// the camera is out among the systems, and nothing once it has descended
+    /// into one of them.
+    pub fn standing(&self) -> f32 {
+        self.0.map_or(1., |(system, _)| self.standing_for(system))
     }
 }
 
@@ -216,7 +216,7 @@ const DASHES: usize = 32;
 /// recorded beside the system: without it a system flown into half scanned
 /// stays half drawn for as long as the camera is in it.
 #[derive(Resource, Default)]
-struct Drawn(Option<(i64, u32)>);
+struct DrawnContents(Option<(i64, u32)>);
 
 /// Anything drawn because it is inside a system
 ///
@@ -357,7 +357,7 @@ impl Glow {
 
 /// The colours a body is drawn in
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Surface {
+enum SurfaceLook {
     Earthlike,
     Water,
     Ammonia,
@@ -368,29 +368,29 @@ enum Surface {
     Unknown,
 }
 
-impl Surface {
-    const ALL: [Surface; 8] = [
-        Surface::Earthlike,
-        Surface::Water,
-        Surface::Ammonia,
-        Surface::Gas,
-        Surface::Icy,
-        Surface::Rocky,
-        Surface::Metal,
-        Surface::Unknown,
+impl SurfaceLook {
+    const ALL: [SurfaceLook; 8] = [
+        SurfaceLook::Earthlike,
+        SurfaceLook::Water,
+        SurfaceLook::Ammonia,
+        SurfaceLook::Gas,
+        SurfaceLook::Icy,
+        SurfaceLook::Rocky,
+        SurfaceLook::Metal,
+        SurfaceLook::Unknown,
     ];
 
     /// What the surface is painted in
     const fn color(self) -> Color {
         match self {
-            Surface::Earthlike => Color::srgb(0.25, 0.5, 0.3),
-            Surface::Water => Color::srgb(0.2, 0.4, 0.7),
-            Surface::Ammonia => Color::srgb(0.7, 0.6, 0.35),
-            Surface::Gas => Color::srgb(0.75, 0.65, 0.5),
-            Surface::Icy => Color::srgb(0.8, 0.85, 0.9),
-            Surface::Rocky => Color::srgb(0.45, 0.4, 0.35),
-            Surface::Metal => Color::srgb(0.5, 0.45, 0.4),
-            Surface::Unknown => Color::srgb(0.35, 0.35, 0.35),
+            SurfaceLook::Earthlike => Color::srgb(0.25, 0.5, 0.3),
+            SurfaceLook::Water => Color::srgb(0.2, 0.4, 0.7),
+            SurfaceLook::Ammonia => Color::srgb(0.7, 0.6, 0.35),
+            SurfaceLook::Gas => Color::srgb(0.75, 0.65, 0.5),
+            SurfaceLook::Icy => Color::srgb(0.8, 0.85, 0.9),
+            SurfaceLook::Rocky => Color::srgb(0.45, 0.4, 0.35),
+            SurfaceLook::Metal => Color::srgb(0.5, 0.45, 0.4),
+            SurfaceLook::Unknown => Color::srgb(0.35, 0.35, 0.35),
         }
     }
 
@@ -406,27 +406,27 @@ impl Surface {
     /// before ammonia is, or every one of them comes out an ammonia world. And
     /// a "rocky ice body" contains both its materials, of which the ice is the
     /// one that shows.
-    fn of(class: &str) -> Surface {
+    fn of(class: &str) -> SurfaceLook {
         let class = class.to_lowercase();
         if class.contains("earthlike") {
-            Surface::Earthlike
+            SurfaceLook::Earthlike
         } else if class.contains("gas giant") {
-            Surface::Gas
+            SurfaceLook::Gas
         } else if class.contains("water world") || class.contains("water giant")
         {
-            Surface::Water
+            SurfaceLook::Water
         } else if class.contains("ammonia") {
-            Surface::Ammonia
+            SurfaceLook::Ammonia
         } else if class.contains("rocky ice") {
-            Surface::Icy
+            SurfaceLook::Icy
         } else if class.contains("icy") || class.contains("ice") {
-            Surface::Icy
+            SurfaceLook::Icy
         } else if class.contains("metal") {
-            Surface::Metal
+            SurfaceLook::Metal
         } else if class.contains("rocky") {
-            Surface::Rocky
+            SurfaceLook::Rocky
         } else {
-            Surface::Unknown
+            SurfaceLook::Unknown
         }
     }
 }
@@ -475,7 +475,7 @@ fn init_materials(
     ));
 
     commands.insert_resource(BodyMaterials(
-        Surface::ALL
+        SurfaceLook::ALL
             .into_iter()
             .map(|surface| {
                 assets.add(StandardMaterial {
@@ -516,8 +516,8 @@ fn draw(
     bodies: Res<BodyMaterials>,
     orbit_material: Res<OrbitMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut drawn: ResMut<Drawn>,
-    mut seen_as: ResMut<Apparent>,
+    mut drawn: ResMut<DrawnContents>,
+    mut seen_as: ResMut<ApparentSize>,
     mut commands: Commands,
 ) {
     let Ok((eye_entity, eye)) = camera.single().map(|(e, c)| (e, c.eye)) else {
@@ -789,7 +789,7 @@ fn drawn_body(
             .with_scale(Vec3::splat(body.radius.max(1.))),
         Mesh3d(roundness.coarsest()),
         MeshMaterial3d(
-            materials.0[Surface::of(&body.planet_class) as usize].clone(),
+            materials.0[SurfaceLook::of(&body.planet_class) as usize].clone(),
         ),
         // As a star: what lies behind is reported too, and settled by depth.
         Pickable { should_block_lower: false, is_hoverable: true },
@@ -966,14 +966,14 @@ mod tests {
 
     /// Where the one body in `app` says it stands
     #[derive(Resource, Default)]
-    struct Stood(Option<DVec3>);
+    struct BodyPosition(Option<DVec3>);
 
-    fn ask(
+    fn read_position(
         placed: Placed,
         bodies: Query<Entity, With<Body>>,
-        mut stood: ResMut<Stood>,
+        mut position: ResMut<BodyPosition>,
     ) {
-        stood.0 = bodies.single().ok().and_then(|body| placed.of(body));
+        position.0 = bodies.single().ok().and_then(|body| placed.of(body));
     }
 
     /// Where a body `out` metres from the middle of a system `away` light
@@ -984,8 +984,8 @@ mod tests {
     fn stands(away: f64, out: DVec3) -> DVec3 {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Stood>();
-        app.add_systems(Update, ask);
+        app.init_resource::<BodyPosition>();
+        app.add_systems(Update, read_position);
 
         let grid = space::system_grid();
         let (cell, offset) = placed(out, &grid);
@@ -1010,7 +1010,10 @@ mod tests {
         ));
 
         app.update();
-        app.world().resource::<Stood>().0.expect("the body stands somewhere")
+        app.world()
+            .resource::<BodyPosition>()
+            .0
+            .expect("the body stands somewhere")
     }
 
     /// One of the systems on the map
@@ -1020,7 +1023,7 @@ mod tests {
 
     /// How much of the mark for the held system is left, at `seen` radians
     fn standing(seen: f32) -> f32 {
-        Apparent(Some((on_the_map(1), seen))).standing(on_the_map(1))
+        ApparentSize(Some((on_the_map(1), seen))).standing_for(on_the_map(1))
     }
 
     /// A mark is gone by the time the camera is inside the system
@@ -1085,10 +1088,10 @@ mod tests {
     /// not fading out because the camera is flying into one of them.
     #[test]
     fn a_mark_for_some_other_system_stands_whole() {
-        let held = Apparent(Some((on_the_map(1), WORTH_DRAWING)));
+        let held = ApparentSize(Some((on_the_map(1), WORTH_DRAWING)));
 
-        assert_eq!(held.standing(on_the_map(2)), 1.);
-        assert_eq!(Apparent::default().standing(on_the_map(1)), 1.);
+        assert_eq!(held.standing_for(on_the_map(2)), 1.);
+        assert_eq!(ApparentSize::default().standing_for(on_the_map(1)), 1.);
     }
 
     /// A body is found where the system holding it put it
@@ -1213,13 +1216,19 @@ mod tests {
     /// The classes the journal actually writes come out as themselves
     #[test]
     fn a_body_is_drawn_as_what_it_is() {
-        assert_eq!(Surface::of("Earthlike body"), Surface::Earthlike);
-        assert_eq!(Surface::of("Water world"), Surface::Water);
-        assert_eq!(Surface::of("Ammonia world"), Surface::Ammonia);
-        assert_eq!(Surface::of("Sudarsky class III gas giant"), Surface::Gas);
-        assert_eq!(Surface::of("Icy body"), Surface::Icy);
-        assert_eq!(Surface::of("Rocky body"), Surface::Rocky);
-        assert_eq!(Surface::of("High metal content body"), Surface::Metal);
+        assert_eq!(SurfaceLook::of("Earthlike body"), SurfaceLook::Earthlike);
+        assert_eq!(SurfaceLook::of("Water world"), SurfaceLook::Water);
+        assert_eq!(SurfaceLook::of("Ammonia world"), SurfaceLook::Ammonia);
+        assert_eq!(
+            SurfaceLook::of("Sudarsky class III gas giant"),
+            SurfaceLook::Gas
+        );
+        assert_eq!(SurfaceLook::of("Icy body"), SurfaceLook::Icy);
+        assert_eq!(SurfaceLook::of("Rocky body"), SurfaceLook::Rocky);
+        assert_eq!(
+            SurfaceLook::of("High metal content body"),
+            SurfaceLook::Metal
+        );
     }
 
     /// A rocky ice body is ice rather than rock
@@ -1228,27 +1237,30 @@ mod tests {
     /// phrase, and the ice is what it looks like.
     #[test]
     fn a_rocky_ice_body_reads_as_ice() {
-        assert_eq!(Surface::of("Rocky ice body"), Surface::Icy);
+        assert_eq!(SurfaceLook::of("Rocky ice body"), SurfaceLook::Icy);
     }
 
     /// A gas giant with something living in it is still a gas giant
     #[test]
     fn a_gas_giant_with_life_is_still_a_gas_giant() {
         assert_eq!(
-            Surface::of("Gas giant with water based life"),
-            Surface::Gas
+            SurfaceLook::of("Gas giant with water based life"),
+            SurfaceLook::Gas
         );
         assert_eq!(
-            Surface::of("Gas giant with ammonia based life"),
-            Surface::Gas
+            SurfaceLook::of("Gas giant with ammonia based life"),
+            SurfaceLook::Gas
         );
     }
 
     /// A class nobody has written down is still drawn
     #[test]
     fn an_unheard_of_body_is_still_given_a_surface() {
-        assert_eq!(Surface::of(""), Surface::Unknown);
-        assert_eq!(Surface::of("Something else entirely"), Surface::Unknown);
+        assert_eq!(SurfaceLook::of(""), SurfaceLook::Unknown);
+        assert_eq!(
+            SurfaceLook::of("Something else entirely"),
+            SurfaceLook::Unknown
+        );
     }
 
     /// It takes more to draw a system's insides than to keep them

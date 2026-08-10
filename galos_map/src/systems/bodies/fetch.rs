@@ -4,7 +4,7 @@
 //! answers rows of `systems` and only those. A second kind of answer on the
 //! same map would make it a map of two unrelated things keyed alike.
 
-use super::{Contents, Held};
+use super::{Contents, FetchState};
 use crate::Db;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
@@ -56,7 +56,7 @@ pub(super) struct Polling {
     /// Separate from [`Contents`] so that dropping the task cancels it: a
     /// system left behind while its rows are still coming back should not land
     /// them on the map a moment later.
-    query: Option<(i64, Task<Answer>)>,
+    query: Option<(i64, Task<Rows>)>,
     /// When the system being held was last asked about
     ///
     /// What [`Poll`] is measured from, and nothing until something has been
@@ -89,7 +89,7 @@ impl Polling {
             // database cannot speak about and one it has nothing to say about
             // are the same thing to a map that has to draw something either
             // way.
-            Answer {
+            Rows {
                 stars: DbStar::fetch_all(&db, address)
                     .await
                     .unwrap_or_default(),
@@ -108,7 +108,7 @@ impl Polling {
 }
 
 /// What the database had about one system
-pub(super) struct Answer {
+pub(super) struct Rows {
     stars: Vec<DbStar>,
     bodies: Vec<DbBody>,
     /// The points a close pair goes round
@@ -188,7 +188,8 @@ fn choose(
     }
 
     debug!("asking what is in {address}");
-    *contents = Contents { of: Some(address), held: Held::Asking, revision: 0 };
+    *contents =
+        Contents { of: Some(address), state: FetchState::Asking, revision: 0 };
     polling.ask(&db, address, now);
 }
 
