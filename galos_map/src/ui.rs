@@ -1735,7 +1735,12 @@ fn whole_selection(
     let mut routing = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{picked} systems")).weak());
-        if ui.button("Filter").clicked() {
+        // Offered only where there is a system to filter on. A set of bodies
+        // builds a filter over no addresses, which admits nothing, and the map
+        // fetches by the same answer it dims by: the sky goes black under a
+        // row saying none was picked. Widen this when a filter can name a
+        // body, rather than dropping it.
+        if picked > 0 && ui.button("Filter").clicked() {
             filters.add(Filter::Systems {
                 label: format!("{picked} systems"),
                 systems: selection.addresses(),
@@ -3692,6 +3697,25 @@ mod tests {
         let said = selection_said(&["SOL", "BARNARD"]);
 
         assert!(said.contains(&"Route".to_owned()), "{said:?}");
+    }
+
+    /// Bodies alone are offered no filter, while none can name them
+    ///
+    /// A body is picked out into the same list as a system and counted with
+    /// it, so a pair of them reaches the gathered controls while leaving no
+    /// system to gather. The filter that would build names no address, admits
+    /// nothing, and blanks the sky under a row saying none was picked, the map
+    /// fetching by the same answer it dims by.
+    ///
+    /// About what a filter can name rather than about bodies. A filter that
+    /// can name one makes this case a filter over bodies, and this test the
+    /// wrong question.
+    #[test]
+    fn bodies_alone_are_not_offered_a_filter() {
+        let said = rows_said(&[body(1, "SOL A", 0.), body(2, "SOL B", 0.)]);
+
+        assert!(said.contains(&"0 systems".to_owned()), "{said:?}");
+        assert!(!said.contains(&"Filter".to_owned()), "{said:?}");
     }
 
     /// Any other number is not, there being no route it could ask for
