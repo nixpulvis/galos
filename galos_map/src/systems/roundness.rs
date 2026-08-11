@@ -24,6 +24,13 @@ pub fn plugin(app: &mut App) {
 /// times the size, and the figures are where the rung below passes about a
 /// quarter of a pixel out. The bottom is a bare icosahedron, which is all a
 /// half pixel dot has ever needed, and the top is a body filling a tall screen.
+///
+/// TODO(#72): What the bottom rung is worth is a question about area rather
+/// than about outline. An icosahedron's mean projected area is a quarter of
+/// its surface, a little over three quarters of the disc it stands in, so a
+/// dot held at [`crate::systems::scale`]'s pixel floor is drawn an eighth
+/// narrower than it asked to be. That area also swings a tenth with which way
+/// it is seen, which a dot of a few pixels shows as a flicker of its own.
 const LADDER: [(u32, f32); 7] =
     [(0, 0.), (1, 2.), (3, 8.), (7, 32.), (15, 128.), (31, 512.), (63, 2048.)];
 

@@ -177,6 +177,14 @@ const NEAREST: f32 = 4e-3;
 /// hundred light years. Half a pixel down the same window: by then every
 /// system in the sky is the same dot, and a mark that went on shrinking would
 /// leave nothing to see at all.
+///
+/// TODO(#72): Half a pixel is under what a sphere can be sampled at, and this
+/// is [`SMALLEST_DRAWN`]'s trouble at half the size. A mark this wide falls
+/// across two to five of the four samples a pixel is drawn from, so its
+/// brightness nearly doubles and halves with where it lands between them.
+/// Down a 600 line window it is 0.29 of a pixel, under the 0.354 a lattice of
+/// four to the pixel can miss entirely, and the mark blinks out at some
+/// positions altogether.
 const ANGULAR: f32 = 4e-4;
 
 /// How much larger than its system a shell is drawn
@@ -282,6 +290,18 @@ pub fn size_by_distance(
 /// A radius, so this is two pixels across. Below [`super::pointing`]'s floor
 /// for the same body's mark, which keeps what can be aimed at a little wider
 /// than what is drawn.
+///
+/// TODO(#72): A pixel is the right idea and not far enough. How many of the
+/// four samples in a pixel a hard edge catches is off its true area by about
+/// `r^-3/2`, so a body held here covers eleven to seventeen of them over the
+/// sub-pixel positions and swings half its brightness between the two. What
+/// draws a fresh one of those each frame is movement across the screen: a
+/// zoom covers a quarter of the camera's remaining distance a frame, so
+/// anything more than a pixel off the middle of the view crosses a quarter of
+/// a sample's spacing in that time. The star the camera orbits is the one
+/// thing exempt, since it lands on the same spot however far the zoom goes.
+/// Four pixels would hold the swing to a couple of percent, and a billboard
+/// sampled by its own falloff rather than by an edge has no such floor.
 const SMALLEST_DRAWN: f32 = 1.;
 
 /// Draw everything inside a system at its own size, down to a point
