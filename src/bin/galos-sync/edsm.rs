@@ -5,29 +5,28 @@ use galos_db::systems::{Economies, System};
 use galos_db::Database;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use structopt::StructOpt;
 
-#[derive(StructOpt, Debug)]
+#[derive(clap::Subcommand, Debug)]
 pub enum Cli {
     File(FileCli),
     Api(ApiCli),
 }
 
-#[derive(StructOpt, Debug)]
+#[derive(clap::Args, Debug)]
 pub struct FileCli {
     // TODO: Type as a path.
-    #[structopt(name = "PATH")]
+    #[arg(value_name = "PATH")]
     pub path: String,
 }
 
-#[derive(StructOpt, Debug)]
+#[derive(clap::Args, Debug)]
 pub struct ApiCli {
-    #[structopt(name = "NAME")]
+    #[arg(value_name = "NAME")]
     pub name: String,
 
-    #[structopt(name = "cube", long, short)]
+    #[arg(long, short, value_name = "LY")]
     pub cube: Option<u32>,
-    #[structopt(name = "sphere", long, short)]
+    #[arg(long, short, value_name = "LY")]
     pub sphere: Option<u32>,
 }
 

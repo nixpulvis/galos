@@ -1,25 +1,31 @@
+use clap::Parser;
 use galos::Run;
 use galos_db::{Database, Error};
 use std::io::{stderr, IsTerminal};
-use structopt::StructOpt;
 
 mod eddb;
 mod eddn;
 mod edsm;
 mod journal;
 
-#[derive(StructOpt, Debug)]
+#[derive(Parser, Debug)]
+#[command(name = "galos-sync", version, about = "Fill the database")]
+struct Args {
+    #[command(subcommand)]
+    provider: Cli,
+}
+
+#[derive(clap::Subcommand, Debug)]
 pub enum Cli {
-    #[structopt(about = "Import local journal files")]
+    /// Import local journal files
     Journal(journal::Cli),
-    #[structopt(
-        about = "Subscribes to EDDN to continuously sync from incoming events"
-    )]
+    /// Subscribes to EDDN to continuously sync from incoming events
     #[cfg(unix)]
     Eddn(eddn::Cli),
-    #[structopt(about = "Sync from EDSM's nightly dumps")]
+    /// Sync from EDSM's nightly dumps
+    #[command(subcommand)]
     Edsm(edsm::Cli),
-    #[structopt(about = "Sync from EDDB's nightly dumps")]
+    /// Sync from EDDB's nightly dumps
     Eddb(eddb::Cli),
 }
 
@@ -50,9 +56,9 @@ async fn main() -> Result<(), Error> {
         )
         .init();
 
-    let cli = Cli::from_args();
+    let args = Args::parse();
     let db = Database::new().await?;
-    cli.run(&db);
+    args.provider.run(&db);
 
     Ok(())
 }
