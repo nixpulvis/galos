@@ -9,7 +9,14 @@ default-run = "galos"
 
 [dependencies]
 async-std = "*"
-structopt = "*"
+# The CLI's parser and the terminal UI's command line are the same parser, so
+# what one accepts the other does. `wrap_help` because the help is read in a
+# terminal of whatever width it happens to be.
+clap = { version = "4", features = ["derive", "wrap_help"] }
+# A line typed at the terminal UI is split the way a shell would split it,
+# quotes and all, before that parser is handed it. `galos route "Alpha
+# Centauri" Sol` means one system and not two either way it is typed.
+shlex = "2"
 itertools = "*"
 indicatif = "*"
 chrono = "*"
@@ -18,14 +25,16 @@ edsm = { path = "./edsm" }
 galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
 prettytable-rs = "*"
-tui = "*"
+ratatui = "0.30"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
-galos_map= { path = "./galos_map" }
+# `galos_map` is a workspace member and is not depended on here. Nothing in
+# `galos` calls into it, and having it on this list means bevy, wgpu and naga
+# are compiled before the CLI can be type-checked — minutes, for a crate the
+# CLI never mentions. `cargo check -p galos_map` builds the map.
 
 [target.'cfg(unix)'.dependencies]
 eddn = { path = "./eddn" }
-termion = "*"
 
 [patch.crates-io]
 # elite_dat     = { path = './elite_dat' }

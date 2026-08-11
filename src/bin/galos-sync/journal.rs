@@ -4,11 +4,10 @@ use elite_journal::entry::{self, Event};
 use galos_db::{systems::System, Database};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
-use structopt::StructOpt;
 
-#[derive(StructOpt, Debug)]
+#[derive(clap::Args, Debug)]
 pub struct Cli {
-    #[structopt(name = "PATH")]
+    #[arg(value_name = "PATH")]
     pub path: String,
 }
 

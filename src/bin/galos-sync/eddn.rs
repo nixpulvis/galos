@@ -19,7 +19,6 @@ use galos_db::{
     systems::System, Database,
 };
 use std::time::Duration;
-use structopt::StructOpt;
 use tracing::{debug, info, warn};
 
 /// How long EDDN may carry nothing before its connection is replaced
@@ -28,16 +27,16 @@ use tracing::{debug, info, warn};
 /// without one, so two minutes of quiet is not EDDN being quiet.
 const STALL: Duration = Duration::from_secs(120);
 
-#[derive(StructOpt, Debug)]
+#[derive(clap::Args, Debug)]
 pub struct Cli {
     // Type as a URL? ZMQ doesn't bother :(
-    #[structopt(short = "r", long = "remote", default_value = URL, help = "ZMQ remote address")]
+    /// ZMQ remote address
+    #[arg(short = 'r', long = "remote", default_value = URL)]
     pub url: String,
 
-    #[structopt(
-        long = "stall",
-        help = "Seconds of silence before the connection is replaced, or 0 to leave it alone"
-    )]
+    /// Seconds of silence before the connection is replaced, or 0 to leave
+    /// it alone
+    #[arg(long = "stall")]
     pub stall: Option<u64>,
     // TODO: Filters?
 }

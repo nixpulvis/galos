@@ -6,13 +6,12 @@ use galos_db::{
     Database,
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use structopt::StructOpt;
 
-#[derive(StructOpt, Debug)]
+#[derive(clap::Args, Debug)]
 pub struct Cli {
     // TODO: Type as a path.
     // TODO: Default, when not provided?
-    #[structopt(name = "PATH")]
+    #[arg(value_name = "PATH")]
     pub path: String,
 }
 
