@@ -52,11 +52,30 @@ use std::collections::BTreeMap;
 async fn forget(address: i64) {
     let Ok(url) = std::env::var("DATABASE_URL") else { return };
     let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
-    sqlx::query("DELETE FROM systems WHERE address = $1")
+    // Whatever hangs off the system, then the system. Only this file writes
+    // these addresses, so nothing else loses anything.
+    for table in [
+        "clusters",
+        "rings",
+        "bodies",
+        "stars",
+        "barycenters",
+        "body_signals",
+        "system_signals",
+        "codex_entries",
+        "stations",
+        "systems",
+    ] {
+        sqlx::query(&format!(
+            "DELETE FROM {} WHERE {} = $1",
+            table,
+            if table == "systems" { "address" } else { "system_address" },
+        ))
         .bind(address)
         .execute(&pool)
         .await
-        .expect("the address should be clearable");
+        .unwrap_or_else(|e| panic!("{} should be clearable: {}", table, e));
+    }
 }
 
 /// A database to write to, or nothing and the test stands down
@@ -97,6 +116,7 @@ const REDOCK: i64 = 900_000_010;
 const STALE: i64 = 900_000_011;
 const SAME_SECOND: i64 = 900_000_012;
 const RING: i64 = 900_000_013;
+const UNMAPPED: i64 = 900_000_014;
 
 /// A honk is often the first thing heard about a system, so it writes the row
 #[async_std::test]
@@ -604,6 +624,7 @@ async fn a_black_market_sale_does_not_retire_the_others() {
 #[async_std::test]
 async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     let db = db!();
+    forget(CLUSTER).await;
 
     System::set_body_counts(
         &db,
@@ -1035,4 +1056,64 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
         .expect("the cluster should be on record");
     assert_eq!(lying_in.parent_ids.first(), Some(&65));
     assert_eq!(lying_in.parent_ids.first(), Some(&held[0].id));
+}
+
+/// Once something has been mapped it stays mapped
+///
+/// The flags say whether anyone has found or mapped a thing, and the galaxy
+/// has no way to undo either. A scan still reports `WasMapped` false after
+/// another has reported it true: one report in every three hundred that come
+/// back for the same body does, and the one this was found on was a ring.
+#[async_std::test]
+async fn a_thing_once_mapped_stays_mapped() {
+    let db = db!();
+
+    System::set_body_counts(
+        &db,
+        UNMAPPED,
+        "Test Unmapped",
+        Some(somewhere(14.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let hangs_off = |ty: &str, id: i16| {
+        let mut parent = BTreeMap::new();
+        parent.insert(ty.to_owned(), id);
+        parent
+    };
+    let ring = |discovered, mapped| JournalRing {
+        name: "Test Unmapped 2 A Ring".into(),
+        id: 40,
+        parents: vec![hangs_off("Planet", 39)],
+        distance_from_arrival: Some(10.0),
+        orbit: Orbit {
+            semi_major_axis: 1e7,
+            eccentricity: 0.,
+            orbital_inclination: 0.,
+            periapsis: 0.,
+            orbital_period: 1e4,
+            ascending_node: 0.,
+            mean_anomaly: 0.,
+        },
+        discovery: Discovery { discovered, mapped },
+    };
+
+    Ring::from_journal(&db, at(0), "test", &ring(true, true), UNMAPPED)
+        .await
+        .expect("the first scan should write");
+
+    // Another scan of the same ring, saying nobody has mapped it.
+    Ring::from_journal(&db, at(60), "test", &ring(false, false), UNMAPPED)
+        .await
+        .expect("the second scan should write");
+
+    let held = Ring::fetch_all(&db, UNMAPPED).await.expect("should read");
+    let stored = held.iter().find(|r| r.id == 40).expect("on record");
+    assert!(stored.mapped, "a later scan unmapped it");
+    assert!(stored.discovered, "a later scan undiscovered it");
 }

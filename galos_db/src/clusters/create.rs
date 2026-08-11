@@ -46,8 +46,8 @@ impl Cluster {
 
                 distance_from_arrival =
                     COALESCE($6, clusters.distance_from_arrival),
-                was_discovered = $7,
-                was_mapped = $8,
+                was_discovered = clusters.was_discovered OR $7,
+                was_mapped = clusters.was_mapped OR $8,
                 parent_ids = $9,
                 parent_types = $10
             RETURNING *

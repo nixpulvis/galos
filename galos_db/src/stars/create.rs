@@ -83,8 +83,8 @@ impl Star {
                 semi_major_axis = COALESCE($25, stars.semi_major_axis),
                 temperature = $26,
 
-                was_mapped = $27,
-                was_discovered = $28
+                was_mapped = stars.was_mapped OR $27,
+                was_discovered = stars.was_discovered OR $28
             RETURNING *
             ",
             system_address,

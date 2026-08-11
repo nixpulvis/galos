@@ -146,8 +146,8 @@ impl Body {
                 ascending_node = $33,
                 mean_anomaly = $34,
 
-                was_mapped = $35,
-                was_discovered = $36
+                was_mapped = bodies.was_mapped OR $35,
+                was_discovered = bodies.was_discovered OR $36
             RETURNING *
             ",
             body.name,
