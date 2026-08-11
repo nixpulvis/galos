@@ -27,7 +27,8 @@
                 "Patronage",
                 "Prison",
                 "PrisonColony",
-                "Theocracy"
+                "Theocracy",
+                "Megaconstruction"
               ]
             }
           }
@@ -44,7 +45,8 @@
                 "Independent",
                 "PilotsFederation",
                 "PlayerPilots",
-                "Thargoid"
+                "Thargoid",
+                "FrontlineSolutions"
               ]
             }
           }
@@ -94,7 +96,13 @@
                       "VistaGenomics",
                       "PioneerSupplies",
                       "ApexInterstellar",
-                      "FrontlineSolutions"
+                      "FrontlineSolutions",
+                      "RegisteringColonisation",
+                      "ColonisationContribution",
+                      "OnDockMission",
+                      "SquadronBank",
+                      "Refinery",
+                      "CarrierVendor"
                     ]
                   }
                 }

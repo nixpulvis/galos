@@ -819,7 +819,9 @@ fn allegiance_hue(system: &System) -> Hue {
         Some(Allegiance::Alliance) => Hue::Green,
         Some(Allegiance::Empire) => Hue::Cyan,
         Some(Allegiance::Federation) => Hue::Red,
-        Some(Allegiance::PilotsFederation) => Hue::Orange,
+        // A company rather than a power, as the Pilots Federation is
+        Some(Allegiance::PilotsFederation)
+        | Some(Allegiance::FrontlineSolutions) => Hue::Orange,
         Some(Allegiance::PlayerPilots) => Hue::Yellow,
         Some(Allegiance::Independent) => Hue::Yellow,
         Some(Allegiance::Guardian) => Hue::Blue,
@@ -831,7 +833,11 @@ fn allegiance_hue(system: &System) -> Hue {
 fn government_hue(system: &System) -> Hue {
     match system.government {
         Some(Government::Anarchy) => Hue::Yellow,
-        Some(Government::Carrier) => Hue::Green,
+        // Neither is a way of governing anybody. A carrier answers to whoever
+        // owns it, and a megaconstruction site to whoever is building it.
+        Some(Government::Carrier) | Some(Government::Megaconstruction) => {
+            Hue::Green
+        }
         Some(Government::Communism) => Hue::Red,
         Some(Government::Confederacy) => Hue::Red,
         Some(Government::Cooperative) => Hue::Orange,

@@ -1,0 +1,14 @@
+-- A basic scan of a body reports no surface temperature.
+--
+-- `ScanType` says how close a look was taken. A detailed scan carries every
+-- figure a body has; a basic one, which is what a nav beacon and a distant
+-- honk give, leaves some of them out. `SurfaceTemperature` is one, and gas
+-- giants are where it shows up.
+--
+-- `create_bodies` declared the column NOT NULL, which reads as every body
+-- having a known temperature. A scan without one failed to deserialize and
+-- the whole message went with it: the system, its position, and the body.
+--
+-- Every other figure a basic scan leaves out is already nullable here. This
+-- one was not.
+ALTER TABLE bodies ALTER COLUMN temperature DROP NOT NULL;

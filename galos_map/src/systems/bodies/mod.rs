@@ -437,7 +437,7 @@ mod tests {
             mass: 0.,
             radius: 0.,
             gravity: 0.,
-            temperature: 0.,
+            temperature: Some(0.),
             surface: None,
             orbit: JournalOrbit {
                 semi_major_axis: a,

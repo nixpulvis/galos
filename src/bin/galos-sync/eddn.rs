@@ -13,9 +13,9 @@ use elite_journal::system::Coordinate;
 use elite_journal::system::System as JournalSystem;
 use galos_db::{
     barycenters::Barycenter, black_market::BlackMarket, bodies::Body,
-    body_signals::BodySignal, codex_entries::CodexEntry, markets::Market,
-    outfitting::Outfitting, shipyard::Shipyard, stars::Star, stations::Station,
-    system_signals::SystemSignal, systems::System, Database,
+    body_signals::BodySignal, clusters::Cluster, codex_entries::CodexEntry,
+    markets::Market, outfitting::Outfitting, shipyard::Shipyard, stars::Star,
+    stations::Station, system_signals::SystemSignal, systems::System, Database,
 };
 use std::time::Duration;
 use structopt::StructOpt;
@@ -81,9 +81,15 @@ async fn record_visit(
 ) {
     match System::from_journal(db, timestamp, user, system).await {
         Ok(_) => info!(system = %system.name, "{}", what),
-        Err(err) => {
-            warn!(system = %system.name, error = %err, "{}", what)
-        }
+        // Its address and where it says it is, both of which a write can be
+        // refused over and neither of which the name gives.
+        Err(err) => warn!(
+            system = %system.name,
+            address = system.address,
+            position = ?system.pos,
+            error = %err,
+            "{}", what
+        ),
     }
 
     if let Some(body) = body {
@@ -295,6 +301,24 @@ fn process_message(
                                 warn!(body = %body.name, error = %err, "scan")
                             }
                         },
+                        ScanTarget::Cluster(cluster) => {
+                            match Cluster::from_journal(
+                                db,
+                                entry.timestamp,
+                                user,
+                                &cluster,
+                                scan.system_address,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    info!(cluster = %cluster.name, "scan")
+                                }
+                                Err(err) => {
+                                    warn!(cluster = %cluster.name, error = %err, "scan")
+                                }
+                            }
+                        }
                     }
                 }
                 // A barycenter is not a body and is not drawn. It is stored so

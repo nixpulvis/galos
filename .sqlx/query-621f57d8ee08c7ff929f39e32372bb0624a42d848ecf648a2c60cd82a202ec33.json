@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT *\n            FROM clusters\n            WHERE system_address = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "distance_from_arrival",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "parent_ids",
+        "type_info": "Int2Array"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_types",
+        "type_info": "VarcharArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "621f57d8ee08c7ff929f39e32372bb0624a42d848ecf648a2c60cd82a202ec33"
+}

@@ -31,7 +31,7 @@ pub struct Body {
     /// Measured at the cloud tops where there is no surface, which is why
     /// these are not part of [`Surface`]
     pub gravity: f32,
-    pub temperature: f32,
+    pub temperature: Option<f32>,
 
     /// [`None`] for a gas giant, which has no surface to record
     pub surface: Option<Surface>,

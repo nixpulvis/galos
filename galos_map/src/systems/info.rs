@@ -782,7 +782,14 @@ fn body_described(ui: &mut Ui, body: &DbBody) {
                 "Gravity",
                 format!("{:.2} g", body.gravity as f64 / GRAVITY),
             );
-            field(ui, "Temperature", format!("{:.0} K", body.temperature));
+            field(
+                ui,
+                "Temperature",
+                match body.temperature {
+                    Some(heat) => format!("{heat:.0} K"),
+                    None => UNKNOWN.into(),
+                },
+            );
             standing(ui, &body.surface);
             field(ui, "Tidal lock", yes_no(body.tidal_lock));
             turning(ui, &body.spin);
@@ -1355,7 +1362,7 @@ mod tests {
             mass: 0.69,
             radius: 5.485766e6,
             gravity: 9.13869,
-            temperature: 298.70755,
+            temperature: Some(298.70755),
             surface: None,
             orbit: JournalOrbit {
                 semi_major_axis: 1.0023064e11,

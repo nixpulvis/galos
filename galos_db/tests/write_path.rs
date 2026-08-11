@@ -17,9 +17,10 @@
 //! every one of those is a decision made per table here.
 
 use chrono::{DateTime, TimeZone, Utc};
-use elite_journal::body::Signal;
+use elite_journal::body::{Discovery, Signal};
 use elite_journal::entry::incremental::exploration::{
-    CodexEntry as JournalCodex, SystemSignal as JournalSignal,
+    Cluster as JournalCluster, CodexEntry as JournalCodex,
+    SystemSignal as JournalSignal,
 };
 use elite_journal::entry::incremental::travel::ApproachSettlement;
 use elite_journal::entry::market::{
@@ -28,10 +29,11 @@ use elite_journal::entry::market::{
 };
 use elite_journal::system::Coordinate;
 use galos_db::{
-    black_market::BlackMarket, body_signals::BodySignal,
+    black_market::BlackMarket, body_signals::BodySignal, clusters::Cluster,
     codex_entries::CodexEntry, outfitting::Outfitting, shipyard::Shipyard,
     stations::Station, system_signals::SystemSignal, systems::System, Database,
 };
+use std::collections::BTreeMap;
 
 /// A database to write to, or nothing and the test stands down
 macro_rules! db {
@@ -65,6 +67,7 @@ const SYSTEM_SIGNALS: i64 = 900_000_003;
 const CODEX: i64 = 900_000_004;
 const SETTLEMENT: i64 = 900_000_005;
 const TRADE: i64 = 900_000_006;
+const CLUSTER: i64 = 900_000_008;
 
 /// A honk is often the first thing heard about a system, so it writes the row
 #[async_std::test]
@@ -562,4 +565,65 @@ async fn a_black_market_sale_does_not_retire_the_others() {
     assert_eq!(taken.len(), 2);
     assert_eq!(taken[0].name, "gold");
     assert_eq!(taken[1].name, "silver");
+}
+
+/// A belt cluster lands, and a second sighting replaces it
+///
+/// Keyed on the system and the id the game numbers it by, as a body is. The
+/// same cluster is scanned again every time a commander passes through, and a
+/// second row for it would count one stretch of belt twice.
+#[async_std::test]
+async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
+    let db = db!();
+
+    System::set_body_counts(
+        &db,
+        CLUSTER,
+        "Test Cluster",
+        Some(somewhere(8.0)),
+        4,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let ring = |ty: &str, id: i16| {
+        let mut parent = BTreeMap::new();
+        parent.insert(ty.to_owned(), id);
+        parent
+    };
+    let mut cluster = JournalCluster {
+        name: "Test Cluster A Belt Cluster 1".into(),
+        id: 5,
+        parents: vec![ring("Ring", 1), ring("Star", 0)],
+        distance_from_arrival: Some(12.5),
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+
+    Cluster::from_journal(&db, at(0), "test", &cluster, CLUSTER)
+        .await
+        .expect("cluster should write");
+
+    let held = Cluster::fetch_all(&db, CLUSTER).await.expect("should read");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].name, "Test Cluster A Belt Cluster 1");
+    assert_eq!(held[0].id, 5);
+    assert_eq!(held[0].distance_from_arrival, Some(12.5));
+    assert!(held[0].discovered);
+    assert!(!held[0].mapped);
+    // Nearest ancestor first: the ring it lies in, then what that goes round.
+    assert_eq!(held[0].parent_ids, vec![1, 0]);
+    assert_eq!(held[0].parent_types, vec!["Ring", "Star"]);
+
+    cluster.discovery.mapped = true;
+    Cluster::from_journal(&db, at(60), "test", &cluster, CLUSTER)
+        .await
+        .expect("second scan should write");
+
+    let held = Cluster::fetch_all(&db, CLUSTER).await.expect("should read");
+    assert_eq!(held.len(), 1, "a second scan wrote a second row");
+    assert!(held[0].mapped);
+    assert_eq!(held[0].updated_at, at(60));
 }

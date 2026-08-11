@@ -101,7 +101,8 @@
                 "Patronage",
                 "Prison",
                 "PrisonColony",
-                "Theocracy"
+                "Theocracy",
+                "Megaconstruction"
               ]
             }
           }
@@ -122,7 +123,8 @@
                 "Independent",
                 "PilotsFederation",
                 "PlayerPilots",
-                "Thargoid"
+                "Thargoid",
+                "FrontlineSolutions"
               ]
             }
           }

@@ -108,6 +108,7 @@ pub mod barycenters;
 pub mod black_market;
 pub mod bodies;
 pub mod body_signals;
+pub mod clusters;
 pub mod codex_entries;
 pub mod factions;
 pub mod markets;

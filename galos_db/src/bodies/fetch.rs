@@ -29,7 +29,7 @@ struct Row {
     mass: f32,
     radius: f32,
     gravity: f32,
-    temperature: f32,
+    temperature: Option<f32>,
     surface_pressure: Option<f32>,
     composition_ice: Option<f32>,
     composition_rock: Option<f32>,
