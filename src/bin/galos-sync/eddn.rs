@@ -138,8 +138,16 @@ async fn ensure_system(
 
     match System::from_journal(db, timestamp, user, &system).await {
         Ok(_) => true,
+        // Its address and where it says it is, as `record_visit` says them. A
+        // write is refused over both, and the name gives neither.
         Err(err) => {
-            warn!(system = %name, error = %err, "system");
+            warn!(
+                system = %name,
+                address = address,
+                position = ?position,
+                error = %err,
+                "system"
+            );
             false
         }
     }
