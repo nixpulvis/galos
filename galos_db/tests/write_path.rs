@@ -707,8 +707,8 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
         orbital_inclination: 0.,
         periapsis: 1.,
         orbital_period: 1e7,
-        ascending_node: 0.,
-        mean_anomaly: 0.,
+        ascending_node: Some(0.),
+        mean_anomaly: Some(0.),
     };
     let body = |temperature, surface| JournalBody {
         id: 1,
@@ -1016,8 +1016,8 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
             orbital_inclination: 0.,
             periapsis: 0.,
             orbital_period: 15402.967,
-            ascending_node: 0.,
-            mean_anomaly: 166.00566,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(166.00566),
         },
         discovery: Discovery { discovered: false, mapped: false },
     };
@@ -1097,8 +1097,8 @@ async fn a_thing_once_mapped_stays_mapped() {
             orbital_inclination: 0.,
             periapsis: 0.,
             orbital_period: 1e4,
-            ascending_node: 0.,
-            mean_anomaly: 0.,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
         },
         discovery: Discovery { discovered, mapped },
     };

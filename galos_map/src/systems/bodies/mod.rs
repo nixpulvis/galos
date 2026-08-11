@@ -341,8 +341,8 @@ fn recorded_body(body: &DbBody) -> Orbit {
         body.orbit.eccentricity,
         body.orbit.orbital_inclination,
         body.orbit.periapsis,
-        body.orbit.ascending_node,
-        body.orbit.mean_anomaly,
+        body.orbit.ascending_node.unwrap_or(0.),
+        body.orbit.mean_anomaly.unwrap_or(0.),
         body.orbit.orbital_period,
     )
 }
@@ -359,8 +359,8 @@ fn recorded_center(center: &DbBarycenter) -> Orbit {
             orbit.eccentricity,
             orbit.orbital_inclination,
             orbit.periapsis,
-            orbit.ascending_node,
-            orbit.mean_anomaly,
+            orbit.ascending_node.unwrap_or(0.),
+            orbit.mean_anomaly.unwrap_or(0.),
             orbit.orbital_period,
         )
     })
@@ -378,8 +378,8 @@ fn recorded_star(star: &DbStar) -> Orbit {
             orbit.eccentricity,
             orbit.orbital_inclination,
             orbit.periapsis,
-            orbit.ascending_node,
-            orbit.mean_anomaly,
+            orbit.ascending_node.unwrap_or(0.),
+            orbit.mean_anomaly.unwrap_or(0.),
             orbit.orbital_period,
         )
     })
@@ -445,8 +445,8 @@ mod tests {
                 orbital_inclination: 0.,
                 periapsis: 0.,
                 orbital_period: 0.,
-                ascending_node: 0.,
-                mean_anomaly: 0.,
+                ascending_node: Some(0.),
+                mean_anomaly: Some(0.),
             },
             spin: JournalSpin { period: 0., tilt: 0. },
             discovery: JournalDiscovery { discovered: false, mapped: false },
@@ -461,8 +461,8 @@ mod tests {
             orbital_inclination: 0.,
             periapsis: 0.,
             orbital_period: 1.,
-            ascending_node: 0.,
-            mean_anomaly: 0.,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
         }
     }
 

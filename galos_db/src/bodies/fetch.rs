@@ -41,8 +41,8 @@ struct Row {
     orbital_period: f32,
     rotation_period: f32,
     axial_tilt: f32,
-    ascending_node: f32,
-    mean_anomaly: f32,
+    ascending_node: Option<f32>,
+    mean_anomaly: Option<f32>,
 
     was_mapped: bool,
     was_discovered: bool,

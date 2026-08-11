@@ -52,8 +52,8 @@ impl Barycenter {
             scanned.map(|orbit| orbit.orbital_inclination),
             scanned.map(|orbit| orbit.periapsis),
             scanned.map(|orbit| orbit.orbital_period),
-            scanned.map(|orbit| orbit.ascending_node),
-            scanned.map(|orbit| orbit.mean_anomaly),
+            scanned.and_then(|orbit| orbit.ascending_node),
+            scanned.and_then(|orbit| orbit.mean_anomaly),
         )
         .fetch_one(&db.pool)
         .await?;

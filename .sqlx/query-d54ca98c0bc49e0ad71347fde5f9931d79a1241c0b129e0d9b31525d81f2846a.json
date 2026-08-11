@@ -224,7 +224,8 @@
                                 "Service",
                                 "Terraforming",
                                 "Tourism",
-                                "Undefined"
+                                "Undefined",
+                                "Rescue"
                               ]
                             }
                           }
@@ -453,7 +454,8 @@
                                 "Service",
                                 "Terraforming",
                                 "Tourism",
-                                "Undefined"
+                                "Undefined",
+                                "Rescue"
                               ]
                             }
                           }
