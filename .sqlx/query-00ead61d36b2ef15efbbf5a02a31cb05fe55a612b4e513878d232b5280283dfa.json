@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO clusters (\n                system_address,\n                id,\n                name,\n                updated_at,\n                updated_by,\n\n                distance_from_arrival,\n                was_discovered,\n                was_mapped,\n                parent_ids,\n                parent_types)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                name = $3,\n                updated_at = $4,\n                updated_by = $5,\n\n                distance_from_arrival =\n                    COALESCE($6, clusters.distance_from_arrival),\n                was_discovered = clusters.was_discovered OR $7,\n                was_mapped = clusters.was_mapped OR $8,\n                parent_ids = $9,\n                parent_types = $10\n            RETURNING *\n            ",
+  "query": "\n            INSERT INTO clusters (\n                system_address,\n                id,\n                name,\n                updated_at,\n                updated_by,\n\n                distance_from_arrival,\n                was_discovered,\n                was_mapped,\n                parent_ids,\n                parent_types)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                name = $3,\n                updated_at = $4,\n                updated_by = $5,\n\n                distance_from_arrival =\n                    COALESCE($6, clusters.distance_from_arrival),\n                was_discovered = clusters.was_discovered OR $7,\n                was_mapped = clusters.was_mapped OR $8,\n                parent_ids = COALESCE($9, clusters.parent_ids),\n                parent_types = COALESCE($10, clusters.parent_types)\n            RETURNING *\n            ",
   "describe": {
     "columns": [
       {
@@ -81,5 +81,5 @@
       true
     ]
   },
-  "hash": "1f10c966b0eccdb7ca1848fa1f701518b9b36a7d1d4055d09dd47d251e86bf22"
+  "hash": "00ead61d36b2ef15efbbf5a02a31cb05fe55a612b4e513878d232b5280283dfa"
 }

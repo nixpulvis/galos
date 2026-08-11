@@ -13,6 +13,9 @@ impl Star {
         star: &JournalStar,
         system_address: i64,
     ) -> Result<Star, Error> {
+        // Written outright, where a body, a cluster and a ring each keep what
+        // they have. A primary star names no ancestor, so an empty ancestry
+        // here is the answer rather than the want of one.
         let parents = Parent::chain(&star.parents);
         let (parent_ids, parent_types) = Parent::columns(&parents);
         let parent_id = parent_ids.first().copied();

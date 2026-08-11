@@ -48,8 +48,8 @@ impl Cluster {
                     COALESCE($6, clusters.distance_from_arrival),
                 was_discovered = clusters.was_discovered OR $7,
                 was_mapped = clusters.was_mapped OR $8,
-                parent_ids = $9,
-                parent_types = $10
+                parent_ids = COALESCE($9, clusters.parent_ids),
+                parent_types = COALESCE($10, clusters.parent_types)
             RETURNING *
             ",
             system_address,
@@ -60,8 +60,8 @@ impl Cluster {
             cluster.distance_from_arrival,
             cluster.discovery.discovered,
             cluster.discovery.mapped,
-            &parent_ids[..],
-            &parent_types[..],
+            (!parent_ids.is_empty()).then_some(&parent_ids[..]),
+            (!parent_types.is_empty()).then_some(&parent_types[..]),
         )
         .fetch_one(&db.pool)
         .await?;

@@ -112,9 +112,9 @@ impl Body {
             ON CONFLICT (system_address, id)
             DO UPDATE SET
                 name = $1,
-                parent_id = $3,
-                parent_ids = $4,
-                parent_types = $5,
+                parent_id = COALESCE($3, bodies.parent_id),
+                parent_ids = COALESCE($4, bodies.parent_ids),
+                parent_types = COALESCE($5, bodies.parent_types),
                 updated_at = $7,
                 updated_by = $8,
 
@@ -153,8 +153,8 @@ impl Body {
             body.name,
             body.id,
             parent_id,
-            &parent_ids,
-            &parent_types,
+            (!parent_ids.is_empty()).then_some(&parent_ids[..]),
+            (!parent_types.is_empty()).then_some(&parent_types[..]),
             system_address,
             timestamp.naive_utc(),
             user,

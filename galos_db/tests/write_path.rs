@@ -116,6 +116,7 @@ const REDOCK: i64 = 900_000_010;
 const STALE: i64 = 900_000_011;
 const SAME_SECOND: i64 = 900_000_012;
 const RING: i64 = 900_000_013;
+const ORPHANED: i64 = 900_000_017;
 const UNMAPPED: i64 = 900_000_014;
 const SHARED_A: i64 = 900_000_015;
 const SHARED_B: i64 = 900_000_016;
@@ -1177,4 +1178,76 @@ async fn two_systems_may_share_a_position() {
     assert_eq!(first.position, second.position);
     assert_eq!(first.population, 1, "the first lost what it said");
     assert_eq!(second.population, 1, "the second lost what it said");
+}
+
+/// A scan that names no ancestor does not orphan what it describes
+///
+/// A ring's parents default to empty where the field is absent, and an empty
+/// ancestry is not an answer: the walk from a cluster back to its star runs
+/// through these, and a blanked chain stops it at a number with nothing behind
+/// it. A primary star is the one thing an empty ancestry is true of, and it is
+/// written outright for that reason.
+#[async_std::test]
+async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
+    let db = db!();
+    forget(ORPHANED).await;
+
+    System::set_body_counts(
+        &db,
+        ORPHANED,
+        "Test Orphaned",
+        Some(somewhere(17.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let hangs_off = |ty: &str, id: i16| {
+        let mut parent = BTreeMap::new();
+        parent.insert(ty.to_owned(), id);
+        parent
+    };
+    let ring = |parents| JournalRing {
+        name: "Test Orphaned 2 A Ring".into(),
+        id: 41,
+        parents,
+        distance_from_arrival: Some(10.0),
+        orbit: Orbit {
+            semi_major_axis: 1e7,
+            eccentricity: 0.,
+            orbital_inclination: 0.,
+            periapsis: 0.,
+            orbital_period: 1e4,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
+        },
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+
+    Ring::from_journal(
+        &db,
+        at(0),
+        "test",
+        &ring(vec![hangs_off("Planet", 39), hangs_off("Star", 0)]),
+        ORPHANED,
+    )
+    .await
+    .expect("the first scan should write");
+
+    // The same ring from a sender that left the field out.
+    Ring::from_journal(&db, at(60), "test", &ring(vec![]), ORPHANED)
+        .await
+        .expect("a scan without parents should write");
+
+    let held = Ring::fetch_all(&db, ORPHANED).await.expect("should read");
+    let stored = held.iter().find(|r| r.id == 41).expect("on record");
+    assert_eq!(stored.parent_ids, vec![39, 0], "the ancestry was blanked");
+    assert_eq!(
+        stored.parent_types.first().map(String::as_str),
+        Some("Planet"),
+        "the ancestry was blanked",
+    );
 }
