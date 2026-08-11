@@ -319,6 +319,13 @@ fn process_message(
                                 }
                             }
                         }
+                        // Read so that the system the scan names is recorded,
+                        // and nowhere to put yet. A ring belongs beside
+                        // `clusters` for the reason a cluster belongs beside
+                        // `bodies`, and has none of a cluster's columns.
+                        ScanTarget::Ring(ring) => {
+                            debug!(ring = %ring.name, "scan")
+                        }
                     }
                 }
                 // A barycenter is not a body and is not drawn. It is stored so
