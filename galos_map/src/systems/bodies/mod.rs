@@ -335,6 +335,12 @@ impl Contents {
 }
 
 /// The orbit a body was recorded on
+///
+/// TODO: A node and an anomaly nobody reported are read as zero, here and in
+/// the two below, which draws the thing at periapsis. Worth answering properly
+/// if that stops being rare: the path is known and the place along it is not,
+/// a null `mean_anomaly` is how to tell the two apart, and the panel is where
+/// it can be said in words rather than guessed at in space.
 fn recorded_body(body: &DbBody) -> Orbit {
     Orbit::recorded(
         body.orbit.semi_major_axis,
