@@ -18,6 +18,15 @@ pub struct Station {
     pub economies: Option<Vec<EconomyShare>>,
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
+
+    /// Which body it sits on, for a settlement
+    ///
+    /// All four are [`None`] for anything in orbit, which is most of them.
+    /// Only `ApproachSettlement` reports them, and it reports nothing else.
+    pub body_id: Option<i16>,
+    pub body_name: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 impl Eq for Station {}

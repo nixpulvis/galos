@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT * FROM system_signals\n             WHERE system_address = $1\n             ORDER BY updated_at DESC, name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "signal_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "is_station",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "uss_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "spawning_state",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "spawning_faction",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "spawning_power",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "opposing_power",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "threat_level",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "c7d741374ab95c1c42de51d34650902df2df4f6de813443c3301cbe084559a34"
+}

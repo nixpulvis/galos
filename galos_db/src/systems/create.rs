@@ -220,4 +220,67 @@ impl System {
 
         Ok(())
     }
+
+    /// Record how many bodies a system holds
+    ///
+    /// Three events report this and they are reporting the same number, so
+    /// they arrive here together. `non_body_count` is the belts and rings,
+    /// which only the honk counts; the others pass [`None`] and leave
+    /// whatever is there alone.
+    ///
+    /// The system need not be on record. A honk is often the first thing
+    /// heard about somewhere, and carries a name and a position, which is
+    /// enough to write the row it belongs to.
+    ///
+    /// Unlike [`System::create`] this does not refuse an older message. A
+    /// count does not go stale -- a system does not gain or lose bodies --
+    /// and the timestamp guard would throw nearly all of them away, since a
+    /// system busy enough to be honked at is busy enough to have been written
+    /// more recently by something else.
+    pub async fn set_body_counts(
+        db: &Database,
+        address: i64,
+        name: &str,
+        position: Option<Coordinate>,
+        body_count: i32,
+        non_body_count: Option<i32>,
+        updated_at: DateTime<Utc>,
+        updated_by: &str,
+    ) -> Result<(), Error> {
+        sqlx::query!(
+            r#"
+            INSERT INTO systems
+                (address,
+                 name,
+                 position,
+                 body_count,
+                 non_body_count,
+                 updated_at,
+                 updated_by)
+            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7)
+            ON CONFLICT (address)
+            DO UPDATE SET
+                position = COALESCE($3, systems.position),
+                body_count = $4,
+                non_body_count =
+                    COALESCE($5, systems.non_body_count),
+                updated_at = $6,
+                updated_by = $7
+            "#,
+            address,
+            name,
+            position.map(|p| wkb::Encode(p)) as _,
+            body_count,
+            non_body_count,
+            updated_at.naive_utc(),
+            updated_by,
+        )
+        .execute(&db.pool)
+        .await?;
+
+        Self::adopt_waiting_markets(db, address, name, updated_at, updated_by)
+            .await?;
+
+        Ok(())
+    }
 }

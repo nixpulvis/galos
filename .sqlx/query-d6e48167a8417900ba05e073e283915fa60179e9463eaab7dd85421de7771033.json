@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO codex_entries (\n                system_address,\n                entry_id,\n                updated_at,\n                updated_by,\n\n                name,\n                category,\n                sub_category,\n                region,\n                body_id,\n                body_name,\n                nearest_destination,\n                latitude,\n                longitude)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n            ON CONFLICT (system_address, entry_id)\n            DO UPDATE SET\n                updated_at = $3,\n                updated_by = $4,\n\n                name = COALESCE($5, codex_entries.name),\n                category = COALESCE($6, codex_entries.category),\n                sub_category = COALESCE($7, codex_entries.sub_category),\n                region = COALESCE($8, codex_entries.region),\n                body_id = COALESCE($9, codex_entries.body_id),\n                body_name = COALESCE($10, codex_entries.body_name),\n                nearest_destination =\n                    COALESCE($11, codex_entries.nearest_destination),\n                latitude = COALESCE($12, codex_entries.latitude),\n                longitude = COALESCE($13, codex_entries.longitude)\n            WHERE codex_entries.updated_at <= $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamp",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Int2",
+        "Varchar",
+        "Varchar",
+        "Float8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d6e48167a8417900ba05e073e283915fa60179e9463eaab7dd85421de7771033"
+}

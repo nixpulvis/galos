@@ -105,10 +105,16 @@ mod tests {
 
 pub mod articles;
 pub mod barycenters;
+pub mod black_market;
 pub mod bodies;
+pub mod body_signals;
+pub mod codex_entries;
 pub mod factions;
 pub mod markets;
 mod orbit;
+pub mod outfitting;
+pub mod shipyard;
 pub mod stars;
 pub mod stations;
+pub mod system_signals;
 pub mod systems;

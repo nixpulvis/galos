@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT * FROM black_market\n             WHERE market_id = $1\n             ORDER BY name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "market_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "sell_price",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "prohibited",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "listed_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b20a9fa6093c6c90eba8d5098bfa225f3f2ee1300ef641e23a73b47f34b3d947"
+}

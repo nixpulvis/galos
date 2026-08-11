@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT\n                    address,\n                    name,\n                    position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                    population,\n                    security as \"security: Security\",\n                    government as \"government: Government\",\n                    allegiance as \"allegiance: Allegiance\",\n                    primary_economy as \"primary_economy: Economy\",\n                    secondary_economy as \"secondary_economy: Economy\",\n                    updated_at,\n                    updated_by,\n                    COALESCE((\n                        SELECT array_agg(faction_id)\n                        FROM system_factions\n                        WHERE system_address = systems.address\n                    ), ARRAY[]::integer[]) AS \"factions!\"\n                FROM systems\n                WHERE ST_3DDWithin(position, $1, $2);\n                ",
+  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                body_count,\n                non_body_count,\n                updated_at,\n                updated_by,\n                COALESCE((\n                    SELECT array_agg(faction_id)\n                    FROM system_factions\n                    WHERE system_address = systems.address\n                ), ARRAY[]::integer[]) AS \"factions!\"\n            FROM systems\n            WHERE name ILIKE $1\n            ORDER BY name\n            ",
   "describe": {
     "columns": [
       {
@@ -146,29 +146,33 @@
       },
       {
         "ordinal": 9,
+        "name": "body_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "non_body_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamp"
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "updated_by",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "factions!",
         "type_info": "Int4Array"
       }
     ],
     "parameters": {
       "Left": [
-        {
-          "Custom": {
-            "name": "geometry",
-            "kind": "Simple"
-          }
-        },
-        "Float8"
+        "Text"
       ]
     },
     "nullable": [
@@ -181,10 +185,12 @@
       true,
       true,
       true,
+      true,
+      true,
       false,
       false,
       null
     ]
   },
-  "hash": "1b072dd14733988de5c3282f7e0d738a3b1e5f0a8a12dab43c6684c89bf25815"
+  "hash": "74dac2b5305fda8993e3b5059252a60935ed433e946e0612414ea08d3e0e98a0"
 }

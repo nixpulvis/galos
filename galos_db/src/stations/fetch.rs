@@ -24,7 +24,11 @@ impl Station {
                 services as "services: Vec<Service>",
                 economies as "economies: Vec<EconomyShare>",
                 updated_at,
-                updated_by
+                updated_by,
+                body_id,
+                body_name,
+                latitude,
+                longitude
             FROM stations
             WHERE system_address = $1 AND name = $2
             "#,
@@ -48,6 +52,10 @@ impl Station {
             economies: row.economies,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
+            body_id: row.body_id,
+            body_name: row.body_name,
+            latitude: row.latitude,
+            longitude: row.longitude,
         })
     }
 
@@ -70,7 +78,11 @@ impl Station {
                 services as "services: Vec<Service>",
                 economies as "economies: Vec<EconomyShare>",
                 updated_at,
-                updated_by
+                updated_by,
+                body_id,
+                body_name,
+                latitude,
+                longitude
             FROM stations
             WHERE system_address = $1
             "#,
@@ -95,6 +107,10 @@ impl Station {
                 economies: row.economies,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
+                body_id: row.body_id,
+                body_name: row.body_name,
+                latitude: row.latitude,
+                longitude: row.longitude,
             })
             .collect())
     }

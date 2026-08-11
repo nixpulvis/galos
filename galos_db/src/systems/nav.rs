@@ -22,6 +22,8 @@ impl System {
                     allegiance as "allegiance: Allegiance",
                     primary_economy as "primary_economy: Economy",
                     secondary_economy as "secondary_economy: Economy",
+                    body_count,
+                    non_body_count,
                     updated_at,
                     updated_by,
                     COALESCE((
@@ -56,6 +58,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })

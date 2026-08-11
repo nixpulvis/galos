@@ -1,6 +1,7 @@
 use super::Station;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
+use elite_journal::entry::incremental::travel::ApproachSettlement;
 use elite_journal::station::Station as JournalStation;
 use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
@@ -41,7 +42,11 @@ impl Station {
                 services as "services: Vec<Service>",
                 economies as "economies: Vec<EconomyShare>",
                 updated_at,
-                updated_by
+                updated_by,
+                body_id,
+                body_name,
+                latitude,
+                longitude
             "#,
             system_address,
             name,
@@ -70,6 +75,10 @@ impl Station {
             economies: row.economies,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
+            body_id: row.body_id,
+            body_name: row.body_name,
+            latitude: row.latitude,
+            longitude: row.longitude,
         })
     }
 
@@ -123,7 +132,11 @@ impl Station {
                 services as "services: Vec<Service>",
                 economies as "economies: Vec<EconomyShare>",
                 updated_at,
-                updated_by
+                updated_by,
+                body_id,
+                body_name,
+                latitude,
+                longitude
             "#,
             system_address,
             station.name,
@@ -156,6 +169,81 @@ impl Station {
             economies: row.economies,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
+            body_id: row.body_id,
+            body_name: row.body_name,
+            latitude: row.latitude,
+            longitude: row.longitude,
         })
+    }
+
+    /// Record a settlement, which is a station on a planet's surface
+    ///
+    /// Written as a station because that is what it is: it has a market, a
+    /// controlling faction, services and an allegiance, and it is docked at.
+    /// What it has that an orbital station does not is somewhere to be, which
+    /// is the four columns nothing else fills in.
+    ///
+    /// `ty` is left alone rather than written. `ApproachSettlement` does not
+    /// say what kind of station this is, and coming up on a settlement that
+    /// has already been docked at must not throw away what docking learned.
+    pub async fn from_settlement(
+        db: &Database,
+        timestamp: DateTime<Utc>,
+        user: &str,
+        settlement: &ApproachSettlement,
+    ) -> Result<(), Error> {
+        sqlx::query!(
+            r#"
+            INSERT INTO stations (
+                system_address,
+                name,
+                market_id,
+                faction,
+                government,
+                allegiance,
+                services,
+                economies,
+                body_id,
+                body_name,
+                latitude,
+                longitude,
+                updated_at,
+                updated_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT (system_address, name)
+            DO UPDATE SET
+                market_id = COALESCE($3, stations.market_id),
+                faction = COALESCE($4, stations.faction),
+                government = COALESCE($5, stations.government),
+                allegiance = COALESCE($6, stations.allegiance),
+                services = COALESCE($7, stations.services),
+                economies = COALESCE($8, stations.economies),
+                body_id = $9,
+                body_name = $10,
+                latitude = $11,
+                longitude = $12,
+                updated_at = $13,
+                updated_by = $14
+            WHERE stations.updated_at <= $13
+            "#,
+            settlement.system_address,
+            settlement.name,
+            settlement.market_id,
+            settlement.faction.as_ref().map(|f| f.name.clone()),
+            settlement.government as Option<Government>,
+            settlement.allegiance as Option<Allegiance>,
+            settlement.services.clone() as Option<Vec<Service>>,
+            settlement.economies.clone() as Option<Vec<EconomyShare>>,
+            settlement.body_id,
+            settlement.body_name,
+            settlement.latitude,
+            settlement.longitude,
+            timestamp.naive_utc(),
+            user,
+        )
+        .execute(&db.pool)
+        .await?;
+
+        Ok(())
     }
 }

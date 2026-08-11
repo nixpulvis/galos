@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO black_market (\n                market_id,\n                name,\n                sell_price,\n                prohibited,\n                listed_at)\n            VALUES ($1, LOWER($2), $3, $4, $5)\n            ON CONFLICT (market_id, name)\n            DO UPDATE SET\n                sell_price = $3,\n                prohibited = $4,\n                listed_at = $5\n            WHERE black_market.listed_at <= $5\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int4",
+        "Bool",
+        "Timestamp"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "381f0cc3c2e8b510d4dd9ae703ac73dceca3844c4939adcbaaac49c8a99387f2"
+}

@@ -1,84 +1,15 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (system_address, name) DO NOTHING\n            RETURNING\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by\n            ",
+  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                market_id,\n                faction,\n                government,\n                allegiance,\n                services,\n                economies,\n                body_id,\n                body_name,\n                latitude,\n                longitude,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)\n            ON CONFLICT (system_address, name)\n            DO UPDATE SET\n                market_id = COALESCE($3, stations.market_id),\n                faction = COALESCE($4, stations.faction),\n                government = COALESCE($5, stations.government),\n                allegiance = COALESCE($6, stations.allegiance),\n                services = COALESCE($7, stations.services),\n                economies = COALESCE($8, stations.economies),\n                body_id = $9,\n                body_name = $10,\n                latitude = $11,\n                longitude = $12,\n                updated_at = $13,\n                updated_by = $14\n            WHERE stations.updated_at <= $13\n            ",
   "describe": {
-    "columns": [
-      {
-        "ordinal": 0,
-        "name": "system_address",
-        "type_info": "Int8"
-      },
-      {
-        "ordinal": 1,
-        "name": "name",
-        "type_info": "Varchar"
-      },
-      {
-        "ordinal": 2,
-        "name": "ty: StationType",
-        "type_info": {
-          "Custom": {
-            "name": "stationtype",
-            "kind": {
-              "Enum": [
-                "AsteroidBase",
-                "Coriolis",
-                "CraterOutpost",
-                "CraterPort",
-                "FleetCarrier",
-                "MegaShip",
-                "Ocellus",
-                "Orbis",
-                "Outpost"
-              ]
-            }
-          }
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "dist_from_star_ls",
-        "type_info": "Float8"
-      },
-      {
-        "ordinal": 4,
-        "name": "market_id",
-        "type_info": "Int8"
-      },
-      {
-        "ordinal": 5,
-        "name": "landing_pads: LandingPads",
-        "type_info": {
-          "Custom": {
-            "name": "landingpads",
-            "kind": {
-              "Composite": [
-                [
-                  "large",
-                  "Int2"
-                ],
-                [
-                  "medium",
-                  "Int2"
-                ],
-                [
-                  "small",
-                  "Int2"
-                ]
-              ]
-            }
-          }
-        }
-      },
-      {
-        "ordinal": 6,
-        "name": "faction",
-        "type_info": "Varchar"
-      },
-      {
-        "ordinal": 7,
-        "name": "government: Government",
-        "type_info": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Int8",
+        "Varchar",
+        {
           "Custom": {
             "name": "government",
             "kind": {
@@ -100,12 +31,8 @@
               ]
             }
           }
-        }
-      },
-      {
-        "ordinal": 8,
-        "name": "allegiance: Allegiance",
-        "type_info": {
+        },
+        {
           "Custom": {
             "name": "allegiance",
             "kind": {
@@ -121,12 +48,8 @@
               ]
             }
           }
-        }
-      },
-      {
-        "ordinal": 9,
-        "name": "services: Vec<Service>",
-        "type_info": {
+        },
+        {
           "Custom": {
             "name": "service[]",
             "kind": {
@@ -178,12 +101,8 @@
               }
             }
           }
-        }
-      },
-      {
-        "ordinal": 10,
-        "name": "economies: Vec<EconomyShare>",
-        "type_info": {
+        },
+        {
           "Custom": {
             "name": "economyshare[]",
             "kind": {
@@ -227,42 +146,16 @@
               }
             }
           }
-        }
-      },
-      {
-        "ordinal": 11,
-        "name": "updated_at",
-        "type_info": "Timestamp"
-      },
-      {
-        "ordinal": 12,
-        "name": "updated_by",
-        "type_info": "Varchar"
-      }
-    ],
-    "parameters": {
-      "Left": [
-        "Int8",
+        },
+        "Int2",
         "Varchar",
+        "Float8",
+        "Float8",
         "Timestamp",
         "Varchar"
       ]
     },
-    "nullable": [
-      false,
-      false,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      false,
-      false
-    ]
+    "nullable": []
   },
-  "hash": "476953d6b7622a6ebf35d616cf9ef14794f1e45b302b13e86f7c7ef6a33e6fc0"
+  "hash": "50ab747ed87aea7aa300fe8545ac9969b6812a33d4966b7692da16d7e64beea6"
 }
