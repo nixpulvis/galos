@@ -44,7 +44,8 @@ impl Cluster {
                 updated_at = $4,
                 updated_by = $5,
 
-                distance_from_arrival = $6,
+                distance_from_arrival =
+                    COALESCE($6, clusters.distance_from_arrival),
                 was_discovered = $7,
                 was_mapped = $8,
                 parent_ids = $9,

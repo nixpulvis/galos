@@ -34,13 +34,13 @@ impl Barycenter {
                 updated_at = $3,
                 updated_by = $4,
 
-                semi_major_axis = $5,
-                eccentricity = $6,
-                orbital_inclination = $7,
-                periapsis = $8,
-                orbital_period = $9,
-                ascending_node = $10,
-                mean_anomaly = $11
+                semi_major_axis = COALESCE($5, barycenters.semi_major_axis),
+                eccentricity = COALESCE($6, barycenters.eccentricity),
+                orbital_inclination = COALESCE($7, barycenters.orbital_inclination),
+                periapsis = COALESCE($8, barycenters.periapsis),
+                orbital_period = COALESCE($9, barycenters.orbital_period),
+                ascending_node = COALESCE($10, barycenters.ascending_node),
+                mean_anomaly = COALESCE($11, barycenters.mean_anomaly)
             RETURNING *
             ",
             scan.system_address,

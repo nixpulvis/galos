@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO body_materials (system_address, body_id, name, percent)\n                SELECT DISTINCT ON (name) $1, $2, name, percent\n                FROM UNNEST($3::varchar[], $4::double precision[]) AS m(name, percent)\n                ORDER BY name\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "VarcharArray",
+        "Float8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d9dba7ded5a58fcd139b72640d9be25d72aa1d31f25f73d8f23146f94933e8f5"
+}

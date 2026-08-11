@@ -108,15 +108,16 @@ impl Station {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (system_address, name)
             DO UPDATE SET
-                ty = $3,
-                dist_from_star_ls = $4,
-                market_id = $5,
-                landing_pads = $6,
-                faction = $7,
-                government = $8,
-                allegiance = $9,
-                services = $10,
-                economies = $11,
+                ty = COALESCE($3, stations.ty),
+                dist_from_star_ls =
+                    COALESCE($4, stations.dist_from_star_ls),
+                market_id = COALESCE($5, stations.market_id),
+                landing_pads = COALESCE($6, stations.landing_pads),
+                faction = COALESCE($7, stations.faction),
+                government = COALESCE($8, stations.government),
+                allegiance = COALESCE($9, stations.allegiance),
+                services = COALESCE($10, stations.services),
+                economies = COALESCE($11, stations.economies),
                 updated_at = $12,
                 updated_by = $13
             RETURNING

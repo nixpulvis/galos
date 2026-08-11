@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT name, percent\n            FROM body_materials\n            WHERE system_address = $1 AND body_id = $2\n            ORDER BY name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "percent",
+        "type_info": "Float8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c6ca54d365bf6a480a58218f902bc2dd776f4b27faab221e599d43729e2a5339"
+}

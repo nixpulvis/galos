@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO barycenters (\n                system_address,\n                id,\n                updated_at,\n                updated_by,\n\n                semi_major_axis,\n                eccentricity,\n                orbital_inclination,\n                periapsis,\n                orbital_period,\n                ascending_node,\n                mean_anomaly)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                updated_at = $3,\n                updated_by = $4,\n\n                semi_major_axis = $5,\n                eccentricity = $6,\n                orbital_inclination = $7,\n                periapsis = $8,\n                orbital_period = $9,\n                ascending_node = $10,\n                mean_anomaly = $11\n            RETURNING *\n            ",
+  "query": "\n            INSERT INTO barycenters (\n                system_address,\n                id,\n                updated_at,\n                updated_by,\n\n                semi_major_axis,\n                eccentricity,\n                orbital_inclination,\n                periapsis,\n                orbital_period,\n                ascending_node,\n                mean_anomaly)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                updated_at = $3,\n                updated_by = $4,\n\n                semi_major_axis = COALESCE($5, barycenters.semi_major_axis),\n                eccentricity = COALESCE($6, barycenters.eccentricity),\n                orbital_inclination = COALESCE($7, barycenters.orbital_inclination),\n                periapsis = COALESCE($8, barycenters.periapsis),\n                orbital_period = COALESCE($9, barycenters.orbital_period),\n                ascending_node = COALESCE($10, barycenters.ascending_node),\n                mean_anomaly = COALESCE($11, barycenters.mean_anomaly)\n            RETURNING *\n            ",
   "describe": {
     "columns": [
       {
@@ -88,5 +88,5 @@
       true
     ]
   },
-  "hash": "fc5b271c48495a9f85416016b432bbe68716ed7c70746ec1d7edb4406c94d215"
+  "hash": "afc910f6ce9b26cc897d00a3a52b056a597ac9b7a0bd78bf543a3fdef09b58d1"
 }

@@ -17,7 +17,10 @@
 //! every one of those is a decision made per table here.
 
 use chrono::{DateTime, TimeZone, Utc};
-use elite_journal::body::{Discovery, Signal};
+use elite_journal::body::{
+    AtmosphereType, Body as JournalBody, Composition, Discovery, Material,
+    Orbit, Signal, Spin, Surface,
+};
 use elite_journal::entry::incremental::exploration::{
     Cluster as JournalCluster, CodexEntry as JournalCodex,
     SystemSignal as JournalSignal,
@@ -27,11 +30,15 @@ use elite_journal::entry::market::{
     BlackMarket as JournalBlackMarket, Module, Outfitting as JournalOutfitting,
     PricedModule, Shipyard as JournalShipyard,
 };
+use elite_journal::station::{
+    LandingPads, Service, Station as JournalStation, StationType,
+};
 use elite_journal::system::Coordinate;
 use galos_db::{
-    black_market::BlackMarket, body_signals::BodySignal, clusters::Cluster,
-    codex_entries::CodexEntry, outfitting::Outfitting, shipyard::Shipyard,
-    stations::Station, system_signals::SystemSignal, systems::System, Database,
+    black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
+    clusters::Cluster, codex_entries::CodexEntry, outfitting::Outfitting,
+    shipyard::Shipyard, stations::Station, system_signals::SystemSignal,
+    systems::System, Database,
 };
 use std::collections::BTreeMap;
 
@@ -68,6 +75,8 @@ const CODEX: i64 = 900_000_004;
 const SETTLEMENT: i64 = 900_000_005;
 const TRADE: i64 = 900_000_006;
 const CLUSTER: i64 = 900_000_008;
+const RESCAN: i64 = 900_000_009;
+const REDOCK: i64 = 900_000_010;
 
 /// A honk is often the first thing heard about a system, so it writes the row
 #[async_std::test]
@@ -626,4 +635,181 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     assert_eq!(held.len(), 1, "a second scan wrote a second row");
     assert!(held[0].mapped);
     assert_eq!(held[0].updated_at, at(60));
+}
+
+/// A basic scan does not undo what a detailed one recorded
+///
+/// The same body is scanned again every time a commander passes through, and
+/// not every look is as close as the last. A detailed scan states a body's
+/// surface, its temperature and what it is made of; a basic one carries none
+/// of the three, and carries them absent rather than carries them as nothing.
+#[async_std::test]
+async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
+    let db = db!();
+
+    System::set_body_counts(
+        &db,
+        RESCAN,
+        "Test Rescan",
+        Some(somewhere(9.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let orbit = || Orbit {
+        semi_major_axis: 1e11,
+        eccentricity: 0.01,
+        orbital_inclination: 0.,
+        periapsis: 1.,
+        orbital_period: 1e7,
+        ascending_node: 0.,
+        mean_anomaly: 0.,
+    };
+    let body = |temperature, surface| JournalBody {
+        id: 1,
+        name: "Test Rescan 1".into(),
+        ty: None,
+        distance_from_arrival: Some(12.5),
+        parents: vec![],
+        planet_class: "Rocky body".into(),
+        tidal_lock: None,
+        mass: 1.,
+        radius: 6e6,
+        gravity: 9.8,
+        temperature,
+        surface,
+        orbit: orbit(),
+        spin: Spin { period: 80000., tilt: 0.1 },
+        discovery: Discovery { discovered: true, mapped: true },
+    };
+
+    let detailed = body(
+        Some(500.),
+        Some(Surface {
+            atmosphere_type: AtmosphereType::SulphurDioxide,
+            pressure: 101325.,
+            composition: Composition { ice: 0., rock: 70., metal: 30. },
+            landable: true,
+            atmosphere: Some("thin sulphur dioxide atmosphere".into()),
+            volcanism: Some("minor silicate vapour geysers".into()),
+            terraform_state: None,
+            materials: vec![Material { name: "iron".into(), percent: 22.0 }],
+        }),
+    );
+    let mut detailed = detailed;
+    detailed.tidal_lock = Some(true);
+
+    Body::from_journal(&db, at(0), "test", &detailed, RESCAN)
+        .await
+        .expect("detailed scan should write");
+
+    // The same body, seen from further off.
+    let basic = body(None, None);
+    let returned = Body::from_journal(&db, at(60), "test", &basic, RESCAN)
+        .await
+        .expect("basic scan should write");
+
+    // What the write says it wrote is what is on record, materials included.
+    // They are read back rather than handed on from the scan, which carried
+    // none.
+    assert_eq!(
+        returned
+            .surface
+            .as_ref()
+            .expect("the write reports a surface")
+            .materials
+            .len(),
+        1,
+        "the write reported materials it had not kept",
+    );
+
+    // Read back rather than taken from what the write returned. A write
+    // returns the materials it was handed, and the question here is what the
+    // table kept.
+    let stored = Body::fetch(&db, RESCAN, 1).await.expect("should read back");
+
+    assert_eq!(stored.temperature, Some(500.), "temperature was erased");
+    assert!(stored.surface.is_some(), "the surface was erased");
+    assert!(stored.tidal_lock, "tidal lock was erased");
+
+    let surface = stored.surface.expect("a surface");
+    assert!(surface.landable, "landable was erased");
+    assert_eq!(
+        surface.atmosphere.as_deref(),
+        Some("thin sulphur dioxide atmosphere"),
+    );
+    assert_eq!(surface.materials.len(), 1, "the materials were erased");
+}
+
+/// A sparser station message does not undo a fuller one
+///
+/// Station messages differ in what they carry. Docking reports the services,
+/// the pads and the economies; something that merely names the station in
+/// passing reports none of them, and reports them absent rather than empty.
+#[async_std::test]
+async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
+    let db = db!();
+
+    System::set_body_counts(
+        &db,
+        REDOCK,
+        "Test Redock",
+        Some(somewhere(10.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let station = |ty, pads, services| JournalStation {
+        name: "Test Redock Port".into(),
+        ty,
+        dist_from_star_ls: Some(120.5),
+        market_id: Some(128_016_384),
+        landing_pads: pads,
+        faction: None,
+        government: None,
+        allegiance: None,
+        services,
+        economies: None,
+        wanted: None,
+    };
+
+    let docked = station(
+        Some(StationType::Coriolis),
+        Some(LandingPads { large: 4, medium: 4, small: 8 }),
+        Some(vec![Service::Dock, Service::Refuel, Service::Shipyard]),
+    );
+    Station::from_journal(&db, at(0), "test", &docked, REDOCK)
+        .await
+        .expect("docking should write");
+
+    // The same station, named in passing.
+    let mentioned = station(None, None, None);
+    Station::from_journal(&db, at(60), "test", &mentioned, REDOCK)
+        .await
+        .expect("a mention should write");
+
+    let stored = Station::fetch(&db, REDOCK, "Test Redock Port")
+        .await
+        .expect("should read back");
+
+    assert_eq!(stored.ty, Some(StationType::Coriolis), "the kind was erased");
+    assert_eq!(
+        stored.landing_pads,
+        Some(LandingPads { large: 4, medium: 4, small: 8 }),
+        "the pads were erased",
+    );
+    assert_eq!(
+        stored.services.as_ref().map(|s| s.len()),
+        Some(3),
+        "the services were erased",
+    );
+    assert_eq!(stored.dist_from_star_ls, Some(120.5));
 }

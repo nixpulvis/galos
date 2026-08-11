@@ -45,7 +45,7 @@ impl Body {
         let composition_ice = crust.map(|crust| crust.ice);
         let composition_rock = crust.map(|crust| crust.rock);
         let composition_metal = crust.map(|crust| crust.metal);
-        let landable = surface.is_some_and(|surface| surface.landable);
+        let landable = surface.map(|surface| surface.landable);
         let atmosphere = surface.and_then(|surface| surface.atmosphere.clone());
         let volcanism = surface.and_then(|surface| surface.volcanism.clone());
         let terraform_state =
@@ -105,7 +105,8 @@ impl Body {
 
                 was_mapped,
                 was_discovered)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                COALESCE($12, false), COALESCE($13, false), $14, $15, $16, $17,
                 $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
                 $34, $35, $36)
             ON CONFLICT (system_address, id)
@@ -117,24 +118,24 @@ impl Body {
                 updated_at = $7,
                 updated_by = $8,
 
-                body_type = $9,
-                distance_from_arrival = $10,
+                body_type = COALESCE($9, bodies.body_type),
+                distance_from_arrival = COALESCE($10, bodies.distance_from_arrival),
                 planet_class = $11,
-                tidal_lock = $12,
-                landable = $13,
-                terraform_state = $14,
-                atmosphere = $15,
-                atmosphere_type = $16,
-                volcanism = $17,
+                tidal_lock = COALESCE($12, bodies.tidal_lock),
+                landable = COALESCE($13, bodies.landable),
+                terraform_state = COALESCE($14, bodies.terraform_state),
+                atmosphere = COALESCE($15, bodies.atmosphere),
+                atmosphere_type = COALESCE($16, bodies.atmosphere_type),
+                volcanism = COALESCE($17, bodies.volcanism),
 
                 mass = $18,
                 radius = $19,
                 gravity = $20,
-                temperature = $21,
-                surface_pressure = $22,
-                composition_ice = $23,
-                composition_rock = $24,
-                composition_metal = $25,
+                temperature = COALESCE($21, bodies.temperature),
+                surface_pressure = COALESCE($22, bodies.surface_pressure),
+                composition_ice = COALESCE($23, bodies.composition_ice),
+                composition_rock = COALESCE($24, bodies.composition_rock),
+                composition_metal = COALESCE($25, bodies.composition_metal),
                 semi_major_axis = $26,
                 eccentricity = $27,
                 orbital_inclination = $28,
@@ -189,35 +190,61 @@ impl Body {
         .fetch_one(&mut *tx)
         .await?;
 
-        // A scan states the whole of what a body is made of, so what it
-        // leaves out the body no longer carries.
-        sqlx::query!(
-            "DELETE FROM body_materials WHERE system_address = $1 AND body_id = $2",
-            system_address,
-            body.id,
-        )
-        .execute(&mut *tx)
-        .await?;
+        // Only where the scan looked at a surface. One that did states the
+        // whole of what the body is made of, so what it leaves out the body no
+        // longer carries; one that did not says nothing on the subject, and a
+        // gas giant and a basic scan both carry no materials for want of
+        // having looked rather than for want of anything being there.
+        if body.surface.is_some() {
+            sqlx::query!(
+                "DELETE FROM body_materials WHERE system_address = $1 AND body_id = $2",
+                system_address,
+                body.id,
+            )
+            .execute(&mut *tx)
+            .await?;
 
-        sqlx::query!(
-            // The rows this writes were just cleared, so nothing here can meet
-            // one already stored. `DISTINCT ON` answers for the other way a
-            // conflict arises, which is one scan naming a material twice: two
-            // rows conflicting inside a single statement is an error rather
-            // than something `ON CONFLICT` can settle. The first reading wins.
+            sqlx::query!(
+                // The rows this writes were just cleared, so nothing here can
+                // meet one already stored. `DISTINCT ON` answers for the other
+                // way a conflict arises, which is one scan naming a material
+                // twice: two rows conflicting inside a single statement is an
+                // error rather than something `ON CONFLICT` can settle. The
+                // first reading wins.
+                "
+                INSERT INTO body_materials (system_address, body_id, name, percent)
+                SELECT DISTINCT ON (name) $1, $2, name, percent
+                FROM UNNEST($3::varchar[], $4::double precision[]) AS m(name, percent)
+                ORDER BY name
+                ",
+                system_address,
+                body.id,
+                &material_names,
+                &material_percents,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Read back rather than handed on from the scan. A scan that did not
+        // look at a surface leaves the stored materials where they are, so what
+        // is on record is not what arrived, and every other field below comes
+        // off the row for the same reason.
+        let materials = sqlx::query!(
             "
-            INSERT INTO body_materials (system_address, body_id, name, percent)
-            SELECT DISTINCT ON (name) $1, $2, name, percent
-            FROM UNNEST($3::varchar[], $4::double precision[]) AS m(name, percent)
+            SELECT name, percent
+            FROM body_materials
+            WHERE system_address = $1 AND body_id = $2
             ORDER BY name
             ",
             system_address,
             body.id,
-            &material_names,
-            &material_percents,
         )
-        .execute(&mut *tx)
-        .await?;
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|row| Material { name: row.name, percent: row.percent })
+        .collect::<Vec<_>>();
 
         tx.commit().await?;
 
