@@ -662,6 +662,12 @@ fn described(
         |ui| {
             let [x, y, z] = system.position;
             field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
+            // Two rows rather than one, because the two counts are reported
+            // separately: the all-found tally and a nav beacon give the bodies
+            // alone, and only the honk ever counts the belts and rings. Either
+            // can stand known while the other is not.
+            field(ui, "Bodies", named(&system.body_count));
+            field(ui, "Belts and rings", named(&system.non_body_count));
             field(ui, "Population", crate::ui::thousands(system.population));
             field(ui, "Allegiance", named(&system.allegiance));
             field(ui, "Government", named(&system.government));
@@ -1174,7 +1180,7 @@ fn named<T: Display>(value: &Option<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::tests::system;
+    use crate::systems::tests::{system, tallied};
     use crate::tests::{context, painted, words};
     use chrono::DateTime;
     use elite_journal::Allegiance;
@@ -1251,6 +1257,44 @@ mod tests {
                 super::economies(ui, &economies);
             });
         })
+    }
+
+    /// What a system's own panel reads as, line by line
+    fn panel(system: &System) -> Vec<String> {
+        words(|ui| {
+            described(ui, system, &known(&[]), &mut None, &mut None);
+        })
+    }
+
+    /// What stands in the answer column beside `name`
+    fn beside(painted: &[String], name: &str) -> String {
+        let at = painted
+            .iter()
+            .position(|word| word == name)
+            .unwrap_or_else(|| panic!("{name} was painted"));
+        painted[at + 1].clone()
+    }
+
+    /// A tallied system says how much of itself there is to find
+    #[test]
+    fn a_tallied_system_says_what_it_holds() {
+        let painted = panel(&tallied(1, Some(12), Some(3)));
+
+        assert_eq!(beside(&painted, "Bodies"), "12");
+        assert_eq!(beside(&painted, "Belts and rings"), "3");
+    }
+
+    /// A system tallied for its bodies alone still answers for its belts
+    ///
+    /// Only the honk counts the belts and rings, so a system counted by the
+    /// all-found tally has the one and not the other. Dropping the row would
+    /// read as a system with no belts rather than one nobody has honked.
+    #[test]
+    fn a_system_tallied_for_its_bodies_alone_says_so() {
+        let painted = panel(&tallied(1, Some(12), None));
+
+        assert_eq!(beside(&painted, "Bodies"), "12");
+        assert_eq!(beside(&painted, "Belts and rings"), UNKNOWN);
     }
 
     /// Both halves are written out, under a header naming what they are

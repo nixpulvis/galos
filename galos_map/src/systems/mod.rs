@@ -79,6 +79,14 @@ pub struct System {
     /// compare is what that wants. A filter naming a faction has resolved it
     /// to an id already, since it was picked from a list.
     factions: Vec<i32>,
+    /// How many bodies the system holds, and how many belts and rings
+    ///
+    /// What the system is made of rather than what the map has fetched of it,
+    /// so a system says how much of itself is still unvisited. Either may
+    /// stand [`None`]: the bodies come from the all-found tally, a nav beacon
+    /// or the honk, and the belts and rings from the honk alone.
+    body_count: Option<i32>,
+    non_body_count: Option<i32>,
     updated_at: DateTime<Utc>,
 }
 
@@ -415,6 +423,8 @@ pub(crate) mod tests {
             security: None,
             economies: None,
             factions: vec![],
+            body_count: None,
+            non_body_count: None,
             updated_at: DateTime::UNIX_EPOCH,
         }
     }
@@ -427,6 +437,21 @@ pub(crate) mod tests {
     pub(crate) fn named(address: i64, name: &str) -> System {
         let mut system = system(address);
         system.name = name.to_owned();
+        system
+    }
+
+    /// A system tallied as holding `bodies` bodies and `non_bodies` belts
+    ///
+    /// Shared for the same reason [`named`] is. Either count is passed as it
+    /// stands, since a system may be tallied for one and not the other.
+    pub(crate) fn tallied(
+        address: i64,
+        bodies: Option<i32>,
+        non_bodies: Option<i32>,
+    ) -> System {
+        let mut system = system(address);
+        system.body_count = bodies;
+        system.non_body_count = non_bodies;
         system
     }
 

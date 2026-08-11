@@ -880,6 +880,8 @@ impl TryFrom<&DbSystem> for System {
             security: system.security,
             economies: system.economies,
             factions: system.factions.clone(),
+            body_count: system.body_count,
+            non_body_count: system.non_body_count,
             updated_at: system.updated_at,
         })
     }
