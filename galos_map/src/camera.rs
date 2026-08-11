@@ -664,7 +664,7 @@ pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
 mod tests {
     use super::*;
     use crate::systems::pointing::PRIMARY;
-    use crate::ui::Grasp;
+    use crate::ui::PressOwner;
     use bevy::input::mouse::AccumulatedMouseScroll;
 
     /// A world holding a grid, a camera `back` light years out, and one
@@ -678,7 +678,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(spyglass);
         app.insert_resource(PointerOverUi(false));
-        app.init_resource::<Grasp>();
+        app.init_resource::<PressOwner>();
         app.init_resource::<ButtonInput<MouseButton>>();
         app.init_resource::<AccumulatedMouseMotion>();
         app.insert_resource(AccumulatedMouseScroll {
@@ -729,7 +729,7 @@ mod tests {
         let world = app.world_mut();
         world.resource_mut::<ButtonInput<MouseButton>>().press(PRIMARY);
         let buttons = world.resource::<ButtonInput<MouseButton>>().clone();
-        world.resource_mut::<Grasp>().settle(&buttons, owner);
+        world.resource_mut::<PressOwner>().settle(&buttons, owner);
         app
     }
 
@@ -1277,13 +1277,13 @@ mod tests {
     /// detection means anything: a query made by hand from outside one has no
     /// run of its own to measure the change against.
     #[derive(Resource, Default)]
-    struct Wrote(usize);
+    struct Writes(usize);
 
     fn count_writes(
-        mut wrote: ResMut<Wrote>,
+        mut writes: ResMut<Writes>,
         lenses: Query<(), Changed<Projection>>,
     ) {
-        wrote.0 += lenses.iter().count();
+        writes.0 += lenses.iter().count();
     }
 
     /// A frame that moves nothing leaves the projection alone
@@ -1294,7 +1294,7 @@ mod tests {
     fn a_resting_frame_leaves_the_lens_alone() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Wrote>();
+        app.init_resource::<Writes>();
         app.world_mut().spawn((
             OrbitCamera { radius: 1., ..default() },
             Projection::Perspective(PerspectiveProjection::default()),
@@ -1305,11 +1305,11 @@ mod tests {
         // counted whatever this system does. It is the second that says
         // whether a resting frame writes.
         app.update();
-        let settled = app.world().resource::<Wrote>().0;
+        let settled = app.world().resource::<Writes>().0;
 
         app.update();
         assert_eq!(
-            app.world().resource::<Wrote>().0,
+            app.world().resource::<Writes>().0,
             settled,
             "wrote a projection that had not moved"
         );

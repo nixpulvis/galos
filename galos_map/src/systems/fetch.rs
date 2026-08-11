@@ -1,9 +1,9 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::filter::{Admitting, DimTo, Filters};
+use crate::systems::filter::{Admitted, DimTo, Filters};
 use crate::systems::selection::Selection;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
-use crate::{Db, search::Searched};
+use crate::{Db, search::Search};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use galos_db::systems::System as DbSystem;
@@ -85,7 +85,7 @@ pub enum FetchIndex {
     /// which makes it a different question about the same place: adding or
     /// dropping a filter is somewhere new rather than a refresh, and is
     /// answered at the throttle rather than waiting out the poll.
-    Region(IVec3, i32, Option<Admitting>),
+    Region(IVec3, i32, Option<Admitted>),
     // View<Frustum>,
     Route(String, String, String),
     /// Named systems, by address
@@ -116,9 +116,9 @@ impl FetchIndex {
     fn refreshes(&self, last: &FetchIndex) -> bool {
         match (self, last) {
             (
-                FetchIndex::Region(center, radius, admitting),
+                FetchIndex::Region(center, radius, admitted),
                 FetchIndex::Region(before, reached, asked),
-            ) => center == before && radius <= reached && admitting == asked,
+            ) => center == before && radius <= reached && admitted == asked,
             // Only the spyglass records what it last fetched, so neither a
             // route nor a named system is ever on either side of this.
             // Somewhere new either way.
@@ -132,18 +132,18 @@ impl fmt::Debug for FetchIndex {
         use FetchIndex::*;
 
         match self {
-            Region(center, radius, admitting) => {
+            Region(center, radius, admitted) => {
                 write!(
                     f,
                     "<({},{},{}),{}",
                     center.x, center.y, center.z, radius
                 )?;
-                if let Some(admitting) = admitting {
+                if let Some(admitted) = admitted {
                     write!(
                         f,
                         " admitting {} factions and {} systems",
-                        admitting.factions.len(),
-                        admitting.systems.len()
+                        admitted.factions.len(),
+                        admitted.systems.len()
                     )?;
                 }
                 write!(f, ">")
@@ -166,7 +166,7 @@ pub struct FetchTasks {
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
     camera_query: Query<&OrbitCamera>,
-    mut search_events: MessageReader<Searched>,
+    mut search_events: MessageReader<Search>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
     filters: Res<Filters>,
@@ -197,8 +197,8 @@ pub fn fetch(
             // A search finds and picks out nothing, so there is nothing
             // here to fetch yet. Whatever the user picks out of what it
             // found is asked for by `fetch_selected`.
-            Searched::System { .. } => {}
-            Searched::Route { start, end, range } => {
+            Search::System { .. } => {}
+            Search::Route { start, end, range } => {
                 fetch_route(
                     start.into(),
                     end.into(),
@@ -232,9 +232,9 @@ fn fetch_spyglass(
 ) {
     let Ok(camera) = camera_query.single() else { return };
     let center = camera.center.as_ivec3();
-    let admitting = if dim.0 == 0. { filters.admitting() } else { None };
+    let admitted = if dim.0 == 0. { filters.admitted() } else { None };
     let index =
-        FetchIndex::Region(center, spyglass.radius as i32, admitting.clone());
+        FetchIndex::Region(center, spyglass.radius as i32, admitted.clone());
     let now = time.last_update().unwrap_or(time.startup());
     if spyglass_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
         debug!(
@@ -249,8 +249,8 @@ fn fetch_spyglass(
         let task = task_pool.spawn(async move {
             let cent = [center.x as f64, center.y as f64, center.z as f64];
             let range = radius.floor() as f64;
-            let narrowed = admitting.as_ref().map(|admitting| {
-                (admitting.factions.as_slice(), admitting.systems.as_slice())
+            let narrowed = admitted.as_ref().map(|admitted| {
+                (admitted.factions.as_slice(), admitted.systems.as_slice())
             });
             DbSystem::fetch_in_range_of_point(&db, range, cent, narrowed)
                 .await
@@ -373,8 +373,8 @@ mod tests {
 
     /// The same region, narrowed to the faction at `id`
     fn region_admitting(center: i32, radius: i32, id: i32) -> FetchIndex {
-        let admitting = Admitting { factions: vec![id], systems: Vec::new() };
-        FetchIndex::Region(IVec3::new(center, 0, 0), radius, Some(admitting))
+        let admitted = Admitted { factions: vec![id], systems: Vec::new() };
+        FetchIndex::Region(IVec3::new(center, 0, 0), radius, Some(admitted))
     }
 
     /// The map holding a star for each of `addresses`

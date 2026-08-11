@@ -17,8 +17,8 @@ use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::{Picked, Selection};
-use crate::ui::Chose;
 use crate::ui::MARGIN;
+use crate::ui::SystemAction;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
@@ -498,7 +498,7 @@ fn panels(
     names: Res<FactionNames>,
     mut selection: ResMut<Selection>,
     mut filters: ResMut<Filters>,
-    mut selected: ResMut<crate::systems::route::Selected>,
+    mut selected: ResMut<crate::systems::route::SelectedRoute>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
@@ -620,7 +620,7 @@ fn panels(
         panels.open_system(system);
     }
     // Already resolved, both halves of it having been read off a system the
-    // map holds, so it goes straight in rather than round by `Wanted`.
+    // map holds, so it goes straight in rather than round by `Lookup`.
     if let Some(filter) = wanted {
         filters.add(filter);
     }
@@ -778,7 +778,7 @@ fn body_described(ui: &mut Ui, body: &DbBody) {
             );
             field(ui, "Temperature", format!("{:.0} K", body.temperature));
             standing(ui, &body.surface);
-            field(ui, "Tidal lock", yes(body.tidal_lock));
+            field(ui, "Tidal lock", yes_no(body.tidal_lock));
             turning(ui, &body.spin);
             circling(ui, Some(&body.orbit));
             found(ui, &body.discovery);
@@ -802,7 +802,7 @@ fn standing(ui: &mut Ui, surface: &Option<Surface>) {
 
     ui.label(egui::RichText::new("Surface").strong());
     ui.end_row();
-    under(ui, "Landable", yes(surface.landable));
+    under(ui, "Landable", yes_no(surface.landable));
     under(ui, "Atmosphere", surface.atmosphere_type.to_string());
     under(
         ui,
@@ -817,7 +817,7 @@ fn standing(ui: &mut Ui, surface: &Option<Surface>) {
 fn turning(ui: &mut Ui, spin: &Spin) {
     ui.label(egui::RichText::new("Spin").strong());
     ui.end_row();
-    under(ui, "Period", spent(spin.period));
+    under(ui, "Period", lasting(spin.period));
     under(ui, "Tilt", format!("{:.1}°", spin.tilt.to_degrees()));
 }
 
@@ -834,7 +834,7 @@ fn circling(ui: &mut Ui, orbit: Option<&Orbit>) {
     ui.label(egui::RichText::new("Orbit").strong());
     ui.end_row();
     under(ui, "Radius", spanning(orbit.semi_major_axis));
-    under(ui, "Period", spent(orbit.orbital_period));
+    under(ui, "Period", lasting(orbit.orbital_period));
     under(ui, "Eccentricity", format!("{:.4}", orbit.eccentricity));
     under(ui, "Inclination", format!("{:.1}°", orbit.orbital_inclination));
 }
@@ -843,15 +843,15 @@ fn circling(ui: &mut Ui, orbit: Option<&Orbit>) {
 fn found(ui: &mut Ui, discovery: &Discovery) {
     ui.label(egui::RichText::new("Discovery").strong());
     ui.end_row();
-    under(ui, "Discovered", yes(discovery.discovered));
-    under(ui, "Mapped", yes(discovery.mapped));
+    under(ui, "Discovered", yes_no(discovery.discovered));
+    under(ui, "Mapped", yes_no(discovery.mapped));
 }
 
 /// How long something takes, in the largest unit it fills
 ///
 /// Days for anything that turns slowly, which is most of what is scanned, and
 /// hours for the rest. A period in seconds is eight digits nobody reads.
-fn spent(seconds: f32) -> String {
+fn lasting(seconds: f32) -> String {
     if seconds <= 0. {
         return UNKNOWN.into();
     }
@@ -878,7 +878,7 @@ fn spanning(metres: f32) -> String {
 }
 
 /// What the database says of a yes or no question
-fn yes(answer: bool) -> String {
+fn yes_no(answer: bool) -> String {
     if answer { "Yes".into() } else { "No".into() }
 }
 
@@ -905,10 +905,10 @@ const LISTED: usize = 8;
 /// Said in the panel rather than in the title, which is cut to the room a
 /// window has and would lose it. The other filters are named for the whole of
 /// what they are and have nothing to add here.
-fn summary(filter: &Filter, held: usize) -> String {
+fn summary(filter: &Filter, count: usize) -> String {
     match filter.range() {
-        Some(range) => format!("{held} systems, {range} Ly range"),
-        None => format!("{held} systems"),
+        Some(range) => format!("{count} systems, {range} Ly range"),
+        None => format!("{count} systems"),
     }
 }
 
@@ -1023,13 +1023,15 @@ fn admitted(
                 ("admitted", index),
             );
             match asked {
-                Some(Chose::Select { gathering }) => {
+                Some(SystemAction::Select { gathering }) => {
                     *picked = Some((system.clone(), gathering))
                 }
-                Some(Chose::Travel) => {
+                Some(SystemAction::Travel) => {
                     *centered = Some(DVec3::from(system.position))
                 }
-                Some(Chose::Describe) => *described = Some(system.clone()),
+                Some(SystemAction::Describe) => {
+                    *described = Some(system.clone())
+                }
                 None => {}
             }
         }
@@ -1382,9 +1384,9 @@ mod tests {
     /// And how long it takes, likewise
     #[test]
     fn a_span_of_time_is_read_in_the_unit_it_fills() {
-        assert_eq!(spent(3.6254802e6), "42.0 days");
-        assert_eq!(spent(3600.), "1.0 hours");
-        assert_eq!(spent(0.), UNKNOWN);
+        assert_eq!(lasting(3.6254802e6), "42.0 days");
+        assert_eq!(lasting(3600.), "1.0 hours");
+        assert_eq!(lasting(0.), UNKNOWN);
     }
 
     /// The names down the left of a panel are written as brightly as a header

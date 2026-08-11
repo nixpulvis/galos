@@ -1,4 +1,4 @@
-//! What a number on a ruler is called
+//! The labels a ruler's numbers are written as
 //!
 //! A figure and a power, `1.2e6` rather than `1200000`, said to exactly the
 //! places the step it is written along carries. The same rule for the numbers
@@ -17,7 +17,7 @@ use bevy::math::DVec3;
 /// numbers that stand away from a ruler, with nothing beside them to say what
 /// they count.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Unit {
+pub struct DistanceUnit {
     /// How many of whatever the world is drawn in one of these comes to
     pub metres: f64,
     /// And what a number said in it is marked with
@@ -127,7 +127,7 @@ pub fn told(at: DVec3, step: f64) -> String {
 /// Nothing at all for something standing on the plane, or near enough that the
 /// number would read as nought. The line is already as short as it can be
 /// there, and a `+0.0` beside it says less than the line does.
-pub fn off_plane(high: f64, step: f64, unit: Unit) -> Option<String> {
+pub fn off_plane(high: f64, step: f64, unit: DistanceUnit) -> Option<String> {
     let fine = step / RESOLVES;
     let said = ticked(high, fine);
     if said == ticked(0., fine) {
@@ -149,8 +149,10 @@ pub(crate) mod tests {
     use super::super::ladder::{numbering, tests::zooms};
     use super::*;
 
-    const LIGHT_YEARS: Unit = Unit { metres: 9.4607304725808e15, mark: "Ly" };
-    const LIGHT_SECONDS: Unit = Unit { metres: 2.99792458e8, mark: "Ls" };
+    const LIGHT_YEARS: DistanceUnit =
+        DistanceUnit { metres: 9.4607304725808e15, mark: "Ly" };
+    const LIGHT_SECONDS: DistanceUnit =
+        DistanceUnit { metres: 2.99792458e8, mark: "Ls" };
 
     /// Somewhere a few views out from where the map is measured from, for a
     /// view `across` wide

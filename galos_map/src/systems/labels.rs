@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{Apparent, Body};
+use crate::systems::bodies::spawn::{ApparentSize, Body};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
@@ -277,12 +277,12 @@ fn worth_naming(
 /// a system exactly, so this only has to forgive one that is merely near it.
 const CENTER_REACH: f32 = 2.;
 
-/// What [`choose_names`] weighs a thing by, alongside what it is
+/// One thing in the running for a name, as [`choose_names`] weighs it
 ///
 /// Spelled out once. Both of the questions it answers are asked of the same
 /// five things, and written into the query they read as a wall rather than as
 /// a list of claims.
-type Weighed<'a, T> = (
+type Candidate<'a, T> = (
     Entity,
     T,
     &'a Visibility,
@@ -302,11 +302,11 @@ type Plated = (
     Has<crate::systems::route::Hop>,
 );
 
-/// What [`leaders`] needs of whatever a name is hung off
+/// Whatever a name is hung off, as [`leaders`] reads it
 ///
 /// Where it is, what is drawn under it to begin clear of, and the three ways
 /// of being marked out that leave a line with nothing to say.
-type Led = (
+type Anchor = (
     &'static GlobalTransform,
     Option<&'static Children>,
     Has<PointedAt>,
@@ -505,13 +505,13 @@ pub fn choose_names(
     spyglass: Res<Spyglass>,
     show_names: Res<ShowNames>,
     show_body_names: Res<ShowBodyNames>,
-    systems: Query<Weighed<'_, &'static System>>,
+    systems: Query<Candidate<'_, &'static System>>,
     bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
     eye_at: Query<&GlobalTransform, With<Camera>>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
-    seen_as: Res<Apparent>,
+    seen_as: Res<ApparentSize>,
     time: Res<Time<Real>>,
 ) {
     let clear = |commands: &mut Commands| {
@@ -584,7 +584,7 @@ pub fn choose_names(
             // rather than marked, and its name belongs to the mark. The star
             // it arrives at being drawn ends it just as surely, that star
             // carrying the name from there on.
-            let stands = seen_as.standing(entity) > 0.
+            let stands = seen_as.standing_for(entity) > 0.
                 && carried != Some(system.address);
 
             // A stop a route reaches is named whatever else is set. It is
@@ -881,7 +881,7 @@ pub fn respawn(
     // granted room for on the frame the camera arrives and the system it is
     // arriving in has not yet let go of its own name.
     standing_in: Query<&System>,
-    seen_as: Res<Apparent>,
+    seen_as: Res<ApparentSize>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     unnamed: Query<&Children, (Or<(With<System>, With<Body>)>, Without<Named>)>,
     labels: Query<Entity, With<Label>>,
@@ -1127,7 +1127,7 @@ pub fn face_camera(
 pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
-    named: Query<Led, Or<(With<System>, With<Body>)>>,
+    named: Query<Anchor, Or<(With<System>, With<Body>)>>,
     shells: Query<&GlobalTransform, With<Shell>>,
 ) {
     for (label, drawn, child_of) in &labels {

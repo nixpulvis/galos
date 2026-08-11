@@ -11,11 +11,11 @@ use crate::systems::{
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
     roundness::Roundness,
     route::spawn::{framing, spawn_route},
-    route::{self, Plotted, Route},
+    route::{self, PlottedRoute, Route},
     selection::{Picked, PickedBody, Selection},
     system_to_vec,
 };
-use crate::ui::{Gesture, Grasp};
+use crate::ui::{Gesture, PressOwner};
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -214,7 +214,7 @@ fn select_on_click(
     placed: Placed,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
-    grasp: Res<Grasp>,
+    press: Res<PressOwner>,
     frame: Res<FrameCount>,
     keys: Res<ButtonInput<KeyCode>>,
     mut answered: Local<Option<u32>>,
@@ -236,7 +236,7 @@ fn select_on_click(
     // reports a click before the UI has settled whose the press was, so a
     // whole click inside one frame reaches here with no owner at all, and
     // refusing those would be a star that cannot be picked out on a slow map.
-    if grasp.taken_by_ui() {
+    if press.taken_by_ui() {
         return;
     }
 
@@ -401,7 +401,7 @@ pub fn spawn(
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
-    mut plotted: MessageWriter<route::Plotted>,
+    mut plotted: MessageWriter<route::PlottedRoute>,
     mut tasks: ResMut<FetchTasks>,
     mut plot: ResMut<Plot>,
 ) {
@@ -437,7 +437,7 @@ pub fn spawn(
                 // over a moment after it arrives.
                 if *plot == Plot::Working {
                     *plot = if new_systems.len() < 2 {
-                        Plot::Trouble(format!(
+                        Plot::Failed(format!(
                             "No route from {start} to {end} at {range} Ly"
                         ))
                     } else {
@@ -507,7 +507,7 @@ pub fn spawn(
 /// `range` comes off the key the route was fetched under, that being where
 /// what the user asked for is still written down. The rows that came back say
 /// which systems the ship passes through and nothing about how far it reaches.
-fn plotted_route(systems: &[DbSystem], range: &str) -> Option<Plotted> {
+fn plotted_route(systems: &[DbSystem], range: &str) -> Option<PlottedRoute> {
     let (first, last) = (systems.first()?, systems.last()?);
     if systems.len() < 2 {
         return None;
@@ -516,7 +516,7 @@ fn plotted_route(systems: &[DbSystem], range: &str) -> Option<Plotted> {
     let places: Vec<_> = systems.iter().filter_map(system_to_vec).collect();
     let (middle, extent) = framing(&places)?;
 
-    Some(Plotted {
+    Some(PlottedRoute {
         label: format!("{} -> {}", first.name, last.name),
         // In the order they are travelled, which is the order the route came
         // back in and the order its panel lists.
@@ -674,7 +674,7 @@ fn update(
 /// that both runs after the mark and can still see what changed.
 pub(super) fn shells(
     systems: Query<(&System, Has<Filtered>)>,
-    seen_as: Res<super::bodies::spawn::Apparent>,
+    seen_as: Res<super::bodies::spawn::ApparentSize>,
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
     materials: Res<SystemMaterials>,
@@ -690,7 +690,7 @@ pub(super) fn shells(
         };
         // Its own visibility rather than its system's. `super::visibility`
         // owns that one, and a shell inherits it either way.
-        let standing = seen_as.standing(child_of.parent());
+        let standing = seen_as.standing_for(child_of.parent());
         if standing <= 0. {
             visibility.set_if_neq(Visibility::Hidden);
             continue;

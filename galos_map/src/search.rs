@@ -10,7 +10,7 @@ use galos_db::systems::System as DbSystem;
 use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
-    app.add_message::<Searched>();
+    app.add_message::<Search>();
     app.init_resource::<SearchNote>();
     app.init_resource::<SearchResults>();
     app.init_resource::<Plot>();
@@ -87,7 +87,7 @@ pub enum Plot {
     /// Asked for, and not yet come back
     Working,
     /// Why the route could not be plotted
-    Trouble(String),
+    Failed(String),
 }
 
 /// A collection of search messages for responding to the user's UI
@@ -95,9 +95,9 @@ pub enum Plot {
 ///
 /// A filter is not one of these. Asking for a filter names something and the
 /// map neither goes there, fetches it, nor picks it out, so it is asked for
-/// by [`crate::systems::filter::Wanted`] instead.
+/// by [`crate::systems::filter::Lookup`] instead.
 #[derive(Message, Debug)]
-pub enum Searched {
+pub enum Search {
     System { name: String },
     Route { start: String, end: String, range: String },
 }
@@ -140,18 +140,18 @@ const PATIENCE: Duration = Duration::from_millis(50);
 /// database here. Waited for in the frame, that is a third of a second of a
 /// map that does not move.
 #[derive(Resource)]
-pub struct Asking<A, T> {
+pub struct Pending<A, T> {
     out: Option<(A, Instant, Task<T>)>,
     waiting: bool,
 }
 
-impl<A, T> Default for Asking<A, T> {
+impl<A, T> Default for Pending<A, T> {
     fn default() -> Self {
-        Asking { out: None, waiting: false }
+        Pending { out: None, waiting: false }
     }
 }
 
-impl<A, T> Asking<A, T> {
+impl<A, T> Pending<A, T> {
     /// Put `task` to the database, in place of whatever was already out
     pub(crate) fn ask(&mut self, about: A, now: Instant, task: Task<T>) {
         self.out = Some((about, now, task));
@@ -194,7 +194,7 @@ impl<A, T> Asking<A, T> {
 ///
 /// The name is what its note is written against, a search that found nothing
 /// having to say which name found it.
-pub type Searching = Asking<String, Vec<DbSystem>>;
+pub type Searching = Pending<String, Vec<DbSystem>>;
 
 /// The pair of names a route is being worked out between, while they are
 /// being looked up
@@ -203,7 +203,7 @@ pub type Searching = Asking<String, Vec<DbSystem>>;
 /// itself, which `systems::fetch` has already sent off. This settles only
 /// which of the two ends the user got wrong, so what it answers with is that
 /// trouble or nothing at all.
-type Locating = Asking<(), Option<String>>;
+type Locating = Pending<(), Option<String>>;
 
 /// Say what a pair of names being looked up had to say about the plot
 ///
@@ -222,14 +222,14 @@ type Locating = Asking<(), Option<String>>;
 /// spinner that turns for the rest of the session over a route that is drawn.
 fn located(plot: &mut Plot, trouble: Option<String>) {
     if let Some(why) = trouble {
-        *plot = Plot::Trouble(why);
+        *plot = Plot::Failed(why);
     }
 }
 
 /// Answer what the user asked for
 ///
-/// A system for responding to [`Searched`] messages.
-/// - On [`Searched::System`] the systems that might be meant are looked up and
+/// A system for responding to [`Search`] messages.
+/// - On [`Search::System`] the systems that might be meant are looked up and
 /// left as a list for the user to choose from. Nothing is picked out by the
 /// search itself, however exactly the name was typed: a search says which
 /// systems are on record under that name and a click says which of them is
@@ -237,7 +237,7 @@ fn located(plot: &mut Plot, trouble: Option<String>) {
 /// searches, since a search that picked something out would let go of
 /// everything gathered before it. The camera is left where it is for the same
 /// reason, and the map has a control of its own for going there.
-/// - On [`Searched::Route`] both ends are resolved, and which of them could
+/// - On [`Search::Route`] both ends are resolved, and which of them could
 /// not be is what the form is told.
 ///
 /// Every one of them is asked of the database off the main thread and read
@@ -248,7 +248,7 @@ fn located(plot: &mut Plot, trouble: Option<String>) {
 /// fragment answers with the systems in front of the user rather than with
 /// whichever ones the database reached first.
 fn searched(
-    mut search_events: MessageReader<Searched>,
+    mut search_events: MessageReader<Search>,
     mut searching: ResMut<Searching>,
     mut locating: ResMut<Locating>,
     mut note: ResMut<SearchNote>,
@@ -271,7 +271,7 @@ fn searched(
 
     for event in search_events.read() {
         match event {
-            Searched::System { name, .. } => {
+            Search::System { name, .. } => {
                 let db = db.0.clone();
                 let asked = name.clone();
                 searching.ask(
@@ -286,7 +286,7 @@ fn searched(
             }
             // A route needs both ends. Say which one is the problem rather
             // than drawing nothing and leaving the user to guess.
-            Searched::Route { start, end, .. } => {
+            Search::Route { start, end, .. } => {
                 let db = db.0.clone();
                 let (start, end) = (start.clone(), end.clone());
                 locating.ask(
@@ -401,7 +401,7 @@ pub(crate) mod tests {
 
         located(&mut plot, Some("No system named NOWHERE".to_owned()));
 
-        assert_eq!(plot, Plot::Trouble("No system named NOWHERE".to_owned()));
+        assert_eq!(plot, Plot::Failed("No system named NOWHERE".to_owned()));
     }
 
     /// Both ends resolving leaves the plot as it stands
@@ -414,7 +414,7 @@ pub(crate) mod tests {
         let mut working = Plot::Working;
         let mut drawn = Plot::Nothing;
         let mut refused =
-            Plot::Trouble("No route from SOL to BARNARD at 10 Ly".to_owned());
+            Plot::Failed("No route from SOL to BARNARD at 10 Ly".to_owned());
 
         located(&mut working, None);
         located(&mut drawn, None);
@@ -424,7 +424,7 @@ pub(crate) mod tests {
         assert_eq!(drawn, Plot::Nothing);
         assert_eq!(
             refused,
-            Plot::Trouble("No route from SOL to BARNARD at 10 Ly".to_owned())
+            Plot::Failed("No route from SOL to BARNARD at 10 Ly".to_owned())
         );
     }
 

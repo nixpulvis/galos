@@ -12,8 +12,8 @@ use bevy::prelude::*;
 use super::system_to_vec;
 
 pub fn plugin(app: &mut App) {
-    app.add_message::<Plotted>();
-    app.init_resource::<Selected>();
+    app.add_message::<PlottedRoute>();
+    app.init_resource::<SelectedRoute>();
     // After the fetch it answers has been drawn, and before the camera is
     // pointed, since where it asks the camera to go is what `move_camera`
     // then works out.
@@ -215,9 +215,9 @@ fn reaching<'a>(
 /// moved, which drags its name and its material along behind it.
 fn hops(
     filters: Res<Filters>,
-    selected: Res<Selected>,
+    selected: Res<SelectedRoute>,
     contents: Res<crate::systems::bodies::Contents>,
-    seen_as: Res<crate::systems::bodies::spawn::Apparent>,
+    seen_as: Res<crate::systems::bodies::spawn::ApparentSize>,
     systems: Query<(Entity, &System, Option<&Hop>)>,
     mut commands: Commands,
 ) {
@@ -228,7 +228,7 @@ fn hops(
     let routes = front
         .into_iter()
         .chain(shown(&filters).filter(|route| Some(*route) != front));
-    let reached = reaching(routes, contents.of(), seen_as.held());
+    let reached = reaching(routes, contents.of(), seen_as.standing());
 
     for (entity, system, held) in &systems {
         let wanted = reached
@@ -269,7 +269,7 @@ pub struct Route(pub Filter);
 /// route does to the map is in one place rather than threaded through the
 /// system that draws stars.
 #[derive(Message, Debug)]
-pub struct Plotted {
+pub struct PlottedRoute {
     /// The two ends, as the database spells them
     pub label: String,
     /// Every system it runs through, by address, in the order travelled
@@ -287,7 +287,7 @@ pub struct Plotted {
     pub range: String,
 }
 
-impl Plotted {
+impl PlottedRoute {
     /// The filter this route asks for, and the line's own name for itself
     ///
     /// Built in one place and read in two: the row in the bar is this filter,
@@ -313,11 +313,11 @@ impl Plotted {
 /// route drawn as a line running out through the edge of an unchanged
 /// spyglass is a route with no systems on it.
 fn plotted(
-    mut plotted: MessageReader<Plotted>,
+    mut plotted: MessageReader<PlottedRoute>,
     mut camera: MessageWriter<MoveCamera>,
     mut spyglass: ResMut<Spyglass>,
     mut filters: ResMut<Filters>,
-    mut selected: ResMut<Selected>,
+    mut selected: ResMut<SelectedRoute>,
 ) {
     for route in plotted.read() {
         // A route just asked for is the one being looked at, so whichever was
@@ -412,7 +412,7 @@ fn asked(filters: &Filters, route: &Filter) -> Option<bool> {
 /// An override rather than the answer itself. What it stands in front of is
 /// the last route plotted, and [`active`] puts the two together.
 #[derive(Resource, Default)]
-pub struct Selected(pub Option<Filter>);
+pub struct SelectedRoute(pub Option<Filter>);
 
 /// Which route is the one being worked with
 ///
@@ -486,13 +486,13 @@ pub fn strength(is_active: bool) -> f32 {
 /// standing for that system fades on, and the two go together.
 fn emphasise(
     filters: Res<Filters>,
-    selected: Res<Selected>,
-    seen_as: Res<crate::systems::bodies::spawn::Apparent>,
+    selected: Res<SelectedRoute>,
+    seen_as: Res<crate::systems::bodies::spawn::ApparentSize>,
     lines: Query<(&Route, &MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let active = active(&filters, &selected.0);
-    let standing = seen_as.held();
+    let standing = seen_as.standing();
 
     for (line, material) in &lines {
         let Some(mut material) = materials.get_mut(&material.0) else {
@@ -847,7 +847,7 @@ mod tests {
     fn spyglass_for(middle: DVec3, extent: f32) -> Spyglass {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_message::<Plotted>();
+        app.add_message::<PlottedRoute>();
         app.add_message::<MoveCamera>();
         app.insert_resource(Spyglass {
             fetch: true,
@@ -857,10 +857,10 @@ mod tests {
             follow_camera: false,
         });
         app.init_resource::<Filters>();
-        app.init_resource::<Selected>();
+        app.init_resource::<SelectedRoute>();
         app.add_systems(Update, plotted);
 
-        app.world_mut().write_message(Plotted {
+        app.world_mut().write_message(PlottedRoute {
             label: "A -> B".to_owned(),
             systems: vec![1, 2],
             middle,
@@ -1112,7 +1112,7 @@ mod tests {
     fn plotting_takes_back_what_was_picked_out() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_message::<Plotted>();
+        app.add_message::<PlottedRoute>();
         app.add_message::<MoveCamera>();
         app.init_resource::<Filters>();
         app.insert_resource(Spyglass {
@@ -1122,10 +1122,10 @@ mod tests {
             lock_camera: false,
             follow_camera: false,
         });
-        app.insert_resource(Selected(Some(asking(&[1, 2]))));
+        app.insert_resource(SelectedRoute(Some(asking(&[1, 2]))));
         app.add_systems(Update, plotted);
 
-        app.world_mut().write_message(Plotted {
+        app.world_mut().write_message(PlottedRoute {
             label: "C -> D".to_owned(),
             systems: vec![8, 9],
             middle: DVec3::ZERO,
@@ -1134,7 +1134,7 @@ mod tests {
         });
         app.update();
 
-        assert!(app.world().resource::<Selected>().0.is_none());
+        assert!(app.world().resource::<SelectedRoute>().0.is_none());
     }
 
     /// The active route is drawn at full strength and the rest behind it

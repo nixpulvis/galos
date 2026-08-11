@@ -38,7 +38,7 @@ pub struct Contents {
     /// Which system this is about, if any
     of: Option<i64>,
     /// What has come back about it
-    held: Held,
+    state: FetchState,
     /// How many answers about this system have said something new
     ///
     /// The poll asks over and over and most of what comes back says what the
@@ -50,7 +50,7 @@ pub struct Contents {
 
 /// How far along the asking has got
 #[derive(Default)]
-enum Held {
+enum FetchState {
     /// Nothing has been asked about
     #[default]
     Nothing,
@@ -92,8 +92,8 @@ impl Contents {
         bodies: Vec<DbBody>,
         centers: Vec<DbBarycenter>,
     ) {
-        if let Held::Known { stars: had, bodies: were, centers: about } =
-            &self.held
+        if let FetchState::Known { stars: had, bodies: were, centers: about } =
+            &self.state
             && *had == stars
             && *were == bodies
             && *about == centers
@@ -101,7 +101,7 @@ impl Contents {
             return;
         }
 
-        self.held = Held::Known { stars, bodies, centers };
+        self.state = FetchState::Known { stars, bodies, centers };
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -111,21 +111,22 @@ impl Contents {
     /// still an answer, and a system with no bodies on record is one the map
     /// knows about rather than one it has yet to ask after.
     pub fn known(&self, address: i64) -> bool {
-        self.of == Some(address) && matches!(self.held, Held::Known { .. })
+        self.of == Some(address)
+            && matches!(self.state, FetchState::Known { .. })
     }
 
     /// The stars of the system being held
     pub fn stars(&self) -> &[DbStar] {
-        match &self.held {
-            Held::Known { stars, .. } => stars,
+        match &self.state {
+            FetchState::Known { stars, .. } => stars,
             _ => &[],
         }
     }
 
     /// The bodies of the system being held
     pub fn bodies(&self) -> &[DbBody] {
-        match &self.held {
-            Held::Known { bodies, .. } => bodies,
+        match &self.state {
+            FetchState::Known { bodies, .. } => bodies,
             _ => &[],
         }
     }
@@ -151,8 +152,8 @@ impl Contents {
     /// body measures its orbit about its nearest ancestor, and where that
     /// ancestor stands is the rest of the answer.
     pub fn barycenters(&self) -> &[DbBarycenter] {
-        match &self.held {
-            Held::Known { centers, .. } => centers,
+        match &self.state {
+            FetchState::Known { centers, .. } => centers,
             _ => &[],
         }
     }
@@ -226,7 +227,7 @@ impl Contents {
     /// Both are the same picture to whoever is drawing: the map cannot say how
     /// far this system reaches.
     pub fn extent(&self) -> Option<f32> {
-        let Held::Known { stars, bodies, centers } = &self.held else {
+        let FetchState::Known { stars, bodies, centers } = &self.state else {
             return None;
         };
 
@@ -520,7 +521,7 @@ mod tests {
         Contents {
             of: Some(1),
             revision: 0,
-            held: Held::Known {
+            state: FetchState::Known {
                 stars: vec![
                     star(1, 0., 1e13, vec![parent("Null", 0)]),
                     star(2, 1e5, 2e13, vec![parent("Null", 0)]),
@@ -636,7 +637,7 @@ mod tests {
         let contents = Contents {
             of: Some(1),
             revision: 0,
-            held: Held::Known {
+            state: FetchState::Known {
                 stars: vec![lone],
                 bodies: vec![],
                 centers: vec![center(10, 4e12)],
@@ -667,7 +668,7 @@ mod tests {
         Contents {
             of: Some(1),
             revision: 0,
-            held: Held::Known {
+            state: FetchState::Known {
                 stars: vec![star(1, 0., 0., vec![])],
                 bodies: vec![close],
                 centers: vec![wide],
@@ -715,7 +716,7 @@ mod tests {
         Contents {
             of: Some(1),
             revision: 0,
-            held: Held::Known { stars: vec![], bodies, centers: vec![] },
+            state: FetchState::Known { stars: vec![], bodies, centers: vec![] },
         }
     }
 
@@ -821,7 +822,7 @@ mod tests {
         let contents = Contents {
             of: Some(1),
             revision: 0,
-            held: Held::Known {
+            state: FetchState::Known {
                 stars: vec![lone],
                 bodies: vec![],
                 centers: vec![],

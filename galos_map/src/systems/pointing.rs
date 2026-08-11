@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::spawn::{Apparent, Body};
+use crate::systems::bodies::spawn::{ApparentSize, Body};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
     Label, depth, depth_of, name_rect, screen_offset, screen_position,
@@ -111,7 +111,7 @@ const ICON: f32 = 14.;
 /// triangle this small is mostly the gap in the middle of it, so each is drawn
 /// as a row of lines from its flat side out to wherever the two sloping sides
 /// have met by that row.
-fn transport(hop: &crate::systems::route::Hop, at: Vec2) -> Vec<[Vec2; 2]> {
+fn triangle(hop: &crate::systems::route::Hop, at: Vec2) -> Vec<[Vec2; 2]> {
     let way = match hop {
         crate::systems::route::Hop::Next => 1.,
         crate::systems::route::Hop::Last => -1.,
@@ -774,7 +774,7 @@ pub fn point_the_cursor(
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
-    seen_as: Res<Apparent>,
+    seen_as: Res<ApparentSize>,
     // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
@@ -829,7 +829,7 @@ pub fn ring(
         let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
         for (entity, at, _, indicator, hop, picked) in &hops {
-            let standing = seen_as.standing(entity);
+            let standing = seen_as.standing_for(entity);
             if standing <= 0. {
                 continue;
             }
@@ -922,7 +922,7 @@ pub fn ring(
             };
 
             // The same mark either way, so it is drawn in one place.
-            for rule in transport(hop, icon) {
+            for rule in triangle(hop, icon) {
                 gizmos.line(placed(rule[0]), placed(rule[1]), color);
             }
         }
@@ -952,7 +952,7 @@ pub fn ring(
     }
 
     for (entity, at, system, indicator, filtered) in &pointed_at {
-        let standing = seen_as.standing(entity);
+        let standing = seen_as.standing_for(entity);
         if standing <= 0. {
             continue;
         }
@@ -971,7 +971,7 @@ pub fn ring(
                 Isometry3d::new(at.translation(), orbit.rotation),
                 radius,
                 super::selection::going(
-                    dim.against(INDICATOR, filtered),
+                    dim.as_drawn(INDICATOR, filtered),
                     standing,
                 ),
             )
