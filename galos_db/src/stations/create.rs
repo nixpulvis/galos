@@ -120,6 +120,7 @@ impl Station {
                 economies = COALESCE($11, stations.economies),
                 updated_at = $12,
                 updated_by = $13
+            WHERE stations.updated_at <= $12
             RETURNING
                 system_address,
                 name,
@@ -153,8 +154,15 @@ impl Station {
             timestamp.naive_utc(),
             user,
         )
-        .fetch_one(&db.pool)
+        .fetch_optional(&db.pool)
         .await?;
+
+        // Nothing comes back where the guard turned the update away, which is a
+        // message older than what is already stored. What is on record is the
+        // newer station, so that is what is answered with.
+        let Some(row) = row else {
+            return Self::fetch(db, system_address, &station.name).await;
+        };
 
         Ok(Station {
             system_address: row.system_address,

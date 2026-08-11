@@ -49,7 +49,11 @@ impl System {
                 secondary_economy = COALESCE($10, systems.secondary_economy),
                 updated_at = $11,
                 updated_by = $12
-            WHERE systems.updated_at < $11
+            -- Not strictly newer. Every field above keeps what this message
+            -- does not carry, so one arriving in the same second as the last
+            -- can only fill in what that one left out. `Location` and
+            -- `FSDJump` are sent together and do not say the same things.
+            WHERE systems.updated_at <= $11
             "#,
             address as i64,
             name,

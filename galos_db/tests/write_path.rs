@@ -34,6 +34,7 @@ use elite_journal::station::{
     LandingPads, Service, Station as JournalStation, StationType,
 };
 use elite_journal::system::Coordinate;
+use elite_journal::Allegiance;
 use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
     clusters::Cluster, codex_entries::CodexEntry, outfitting::Outfitting,
@@ -41,6 +42,22 @@ use galos_db::{
     systems::System, Database,
 };
 use std::collections::BTreeMap;
+
+/// Forget a system, so a test may assert on what did not happen
+///
+/// These tests share one database and own an address each, and asserting that a
+/// write was turned away means telling a refusal apart from a row an earlier run
+/// left behind. Only this file writes these addresses, so nothing points at the
+/// row being dropped.
+async fn forget(address: i64) {
+    let Ok(url) = std::env::var("DATABASE_URL") else { return };
+    let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
+    sqlx::query("DELETE FROM systems WHERE address = $1")
+        .bind(address)
+        .execute(&pool)
+        .await
+        .expect("the address should be clearable");
+}
 
 /// A database to write to, or nothing and the test stands down
 macro_rules! db {
@@ -77,6 +94,8 @@ const TRADE: i64 = 900_000_006;
 const CLUSTER: i64 = 900_000_008;
 const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
+const STALE: i64 = 900_000_011;
+const SAME_SECOND: i64 = 900_000_012;
 
 /// A honk is often the first thing heard about a system, so it writes the row
 #[async_std::test]
@@ -812,4 +831,126 @@ async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
         "the services were erased",
     );
     assert_eq!(stored.dist_from_star_ls, Some(120.5));
+}
+
+/// A message older than what is stored does not undo it
+///
+/// A station's services, faction and allegiance all change, so a message that
+/// carries an older reading of them is not merely redundant. Uploaders batch
+/// and reconnect, and the gateway has been seen handing over a journal entry a
+/// quarter of an hour after the game wrote it.
+#[async_std::test]
+async fn a_stale_station_message_does_not_undo_a_newer_one() {
+    let db = db!();
+
+    System::set_body_counts(
+        &db,
+        STALE,
+        "Test Stale",
+        Some(somewhere(11.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let station = |services| JournalStation {
+        name: "Test Stale Port".into(),
+        ty: Some(StationType::Coriolis),
+        dist_from_star_ls: Some(120.5),
+        market_id: Some(128_016_385),
+        landing_pads: None,
+        faction: None,
+        government: None,
+        allegiance: None,
+        services,
+        economies: None,
+        wanted: None,
+    };
+
+    // What is known now.
+    let now = station(Some(vec![Service::Dock, Service::Shipyard]));
+    Station::from_journal(&db, at(600), "test", &now, STALE)
+        .await
+        .expect("the newer message should write");
+
+    // An older reading of the same station, arriving late.
+    let then = station(Some(vec![Service::Dock]));
+    let answered = Station::from_journal(&db, at(0), "test", &then, STALE)
+        .await
+        .expect("a stale message should not fail");
+
+    // Answered with what is on record rather than with what it carried.
+    assert_eq!(
+        answered.services.as_ref().map(|s| s.len()),
+        Some(2),
+        "the write answered with the stale message",
+    );
+
+    let stored = Station::fetch(&db, STALE, "Test Stale Port")
+        .await
+        .expect("should read back");
+    assert_eq!(
+        stored.services.as_ref().map(|s| s.len()),
+        Some(2),
+        "a stale message undid the newer one",
+    );
+    assert_eq!(stored.updated_at, at(600), "the older time was written");
+}
+
+/// Two messages in the same second both get to say their part
+///
+/// `Location` and `FSDJump` are sent together and do not carry the same
+/// fields. Since a system keeps what a message leaves out, the second of them
+/// can only fill in what the first did not have.
+#[async_std::test]
+async fn two_messages_in_one_second_both_land() {
+    let db = db!();
+    forget(SAME_SECOND).await;
+
+    // The first says how many live there and nothing about who runs it.
+    System::create(
+        &db,
+        SAME_SECOND,
+        "Test Same Second",
+        Some(somewhere(12.0)),
+        None,
+        Some(4_000_000),
+        None,
+        None,
+        None,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("the first should write");
+
+    // The second, in the same second, says the allegiance and not the rest.
+    System::create(
+        &db,
+        SAME_SECOND,
+        "Test Same Second",
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(Allegiance::Empire),
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("the second should write");
+
+    let stored = System::fetch(&db, SAME_SECOND).await.expect("should read");
+    assert_eq!(stored.population, 4_000_000, "the population was lost");
+    assert_eq!(
+        stored.allegiance,
+        Some(Allegiance::Empire),
+        "the second message in the second did not land",
+    );
 }
