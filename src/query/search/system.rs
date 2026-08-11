@@ -1,65 +1,69 @@
-//! Finding systems: by name, by who holds them, and by what is near one
+//! Looking for star systems: by name, by who holds them, by what is near one
 
-use super::{quoted, Ask, Info, Query};
-use crate::view::{Column, Row, Table, View};
+use super::{Kind, Look};
+use crate::query::{quoted, Info, Query};
+use crate::view::{Column, Row, Table};
 use crate::{Error, Result};
 use elite_journal::system::Coordinate;
 use galos_db::{escaped, systems::System, Database};
+use std::collections::HashSet;
 
-/// Systems, however the user would rather name them
+/// Star systems, however the user would rather name them
 ///
-/// The three ways of naming compose. `--system` narrows by name, `--faction`
+/// The three ways of naming compose. A name narrows by name, `--faction`
 /// narrows by who is present, and `--radius` narrows by where; giving two of
-/// them means both, which is the only reading of them that does not surprise
-/// somebody.
+/// them means both, which is the only reading that surprises nobody.
 #[derive(clap::Args, Clone, Debug, PartialEq)]
-pub struct Search {
+pub struct Systems {
     /// Systems whose name holds this
-    #[arg(short = 's', long = "system", value_name = "NAME")]
-    pub system: Option<String>,
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
 
-    /// Systems where a faction whose name holds this is present
+    /// Only systems where a faction whose name holds this is present
     #[arg(short = 'f', long = "faction", value_name = "NAME")]
     pub faction: Option<String>,
 
-    /// Only systems within this many light years of --system
+    /// Only systems within this many light years of the named one
     ///
-    /// Measured from one system, so --system must be the whole of a name and
-    /// not a fragment of several.
+    /// Measured from one system, so the name has to be a whole one rather
+    /// than a fragment several answer to.
     #[arg(short = 'r', long, value_name = "LY")]
     pub radius: Option<f64>,
-
-    /// How many to answer with
-    #[arg(short = 'l', long, default_value_t = 25, value_name = "N")]
-    pub limit: i64,
-
-    /// Say how many there are rather than which they are
-    #[arg(short = 'c', long)]
-    pub count: bool,
 }
 
-impl Search {
+impl Systems {
+    /// Systems whose name holds `name`
+    pub fn named(name: &str) -> Self {
+        Systems { name: Some(name.to_string()), faction: None, radius: None }
+    }
+
+    /// Systems a faction named like `faction` is present in
+    pub fn held_by(faction: &str) -> Self {
+        Systems { name: None, faction: Some(faction.to_string()), radius: None }
+    }
+
     /// The systems this asks for, and what to measure them from
     ///
-    /// The centre comes back with them because a distance column is only
-    /// meaningful against something, and the something is the system a radius
-    /// was drawn around.
+    /// The centre comes back with them because a distance column means
+    /// nothing on its own, and what it means is the system a radius was drawn
+    /// around.
     async fn find(
         &self,
         db: &Database,
+        limit: i64,
     ) -> Result<(Vec<System>, Option<Coordinate>)> {
-        match (&self.system, &self.faction, self.radius) {
+        match (&self.name, &self.faction, self.radius) {
             (None, None, _) => Err(Error::Nonsense(
-                "search needs --system or --faction".into(),
+                "search system needs a name or --faction".into(),
             )),
 
             // A radius is drawn around a system, so the name has to be one.
             (None, Some(_), Some(_)) => Err(Error::Nonsense(
-                "--radius needs a --system to be measured from".into(),
+                "--radius needs a system for it to be measured from".into(),
             )),
 
             (Some(name), faction, Some(radius)) => {
-                let centre = super::locate(db, name).await?;
+                let centre = crate::query::locate(db, name).await?;
                 let position = centre
                     .position
                     .ok_or_else(|| Error::Unplaced { name: centre.name })?;
@@ -76,11 +80,12 @@ impl Search {
                     found.retain(|system| held.contains(&system.address));
                 }
                 // Nearest first, the centre itself leading: a radius is asked
-                // about from somewhere, and what is close to that somewhere is
-                // what it was asked for.
+                // about from somewhere, and what is close to that somewhere
+                // is what it was asked for.
                 found.sort_by(|a, b| {
                     reach(position, a).total_cmp(&reach(position, b))
                 });
+                found.truncate(limit as usize);
                 Ok((found, Some(position)))
             }
 
@@ -94,93 +99,24 @@ impl Search {
                     });
                 }
                 found.sort_by(|a, b| a.name.cmp(&b.name));
+                found.truncate(limit as usize);
                 Ok((found, None))
             }
 
-            (Some(name), None, None) => Ok((
-                System::search_by_name(db, name, None, self.limit).await?,
-                None,
-            )),
+            (Some(name), None, None) => {
+                Ok((System::search_by_name(db, name, None, limit).await?, None))
+            }
         }
     }
 }
 
-impl Ask for Search {
-    async fn ask(&self, db: &Database) -> Result<View> {
-        let (found, centre) = self.find(db).await?;
-        let total = found.len();
-
-        if self.count {
-            return Ok(View::new(self.title()).with(
-                crate::view::Section::Note(format!(
-                    "{} system{} found",
-                    super::tally(total as u64),
-                    if total == 1 { "" } else { "s" }
-                )),
-            ));
-        }
-
-        let table = table(found.iter().take(self.limit as usize), centre);
-        let shown = table.rows.len();
-        let view = View::new(self.title()).with(table);
-        Ok(if shown < total {
-            view.noting(format!(
-                "{shown} of {} systems, by --limit",
-                super::tally(total as u64)
-            ))
-        } else if shown as i64 == self.limit {
-            // Cut exactly at the limit, the database was not asked whether
-            // there was a next one, so this cannot promise there is not.
-            view.noting(format!("{shown} systems, up to the --limit"))
-        } else {
-            view.noting(format!(
-                "{shown} system{}",
-                if shown == 1 { "" } else { "s" }
-            ))
-        })
-    }
-
-    fn command(&self) -> String {
-        let mut line = String::from("galos search");
-        if let Some(system) = &self.system {
-            line += &format!(" -s {}", quoted(system));
-        }
-        if let Some(faction) = &self.faction {
-            line += &format!(" -f {}", quoted(faction));
-        }
-        if let Some(radius) = self.radius {
-            line += &format!(" -r {radius}");
-        }
-        if self.limit != 25 {
-            line += &format!(" -l {}", self.limit);
-        }
-        if self.count {
-            line += " -c";
-        }
-        line
-    }
-}
-
-impl Search {
-    /// A search for systems holding `name`
-    ///
-    /// What a faction row leads to, and the reason [`Factions`] answers with
-    /// faction names rather than with the systems behind them: the systems
-    /// are one enter away and are their own page when you get there.
-    ///
-    /// [`Factions`]: super::Factions
-    pub fn by_faction(name: &str) -> Self {
-        Search {
-            system: None,
-            faction: Some(name.to_string()),
-            radius: None,
-            limit: 25,
-            count: false,
-        }
+impl Look for Systems {
+    fn kind(&self) -> &'static str {
+        "System"
     }
 
     fn title(&self) -> String {
-        match (&self.system, &self.faction, self.radius) {
+        match (&self.name, &self.faction, self.radius) {
             (Some(name), _, Some(radius)) => {
                 format!("Systems within {radius} Ly of {name}")
             }
@@ -192,12 +128,37 @@ impl Search {
             (None, None, _) => "Systems".into(),
         }
     }
+
+    async fn look(&self, db: &Database, limit: i64) -> Result<Table> {
+        let (found, centre) = self.find(db, limit).await?;
+        Ok(table(found.iter(), centre))
+    }
+
+    fn arguments(&self) -> String {
+        let mut line = String::from(" system");
+        if let Some(name) = &self.name {
+            line += &format!(" {}", quoted(name));
+        }
+        if let Some(faction) = &self.faction {
+            line += &format!(" -f {}", quoted(faction));
+        }
+        if let Some(radius) = self.radius {
+            line += &format!(" -r {radius}");
+        }
+        line
+    }
+}
+
+impl From<Systems> for Kind {
+    fn from(look: Systems) -> Kind {
+        Kind::System(look)
+    }
 }
 
 /// Systems as rows, each leading to what is known about it
 ///
-/// Here rather than in [`Search::ask`] because a list of systems is not only
-/// ever the answer to a search: asking for one by an ambiguous name answers
+/// Here rather than in [`Look::look`] because a list of systems is not only
+/// ever the answer to a search: asking about one by an ambiguous name answers
 /// with the several it could have been, and that list wants the same columns
 /// under the same headings. The moment it is written twice, one of them gains
 /// a column.
@@ -229,10 +190,13 @@ pub(crate) fn table<'a>(
             });
         }
         cells.extend([
-            system.position.map(super::place).unwrap_or_else(|| "-".into()),
-            super::tally(system.population),
-            super::or_dash(system.allegiance),
-            super::or_dash(system.economies),
+            system
+                .position
+                .map(crate::query::place)
+                .unwrap_or_else(|| "-".into()),
+            crate::query::tally(system.population),
+            crate::query::or_dash(system.allegiance),
+            crate::query::or_dash(system.economies),
         ]);
         table
             .push(Row::new(cells).linking(Query::Info(Info::of(&system.name))));
@@ -241,10 +205,7 @@ pub(crate) fn table<'a>(
 }
 
 /// The addresses of every system a faction named like `faction` is present in
-async fn held_by(
-    db: &Database,
-    faction: &str,
-) -> Result<std::collections::HashSet<i64>> {
+async fn held_by(db: &Database, faction: &str) -> Result<HashSet<i64>> {
     Ok(System::fetch_faction(db, &like(faction))
         .await?
         .into_iter()

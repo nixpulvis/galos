@@ -47,7 +47,7 @@
 //! With no command, the terminal UI. `?` for the keys, `:` to ask something.
 //!
 //! ```notrust
-//!  galos › Systems matching Meliae › Meliae          ? keys   q quit
+//!  galos › Anything matching Meliae › Meliae         ? keys   q quit
 //!    address     3107241104
 //!    position    -68, -8, 46
 //!    population  9,832,821
@@ -60,19 +60,35 @@
 //!
 //!  Stations (8 of 14)
 //!  ...
-//!  2 factions                       galos search -f "Aegis Core"
+//!  2 factions            galos search system -f "Aegis Core"
 //! ```
 //!
-//! ### `galos search [-s NAME] [-f NAME] [-r LY] [-l N] [-c]`
+//! ### `galos search [-l N] [-c] <NAME>`
 //!
-//! Systems, by name, by who is present in them, or by what is within a radius
-//! of one. The three narrow together.
+//! Anything called that: systems, factions, stations, bodies, a few of each
+//! and how many there were. Which is the search for a name off a screen,
+//! belonging to who knows what.
 //!
 //! ```notrust
-//! $ galos search -s Meliae
-//! $ galos search -s Sol -r 50
-//! $ galos search -f "Aegis Core" -c
+//! $ galos search Meliae
 //! ```
+//!
+//! ### `galos search <KIND> [FILTERS] <NAME>`
+//!
+//! One kind of thing, all of what was found, and the filters only that kind
+//! has. `system`, `faction`, `station` or `body`.
+//!
+//! ```notrust
+//! $ galos search system Sol -r 50           # within 50 Ly of Sol
+//! $ galos search system -f "Aegis Core"     # systems they are present in
+//! $ galos search station Jameson -l 50
+//! $ galos search -c body "Col 285"
+//! ```
+//!
+//! `--limit` and `--count` mean the same thing to every kind, so they live
+//! above them and are taken on either side of the kind. A filter only one
+//! kind understands stays with that kind: a radius is measured from a system,
+//! and a faction has nowhere for one to be measured from.
 //!
 //! ### `galos info <system>`
 //!
@@ -82,11 +98,8 @@
 //!
 //! ### `galos bodies <system>` and `galos stations <system>`
 //!
-//! All of them, rather than the handful `info` shows.
-//!
-//! ### `galos factions <name>`
-//!
-//! Factions by any part of their name. Where they are is `galos search -f`.
+//! What is in a place, rather than what something is called: all of a
+//! system's bodies or stations, where `info` shows the first few.
 //!
 //! ### `galos route <from> <to> [-r LY]`
 //!

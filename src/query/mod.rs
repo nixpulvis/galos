@@ -7,7 +7,7 @@
 //! roads lead to [`Query::ask`].
 //!
 //! The parser is the same parser. `Query` derives clap's [`Subcommand`], so
-//! `galos search -s Sol -r 50` at a shell and `search -s Sol -r 50` typed at
+//! `galos search system Sol -r 50` at a shell and `search system Sol -r 50` at
 //! the UI go through one grammar with one help text; a flag added here shows
 //! up in both places or in neither.
 //!
@@ -18,30 +18,29 @@
 //! the interactive tool teaches the batch one rather than growing away from
 //! it.
 
-use crate::view::View;
+use crate::view::{Row, Table, View};
 use crate::{Error, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use elite_journal::system::Coordinate;
 use galos_db::{systems::System, Database};
+use std::collections::HashMap;
 
 mod bodies;
-mod factions;
 mod info;
 mod route;
-mod search;
+pub mod search;
 mod stations;
 
 pub use self::bodies::Bodies;
-pub use self::factions::Factions;
 pub use self::info::Info;
 pub use self::route::Route;
-pub use self::search::Search;
+pub use self::search::{Kind, Search};
 pub use self::stations::Stations;
 
 /// Something to ask the database
 #[derive(Subcommand, Clone, Debug, PartialEq)]
 pub enum Query {
-    /// Find systems by name, by faction, or by what is near one
+    /// Find something by name: a system, a faction, a station, a body
     Search(Search),
     /// Everything on record about one system
     Info(Info),
@@ -49,8 +48,6 @@ pub enum Query {
     Bodies(Bodies),
     /// The stations of a system
     Stations(Stations),
-    /// Find factions by name
-    Factions(Factions),
     /// Plot a route between two systems
     Route(Route),
 }
@@ -82,7 +79,6 @@ impl Ask for Query {
             Query::Info(q) => q.ask(db).await,
             Query::Bodies(q) => q.ask(db).await,
             Query::Stations(q) => q.ask(db).await,
-            Query::Factions(q) => q.ask(db).await,
             Query::Route(q) => q.ask(db).await,
         }
     }
@@ -93,7 +89,6 @@ impl Ask for Query {
             Query::Info(q) => q.command(),
             Query::Bodies(q) => q.command(),
             Query::Stations(q) => q.command(),
-            Query::Factions(q) => q.command(),
             Query::Route(q) => q.command(),
         }
     }
@@ -179,6 +174,118 @@ fn first_line(message: &str) -> String {
         .unwrap_or("bad query")
         .trim_start_matches("error: ")
         .to_string()
+}
+
+/// Where the things in a table live, as far as the table has to say
+///
+/// A station listed on its system's own page has no use for a column saying
+/// which system it is in, and the same station found by a search across all
+/// of them has nothing but that column to say where it turned up. It is one
+/// list of stations either way, so the difference is passed in rather than
+/// written out as a second table with a column added.
+pub(crate) enum Home<'a> {
+    /// All of one system, whose name is left off the columns
+    Within(&'a str),
+    /// Spread across systems, each named beside what was found in it
+    Across(&'a HashMap<i64, String>),
+}
+
+impl Home<'_> {
+    /// Whether a column is needed to say which system each row is in
+    pub(crate) fn is_across(&self) -> bool {
+        matches!(self, Home::Across(_))
+    }
+
+    /// The system a row is in, where the table is saying
+    ///
+    /// A system the search did not turn up is written as a dash rather than
+    /// left out: the row is about something that is somewhere, and a blank
+    /// there reads as a thing adrift.
+    pub(crate) fn named(&self, address: i64) -> Option<String> {
+        match self {
+            Home::Within(_) => None,
+            Home::Across(systems) => Some(
+                systems.get(&address).cloned().unwrap_or_else(|| "-".into()),
+            ),
+        }
+    }
+
+    /// A name with its system's taken off the front, within one system
+    ///
+    /// Bodies are named after the system holding them, so a column of them on
+    /// a page already headed by that system spends its width saying `Col 285
+    /// Sector KR-V b4-2` over and over and its last two characters saying
+    /// which body. Across systems the whole name is what tells them apart.
+    /// The arrival star, named exactly for its system, keeps its name.
+    pub(crate) fn short(&self, name: &str) -> String {
+        match self {
+            Home::Across(_) => name.to_string(),
+            Home::Within(system) => {
+                match name.strip_prefix(*system).map(str::trim) {
+                    Some(rest) if !rest.is_empty() => rest.to_string(),
+                    _ => name.to_string(),
+                }
+            }
+        }
+    }
+
+    /// The rows in the order they are worth reading
+    ///
+    /// Within a system, outward from the arrival star: that is the order they
+    /// are flown past in and the order a system is learned in, and unscanned
+    /// distances sort last rather than at the star. Across systems the order
+    /// is the one the search came back in, which is how well each answers the
+    /// name that was typed, and nothing here knows better than that.
+    pub(crate) fn ordered<'t, T>(
+        &self,
+        things: &'t [T],
+        out: impl Fn(&T) -> Option<f32>,
+    ) -> Vec<&'t T> {
+        let mut ordered: Vec<&T> = things.iter().collect();
+        if let Home::Within(_) = self {
+            ordered.sort_by(|a, b| {
+                out(a)
+                    .unwrap_or(f32::INFINITY)
+                    .total_cmp(&out(b).unwrap_or(f32::INFINITY))
+            });
+        }
+        ordered
+    }
+}
+
+/// What the systems at `addresses` are called
+///
+/// One query for the lot of them. A search across systems comes back holding
+/// addresses and needs names to put beside them, and asking per row would be
+/// a query per station found.
+pub(crate) async fn homes(
+    db: &Database,
+    addresses: &[i64],
+) -> Result<HashMap<i64, String>> {
+    Ok(System::fetch_many(db, addresses)
+        .await?
+        .into_iter()
+        .map(|system| (system.address, system.name))
+        .collect())
+}
+
+/// A table cut to `most` rows, with a row on the end leading to the rest
+///
+/// The row that leads to the rest of them is drawn as one of the list so that
+/// the terminal UI's cursor reaches it the way it reaches the others, and so
+/// that the command showing all of them is on the screen either way.
+pub(crate) fn clipped(mut table: Table, most: usize, whole: Query) -> Table {
+    let total = table.rows.len();
+    if total <= most {
+        return table;
+    }
+
+    table.rows.truncate(most);
+    let width = table.columns.len();
+    let mut more = vec![format!("… {} more", total - most)];
+    more.resize(width, String::new());
+    table.push(Row::new(more).linking(whole));
+    table
 }
 
 /// The one system that name means
@@ -280,26 +387,42 @@ mod tests {
     /// in it, and an argument that is not a flag at all.
     fn every_shape() -> Vec<Query> {
         vec![
+            // A search with no kind named, which is a bare name and nothing
+            // else, and the same with the shared flags moved off their
+            // defaults.
+            Query::Search(Search::for_anything("Meliae")),
             Query::Search(Search {
-                system: Some("Sol".into()),
+                limit: 5,
+                count: true,
+                ..Search::for_anything("Col 285")
+            }),
+            // One of each kind, with and without the filters only it has.
+            Query::Search(Search::for_kind(Kind::System(search::Systems {
+                name: Some("Sol".into()),
                 faction: None,
                 radius: Some(50.),
-                limit: 25,
-                count: false,
-            }),
-            Query::Search(Search::by_faction("Aegis Core")),
+            }))),
+            Query::Search(Search::systems_of("Aegis Core")),
             Query::Search(Search {
-                system: Some("Col 285".into()),
-                faction: Some("Aegis Core".into()),
-                radius: None,
                 limit: 100,
-                count: true,
+                ..Search::for_kind(Kind::System(search::Systems {
+                    name: Some("Col 285".into()),
+                    faction: Some("Aegis Core".into()),
+                    radius: None,
+                }))
             }),
+            Query::Search(Search::for_kind(Kind::Faction(
+                search::Factions::named("New LHS"),
+            ))),
+            Query::Search(Search::for_kind(Kind::Station(
+                search::Stations::named("Jameson Memorial"),
+            ))),
+            Query::Search(Search::for_kind(Kind::Body(search::Bodies::named(
+                "Sol 3",
+            )))),
             Query::Info(Info::of("Alpha Centauri")),
             Query::Bodies(Bodies::of("Sol")),
             Query::Stations(Stations::of("Alpha Centauri")),
-            Query::Factions(Factions { name: "Aegis".into(), limit: 25 }),
-            Query::Factions(Factions { name: "New LHS".into(), limit: 5 }),
             Query::Route(Route {
                 start: "Wolf 397".into(),
                 end: "Meliae".into(),
@@ -345,13 +468,67 @@ mod tests {
     #[test]
     fn a_typed_line_is_the_cli() {
         let Query::Search(search) =
-            Query::parse_line("search -s Sol -r 50 -l 10").unwrap()
+            Query::parse_line("search system Sol -r 50 -l 10").unwrap()
         else {
             panic!("a search")
         };
-        assert_eq!(search.system.as_deref(), Some("Sol"));
-        assert_eq!(search.radius, Some(50.));
         assert_eq!(search.limit, 10);
+        let Some(Kind::System(systems)) = search.kind else {
+            panic!("a search of systems")
+        };
+        assert_eq!(systems.name.as_deref(), Some("Sol"));
+        assert_eq!(systems.radius, Some(50.));
+    }
+
+    /// A name with no kind in front of it is what to look for
+    ///
+    /// The commonest search there is: a name off a screen, belonging to who
+    /// knows what. Naming a kind is the narrowing, and not naming one is not
+    /// an error to be corrected with a flag.
+    #[test]
+    fn a_bare_name_is_the_search() {
+        assert_eq!(
+            Query::parse_line("search Meliae").unwrap(),
+            Query::Search(Search::for_anything("Meliae"))
+        );
+    }
+
+    /// The shared flags are taken on either side of the kind
+    ///
+    /// `--limit` means the same thing to every kind, so it is written once,
+    /// above them; and being global it can be typed wherever it falls out of
+    /// the user's hands rather than only before the kind is named.
+    #[test]
+    fn a_common_flag_goes_on_either_side() {
+        let before = Query::parse_line("search -l 5 system Sol").unwrap();
+        let after = Query::parse_line("search system Sol -l 5").unwrap();
+        assert_eq!(before, after);
+        let Query::Search(search) = before else { panic!("a search") };
+        assert_eq!(search.limit, 5);
+    }
+
+    /// A filter only one kind understands is that kind's to take
+    ///
+    /// A radius is measured from a system. There is nowhere on a faction for
+    /// it to be measured from, so `search faction` does not offer it rather
+    /// than offering it and failing.
+    #[test]
+    fn a_kinds_own_filter_stays_with_it() {
+        assert!(Query::parse_line("search system Sol -r 50").is_ok());
+        assert!(Query::parse_line("search faction Aegis -r 50").is_err());
+        assert!(Query::parse_line("search -r 50 Aegis").is_err());
+    }
+
+    /// Every kind can be narrowed to by name
+    #[test]
+    fn each_kind_is_a_word() {
+        for kind in ["system", "faction", "station", "body"] {
+            assert!(
+                Query::parse_line(&format!("search {kind} Sol")).is_ok(),
+                "search {} is not a search",
+                kind
+            );
+        }
     }
 
     /// A line that means nothing says so in one line

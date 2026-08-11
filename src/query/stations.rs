@@ -1,11 +1,14 @@
 //! Somewhere to dock in a system
 
-use super::{quoted, Ask};
+use super::{quoted, Ask, Home};
 use crate::view::{Column, Row, Table, View};
 use crate::Result;
 use galos_db::{stations::Station, Database};
 
 /// The stations of one system
+///
+/// Not a search — the question is what is in a place, not what something is
+/// called, and `galos search station <NAME>` is the other one.
 #[derive(clap::Args, Clone, Debug, PartialEq)]
 pub struct Stations {
     /// The system, whole or in part
@@ -23,10 +26,10 @@ impl Stations {
 impl Ask for Stations {
     async fn ask(&self, db: &Database) -> Result<View> {
         let system = super::locate(db, &self.system).await?;
-        let stations = table(db, system.address).await?;
-        let count = stations.rows.len();
+        let stations = Station::fetch_all(db, system.address).await?;
+        let count = stations.len();
         Ok(View::new(format!("Stations of {}", system.name))
-            .with(stations)
+            .with(table(&stations, Home::Within(&system.name)))
             .noting(format!(
                 "{count} station{}",
                 if count == 1 { "" } else { "s" }
@@ -38,32 +41,35 @@ impl Ask for Stations {
     }
 }
 
-/// The stations of a system as rows, nearest to the star first
+/// Stations as rows
 ///
-/// Shared with the system's own page, for the same reason its bodies are:
-/// what a station is worth saying about it is one decision, and a system page
-/// showing a different four columns than the stations command is two.
-pub(crate) async fn table(db: &Database, address: i64) -> Result<Table> {
-    let mut stations = Station::fetch_all(db, address).await?;
-    stations.sort_by(|a, b| {
-        a.dist_from_star_ls
-            .unwrap_or(f64::INFINITY)
-            .total_cmp(&b.dist_from_star_ls.unwrap_or(f64::INFINITY))
-    });
-
-    let mut table = Table::new([
-        Column::text("Station"),
+/// Shared by the system's own page and by the search that finds stations
+/// across systems, for the same reason the bodies are: what is worth saying
+/// about a station is one decision.
+pub(crate) fn table(stations: &[Station], home: Home) -> Table {
+    let mut columns = vec![Column::text("Station")];
+    if home.is_across() {
+        columns.push(Column::text("System"));
+    }
+    columns.extend([
         Column::text("Type"),
         Column::number("Distance"),
         Column::text("Pads"),
         Column::text("Faction"),
         Column::text("Allegiance"),
-    ])
-    .or_else("no stations on record");
+    ]);
 
-    for station in &stations {
-        table.push(Row::new([
-            station.name.clone(),
+    let mut table = Table::new(columns).or_else("no stations on record");
+    for station in home.ordered(stations, |station| {
+        station.dist_from_star_ls.map(|ls| ls as f32)
+    }) {
+        // A station is named for itself rather than for its system, so the
+        // name is left whole where a body's is trimmed.
+        let mut cells = vec![station.name.clone()];
+        if let Some(system) = home.named(station.system_address) {
+            cells.push(system);
+        }
+        cells.extend([
             super::or_dash(station.ty.clone()),
             station
                 .dist_from_star_ls
@@ -72,10 +78,11 @@ pub(crate) async fn table(db: &Database, address: i64) -> Result<Table> {
             station.landing_pads.map(pads).unwrap_or_else(|| "-".into()),
             station.faction.clone().unwrap_or_else(|| "-".into()),
             super::or_dash(station.allegiance),
-        ]));
+        ]);
+        table.push(Row::new(cells));
     }
 
-    Ok(table)
+    table
 }
 
 /// What can land, in the width of a column

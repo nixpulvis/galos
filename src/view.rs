@@ -39,8 +39,13 @@ impl View {
 
     /// Add a section to the end of the answer
     pub fn with(mut self, section: impl Into<Section>) -> Self {
-        self.body.push(section.into());
+        self.push(section);
         self
+    }
+
+    /// Add a section to a view that is being built up rather than chained
+    pub fn push(&mut self, section: impl Into<Section>) {
+        self.body.push(section.into());
     }
 
     /// Say what the answer adds up to, under it
