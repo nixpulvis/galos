@@ -117,6 +117,8 @@ const STALE: i64 = 900_000_011;
 const SAME_SECOND: i64 = 900_000_012;
 const RING: i64 = 900_000_013;
 const UNMAPPED: i64 = 900_000_014;
+const SHARED_A: i64 = 900_000_015;
+const SHARED_B: i64 = 900_000_016;
 
 /// A honk is often the first thing heard about a system, so it writes the row
 #[async_std::test]
@@ -1116,4 +1118,48 @@ async fn a_thing_once_mapped_stays_mapped() {
     let stored = held.iter().find(|r| r.id == 40).expect("on record");
     assert!(stored.mapped, "a later scan unmapped it");
     assert!(stored.discovered, "a later scan undiscovered it");
+}
+
+/// Two systems may stand at one point
+///
+/// A position is measured and arrives rounded to a thirty-second of a light
+/// year, so two of four hundred billion systems landing on one point is a thing
+/// to expect. Forbidding it cost the whole of the second message: its name, its
+/// population and everything else it said, not merely its position.
+#[async_std::test]
+async fn two_systems_may_share_a_position() {
+    let db = db!();
+    forget(SHARED_A).await;
+    forget(SHARED_B).await;
+
+    let at_the_same_point = |address, name| {
+        System::create(
+            &db,
+            address,
+            name,
+            Some(somewhere(15.0)),
+            None,
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            at(0),
+            "test",
+        )
+    };
+
+    at_the_same_point(SHARED_A, "Test Shared A")
+        .await
+        .expect("the first should write");
+    at_the_same_point(SHARED_B, "Test Shared B")
+        .await
+        .expect("the second should write, and not be refused the point");
+
+    // Both on record, each by its own address.
+    let first = System::fetch(&db, SHARED_A).await.expect("the first");
+    let second = System::fetch(&db, SHARED_B).await.expect("the second");
+    assert_eq!(first.position, second.position);
+    assert_eq!(first.population, 1, "the first lost what it said");
+    assert_eq!(second.population, 1, "the second lost what it said");
 }
