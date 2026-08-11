@@ -66,8 +66,8 @@ impl Ring {
                 orbital_inclination = $13,
                 periapsis = $14,
                 orbital_period = $15,
-                ascending_node = $16,
-                mean_anomaly = $17
+                ascending_node = COALESCE($16, rings.ascending_node),
+                mean_anomaly = COALESCE($17, rings.mean_anomaly)
             RETURNING *
             ",
             system_address,

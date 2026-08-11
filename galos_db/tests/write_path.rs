@@ -751,7 +751,10 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
         .expect("detailed scan should write");
 
     // The same body, seen from further off.
-    let basic = body(None, None);
+    let mut basic = body(None, None);
+    // As a sender that passes the game's scans on without them sends it.
+    basic.orbit.ascending_node = None;
+    basic.orbit.mean_anomaly = None;
     let returned = Body::from_journal(&db, at(60), "test", &basic, RESCAN)
         .await
         .expect("basic scan should write");
@@ -786,6 +789,18 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
         Some("thin sulphur dioxide atmosphere"),
     );
     assert_eq!(surface.materials.len(), 1, "the materials were erased");
+    // The path was sent again and the place along it was not.
+    assert_eq!(stored.orbit.semi_major_axis, 1e11);
+    assert_eq!(
+        stored.orbit.ascending_node,
+        Some(0.),
+        "the ascending node was erased",
+    );
+    assert_eq!(
+        stored.orbit.mean_anomaly,
+        Some(0.),
+        "the mean anomaly was erased",
+    );
 }
 
 /// A sparser station message does not undo a fuller one

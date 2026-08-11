@@ -143,8 +143,8 @@ impl Body {
                 orbital_period = $30,
                 rotation_period = $31,
                 axial_tilt = $32,
-                ascending_node = $33,
-                mean_anomaly = $34,
+                ascending_node = COALESCE($33, bodies.ascending_node),
+                mean_anomaly = COALESCE($34, bodies.mean_anomaly),
 
                 was_mapped = bodies.was_mapped OR $35,
                 was_discovered = bodies.was_discovered OR $36
