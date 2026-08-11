@@ -114,6 +114,7 @@ pub mod factions;
 pub mod markets;
 mod orbit;
 pub mod outfitting;
+pub mod rings;
 pub mod shipyard;
 pub mod stars;
 pub mod stations;

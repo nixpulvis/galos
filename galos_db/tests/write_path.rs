@@ -22,7 +22,7 @@ use elite_journal::body::{
     Orbit, Signal, Spin, Surface,
 };
 use elite_journal::entry::incremental::exploration::{
-    Cluster as JournalCluster, CodexEntry as JournalCodex,
+    Cluster as JournalCluster, CodexEntry as JournalCodex, Ring as JournalRing,
     SystemSignal as JournalSignal,
 };
 use elite_journal::entry::incremental::travel::ApproachSettlement;
@@ -38,8 +38,8 @@ use elite_journal::Allegiance;
 use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
     clusters::Cluster, codex_entries::CodexEntry, outfitting::Outfitting,
-    shipyard::Shipyard, stations::Station, system_signals::SystemSignal,
-    systems::System, Database,
+    rings::Ring, shipyard::Shipyard, stations::Station,
+    system_signals::SystemSignal, systems::System, Database,
 };
 use std::collections::BTreeMap;
 
@@ -96,6 +96,7 @@ const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
 const STALE: i64 = 900_000_011;
 const SAME_SECOND: i64 = 900_000_012;
+const RING: i64 = 900_000_013;
 
 /// A honk is often the first thing heard about a system, so it writes the row
 #[async_std::test]
@@ -953,4 +954,85 @@ async fn two_messages_in_one_second_both_land() {
         Some(Allegiance::Empire),
         "the second message in the second did not land",
     );
+}
+
+/// A ring is kept where its belt clusters can find it
+///
+/// Every belt cluster on record names a ring as its nearest ancestor, by the id
+/// this table is keyed on. Taken from the feed, along with a cluster lying in
+/// it, so the walk from the cluster back to the star has something behind every
+/// number.
+#[async_std::test]
+async fn a_ring_is_kept_where_its_clusters_can_find_it() {
+    let db = db!();
+
+    System::set_body_counts(
+        &db,
+        RING,
+        "Test Ring",
+        Some(somewhere(13.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let ring = |ty: &str, id: i16| {
+        let mut parent = BTreeMap::new();
+        parent.insert(ty.to_owned(), id);
+        parent
+    };
+    let scanned = JournalRing {
+        name: "Test Ring D 12 A Ring".into(),
+        id: 65,
+        parents: vec![ring("Planet", 64), ring("Star", 6)],
+        distance_from_arrival: Some(377022.12),
+        orbit: Orbit {
+            semi_major_axis: 36267684.0,
+            eccentricity: 0.,
+            orbital_inclination: 0.,
+            periapsis: 0.,
+            orbital_period: 15402.967,
+            ascending_node: 0.,
+            mean_anomaly: 166.00566,
+        },
+        discovery: Discovery { discovered: false, mapped: false },
+    };
+
+    Ring::from_journal(&db, at(0), "test", &scanned, RING)
+        .await
+        .expect("ring should write");
+
+    // The cluster that lies in it, naming the ring by the id above.
+    let cluster = JournalCluster {
+        name: "Test Ring D 12 A Belt Cluster 1".into(),
+        id: 70,
+        parents: vec![ring("Ring", 65), ring("Planet", 64)],
+        distance_from_arrival: Some(377022.0),
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+    Cluster::from_journal(&db, at(0), "test", &cluster, RING)
+        .await
+        .expect("cluster should write");
+
+    let held = Ring::fetch_all(&db, RING).await.expect("should read");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].id, 65);
+    assert_eq!(held[0].orbit.orbital_period, 15402.967);
+    // The body it goes round, not a ring: that is what tells it from a cluster.
+    assert_eq!(
+        held[0].parent_types.first().map(String::as_str),
+        Some("Planet")
+    );
+
+    // And the cluster's nearest ancestor is the ring just written.
+    let clusters = Cluster::fetch_all(&db, RING).await.expect("should read");
+    let lying_in = clusters
+        .iter()
+        .find(|c| c.id == 70)
+        .expect("the cluster should be on record");
+    assert_eq!(lying_in.parent_ids.first(), Some(&65));
+    assert_eq!(lying_in.parent_ids.first(), Some(&held[0].id));
 }

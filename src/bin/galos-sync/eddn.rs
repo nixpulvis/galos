@@ -14,8 +14,9 @@ use elite_journal::system::System as JournalSystem;
 use galos_db::{
     barycenters::Barycenter, black_market::BlackMarket, bodies::Body,
     body_signals::BodySignal, clusters::Cluster, codex_entries::CodexEntry,
-    markets::Market, outfitting::Outfitting, shipyard::Shipyard, stars::Star,
-    stations::Station, system_signals::SystemSignal, systems::System, Database,
+    markets::Market, outfitting::Outfitting, rings::Ring, shipyard::Shipyard,
+    stars::Star, stations::Station, system_signals::SystemSignal,
+    systems::System, Database,
 };
 use std::time::Duration;
 use structopt::StructOpt;
@@ -327,12 +328,21 @@ fn process_message(
                                 }
                             }
                         }
-                        // Read so that the system the scan names is recorded,
-                        // and nowhere to put yet. A ring belongs beside
-                        // `clusters` for the reason a cluster belongs beside
-                        // `bodies`, and has none of a cluster's columns.
                         ScanTarget::Ring(ring) => {
-                            debug!(ring = %ring.name, "scan")
+                            match Ring::from_journal(
+                                db,
+                                entry.timestamp,
+                                user,
+                                &ring,
+                                scan.system_address,
+                            )
+                            .await
+                            {
+                                Ok(_) => info!(ring = %ring.name, "scan"),
+                                Err(err) => {
+                                    warn!(ring = %ring.name, error = %err, "scan")
+                                }
+                            }
                         }
                     }
                 }
