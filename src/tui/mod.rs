@@ -6,8 +6,8 @@
 //! being touched: a new command answers with a view like any other, and its
 //! rows lead wherever it says they lead.
 //!
-//! The command bar is the CLI's own parser, so `search -s Sol -r 50` typed
-//! here is `galos search -s Sol -r 50` typed at a shell, down to the error
+//! The command bar is the CLI's own parser, so `search system Sol -r 50`
+//! typed here is `galos search system Sol -r 50` at a shell, down to the error
 //! message when it is typed wrong. And every row shows the command that would
 //! have asked for it, which makes the interactive tool the fastest way to
 //! learn the batch one.
@@ -450,7 +450,7 @@ impl Page {
             .with(commands)
             .with(Section::Note(
                 "Typed here or passed to `galos` at a shell, they are the \
-                 same commands: `search -s Sol -r 50`."
+                 same commands: `search system Sol -r 50`."
                     .into(),
             ))
             .noting("press : to ask something");

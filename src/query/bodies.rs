@@ -1,11 +1,14 @@
 //! What is in orbit around a system
 
-use super::{quoted, Ask};
+use super::{quoted, Ask, Home};
 use crate::view::{Column, Row, Table, View};
 use crate::Result;
-use galos_db::{bodies::Body, systems::System, Database};
+use galos_db::{bodies::Body, Database};
 
 /// The bodies of one system
+///
+/// Not a search — the question is what is in a place, not what something is
+/// called, and `galos search body <NAME>` is the other one.
 #[derive(clap::Args, Clone, Debug, PartialEq)]
 pub struct Bodies {
     /// The system, whole or in part
@@ -23,11 +26,14 @@ impl Bodies {
 impl Ask for Bodies {
     async fn ask(&self, db: &Database) -> Result<View> {
         let system = super::locate(db, &self.system).await?;
-        let bodies = table(db, &system).await?;
-        let count = bodies.rows.len();
-        Ok(View::new(format!("Bodies of {}", system.name)).with(bodies).noting(
-            format!("{count} bod{}", if count == 1 { "y" } else { "ies" }),
-        ))
+        let bodies = Body::fetch_all(db, system.address).await?;
+        let count = bodies.len();
+        Ok(View::new(format!("Bodies of {}", system.name))
+            .with(table(&bodies, Home::Within(&system.name)))
+            .noting(format!(
+                "{count} bod{}",
+                if count == 1 { "y" } else { "ies" }
+            )))
     }
 
     fn command(&self) -> String {
@@ -35,41 +41,37 @@ impl Ask for Bodies {
     }
 }
 
-/// The bodies of a system as rows, arrival star first
+/// Bodies as rows
 ///
-/// Shared with the system's own page, which shows the first few of these
-/// under the same headings. Two lists of the same things with different
-/// columns is the thing the whole arrangement exists to avoid, and a system
-/// page is where it would happen first.
+/// Shared by the system's own page, which shows the first few of these, and
+/// by the search that finds bodies across systems. Three lists of the same
+/// things with different columns is the thing the whole arrangement exists to
+/// avoid, and bodies are where it would happen first.
 ///
 /// The rows lead nowhere. A body has a page's worth to say about it —
 /// atmosphere, materials, the orbit it keeps — and nothing asks for one yet,
 /// so they are left unlinked rather than pointed somewhere approximate: what
 /// the cursor stops on is what can be followed.
-pub(crate) async fn table(db: &Database, system: &System) -> Result<Table> {
-    let mut bodies = Body::fetch_all(db, system.address).await?;
-    // Outward from the arrival star, which is the order they are flown past
-    // in and the order a system is learned in. Unscanned distances sort last
-    // rather than at the star.
-    bodies.sort_by(|a, b| {
-        a.distance_from_arrival
-            .unwrap_or(f32::INFINITY)
-            .total_cmp(&b.distance_from_arrival.unwrap_or(f32::INFINITY))
-    });
-
-    let mut table = Table::new([
-        Column::text("Body"),
+pub(crate) fn table(bodies: &[Body], home: Home) -> Table {
+    let mut columns = vec![Column::text("Body")];
+    if home.is_across() {
+        columns.push(Column::text("System"));
+    }
+    columns.extend([
         Column::text("Type"),
         Column::text("Class"),
         Column::number("Distance"),
         Column::number("Gravity"),
         Column::number("Temp"),
-    ])
-    .or_else("no bodies scanned");
+    ]);
 
-    for body in &bodies {
-        table.push(Row::new([
-            short(&body.name, &system.name),
+    let mut table = Table::new(columns).or_else("no bodies scanned");
+    for body in home.ordered(bodies, |body| body.distance_from_arrival) {
+        let mut cells = vec![home.short(&body.name)];
+        if let Some(system) = home.named(body.system_address) {
+            cells.push(system);
+        }
+        cells.extend([
             super::or_dash(body.body_type.clone()),
             if body.planet_class.is_empty() {
                 "-".into()
@@ -83,21 +85,9 @@ pub(crate) async fn table(db: &Database, system: &System) -> Result<Table> {
             body.temperature
                 .map(|k| format!("{k:.0} K"))
                 .unwrap_or_else(|| "-".into()),
-        ]));
+        ]);
+        table.push(Row::new(cells));
     }
 
-    Ok(table)
-}
-
-/// A body's name with its system's taken off the front
-///
-/// Bodies are named after the system they are in, so a column of them in a
-/// page already headed by that system spends its width saying `Col 285 Sector
-/// KR-V b4-2` over and over and its last two characters saying which body.
-/// The arrival star, which is named exactly for its system, keeps its name.
-fn short(body: &str, system: &str) -> String {
-    match body.strip_prefix(system).map(str::trim) {
-        Some(rest) if !rest.is_empty() => rest.to_string(),
-        _ => body.to_string(),
-    }
+    table
 }

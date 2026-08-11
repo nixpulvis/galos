@@ -1,5 +1,5 @@
 use super::{composition, Body, Parent, Surface};
-use crate::{Database, Error};
+use crate::{escaped, Database, Error};
 use chrono::NaiveDateTime;
 use elite_journal::body::{Discovery, Material, Orbit, Spin};
 
@@ -361,6 +361,91 @@ impl Body {
             ORDER BY b.name
             "#,
             name
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// The bodies whose name holds `query`, best first
+    ///
+    /// Ordered the way [`System::search_by_name`] is, and for the same
+    /// reasons: an exact name leads, then a name starting with what was
+    /// typed, then the rest alphabetically.
+    ///
+    /// Bounded, unlike [`Self::fetch_like_name`] beside it. A body is named
+    /// after the system holding it, so a fragment of a system name matches
+    /// every body of every system holding it — `%col 285%` reaches millions
+    /// of rows, where the name it was typed to find is in the first few.
+    ///
+    /// [`System::search_by_name`]: crate::systems::System::search_by_name
+    pub async fn search_by_name(
+        db: &Database,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<Self>, Error> {
+        let query = escaped(query);
+        let rows = sqlx::query_as!(
+            Row,
+            r#"
+            SELECT
+                b.system_address,
+                b.id,
+                b.name,
+                b.parent_ids,
+                b.parent_types,
+                b.body_type,
+                b.distance_from_arrival,
+                b.updated_at,
+                b.updated_by,
+                b.planet_class,
+                b.tidal_lock,
+                b.landable,
+                b.terraform_state,
+                b.atmosphere,
+                b.atmosphere_type,
+                b.volcanism,
+                b.mass,
+                b.radius,
+                b.gravity,
+                b.temperature,
+                b.surface_pressure,
+                b.composition_ice,
+                b.composition_rock,
+                b.composition_metal,
+                b.semi_major_axis,
+                b.eccentricity,
+                b.orbital_inclination,
+                b.periapsis,
+                b.orbital_period,
+                b.rotation_period,
+                b.axial_tilt,
+                b.ascending_node,
+                b.mean_anomaly,
+                b.was_mapped,
+                b.was_discovered,
+                COALESCE(ARRAY_AGG(m.name ORDER BY m.name)
+                    FILTER (WHERE m.name IS NOT NULL), '{}')
+                    AS "material_names!: Vec<String>",
+                COALESCE(ARRAY_AGG(m.percent ORDER BY m.name)
+                    FILTER (WHERE m.name IS NOT NULL), '{}')
+                    AS "material_percents!: Vec<f64>"
+            FROM bodies b
+            LEFT JOIN body_materials m
+                ON m.system_address = b.system_address AND m.body_id = b.id
+            WHERE b.name ILIKE $1
+            GROUP BY b.system_address, b.id
+            ORDER BY
+                (b.name ILIKE $2) DESC,
+                (b.name ILIKE $3) DESC,
+                b.name
+            LIMIT $4
+            "#,
+            format!("%{query}%"),
+            query,
+            format!("{query}%"),
+            limit,
         )
         .fetch_all(&db.pool)
         .await?;

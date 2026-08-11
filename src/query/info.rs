@@ -1,9 +1,12 @@
 //! Everything on record about one system
 
-use super::{quoted, Ask, Query};
+use super::{quoted, Ask, Home, Query, Search};
 use crate::view::{Column, Fields, Row, Section, Table, View};
 use crate::{Error, Result};
-use galos_db::{factions::SystemFaction, systems::System, Database};
+use galos_db::{
+    bodies::Body, factions::SystemFaction, stations::Station, systems::System,
+    Database,
+};
 
 /// How much of a system's bodies and stations a system's own page shows
 ///
@@ -78,7 +81,7 @@ impl Info {
         let holding =
             System::search_by_name(db, &self.system, None, 25).await?;
         Ok(View::new(format!("Systems matching {}", self.system))
-            .with(super::search::table(holding.iter(), None))
+            .with(super::search::system::table(holding.iter(), None))
             .noting("several systems hold that name; pick one"))
     }
 
@@ -119,7 +122,7 @@ impl Info {
                 ])
                 // Following a faction asks where else it is, which is the
                 // question a name in this list raises.
-                .linking(Query::Search(super::Search::by_faction(name))),
+                .linking(Query::Search(Search::systems_of(name))),
             );
         }
         Ok(Some(table.into()))
@@ -131,9 +134,9 @@ impl Info {
         db: &Database,
         system: &System,
     ) -> Result<Option<Section>> {
-        let stations = super::stations::table(db, system.address).await?;
+        let stations = Station::fetch_all(db, system.address).await?;
         Ok(clipped(
-            stations,
+            super::stations::table(&stations, Home::Within(&system.name)),
             "Stations",
             Query::Stations(super::Stations::of(&system.name)),
         ))
@@ -145,9 +148,9 @@ impl Info {
         db: &Database,
         system: &System,
     ) -> Result<Option<Section>> {
-        let bodies = super::bodies::table(db, system).await?;
+        let bodies = Body::fetch_all(db, system.address).await?;
         Ok(clipped(
-            bodies,
+            super::bodies::table(&bodies, Home::Within(&system.name)),
             "Bodies",
             Query::Bodies(super::Bodies::of(&system.name)),
         ))
@@ -159,27 +162,17 @@ impl Info {
 /// Nothing at all where there are no rows: a system with no stations on
 /// record says so by not having a stations heading, which is shorter than
 /// saying it and reads the same.
-fn clipped(mut table: Table, caption: &str, whole: Query) -> Option<Section> {
+fn clipped(table: Table, caption: &str, whole: Query) -> Option<Section> {
     let total = table.rows.len();
     if total == 0 {
         return None;
     }
 
     let caption = if total > PREVIEW {
-        table.rows.truncate(PREVIEW);
         format!("{caption} ({PREVIEW} of {total})")
     } else {
         caption.to_string()
     };
 
-    // The row that leads to the rest of them, drawn as one of the list so
-    // that the terminal UI's cursor reaches it the way it reaches the others.
-    if total > PREVIEW {
-        let width = table.columns.len();
-        let mut more = vec![format!("… {} more", total - PREVIEW)];
-        more.resize(width, String::new());
-        table.push(Row::new(more).linking(whole));
-    }
-
-    Some(table.captioned(caption).into())
+    Some(super::clipped(table, PREVIEW, whole).captioned(caption).into())
 }
