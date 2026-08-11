@@ -79,14 +79,14 @@ impl Contents {
         self.revision
     }
 
-    /// Take in what the database said, if it said anything new
+    /// Hold what the database said, if it said anything new
     ///
     /// The rows are compared rather than taken as fresh because the poll asks
     /// whether anything changed and the answer is usually no. Everything
     /// inside a system is despawned and drawn again from scratch when what is
     /// held changes, so an answer repeating the last one has to leave both the
     /// rows and the revision exactly as they were.
-    pub(super) fn know(
+    pub(super) fn hold(
         &mut self,
         stars: Vec<DbStar>,
         bodies: Vec<DbBody>,
@@ -109,8 +109,8 @@ impl Contents {
     ///
     /// What the shell asks before it begins to clear: an answer of nothing is
     /// still an answer, and a system with no bodies on record is one the map
-    /// knows about rather than one it has yet to ask after.
-    pub fn known(&self, address: i64) -> bool {
+    /// holds rather than one it has yet to ask after.
+    pub fn holds(&self, address: i64) -> bool {
         self.of == Some(address)
             && matches!(self.state, FetchState::Known { .. })
     }
@@ -712,7 +712,7 @@ mod tests {
     }
 
     /// Contents that came back holding `bodies`
-    fn known(bodies: Vec<DbBody>) -> Contents {
+    fn holding(bodies: Vec<DbBody>) -> Contents {
         Contents {
             of: Some(1),
             revision: 0,
@@ -732,13 +732,13 @@ mod tests {
     /// Nor has one that came back with nothing in it
     #[test]
     fn a_system_with_nothing_on_record_has_no_extent() {
-        assert_eq!(known(vec![]).extent(), None);
+        assert_eq!(holding(vec![]).extent(), None);
     }
 
     /// The extent reaches the furthest body, not the last one read
     #[test]
     fn the_extent_reaches_the_outermost_body() {
-        let contents = known(vec![body(1e11), body(5e12), body(3e11)]);
+        let contents = holding(vec![body(1e11), body(5e12), body(3e11)]);
 
         assert_eq!(contents.extent(), Some(5e12));
     }
@@ -753,7 +753,7 @@ mod tests {
         let mut eccentric = body(2e12);
         eccentric.orbit.eccentricity = 0.5;
 
-        assert_eq!(known(vec![eccentric]).extent(), Some(3e12));
+        assert_eq!(holding(vec![eccentric]).extent(), Some(3e12));
     }
 
     /// A body's own size counts, so the shell holds the whole of it
@@ -762,7 +762,7 @@ mod tests {
         let mut wide = body(5e12);
         wide.radius = 7e7;
 
-        assert_eq!(known(vec![wide]).extent(), Some(5e12 + 7e7));
+        assert_eq!(holding(vec![wide]).extent(), Some(5e12 + 7e7));
     }
 
     /// A body sitting at the centre does not make an extent of nothing
@@ -772,7 +772,7 @@ mod tests {
     /// about how far it reaches.
     #[test]
     fn a_body_at_the_centre_leaves_the_extent_unsaid() {
-        assert_eq!(known(vec![body(0.)]).extent(), None);
+        assert_eq!(holding(vec![body(0.)]).extent(), None);
     }
 
     /// The extent is measured from the middle, not from what a thing goes round
@@ -842,7 +842,7 @@ mod tests {
         let mut escaping = body(1e12);
         escaping.orbit.eccentricity = 1.;
 
-        let extent = known(vec![escaping]).extent().unwrap();
+        let extent = holding(vec![escaping]).extent().unwrap();
         assert!(extent.is_finite(), "the extent ran away to {extent}");
         assert!(extent < 2e12, "the extent reached {extent}");
     }
@@ -856,10 +856,10 @@ mod tests {
     #[test]
     fn a_poll_finding_nothing_new_moves_nothing() {
         let mut contents = Contents::default();
-        contents.know(vec![], vec![body(1e9)], vec![]);
+        contents.hold(vec![], vec![body(1e9)], vec![]);
 
         let first = contents.revision();
-        contents.know(vec![], vec![body(1e9)], vec![]);
+        contents.hold(vec![], vec![body(1e9)], vec![]);
 
         assert_eq!(
             contents.revision(),
@@ -877,12 +877,12 @@ mod tests {
     #[test]
     fn a_body_arriving_mid_scan_is_taken_in() {
         let mut contents = Contents::default();
-        contents.know(vec![], vec![body(1e9)], vec![]);
+        contents.hold(vec![], vec![body(1e9)], vec![]);
         let first = contents.revision();
 
         let mut arriving = body(2e9);
         arriving.id = 2;
-        contents.know(vec![], vec![body(1e9), arriving], vec![]);
+        contents.hold(vec![], vec![body(1e9), arriving], vec![]);
 
         assert_ne!(
             contents.revision(),
