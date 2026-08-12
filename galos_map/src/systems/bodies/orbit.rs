@@ -234,12 +234,16 @@ impl Orbits {
     /// astronomy would recognise.
     ///
     /// Nothing where nothing goes round anything, which is a lone star.
-    pub fn longest(&self) -> Option<f64> {
+    ///
+    /// Answers which body it is as well as how long it takes, so that a control
+    /// reading a span of fifteen thousand years can say what set it. In Sol that
+    /// is Persephone, twenty seven times slower than the next thing out.
+    pub fn slowest(&self) -> Option<(i16, f64)> {
         self.0
-            .values()
-            .filter_map(|(_, orbit)| orbit.period)
-            .filter(|period| *period > 0.)
-            .max_by(f64::total_cmp)
+            .iter()
+            .filter_map(|(id, (_, orbit))| Some((*id, orbit.period?)))
+            .filter(|(_, period)| *period > 0.)
+            .max_by(|(_, one), (_, other)| one.total_cmp(other))
     }
 
     /// What `id` goes round, if it is held and goes round anything
@@ -609,7 +613,7 @@ mod tests {
         orbits.insert(2, Some(1), coming_round_in(1e7));
         orbits.insert(3, Some(1), coming_round_in(1e6));
 
-        assert_eq!(orbits.longest(), Some(1e7));
+        assert_eq!(orbits.slowest(), Some((2, 1e7)));
     }
 
     /// A lone star has no year, nothing there going round anything
@@ -621,6 +625,6 @@ mod tests {
         let mut orbits = Orbits::default();
         orbits.insert(1, None, Orbit::still());
 
-        assert_eq!(orbits.longest(), None);
+        assert_eq!(orbits.slowest(), None);
     }
 }

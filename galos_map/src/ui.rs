@@ -2580,61 +2580,79 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     response.gained_focus()
 }
 
-/// Move a system through its own year
+/// Move a system through one turn of its slowest body
 ///
-/// Read as a fraction of that year rather than as a span of time, because a
-/// system has no span that suits all of it: the slowest body of one takes a
-/// median 993 times as long to come round as its fastest. A whole turn is one
-/// orbit of the slowest, so everything comes round at least once along the rail
-/// and nothing needs a different rail to be watched on.
+/// The rail ends at exactly that turn, so every body comes round at least once
+/// along it. Nothing shorter is true of all of them: the slowest body of a system
+/// takes a median 993 times as long to come round as its fastest, and in Sol it
+/// is four million times, Persephone against Enceladus.
 ///
-/// The year itself is said beside the rail. It is a different length in every
-/// system, so a bare percentage would be a number that quietly changed what it
-/// meant each time the camera moved on.
+/// Which is why the rail is logarithmic. Laid out evenly in time, the whole of
+/// the inner system would live in the first pixel and every drag past it would
+/// throw the inner bodies through thousands of turns. Logarithmic, a pixel is
+/// minutes at one end and centuries at the other, and every body has a stretch
+/// of rail where it moves a step at a time.
+///
+/// What sets the span is said, and named. Fifteen thousand years is a strange
+/// span for a system read as nine planets, and knowing it belongs to one far
+/// flung object is the difference between a control that looks broken and one
+/// that is telling the truth.
 ///
 /// Nothing to set where nothing goes round anything, which is a lone star. The
 /// rail is drawn all the same and does nothing, a control that comes and goes
 /// being harder to find than one that is plainly not offered.
 fn year_control(ui: &mut Ui, phase: &mut Phase, contents: &Contents) {
-    let year = contents.orbits().longest();
+    let orbits = contents.orbits();
+    let turn = orbits.slowest();
 
     ui.add_space(FIELD_GAP);
-    ui.label("Through The System Year");
+    ui.label("Round The Slowest Orbit");
 
-    let mut through = phase.0 * 100.;
+    let year = turn.map_or(1., |(_, year)| year);
+    let mut elapsed = phase.0 * year;
     fill_width(ui);
     let moved = ui
-        .add_enabled_ui(year.is_some(), |ui| {
-            ui.horizontal(|ui| {
-                let rail = ui.add(
-                    egui::Slider::new(&mut through, 0.0..=100.)
-                        .show_value(false),
-                );
-                let typed = value_box(
-                    ui,
-                    egui::DragValue::new(&mut through)
-                        .range(0.0..=100.)
-                        .suffix("%"),
-                );
-                rail | typed
-            })
-            .inner
+        .add_enabled_ui(turn.is_some(), |ui| {
+            ui.add(
+                egui::Slider::new(&mut elapsed, 0.0..=year)
+                    .logarithmic(true)
+                    .smallest_positive(60.)
+                    .custom_formatter(|secs, _| lasting(secs as f32)),
+            )
         })
         .inner;
 
     // Only on a change. Writing every frame would mark the phase changed every
     // frame and have every body in the system put back where it already stands.
     if moved.changed() {
-        phase.0 = through / 100.;
+        phase.0 = elapsed / year;
     }
 
     ui.label(
-        egui::RichText::new(match year {
-            Some(year) => format!("A year here is {}", lasting(year as f32)),
+        egui::RichText::new(match turn {
+            Some((id, year)) => format!(
+                "One turn of {} is {}",
+                named_body(contents, id),
+                lasting(year as f32),
+            ),
             None => "Nothing here goes round anything".to_owned(),
         })
         .weak(),
     );
+}
+
+/// What the thing with `id` inside the held system is called
+///
+/// A barycenter has no name of its own, and is what a close pair of stars goes
+/// round, so it is said as what it is rather than left blank.
+fn named_body(contents: &Contents, id: i16) -> String {
+    if let Some(body) = contents.body(id) {
+        return body.name.clone();
+    }
+    if let Some(star) = contents.star(id) {
+        return star.name.clone();
+    }
+    "a shared centre".to_owned()
 }
 
 /// Ask for a filter by how lately a system was heard from

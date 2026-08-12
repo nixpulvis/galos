@@ -711,7 +711,7 @@ const ATMOSPHERE: f64 = 101_325.;
 /// Seconds in a day
 pub(crate) const DAY: f64 = 86_400.;
 
-/// Days in a year, for reading a span too long to say in days
+/// Days in an Earth year, for reading a span too long to say in days
 const YEAR: f64 = 365.25;
 
 /// Everything the map knows about one star
@@ -876,7 +876,11 @@ pub(crate) fn lasting(seconds: f32) -> String {
     // slowest body of a system takes a median eighteen years to come round, and
     // six thousand days is a number nobody reads either.
     if days >= YEAR {
-        format!("{:.1} years", days / YEAR)
+        // Earth years, said so. Every unit here is Earth's and the rest go
+        // unremarked, but a year is the one that reads as a thing a system might
+        // have of its own, and beside an orbit measured in them it would be
+        // saying that an orbit lasts an orbit.
+        format!("{:.1} Earth years", days / YEAR)
     } else if days >= 1. {
         format!("{days:.1} days")
     } else {
@@ -1448,7 +1452,10 @@ mod tests {
         assert_eq!(lasting(0.), UNKNOWN);
         // The long end, which a system's outermost bodies live at. Six
         // thousand days is as unreadable as eight digits of seconds.
-        assert_eq!(lasting((18.5 * 365.25 * DAY as f64) as f32), "18.5 years");
+        assert_eq!(
+            lasting((18.5 * 365.25 * DAY as f64) as f32),
+            "18.5 Earth years",
+        );
     }
 
     /// The names down the left of a panel are written as brightly as a header

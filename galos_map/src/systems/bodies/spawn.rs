@@ -599,7 +599,7 @@ fn draw(
 
     let grid = space::system_grid();
     let orbits = contents.orbits();
-    let clock = phase.elapsed(orbits.longest());
+    let clock = phase.elapsed(orbits.slowest().map(|(_, year)| year));
     let mut commands = commands.entity(entity);
     commands.insert(grid.clone());
     // Down into the system with them.
@@ -1435,7 +1435,7 @@ fn wind(
     }
 
     let orbits = contents.orbits();
-    let clock = phase.elapsed(orbits.longest());
+    let clock = phase.elapsed(orbits.slowest().map(|(_, year)| year));
     let middle = contents.middle(&orbits, clock);
 
     let put = |grid: &Grid,
