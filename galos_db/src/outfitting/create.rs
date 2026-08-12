@@ -30,6 +30,14 @@ impl Outfitting {
         )
         .await?;
 
+        // Read as the whole of what is stocked, so an older message replaces a
+        // newer list rather than adding to it. The market itself is already
+        // placed, and settled that on its own stamp.
+        if newer_on_record(&mut tx, outfitting.market_id, timestamp).await? {
+            tx.commit().await?;
+            return Ok(());
+        }
+
         sqlx::query!(
             "DELETE FROM outfitting WHERE market_id = $1",
             outfitting.market_id,
@@ -67,4 +75,24 @@ impl Outfitting {
 
         Ok(())
     }
+}
+
+/// Whether a market's modules were last written after `timestamp`
+///
+/// Asked of the rows themselves rather than of the market, whose stamp is the
+/// newest of any of the four kinds of trade message and so says nothing about
+/// how fresh the bay's list is.
+async fn newer_on_record(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    market_id: i64,
+    timestamp: DateTime<Utc>,
+) -> Result<bool, Error> {
+    let listed = sqlx::query_scalar!(
+        "SELECT MAX(listed_at) FROM outfitting WHERE market_id = $1",
+        market_id,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(listed.is_some_and(|listed| listed > timestamp.naive_utc()))
 }

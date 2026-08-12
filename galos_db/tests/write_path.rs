@@ -27,8 +27,8 @@ use elite_journal::entry::incremental::exploration::{
 };
 use elite_journal::entry::incremental::travel::ApproachSettlement;
 use elite_journal::entry::market::{
-    BlackMarket as JournalBlackMarket, Module, Outfitting as JournalOutfitting,
-    PricedModule, Shipyard as JournalShipyard,
+    BlackMarket as JournalBlackMarket, Market as JournalMarket, Module,
+    Outfitting as JournalOutfitting, PricedModule, Shipyard as JournalShipyard,
 };
 use elite_journal::station::{
     LandingPads, Service, Station as JournalStation, StationType,
@@ -37,9 +37,9 @@ use elite_journal::system::Coordinate;
 use elite_journal::Allegiance;
 use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
-    clusters::Cluster, codex_entries::CodexEntry, outfitting::Outfitting,
-    rings::Ring, shipyard::Shipyard, stars::Star, stations::Station,
-    system_signals::SystemSignal, systems::System, Database,
+    clusters::Cluster, codex_entries::CodexEntry, markets::Market,
+    outfitting::Outfitting, rings::Ring, shipyard::Shipyard, stars::Star,
+    stations::Station, system_signals::SystemSignal, systems::System, Database,
 };
 use std::collections::BTreeMap;
 
@@ -72,6 +72,28 @@ async fn forget(address: i64) {
             if table == "systems" { "address" } else { "system_address" },
         ))
         .bind(address)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("{} should be clearable: {}", table, e));
+    }
+}
+
+/// Forget a market, for the reason [`forget`] exists
+///
+/// Keyed by its own id rather than by a system, so there is no reaching these
+/// through the address a test owns.
+async fn forget_market(id: i64) {
+    let Ok(url) = std::env::var("DATABASE_URL") else { return };
+    let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
+    for table in
+        ["commodities", "outfitting", "shipyard", "black_market", "markets"]
+    {
+        sqlx::query(&format!(
+            "DELETE FROM {} WHERE {} = $1",
+            table,
+            if table == "markets" { "id" } else { "market_id" },
+        ))
+        .bind(id)
         .execute(&pool)
         .await
         .unwrap_or_else(|e| panic!("{} should be clearable: {}", table, e));
@@ -124,6 +146,10 @@ const LATE_SIGNAL: i64 = 900_000_021;
 const UNMAPPED: i64 = 900_000_014;
 const SHARED_A: i64 = 900_000_015;
 const SHARED_B: i64 = 900_000_016;
+
+/// A market is keyed by its own id, so these stand apart from the addresses
+const CARRIER_MARKET: i64 = 128_900_001;
+const LATE_STOCK: i64 = 128_900_002;
 
 /// A honk is often the first thing heard about a system, so it writes the row
 #[async_std::test]
@@ -1515,4 +1541,89 @@ async fn the_later_reading_of_a_signal_wins() {
     let signal = stored.first().expect("on record");
     assert_eq!(signal.count, 9, "the older reading won");
     assert_eq!(signal.updated_by, "newer", "the older sender won");
+}
+
+/// A message delivered late does not put a carrier back where it was
+///
+/// A fleet carrier jumps, and one of them turns up in this database under three
+/// systems in an hour. Where it is now is what the newest message about it says,
+/// and a message naming the system it has already left is not that.
+#[async_std::test]
+async fn a_late_message_does_not_put_a_carrier_back() {
+    let db = db!();
+    forget_market(CARRIER_MARKET).await;
+
+    let docked_at = |system: &str| JournalMarket {
+        system_name: system.into(),
+        station_name: "X9K-45Z".into(),
+        market_id: CARRIER_MARKET,
+        commodities: vec![],
+    };
+
+    Market::from_journal(&db, at(600), &docked_at("Test Carrier Here"))
+        .await
+        .expect("the newer message should write");
+
+    // The system it jumped out of, named by a sender catching up.
+    let placed =
+        Market::from_journal(&db, at(0), &docked_at("Test Carrier Gone"))
+            .await
+            .expect("the late message should write");
+
+    assert_eq!(
+        placed.system_name, "TEST CARRIER HERE",
+        "the carrier was put back where it had been",
+    );
+}
+
+/// A list of stock delivered late does not replace a newer one
+///
+/// Outfitting, the shipyard and the commodities are each read as the whole of
+/// what is traded, so an older message does not add to the list -- it clears it
+/// and writes prices the station has since moved on from.
+#[async_std::test]
+async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
+    let db = db!();
+    forget_market(LATE_STOCK).await;
+
+    let priced = |name: &str, price: i64| {
+        Module::Priced(PricedModule {
+            id: 1,
+            name: name.into(),
+            buy_price: price,
+            buy_merc_coins_price: 0,
+        })
+    };
+    let stocking = |module| JournalOutfitting {
+        system_name: "Test Late Stock".into(),
+        station_name: "Test Late Bay".into(),
+        market_id: LATE_STOCK,
+        modules: vec![module],
+    };
+
+    Outfitting::from_journal(
+        &db,
+        at(600),
+        &stocking(priced("Int_Engine_B", 250)),
+    )
+    .await
+    .expect("the newer message should write");
+
+    Outfitting::from_journal(
+        &db,
+        at(0),
+        &stocking(priced("Int_Engine_A", 100)),
+    )
+    .await
+    .expect("the late message should write");
+
+    let stocked = Outfitting::fetch_all(&db, LATE_STOCK)
+        .await
+        .expect("outfitting should read");
+
+    assert_eq!(stocked.len(), 1, "the late message rewrote the bay");
+    assert_eq!(
+        stocked[0].module_name, "Int_Engine_B",
+        "the late message rewrote the bay",
+    );
 }
