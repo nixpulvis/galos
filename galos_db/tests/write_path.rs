@@ -117,6 +117,7 @@ const STALE: i64 = 900_000_011;
 const SAME_SECOND: i64 = 900_000_012;
 const RING: i64 = 900_000_013;
 const ORPHANED: i64 = 900_000_017;
+const PLACED: i64 = 900_000_018;
 const UNMAPPED: i64 = 900_000_014;
 const SHARED_A: i64 = 900_000_015;
 const SHARED_B: i64 = 900_000_016;
@@ -938,6 +939,66 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
         "a stale message undid the newer one",
     );
     assert_eq!(stored.updated_at, at(600), "the older time was written");
+}
+
+/// A settlement approached again keeps where it stands
+///
+/// A latitude and a longitude are the one thing a surface station has that an
+/// orbital does not, and they are optional on the event that reports them. An
+/// approach that leaves them out says nothing about where the place is.
+#[async_std::test]
+async fn a_settlement_approached_again_keeps_its_place() {
+    let db = db!();
+    forget(PLACED).await;
+
+    System::set_body_counts(
+        &db,
+        PLACED,
+        "Test Placed",
+        Some(somewhere(18.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let approach = |latitude, longitude| ApproachSettlement {
+        name: "Test Placed Outpost".into(),
+        market_id: Some(3_510_085_377),
+        system_name: "Test Placed".into(),
+        star_pos: somewhere(18.0),
+        system_address: PLACED,
+        body_id: 12,
+        body_name: "Test Placed 4".into(),
+        latitude,
+        longitude,
+        faction: None,
+        government: None,
+        allegiance: None,
+        economies: None,
+        services: None,
+    };
+
+    Station::from_settlement(
+        &db,
+        at(0),
+        "test",
+        &approach(Some(12.5), Some(-47.25)),
+    )
+    .await
+    .expect("the first approach should write");
+
+    Station::from_settlement(&db, at(60), "test", &approach(None, None))
+        .await
+        .expect("an approach without a place should write");
+
+    let stored = Station::fetch(&db, PLACED, "Test Placed Outpost")
+        .await
+        .expect("should read back");
+    assert_eq!(stored.latitude, Some(12.5), "the latitude was erased");
+    assert_eq!(stored.longitude, Some(-47.25), "the longitude was erased");
 }
 
 /// Two messages in the same second both get to say their part

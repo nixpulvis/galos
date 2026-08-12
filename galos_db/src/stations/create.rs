@@ -229,8 +229,8 @@ impl Station {
                 economies = COALESCE($8, stations.economies),
                 body_id = $9,
                 body_name = $10,
-                latitude = $11,
-                longitude = $12,
+                latitude = COALESCE($11, stations.latitude),
+                longitude = COALESCE($12, stations.longitude),
                 updated_at = $13,
                 updated_by = $14
             WHERE stations.updated_at <= $13
