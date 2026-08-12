@@ -899,10 +899,19 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
             )
         })
         .inner;
+    // The turn the drag sets out from is taken hold of before anything is
+    // written, so that the whole of the drag measures from one place. See
+    // [`crate::systems::bodies::Clock::hold`].
+    if moved.drag_started() {
+        clock.hold(period);
+    }
     // Only on a change, or the clock is written every frame a panel is open and
     // every body in the system is put back where it already stands.
     if moved.changed() {
         clock.wind_to(period, through / 100.);
+    }
+    if moved.drag_stopped() {
+        clock.release();
     }
     ui.end_row();
 }

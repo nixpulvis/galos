@@ -47,40 +47,66 @@ pub fn plugin(app: &mut App) {
 /// also why one reading serves the whole system instead of each body being
 /// advanced from an epoch of its own.
 #[derive(Resource, Default)]
-pub struct Clock(pub f64);
+pub struct Clock {
+    /// The seconds themselves
+    pub at: f64,
+    /// The whole turns the rail being dragged set out from, while one is
+    ///
+    /// A rail covers one turn of its own body, and a phase is cyclic: its far
+    /// end is the same place on the orbit as its near end, one turn later. Which
+    /// turn that is has to hold still while the rail is dragged, or the reading
+    /// moves under the drag: worked out afresh each frame from the clock it is
+    /// itself setting, a rail run to its far end lands on the next turn, reads
+    /// back as no phase at all, and asks for the turn after that.
+    ///
+    /// One of these for the map rather than one per rail, there being one
+    /// pointer and so one rail ever being dragged.
+    held: Option<f64>,
+}
 
 impl Clock {
     /// Where `period` stands in its own turn, from none of it to all
     ///
-    /// What a rail geared to one body reads. The whole turns are kept apart from
-    /// the fraction so that [`Self::wind_to`] can put the body somewhere in the
-    /// turn it is already in rather than back at the first one.
+    /// What a rail geared to one body reads.
     pub fn through(&self, period: f64) -> f64 {
         if period <= 0. {
             return 0.;
         }
-        let turns = self.0 / period;
+        let turns = self.at / period;
         turns - turns.floor()
+    }
+
+    /// Take hold of the turn a rail over `period` is setting out from
+    ///
+    /// Said when a drag begins, so that [`Self::wind_to`] measures from where
+    /// the rail started rather than from where it has since put the clock.
+    pub fn hold(&mut self, period: f64) {
+        if period > 0. {
+            self.held = Some((self.at / period).floor());
+        }
+    }
+
+    /// Let go of it, the drag being over
+    pub fn release(&mut self) {
+        self.held = None;
     }
 
     /// Move to where `period` stands `through` of the way round its turn
     ///
-    /// Within the turn the body is already in, so dragging a rail moves the map
-    /// by at most one period of the body it is geared to. A moon's rail then
-    /// barely stirs the planet it goes round, where jumping to the first turn
-    /// would throw the whole system back to the beginning.
+    /// Within the turn the rail set out from, so dragging one moves the map by
+    /// at most a single period of the body it is geared to, and moves it evenly:
+    /// a rail run from end to end runs the clock on by exactly one turn of that
+    /// body, with nothing anywhere in the system jumping on the way.
     ///
-    /// A whole turn is no turn at all, a phase being cyclic: the far end of a
-    /// rail asks for the same place on the orbit its near end does. Taken at
-    /// face value it would be the start of the *next* turn, which reads back as
-    /// no phase and asks for the turn after that, and a rail held at its far end
-    /// would run the whole system on a period every frame.
+    /// A moon's rail therefore barely stirs the planet it goes round. Reaching
+    /// for the first turn instead would throw the whole system back to the
+    /// beginning every time a moon was nudged.
     pub fn wind_to(&mut self, period: f64, through: f64) {
         if period <= 0. {
             return;
         }
-        let whole = (self.0 / period).floor();
-        self.0 = (whole + through.rem_euclid(1.)) * period;
+        let whole = self.held.unwrap_or_else(|| (self.at / period).floor());
+        self.at = (whole + through) * period;
     }
 }
 
@@ -962,7 +988,7 @@ mod tests {
     fn a_rail_reads_its_own_bodys_turn() {
         let day = 86_400.;
         // A quarter through its second turn of a four hundred day orbit.
-        let clock = Clock(500. * day);
+        let clock = Clock { at: 500. * day, ..default() };
 
         assert_eq!(clock.through(400. * day), 0.25);
     }
@@ -976,62 +1002,79 @@ mod tests {
     #[test]
     fn dragging_a_moons_rail_barely_moves_the_map() {
         let day = 86_400.;
-        let mut clock = Clock(500. * day);
+        let mut clock = Clock { at: 500. * day, ..default() };
 
         clock.wind_to(day, 0.5);
 
-        assert_eq!(clock.0, 500.5 * day, "the map went back to the first turn");
+        assert_eq!(
+            clock.at,
+            500.5 * day,
+            "the map went back to the first turn"
+        );
     }
 
     /// A rail held at its far end leaves the map where it is
     ///
-    /// A phase is cyclic, so the far end of a rail asks for the same place on the
-    /// orbit its near end does. Read as the start of the next turn it reads back
-    /// as no phase at all and asks for the turn after that, and a rail held there
-    /// runs the whole system on a period every frame.
+    /// A phase is cyclic, so the far end of a rail is the same place on the orbit
+    /// as its near end, one turn on. Worked out afresh from the clock each frame,
+    /// that reads back as no phase at all and asks for the turn after it, and a
+    /// rail held there ran the whole system on a period every frame.
     #[test]
     fn a_rail_held_at_its_far_end_stays_put() {
         let day = 86_400.;
-        let mut clock = Clock(500. * day);
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
 
-        clock.wind_to(400. * day, 1.);
-        let once = clock.0;
+        clock.hold(period);
+        clock.wind_to(period, 1.);
+        let once = clock.at;
         for _ in 0..30 {
-            clock.wind_to(400. * day, 1.);
+            clock.wind_to(period, 1.);
         }
 
-        assert_eq!(clock.0, once, "the clock ran away while the rail was held");
-        assert_eq!(clock.through(400. * day), 0., "the far end is no phase");
+        assert_eq!(
+            clock.at, once,
+            "the clock ran away while the rail was held"
+        );
     }
 
-    /// And leaves it where the near end would
+    /// A rail run from end to end runs the clock on by one turn of its body
     ///
-    /// The two ends of the rail are one place on the orbit, so the body is drawn
-    /// in the same spot at either. Nothing jumps as the rail is run to its end.
+    /// Evenly, and that is the point of it. The clock is shared, so every other
+    /// body moves by whatever span this rail asks for; a rail that reached
+    /// backwards at its far end would leave its own body where it was, the two
+    /// ends being one place on its orbit, and jump everything else in the system
+    /// by nearly a whole turn of it.
     #[test]
-    fn the_two_ends_of_a_rail_are_one_place() {
+    fn a_rail_run_end_to_end_moves_the_map_evenly() {
         let day = 86_400.;
-        let far = {
-            let mut clock = Clock(500. * day);
-            clock.wind_to(400. * day, 1.);
-            clock.0
-        };
-        let near = {
-            let mut clock = Clock(500. * day);
-            clock.wind_to(400. * day, 0.);
-            clock.0
-        };
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
+        clock.hold(period);
 
-        assert_eq!(far, near);
+        let mut readings = Vec::new();
+        for step in 0..=20 {
+            clock.wind_to(period, step as f64 / 20.);
+            readings.push(clock.at);
+        }
+
+        let ran_on = readings[20] - readings[0];
+        assert_eq!(ran_on, period, "end to end was not one turn");
+        // Nothing anywhere in the system jumps, which is this being monotone.
+        for pair in readings.windows(2) {
+            let step = pair[1] - pair[0];
+            assert!(step > 0., "the clock went backwards by {}", -step);
+            assert!(step <= period / 20. + 1., "the clock jumped {step}");
+        }
     }
 
     /// A thing whose period nobody recorded has no turn to be a fraction of
     #[test]
     fn an_unrecorded_period_has_no_phase() {
-        let mut clock = Clock(500. * 86_400.);
+        let mut clock = Clock { at: 500. * 86_400., ..default() };
 
         assert_eq!(clock.through(0.), 0.);
         clock.wind_to(0., 0.5);
-        assert_eq!(clock.0, 500. * 86_400., "the map moved on nothing");
+        assert_eq!(clock.at, 500. * 86_400., "the map moved on nothing");
     }
 }

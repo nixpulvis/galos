@@ -619,14 +619,14 @@ fn draw(
     // system whose stars go round a point between them it was arriving at the
     // point: empty sky with the star it came for ten billion kilometres off to
     // one side.
-    let middle = contents.middle(&orbits, clock.0);
+    let middle = contents.middle(&orbits, clock.at);
 
     // How far a star has to light, which is out to the far side of the
     // outermost thing going round it.
     let reach = contents.extent().unwrap_or_default();
     let primary = contents.primary();
     for star in contents.stars() {
-        let place = orbits.place(star.id, clock.0) - middle;
+        let place = orbits.place(star.id, clock.at) - middle;
         commands.with_child(drawn_star(
             star,
             primary == Some(star.id),
@@ -638,7 +638,7 @@ fn draw(
         ));
     }
     for body in contents.bodies() {
-        let place = orbits.place(body.id, clock.0) - middle;
+        let place = orbits.place(body.id, clock.at) - middle;
         commands
             .with_child(drawn_body(body, place, &grid, &roundness, &bodies));
     }
@@ -663,7 +663,7 @@ fn draw(
             parent,
             bare.contains(&id),
             middle,
-            clock.0,
+            clock.at,
             &orbits,
             &grid,
             &mut meshes,
@@ -1047,7 +1047,10 @@ mod tests {
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.insert_resource(Clock(through * 400. * crate::systems::info::DAY));
+        app.insert_resource(Clock {
+            at: through * 400. * crate::systems::info::DAY,
+            ..default()
+        });
         app.insert_resource(Contents {
             of: Some(1),
             revision: 0,
@@ -1434,7 +1437,7 @@ fn wind(
     }
 
     let orbits = contents.orbits();
-    let middle = contents.middle(&orbits, clock.0);
+    let middle = contents.middle(&orbits, clock.at);
 
     let put = |grid: &Grid,
                place: DVec3,
@@ -1447,14 +1450,14 @@ fn wind(
 
     for (body, of, mut cell, mut at) in &mut placed_bodies {
         let Ok(grid) = grids.get(of.parent()) else { continue };
-        put(grid, orbits.place(body.id, clock.0), &mut cell, &mut at);
+        put(grid, orbits.place(body.id, clock.at), &mut cell, &mut at);
     }
 
     for (line, of, mut cell, mut at) in &mut lines {
         let Ok(grid) = grids.get(of.parent()) else { continue };
         let about = line
             .about
-            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.0));
+            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
         put(grid, about, &mut cell, &mut at);
     }
 }

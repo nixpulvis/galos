@@ -2591,12 +2591,12 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
     ui.add_space(FIELD_GAP);
     ui.horizontal(|ui| {
         ui.label("Run on");
-        if clock.0 == 0. {
+        if clock.at == 0. {
             ui.label(egui::RichText::new("not at all").weak());
         } else {
-            ui.label(lasting(clock.0 as f32));
+            ui.label(lasting(clock.at as f32));
             if ui.button("Reset").clicked() {
-                clock.0 = 0.;
+                clock.at = 0.;
             }
         }
     });
