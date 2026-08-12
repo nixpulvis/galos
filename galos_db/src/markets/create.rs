@@ -114,6 +114,7 @@ impl Market {
         // and settled that on its own stamp, so that much of the message
         // stands.
         if newer_on_record(&mut tx, market.market_id, timestamp).await? {
+            crate::turned_away("market prices", timestamp);
             tx.commit().await?;
             return Ok(placed);
         }

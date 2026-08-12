@@ -32,7 +32,7 @@ impl BlackMarket {
         )
         .await?;
 
-        sqlx::query!(
+        let done = sqlx::query!(
             "
             INSERT INTO black_market (
                 market_id,
@@ -56,6 +56,10 @@ impl BlackMarket {
         )
         .execute(&mut *tx)
         .await?;
+
+        if done.rows_affected() == 0 {
+            crate::turned_away("black market price", timestamp);
+        }
 
         tx.commit().await?;
 

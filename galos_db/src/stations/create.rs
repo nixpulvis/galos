@@ -161,6 +161,7 @@ impl Station {
         // message older than what is already stored. What is on record is the
         // newer station, so that is what is answered with.
         let Some(row) = row else {
+            crate::turned_away("station", timestamp);
             return Self::fetch(db, system_address, &station.name).await;
         };
 
@@ -201,7 +202,7 @@ impl Station {
         user: &str,
         settlement: &ApproachSettlement,
     ) -> Result<(), Error> {
-        sqlx::query!(
+        let done = sqlx::query!(
             r#"
             INSERT INTO stations (
                 system_address,
@@ -252,6 +253,10 @@ impl Station {
         )
         .execute(&db.pool)
         .await?;
+
+        if done.rows_affected() == 0 {
+            crate::turned_away("settlement", timestamp);
+        }
 
         Ok(())
     }

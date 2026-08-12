@@ -24,7 +24,7 @@ impl BodySignal {
         signals: &[Signal],
     ) -> Result<(), Error> {
         for signal in signals {
-            sqlx::query!(
+            let done = sqlx::query!(
                 "
                 INSERT INTO body_signals (
                     system_address,
@@ -50,6 +50,10 @@ impl BodySignal {
             )
             .execute(&db.pool)
             .await?;
+
+            if done.rows_affected() == 0 {
+                crate::turned_away("body signal", timestamp);
+            }
         }
 
         Ok(())

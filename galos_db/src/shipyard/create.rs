@@ -38,6 +38,7 @@ impl Shipyard {
         // newer list rather than adding to it. The market itself is already
         // placed, and settled that on its own stamp.
         if newer_on_record(&mut tx, shipyard.market_id, timestamp).await? {
+            crate::turned_away("shipyard", timestamp);
             tx.commit().await?;
             return Ok(());
         }

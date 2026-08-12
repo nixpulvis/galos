@@ -17,7 +17,7 @@ impl SystemSignal {
         signals: &[JournalSignal],
     ) -> Result<(), Error> {
         for signal in signals {
-            sqlx::query!(
+            let done = sqlx::query!(
                 "
                 INSERT INTO system_signals (
                     system_address,
@@ -64,6 +64,10 @@ impl SystemSignal {
             )
             .execute(&db.pool)
             .await?;
+
+            if done.rows_affected() == 0 {
+                crate::turned_away("system signal", signal.timestamp);
+            }
         }
 
         Ok(())

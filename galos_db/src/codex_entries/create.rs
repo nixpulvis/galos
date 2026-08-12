@@ -16,7 +16,7 @@ impl CodexEntry {
         user: &str,
         entry: &JournalEntry,
     ) -> Result<(), Error> {
-        sqlx::query!(
+        let done = sqlx::query!(
             "
             INSERT INTO codex_entries (
                 system_address,
@@ -67,6 +67,10 @@ impl CodexEntry {
         )
         .execute(&db.pool)
         .await?;
+
+        if done.rows_affected() == 0 {
+            crate::turned_away("codex entry", timestamp);
+        }
 
         Ok(())
     }

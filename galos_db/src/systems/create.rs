@@ -20,7 +20,7 @@ impl System {
         updated_at: DateTime<Utc>,
         updated_by: &str,
     ) -> Result<(), Error> {
-        sqlx::query!(
+        let done = sqlx::query!(
             r#"
             INSERT INTO systems
                 (address,
@@ -70,6 +70,10 @@ impl System {
         )
         .execute(&db.pool)
         .await?;
+
+        if done.rows_affected() == 0 {
+            crate::turned_away("system", updated_at);
+        }
 
         Self::adopt_waiting_markets(db, address, name, updated_at, updated_by)
             .await?;

@@ -35,6 +35,23 @@ impl Database {
     }
 }
 
+/// Say that a write was turned away for being older than what is on record
+///
+/// Every guarded write says it the same way, so a run of the sync can be counted
+/// rather than read. What that is worth: a refusal writes nothing and answers
+/// no error, so a guard that fires at the right rate and one that never fires at
+/// all leave a database looking exactly alike. Uploaders batch and reconnect, and
+/// about one message in three hundred arrives older than one already seen for the
+/// same thing, so that is roughly the rate to expect.
+///
+/// `what` names the kind of thing, and `sent` is when the game wrote the message
+/// that lost. Nothing says what is on record instead: reading it back would be a
+/// second query on a path taken thirty times a second to say something the row
+/// itself already holds.
+pub(crate) fn turned_away(what: &str, sent: chrono::DateTime<chrono::Utc>) {
+    tracing::debug!(what, %sent, "older than what is on record");
+}
+
 pub struct Page {
     pub limit: i64,
     pub offset: i64,

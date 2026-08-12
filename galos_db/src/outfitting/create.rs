@@ -34,6 +34,7 @@ impl Outfitting {
         // newer list rather than adding to it. The market itself is already
         // placed, and settled that on its own stamp.
         if newer_on_record(&mut tx, outfitting.market_id, timestamp).await? {
+            crate::turned_away("outfitting", timestamp);
             tx.commit().await?;
             return Ok(());
         }
