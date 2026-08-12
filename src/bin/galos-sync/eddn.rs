@@ -126,6 +126,11 @@ async fn record_visit(
 /// arrive for one nothing has heard of, since the honk that finds them is
 /// often the first thing ever sent about the place. Each carries a name and a
 /// position, which is all it takes to write the row they need.
+///
+/// Whether the row is there to point at, which is worth acting on where the
+/// foreign key would otherwise turn the whole message away. A scan writes its
+/// star regardless: the system may already be on record from something else,
+/// and a write refused here is not the same as no row to hang off.
 async fn ensure_system(
     db: &Database,
     timestamp: DateTime<Utc>,
@@ -133,6 +138,7 @@ async fn ensure_system(
     address: i64,
     name: &str,
     position: Option<Coordinate>,
+    what: &str,
 ) -> bool {
     let mut system = JournalSystem::new(address, name);
     system.pos = position;
@@ -147,7 +153,7 @@ async fn ensure_system(
                 address = address,
                 position = ?position,
                 error = %err,
-                "system"
+                "{}", what
             );
             false
         }
@@ -171,15 +177,17 @@ async fn ensure_station_for_market(
     user: &str,
     system_name: &str,
     station_name: &str,
+    what: &str,
 ) {
     let Ok(system) = System::fetch_by_name(db, system_name).await else {
         return;
     };
 
-    if let Err(err) =
-        Station::create(db, timestamp, user, system.address, station_name).await
+    match Station::create(db, timestamp, user, system.address, station_name)
+        .await
     {
-        warn!(station = %station_name, error = %err, "station");
+        Ok(_) => info!(station = %station_name, "{}", what),
+        Err(err) => warn!(station = %station_name, error = %err, "{}", what),
     }
 }
 
@@ -232,7 +240,8 @@ async fn record_body_signals(
     signals: &[Signal],
     what: &str,
 ) {
-    if !ensure_system(db, timestamp, user, address, name, position).await {
+    if !ensure_system(db, timestamp, user, address, name, position, what).await
+    {
         return;
     }
 
@@ -258,24 +267,16 @@ fn process_message(
         match message {
             Message::Journal(entry) => match entry.event {
                 Event::Scan(scan) => {
-                    let mut system = JournalSystem::new(
-                        scan.system_address,
-                        &scan.star_system,
-                    );
-                    system.pos = Some(scan.star_pos);
-                    match System::from_journal(
+                    ensure_system(
                         db,
                         entry.timestamp,
                         user,
-                        &system,
+                        scan.system_address,
+                        &scan.star_system,
+                        Some(scan.star_pos),
+                        "scan",
                     )
-                    .await
-                    {
-                        Ok(_) => info!(system = %system.name, "scan"),
-                        Err(err) => {
-                            warn!(system = %system.name, error = %err, "scan")
-                        }
-                    }
+                    .await;
 
                     match scan.target {
                         ScanTarget::Star(star) => match Star::from_journal(
@@ -328,48 +329,36 @@ fn process_message(
                                 }
                             }
                         }
-                        ScanTarget::Ring(ring) => {
-                            match Ring::from_journal(
-                                db,
-                                entry.timestamp,
-                                user,
-                                &ring,
-                                scan.system_address,
-                            )
-                            .await
-                            {
-                                Ok(_) => info!(ring = %ring.name, "scan"),
-                                Err(err) => {
-                                    warn!(ring = %ring.name, error = %err, "scan")
-                                }
+                        ScanTarget::Ring(ring) => match Ring::from_journal(
+                            db,
+                            entry.timestamp,
+                            user,
+                            &ring,
+                            scan.system_address,
+                        )
+                        .await
+                        {
+                            Ok(_) => info!(ring = %ring.name, "scan"),
+                            Err(err) => {
+                                warn!(ring = %ring.name, error = %err, "scan")
                             }
-                        }
+                        },
                     }
                 }
                 // A barycenter is not a body and is not drawn. It is stored so
                 // that a body naming it as an ancestor can be placed where it
                 // belongs rather than at the middle of its system.
                 Event::ScanBaryCentre(scan) => {
-                    let mut system = JournalSystem::new(
-                        scan.system_address,
-                        &scan.star_system,
-                    );
-                    system.pos = Some(scan.star_pos);
-                    match System::from_journal(
+                    ensure_system(
                         db,
                         entry.timestamp,
                         user,
-                        &system,
+                        scan.system_address,
+                        &scan.star_system,
+                        Some(scan.star_pos),
+                        "scan barycenter",
                     )
-                    .await
-                    {
-                        Ok(_) => {
-                            info!(system = %system.name, "scan barycenter")
-                        }
-                        Err(err) => {
-                            warn!(system = %system.name, error = %err, "scan barycenter")
-                        }
-                    }
+                    .await;
 
                     match Barycenter::from_journal(
                         db,
@@ -383,10 +372,10 @@ fn process_message(
                         // known by within its system is said along with the
                         // system, neither meaning much without the other.
                         Ok(_) => {
-                            info!(system = %system.name, barycenter = scan.body_id, "scan barycenter")
+                            info!(system = %scan.star_system, barycenter = scan.body_id, "scan barycenter")
                         }
                         Err(err) => {
-                            warn!(system = %system.name, barycenter = scan.body_id, error = %err, "scan barycenter")
+                            warn!(system = %scan.star_system, barycenter = scan.body_id, error = %err, "scan barycenter")
                         }
                     }
                 }
@@ -477,6 +466,7 @@ fn process_message(
                         e.system_address,
                         &e.system_name,
                         Some(e.star_pos),
+                        "approach settlement",
                     )
                     .await
                     {
@@ -552,6 +542,7 @@ fn process_message(
                             e.system_address,
                             name,
                             e.star_pos,
+                            "fss signal discovered",
                         )
                         .await
                         {
@@ -588,6 +579,7 @@ fn process_message(
                         e.system_address,
                         &e.system_name,
                         Some(e.star_pos),
+                        "codex entry",
                     )
                     .await
                     {
@@ -615,21 +607,18 @@ fn process_message(
                     }
                 }
                 Event::Docked(e) => {
-                    let system =
-                        JournalSystem::new(e.system_address, &e.system_name);
-                    match System::from_journal(
+                    // A docking says nothing about where the system is, only
+                    // which one it is.
+                    ensure_system(
                         db,
                         entry.timestamp,
                         user,
-                        &system,
+                        e.system_address,
+                        &e.system_name,
+                        None,
+                        "docked",
                     )
-                    .await
-                    {
-                        Ok(_) => info!(system = %system.name, "docked"),
-                        Err(err) => {
-                            warn!(system = %system.name, error = %err, "docked")
-                        }
-                    }
+                    .await;
 
                     match Station::from_journal(
                         db,
@@ -695,30 +684,15 @@ fn process_message(
             Message::Commodity(
                 ref e @ Entry { event: ref m @ JournalMarket { .. }, .. },
             ) => {
-                // A market message cannot name its system by address, only
-                // by name, so the system may well be one we have never seen.
-                // Record the prices regardless. The station and the link to
-                // the system follow whenever the system itself turns up.
-                if let Ok(system) =
-                    System::fetch_by_name(db, &m.system_name).await
-                {
-                    match Station::create(
-                        db,
-                        e.timestamp,
-                        user,
-                        system.address,
-                        &m.station_name,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            info!(station = %m.station_name, "commodity")
-                        }
-                        Err(err) => {
-                            warn!(station = %m.station_name, error = %err, "commodity")
-                        }
-                    }
-                }
+                ensure_station_for_market(
+                    db,
+                    e.timestamp,
+                    user,
+                    &m.system_name,
+                    &m.station_name,
+                    "commodity",
+                )
+                .await;
 
                 match Market::from_journal(db, e.timestamp, &m).await {
                     // A market can arrive before anything that would create
@@ -747,6 +721,7 @@ fn process_message(
                     user,
                     &o.system_name,
                     &o.station_name,
+                    "outfitting",
                 )
                 .await;
 
@@ -769,6 +744,7 @@ fn process_message(
                     user,
                     &s.system_name,
                     &s.station_name,
+                    "shipyard",
                 )
                 .await;
 
@@ -798,6 +774,7 @@ fn process_message(
                     user,
                     &b.system_name,
                     &b.station_name,
+                    "black market",
                 )
                 .await;
 
