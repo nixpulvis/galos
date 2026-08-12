@@ -709,7 +709,7 @@ const GRAVITY: f64 = 9.80665;
 const ATMOSPHERE: f64 = 101_325.;
 
 /// Seconds in a day
-const DAY: f64 = 86_400.;
+pub(crate) const DAY: f64 = 86_400.;
 
 /// Everything the map knows about one star
 ///

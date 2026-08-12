@@ -15,6 +15,7 @@
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
+use crate::systems::bodies::Clock;
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
 use crate::systems::despawn::Despawn;
@@ -23,6 +24,7 @@ use crate::systems::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
     SPANS, Watch,
 };
+use crate::systems::info::DAY;
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
 use crate::systems::labels::ShowBodyNames;
@@ -315,6 +317,13 @@ const PADDING: i8 = 6;
 /// How far one field of a form stands from the next
 const FIELD_GAP: f32 = 4.;
 
+/// How far the clock over a system's orbits winds, in days
+///
+/// Ten years, which carries the outermost bodies of a wide system a useful part
+/// of their way round while leaving the rail fine enough to step an inner moon
+/// by an hour.
+const WOUND: f64 = 3650.;
+
 /// How much of a slider's row the number beside it is given
 ///
 /// The rail takes everything but this, so the boxes line up down the pane and
@@ -485,6 +494,7 @@ pub struct Settings<'w> {
     poll: ResMut<'w, Poll>,
     name_radius: ResMut<'w, NameRadius>,
     show_orbits: ResMut<'w, ShowOrbits>,
+    clock: ResMut<'w, Clock>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
     unit: ResMut<'w, RulerUnit>,
@@ -758,6 +768,7 @@ pub fn chrome(
         heading(ui, "System View", true);
         ui.checkbox(&mut settings.show_body_names.0, "Show Labels");
         ui.checkbox(&mut settings.show_orbits.0, "Orbit Lines");
+        clock_control(ui, &mut settings.clock);
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
@@ -2575,6 +2586,40 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     watch_control(ui, filter);
 
     response.gained_focus()
+}
+
+/// Wind a system's orbits on from where its scans put them
+///
+/// Days, because that is the unit an orbit is legible in: the innermost bodies
+/// of a system come round in a day or two and the outermost take decades, so a
+/// rail in days moves the near ones visibly and the far ones at all.
+///
+/// A rail and a box, as the opacity is. What the rail is for is dragging to
+/// watch things move, and what the box is for is going back to nothing exactly.
+fn clock_control(ui: &mut Ui, clock: &mut Clock) {
+    ui.add_space(FIELD_GAP);
+    ui.label("Wind Orbits (days)");
+
+    let mut days = clock.0 / DAY;
+    fill_width(ui);
+    let moved = ui
+        .horizontal(|ui| {
+            let rail = ui.add(
+                egui::Slider::new(&mut days, 0.0..=WOUND).show_value(false),
+            );
+            let typed = value_box(
+                ui,
+                egui::DragValue::new(&mut days).range(0.0..=WOUND).speed(0.5),
+            );
+            rail | typed
+        })
+        .inner;
+
+    // Only on a change. Writing every frame would mark the clock changed every
+    // frame and have every body in the system put back where it already stands.
+    if moved.changed() {
+        clock.0 = days * DAY;
+    }
 }
 
 /// Ask for a filter by how lately a system was heard from

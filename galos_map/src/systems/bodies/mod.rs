@@ -24,9 +24,25 @@ pub mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
+    app.init_resource::<Clock>();
     app.add_plugins(fetch::plugin);
     app.add_plugins(spawn::plugin);
 }
+
+/// How far the map has wound a system's orbits on, in seconds
+///
+/// Zero draws every thing where its own scan put it, which is what the map did
+/// before there was anything to wind. The bodies of one system were scanned a
+/// median one minute forty-five apart against periods mostly over a year, so
+/// zero is very nearly one moment and not a smear.
+///
+/// Which is why this is one number for the whole system rather than a moment
+/// each body is advanced to from its own epoch. Winding them all on together
+/// keeps the arrangement the scans found and moves it, where advancing each
+/// from its own record would need an epoch per orbit to be any truer, and would
+/// buy under two minutes of it.
+#[derive(Resource, Default)]
+pub struct Clock(pub f64);
 
 /// The one system the map is holding the insides of
 ///
@@ -428,7 +444,10 @@ mod tests {
     use galos_db::bodies::Parent;
 
     /// A body `a` metres out on a circle, with no size of its own
-    fn body(a: f32) -> DbBody {
+    ///
+    /// Reached from [`super::spawn`]'s tests as well, which drive the same rows
+    /// through the systems that draw and move them.
+    pub(crate) fn body(a: f32) -> DbBody {
         DbBody {
             system_address: 1,
             id: 1,
