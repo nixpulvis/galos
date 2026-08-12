@@ -455,6 +455,18 @@ pub(crate) mod tests {
         system
     }
 
+    /// A system last heard from `secs` after the epoch
+    ///
+    /// Shared for the same reason [`named`] is. A moment is set from in here
+    /// or not at all, and what the map does with one is tested from wherever
+    /// it reads it.
+    pub(crate) fn heard(address: i64, secs: i64) -> System {
+        let mut system = system(address);
+        system.updated_at =
+            DateTime::from_timestamp(secs, 0).expect("a moment");
+        system
+    }
+
     /// A system at `away` light years from the origin, on the x axis
     ///
     /// Shared for the same reason [`named`] is: a position is set from in

@@ -24,8 +24,108 @@ pub mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
+    app.init_resource::<Clock>();
     app.add_plugins(fetch::plugin);
     app.add_plugins(spawn::plugin);
+}
+
+/// How long the map has run a system on from when its things were scanned
+///
+/// Seconds, and one reading for the whole system, so what is drawn is always a
+/// single moment rather than an arrangement composed body by body.
+///
+/// Set from a body's own panel rather than from one control over the system,
+/// because a system has no span that suits all of it: the slowest body of one
+/// takes a median 993 times as long to come round as its fastest, and in Sol it
+/// is four million times. Each panel gears this to its own body's period, so a
+/// rail is one orbit of the body it stands under whatever that body's orbit is
+/// worth in seconds.
+///
+/// Zero draws every thing where its own scan put it. The bodies of one system
+/// are scanned a median one minute forty-five apart against periods mostly over
+/// a year, so zero is very nearly one moment rather than a smear -- which is
+/// also why one reading serves the whole system instead of each body being
+/// advanced from an epoch of its own.
+#[derive(Resource, Default)]
+pub struct Clock {
+    /// The seconds themselves
+    pub at: f64,
+    /// The whole turns the rail being dragged set out from, while one is
+    ///
+    /// A rail covers one turn of its own body, and a phase is cyclic: its far
+    /// end is the same place on the orbit as its near end, one turn later. Which
+    /// turn that is has to hold still while the rail is dragged, or the reading
+    /// moves under the drag: worked out afresh each frame from the clock it is
+    /// itself setting, a rail run to its far end lands on the next turn, reads
+    /// back as no phase at all, and asks for the turn after that.
+    ///
+    /// One of these for the map rather than one per rail, there being one
+    /// pointer and so one rail ever being dragged.
+    held: Option<Held>,
+}
+
+/// The rail a drag has hold of
+///
+/// The period is carried so that the anchor is only ever applied to the rail it
+/// was taken for. A drag that never sees its own end -- a panel shut while the
+/// pointer is down -- would otherwise leave the anchor standing, and the next
+/// rail touched would measure a turn of its own body from a count of somebody
+/// else's.
+struct Held {
+    /// What the rail is geared to
+    period: f64,
+    /// The whole turns it set out from
+    turns: f64,
+}
+
+impl Clock {
+    /// Where `period` stands in its own turn, from none of it to all
+    ///
+    /// What a rail geared to one body reads.
+    pub fn through(&self, period: f64) -> f64 {
+        if period <= 0. {
+            return 0.;
+        }
+        let turns = self.at / period;
+        turns - turns.floor()
+    }
+
+    /// Take hold of the turn a rail over `period` is setting out from
+    ///
+    /// Said when a drag begins, so that [`Self::wind_to`] measures from where
+    /// the rail started rather than from where it has since put the clock.
+    pub fn hold(&mut self, period: f64) {
+        if period > 0. {
+            self.held =
+                Some(Held { period, turns: (self.at / period).floor() });
+        }
+    }
+
+    /// Let go of it, the drag being over
+    pub fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// Move to where `period` stands `through` of the way round its turn
+    ///
+    /// Within the turn the rail set out from, so dragging one moves the map by
+    /// at most a single period of the body it is geared to, and moves it evenly:
+    /// a rail run from end to end runs the clock on by exactly one turn of that
+    /// body, with nothing anywhere in the system jumping on the way.
+    ///
+    /// A moon's rail therefore barely stirs the planet it goes round. Reaching
+    /// for the first turn instead would throw the whole system back to the
+    /// beginning every time a moon was nudged.
+    pub fn wind_to(&mut self, period: f64, through: f64) {
+        if period <= 0. {
+            return;
+        }
+        let whole = match &self.held {
+            Some(held) if held.period == period => held.turns,
+            _ => (self.at / period).floor(),
+        };
+        self.at = (whole + through) * period;
+    }
 }
 
 /// The one system the map is holding the insides of
@@ -428,7 +528,10 @@ mod tests {
     use galos_db::bodies::Parent;
 
     /// A body `a` metres out on a circle, with no size of its own
-    fn body(a: f32) -> DbBody {
+    ///
+    /// Reached from [`super::spawn`]'s tests as well, which drive the same rows
+    /// through the systems that draw and move them.
+    pub(crate) fn body(a: f32) -> DbBody {
         DbBody {
             system_address: 1,
             id: 1,
@@ -896,5 +999,124 @@ mod tests {
             "a body that was not there before read as the same rows"
         );
         assert_eq!(contents.bodies().len(), 2);
+    }
+
+    /// A rail reads where its own body stands in the turn it is in
+    #[test]
+    fn a_rail_reads_its_own_bodys_turn() {
+        let day = 86_400.;
+        // A quarter through its second turn of a four hundred day orbit.
+        let clock = Clock { at: 500. * day, ..default() };
+
+        assert_eq!(clock.through(400. * day), 0.25);
+    }
+
+    /// Dragging a rail stays in the turn its body is already in
+    ///
+    /// The point of gearing a rail to one body: a moon's covers one of its own
+    /// orbits, so dragging it moves the map by at most that. Winding to the
+    /// fraction of the first turn instead would throw the whole system back to
+    /// the beginning every time a moon was nudged.
+    #[test]
+    fn dragging_a_moons_rail_barely_moves_the_map() {
+        let day = 86_400.;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        clock.wind_to(day, 0.5);
+
+        assert_eq!(
+            clock.at,
+            500.5 * day,
+            "the map went back to the first turn"
+        );
+    }
+
+    /// A rail held at its far end leaves the map where it is
+    ///
+    /// A phase is cyclic, so the far end of a rail is the same place on the orbit
+    /// as its near end, one turn on. Worked out afresh from the clock each frame,
+    /// that reads back as no phase at all and asks for the turn after it, and a
+    /// rail held there ran the whole system on a period every frame.
+    #[test]
+    fn a_rail_held_at_its_far_end_stays_put() {
+        let day = 86_400.;
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        clock.hold(period);
+        clock.wind_to(period, 1.);
+        let once = clock.at;
+        for _ in 0..30 {
+            clock.wind_to(period, 1.);
+        }
+
+        assert_eq!(
+            clock.at, once,
+            "the clock ran away while the rail was held"
+        );
+    }
+
+    /// A rail run from end to end runs the clock on by one turn of its body
+    ///
+    /// Evenly, and that is the point of it. The clock is shared, so every other
+    /// body moves by whatever span this rail asks for; a rail that reached
+    /// backwards at its far end would leave its own body where it was, the two
+    /// ends being one place on its orbit, and jump everything else in the system
+    /// by nearly a whole turn of it.
+    #[test]
+    fn a_rail_run_end_to_end_moves_the_map_evenly() {
+        let day = 86_400.;
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
+        clock.hold(period);
+
+        let mut readings = Vec::new();
+        for step in 0..=20 {
+            clock.wind_to(period, step as f64 / 20.);
+            readings.push(clock.at);
+        }
+
+        let ran_on = readings[20] - readings[0];
+        assert_eq!(ran_on, period, "end to end was not one turn");
+        // Nothing anywhere in the system jumps, which is this being monotone.
+        for pair in readings.windows(2) {
+            let step = pair[1] - pair[0];
+            assert!(step > 0., "the clock went backwards by {}", -step);
+            assert!(step <= period / 20. + 1., "the clock jumped {step}");
+        }
+    }
+
+    /// An anchor moves the rail it was taken for and no other
+    ///
+    /// A drag that never sees its own end leaves the anchor standing: a panel
+    /// shut with the pointer down draws no rail that frame, so nothing says the
+    /// drag is over. The next rail touched must measure its own body's turn
+    /// rather than a count of somebody else's, which for a moon holding a
+    /// planet's count is a clock thrown a long way from anywhere.
+    #[test]
+    fn an_anchor_moves_only_the_rail_it_was_taken_for() {
+        let day = 86_400.;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        // A drag of the planet's rail that never ends.
+        clock.hold(400. * day);
+        // Then the moon's rail is touched.
+        clock.wind_to(day, 0.5);
+
+        assert_eq!(
+            clock.at,
+            500.5 * day,
+            "the moon's rail measured from the planet's turn",
+        );
+    }
+
+    /// A thing whose period nobody recorded has no turn to be a fraction of
+    #[test]
+    fn an_unrecorded_period_has_no_phase() {
+        let mut clock = Clock { at: 500. * 86_400., ..default() };
+
+        assert_eq!(clock.through(0.), 0.);
+        clock.wind_to(0., 0.5);
+        assert_eq!(clock.at, 500. * 86_400., "the map moved on nothing");
     }
 }

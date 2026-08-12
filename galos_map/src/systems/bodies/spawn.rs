@@ -17,7 +17,7 @@
 //! Bodies keep a little emission of their own regardless, so that a system
 //! whose star is not on record is dim rather than invisible.
 
-use super::{Contents, orbit::Orbits};
+use super::{Clock, Contents, orbit::Orbits};
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::space;
@@ -48,6 +48,9 @@ pub fn plugin(app: &mut App) {
     // After the lines are spawned, so one drawn this frame is hidden on this
     // frame rather than being shown once and taken away.
     app.add_systems(Update, show_orbits.in_set(MapSet::Present));
+    // After whatever it moves exists. A body spawned this frame is already
+    // standing where the clock says, `draw` having read the same clock.
+    app.add_systems(Update, wind.in_set(MapSet::Populate).after(draw));
 }
 
 /// Whether the lines a system's contents trace are drawn
@@ -56,10 +59,19 @@ pub struct ShowOrbits(pub bool);
 
 /// The line one thing traces about whatever it goes round
 ///
-/// Its own marker rather than [`Inside`], which the bodies wear too. What is
+/// Its own component rather than [`Inside`], which the bodies wear too. What is
 /// asked of these is asked of the lines alone.
 #[derive(Component)]
-pub struct OrbitLine;
+pub struct OrbitLine {
+    /// Which body the ellipse is drawn about, where it is not the middle
+    ///
+    /// An ellipse sits on whatever its thing goes round, so a moon's is drawn
+    /// at its planet and moves when the planet does. Carried because winding
+    /// the clock on has to put the line back where its anchor has gone, and the
+    /// line is a flat child of the system like everything else: nothing moves
+    /// it by inheritance.
+    pub about: Option<i16>,
+}
 
 /// Draw the orbit lines, or do not, as the view asks
 ///
@@ -511,6 +523,7 @@ fn draw(
     systems: Query<(Entity, &System)>,
     inside: Query<Entity, With<Inside>>,
     contents: Res<Contents>,
+    clock: Res<Clock>,
     roundness: Res<Roundness>,
     stars: Res<StarMaterials>,
     bodies: Res<BodyMaterials>,
@@ -606,14 +619,14 @@ fn draw(
     // system whose stars go round a point between them it was arriving at the
     // point: empty sky with the star it came for ten billion kilometres off to
     // one side.
-    let middle = contents.middle(&orbits, 0.);
+    let middle = contents.middle(&orbits, clock.at);
 
     // How far a star has to light, which is out to the far side of the
     // outermost thing going round it.
     let reach = contents.extent().unwrap_or_default();
     let primary = contents.primary();
     for star in contents.stars() {
-        let place = orbits.place(star.id, 0.) - middle;
+        let place = orbits.place(star.id, clock.at) - middle;
         commands.with_child(drawn_star(
             star,
             primary == Some(star.id),
@@ -625,7 +638,7 @@ fn draw(
         ));
     }
     for body in contents.bodies() {
-        let place = orbits.place(body.id, 0.) - middle;
+        let place = orbits.place(body.id, clock.at) - middle;
         commands
             .with_child(drawn_body(body, place, &grid, &roundness, &bodies));
     }
@@ -650,6 +663,7 @@ fn draw(
             parent,
             bare.contains(&id),
             middle,
+            clock.at,
             &orbits,
             &grid,
             &mut meshes,
@@ -814,13 +828,15 @@ fn drawn_orbit(
     parent: Option<i16>,
     bare: bool,
     middle: DVec3,
+    clock: f64,
     orbits: &Orbits,
     grid: &Grid,
     meshes: &mut Assets<Mesh>,
     material: &OrbitMaterial,
 ) -> Option<impl Bundle> {
     let path = orbits.path(id, ORBIT_POINTS)?;
-    let about = parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, 0.));
+    let about =
+        parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, clock));
     let (cell, offset) = placed(about - middle, grid);
 
     let points: Vec<Vec3> = path.into_iter().map(|p| p.as_vec3()).collect();
@@ -831,7 +847,7 @@ fn drawn_orbit(
     };
     Some((
         Inside,
-        OrbitLine,
+        OrbitLine { about: parent },
         cell,
         Transform::from_translation(offset),
         Mesh3d(mesh),
@@ -859,6 +875,63 @@ fn dashed(path: &[Vec3]) -> Vec<Vec3> {
         }
     }
     points
+}
+
+/// Put everything inside a system where the clock says it stands
+///
+/// The bodies are spawned once and moved after, rather than drawn again from
+/// scratch every time the clock moves. Redrawing means despawning a system's
+/// whole insides and building the meshes back, which is work enough to be seen
+/// as a stutter on a control the user drags.
+///
+/// The lines move too. An ellipse is drawn about whatever its thing goes round,
+/// so a moon's sits on its planet, and everything here is a flat child of the
+/// system: nothing is carried along by its parent moving.
+///
+/// The paths themselves are left alone. Winding the clock on moves a thing
+/// along its orbit and does not change the orbit, so the mesh a line was built
+/// from is still the right shape wherever it has to be put.
+fn wind(
+    clock: Res<Clock>,
+    contents: Res<Contents>,
+    grids: Query<&Grid>,
+    mut placed_bodies: Query<
+        (&Body, &ChildOf, &mut CellCoord, &mut Transform),
+        Without<OrbitLine>,
+    >,
+    mut lines: Query<
+        (&OrbitLine, &ChildOf, &mut CellCoord, &mut Transform),
+        Without<Body>,
+    >,
+) {
+    if !clock.is_changed() {
+        return;
+    }
+
+    let orbits = contents.orbits();
+    let middle = contents.middle(&orbits, clock.at);
+
+    let put = |grid: &Grid,
+               place: DVec3,
+               cell: &mut CellCoord,
+               at: &mut Transform| {
+        let (into, offset) = placed(place - middle, grid);
+        *cell = into;
+        at.translation = offset;
+    };
+
+    for (body, of, mut cell, mut at) in &mut placed_bodies {
+        let Ok(grid) = grids.get(of.parent()) else { continue };
+        put(grid, orbits.place(body.id, clock.at), &mut cell, &mut at);
+    }
+
+    for (line, of, mut cell, mut at) in &mut lines {
+        let Ok(grid) = grids.get(of.parent()) else { continue };
+        let about = line
+            .about
+            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
+        put(grid, about, &mut cell, &mut at);
+    }
 }
 
 #[cfg(test)]
@@ -944,8 +1017,10 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(ShowOrbits(true));
         app.add_systems(Update, show_orbits);
-        let line =
-            app.world_mut().spawn((OrbitLine, Visibility::Inherited)).id();
+        let line = app
+            .world_mut()
+            .spawn((OrbitLine { about: None }, Visibility::Inherited))
+            .id();
 
         app.world_mut().resource_mut::<ShowOrbits>().0 = false;
         app.update();
@@ -1014,6 +1089,112 @@ mod tests {
             .resource::<BodyPosition>()
             .0
             .expect("the body stands somewhere")
+    }
+
+    /// A system holding one body, on a circle `out` metres across
+    ///
+    /// Stood `through` of the way through the system's year, with the body and
+    /// the line drawn about it both put where that leaves them. Answers the two,
+    /// so a test can say whether they moved together.
+    ///
+    /// The one body's period is the system's year, it being the only thing here
+    /// that goes round anything.
+    fn wound(out: f64, through: f64) -> (DVec3, DVec3) {
+        use super::super::{Clock, Contents, FetchState};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Clock {
+            at: through * 400. * crate::systems::info::DAY,
+            ..default()
+        });
+        app.insert_resource(Contents {
+            of: Some(1),
+            revision: 0,
+            state: FetchState::Known {
+                stars: vec![],
+                bodies: vec![{
+                    // A period of its own. The shared row carries none, and a
+                    // body with nothing to come round in has nowhere to be
+                    // wound to.
+                    let mut row = super::super::tests::body(out as f32);
+                    row.orbit.orbital_period =
+                        (400. * crate::systems::info::DAY) as f32;
+                    row
+                }],
+                centers: vec![],
+            },
+        });
+        app.add_systems(Update, wind);
+
+        let grid = space::system_grid();
+        let system = app
+            .world_mut()
+            .spawn((crate::systems::tests::at(1, 0.), grid.clone()))
+            .id();
+        let (cell, offset) = placed(DVec3::ZERO, &grid);
+        let body = app
+            .world_mut()
+            .spawn((
+                Body {
+                    address: 1,
+                    name: String::new(),
+                    id: 1,
+                    class: String::new(),
+                    radius: 1e6,
+                    ancestors: 1,
+                    primary: false,
+                    star: false,
+                },
+                cell,
+                Transform::from_translation(offset),
+                ChildOf(system),
+            ))
+            .id();
+        // The line drawn about that body, which is where a moon's would sit.
+        let line = app
+            .world_mut()
+            .spawn((
+                OrbitLine { about: Some(1) },
+                cell,
+                Transform::from_translation(offset),
+                ChildOf(system),
+            ))
+            .id();
+
+        app.update();
+
+        let read = |of: Entity| {
+            let cell = *app.world().get::<CellCoord>(of).expect("a cell");
+            let at = app.world().get::<Transform>(of).expect("a transform");
+            cell.as_dvec3(&grid) + at.translation.as_dvec3()
+        };
+        (read(body), read(line))
+    }
+
+    /// Standing further through the year carries a body along its orbit
+    #[test]
+    fn moving_through_the_year_moves_a_body() {
+        let (still, _) = wound(1e11, 0.);
+        let (later, _) = wound(1e11, 0.5);
+
+        assert!(
+            still.distance(later) > 1e10,
+            "the body stayed at {still} half a year on",
+        );
+    }
+
+    /// And carries the line drawn about it to the same place
+    ///
+    /// An ellipse sits on whatever its thing goes round, so a moon's is drawn at
+    /// its planet. Everything inside a system is a flat child of it, so nothing
+    /// moves the line by inheritance: left behind, a moon would orbit the empty
+    /// point its planet set out from.
+    #[test]
+    fn moving_through_the_year_moves_a_line_with_its_anchor() {
+        let (body, line) = wound(1e11, 0.5);
+
+        assert_eq!(body, line, "the line was left behind at {line}");
     }
 
     /// One of the systems on the map

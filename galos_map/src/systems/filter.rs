@@ -22,12 +22,14 @@ use crate::search::Pending;
 use crate::systems::System;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
+use chrono::{DateTime, Duration, Utc};
 use galos_db::Database;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
+    app.init_resource::<Watch>();
     app.init_resource::<DimTo>();
     app.init_resource::<LookupNote>();
     app.init_resource::<Resolving>();
@@ -42,6 +44,57 @@ pub fn plugin(app: &mut App) {
         Update,
         mark.in_set(MapSet::Populate).after(super::spawn::spawn),
     );
+}
+
+/// How many systems a question about time is answered with at most
+///
+/// An hour of the feed touches about nine thousand of them, so this is a few
+/// hours of it. The bound is there because the question has a far end that means
+/// every system on record, and neither the map nor a list of rows is any use
+/// holding a million of them.
+pub(crate) const MOST: i64 = 10_000;
+
+/// How far back the control over time offers to look, longest first
+///
+/// Named spans rather than a bare number of seconds. The interesting end of
+/// this is the last few minutes and the far end is a database going back years,
+/// so a rail laid out evenly in seconds would spend nearly all of its length in
+/// country nobody wants and cross the useful part in a pixel.
+///
+/// Nothing at the near end. A span reaching back forever admits every system on
+/// record, which is what asking nothing does, and putting the question anyway
+/// would fetch ten thousand rows to say so.
+pub(crate) const SPANS: [(&str, Option<i64>); 9] = [
+    ("Off", None),
+    ("30 days", Some(30 * 24 * 60 * 60)),
+    ("7 days", Some(7 * 24 * 60 * 60)),
+    ("1 day", Some(24 * 60 * 60)),
+    ("6 hours", Some(6 * 60 * 60)),
+    ("1 hour", Some(60 * 60)),
+    ("15 minutes", Some(15 * 60)),
+    ("5 minutes", Some(5 * 60)),
+    ("1 minute", Some(60)),
+];
+
+/// Where the control over time stands, by its place in [`SPANS`]
+///
+/// Kept because [`Filter::Recency`] holds the moment the span worked out to be
+/// rather than the span itself, and a minute later those are different things.
+/// Reading the control back off the filter would have it drift a step to the
+/// left every step of the way.
+#[derive(Resource, Default)]
+pub struct Watch(pub usize);
+
+impl Watch {
+    /// What the control says it is set to
+    pub fn name(&self) -> &'static str {
+        SPANS.get(self.0).map(|(name, _)| *name).unwrap_or("Off")
+    }
+
+    /// How far back it reaches, or nothing where it is off
+    pub fn span(&self) -> Option<Duration> {
+        SPANS.get(self.0).and_then(|(_, secs)| *secs).map(Duration::seconds)
+    }
 }
 
 /// One question asked of every system
@@ -91,6 +144,27 @@ pub enum Filter {
     ///
     /// `label` says how many, a hand-picked set having no name of its own.
     Systems { label: String, systems: Vec<i64> },
+    /// The systems heard from since a moment
+    ///
+    /// Bounded by [`MOST`], the far end of the control putting this question
+    /// being every system on record.
+    ///
+    /// What the feed is doing, drawn. The others ask something about a system
+    /// that holds still while it is asked; this one goes stale as it is
+    /// answered, since the moment it names sits at a fixed distance behind now
+    /// and everything crosses it eventually.
+    ///
+    /// So it is the one filter that is edited rather than added. Asking again
+    /// with a moment a second later is the same question, not a second one, and
+    /// [`Filters::add`] would refuse the second anyway for being a duplicate of
+    /// nothing it recognises.
+    ///
+    /// The database keeps when a system last changed and not a trail of every
+    /// time it did, so `moment` bounds a window whose other end is always now.
+    /// It cannot be slid back to look at the galaxy as it stood: parked in the
+    /// past it picks out what has not been heard from since, which is the same
+    /// question read the other way round.
+    Recency { label: String, moment: DateTime<Utc> },
 }
 
 impl Filter {
@@ -102,6 +176,7 @@ impl Filter {
             Filter::Systems { systems, .. } => {
                 systems.contains(&system.address)
             }
+            Filter::Recency { moment, .. } => system.updated_at >= *moment,
         }
     }
 
@@ -131,7 +206,9 @@ impl Filter {
     /// system it does not admit at all.
     pub fn place_of(&self, address: i64) -> Option<usize> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { systems, .. } => {
                 systems.iter().position(|on| *on == address)
             }
@@ -149,7 +226,9 @@ impl Filter {
     /// jumps lie between them is what it was plotted to find out.
     pub fn hops(&self) -> Option<usize> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { systems, .. } => systems.len().checked_sub(1),
         }
     }
@@ -164,7 +243,9 @@ impl Filter {
     /// each pair of systems the route runs through.
     pub fn range(&self) -> Option<&str> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { range, .. } => Some(range),
         }
     }
@@ -173,9 +254,9 @@ impl Filter {
     pub fn name(&self) -> &str {
         match self {
             Filter::Faction { name, .. } => name,
-            Filter::Route { label, .. } | Filter::Systems { label, .. } => {
-                label
-            }
+            Filter::Route { label, .. }
+            | Filter::Systems { label, .. }
+            | Filter::Recency { label, .. } => label,
         }
     }
 
@@ -195,6 +276,11 @@ impl Filter {
             }
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
+            }
+            Filter::Recency { moment, .. } => {
+                DbSystem::fetch_changed_since(db, *moment, MOST)
+                    .await
+                    .unwrap_or_default()
             }
         }
     }
@@ -444,6 +530,59 @@ impl Filters {
         }
     }
 
+    /// Ask about what has been heard from since `moment`
+    ///
+    /// Replacing whatever moment was being asked about, rather than standing
+    /// beside it. Two of these are not two things wanted: the earlier one's
+    /// answer holds the later one's, so the pair would draw what the wider of
+    /// them draws and read as a control that had stopped responding.
+    ///
+    /// The row says the moment rather than the span it was asked as, which
+    /// holds still while a span does not. "Since 20:47" goes on being true.
+    pub fn ask_since(&mut self, moment: DateTime<Utc>) {
+        let label = format!("Since {}", moment.format("%H:%M"));
+        let asked = Filter::Recency { label, moment };
+        match self
+            .0
+            .iter_mut()
+            .find(|active| matches!(active.filter, Filter::Recency { .. }))
+        {
+            Some(active) => {
+                active.filter = asked;
+                active.enabled = true;
+            }
+            None => self.0.push(Entry { filter: asked, enabled: true }),
+        }
+    }
+
+    /// Stop asking about time at all
+    ///
+    /// Its own way out rather than [`Self::remove`] by index, the control being
+    /// slid to nothing rather than a row being let go of.
+    pub fn ask_nothing_of_time(&mut self) {
+        self.0
+            .retain(|active| !matches!(active.filter, Filter::Recency { .. }));
+    }
+
+    /// The moment an enabled filter on time names, where one is asked
+    ///
+    /// Read apart from [`Self::admitted`] because what it admits is nowhere in
+    /// particular, so it is fetched in its own right rather than as part of a
+    /// question about a region.
+    ///
+    /// The earliest of them where several are somehow asked, that being the one
+    /// whose answer holds the others.
+    pub fn changed_since(&self) -> Option<DateTime<Utc>> {
+        self.0
+            .iter()
+            .filter(|active| active.enabled)
+            .filter_map(|active| match &active.filter {
+                Filter::Recency { moment, .. } => Some(*moment),
+                _ => None,
+            })
+            .min()
+    }
+
     /// What the filters admit, as a query can ask it
     ///
     /// Every enabled filter says either which faction it wants or which
@@ -466,6 +605,10 @@ impl Filters {
                 | Filter::Systems { systems, .. } => {
                     admitted.systems.extend(systems.iter().copied())
                 }
+                // Nothing a region can be narrowed by. What this admits is
+                // scattered across the galaxy rather than gathered anywhere,
+                // so it is fetched in its own right and not as part of a place.
+                Filter::Recency { .. } => {}
             }
         }
 
@@ -576,7 +719,20 @@ fn mark(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::tests::system;
+    use crate::systems::tests::{heard, system};
+
+    /// A moment `secs` after the epoch
+    fn moment(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(secs, 0).expect("a moment")
+    }
+
+    /// A filter admitting whatever was heard from after `secs`
+    fn since(secs: i64) -> Filter {
+        Filter::Recency {
+            label: format!("Since {secs}"),
+            moment: DateTime::from_timestamp(secs, 0).expect("a moment"),
+        }
+    }
 
     /// A faction filter, by id, called after it
     fn faction(id: i32) -> Filter {
@@ -1084,5 +1240,89 @@ mod tests {
         app.update();
 
         assert!(app.world().entity(outside).contains::<Filtered>());
+    }
+
+    /// A filter on time admits what has been heard from since
+    #[test]
+    fn a_filter_on_time_admits_what_came_in_since() {
+        let mut filters = Filters::default();
+        filters.add(since(100));
+
+        assert!(filters.admit(&heard(1, 160)), "later than the moment");
+        assert!(filters.admit(&heard(2, 100)), "the moment itself");
+        assert!(!filters.admit(&heard(3, 40)), "earlier than the moment");
+    }
+
+    /// It narrows no region, what it admits being gathered nowhere
+    ///
+    /// A faction and a route say which systems a region should be asked for. A
+    /// question about time is answered from across the galaxy, so it has
+    /// nothing to add to a question about a place, and adding its systems to
+    /// that list would narrow the region to them.
+    #[test]
+    fn a_filter_on_time_narrows_no_region() {
+        let mut filters = Filters::default();
+        filters.add(since(100));
+
+        let admitted = filters.admitted().expect("something was asked");
+        assert!(admitted.factions.is_empty());
+        assert!(admitted.systems.is_empty());
+    }
+
+    /// Asking again about time replaces the question rather than adding one
+    ///
+    /// Two of these would draw what the wider of them draws, since the earlier
+    /// moment's answer holds the later one's. The control would look like it
+    /// had stopped responding once it had been moved twice.
+    #[test]
+    fn asking_about_time_twice_asks_one_question() {
+        let mut filters = Filters::default();
+        filters.ask_since(moment(100));
+        filters.ask_since(moment(200));
+
+        assert_eq!(filters.len(), 1, "the first question was left standing");
+        assert_eq!(filters.changed_since(), Some(moment(200)));
+    }
+
+    /// Sliding the control off stops asking about time and nothing else
+    #[test]
+    fn asking_nothing_of_time_leaves_the_rest() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.ask_since(moment(100));
+
+        filters.ask_nothing_of_time();
+
+        assert_eq!(filters.changed_since(), None, "still asking about time");
+        assert_eq!(filters.len(), 1, "the faction went with it");
+        assert!(filters.admit(&member(1, &[7])), "the faction stopped asking");
+    }
+
+    /// A filter on time turned off asks nothing, as any other does
+    ///
+    /// The fetch behind it reads this, so a disabled row that still answered
+    /// would go on pulling ten thousand rows a poll for a question the user
+    /// had switched off.
+    #[test]
+    fn a_disabled_filter_on_time_asks_nothing() {
+        let mut filters = Filters::default();
+        filters.ask_since(moment(100));
+        filters.toggle(0);
+
+        assert_eq!(filters.changed_since(), None);
+    }
+
+    /// The control's far end asks nothing, and its near end asks for a minute
+    ///
+    /// The spans and what they are called are one table read by index, so this
+    /// is what says the two halves of it still line up.
+    #[test]
+    fn the_control_reaches_from_nothing_to_a_minute() {
+        assert_eq!(Watch(0).name(), "Off");
+        assert_eq!(Watch(0).span(), None);
+
+        let nearest = Watch(SPANS.len() - 1);
+        assert_eq!(nearest.name(), "1 minute");
+        assert_eq!(nearest.span(), Some(Duration::seconds(60)));
     }
 }

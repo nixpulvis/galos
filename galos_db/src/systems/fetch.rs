@@ -1,5 +1,6 @@
 use super::{Economies, System};
 use crate::{escaped, Database, Error};
+use chrono::{DateTime, Utc};
 use elite_journal::prelude::*;
 use geozero::wkb;
 use std::collections::HashMap;
@@ -691,6 +692,78 @@ impl System {
             WHERE factions.name ILIKE $1
             "#,
             faction,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| System {
+                address: row.address,
+                name: row.name,
+                position: row
+                    .position
+                    .map(|p| p.geometry.expect("not null or invalid")),
+                population: row.population.map(|n| n as u64).unwrap_or(0),
+                security: row.security,
+                government: row.government,
+                allegiance: row.allegiance,
+                economies: Economies::new(
+                    row.primary_economy,
+                    row.secondary_economy,
+                ),
+                factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
+                updated_at: row.updated_at.and_utc(),
+                updated_by: row.updated_by,
+            })
+            .collect())
+    }
+
+    /// The systems heard from since `moment`, newest first
+    ///
+    /// What the map asks to draw the feed arriving. An hour of it touches about
+    /// nine thousand systems scattered across the galaxy, so this is asked of
+    /// the whole table rather than of a region: there is nowhere to look that
+    /// the answer would be in.
+    ///
+    /// `most` bounds it, because the far end of the control putting this
+    /// question is every system on record. Newest first so that what the bound
+    /// drops is the oldest news rather than an arbitrary slice of it.
+    pub async fn fetch_changed_since(
+        db: &Database,
+        moment: DateTime<Utc>,
+        most: i64,
+    ) -> Result<Vec<Self>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                systems.address,
+                systems.name,
+                systems.position AS "position!: Option<wkb::Decode<Coordinate>>",
+                systems.population,
+                systems.security as "security: Security",
+                systems.government as "government: Government",
+                systems.allegiance as "allegiance: Allegiance",
+                systems.primary_economy as "primary_economy: Economy",
+                systems.secondary_economy as "secondary_economy: Economy",
+                systems.body_count,
+                systems.non_body_count,
+                systems.updated_at,
+                systems.updated_by,
+                COALESCE((
+                    SELECT array_agg(faction_id)
+                    FROM system_factions
+                    WHERE system_address = systems.address
+                ), ARRAY[]::integer[]) AS "factions!"
+            FROM systems
+            WHERE systems.updated_at >= $1
+            ORDER BY systems.updated_at DESC
+            LIMIT $2
+            "#,
+            moment.naive_utc(),
+            most,
         )
         .fetch_all(&db.pool)
         .await?;
