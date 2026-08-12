@@ -61,7 +61,21 @@ pub struct Clock {
     ///
     /// One of these for the map rather than one per rail, there being one
     /// pointer and so one rail ever being dragged.
-    held: Option<f64>,
+    held: Option<Held>,
+}
+
+/// The rail a drag has hold of
+///
+/// The period is carried so that the anchor is only ever applied to the rail it
+/// was taken for. A drag that never sees its own end -- a panel shut while the
+/// pointer is down -- would otherwise leave the anchor standing, and the next
+/// rail touched would measure a turn of its own body from a count of somebody
+/// else's.
+struct Held {
+    /// What the rail is geared to
+    period: f64,
+    /// The whole turns it set out from
+    turns: f64,
 }
 
 impl Clock {
@@ -82,7 +96,8 @@ impl Clock {
     /// the rail started rather than from where it has since put the clock.
     pub fn hold(&mut self, period: f64) {
         if period > 0. {
-            self.held = Some((self.at / period).floor());
+            self.held =
+                Some(Held { period, turns: (self.at / period).floor() });
         }
     }
 
@@ -105,7 +120,10 @@ impl Clock {
         if period <= 0. {
             return;
         }
-        let whole = self.held.unwrap_or_else(|| (self.at / period).floor());
+        let whole = match &self.held {
+            Some(held) if held.period == period => held.turns,
+            _ => (self.at / period).floor(),
+        };
         self.at = (whole + through) * period;
     }
 }
@@ -1066,6 +1084,30 @@ mod tests {
             assert!(step > 0., "the clock went backwards by {}", -step);
             assert!(step <= period / 20. + 1., "the clock jumped {step}");
         }
+    }
+
+    /// An anchor moves the rail it was taken for and no other
+    ///
+    /// A drag that never sees its own end leaves the anchor standing: a panel
+    /// shut with the pointer down draws no rail that frame, so nothing says the
+    /// drag is over. The next rail touched must measure its own body's turn
+    /// rather than a count of somebody else's, which for a moon holding a
+    /// planet's count is a clock thrown a long way from anywhere.
+    #[test]
+    fn an_anchor_moves_only_the_rail_it_was_taken_for() {
+        let day = 86_400.;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        // A drag of the planet's rail that never ends.
+        clock.hold(400. * day);
+        // Then the moon's rail is touched.
+        clock.wind_to(day, 0.5);
+
+        assert_eq!(
+            clock.at,
+            500.5 * day,
+            "the moon's rail measured from the planet's turn",
+        );
     }
 
     /// A thing whose period nobody recorded has no turn to be a fraction of
