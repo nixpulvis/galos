@@ -21,6 +21,7 @@ use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
+    SPANS, Watch,
 };
 use crate::systems::info::Panels;
 use crate::systems::labels::NameRadius;
@@ -35,6 +36,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use chrono::Utc;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
 
@@ -529,6 +531,8 @@ pub struct FilterBar<'w, 's> {
     pending: Res<'w, Resolving>,
     /// How faintly what they exclude is drawn
     dim: ResMut<'w, DimTo>,
+    /// Where the control over time stands
+    watch: ResMut<'w, Watch>,
 }
 
 pub fn chrome(
@@ -2568,7 +2572,54 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
         filter.found.clear();
     }
 
+    watch_control(ui, filter);
+
     response.gained_focus()
+}
+
+/// Ask for a filter by how lately a system was heard from
+///
+/// A rail over named spans rather than a field to type a time into. What is
+/// being asked is roughly how fresh, and the spans are the answers anybody
+/// wants: the far end of a typed time is a database going back years and the
+/// near end is the last minute.
+///
+/// Only on a change, as the opacity beside it is. The filter carries the moment
+/// the span worked out to be, so writing it every frame would move that moment
+/// every frame and put a fresh question to the database each time.
+fn watch_control(ui: &mut Ui, filter: &mut FilterBar) {
+    ui.add_space(FIELD_GAP);
+    ui.label("Heard From Within");
+
+    let mut standing = filter.watch.0;
+    fill_width(ui);
+    let rail = ui.add(
+        egui::Slider::new(&mut standing, 0..=SPANS.len() - 1)
+            .show_value(false)
+            .custom_formatter(|at, _| SPANS[at as usize].0.to_owned()),
+    );
+
+    if rail.changed() {
+        filter.watch.0 = standing;
+        match filter.watch.span() {
+            // Worked out here and not where it is asked. `Utc::now` is the one
+            // thing in this that cannot be tested, so it is read at the one
+            // place that turns a span into a moment.
+            Some(span) => filter.active.ask_since(Utc::now() - span),
+            None => filter.active.ask_nothing_of_time(),
+        }
+    }
+
+    // The span is what was asked for and the row says the moment it came to,
+    // which stop agreeing as soon as the clock moves on. Said here so the two
+    // readings are side by side rather than looking like a disagreement.
+    ui.label(
+        egui::RichText::new(match filter.watch.span() {
+            Some(_) => "Everything since, and whatever arrives",
+            None => "Not asked",
+        })
+        .weak(),
+    );
 }
 
 /// The factions a search found, and which of them was clicked
