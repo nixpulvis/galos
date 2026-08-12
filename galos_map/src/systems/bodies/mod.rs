@@ -69,12 +69,18 @@ impl Clock {
     /// by at most one period of the body it is geared to. A moon's rail then
     /// barely stirs the planet it goes round, where jumping to the first turn
     /// would throw the whole system back to the beginning.
+    ///
+    /// A whole turn is no turn at all, a phase being cyclic: the far end of a
+    /// rail asks for the same place on the orbit its near end does. Taken at
+    /// face value it would be the start of the *next* turn, which reads back as
+    /// no phase and asks for the turn after that, and a rail held at its far end
+    /// would run the whole system on a period every frame.
     pub fn wind_to(&mut self, period: f64, through: f64) {
         if period <= 0. {
             return;
         }
         let whole = (self.0 / period).floor();
-        self.0 = (whole + through) * period;
+        self.0 = (whole + through.rem_euclid(1.)) * period;
     }
 }
 
@@ -975,6 +981,48 @@ mod tests {
         clock.wind_to(day, 0.5);
 
         assert_eq!(clock.0, 500.5 * day, "the map went back to the first turn");
+    }
+
+    /// A rail held at its far end leaves the map where it is
+    ///
+    /// A phase is cyclic, so the far end of a rail asks for the same place on the
+    /// orbit its near end does. Read as the start of the next turn it reads back
+    /// as no phase at all and asks for the turn after that, and a rail held there
+    /// runs the whole system on a period every frame.
+    #[test]
+    fn a_rail_held_at_its_far_end_stays_put() {
+        let day = 86_400.;
+        let mut clock = Clock(500. * day);
+
+        clock.wind_to(400. * day, 1.);
+        let once = clock.0;
+        for _ in 0..30 {
+            clock.wind_to(400. * day, 1.);
+        }
+
+        assert_eq!(clock.0, once, "the clock ran away while the rail was held");
+        assert_eq!(clock.through(400. * day), 0., "the far end is no phase");
+    }
+
+    /// And leaves it where the near end would
+    ///
+    /// The two ends of the rail are one place on the orbit, so the body is drawn
+    /// in the same spot at either. Nothing jumps as the rail is run to its end.
+    #[test]
+    fn the_two_ends_of_a_rail_are_one_place() {
+        let day = 86_400.;
+        let far = {
+            let mut clock = Clock(500. * day);
+            clock.wind_to(400. * day, 1.);
+            clock.0
+        };
+        let near = {
+            let mut clock = Clock(500. * day);
+            clock.wind_to(400. * day, 0.);
+            clock.0
+        };
+
+        assert_eq!(far, near);
     }
 
     /// A thing whose period nobody recorded has no turn to be a fraction of
