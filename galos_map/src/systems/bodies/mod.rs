@@ -24,25 +24,45 @@ pub mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
-    app.init_resource::<Clock>();
+    app.init_resource::<Phase>();
     app.add_plugins(fetch::plugin);
     app.add_plugins(spawn::plugin);
 }
 
-/// How far the map has wound a system's orbits on, in seconds
+/// How far through a system's own year the map stands, from none of it to all
 ///
-/// Zero draws every thing where its own scan put it, which is what the map did
-/// before there was anything to wind. The bodies of one system were scanned a
-/// median one minute forty-five apart against periods mostly over a year, so
-/// zero is very nearly one moment and not a smear.
+/// A fraction rather than a span of seconds, because a system has no year to
+/// read seconds against: the slowest body of one takes a median 993 times as
+/// long to come round as its fastest, so a number of days that turns the outer
+/// bodies visibly spins the inner ones through hundreds of turns, and one that
+/// suits the inner ones leaves the outer ones still.
 ///
-/// Which is why this is one number for the whole system rather than a moment
-/// each body is advanced to from its own epoch. Winding them all on together
-/// keeps the arrangement the scans found and moves it, where advancing each
-/// from its own record would need an epoch per orbit to be any truer, and would
-/// buy under two minutes of it.
+/// The year it is a fraction of is [`orbit::Orbits::longest`], so one whole
+/// turn of it brings everything round at least once. Which is the whole reason
+/// for reading it this way: it is the only span that is a full orbit of every
+/// body at once.
+///
+/// Kept as a fraction so it means the same thing from system to system. Held as
+/// seconds it would be four turns of a close pair and a tenth of one of a wide
+/// system, and the control would jump every time the camera moved on.
+///
+/// Zero draws every thing where its own scan put it. The bodies of one system
+/// are scanned a median one minute forty-five apart against periods mostly over
+/// a year, so zero is very nearly one moment rather than a smear -- which is
+/// also why one fraction serves the whole system instead of each body being
+/// advanced to a moment from its own epoch.
 #[derive(Resource, Default)]
-pub struct Clock(pub f64);
+pub struct Phase(pub f64);
+
+impl Phase {
+    /// How many seconds through the system's year this stands, given its length
+    ///
+    /// The one place the fraction becomes a span, so that what a phase means is
+    /// settled here rather than at each of the things that wind by it.
+    pub fn elapsed(&self, year: Option<f64>) -> f64 {
+        year.map_or(0., |year| self.0 * year)
+    }
+}
 
 /// The one system the map is holding the insides of
 ///

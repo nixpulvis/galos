@@ -711,6 +711,9 @@ const ATMOSPHERE: f64 = 101_325.;
 /// Seconds in a day
 pub(crate) const DAY: f64 = 86_400.;
 
+/// Days in a year, for reading a span too long to say in days
+const YEAR: f64 = 365.25;
+
 /// Everything the map knows about one star
 ///
 /// Read in the units a star is talked about in rather than the ones it is
@@ -864,12 +867,17 @@ fn found(ui: &mut Ui, discovery: &Discovery) {
 ///
 /// Days for anything that turns slowly, which is most of what is scanned, and
 /// hours for the rest. A period in seconds is eight digits nobody reads.
-fn lasting(seconds: f32) -> String {
+pub(crate) fn lasting(seconds: f32) -> String {
     if seconds <= 0. {
         return UNKNOWN.into();
     }
     let days = seconds as f64 / DAY;
-    if days >= 1. {
+    // Years for the long end, which a system's outermost bodies live at: the
+    // slowest body of a system takes a median eighteen years to come round, and
+    // six thousand days is a number nobody reads either.
+    if days >= YEAR {
+        format!("{:.1} years", days / YEAR)
+    } else if days >= 1. {
         format!("{days:.1} days")
     } else {
         format!("{:.1} hours", days * 24.)
@@ -1438,6 +1446,9 @@ mod tests {
         assert_eq!(lasting(3.6254802e6), "42.0 days");
         assert_eq!(lasting(3600.), "1.0 hours");
         assert_eq!(lasting(0.), UNKNOWN);
+        // The long end, which a system's outermost bodies live at. Six
+        // thousand days is as unreadable as eight digits of seconds.
+        assert_eq!(lasting((18.5 * 365.25 * DAY as f64) as f32), "18.5 years");
     }
 
     /// The names down the left of a panel are written as brightly as a header
