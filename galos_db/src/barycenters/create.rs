@@ -31,8 +31,11 @@ impl Barycenter {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (system_address, id)
             DO UPDATE SET
-                updated_at = $3,
-                updated_by = $4,
+                -- A message delivered late is still taken, for whatever it
+                -- fills in below, and does not put the reading back in time.
+                updated_at = GREATEST(barycenters.updated_at, $3),
+                updated_by = CASE WHEN $3 >= barycenters.updated_at
+                    THEN $4 ELSE barycenters.updated_by END,
 
                 semi_major_axis = COALESCE($5, barycenters.semi_major_axis),
                 eccentricity = COALESCE($6, barycenters.eccentricity),

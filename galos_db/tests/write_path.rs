@@ -118,6 +118,8 @@ const SAME_SECOND: i64 = 900_000_012;
 const RING: i64 = 900_000_013;
 const ORPHANED: i64 = 900_000_017;
 const PLACED: i64 = 900_000_018;
+const LATE: i64 = 900_000_019;
+const LATE_COUNT: i64 = 900_000_020;
 const UNMAPPED: i64 = 900_000_014;
 const SHARED_A: i64 = 900_000_015;
 const SHARED_B: i64 = 900_000_016;
@@ -1362,4 +1364,109 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     );
     let stored = Star::fetch(&db, ORPHANED, 2).await.expect("on record");
     assert_eq!(stored.parent_id(), Some(1), "the ancestry was blanked");
+}
+
+/// A message delivered late is taken without putting the row back in time
+///
+/// Uploaders batch and reconnect, so a fuller scan can arrive behind a thinner
+/// one that was taken later. Refusing it outright would throw away everything
+/// it found, since a body's figures do not change and the two disagree only in
+/// how much they carry. What it must not do is leave the row saying it was last
+/// heard of at a moment two messages ago.
+#[async_std::test]
+async fn a_message_delivered_late_does_not_put_the_stamp_back() {
+    let db = db!();
+    forget(LATE).await;
+
+    System::set_body_counts(
+        &db,
+        LATE,
+        "Test Late",
+        Some(somewhere(19.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let body = |temperature| JournalBody {
+        id: 1,
+        name: "Test Late 1".into(),
+        ty: None,
+        distance_from_arrival: Some(12.5),
+        parents: vec![],
+        planet_class: "Rocky body".into(),
+        tidal_lock: None,
+        mass: 1.,
+        radius: 6e6,
+        gravity: 9.8,
+        temperature,
+        surface: None,
+        orbit: Orbit {
+            semi_major_axis: 1e11,
+            eccentricity: 0.01,
+            orbital_inclination: 0.,
+            periapsis: 1.,
+            orbital_period: 1e7,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
+        },
+        spin: Spin { period: 80000., tilt: 0.1 },
+        discovery: Discovery { discovered: true, mapped: true },
+    };
+
+    Body::from_journal(&db, at(600), "newer", &body(None), LATE)
+        .await
+        .expect("the scan taken later should write");
+
+    // The fuller scan, taken ten minutes before and arriving after.
+    Body::from_journal(&db, at(0), "older", &body(Some(500.)), LATE)
+        .await
+        .expect("the scan delivered late should write");
+
+    let stored = Body::fetch(&db, LATE, 1).await.expect("should read back");
+    assert_eq!(
+        stored.temperature,
+        Some(500.),
+        "the late message was thrown away",
+    );
+    assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
+    assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+}
+
+/// A count delivered late is taken without putting the system back in time
+///
+/// The counts are the one thing written under no timestamp guard at all, for
+/// the reason [`System::set_body_counts`] gives: a system does not gain or lose
+/// bodies, so the oldest honk is as good as the newest. That is a reason to
+/// take the count, not a reason to believe the system was last heard of then.
+#[async_std::test]
+async fn a_count_delivered_late_does_not_put_the_stamp_back() {
+    let db = db!();
+    forget(LATE_COUNT).await;
+
+    let honk = |bodies, non_bodies, secs, user| {
+        System::set_body_counts(
+            &db,
+            LATE_COUNT,
+            "Test Late Count",
+            Some(somewhere(20.0)),
+            bodies,
+            non_bodies,
+            at(secs),
+            user,
+        )
+    };
+
+    honk(40, None, 600, "newer").await.expect("the newer honk should write");
+    // The honk that counted the belts, taken ten minutes before.
+    honk(40, Some(7), 0, "older").await.expect("the late honk should write");
+
+    let stored = System::fetch(&db, LATE_COUNT).await.expect("should read");
+    assert_eq!(stored.body_count, Some(40));
+    assert_eq!(stored.non_body_count, Some(7), "the late count was refused");
+    assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
+    assert_eq!(stored.updated_by, "newer", "the sender went back with it");
 }

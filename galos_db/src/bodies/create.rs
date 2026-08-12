@@ -115,8 +115,11 @@ impl Body {
                 parent_id = COALESCE($3, bodies.parent_id),
                 parent_ids = COALESCE($4, bodies.parent_ids),
                 parent_types = COALESCE($5, bodies.parent_types),
-                updated_at = $7,
-                updated_by = $8,
+                -- A message delivered late is still taken, for whatever it
+                -- fills in below, and does not put the reading back in time.
+                updated_at = GREATEST(bodies.updated_at, $7),
+                updated_by = CASE WHEN $7 >= bodies.updated_at
+                    THEN $8 ELSE bodies.updated_by END,
 
                 body_type = COALESCE($9, bodies.body_type),
                 distance_from_arrival = COALESCE($10, bodies.distance_from_arrival),

@@ -64,8 +64,11 @@ impl Star {
                 parent_id = COALESCE($4, stars.parent_id),
                 parent_ids = COALESCE($5, stars.parent_ids),
                 parent_types = COALESCE($6, stars.parent_types),
-                updated_at = $7,
-                updated_by = $8,
+                -- A message delivered late is still taken, for whatever it
+                -- fills in below, and does not put the reading back in time.
+                updated_at = GREATEST(stars.updated_at, $7),
+                updated_by = CASE WHEN $7 >= stars.updated_at
+                    THEN $8 ELSE stars.updated_by END,
 
                 absolute_magnitude = $9,
                 age_my = $10,

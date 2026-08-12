@@ -51,8 +51,11 @@ impl Ring {
             ON CONFLICT (system_address, id)
             DO UPDATE SET
                 name = $3,
-                updated_at = $4,
-                updated_by = $5,
+                -- A message delivered late is still taken, for whatever it
+                -- fills in below, and does not put the reading back in time.
+                updated_at = GREATEST(rings.updated_at, $4),
+                updated_by = CASE WHEN $4 >= rings.updated_at
+                    THEN $5 ELSE rings.updated_by END,
 
                 distance_from_arrival =
                     COALESCE($6, rings.distance_from_arrival),

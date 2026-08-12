@@ -240,7 +240,8 @@ impl System {
     /// count does not go stale -- a system does not gain or lose bodies --
     /// and the timestamp guard would throw nearly all of them away, since a
     /// system busy enough to be honked at is busy enough to have been written
-    /// more recently by something else.
+    /// more recently by something else. What an older message does not do is
+    /// put the system's reading back to when it was sent.
     pub async fn set_body_counts(
         db: &Database,
         address: i64,
@@ -268,8 +269,9 @@ impl System {
                 body_count = $4,
                 non_body_count =
                     COALESCE($5, systems.non_body_count),
-                updated_at = $6,
-                updated_by = $7
+                updated_at = GREATEST(systems.updated_at, $6),
+                updated_by = CASE WHEN $6 >= systems.updated_at
+                    THEN $7 ELSE systems.updated_by END
             "#,
             address,
             name,
