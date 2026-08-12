@@ -1,12 +1,23 @@
 //! What the EDDN sync writes, written and read back
 //!
-//! These need a database. CI has none -- it runs `SQLX_OFFLINE=true` against
-//! the cached query metadata and never connects -- so each of them stands down
-//! when `DATABASE_URL` says nothing rather than failing. Run them against a
-//! migrated database and they run for real:
+//! These need a database of their own, named by `TEST_DATABASE_URL`. They
+//! write systems and markets under addresses they own and delete only what a
+//! test needs gone before it runs, so every run leaves those rows sitting in
+//! whatever they were pointed at. `DATABASE_URL` is deliberately not read
+//! here: the database being filled from EDDN is one `cargo test` must not be
+//! able to reach.
+//!
+//! Each test stands down when `TEST_DATABASE_URL` says nothing, so CI passes
+//! without a database -- it runs `SQLX_OFFLINE=true` against the cached query
+//! metadata and never connects. Point them at a migrated database and they run
+//! for real:
 //!
 //! ```sh
-//! DATABASE_URL=postgresql://…/galos cargo test -p galos_db --test write_path
+//! createdb galos_test
+//! DATABASE_URL=postgresql://…/galos_test \
+//!     cargo sqlx migrate run --source galos_db/migrations/
+//! TEST_DATABASE_URL=postgresql://…/galos_test \
+//!     cargo test -p galos_db --test write_path
 //! ```
 //!
 //! What they are for is the half of a write that the `sqlx` macros cannot
@@ -43,6 +54,16 @@ use galos_db::{
 };
 use std::collections::BTreeMap;
 
+/// Where these tests write, or nothing and they stand down
+///
+/// `TEST_DATABASE_URL` and never `DATABASE_URL`, so that a database being used
+/// for anything else cannot be reached from here. Read out of the environment
+/// or out of `.env`, either of which is a place to say it.
+fn database_url() -> Option<String> {
+    dotenv::dotenv().ok();
+    std::env::var("TEST_DATABASE_URL").ok()
+}
+
 /// Forget a system, so a test may assert on what did not happen
 ///
 /// These tests share one database and own an address each, and asserting that a
@@ -50,7 +71,7 @@ use std::collections::BTreeMap;
 /// left behind. Only this file writes these addresses, so nothing points at the
 /// row being dropped.
 async fn forget(address: i64) {
-    let Ok(url) = std::env::var("DATABASE_URL") else { return };
+    let Some(url) = database_url() else { return };
     let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
     // Whatever hangs off the system, then the system. Only this file writes
     // these addresses, so nothing else loses anything.
@@ -83,7 +104,7 @@ async fn forget(address: i64) {
 /// Keyed by its own id rather than by a system, so there is no reaching these
 /// through the address a test owns.
 async fn forget_market(id: i64) {
-    let Ok(url) = std::env::var("DATABASE_URL") else { return };
+    let Some(url) = database_url() else { return };
     let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
     for table in
         ["commodities", "outfitting", "shipyard", "black_market", "markets"]
@@ -101,12 +122,17 @@ async fn forget_market(id: i64) {
 }
 
 /// A database to write to, or nothing and the test stands down
+///
+/// Standing down is for having nowhere to write. A url that is there and will
+/// not connect is a database that was meant to be run against, so it fails.
 macro_rules! db {
     () => {
-        match Database::new().await {
-            Ok(db) => db,
-            Err(_) => {
-                eprintln!("no DATABASE_URL: standing down");
+        match database_url() {
+            Some(url) => Database::from_url(&url)
+                .await
+                .expect("TEST_DATABASE_URL should connect"),
+            None => {
+                eprintln!("no TEST_DATABASE_URL: standing down");
                 return;
             }
         }
@@ -138,14 +164,14 @@ const REDOCK: i64 = 900_000_010;
 const STALE: i64 = 900_000_011;
 const SAME_SECOND: i64 = 900_000_012;
 const RING: i64 = 900_000_013;
+const UNMAPPED: i64 = 900_000_014;
+const SHARED_A: i64 = 900_000_015;
+const SHARED_B: i64 = 900_000_016;
 const ORPHANED: i64 = 900_000_017;
 const PLACED: i64 = 900_000_018;
 const LATE: i64 = 900_000_019;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
-const UNMAPPED: i64 = 900_000_014;
-const SHARED_A: i64 = 900_000_015;
-const SHARED_B: i64 = 900_000_016;
 
 /// A market is keyed by its own id, so these stand apart from the addresses
 const CARRIER_MARKET: i64 = 128_900_001;
