@@ -877,6 +877,63 @@ fn dashed(path: &[Vec3]) -> Vec<Vec3> {
     points
 }
 
+/// Put everything inside a system where the clock says it stands
+///
+/// The bodies are spawned once and moved after, rather than drawn again from
+/// scratch every time the clock moves. Redrawing means despawning a system's
+/// whole insides and building the meshes back, which is work enough to be seen
+/// as a stutter on a control the user drags.
+///
+/// The lines move too. An ellipse is drawn about whatever its thing goes round,
+/// so a moon's sits on its planet, and everything here is a flat child of the
+/// system: nothing is carried along by its parent moving.
+///
+/// The paths themselves are left alone. Winding the clock on moves a thing
+/// along its orbit and does not change the orbit, so the mesh a line was built
+/// from is still the right shape wherever it has to be put.
+fn wind(
+    clock: Res<Clock>,
+    contents: Res<Contents>,
+    grids: Query<&Grid>,
+    mut placed_bodies: Query<
+        (&Body, &ChildOf, &mut CellCoord, &mut Transform),
+        Without<OrbitLine>,
+    >,
+    mut lines: Query<
+        (&OrbitLine, &ChildOf, &mut CellCoord, &mut Transform),
+        Without<Body>,
+    >,
+) {
+    if !clock.is_changed() {
+        return;
+    }
+
+    let orbits = contents.orbits();
+    let middle = contents.middle(&orbits, clock.at);
+
+    let put = |grid: &Grid,
+               place: DVec3,
+               cell: &mut CellCoord,
+               at: &mut Transform| {
+        let (into, offset) = placed(place - middle, grid);
+        *cell = into;
+        at.translation = offset;
+    };
+
+    for (body, of, mut cell, mut at) in &mut placed_bodies {
+        let Ok(grid) = grids.get(of.parent()) else { continue };
+        put(grid, orbits.place(body.id, clock.at), &mut cell, &mut at);
+    }
+
+    for (line, of, mut cell, mut at) in &mut lines {
+        let Ok(grid) = grids.get(of.parent()) else { continue };
+        let about = line
+            .about
+            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
+        put(grid, about, &mut cell, &mut at);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1402,62 +1459,5 @@ mod tests {
         assert_eq!(standing(WORTH_MARKING), 1.);
         assert!(standing(WORTH_MARKING * 1.001) < 1.);
         assert!(standing(WORTH_HIDING * 0.999) > 0.);
-    }
-}
-
-/// Put everything inside a system where the clock says it stands
-///
-/// The bodies are spawned once and moved after, rather than drawn again from
-/// scratch every time the clock moves. Redrawing means despawning a system's
-/// whole insides and building the meshes back, which is work enough to be seen
-/// as a stutter on a control the user drags.
-///
-/// The lines move too. An ellipse is drawn about whatever its thing goes round,
-/// so a moon's sits on its planet, and everything here is a flat child of the
-/// system: nothing is carried along by its parent moving.
-///
-/// The paths themselves are left alone. Winding the clock on moves a thing
-/// along its orbit and does not change the orbit, so the mesh a line was built
-/// from is still the right shape wherever it has to be put.
-fn wind(
-    clock: Res<Clock>,
-    contents: Res<Contents>,
-    grids: Query<&Grid>,
-    mut placed_bodies: Query<
-        (&Body, &ChildOf, &mut CellCoord, &mut Transform),
-        Without<OrbitLine>,
-    >,
-    mut lines: Query<
-        (&OrbitLine, &ChildOf, &mut CellCoord, &mut Transform),
-        Without<Body>,
-    >,
-) {
-    if !clock.is_changed() {
-        return;
-    }
-
-    let orbits = contents.orbits();
-    let middle = contents.middle(&orbits, clock.at);
-
-    let put = |grid: &Grid,
-               place: DVec3,
-               cell: &mut CellCoord,
-               at: &mut Transform| {
-        let (into, offset) = placed(place - middle, grid);
-        *cell = into;
-        at.translation = offset;
-    };
-
-    for (body, of, mut cell, mut at) in &mut placed_bodies {
-        let Ok(grid) = grids.get(of.parent()) else { continue };
-        put(grid, orbits.place(body.id, clock.at), &mut cell, &mut at);
-    }
-
-    for (line, of, mut cell, mut at) in &mut lines {
-        let Ok(grid) = grids.get(of.parent()) else { continue };
-        let about = line
-            .about
-            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
-        put(grid, about, &mut cell, &mut at);
     }
 }
