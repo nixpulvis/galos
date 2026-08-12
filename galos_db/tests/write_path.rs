@@ -120,6 +120,7 @@ const ORPHANED: i64 = 900_000_017;
 const PLACED: i64 = 900_000_018;
 const LATE: i64 = 900_000_019;
 const LATE_COUNT: i64 = 900_000_020;
+const LATE_SIGNAL: i64 = 900_000_021;
 const UNMAPPED: i64 = 900_000_014;
 const SHARED_A: i64 = 900_000_015;
 const SHARED_B: i64 = 900_000_016;
@@ -1469,4 +1470,49 @@ async fn a_count_delivered_late_does_not_put_the_stamp_back() {
     assert_eq!(stored.non_body_count, Some(7), "the late count was refused");
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+}
+
+/// The later reading of a signal wins, whichever of the two arrives first
+///
+/// A count is the whole of what a signal's row holds, so there is nothing for an
+/// older message to fill in and the newer reading is simply the answer. Taking
+/// whichever arrived last instead would leave a body's geology reading as
+/// whatever the slowest uploader saw.
+#[async_std::test]
+async fn the_later_reading_of_a_signal_wins() {
+    let db = db!();
+    forget(LATE_SIGNAL).await;
+
+    System::set_body_counts(
+        &db,
+        LATE_SIGNAL,
+        "Test Late Signal",
+        Some(somewhere(21.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let found = |count| {
+        vec![Signal { ty: "$SAA_SignalType_Geological;".into(), count }]
+    };
+
+    BodySignal::from_journal(&db, at(600), "newer", LATE_SIGNAL, 3, &found(9))
+        .await
+        .expect("the reading taken later should write");
+
+    // The same kind, read ten minutes before and arriving after.
+    BodySignal::from_journal(&db, at(0), "older", LATE_SIGNAL, 3, &found(2))
+        .await
+        .expect("the reading delivered late should write");
+
+    let stored = BodySignal::fetch(&db, LATE_SIGNAL, 3)
+        .await
+        .expect("signals should read");
+    let signal = stored.first().expect("on record");
+    assert_eq!(signal.count, 9, "the older reading won");
+    assert_eq!(signal.updated_by, "newer", "the older sender won");
 }
