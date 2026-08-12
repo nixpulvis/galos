@@ -499,6 +499,7 @@ fn panels(
     mut selection: ResMut<Selection>,
     mut filters: ResMut<Filters>,
     mut selected: ResMut<crate::systems::route::SelectedRoute>,
+    mut clock: ResMut<crate::systems::bodies::Clock>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
@@ -564,8 +565,8 @@ fn panels(
                 Subject::System(system) => {
                     described(ui, system, &names, &mut centered, &mut wanted)
                 }
-                Subject::Star(star) => star_described(ui, star),
-                Subject::Body(body) => body_described(ui, body),
+                Subject::Star(star) => star_described(ui, star, &mut clock),
+                Subject::Body(body) => body_described(ui, body, &mut clock),
                 Subject::Filter { filter, systems } => admitted(
                     ui,
                     filter,
@@ -719,7 +720,11 @@ const YEAR: f64 = 365.25;
 /// Read in the units a star is talked about in rather than the ones it is
 /// stored in: suns for its size and its mass, days for its turn, and light
 /// seconds for how far out it stands.
-fn star_described(ui: &mut Ui, star: &DbStar) {
+fn star_described(
+    ui: &mut Ui,
+    star: &DbStar,
+    clock: &mut crate::systems::bodies::Clock,
+) {
     egui::Grid::new(("star-fields", star.system_address, star.id))
         .num_columns(2)
         .show(ui, |ui| {
@@ -747,7 +752,7 @@ fn star_described(ui: &mut Ui, star: &DbStar) {
             );
             field(ui, "Magnitude", format!("{:.2}", star.absolute_magnitude));
             turning(ui, &star.spin);
-            circling(ui, star.orbit.as_ref());
+            circling(ui, star.orbit.as_ref(), clock);
             found(ui, &star.discovery);
             field(
                 ui,
@@ -758,7 +763,11 @@ fn star_described(ui: &mut Ui, star: &DbStar) {
 }
 
 /// Everything the map knows about one body
-fn body_described(ui: &mut Ui, body: &DbBody) {
+fn body_described(
+    ui: &mut Ui,
+    body: &DbBody,
+    clock: &mut crate::systems::bodies::Clock,
+) {
     egui::Grid::new(("body-fields", body.system_address, body.id))
         .num_columns(2)
         .show(ui, |ui| {
@@ -796,7 +805,7 @@ fn body_described(ui: &mut Ui, body: &DbBody) {
             standing(ui, &body.surface);
             field(ui, "Tidal lock", yes_no(body.tidal_lock));
             turning(ui, &body.spin);
-            circling(ui, Some(&body.orbit));
+            circling(ui, Some(&body.orbit), clock);
             found(ui, &body.discovery);
             field(
                 ui,
@@ -841,7 +850,11 @@ fn turning(ui: &mut Ui, spin: &Spin) {
 ///
 /// Nothing to say for the one that goes round nothing, which is the star a
 /// system arrives at.
-fn circling(ui: &mut Ui, orbit: Option<&Orbit>) {
+fn circling(
+    ui: &mut Ui,
+    orbit: Option<&Orbit>,
+    clock: &mut crate::systems::bodies::Clock,
+) {
     let Some(orbit) = orbit else {
         field(ui, "Orbit", "Goes round nothing".into());
         return;
@@ -853,6 +866,45 @@ fn circling(ui: &mut Ui, orbit: Option<&Orbit>) {
     under(ui, "Period", lasting(orbit.orbital_period));
     under(ui, "Eccentricity", format!("{:.4}", orbit.eccentricity));
     under(ui, "Inclination", format!("{:.1}°", orbit.orbital_inclination));
+    turned(ui, orbit.orbital_period as f64, clock);
+}
+
+/// Where round its orbit this thing stands, and a rail to move it by
+///
+/// Geared to this orbit alone, so the whole rail is one turn of this body
+/// however long that is: a system has no span that suits all of it, the slowest
+/// body of one taking a median 993 times as long to come round as its fastest.
+///
+/// It moves the whole system, which is one moment and not an arrangement built
+/// body by body. So dragging this stirs everything else by the same span of
+/// time, which for something far slower is imperceptible and for something far
+/// faster is a blur -- and either is the truth about what a year of this body
+/// does to its neighbours.
+///
+/// Nothing to drag where the period is unrecorded, there being no turn to be a
+/// fraction of.
+fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
+    ui.horizontal(|ui| {
+        ui.add_space(NEST);
+        ui.label(egui::RichText::new("Phase").strong());
+    });
+
+    let mut through = clock.through(period) * 100.;
+    let moved = ui
+        .add_enabled_ui(period > 0., |ui| {
+            ui.add(
+                egui::Slider::new(&mut through, 0.0..=100.)
+                    .suffix("%")
+                    .max_decimals(1),
+            )
+        })
+        .inner;
+    // Only on a change, or the clock is written every frame a panel is open and
+    // every body in the system is put back where it already stands.
+    if moved.changed() {
+        clock.wind_to(period, through / 100.);
+    }
+    ui.end_row();
 }
 
 /// What is known about a thing rather than about the thing itself
@@ -1392,7 +1444,13 @@ mod tests {
 
     /// What a body's panel says
     fn body_said() -> Vec<String> {
-        words(|ui| body_described(ui, &founders()))
+        words(|ui| {
+            body_described(
+                ui,
+                &founders(),
+                &mut crate::systems::bodies::Clock::default(),
+            )
+        })
     }
 
     /// A body's panel reads in the units a body is talked about in

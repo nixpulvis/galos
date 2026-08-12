@@ -225,27 +225,6 @@ impl Orbits {
         self.0.insert(id, (parent, orbit));
     }
 
-    /// The longest any of them takes to come round, in seconds
-    ///
-    /// The system's own unit of time. Everything here comes round at least once
-    /// in it by definition, which is what makes it the span a control over the
-    /// whole system can be read in: a body has no year of its own that says
-    /// anything about its neighbours, and there is no year for a system that
-    /// astronomy would recognise.
-    ///
-    /// Nothing where nothing goes round anything, which is a lone star.
-    ///
-    /// Answers which body it is as well as how long it takes, so that a control
-    /// reading a span of fifteen thousand years can say what set it. In Sol that
-    /// is Persephone, twenty seven times slower than the next thing out.
-    pub fn slowest(&self) -> Option<(i16, f64)> {
-        self.0
-            .iter()
-            .filter_map(|(id, (_, orbit))| Some((*id, orbit.period?)))
-            .filter(|(_, period)| *period > 0.)
-            .max_by(|(_, one), (_, other)| one.total_cmp(other))
-    }
-
     /// What `id` goes round, if it is held and goes round anything
     pub fn parent(&self, id: i16) -> Option<i16> {
         self.0.get(&id).and_then(|(parent, _)| *parent)
@@ -600,31 +579,5 @@ mod tests {
 
         let place = orbits.place(1, 0.);
         assert!(place.is_finite(), "the walk ran off to {place}");
-    }
-
-    /// The system's year is its slowest orbit, so everything comes round in one
-    #[test]
-    fn a_systems_year_is_its_slowest_orbit() {
-        let coming_round_in =
-            |period| Orbit { period: Some(period), ..circle(1e10) };
-
-        let mut orbits = Orbits::default();
-        orbits.insert(1, None, coming_round_in(1e5));
-        orbits.insert(2, Some(1), coming_round_in(1e7));
-        orbits.insert(3, Some(1), coming_round_in(1e6));
-
-        assert_eq!(orbits.slowest(), Some((2, 1e7)));
-    }
-
-    /// A lone star has no year, nothing there going round anything
-    ///
-    /// The control over it reads this, and a year of nothing would put every
-    /// body at the place it was scanned however far the rail was pushed.
-    #[test]
-    fn nothing_going_round_anything_has_no_year() {
-        let mut orbits = Orbits::default();
-        orbits.insert(1, None, Orbit::still());
-
-        assert_eq!(orbits.slowest(), None);
     }
 }

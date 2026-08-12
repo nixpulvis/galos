@@ -16,7 +16,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::systems::bodies::spawn::ShowOrbits;
-use crate::systems::bodies::{Contents, Phase};
+use crate::systems::bodies::{Clock, Contents};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
@@ -486,7 +486,7 @@ pub struct Settings<'w> {
     poll: ResMut<'w, Poll>,
     name_radius: ResMut<'w, NameRadius>,
     show_orbits: ResMut<'w, ShowOrbits>,
-    phase: ResMut<'w, Phase>,
+    clock: ResMut<'w, Clock>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
     unit: ResMut<'w, RulerUnit>,
@@ -760,7 +760,7 @@ pub fn chrome(
         heading(ui, "System View", true);
         ui.checkbox(&mut settings.show_body_names.0, "Show Labels");
         ui.checkbox(&mut settings.show_orbits.0, "Orbit Lines");
-        year_control(ui, &mut settings.phase, &contents);
+        clock_readout(ui, &mut settings.clock);
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
@@ -2580,79 +2580,26 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     response.gained_focus()
 }
 
-/// Move a system through one turn of its slowest body
+/// Say how far the system has been run on, and offer the way back
 ///
-/// The rail ends at exactly that turn, so every body comes round at least once
-/// along it. Nothing shorter is true of all of them: the slowest body of a system
-/// takes a median 993 times as long to come round as its fastest, and in Sol it
-/// is four million times, Persephone against Enceladus.
-///
-/// Which is why the rail is logarithmic. Laid out evenly in time, the whole of
-/// the inner system would live in the first pixel and every drag past it would
-/// throw the inner bodies through thousands of turns. Logarithmic, a pixel is
-/// minutes at one end and centuries at the other, and every body has a stretch
-/// of rail where it moves a step at a time.
-///
-/// What sets the span is said, and named. Fifteen thousand years is a strange
-/// span for a system read as nine planets, and knowing it belongs to one far
-/// flung object is the difference between a control that looks broken and one
-/// that is telling the truth.
-///
-/// Nothing to set where nothing goes round anything, which is a lone star. The
-/// rail is drawn all the same and does nothing, a control that comes and goes
-/// being harder to find than one that is plainly not offered.
-fn year_control(ui: &mut Ui, phase: &mut Phase, contents: &Contents) {
-    let orbits = contents.orbits();
-    let turn = orbits.slowest();
-
+/// The rails that move it are under the bodies themselves, each geared to its
+/// own orbit, there being no span that suits a whole system. What is left here
+/// is the reading they share and the one thing none of them can do: a rail moves
+/// the map within the turn its body is already in, so no amount of dragging one
+/// ever comes back to the moment the scans were taken.
+fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
     ui.add_space(FIELD_GAP);
-    ui.label("Round The Slowest Orbit");
-
-    let year = turn.map_or(1., |(_, year)| year);
-    let mut elapsed = phase.0 * year;
-    fill_width(ui);
-    let moved = ui
-        .add_enabled_ui(turn.is_some(), |ui| {
-            ui.add(
-                egui::Slider::new(&mut elapsed, 0.0..=year)
-                    .logarithmic(true)
-                    .smallest_positive(60.)
-                    .custom_formatter(|secs, _| lasting(secs as f32)),
-            )
-        })
-        .inner;
-
-    // Only on a change. Writing every frame would mark the phase changed every
-    // frame and have every body in the system put back where it already stands.
-    if moved.changed() {
-        phase.0 = elapsed / year;
-    }
-
-    ui.label(
-        egui::RichText::new(match turn {
-            Some((id, year)) => format!(
-                "One turn of {} is {}",
-                named_body(contents, id),
-                lasting(year as f32),
-            ),
-            None => "Nothing here goes round anything".to_owned(),
-        })
-        .weak(),
-    );
-}
-
-/// What the thing with `id` inside the held system is called
-///
-/// A barycenter has no name of its own, and is what a close pair of stars goes
-/// round, so it is said as what it is rather than left blank.
-fn named_body(contents: &Contents, id: i16) -> String {
-    if let Some(body) = contents.body(id) {
-        return body.name.clone();
-    }
-    if let Some(star) = contents.star(id) {
-        return star.name.clone();
-    }
-    "a shared centre".to_owned()
+    ui.horizontal(|ui| {
+        ui.label("Run on");
+        if clock.0 == 0. {
+            ui.label(egui::RichText::new("not at all").weak());
+        } else {
+            ui.label(lasting(clock.0 as f32));
+            if ui.button("Reset").clicked() {
+                clock.0 = 0.;
+            }
+        }
+    });
 }
 
 /// Ask for a filter by how lately a system was heard from

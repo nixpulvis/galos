@@ -24,43 +24,57 @@ pub mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
-    app.init_resource::<Phase>();
+    app.init_resource::<Clock>();
     app.add_plugins(fetch::plugin);
     app.add_plugins(spawn::plugin);
 }
 
-/// How far through a system's own year the map stands, from none of it to all
+/// How long the map has run a system on from when its things were scanned
 ///
-/// A fraction rather than a span of seconds, because a system has no year to
-/// read seconds against: the slowest body of one takes a median 993 times as
-/// long to come round as its fastest, so a number of days that turns the outer
-/// bodies visibly spins the inner ones through hundreds of turns, and one that
-/// suits the inner ones leaves the outer ones still.
+/// Seconds, and one reading for the whole system, so what is drawn is always a
+/// single moment rather than an arrangement composed body by body.
 ///
-/// The year it is a fraction of is [`orbit::Orbits::longest`], so one whole
-/// turn of it brings everything round at least once. Which is the whole reason
-/// for reading it this way: it is the only span that is a full orbit of every
-/// body at once.
-///
-/// Kept as a fraction so it means the same thing from system to system. Held as
-/// seconds it would be four turns of a close pair and a tenth of one of a wide
-/// system, and the control would jump every time the camera moved on.
+/// Set from a body's own panel rather than from one control over the system,
+/// because a system has no span that suits all of it: the slowest body of one
+/// takes a median 993 times as long to come round as its fastest, and in Sol it
+/// is four million times. Each panel gears this to its own body's period, so a
+/// rail is one orbit of the body it stands under whatever that body's orbit is
+/// worth in seconds.
 ///
 /// Zero draws every thing where its own scan put it. The bodies of one system
 /// are scanned a median one minute forty-five apart against periods mostly over
 /// a year, so zero is very nearly one moment rather than a smear -- which is
-/// also why one fraction serves the whole system instead of each body being
-/// advanced to a moment from its own epoch.
+/// also why one reading serves the whole system instead of each body being
+/// advanced from an epoch of its own.
 #[derive(Resource, Default)]
-pub struct Phase(pub f64);
+pub struct Clock(pub f64);
 
-impl Phase {
-    /// How many seconds through the system's year this stands, given its length
+impl Clock {
+    /// Where `period` stands in its own turn, from none of it to all
     ///
-    /// The one place the fraction becomes a span, so that what a phase means is
-    /// settled here rather than at each of the things that wind by it.
-    pub fn elapsed(&self, year: Option<f64>) -> f64 {
-        year.map_or(0., |year| self.0 * year)
+    /// What a rail geared to one body reads. The whole turns are kept apart from
+    /// the fraction so that [`Self::wind_to`] can put the body somewhere in the
+    /// turn it is already in rather than back at the first one.
+    pub fn through(&self, period: f64) -> f64 {
+        if period <= 0. {
+            return 0.;
+        }
+        let turns = self.0 / period;
+        turns - turns.floor()
+    }
+
+    /// Move to where `period` stands `through` of the way round its turn
+    ///
+    /// Within the turn the body is already in, so dragging a rail moves the map
+    /// by at most one period of the body it is geared to. A moon's rail then
+    /// barely stirs the planet it goes round, where jumping to the first turn
+    /// would throw the whole system back to the beginning.
+    pub fn wind_to(&mut self, period: f64, through: f64) {
+        if period <= 0. {
+            return;
+        }
+        let whole = (self.0 / period).floor();
+        self.0 = (whole + through) * period;
     }
 }
 
@@ -935,5 +949,41 @@ mod tests {
             "a body that was not there before read as the same rows"
         );
         assert_eq!(contents.bodies().len(), 2);
+    }
+
+    /// A rail reads where its own body stands in the turn it is in
+    #[test]
+    fn a_rail_reads_its_own_bodys_turn() {
+        let day = 86_400.;
+        // A quarter through its second turn of a four hundred day orbit.
+        let clock = Clock(500. * day);
+
+        assert_eq!(clock.through(400. * day), 0.25);
+    }
+
+    /// Dragging a rail stays in the turn its body is already in
+    ///
+    /// The point of gearing a rail to one body: a moon's covers one of its own
+    /// orbits, so dragging it moves the map by at most that. Winding to the
+    /// fraction of the first turn instead would throw the whole system back to
+    /// the beginning every time a moon was nudged.
+    #[test]
+    fn dragging_a_moons_rail_barely_moves_the_map() {
+        let day = 86_400.;
+        let mut clock = Clock(500. * day);
+
+        clock.wind_to(day, 0.5);
+
+        assert_eq!(clock.0, 500.5 * day, "the map went back to the first turn");
+    }
+
+    /// A thing whose period nobody recorded has no turn to be a fraction of
+    #[test]
+    fn an_unrecorded_period_has_no_phase() {
+        let mut clock = Clock(500. * 86_400.);
+
+        assert_eq!(clock.through(0.), 0.);
+        clock.wind_to(0., 0.5);
+        assert_eq!(clock.0, 500. * 86_400., "the map moved on nothing");
     }
 }
