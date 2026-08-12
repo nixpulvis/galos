@@ -22,6 +22,7 @@ use crate::search::Pending;
 use crate::systems::System;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
+use chrono::{DateTime, Utc};
 use galos_db::Database;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
@@ -43,6 +44,14 @@ pub fn plugin(app: &mut App) {
         mark.in_set(MapSet::Populate).after(super::spawn::spawn),
     );
 }
+
+/// How many systems a question about time is answered with at most
+///
+/// An hour of the feed touches about nine thousand of them, so this is a few
+/// hours of it. The bound is there because the question has a far end that means
+/// every system on record, and neither the map nor a list of rows is any use
+/// holding a million of them.
+const MOST: i64 = 10_000;
 
 /// One question asked of every system
 ///
@@ -91,6 +100,27 @@ pub enum Filter {
     ///
     /// `label` says how many, a hand-picked set having no name of its own.
     Systems { label: String, systems: Vec<i64> },
+    /// The systems heard from since a moment
+    ///
+    /// Bounded by [`MOST`], the far end of the control putting this question
+    /// being every system on record.
+    ///
+    /// What the feed is doing, drawn. The others ask something about a system
+    /// that holds still while it is asked; this one goes stale as it is
+    /// answered, since the moment it names sits at a fixed distance behind now
+    /// and everything crosses it eventually.
+    ///
+    /// So it is the one filter that is edited rather than added. Asking again
+    /// with a moment a second later is the same question, not a second one, and
+    /// [`Filters::add`] would refuse the second anyway for being a duplicate of
+    /// nothing it recognises.
+    ///
+    /// The database keeps when a system last changed and not a trail of every
+    /// time it did, so `moment` bounds a window whose other end is always now.
+    /// It cannot be slid back to look at the galaxy as it stood: parked in the
+    /// past it picks out what has not been heard from since, which is the same
+    /// question read the other way round.
+    Recency { label: String, moment: DateTime<Utc> },
 }
 
 impl Filter {
@@ -102,6 +132,7 @@ impl Filter {
             Filter::Systems { systems, .. } => {
                 systems.contains(&system.address)
             }
+            Filter::Recency { moment, .. } => system.updated_at >= *moment,
         }
     }
 
@@ -131,7 +162,9 @@ impl Filter {
     /// system it does not admit at all.
     pub fn place_of(&self, address: i64) -> Option<usize> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { systems, .. } => {
                 systems.iter().position(|on| *on == address)
             }
@@ -149,7 +182,9 @@ impl Filter {
     /// jumps lie between them is what it was plotted to find out.
     pub fn hops(&self) -> Option<usize> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { systems, .. } => systems.len().checked_sub(1),
         }
     }
@@ -164,7 +199,9 @@ impl Filter {
     /// each pair of systems the route runs through.
     pub fn range(&self) -> Option<&str> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { range, .. } => Some(range),
         }
     }
@@ -173,9 +210,9 @@ impl Filter {
     pub fn name(&self) -> &str {
         match self {
             Filter::Faction { name, .. } => name,
-            Filter::Route { label, .. } | Filter::Systems { label, .. } => {
-                label
-            }
+            Filter::Route { label, .. }
+            | Filter::Systems { label, .. }
+            | Filter::Recency { label, .. } => label,
         }
     }
 
@@ -195,6 +232,11 @@ impl Filter {
             }
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
+            }
+            Filter::Recency { moment, .. } => {
+                DbSystem::fetch_changed_since(db, *moment, MOST)
+                    .await
+                    .unwrap_or_default()
             }
         }
     }
@@ -466,6 +508,10 @@ impl Filters {
                 | Filter::Systems { systems, .. } => {
                     admitted.systems.extend(systems.iter().copied())
                 }
+                // Nothing a region can be narrowed by. What this admits is
+                // scattered across the galaxy rather than gathered anywhere,
+                // so it is fetched in its own right and not as part of a place.
+                Filter::Recency { .. } => {}
             }
         }
 
@@ -576,7 +622,15 @@ fn mark(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::tests::system;
+    use crate::systems::tests::{heard, system};
+
+    /// A filter admitting whatever was heard from after `secs`
+    fn since(secs: i64) -> Filter {
+        Filter::Recency {
+            label: format!("Since {secs}"),
+            moment: DateTime::from_timestamp(secs, 0).expect("a moment"),
+        }
+    }
 
     /// A faction filter, by id, called after it
     fn faction(id: i32) -> Filter {
@@ -1084,5 +1138,32 @@ mod tests {
         app.update();
 
         assert!(app.world().entity(outside).contains::<Filtered>());
+    }
+
+    /// A filter on time admits what has been heard from since
+    #[test]
+    fn a_filter_on_time_admits_what_came_in_since() {
+        let mut filters = Filters::default();
+        filters.add(since(100));
+
+        assert!(filters.admit(&heard(1, 160)), "later than the moment");
+        assert!(filters.admit(&heard(2, 100)), "the moment itself");
+        assert!(!filters.admit(&heard(3, 40)), "earlier than the moment");
+    }
+
+    /// It narrows no region, what it admits being gathered nowhere
+    ///
+    /// A faction and a route say which systems a region should be asked for. A
+    /// question about time is answered from across the galaxy, so it has
+    /// nothing to add to a question about a place, and adding its systems to
+    /// that list would narrow the region to them.
+    #[test]
+    fn a_filter_on_time_narrows_no_region() {
+        let mut filters = Filters::default();
+        filters.add(since(100));
+
+        let admitted = filters.admitted().expect("something was asked");
+        assert!(admitted.factions.is_empty());
+        assert!(admitted.systems.is_empty());
     }
 }
