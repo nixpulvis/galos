@@ -251,7 +251,9 @@ impl Body {
         Ok(Body {
             system_address: row.system_address,
             id: row.id,
-            parents,
+            // Read back rather than answered with, since the row may hold an
+            // ancestry this scan did not name.
+            parents: Parent::rows(row.parent_ids, row.parent_types),
             name: row.name,
             body_type: row.body_type.map(|ty| ty.as_str().into()),
             distance_from_arrival: row.distance_from_arrival,

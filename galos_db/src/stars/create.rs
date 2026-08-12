@@ -13,9 +13,10 @@ impl Star {
         star: &JournalStar,
         system_address: i64,
     ) -> Result<Star, Error> {
-        // Written outright, where a body, a cluster and a ring each keep what
-        // they have. A primary star names no ancestor, so an empty ancestry
-        // here is the answer rather than the want of one.
+        // Kept where a scan names none, as a body's and a ring's are. A
+        // primary star has no ancestor to name, and nothing tells that apart
+        // from a scan that left the field out, so the two are stored the same
+        // way and read back the same way.
         let parents = Parent::chain(&star.parents);
         let (parent_ids, parent_types) = Parent::columns(&parents);
         let parent_id = parent_ids.first().copied();
@@ -60,9 +61,9 @@ impl Star {
             ON CONFLICT (system_address, id)
             DO UPDATE SET
                 name = $3,
-                parent_id = $4,
-                parent_ids = $5,
-                parent_types = $6,
+                parent_id = COALESCE($4, stars.parent_id),
+                parent_ids = COALESCE($5, stars.parent_ids),
+                parent_types = COALESCE($6, stars.parent_types),
                 updated_at = $7,
                 updated_by = $8,
 
@@ -94,8 +95,8 @@ impl Star {
             star.id,
             star.name,
             parent_id,
-            &parent_ids,
-            &parent_types,
+            (!parent_ids.is_empty()).then_some(&parent_ids[..]),
+            (!parent_types.is_empty()).then_some(&parent_types[..]),
             timestamp.naive_utc(),
             user,
             star.absolute_magnitude,
@@ -126,7 +127,9 @@ impl Star {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            parents,
+            // Read back rather than answered with, since the row may hold an
+            // ancestry this scan did not name.
+            parents: Parent::rows(row.parent_ids, row.parent_types),
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
 

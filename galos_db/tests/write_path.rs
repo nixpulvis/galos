@@ -19,7 +19,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use elite_journal::body::{
     AtmosphereType, Body as JournalBody, Composition, Discovery, Material,
-    Orbit, Signal, Spin, Surface,
+    Orbit, Signal, Spin, Star as JournalStar, Surface,
 };
 use elite_journal::entry::incremental::exploration::{
     Cluster as JournalCluster, CodexEntry as JournalCodex, Ring as JournalRing,
@@ -38,7 +38,7 @@ use elite_journal::Allegiance;
 use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
     clusters::Cluster, codex_entries::CodexEntry, outfitting::Outfitting,
-    rings::Ring, shipyard::Shipyard, stations::Station,
+    rings::Ring, shipyard::Shipyard, stars::Star, stations::Station,
     system_signals::SystemSignal, systems::System, Database,
 };
 use std::collections::BTreeMap;
@@ -1243,11 +1243,10 @@ async fn two_systems_may_share_a_position() {
 
 /// A scan that names no ancestor does not orphan what it describes
 ///
-/// A ring's parents default to empty where the field is absent, and an empty
-/// ancestry is not an answer: the walk from a cluster back to its star runs
-/// through these, and a blanked chain stops it at a number with nothing behind
-/// it. A primary star is the one thing an empty ancestry is true of, and it is
-/// written outright for that reason.
+/// Parents default to empty where the field is absent, and an empty ancestry is
+/// not an answer: the walk from a body back to its star runs through these, and
+/// a blanked chain stops at a number with nothing behind it. The thing lands at
+/// the middle of its system, which is somewhere it is not.
 #[async_std::test]
 async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     let db = db!();
@@ -1311,4 +1310,56 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
         Some("Planet"),
         "the ancestry was blanked",
     );
+
+    // A secondary star, which goes round the barycenter the pair share. The
+    // primary is the one thing an empty ancestry is true of, and nothing tells
+    // that apart from a scan that left the field out.
+    let star = |parents| JournalStar {
+        name: "Test Orphaned B".into(),
+        id: 2,
+        parents,
+        absolute_magnitude: 8.4,
+        age_my: 1000,
+        distance_from_arrival_ls: 900.,
+        luminosity: "V".into(),
+        star_class: "M".into(),
+        stellar_mass: 0.35,
+        subclass: 4,
+        orbit: Some(Orbit {
+            semi_major_axis: 3e11,
+            eccentricity: 0.1,
+            orbital_inclination: 0.,
+            periapsis: 0.,
+            orbital_period: 1e9,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
+        }),
+        spin: Spin { period: 1e5, tilt: 0. },
+        radius: 3e8,
+        temperature: 3200.,
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+
+    Star::from_journal(
+        &db,
+        at(0),
+        "test",
+        &star(vec![hangs_off("Null", 1)]),
+        ORPHANED,
+    )
+    .await
+    .expect("the first scan should write");
+
+    let answered =
+        Star::from_journal(&db, at(60), "test", &star(vec![]), ORPHANED)
+            .await
+            .expect("a scan without parents should write");
+
+    assert_eq!(
+        answered.parent_id(),
+        Some(1),
+        "the answer forgot what the row kept",
+    );
+    let stored = Star::fetch(&db, ORPHANED, 2).await.expect("on record");
+    assert_eq!(stored.parent_id(), Some(1), "the ancestry was blanked");
 }

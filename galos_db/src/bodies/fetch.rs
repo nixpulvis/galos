@@ -53,17 +53,7 @@ struct Row {
 
 impl From<Row> for Body {
     fn from(row: Row) -> Self {
-        // The ids are what a chain is walked by. The kinds went unrecorded
-        // until they were stored alongside, so a row may have the one without
-        // the other, and the ids are what decides how long the chain is.
-        let types = row.parent_types.unwrap_or_default();
-        let parents = row
-            .parent_ids
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(depth, id)| Parent { ty: types.get(depth).cloned(), id })
-            .collect();
+        let parents = Parent::rows(row.parent_ids, row.parent_types);
 
         let materials = row
             .material_names

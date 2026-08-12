@@ -18,18 +18,7 @@ macro_rules! star {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            parents: {
-                let types = row.parent_types.unwrap_or_default();
-                row.parent_ids
-                    .unwrap_or_default()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(depth, id)| Parent {
-                        ty: types.get(depth).cloned(),
-                        id,
-                    })
-                    .collect()
-            },
+            parents: Parent::rows(row.parent_ids, row.parent_types),
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
 
