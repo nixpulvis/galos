@@ -874,9 +874,9 @@ fn circling(
     turned(ui, orbit.orbital_period as f64, clock);
 }
 
-/// Where round its orbit this thing stands, and a rail to move it by
+/// Where round its orbit this thing stands, and a slider to move it by
 ///
-/// Geared to this orbit alone, so the whole rail is one turn of this body
+/// Geared to this orbit alone, so the whole slider is one turn of this body
 /// however long that is: a system has no span that suits all of it, the slowest
 /// body of one taking a median 993 times as long to come round as its fastest.
 ///

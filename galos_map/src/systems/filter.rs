@@ -73,8 +73,8 @@ impl Default for LastCutAt {
 ///
 /// Named spans rather than a bare number of seconds. The interesting end of
 /// this is the last few minutes and the far end is a database going back years,
-/// so a rail laid out evenly in seconds would spend nearly all of its length in
-/// country nobody wants and cross the useful part in a pixel.
+/// so a slider laid out evenly in seconds would spend nearly all of its
+/// length in country nobody wants and cross the useful part in a pixel.
 ///
 /// Nothing at the near end. A span reaching back forever admits every system on
 /// record, which is what asking nothing does, and putting the question anyway

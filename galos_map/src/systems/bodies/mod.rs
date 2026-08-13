@@ -37,9 +37,9 @@ pub fn plugin(app: &mut App) {
 /// Set from a body's own panel rather than from one control over the system,
 /// because a system has no span that suits all of it: the slowest body of one
 /// takes a median 993 times as long to come round as its fastest, and in Sol it
-/// is four million times. Each panel gears this to its own body's period, so a
-/// rail is one orbit of the body it stands under whatever that body's orbit is
-/// worth in seconds.
+/// is four million times. Each panel gears this to its own body's period, so
+/// a slider is one orbit of the body it stands under whatever that body's
+/// orbit is worth in seconds.
 ///
 /// Zero draws every thing where its own scan put it. The bodies of one system
 /// are scanned a median one minute forty-five apart against periods mostly over
@@ -50,27 +50,28 @@ pub fn plugin(app: &mut App) {
 pub struct Clock {
     /// The seconds themselves
     pub at: f64,
-    /// The whole turns the rail being dragged set out from, while one is
+    /// The whole turns the slider being dragged set out from, while one is
     ///
-    /// A rail covers one turn of its own body, and a phase is cyclic: its far
-    /// end is the same place on the orbit as its near end, one turn later. Which
-    /// turn that is has to hold still while the rail is dragged, or the reading
-    /// moves under the drag: worked out afresh each frame from the clock it is
-    /// itself setting, a rail run to its far end lands on the next turn, reads
-    /// back as no phase at all, and asks for the turn after that.
+    /// A slider covers one turn of its own body, and a phase is cyclic: its
+    /// far end is the same place on the orbit as its near end, one turn later.
+    /// Which turn that is has to hold still while the slider is dragged, or
+    /// the reading moves under the drag: worked out afresh each frame from the
+    /// clock it is itself setting, a slider run to its far end lands on the
+    /// next turn, reads back as no phase at all, and asks for the turn after
+    /// that.
     ///
-    /// One of these for the map rather than one per rail, there being one
-    /// pointer and so one rail ever being dragged.
+    /// One of these for the map rather than one per slider, there being one
+    /// pointer and so one slider ever being dragged.
     held: Option<Held>,
 }
 
-/// The rail a drag has hold of
+/// The slider a drag has hold of
 ///
-/// The period is carried so that the anchor is only ever applied to the rail it
-/// was taken for. A drag that never sees its own end -- a panel shut while the
-/// pointer is down -- would otherwise leave the anchor standing, and the next
-/// rail touched would measure a turn of its own body from a count of somebody
-/// else's.
+/// The period is carried so that the anchor is only ever applied to the
+/// slider it was taken for. A drag that never sees its own end -- a panel shut
+/// while the pointer is down -- would otherwise leave the anchor standing, and
+/// the next slider touched would measure a turn of its own body from a count
+/// of somebody else's.
 struct Held {
     /// What the slider is geared to
     period: f64,
@@ -96,7 +97,7 @@ impl Held {
 impl Clock {
     /// Where `period` stands in its own turn, from none of it to all
     ///
-    /// What a rail geared to one body reads.
+    /// What a slider geared to one body reads.
     pub fn through(&self, period: f64) -> f64 {
         if period <= 0. {
             return 0.;
@@ -105,10 +106,10 @@ impl Clock {
         turns - turns.floor()
     }
 
-    /// Take hold of the turn a rail over `period` is setting out from
+    /// Take hold of the turn a slider over `period` is setting out from
     ///
     /// Said when a drag begins, so that [`Self::wind_to`] measures from where
-    /// the rail started rather than from where it has since put the clock.
+    /// the slider started rather than from where it has since put the clock.
     pub fn hold(&mut self, period: f64) {
         if period > 0. {
             self.held =
@@ -123,14 +124,15 @@ impl Clock {
 
     /// Move to where `period` stands `through` of the way round its turn
     ///
-    /// Within the turn the rail set out from, so dragging one moves the map by
-    /// at most a single period of the body it is geared to, and moves it evenly:
-    /// a rail run from end to end runs the clock on by exactly one turn of that
-    /// body, with nothing anywhere in the system jumping on the way.
+    /// Within the turn the slider set out from, so dragging one moves the map
+    /// by at most a single period of the body it is geared to, and moves it
+    /// evenly: a slider run from end to end runs the clock on by exactly one
+    /// turn of that body, with nothing anywhere in the system jumping on the
+    /// way.
     ///
-    /// A moon's rail therefore barely stirs the planet it goes round. Reaching
-    /// for the first turn instead would throw the whole system back to the
-    /// beginning every time a moon was nudged.
+    /// A moon's slider therefore barely stirs the planet it goes round.
+    /// Reaching for the first turn instead would throw the whole system back to
+    /// the beginning every time a moon was nudged.
     pub fn wind_to(&mut self, period: f64, through: f64) {
         if period <= 0. {
             return;
@@ -1044,9 +1046,9 @@ mod tests {
         assert_eq!(contents.bodies().len(), 2);
     }
 
-    /// A rail reads where its own body stands in the turn it is in
+    /// A slider reads where its own body stands in the turn it is in
     #[test]
-    fn a_rail_reads_its_own_bodys_turn() {
+    fn a_slider_reads_its_own_bodys_turn() {
         let day = 86_400.;
         // A quarter through its second turn of a four hundred day orbit.
         let clock = Clock { at: 500. * day, ..default() };
@@ -1054,14 +1056,14 @@ mod tests {
         assert_eq!(clock.through(400. * day), 0.25);
     }
 
-    /// Dragging a rail stays in the turn its body is already in
+    /// Dragging a slider stays in the turn its body is already in
     ///
-    /// The point of gearing a rail to one body: a moon's covers one of its own
-    /// orbits, so dragging it moves the map by at most that. Winding to the
+    /// The point of gearing a slider to one body: a moon's covers one of its
+    /// own orbits, so dragging it moves the map by at most that. Winding to the
     /// fraction of the first turn instead would throw the whole system back to
     /// the beginning every time a moon was nudged.
     #[test]
-    fn dragging_a_moons_rail_barely_moves_the_map() {
+    fn dragging_a_moons_slider_barely_moves_the_map() {
         let day = 86_400.;
         let mut clock = Clock { at: 500. * day, ..default() };
 
@@ -1074,14 +1076,15 @@ mod tests {
         );
     }
 
-    /// A rail held at its far end leaves the map where it is
+    /// A slider held at its far end leaves the map where it is
     ///
-    /// A phase is cyclic, so the far end of a rail is the same place on the orbit
-    /// as its near end, one turn on. Worked out afresh from the clock each frame,
-    /// that reads back as no phase at all and asks for the turn after it, and a
-    /// rail held there ran the whole system on a period every frame.
+    /// A phase is cyclic, so the far end of a slider is the same place on the
+    /// orbit as its near end, one turn on. Worked out afresh from the clock
+    /// each frame, that reads back as no phase at all and asks for the turn
+    /// after it, and a slider held there ran the whole system on a period every
+    /// frame.
     #[test]
-    fn a_rail_held_at_its_far_end_stays_put() {
+    fn a_slider_held_at_its_far_end_stays_put() {
         let day = 86_400.;
         let period = 400. * day;
         let mut clock = Clock { at: 500. * day, ..default() };
@@ -1095,7 +1098,7 @@ mod tests {
 
         assert_eq!(
             clock.at, once,
-            "the clock ran away while the rail was held"
+            "the clock ran away while the slider was held"
         );
     }
 
@@ -1186,15 +1189,15 @@ mod tests {
         assert!(written(&world), "a dragged slider left the map where it was");
     }
 
-    /// A rail run from end to end runs the clock on by one turn of its body
+    /// A slider run from end to end runs the clock on by one turn of its body
     ///
     /// Evenly, and that is the point of it. The clock is shared, so every other
-    /// body moves by whatever span this rail asks for; a rail that reached
+    /// body moves by whatever span this slider asks for; a slider that reached
     /// backwards at its far end would leave its own body where it was, the two
-    /// ends being one place on its orbit, and jump everything else in the system
-    /// by nearly a whole turn of it.
+    /// ends being one place on its orbit, and jump everything else in the
+    /// system by nearly a whole turn of it.
     #[test]
-    fn a_rail_run_end_to_end_moves_the_map_evenly() {
+    fn a_slider_run_end_to_end_moves_the_map_evenly() {
         let day = 86_400.;
         let period = 400. * day;
         let mut clock = Clock { at: 500. * day, ..default() };
@@ -1216,27 +1219,27 @@ mod tests {
         }
     }
 
-    /// An anchor moves the rail it was taken for and no other
+    /// An anchor moves the slider it was taken for and no other
     ///
     /// A drag that never sees its own end leaves the anchor standing: a panel
-    /// shut with the pointer down draws no rail that frame, so nothing says the
-    /// drag is over. The next rail touched must measure its own body's turn
-    /// rather than a count of somebody else's, which for a moon holding a
+    /// shut with the pointer down draws no slider that frame, so nothing says
+    /// the drag is over. The next slider touched must measure its own body's
+    /// turn rather than a count of somebody else's, which for a moon holding a
     /// planet's count is a clock thrown a long way from anywhere.
     #[test]
-    fn an_anchor_moves_only_the_rail_it_was_taken_for() {
+    fn an_anchor_moves_only_the_slider_it_was_taken_for() {
         let day = 86_400.;
         let mut clock = Clock { at: 500. * day, ..default() };
 
-        // A drag of the planet's rail that never ends.
+        // A drag of the planet's slider that never ends.
         clock.hold(400. * day);
-        // Then the moon's rail is touched.
+        // Then the moon's slider is touched.
         clock.wind_to(day, 0.5);
 
         assert_eq!(
             clock.at,
             500.5 * day,
-            "the moon's rail measured from the planet's turn",
+            "the moon's slider measured from the planet's turn",
         );
     }
 

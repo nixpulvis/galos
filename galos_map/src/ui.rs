@@ -2641,9 +2641,10 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 
 /// Say how far the system has been run on, and offer the way back
 ///
-/// The rails that move it are under the bodies themselves, each geared to its
-/// own orbit, there being no span that suits a whole system. What is left here
-/// is the reading they share and the one thing none of them can do: a rail moves
+/// The sliders that move it are under the bodies themselves, each geared to
+/// its own orbit, there being no span that suits a whole system. What is left
+/// here is the reading they share and the one thing none of them can do: a
+/// slider moves
 /// the map within the turn its body is already in, so no amount of dragging one
 /// ever comes back to the moment the scans were taken.
 fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
