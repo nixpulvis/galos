@@ -6,6 +6,20 @@ use elite_journal::{prelude::*, system::System as JournalSystem};
 use geozero::wkb;
 
 impl System {
+    /// Write what a message says about a system, whenever it was sent
+    ///
+    /// Three things at once, which is what the `CASE` on every field below is
+    /// for. The newer of two readings wins wherever they disagree, since what
+    /// a system stands at changes and an older one is stale rather than a
+    /// repeat. An older message still fills in what the row has never held,
+    /// since a blank is not a reading it can contradict: a scan writes a
+    /// system with nothing but a name and a place, and the visit that says who
+    /// holds it may well be the one delivered late. And the stamp holds at the
+    /// newest reading either way, so a late message does not put the row back
+    /// to when it was sent.
+    ///
+    /// [`Self::from_journal`] asks the same, and must: the two write one row.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         db: &Database,
         address: i64,
@@ -20,7 +34,7 @@ impl System {
         updated_at: DateTime<Utc>,
         updated_by: &str,
     ) -> Result<(), Error> {
-        let done = sqlx::query!(
+        sqlx::query!(
             r#"
             INSERT INTO systems
                 (address,
@@ -39,21 +53,33 @@ impl System {
                 $7, $8, $9, $10, $11, $12)
             ON CONFLICT (address)
             DO UPDATE SET
-                primary_star_class = COALESCE($3, systems.primary_star_class),
-                position = COALESCE($4, systems.position),
-                population = COALESCE($5, systems.population),
-                security = COALESCE($6, systems.security),
-                government = COALESCE($7, systems.government),
-                allegiance = COALESCE($8, systems.allegiance),
-                primary_economy = COALESCE($9, systems.primary_economy),
-                secondary_economy = COALESCE($10, systems.secondary_economy),
-                updated_at = $11,
-                updated_by = $12
-            -- Not strictly newer. Every field above keeps what this message
-            -- does not carry, so one arriving in the same second as the last
-            -- can only fill in what that one left out. `Location` and
-            -- `FSDJump` are sent together and do not say the same things.
-            WHERE systems.updated_at <= $11
+                primary_star_class = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($3, systems.primary_star_class)
+                    ELSE COALESCE(systems.primary_star_class, $3) END,
+                position = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($4, systems.position)
+                    ELSE COALESCE(systems.position, $4) END,
+                population = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($5, systems.population)
+                    ELSE COALESCE(systems.population, $5) END,
+                security = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($6, systems.security)
+                    ELSE COALESCE(systems.security, $6) END,
+                government = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($7, systems.government)
+                    ELSE COALESCE(systems.government, $7) END,
+                allegiance = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($8, systems.allegiance)
+                    ELSE COALESCE(systems.allegiance, $8) END,
+                primary_economy = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($9, systems.primary_economy)
+                    ELSE COALESCE(systems.primary_economy, $9) END,
+                secondary_economy = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE($10, systems.secondary_economy)
+                    ELSE COALESCE(systems.secondary_economy, $10) END,
+                updated_at = GREATEST(systems.updated_at, $11),
+                updated_by = CASE WHEN $11 >= systems.updated_at
+                    THEN $12 ELSE systems.updated_by END
             "#,
             address as i64,
             name,
@@ -70,10 +96,6 @@ impl System {
         )
         .execute(&db.pool)
         .await?;
-
-        if done.rows_affected() == 0 {
-            crate::turned_away("system", updated_at);
-        }
 
         Self::adopt_waiting_markets(db, address, name, updated_at, updated_by)
             .await?;
@@ -158,7 +180,7 @@ impl System {
         let position =
             system.pos.map(|p| Coordinate { x: p.x, y: p.y, z: p.z });
         let economies = Economies::new(system.economy, system.second_economy);
-        let done = sqlx::query!(
+        sqlx::query!(
             r#"
             INSERT INTO systems
                 (address,
@@ -175,21 +197,30 @@ impl System {
             VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (address)
             DO UPDATE SET
-                position = COALESCE($3, systems.position),
-                population = COALESCE($4, systems.population),
-                security = COALESCE($5, systems.security),
-                government = COALESCE($6, systems.government),
-                allegiance = COALESCE($7, systems.allegiance),
-                primary_economy = COALESCE($8, systems.primary_economy),
-                secondary_economy = COALESCE($9, systems.secondary_economy),
-                updated_at = $10,
-                updated_by = $11
-            -- As [`Self::create`] asks it, this being the same row written
-            -- from the other end. What a system stands at changes with time,
-            -- so a message carrying an older reading of it is not repeating
-            -- itself, and taken it would put the row back to what the galaxy
-            -- was when it was sent.
-            WHERE systems.updated_at <= $10
+                position = CASE WHEN $10 >= systems.updated_at
+                    THEN COALESCE($3, systems.position)
+                    ELSE COALESCE(systems.position, $3) END,
+                population = CASE WHEN $10 >= systems.updated_at
+                    THEN COALESCE($4, systems.population)
+                    ELSE COALESCE(systems.population, $4) END,
+                security = CASE WHEN $10 >= systems.updated_at
+                    THEN COALESCE($5, systems.security)
+                    ELSE COALESCE(systems.security, $5) END,
+                government = CASE WHEN $10 >= systems.updated_at
+                    THEN COALESCE($6, systems.government)
+                    ELSE COALESCE(systems.government, $6) END,
+                allegiance = CASE WHEN $10 >= systems.updated_at
+                    THEN COALESCE($7, systems.allegiance)
+                    ELSE COALESCE(systems.allegiance, $7) END,
+                primary_economy = CASE WHEN $10 >= systems.updated_at
+                    THEN COALESCE($8, systems.primary_economy)
+                    ELSE COALESCE(systems.primary_economy, $8) END,
+                secondary_economy = CASE WHEN $10 >= systems.updated_at
+                    THEN COALESCE($9, systems.secondary_economy)
+                    ELSE COALESCE(systems.secondary_economy, $9) END,
+                updated_at = GREATEST(systems.updated_at, $10),
+                updated_by = CASE WHEN $10 >= systems.updated_at
+                    THEN $11 ELSE systems.updated_by END
             "#,
             system.address as i64,
             system.name,
@@ -205,10 +236,6 @@ impl System {
         )
         .execute(&db.pool)
         .await?;
-
-        if done.rows_affected() == 0 {
-            crate::turned_away("system", timestamp);
-        }
 
         // Asked whatever became of the row above. A faction and a conflict are
         // rows of their own, each with a stamp of its own and its own say in

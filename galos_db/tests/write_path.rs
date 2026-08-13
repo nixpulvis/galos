@@ -194,6 +194,7 @@ const ORPHANED: i64 = 900_000_017;
 const PLACED: i64 = 900_000_018;
 const LATE: i64 = 900_000_019;
 const LATE_VISIT: i64 = 900_000_037;
+const LATE_FILLS: i64 = 900_000_038;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
@@ -1633,6 +1634,49 @@ async fn a_visit_delivered_late_does_not_undo_a_newer_one() {
     );
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+}
+
+/// An older visit still fills in what a system has never held
+///
+/// A blank is not a reading an older message can contradict. Most of what
+/// arrives names a system in passing and carries nothing about it but a name
+/// and a place -- a scan, a docking, a codex sighting -- so the row that says
+/// who holds a system is often the one delivered late. Refusing it outright
+/// drops that: 1,162,770 of the 1,192,896 systems on record have no allegiance
+/// against them, so this is the scarce half of what the database knows.
+///
+/// What the fill-in must not do is claim the system was heard from then. The
+/// stamp stays where the newer message left it, and so does the sender.
+#[async_std::test]
+async fn an_older_visit_fills_in_what_a_system_has_never_held() {
+    let db = db!();
+    forget(LATE_FILLS).await;
+
+    // A scan, which is the whole of what `ensure_system` ever carries.
+    let mut scanned = JournalSystem::new(LATE_FILLS, "Test Late Fills");
+    scanned.pos = Some(somewhere(22.0));
+    System::from_journal(&db, at(600), "scan", &scanned)
+        .await
+        .expect("the scan should write");
+
+    // A visit sent before it and handed over after, saying what it could not.
+    let mut visit = JournalSystem::new(LATE_FILLS, "Test Late Fills");
+    visit.pos = Some(somewhere(22.0));
+    visit.population = Some(4_000_000);
+    visit.allegiance = Some(Allegiance::Empire);
+    System::from_journal(&db, at(0), "visit", &visit)
+        .await
+        .expect("the late visit should write");
+
+    let stored = System::fetch(&db, LATE_FILLS).await.expect("should read");
+    assert_eq!(stored.population, 4_000_000, "the blank was left blank");
+    assert_eq!(
+        stored.allegiance,
+        Some(Allegiance::Empire),
+        "the blank was left blank",
+    );
+    assert_eq!(stored.updated_at, at(600), "the fill-in moved the stamp");
+    assert_eq!(stored.updated_by, "scan", "the sender went with it");
 }
 
 /// The later reading of a signal wins, whichever of the two arrives first

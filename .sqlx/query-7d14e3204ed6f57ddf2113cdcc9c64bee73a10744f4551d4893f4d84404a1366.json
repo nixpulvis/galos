@@ -1,13 +1,12 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 primary_star_class,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at,\n                 updated_by)\n            VALUES ($1, UPPER($2), $3, $4::geometry, $5, $6,\n                $7, $8, $9, $10, $11, $12)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                primary_star_class = COALESCE($3, systems.primary_star_class),\n                position = COALESCE($4, systems.position),\n                population = COALESCE($5, systems.population),\n                security = COALESCE($6, systems.security),\n                government = COALESCE($7, systems.government),\n                allegiance = COALESCE($8, systems.allegiance),\n                primary_economy = COALESCE($9, systems.primary_economy),\n                secondary_economy = COALESCE($10, systems.secondary_economy),\n                updated_at = $11,\n                updated_by = $12\n            -- Not strictly newer. Every field above keeps what this message\n            -- does not carry, so one arriving in the same second as the last\n            -- can only fill in what that one left out. `Location` and\n            -- `FSDJump` are sent together and do not say the same things.\n            WHERE systems.updated_at <= $11\n            ",
+  "query": "\n            INSERT INTO systems\n                (address,\n                 name,\n                 position,\n                 population,\n                 security,\n                 government,\n                 allegiance,\n                 primary_economy,\n                 secondary_economy,\n                 updated_at,\n                 updated_by)\n            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (address)\n            DO UPDATE SET\n                position = CASE WHEN $10 >= systems.updated_at\n                    THEN COALESCE($3, systems.position)\n                    ELSE COALESCE(systems.position, $3) END,\n                population = CASE WHEN $10 >= systems.updated_at\n                    THEN COALESCE($4, systems.population)\n                    ELSE COALESCE(systems.population, $4) END,\n                security = CASE WHEN $10 >= systems.updated_at\n                    THEN COALESCE($5, systems.security)\n                    ELSE COALESCE(systems.security, $5) END,\n                government = CASE WHEN $10 >= systems.updated_at\n                    THEN COALESCE($6, systems.government)\n                    ELSE COALESCE(systems.government, $6) END,\n                allegiance = CASE WHEN $10 >= systems.updated_at\n                    THEN COALESCE($7, systems.allegiance)\n                    ELSE COALESCE(systems.allegiance, $7) END,\n                primary_economy = CASE WHEN $10 >= systems.updated_at\n                    THEN COALESCE($8, systems.primary_economy)\n                    ELSE COALESCE(systems.primary_economy, $8) END,\n                secondary_economy = CASE WHEN $10 >= systems.updated_at\n                    THEN COALESCE($9, systems.secondary_economy)\n                    ELSE COALESCE(systems.secondary_economy, $9) END,\n                updated_at = GREATEST(systems.updated_at, $10),\n                updated_by = CASE WHEN $10 >= systems.updated_at\n                    THEN $11 ELSE systems.updated_by END\n            ",
   "describe": {
     "columns": [],
     "parameters": {
       "Left": [
         "Int8",
         "Text",
-        "Varchar",
         {
           "Custom": {
             "name": "geometry",
@@ -121,5 +120,5 @@
     },
     "nullable": []
   },
-  "hash": "dec85de7ae862e2de5f39f91699d9bab9a3306bfec6d6120db2ae00874c2c0fe"
+  "hash": "7d14e3204ed6f57ddf2113cdcc9c64bee73a10744f4551d4893f4d84404a1366"
 }
