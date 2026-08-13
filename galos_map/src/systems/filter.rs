@@ -30,6 +30,7 @@ use galos_db::systems::System as DbSystem;
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
     app.init_resource::<Watch>();
+    app.init_resource::<Standstill>();
     app.init_resource::<DimTo>();
     app.init_resource::<LookupNote>();
     app.init_resource::<Resolving>();
@@ -418,10 +419,72 @@ pub struct Entry {
 }
 
 /// Every filter the user has added
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub struct Filters(Vec<Entry>);
 
+/// The time filter's row, held back while a control is held
+///
+/// The rows are drawn above the controls that ask for filters, so a filter
+/// asked for part way through a gesture puts a row above the control being
+/// used and takes it down a row. Egui follows a drag by the widget it began
+/// on, and a control that has moved is one the pointer is no longer over.
+///
+/// Only a row that was not there when the press landed is held back, and only
+/// while the control is held. One that was there is drawn as it stands, so
+/// what it says follows the drag: a span dragged from one to the next says the
+/// span it has reached, and dragged to the far end says it is off.
+///
+/// Nothing holds a row the other way, because nothing takes one away mid-drag.
+/// A control slid to its far end stops asking without letting go of its row,
+/// by [`Filters::turn_time_off`], and the row goes when the control does.
+#[derive(Resource, Default)]
+pub struct Standstill {
+    /// Whether a control is being held
+    held: bool,
+    /// Whether a filter on time was being asked when the press landed
+    asked: bool,
+}
+
+impl Standstill {
+    /// Hold the rows where the press finds them in `rows`
+    pub fn hold(&mut self, rows: &Filters) {
+        self.held = true;
+        self.asked = rows.timed().is_some();
+    }
+
+    /// Let them catch up with what has been asked for
+    pub fn release(&mut self) {
+        self.held = false;
+        self.asked = false;
+    }
+
+    /// `rows` as they are to be drawn, where a control is being held
+    ///
+    /// Nothing where none is, the rows being drawn as they stand.
+    pub fn rows(&self, rows: &Filters) -> Option<Filters> {
+        if !self.held {
+            return None;
+        }
+
+        let mut standing = rows.clone();
+        if !self.asked
+            && let Some(at) = standing.timed()
+        {
+            standing.0.remove(at);
+        }
+
+        Some(standing)
+    }
+}
+
 impl Filters {
+    /// Where the filter on time stands, where one is being asked
+    fn timed(&self) -> Option<usize> {
+        self.0
+            .iter()
+            .position(|active| matches!(active.filter, Filter::Recency { .. }))
+    }
+
     /// Whether any enabled filter admits `system`
     ///
     /// Any of them, so each one adds to what is shown rather than cutting
@@ -554,6 +617,28 @@ impl Filters {
                 active.enabled = true;
             }
             None => self.0.push(Entry { filter: asked, enabled: true }),
+        }
+    }
+
+    /// Stop asking about time, leaving the row standing and saying `said`
+    ///
+    /// What the control does while it is being held. Its row is drawn above
+    /// it, so a row going out from under the pointer takes the control up a
+    /// row and out from under it too.
+    ///
+    /// The row says what is filtering, which by now is nothing, so it reads as
+    /// the control does. A row left saying the span it was asked as would name
+    /// a question that is no longer being put.
+    pub fn turn_time_off(&mut self, said: &str) {
+        if let Some(active) = self
+            .0
+            .iter_mut()
+            .find(|active| matches!(active.filter, Filter::Recency { .. }))
+        {
+            if let Filter::Recency { label, .. } = &mut active.filter {
+                *label = said.to_owned();
+            }
+            active.enabled = false;
         }
     }
 
