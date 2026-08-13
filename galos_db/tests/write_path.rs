@@ -549,10 +549,6 @@ async fn an_outfitting_message_replaces_what_came_before() {
     .await
     .expect("system should write");
 
-    Station::create(&db, at(0), "test", TRADE, "Test Station")
-        .await
-        .expect("station should write");
-
     let priced = |name: &str, price: i64| {
         Module::Priced(PricedModule {
             id: 1,
@@ -659,10 +655,6 @@ async fn an_unpriced_module_is_still_stocked() {
     .await
     .expect("system should write");
 
-    Station::create(&db, at(0), "test", TRADE_UNPRICED, "Test Station 2")
-        .await
-        .expect("station should write");
-
     let outfitting = JournalOutfitting {
         system_name: "Test Trade Unpriced".into(),
         station_name: "Test Station 2".into(),
@@ -701,10 +693,6 @@ async fn a_shipyard_message_replaces_what_came_before() {
     )
     .await
     .expect("system should write");
-
-    Station::create(&db, at(0), "test", TRADE_SHIPYARD, "Test Station 3")
-        .await
-        .expect("station should write");
 
     let yard = JournalShipyard {
         system_name: "Test Trade Shipyard".into(),
@@ -752,10 +740,6 @@ async fn a_black_market_sale_does_not_retire_the_others() {
     )
     .await
     .expect("system should write");
-
-    Station::create(&db, at(0), "test", TRADE_BLACK_MARKET, "Test Station 4")
-        .await
-        .expect("station should write");
 
     for (name, price, when) in [("Gold", 9432, at(0)), ("Silver", 4700, at(60))]
     {
@@ -1900,10 +1884,6 @@ async fn trade_messages_do_not_wait_on_each_other() {
     )
     .await
     .expect("system should write");
-
-    Station::create(&db, at(0), "test", CROWDED, "Test Crowded Station")
-        .await
-        .expect("station should write");
 
     let mut running = Vec::new();
     for _ in 0..8 {
