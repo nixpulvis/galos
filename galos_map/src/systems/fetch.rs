@@ -6,7 +6,7 @@ use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Db, search::Search};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use galos_db::systems::System as DbSystem;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -17,13 +17,9 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(Throttle(100));
 
     app.init_resource::<LastFetchedAt>();
-    app.init_resource::<LastAskedAt>();
     app.init_resource::<FetchTasks>();
 
-    app.add_systems(
-        Update,
-        (fetch, fetch_selected, fetch_changed).in_set(MapSet::Fetch),
-    );
+    app.add_systems(Update, (fetch, fetch_selected).in_set(MapSet::Fetch));
 }
 
 /// How long the map waits before asking again for what it already has
@@ -73,22 +69,6 @@ impl Default for LastFetchedAt {
     }
 }
 
-/// When the question about time was last put
-///
-/// Its own memory rather than [`LastFetchedAt`], which is the spyglass's. The
-/// two ask on the same [`Poll`] and about different things, and sharing one
-/// instant would have each reset the other's wait.
-#[derive(Resource)]
-pub struct LastAskedAt(pub Instant);
-
-impl Default for LastAskedAt {
-    fn default() -> LastAskedAt {
-        LastAskedAt(Instant::now())
-    }
-}
-
-/// Represents a single fetch request
-//
 // TODO: Put region math inside custom Hash impl?
 // TODO: once we have a hash impl let's save f64 instead of String for route
 // range.
@@ -113,13 +93,6 @@ pub enum FetchIndex {
     /// a system the user picked out of a list is one the map may never have
     /// been near.
     Systems(Vec<i64>),
-    /// Whatever has been heard from since a moment, wherever it is
-    ///
-    /// The one question here with no place in it. An hour of the feed touches
-    /// systems scattered across the galaxy, so there is nowhere to look that
-    /// the answer would be in, and narrowing this to a region would answer
-    /// with the handful of them that happen to lie under the camera.
-    Changed(DateTime<Utc>),
 }
 
 impl FetchIndex {
@@ -178,7 +151,6 @@ impl fmt::Debug for FetchIndex {
                 write!(f, "<{}-{}>{}>", start, end, range)
             }
             Systems(addresses) => write!(f, "<{} named>", addresses.len()),
-            Changed(moment) => write!(f, "<since {}>", moment),
         }
     }
 }
@@ -260,6 +232,15 @@ fn fetch_spyglass(
     let Ok(camera) = camera_query.single() else { return };
     let center = camera.center.as_ivec3();
     let admitted = if dim.0 == 0. { filters.admitted() } else { None };
+    // Kept out of the index, unlike the two lists. The moment moves with the
+    // clock, so a region that carried it would be somewhere new every time it
+    // was worked out, and the map would ask again at the throttle rather than
+    // waiting out the poll.
+    let since = if dim.0 == 0. {
+        filters.changed_since(Utc::now()).map(|moment| (moment, MOST))
+    } else {
+        None
+    };
     let index =
         FetchIndex::Region(center, spyglass.radius as i32, admitted.clone());
     let now = time.last_update().unwrap_or(time.startup());
@@ -279,7 +260,7 @@ fn fetch_spyglass(
             let narrowed = admitted.as_ref().map(|admitted| {
                 (admitted.factions.as_slice(), admitted.systems.as_slice())
             });
-            DbSystem::fetch_in_range_of_point(&db, range, cent, narrowed)
+            DbSystem::fetch_in_range_of_point(&db, range, cent, narrowed, since)
                 .await
                 .unwrap_or_default()
         });
@@ -332,61 +313,6 @@ fn fetch_selected(
         DbSystem::fetch_many(&db, &asking).await.unwrap_or_default()
     });
     tasks.fetched.insert(FetchIndex::Systems(wanted), (task, now));
-}
-
-/// Ask for whatever has been heard from since the filter's moment
-///
-/// The one fetch here with no place in it, for the reason
-/// [`FetchIndex::Changed`] gives. Nothing narrows it and nothing about where
-/// the camera is bears on it.
-///
-/// Asked again every [`Poll`] rather than only when the filter changes, which
-/// is what draws the feed arriving: the moment holds still while systems cross
-/// it, so the same question put again is a longer answer. That is also why the
-/// index is no help in deciding whether to ask -- it is the same index each
-/// time, and a fetch that has already landed leaves nothing behind to compare
-/// against.
-///
-/// Whatever the spyglass is set to, and leaving its memory of where it last
-/// looked alone. Turning off fetching by region stops the map filling itself in
-/// as the camera moves, and this is not that.
-fn fetch_changed(
-    filters: Res<Filters>,
-    mut tasks: ResMut<FetchTasks>,
-    mut last_asked_at: ResMut<LastAskedAt>,
-    time: Res<Time<Real>>,
-    poll: Res<Poll>,
-    db: Res<Db>,
-) {
-    // Worked out here rather than carried by the filter, a span's near edge
-    // moving with the clock. So the same question put again is about a later
-    // moment, and the index it is asked under is a fresh one.
-    let Some(moment) = filters.changed_since(Utc::now()) else { return };
-    let index = FetchIndex::Changed(moment);
-    let now = time.last_update().unwrap_or(time.startup());
-
-    // Already on the wire. One of these at a time, as a region is.
-    if tasks.fetched.contains_key(&index) {
-        return;
-    }
-
-    // The filter having just been asked for, or moved, is worth answering at
-    // once rather than at the end of a wait the user cannot see.
-    if !filters.is_changed() && !poll.elapsed(last_asked_at.0, now) {
-        return;
-    }
-
-    debug!("fetching {:?} @ {:?}", index, now.duration_since(time.startup()));
-
-    let task_pool = AsyncComputeTaskPool::get();
-    let db = db.0.clone();
-    let task = task_pool.spawn(async move {
-        DbSystem::fetch_changed_since(&db, moment, MOST)
-            .await
-            .unwrap_or_default()
-    });
-    tasks.fetched.insert(index, (task, now));
-    *last_asked_at = LastAskedAt(now);
 }
 
 /// Which of `selected` the map has no star for, by address

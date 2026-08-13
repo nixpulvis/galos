@@ -443,16 +443,35 @@ impl System {
     /// magnitude longer than asking for the whole table. The addresses are in
     /// hand by then and say the same thing without the planner having to
     /// guess at it.
+    ///
+    /// `since` narrows it again, to what has been heard from since a moment,
+    /// and bounds what comes back: the reach runs to the whole galaxy and the
+    /// far end of the control putting that question is every system on record.
+    /// Newest first, so what the bound drops is the oldest news.
     pub async fn fetch_in_range_of_point(
         db: &Database,
         range: f64,
         center: [f64; 3],
         admitting: Option<(&[i32], &[i64])>,
+        since: Option<(DateTime<Utc>, i64)>,
     ) -> Result<Vec<Self>, Error> {
-        if let Some((factions, addresses)) = admitting {
-            let admitted =
+        let admitted = match (admitting, since) {
+            (Some((factions, addresses)), Some((moment, most))) => Some(
+                Self::admitted_in_range_since(
+                    db, range, center, factions, addresses, moment, most,
+                )
+                .await?,
+            ),
+            (Some((factions, addresses)), None) => Some(
                 Self::admitted_in_range(db, range, center, factions, addresses)
-                    .await?;
+                    .await?,
+            ),
+            (None, Some((moment, most))) => Some(
+                Self::changed_in_range(db, range, center, moment, most).await?,
+            ),
+            (None, None) => None,
+        };
+        if let Some(admitted) = admitted {
             return Self::fetch_many(db, &admitted).await;
         }
 
@@ -557,6 +576,92 @@ impl System {
         .await?;
 
         Ok(rows.into_iter().filter_map(|row| row.address).collect())
+    }
+
+    /// [`Self::admitted_in_range`], of those heard from since `moment`
+    ///
+    /// The stamp goes on both halves rather than around the two, so that each
+    /// still drives from what it drove from before: put outside, it would be a
+    /// filter over the union and leave the halves reaching for everything in
+    /// range again.
+    #[allow(clippy::too_many_arguments)]
+    async fn admitted_in_range_since(
+        db: &Database,
+        range: f64,
+        center: [f64; 3],
+        factions: &[i32],
+        addresses: &[i64],
+        moment: DateTime<Utc>,
+        most: i64,
+    ) -> Result<Vec<i64>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT address, updated_at
+            FROM (
+                SELECT address, updated_at
+                FROM systems
+                WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+                  AND address = ANY($5)
+                  AND updated_at >= $7
+                UNION
+                SELECT systems.address, systems.updated_at
+                FROM systems
+                JOIN system_factions
+                  ON system_factions.system_address = systems.address
+                WHERE system_factions.faction_id = ANY($6)
+                  AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+                  AND systems.updated_at >= $7
+            ) AS admitted
+            ORDER BY updated_at DESC
+            LIMIT $8
+            "#,
+            range,
+            center[0],
+            center[1],
+            center[2],
+            addresses,
+            factions,
+            moment.naive_utc(),
+            most,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows.into_iter().filter_map(|row| row.address).collect())
+    }
+
+    /// Which systems within `range` of `center` were heard from since `moment`
+    ///
+    /// What a question about time alone narrows a region to. No union, nothing
+    /// being admitted by name or by faction: the stamp is the whole of what is
+    /// asked, and it drives from the index on it.
+    async fn changed_in_range(
+        db: &Database,
+        range: f64,
+        center: [f64; 3],
+        moment: DateTime<Utc>,
+        most: i64,
+    ) -> Result<Vec<i64>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT address
+            FROM systems
+            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND updated_at >= $5
+            ORDER BY updated_at DESC
+            LIMIT $6
+            "#,
+            range,
+            center[0],
+            center[1],
+            center[2],
+            moment.naive_utc(),
+            most,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|row| row.address).collect())
     }
 
     /// Which factions are present in each of `addresses`, by address
@@ -692,78 +797,6 @@ impl System {
             WHERE factions.name ILIKE $1
             "#,
             faction,
-        )
-        .fetch_all(&db.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| System {
-                address: row.address,
-                name: row.name,
-                position: row
-                    .position
-                    .map(|p| p.geometry.expect("not null or invalid")),
-                population: row.population.map(|n| n as u64).unwrap_or(0),
-                security: row.security,
-                government: row.government,
-                allegiance: row.allegiance,
-                economies: Economies::new(
-                    row.primary_economy,
-                    row.secondary_economy,
-                ),
-                factions: row.factions,
-                body_count: row.body_count,
-                non_body_count: row.non_body_count,
-                updated_at: row.updated_at.and_utc(),
-                updated_by: row.updated_by,
-            })
-            .collect())
-    }
-
-    /// The systems heard from since `moment`, newest first
-    ///
-    /// What the map asks to draw the feed arriving. An hour of it touches about
-    /// nine thousand systems scattered across the galaxy, so this is asked of
-    /// the whole table rather than of a region: there is nowhere to look that
-    /// the answer would be in.
-    ///
-    /// `most` bounds it, because the far end of the control putting this
-    /// question is every system on record. Newest first so that what the bound
-    /// drops is the oldest news rather than an arbitrary slice of it.
-    pub async fn fetch_changed_since(
-        db: &Database,
-        moment: DateTime<Utc>,
-        most: i64,
-    ) -> Result<Vec<Self>, Error> {
-        let rows = sqlx::query!(
-            r#"
-            SELECT
-                systems.address,
-                systems.name,
-                systems.position AS "position!: Option<wkb::Decode<Coordinate>>",
-                systems.population,
-                systems.security as "security: Security",
-                systems.government as "government: Government",
-                systems.allegiance as "allegiance: Allegiance",
-                systems.primary_economy as "primary_economy: Economy",
-                systems.secondary_economy as "secondary_economy: Economy",
-                systems.body_count,
-                systems.non_body_count,
-                systems.updated_at,
-                systems.updated_by,
-                COALESCE((
-                    SELECT array_agg(faction_id)
-                    FROM system_factions
-                    WHERE system_address = systems.address
-                ), ARRAY[]::integer[]) AS "factions!"
-            FROM systems
-            WHERE systems.updated_at >= $1
-            ORDER BY systems.updated_at DESC
-            LIMIT $2
-            "#,
-            moment.naive_utc(),
-            most,
         )
         .fetch_all(&db.pool)
         .await?;

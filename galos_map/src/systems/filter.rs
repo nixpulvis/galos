@@ -203,6 +203,20 @@ impl Filter {
         }
     }
 
+    /// Whether a panel could say anything about what this admits
+    ///
+    /// A faction, a route and a hand-picked set each admit a set of systems
+    /// worth reading as a list: a few, or a few tens, settled and standing
+    /// still while the panel is open.
+    ///
+    /// A span admits neither. What it holds is scattered across the galaxy and
+    /// changes while it is being read, so a list of it is a question over every
+    /// system on record answered with an arbitrary slice of the newest. What a
+    /// span admits is on the map already, which is where it is worth looking.
+    pub fn worth_describing(&self) -> bool {
+        !matches!(self, Filter::Recency { .. })
+    }
+
     /// Whether this is a route
     ///
     /// What the bar groups its rows by and what the map draws a line for. Its
@@ -300,11 +314,9 @@ impl Filter {
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
             }
-            Filter::Recency { span, .. } => {
-                DbSystem::fetch_changed_since(db, Utc::now() - *span, MOST)
-                    .await
-                    .unwrap_or_default()
-            }
+            // Nothing describes a span, so nothing asks this of one. See
+            // [`Self::worth_describing`].
+            Filter::Recency { .. } => Vec::new(),
         }
     }
 }

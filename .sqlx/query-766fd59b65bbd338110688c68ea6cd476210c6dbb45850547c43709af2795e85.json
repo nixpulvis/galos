@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT address, updated_at\n            FROM (\n                SELECT address, updated_at\n                FROM systems\n                WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)\n                  AND address = ANY($5)\n                  AND updated_at >= $7\n                UNION\n                SELECT systems.address, systems.updated_at\n                FROM systems\n                JOIN system_factions\n                  ON system_factions.system_address = systems.address\n                WHERE system_factions.faction_id = ANY($6)\n                  AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)\n                  AND systems.updated_at >= $7\n            ) AS admitted\n            ORDER BY updated_at DESC\n            LIMIT $8\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Int8Array",
+        "Int4Array",
+        "Timestamp",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "766fd59b65bbd338110688c68ea6cd476210c6dbb45850547c43709af2795e85"
+}

@@ -2311,7 +2311,13 @@ fn section_rows(
                 )
         });
 
-        let buttons = lay_out_buttons(ui);
+        // No info button where nothing could be said: a span admits the
+        // galaxy over and what it admits is on the map already.
+        let buttons = if active.filter.worth_describing() {
+            lay_out_buttons(ui)
+        } else {
+            lay_out_close(ui)
+        };
 
         // Whatever the dot, the hops and the marks leave. Faction names run
         // long, and one laid out against no bound is painted out past the
@@ -4466,6 +4472,34 @@ mod tests {
             let mut panels = Panels::default();
             applied(ui, &mut standing, &mut panels, &mut 0);
         })
+    }
+
+    /// A time filter's row offers no panel
+    ///
+    /// The other filters name a set of systems worth reading as a list. A span
+    /// admits the galaxy over and changes while it is being read, so a panel
+    /// about one is a question over every system on record answered with an
+    /// arbitrary slice of the newest. What it admits is on the map already.
+    #[test]
+    fn a_time_filters_row_offers_no_panel() {
+        let mut filters = Filters::default();
+        filters.ask_within("1 day", chrono::Duration::days(1));
+
+        let said = drawn_rows(&filters, &Standstill::default());
+
+        assert!(said.contains(&CLOSE.to_owned()), "no way to let go: {said:?}");
+        assert!(!said.contains(&INFO.to_owned()), "a panel was offered");
+    }
+
+    /// Where a faction's does
+    #[test]
+    fn a_faction_filters_row_offers_a_panel() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+
+        let said = drawn_rows(&filters, &Standstill::default());
+
+        assert!(said.contains(&INFO.to_owned()), "no panel offered: {said:?}");
     }
 
     /// The rows stand still while the time control is held
