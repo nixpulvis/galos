@@ -2669,8 +2669,8 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
 /// wants: the far end of a typed time is a database going back years and the
 /// near end is the last minute.
 ///
-/// The label reads into the span beside it, so the row says "updated in the
-/// last 6 hours" across the two of them.
+/// The label names what is being asked about and the span says how far back,
+/// so the two read as "Last Updated" over "6 hours".
 ///
 /// Only on a change, as the opacity beside it is. Asking is what marks the
 /// filters as changed, and what reads that mark puts a fresh question to the
@@ -2684,7 +2684,7 @@ fn watch_control(
     standstill: &mut Standstill,
 ) -> Response {
     ui.add_space(FIELD_GAP);
-    ui.label("Updated In The Last");
+    ui.label("Last Updated");
 
     let mut standing = Watch(watch.0);
     fill_width(ui, SPAN_WIDTH);
