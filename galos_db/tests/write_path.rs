@@ -178,9 +178,9 @@ const NAMED_OLD: i64 = 900_000_030;
 const MEMBER_NEAR: i64 = 900_000_031;
 const MEMBER_OLD: i64 = 900_000_032;
 const NAMED_ONLY: i64 = 900_000_033;
-const BOUND_NEWEST: i64 = 900_000_034;
-const BOUND_NEXT: i64 = 900_000_035;
-const BOUND_OLDEST: i64 = 900_000_036;
+const SPAN_NEWEST: i64 = 900_000_034;
+const SPAN_NEXT: i64 = 900_000_035;
+const SPAN_OLDEST: i64 = 900_000_036;
 const CLUSTER: i64 = 900_000_008;
 const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
@@ -1956,7 +1956,7 @@ async fn a_region_asked_by_address_alone_keeps_what_is_old() {
     assert!(addresses(&found).contains(&NAMED_ONLY));
 }
 
-/// A span answers with everything it reaches, however much that is
+/// A span answers with everything inside it, however much that is
 ///
 /// The whole of what the filter admits and no slice of it. A count kept back
 /// would drop systems the filter says yes to, so the map would draw a sky
@@ -1964,14 +1964,14 @@ async fn a_region_asked_by_address_alone_keeps_what_is_old() {
 /// span -- which excludes almost nothing -- would be the one that took the most
 /// away.
 #[async_std::test]
-async fn a_span_answers_with_everything_it_reaches() {
+async fn a_span_answers_with_everything_inside_it() {
     let db = db!();
-    for address in [BOUND_NEWEST, BOUND_NEXT, BOUND_OLDEST] {
+    for address in [SPAN_NEWEST, SPAN_NEXT, SPAN_OLDEST] {
         forget(address).await;
     }
-    heard_of(&db, BOUND_NEWEST, 7400., 0., 500).await;
-    heard_of(&db, BOUND_NEXT, 7400., 1., 300).await;
-    heard_of(&db, BOUND_OLDEST, 7400., 2., 100).await;
+    heard_of(&db, SPAN_NEWEST, 7400., 0., 500).await;
+    heard_of(&db, SPAN_NEXT, 7400., 1., 300).await;
+    heard_of(&db, SPAN_OLDEST, 7400., 2., 100).await;
 
     let found = System::fetch_in_range_of_point(
         &db,
@@ -1984,7 +1984,7 @@ async fn a_span_answers_with_everything_it_reaches() {
     .expect("the region should answer");
 
     let found = addresses(&found);
-    assert!(found.contains(&BOUND_NEWEST), "the newest");
-    assert!(found.contains(&BOUND_NEXT), "the next newest");
-    assert!(found.contains(&BOUND_OLDEST), "the oldest, kept as well");
+    assert!(found.contains(&SPAN_NEWEST), "the newest");
+    assert!(found.contains(&SPAN_NEXT), "the next newest");
+    assert!(found.contains(&SPAN_OLDEST), "the oldest, kept as well");
 }
