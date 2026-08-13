@@ -323,6 +323,19 @@ const FIELD_GAP: f32 = 4.;
 /// slider here reaches: the spyglass runs to 110,000 light years.
 const VALUE_WIDTH: f32 = 56.;
 
+/// The name the time control's own `Ui` is spelled out under
+///
+/// Global, so that what is inside it is numbered from this name alone and not
+/// from how many widgets stand above it in the bar.
+const WATCH: &str = "watch-control";
+
+/// How much of the watch slider's row the span beside it is given
+///
+/// Wider than [`VALUE_WIDTH`], the reading being a name rather than a number.
+/// Enough for "15 minutes", the longest of [`SPANS`], which comes to 69.25 in
+/// the face the map letters its controls in.
+const SPAN_WIDTH: f32 = 70.;
+
 /// Hold a slider's value in a box of its own
 ///
 /// A slider left to draw its own value sizes that box to the number in it, so
@@ -345,12 +358,13 @@ fn value_box(ui: &mut Ui, value: egui::DragValue<'_>) -> Response {
 /// whole pane, so that a slider indented under a checkbox fills what is left
 /// of its line rather than running out past it.
 ///
-/// What the rail leaves is the box holding the value and the gap between the
-/// two, so the row ends flush with whatever it is standing in.
-fn fill_width(ui: &mut Ui) {
+/// What the slider leaves is `beside`, for whatever stands at the end of the row
+/// reading it out, and the gap between the two, so the row ends flush with
+/// whatever it is standing in.
+fn fill_width(ui: &mut Ui, beside: f32) {
     let gap = ui.spacing().item_spacing.x;
     ui.spacing_mut().slider_width =
-        (ui.available_width() - VALUE_WIDTH - gap).max(0.);
+        (ui.available_width() - beside - gap).max(0.);
 }
 
 /// How wide the dot standing for the selection is drawn
@@ -424,7 +438,7 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
     let ceiling = ceiling.clamp(Spyglass::FLOOR, Spyglass::CEILING);
     // Read before the rail borrows it, and the reason it is read at all.
     let speed = (*radius * RADIUS_DRAG).max(f32::EPSILON) as f64;
-    fill_width(ui);
+    fill_width(ui, VALUE_WIDTH);
 
     ui.horizontal(|ui| {
         ui.add(
@@ -647,7 +661,7 @@ pub fn chrome(
                 // way of a busy sky.
                 ui.label("Brightness (%)");
                 let mut bright = settings.bright.0 * 100.;
-                fill_width(ui);
+                fill_width(ui, VALUE_WIDTH);
                 let slider = ui
                     .horizontal(|ui| {
                         let rail = ui.add(
@@ -768,7 +782,7 @@ pub fn chrome(
         heading(ui, "Filters", true);
         ui.label("Filtered Opacity (%)");
         let mut showing = filter.dim.0 * 100.;
-        fill_width(ui);
+        fill_width(ui, VALUE_WIDTH);
         let slider = ui
             .horizontal(|ui| {
                 let rail = ui.add(
@@ -2575,7 +2589,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
         filter.found.clear();
     }
 
-    watch_control(ui, filter);
+    watch_control(ui, &mut filter.watch, &mut filter.active);
 
     response.gained_focus()
 }
@@ -2604,7 +2618,7 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
 
 /// Ask for a filter by how lately a system was heard from
 ///
-/// A rail over named spans rather than a field to type a time into. What is
+/// A slider over named spans rather than a field to type a time into. What is
 /// being asked is roughly how fresh, and the spans are the answers anybody
 /// wants: the far end of a typed time is a database going back years and the
 /// near end is the last minute.
@@ -2612,26 +2626,40 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
 /// Only on a change, as the opacity beside it is. The filter carries the moment
 /// the span worked out to be, so writing it every frame would move that moment
 /// every frame and put a fresh question to the database each time.
-fn watch_control(ui: &mut Ui, filter: &mut FilterBar) {
+fn watch_control(ui: &mut Ui, watch: &mut Watch, active: &mut Filters) {
     ui.add_space(FIELD_GAP);
     ui.label("Heard From Within");
 
-    let mut standing = filter.watch.0;
-    fill_width(ui);
-    let rail = ui.add(
-        egui::Slider::new(&mut standing, 0..=SPANS.len() - 1)
-            .show_value(false)
-            .custom_formatter(|at, _| SPANS[at as usize].0.to_owned()),
-    );
+    let mut standing = Watch(watch.0);
+    fill_width(ui, SPAN_WIDTH);
+    let slider = ui
+        .horizontal(|ui| {
+            let slider = ui.add(
+                egui::Slider::new(&mut standing.0, 0..=SPANS.len() - 1)
+                    .show_value(false),
+            );
+            // Beside the slider rather than in the box egui draws its own
+            // reading in. That box is a field to type the value into, and what
+            // it would take is one of nine places along the slider, where what
+            // the user is reading is a span. So the box is turned off and the
+            // span said here.
+            //
+            // Read off the slider rather than off `watch`, which is not
+            // written until the drag is over: taken from there the name would
+            // say the span the slider set out from all the way through a drag.
+            ui.label(standing.name());
+            slider
+        })
+        .inner;
 
-    if rail.changed() {
-        filter.watch.0 = standing;
-        match filter.watch.span() {
+    if slider.changed() {
+        watch.0 = standing.0;
+        match watch.span() {
             // Worked out here and not where it is asked. `Utc::now` is the one
             // thing in this that cannot be tested, so it is read at the one
             // place that turns a span into a moment.
-            Some(span) => filter.active.ask_since(Utc::now() - span),
-            None => filter.active.ask_nothing_of_time(),
+            Some(span) => active.ask_since(Utc::now() - span),
+            None => active.ask_nothing_of_time(),
         }
     }
 
@@ -2639,7 +2667,7 @@ fn watch_control(ui: &mut Ui, filter: &mut FilterBar) {
     // which stop agreeing as soon as the clock moves on. Said here so the two
     // readings are side by side rather than looking like a disagreement.
     ui.label(
-        egui::RichText::new(match filter.watch.span() {
+        egui::RichText::new(match watch.span() {
             Some(_) => "Everything since, and whatever arrives",
             None => "Not asked",
         })
@@ -4315,6 +4343,54 @@ mod tests {
 
     /// The row over the set says how many are held, and is drawn over two
     ///
+    /// The time control says which span it is standing on
+    ///
+    /// Egui draws a slider's own reading inside the box `show_value` turns
+    /// off, and that box is turned off here because what it offers is a field
+    /// to type a number into where these are named spans. Without a word
+    /// beside it the control is nine positions and nothing to tell them apart.
+    #[test]
+    fn the_time_control_says_which_span_it_stands_on() {
+        let mut watch = Watch(1);
+        let mut active = Filters::default();
+
+        let said = words(|ui| watch_control(ui, &mut watch, &mut active));
+
+        assert!(said.contains(&"30 days".to_owned()), "{said:?}");
+    }
+
+    /// And says so for the whole of its travel, the widest name included
+    ///
+    /// The slider is sized to leave [`SPAN_WIDTH`] for the name, which is the
+    /// one thing that would quietly go wrong: a name too wide for the room
+    /// left it is drawn off the end of the row it stands in.
+    #[test]
+    fn every_span_is_named_beside_the_control() {
+        for (place, (name, _)) in SPANS.iter().enumerate() {
+            let mut watch = Watch(place);
+            let mut active = Filters::default();
+
+            let said = words(|ui| watch_control(ui, &mut watch, &mut active));
+
+            assert!(said.contains(&(*name).to_owned()), "{name}: {said:?}");
+        }
+    }
+
+    /// Left alone it asks nothing of time
+    ///
+    /// The moment a span works out to is read from the clock when the control
+    /// is moved. Written every frame instead, it would move every frame and
+    /// put a fresh question to the database each time.
+    #[test]
+    fn a_time_control_left_alone_asks_nothing() {
+        let mut watch = Watch(1);
+        let mut active = Filters::default();
+
+        painted(|ui| watch_control(ui, &mut watch, &mut active));
+
+        assert!(active.admitted().is_none(), "an untouched control asked");
+    }
+
     /// Not over one, where it would be a second control for what the row
     /// beneath it already does.
     #[test]
