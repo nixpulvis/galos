@@ -39,11 +39,22 @@ jobs:
       # are always used by somebody -- whichever crate was bumped in step.
       - name: one of each patched crate, not two
         run: |
+          # `set -e` alone leaves this passing where `cargo tree` never ran:
+          # the count comes back zero and zero reads as no duplicate. Asked
+          # once and held, so a failure to answer stops the step rather than
+          # being taken for an answer of no.
+          set -euo pipefail
+          duplicates=$(cargo tree --duplicates --workspace)
           for crate in elite_journal eddn edsm eddb; do
-            found=$(cargo tree -d --workspace -p "$crate" | grep -c "^$crate v") || true
-            if [ "$found" -gt 1 ]; then
-              echo "::error::$crate is in the graph $found times, not once:"
-              cargo tree -d --workspace -p "$crate" | grep "^$crate v"
+            # Captured rather than tested with `grep -q`, which stops reading
+            # at the first match. The list runs past the pipe's buffer, so
+            # `printf` is left writing into a closed pipe and dies of it, and
+            # `pipefail` reports that as the pipeline failing -- reading every
+            # duplicate as no duplicate at all.
+            twice=$(printf '%s\n' "$duplicates" | grep "^$crate v" || true)
+            if [ -n "$twice" ]; then
+              echo "::error::$crate is in the graph more than once:"
+              printf '%s\n' "$twice"
               exit 1
             fi
           done
