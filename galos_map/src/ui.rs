@@ -2652,16 +2652,19 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
     });
 }
 
-/// Ask for a filter by how lately a system was heard from
+/// Ask for a filter by how lately a system was updated
 ///
 /// A slider over named spans rather than a field to type a time into. What is
 /// being asked is roughly how fresh, and the spans are the answers anybody
 /// wants: the far end of a typed time is a database going back years and the
 /// near end is the last minute.
 ///
-/// Only on a change, as the opacity beside it is. The filter carries the moment
-/// the span worked out to be, so writing it every frame would move that moment
-/// every frame and put a fresh question to the database each time.
+/// The label reads into the span beside it, so the row says "updated in the
+/// last 6 hours" across the two of them.
+///
+/// Only on a change, as the opacity beside it is. Asking is what marks the
+/// filters as changed, and what reads that mark puts a fresh question to the
+/// database.
 ///
 /// Answers the slider, so that a caller can say whether it is being dragged.
 fn watch_control(
@@ -2671,7 +2674,7 @@ fn watch_control(
     standstill: &mut Standstill,
 ) -> Response {
     ui.add_space(FIELD_GAP);
-    ui.label("Heard From Within");
+    ui.label("Updated In The Last");
 
     let mut standing = Watch(watch.0);
     fill_width(ui, SPAN_WIDTH);
@@ -2742,17 +2745,6 @@ fn watch_control(
             active.ask_nothing_of_time();
         }
     }
-
-    // The span is what was asked for and the row says the moment it came to,
-    // which stop agreeing as soon as the clock moves on. Said here so the two
-    // readings are side by side rather than looking like a disagreement.
-    ui.label(
-        egui::RichText::new(match watch.span() {
-            Some(_) => "Everything since, and whatever arrives",
-            None => "Not asked",
-        })
-        .weak(),
-    );
 
     slider
 }

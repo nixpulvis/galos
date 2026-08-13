@@ -101,10 +101,10 @@ pub(crate) const SPANS: [(&str, Option<i64>); 9] = [
 
 /// Where the control over time stands, by its place in [`SPANS`]
 ///
-/// Kept because [`Filter::Recency`] holds the moment the span worked out to be
-/// rather than the span itself, and a minute later those are different things.
-/// Reading the control back off the filter would have it drift a step to the
-/// left every step of the way.
+/// Kept rather than read back off [`Filter::Recency`], which is not there at
+/// all while the control sits at its far end, and is left standing but asking
+/// nothing while a drag passes through it. The control has a place either way,
+/// and it is the place the user put it.
 #[derive(Resource, Default)]
 pub struct Watch(pub usize);
 
