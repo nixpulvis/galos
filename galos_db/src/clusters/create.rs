@@ -40,9 +40,12 @@ impl Cluster {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (system_address, id)
             DO UPDATE SET
-                name = $3,
                 -- A message delivered late is still taken, for whatever it
-                -- fills in below, and does not put the reading back in time.
+                -- fills in below. What it does not do is put the reading back
+                -- in time, or call the row what it was called when it was
+                -- sent.
+                name = CASE WHEN $4 >= clusters.updated_at
+                    THEN $3 ELSE clusters.name END,
                 updated_at = GREATEST(clusters.updated_at, $4),
                 updated_by = CASE WHEN $4 >= clusters.updated_at
                     THEN $5 ELSE clusters.updated_by END,

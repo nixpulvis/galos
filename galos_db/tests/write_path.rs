@@ -196,6 +196,7 @@ const LATE: i64 = 900_000_019;
 const LATE_VISIT: i64 = 900_000_037;
 const LATE_FILLS: i64 = 900_000_038;
 const TRADE_STATION: i64 = 900_000_039;
+const RENAMED: i64 = 900_000_040;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
@@ -825,6 +826,73 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     assert_eq!(held.len(), 1, "a second scan wrote a second row");
     assert!(held[0].mapped);
     assert_eq!(held[0].updated_at, at(60));
+}
+
+/// A scan delivered late does not call a cluster what it called it
+///
+/// Every other column in that write takes care over a late message: the stamp
+/// holds at the newest reading, the sender follows it, what was found stays
+/// found, and the ancestry is only ever filled in. The name was written
+/// outright, so the field a reader sees first was the one an older message
+/// could take back.
+///
+/// Rarely, a body's name being fixed. `20260811220000` is what happens when one
+/// is not: it deleted every cluster whose name ended in Ring, rows written
+/// while a ring was being read as a belt cluster.
+#[async_std::test]
+async fn a_late_scan_does_not_rename_a_cluster() {
+    let db = db!();
+    forget(RENAMED).await;
+
+    System::set_body_counts(
+        &db,
+        RENAMED,
+        "Test Renamed",
+        Some(somewhere(24.0)),
+        4,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let named = |name: &str| JournalCluster {
+        name: name.into(),
+        id: 5,
+        parents: vec![],
+        distance_from_arrival: Some(12.5),
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+
+    Cluster::from_journal(
+        &db,
+        at(600),
+        "newer",
+        &named("Test Renamed A Belt Cluster 1"),
+        RENAMED,
+    )
+    .await
+    .expect("the newer scan should write");
+
+    // Sent ten minutes earlier, under the name the body had then.
+    Cluster::from_journal(
+        &db,
+        at(0),
+        "older",
+        &named("Test Renamed A Belt"),
+        RENAMED,
+    )
+    .await
+    .expect("the late scan should write");
+
+    let held = Cluster::fetch_all(&db, RENAMED).await.expect("should read");
+    assert_eq!(held.len(), 1);
+    assert_eq!(
+        held[0].name, "Test Renamed A Belt Cluster 1",
+        "the late scan renamed the row",
+    );
+    assert_eq!(held[0].updated_at, at(600), "the stamp went back in time");
 }
 
 /// A basic scan does not undo what a detailed one recorded
