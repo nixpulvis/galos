@@ -159,6 +159,9 @@ const SYSTEM_SIGNALS: i64 = 900_000_003;
 const CODEX: i64 = 900_000_004;
 const SETTLEMENT: i64 = 900_000_005;
 const TRADE: i64 = 900_000_006;
+const TRADE_UNPRICED: i64 = 900_000_023;
+const TRADE_SHIPYARD: i64 = 900_000_024;
+const TRADE_BLACK_MARKET: i64 = 900_000_025;
 const CLUSTER: i64 = 900_000_008;
 const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
@@ -174,6 +177,23 @@ const LATE: i64 = 900_000_019;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
+
+/// A market id each, for the reason the addresses above are one each
+///
+/// A market is keyed by its own id and reached through nothing else, so two
+/// tests sharing one are two tests writing the same rows. Nothing catches that
+/// today, the guards being written to survive whatever an earlier run left
+/// behind, but a key from `stations.market_id` onto `markets` would make the
+/// order they run in decide what they see.
+const OUTFITTING: i64 = 128_016_384;
+const UNPRICED: i64 = 128_016_385;
+const SHIPYARD: i64 = 128_016_386;
+const BLACK_MARKET: i64 = 128_016_387;
+const CROWDED_MARKET: i64 = 128_016_388;
+const FULLER_STATION: i64 = 128_016_389;
+const STALE_STATION: i64 = 128_016_390;
+const SETTLEMENT_MARKET: i64 = 3_510_085_376;
+const SETTLEMENT_AGAIN: i64 = 3_510_085_377;
 
 /// A market is keyed by its own id, so these stand apart from the addresses
 const CARRIER_MARKET: i64 = 128_900_001;
@@ -453,7 +473,7 @@ async fn a_settlement_keeps_its_place_on_the_body() {
 
     let settlement = ApproachSettlement {
         name: "Bloomfield Vision".into(),
-        market_id: Some(3510085376),
+        market_id: Some(SETTLEMENT_MARKET),
         system_name: "Test Settlement".into(),
         star_pos: somewhere(5.0),
         system_address: SETTLEMENT,
@@ -489,6 +509,9 @@ async fn a_settlement_keeps_its_place_on_the_body() {
 #[async_std::test]
 async fn an_outfitting_message_replaces_what_came_before() {
     let db = db!();
+    // The market points at the station, so it goes first.
+    forget_market(OUTFITTING).await;
+    forget(TRADE).await;
 
     System::set_body_counts(
         &db,
@@ -519,7 +542,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
     let first = JournalOutfitting {
         system_name: "Test Trade".into(),
         station_name: "Test Station".into(),
-        market_id: 128016384,
+        market_id: OUTFITTING,
         modules: vec![priced("Int_Engine_A", 100), priced("Int_Engine_B", 200)],
     };
     Outfitting::from_journal(&db, at(0), &first)
@@ -534,7 +557,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
         .await
         .expect("outfitting should write again");
 
-    let stocked = Outfitting::fetch_all(&db, 128016384)
+    let stocked = Outfitting::fetch_all(&db, OUTFITTING)
         .await
         .expect("outfitting should read");
 
@@ -547,11 +570,14 @@ async fn an_outfitting_message_replaces_what_came_before() {
 #[async_std::test]
 async fn an_unpriced_module_is_still_stocked() {
     let db = db!();
+    // The market points at the station, so it goes first.
+    forget_market(UNPRICED).await;
+    forget(TRADE_UNPRICED).await;
 
     System::set_body_counts(
         &db,
-        TRADE,
-        "Test Trade",
+        TRADE_UNPRICED,
+        "Test Trade Unpriced",
         Some(somewhere(6.0)),
         4,
         None,
@@ -561,21 +587,21 @@ async fn an_unpriced_module_is_still_stocked() {
     .await
     .expect("system should write");
 
-    Station::create(&db, at(0), "test", TRADE, "Test Station 2")
+    Station::create(&db, at(0), "test", TRADE_UNPRICED, "Test Station 2")
         .await
         .expect("station should write");
 
     let outfitting = JournalOutfitting {
-        system_name: "Test Trade".into(),
+        system_name: "Test Trade Unpriced".into(),
         station_name: "Test Station 2".into(),
-        market_id: 128016385,
+        market_id: UNPRICED,
         modules: vec![Module::Named("Hpt_ChaffLauncher_Tiny".into())],
     };
     Outfitting::from_journal(&db, at(0), &outfitting)
         .await
         .expect("outfitting should write");
 
-    let stocked = Outfitting::fetch_all(&db, 128016385)
+    let stocked = Outfitting::fetch_all(&db, UNPRICED)
         .await
         .expect("outfitting should read");
 
@@ -587,11 +613,14 @@ async fn an_unpriced_module_is_still_stocked() {
 #[async_std::test]
 async fn a_shipyard_message_replaces_what_came_before() {
     let db = db!();
+    // The market points at the station, so it goes first.
+    forget_market(SHIPYARD).await;
+    forget(TRADE_SHIPYARD).await;
 
     System::set_body_counts(
         &db,
-        TRADE,
-        "Test Trade",
+        TRADE_SHIPYARD,
+        "Test Trade Shipyard",
         Some(somewhere(6.0)),
         4,
         None,
@@ -601,14 +630,14 @@ async fn a_shipyard_message_replaces_what_came_before() {
     .await
     .expect("system should write");
 
-    Station::create(&db, at(0), "test", TRADE, "Test Station 3")
+    Station::create(&db, at(0), "test", TRADE_SHIPYARD, "Test Station 3")
         .await
         .expect("station should write");
 
     let yard = JournalShipyard {
-        system_name: "Test Trade".into(),
+        system_name: "Test Trade Shipyard".into(),
         station_name: "Test Station 3".into(),
-        market_id: 128016386,
+        market_id: SHIPYARD,
         ships: vec!["SideWinder".into(), "Eagle".into()],
         allow_cobra_mk_iv: Some(false),
     };
@@ -622,7 +651,7 @@ async fn a_shipyard_message_replaces_what_came_before() {
         .expect("shipyard should write again");
 
     let stocked =
-        Shipyard::fetch_all(&db, 128016386).await.expect("yard should read");
+        Shipyard::fetch_all(&db, SHIPYARD).await.expect("yard should read");
 
     assert_eq!(stocked.len(), 1);
     assert_eq!(stocked[0].ship_name, "SideWinder");
@@ -635,11 +664,14 @@ async fn a_shipyard_message_replaces_what_came_before() {
 #[async_std::test]
 async fn a_black_market_sale_does_not_retire_the_others() {
     let db = db!();
+    // The market points at the station, so it goes first.
+    forget_market(BLACK_MARKET).await;
+    forget(TRADE_BLACK_MARKET).await;
 
     System::set_body_counts(
         &db,
-        TRADE,
-        "Test Trade",
+        TRADE_BLACK_MARKET,
+        "Test Trade Black Market",
         Some(somewhere(6.0)),
         4,
         None,
@@ -649,16 +681,16 @@ async fn a_black_market_sale_does_not_retire_the_others() {
     .await
     .expect("system should write");
 
-    Station::create(&db, at(0), "test", TRADE, "Test Station 4")
+    Station::create(&db, at(0), "test", TRADE_BLACK_MARKET, "Test Station 4")
         .await
         .expect("station should write");
 
     for (name, price, when) in [("Gold", 9432, at(0)), ("Silver", 4700, at(60))]
     {
         let sale = JournalBlackMarket {
-            system_name: "Test Trade".into(),
+            system_name: "Test Trade Black Market".into(),
             station_name: "Test Station 4".into(),
-            market_id: Some(128016387),
+            market_id: Some(BLACK_MARKET),
             name: name.into(),
             sell_price: price,
             prohibited: true,
@@ -668,7 +700,7 @@ async fn a_black_market_sale_does_not_retire_the_others() {
             .expect("sale should write");
     }
 
-    let taken = BlackMarket::fetch_all(&db, 128016387)
+    let taken = BlackMarket::fetch_all(&db, BLACK_MARKET)
         .await
         .expect("sales should read");
 
@@ -888,7 +920,7 @@ async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
         name: "Test Redock Port".into(),
         ty,
         dist_from_star_ls: Some(120.5),
-        market_id: Some(128_016_384),
+        market_id: Some(FULLER_STATION),
         landing_pads: pads,
         faction: None,
         government: None,
@@ -958,7 +990,7 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
         name: "Test Stale Port".into(),
         ty: Some(StationType::Coriolis),
         dist_from_star_ls: Some(120.5),
-        market_id: Some(128_016_385),
+        market_id: Some(STALE_STATION),
         landing_pads: None,
         faction: None,
         government: None,
@@ -1023,7 +1055,7 @@ async fn a_settlement_approached_again_keeps_its_place() {
 
     let approach = |latitude, longitude| ApproachSettlement {
         name: "Test Placed Outpost".into(),
-        market_id: Some(3_510_085_377),
+        market_id: Some(SETTLEMENT_AGAIN),
         system_name: "Test Placed".into(),
         star_pos: somewhere(18.0),
         system_address: PLACED,
@@ -1671,7 +1703,7 @@ async fn trade_messages_do_not_wait_on_each_other() {
     let Some(url) = database_url() else { return };
     let db = Database::from_url(&url).await.expect("a database");
     // The market points at the station, so it goes first.
-    forget_market(128_016_388).await;
+    forget_market(CROWDED_MARKET).await;
     forget(CROWDED).await;
 
     System::create(
@@ -1702,7 +1734,7 @@ async fn trade_messages_do_not_wait_on_each_other() {
             let outfitting = JournalOutfitting {
                 system_name: "Test Crowded".into(),
                 station_name: "Test Crowded Station".into(),
-                market_id: 128_016_388,
+                market_id: CROWDED_MARKET,
                 modules: vec![Module::Named("Hpt_ChaffLauncher_Tiny".into())],
             };
             Outfitting::from_journal(&db, at(0), &outfitting).await
