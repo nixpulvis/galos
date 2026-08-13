@@ -161,8 +161,8 @@ pub enum Filter {
     Systems { label: String, systems: Vec<i64> },
     /// The systems heard from since a moment
     ///
-    /// Whatever the span reaches, which at its widest is most of the sky: all
-    /// but a fiftieth of the systems on record have been heard from inside
+    /// Whatever falls inside the span, which at its widest is most of the sky:
+    /// all but a fiftieth of the systems on record have been heard from inside
     /// thirty days. What holds the answer down is the spyglass, which is the
     /// one control over how much sky is being asked about and the one the user
     /// can see.
@@ -741,23 +741,30 @@ impl Filters {
         self.revision += 1;
     }
 
-    /// The moment an enabled filter on time names, where one is asked
+    /// How far back an enabled filter on time looks, where one is asked
     ///
     /// Read apart from [`Self::admitted`] because what it admits is nowhere in
     /// particular, so it is fetched in its own right rather than as part of a
     /// question about a region.
     ///
-    /// The earliest of them where several are somehow asked, that being the one
-    /// whose answer holds the others.
-    pub fn changed_since(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    /// The span rather than the moment it reaches back to. A moment is a
+    /// different value every time it is worked out, so a region carrying one
+    /// would be somewhere new every frame; the span moves only when the user
+    /// moves the control, which is exactly when the region is a new question.
+    /// Whoever puts the question turns it into a moment against the clock they
+    /// ask at.
+    ///
+    /// The longest where several are somehow asked, that being the one whose
+    /// answer holds the others.
+    pub fn span(&self) -> Option<Duration> {
         self.asked
             .iter()
             .filter(|active| active.enabled)
             .filter_map(|active| match &active.filter {
-                Filter::Recency { span, .. } => Some(now - *span),
+                Filter::Recency { span, .. } => Some(*span),
                 _ => None,
             })
-            .min()
+            .max()
     }
 
     /// What the filters admit, as a query can ask it
@@ -889,8 +896,8 @@ fn mark(
     // for on, rather than every frame: the line moves by a frame's worth in a
     // frame, and finding out costs a walk of every system on the map.
     let running = time.last_update().unwrap_or(time.startup());
-    let recut = filters.changed_since(now).is_some()
-        && poll.elapsed(last_cut_at.0, running);
+    let recut =
+        filters.span().is_some() && poll.elapsed(last_cut_at.0, running);
     if recut {
         *last_cut_at = LastCutAt(running);
     }
@@ -1538,7 +1545,7 @@ mod tests {
         let settled = filters.revision();
         let _ = filters.admit(&member(1, &[7]), now());
         let _ = filters.admitted();
-        let _ = filters.changed_since(now());
+        let _ = filters.span();
         let _ = filters.len();
         let _ = filters.any_enabled();
 
@@ -1598,17 +1605,20 @@ mod tests {
         );
     }
 
-    /// And the question put to the database moves with it
+    /// And the span itself holds still while it does
     ///
-    /// Asked again on every poll, so the same span is a later moment each
-    /// time. Answered with whatever has crossed into it since.
+    /// Which is what the region is keyed on. The moment it works out to is a
+    /// different value every frame, so a region carrying one would never be the
+    /// question it was last time; the span is the same question until the user
+    /// moves the control, and whoever puts it turns it into a moment against
+    /// the clock they ask at.
     #[test]
-    fn the_question_asked_of_the_database_moves_with_the_clock() {
+    fn the_span_holds_still_while_the_clock_runs() {
         let mut filters = Filters::default();
         filters.add(within(100));
 
-        assert_eq!(filters.changed_since(moment(200)), Some(moment(100)));
-        assert_eq!(filters.changed_since(moment(300)), Some(moment(200)));
+        assert_eq!(filters.span(), Some(Duration::seconds(100)));
+        assert_eq!(filters.span(), Some(Duration::seconds(100)));
     }
 
     /// It narrows no region, what it admits being gathered nowhere
@@ -1654,7 +1664,7 @@ mod tests {
         filters.ask_within("1 hour", Duration::seconds(50));
 
         assert_eq!(filters.len(), 1, "the first question was left standing");
-        assert_eq!(filters.changed_since(now()), Some(moment(150)));
+        assert_eq!(filters.span(), Some(Duration::seconds(50)));
     }
 
     /// The row a filter on time draws says the span it was asked as
@@ -1682,11 +1692,7 @@ mod tests {
 
         filters.ask_nothing_of_time();
 
-        assert_eq!(
-            filters.changed_since(now()),
-            None,
-            "still asking about time"
-        );
+        assert_eq!(filters.span(), None, "still asking about time");
         assert_eq!(filters.len(), 1, "the faction went with it");
         assert!(
             filters.admit(&member(1, &[7]), now()),
@@ -1706,11 +1712,7 @@ mod tests {
         filters.turn_time_off("Off");
 
         assert_eq!(filters.len(), 1, "the row went with the question");
-        assert_eq!(
-            filters.changed_since(now()),
-            None,
-            "still asking about time"
-        );
+        assert_eq!(filters.span(), None, "still asking about time");
         assert!(
             filters.admit(&heard(1, 40), now()),
             "still turning systems away"
@@ -1733,7 +1735,7 @@ mod tests {
         filters.ask_within("1 day", Duration::seconds(100));
         filters.toggle(0);
 
-        assert_eq!(filters.changed_since(now()), None);
+        assert_eq!(filters.span(), None);
     }
 
     /// A hold whose drag never ended is let go of
