@@ -48,9 +48,10 @@ use elite_journal::system::Coordinate;
 use elite_journal::Allegiance;
 use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
-    clusters::Cluster, codex_entries::CodexEntry, markets::Market,
-    outfitting::Outfitting, rings::Ring, shipyard::Shipyard, stars::Star,
-    stations::Station, system_signals::SystemSignal, systems::System, Database,
+    clusters::Cluster, codex_entries::CodexEntry, factions::Faction,
+    markets::Market, outfitting::Outfitting, rings::Ring, shipyard::Shipyard,
+    stars::Star, stations::Station, system_signals::SystemSignal,
+    systems::System, Database,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -85,6 +86,7 @@ async fn forget(address: i64) {
         "body_signals",
         "system_signals",
         "codex_entries",
+        "system_factions",
         "stations",
         "systems",
     ] {
@@ -162,6 +164,29 @@ const TRADE: i64 = 900_000_006;
 const TRADE_UNPRICED: i64 = 900_000_023;
 const TRADE_SHIPYARD: i64 = 900_000_024;
 const TRADE_BLACK_MARKET: i64 = 900_000_025;
+/// Addresses for the tests that ask a region something
+///
+/// One set each, as everything above has, and a neighbourhood each as well:
+/// these ask what a region holds, so a system another test put within reach
+/// would be part of the answer. The neighbourhoods stand a hundred light years
+/// apart and are asked about within ten, so none of them can see another.
+const TIMED_NEAR: i64 = 900_000_026;
+const TIMED_OLD: i64 = 900_000_027;
+const TIMED_OFF: i64 = 900_000_028;
+const NAMED_NEAR: i64 = 900_000_029;
+const NAMED_OLD: i64 = 900_000_030;
+const MEMBER_NEAR: i64 = 900_000_031;
+const MEMBER_OLD: i64 = 900_000_032;
+const NAMED_ONLY: i64 = 900_000_033;
+const BOUND_NEWEST: i64 = 900_000_034;
+const BOUND_NEXT: i64 = 900_000_035;
+const BOUND_OLDEST: i64 = 900_000_036;
+
+/// As many as the map ever asks a region for at once
+///
+/// Its own name here rather than reached out of `galos_map`, which these tests
+/// do not depend on. What it is matters only where a test is about the bound.
+const MOST: i64 = 10_000;
 const CLUSTER: i64 = 900_000_008;
 const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
@@ -1750,4 +1775,225 @@ async fn trade_messages_do_not_wait_on_each_other() {
             .expect("the messages should not be waiting on each other")
             .expect("every message should be written");
     }
+}
+
+/// Put `faction` in each of `addresses`
+///
+/// Written straight in rather than through `Faction::from_journal`, which wants
+/// a whole journal reading of a faction where what this is about is only which
+/// systems it is present in. On a connection of its own for the reason [`forget`]
+/// opens one: the pool inside a [`Database`] is not the tests' to reach.
+async fn stand_in(faction: i32, addresses: &[i64]) {
+    let Some(url) = database_url() else { return };
+    let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
+    for address in addresses {
+        sqlx::query(
+            "INSERT INTO system_factions
+                 (system_address, faction_id, influence, government,
+                  allegiance, updated_at)
+             VALUES ($1, $2, 0, 'Anarchy', 'Independent', $3)
+             ON CONFLICT (system_address, faction_id) DO NOTHING",
+        )
+        .bind(address)
+        .bind(faction)
+        .bind(at(0).naive_utc())
+        .execute(&pool)
+        .await
+        .expect("a faction should stand in a system");
+    }
+}
+
+/// A system in the neighbourhood around `middle`, `out` light years along it
+///
+/// Placed by its neighbourhood so that a test asking what a region holds is
+/// answered with its own systems and nothing else.
+async fn heard_of(
+    db: &Database,
+    address: i64,
+    middle: f64,
+    out: f64,
+    secs: i64,
+) {
+    System::create(
+        db,
+        address,
+        &format!("Test Reach {address}"),
+        Some(somewhere(middle + out)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(secs),
+        "test",
+    )
+    .await
+    .expect("system should write");
+}
+
+/// The middle of a neighbourhood, as a point to ask a region about
+fn middle_of(middle: f64) -> [f64; 3] {
+    [middle, middle, middle]
+}
+
+/// Which of `found` came back, by address
+fn addresses(found: &[System]) -> Vec<i64> {
+    found.iter().map(|system| system.address).collect()
+}
+
+/// A span asked on its own narrows a region to what it reaches
+///
+/// The whole of what the map asks where the only filter is one on time, and
+/// the half of it that would otherwise fetch a region and throw most of it
+/// away.
+#[async_std::test]
+async fn a_region_asked_about_time_alone_leaves_out_what_is_older() {
+    let db = db!();
+    for address in [TIMED_NEAR, TIMED_OLD, TIMED_OFF] {
+        forget(address).await;
+    }
+    heard_of(&db, TIMED_NEAR, 7000., 0., 500).await;
+    heard_of(&db, TIMED_OLD, 7000., 1., 100).await;
+    heard_of(&db, TIMED_OFF, 7000., 100., 500).await;
+
+    let found = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7000.),
+        None,
+        Some((at(400), MOST)),
+    )
+    .await
+    .expect("the region should answer");
+
+    let found = addresses(&found);
+    assert!(found.contains(&TIMED_NEAR), "heard from since, and in reach");
+    assert!(!found.contains(&TIMED_OLD), "older than the span reaches");
+    assert!(!found.contains(&TIMED_OFF), "out of reach");
+}
+
+/// Named outright as well, and both have to say yes
+///
+/// Time narrows what the other filters admit rather than adding to it, so a
+/// system named outright and heard from too long ago is not drawn.
+#[async_std::test]
+async fn a_region_asked_by_address_and_time_wants_both() {
+    let db = db!();
+    for address in [NAMED_NEAR, NAMED_OLD] {
+        forget(address).await;
+    }
+    heard_of(&db, NAMED_NEAR, 7100., 0., 500).await;
+    heard_of(&db, NAMED_OLD, 7100., 1., 100).await;
+
+    let named = [NAMED_NEAR, NAMED_OLD];
+    let found = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7100.),
+        Some((&[], &named)),
+        Some((at(400), MOST)),
+    )
+    .await
+    .expect("the region should answer");
+
+    let found = addresses(&found);
+    assert!(found.contains(&NAMED_NEAR), "named, and heard from since");
+    assert!(
+        !found.contains(&NAMED_OLD),
+        "named, but older than the span reaches"
+    );
+}
+
+/// And the faction half of that question carries the stamp the same way
+///
+/// The two halves are asked apart and put together, so the stamp goes on each
+/// of them. Around the union instead, each half would reach for everything in
+/// range first and the planner would have nothing to drive from but the region.
+#[async_std::test]
+async fn a_region_asked_by_faction_and_time_wants_both() {
+    let db = db!();
+    for address in [MEMBER_NEAR, MEMBER_OLD] {
+        forget(address).await;
+    }
+    heard_of(&db, MEMBER_NEAR, 7200., 0., 500).await;
+    heard_of(&db, MEMBER_OLD, 7200., 1., 100).await;
+
+    let faction =
+        Faction::create(&db, "Test Reach Faction").await.expect("a faction");
+    stand_in(faction.id, &[MEMBER_NEAR, MEMBER_OLD]).await;
+
+    let found = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7200.),
+        Some((&[faction.id], &[])),
+        Some((at(400), MOST)),
+    )
+    .await
+    .expect("the region should answer");
+
+    let found = addresses(&found);
+    assert!(found.contains(&MEMBER_NEAR), "present, and heard from since");
+    assert!(
+        !found.contains(&MEMBER_OLD),
+        "present, but older than the span reaches"
+    );
+}
+
+/// Asked by address alone, how lately it was heard from says nothing
+#[async_std::test]
+async fn a_region_asked_by_address_alone_keeps_what_is_old() {
+    let db = db!();
+    forget(NAMED_ONLY).await;
+    heard_of(&db, NAMED_ONLY, 7300., 0., 100).await;
+
+    let named = [NAMED_ONLY];
+    let found = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7300.),
+        Some((&[], &named)),
+        None,
+    )
+    .await
+    .expect("the region should answer");
+
+    assert!(addresses(&found).contains(&NAMED_ONLY));
+}
+
+/// The bound keeps the newest of what a span reaches
+///
+/// The reach runs the whole way to the galaxy and the far end of the control
+/// putting this question is every system on record, so what comes back is
+/// bounded. Newest first, so what the bound drops is the oldest news rather
+/// than an arbitrary slice of it.
+#[async_std::test]
+async fn a_bounded_region_keeps_the_newest_of_what_it_reaches() {
+    let db = db!();
+    for address in [BOUND_NEWEST, BOUND_NEXT, BOUND_OLDEST] {
+        forget(address).await;
+    }
+    heard_of(&db, BOUND_NEWEST, 7400., 0., 500).await;
+    heard_of(&db, BOUND_NEXT, 7400., 1., 300).await;
+    heard_of(&db, BOUND_OLDEST, 7400., 2., 100).await;
+
+    let found = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7400.),
+        None,
+        Some((at(0), 2)),
+    )
+    .await
+    .expect("the region should answer");
+
+    let found = addresses(&found);
+    assert_eq!(found.len(), 2, "the bound was not kept: {found:?}");
+    assert!(found.contains(&BOUND_NEWEST), "the newest");
+    assert!(found.contains(&BOUND_NEXT), "the next newest");
+    assert!(
+        !found.contains(&BOUND_OLDEST),
+        "the oldest, which the bound drops"
+    );
 }
