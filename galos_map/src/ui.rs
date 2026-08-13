@@ -37,7 +37,6 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use chrono::Utc;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
 
@@ -2709,7 +2708,7 @@ fn watch_control(
             // Worked out here and not where it is asked. `Utc::now` is the one
             // thing in this that cannot be tested, so it is read at the one
             // place that turns a span into a moment.
-            Some(span) => active.ask_since(watch.name(), Utc::now() - span),
+            Some(span) => active.ask_within(watch.name(), span),
             // Its row stands above this control, so letting go of it mid-drag
             // would take the control up a row and out from under the pointer.
             // It stops asking where it stands instead, and says so.
@@ -4474,7 +4473,7 @@ mod tests {
 
         // What the drag asks for, which the sky is filtered by at once.
         let mut asked = before.clone();
-        asked.ask_since("1 day", Utc::now() - chrono::Duration::days(1));
+        asked.ask_within("1 day", chrono::Duration::days(1));
 
         assert_eq!(
             drawn_rows(&asked, &standstill),
@@ -4498,12 +4497,12 @@ mod tests {
     #[test]
     fn a_held_time_filter_still_reads_live() {
         let mut asked = Filters::default();
-        asked.ask_since("1 day", Utc::now() - chrono::Duration::days(1));
+        asked.ask_within("1 day", chrono::Duration::days(1));
 
         let mut standstill = Standstill::default();
         standstill.hold(&asked);
 
-        asked.ask_since("6 hours", Utc::now() - chrono::Duration::hours(6));
+        asked.ask_within("6 hours", chrono::Duration::hours(6));
 
         let said = drawn_rows(&asked, &standstill);
         assert!(said.contains(&"Last 6 hours".to_owned()), "{said:?}");
@@ -4519,7 +4518,7 @@ mod tests {
     #[test]
     fn a_time_filter_slid_off_says_so_before_it_goes() {
         let mut asked = Filters::default();
-        asked.ask_since("1 day", Utc::now() - chrono::Duration::days(1));
+        asked.ask_within("1 day", chrono::Duration::days(1));
 
         let mut standstill = Standstill::default();
         standstill.hold(&asked);

@@ -5,6 +5,11 @@
 //! what is picked out rather than cutting into it, every filter being
 //! something the user asked to see.
 //!
+//! Except the one on time, which is asked of all of them. A span names no
+//! systems, only how lately one was heard from, so two factions and a span
+//! mean either faction heard from within it. Counted alongside the factions it
+//! would put the whole of the last hour onto a map asked for two factions.
+//!
 //! This is a layer over the map rather than a mode. The spyglass goes on
 //! fetching by region, the camera stays where it is, and nothing is
 //! despawned.
@@ -20,6 +25,8 @@ use crate::Db;
 use crate::schedule::MapSet;
 use crate::search::Pending;
 use crate::systems::System;
+use crate::systems::fetch::Poll;
+use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use chrono::{DateTime, Duration, Utc};
@@ -29,6 +36,7 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
+    app.init_resource::<LastCutAt>();
     app.init_resource::<Watch>();
     app.init_resource::<Standstill>();
     app.init_resource::<DimTo>();
@@ -45,6 +53,20 @@ pub fn plugin(app: &mut App) {
         Update,
         mark.in_set(MapSet::Populate).after(super::spawn::spawn),
     );
+}
+
+/// When the filters were last cut afresh against the clock
+///
+/// Its own memory rather than the fetch's. A span's near edge moves with the
+/// clock, so what it admits has to be settled again as time passes, and that
+/// is a walk of every system on the map rather than a query.
+#[derive(Resource)]
+struct LastCutAt(Instant);
+
+impl Default for LastCutAt {
+    fn default() -> LastCutAt {
+        LastCutAt(Instant::now())
+    }
 }
 
 /// How many systems a question about time is answered with at most
@@ -165,19 +187,19 @@ pub enum Filter {
     /// It cannot be slid back to look at the galaxy as it stood: parked in the
     /// past it picks out what has not been heard from since, which is the same
     /// question read the other way round.
-    Recency { label: String, moment: DateTime<Utc> },
+    Recency { label: String, span: Duration },
 }
 
 impl Filter {
     /// Whether this filter admits `system`
-    fn admits(&self, system: &System) -> bool {
+    fn admits(&self, system: &System, now: DateTime<Utc>) -> bool {
         match self {
             Filter::Faction { id, .. } => system.factions.contains(id),
             Filter::Route { systems, .. } => systems.contains(&system.address),
             Filter::Systems { systems, .. } => {
                 systems.contains(&system.address)
             }
-            Filter::Recency { moment, .. } => system.updated_at >= *moment,
+            Filter::Recency { span, .. } => system.updated_at >= now - *span,
         }
     }
 
@@ -278,8 +300,8 @@ impl Filter {
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
             }
-            Filter::Recency { moment, .. } => {
-                DbSystem::fetch_changed_since(db, *moment, MOST)
+            Filter::Recency { span, .. } => {
+                DbSystem::fetch_changed_since(db, Utc::now() - *span, MOST)
                     .await
                     .unwrap_or_default()
             }
@@ -485,24 +507,42 @@ impl Filters {
             .position(|active| matches!(active.filter, Filter::Recency { .. }))
     }
 
-    /// Whether any enabled filter admits `system`
+    /// Whether the enabled filters admit `system`
     ///
-    /// Any of them, so each one adds to what is shown rather than cutting
-    /// into it. Every filter is something the user asked to see, and a second
-    /// ask is a second thing wanted, not a condition on the first: asking for
-    /// a faction and then for a route means both, where taking the systems
-    /// they share would usually mean nothing at all, the two rarely
-    /// overlapping.
+    /// The filters that pick systems out admit between them, so each adds to
+    /// what is shown rather than cutting into it. Every one is something the
+    /// user asked to see, and a second ask is a second thing wanted rather
+    /// than a condition on the first: asking for a faction and then for a
+    /// route means both, where taking the systems they share would usually
+    /// mean nothing at all, the two rarely overlapping.
+    ///
+    /// Time is asked of all of them instead. It names no systems, only how
+    /// lately one was heard from, so a faction and a span together mean that
+    /// faction's systems heard from within it. Counted as one more thing to
+    /// show, a span would put the whole of the last hour onto a map asked for
+    /// one faction.
     ///
     /// Nothing asked for admits everything. A map with no filter on it is a
     /// map showing the sky rather than an empty one.
-    pub fn admit(&self, system: &System) -> bool {
-        let mut asked =
-            self.0.iter().filter(|active| active.enabled).peekable();
-        if asked.peek().is_none() {
-            return true;
+    pub fn admit(&self, system: &System, now: DateTime<Utc>) -> bool {
+        // Nothing while no filter picks systems out, which is what says a span
+        // asked on its own admits whatever it reaches rather than nothing.
+        let mut picked = None;
+
+        for active in self.0.iter().filter(|active| active.enabled) {
+            match &active.filter {
+                timed @ Filter::Recency { .. } => {
+                    if !timed.admits(system, now) {
+                        return false;
+                    }
+                }
+                picking => {
+                    *picked.get_or_insert(false) |= picking.admits(system, now);
+                }
+            }
         }
-        asked.any(|active| active.filter.admits(system))
+
+        picked.unwrap_or(true)
     }
 
     /// Add `filter`, unless it is already being asked
@@ -604,9 +644,9 @@ impl Filters {
     /// [`SPANS`]. A moment on its own reads as a time of day with no date
     /// against it, which says nothing at all once the span reaching back to it
     /// is longer than a day.
-    pub fn ask_since(&mut self, span: &str, moment: DateTime<Utc>) {
-        let label = format!("Last {span}");
-        let asked = Filter::Recency { label, moment };
+    pub fn ask_within(&mut self, said: &str, span: Duration) {
+        let label = format!("Last {said}");
+        let asked = Filter::Recency { label, span };
         match self
             .0
             .iter_mut()
@@ -659,12 +699,12 @@ impl Filters {
     ///
     /// The earliest of them where several are somehow asked, that being the one
     /// whose answer holds the others.
-    pub fn changed_since(&self) -> Option<DateTime<Utc>> {
+    pub fn changed_since(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         self.0
             .iter()
             .filter(|active| active.enabled)
             .filter_map(|active| match &active.filter {
-                Filter::Recency { moment, .. } => Some(*moment),
+                Filter::Recency { span, .. } => Some(now - *span),
                 _ => None,
             })
             .min()
@@ -685,16 +725,22 @@ impl Filters {
         let mut asked = false;
 
         for active in self.0.iter().filter(|active| active.enabled) {
-            asked = true;
             match &active.filter {
-                Filter::Faction { id, .. } => admitted.factions.push(*id),
+                Filter::Faction { id, .. } => {
+                    asked = true;
+                    admitted.factions.push(*id);
+                }
                 Filter::Route { systems, .. }
                 | Filter::Systems { systems, .. } => {
-                    admitted.systems.extend(systems.iter().copied())
+                    asked = true;
+                    admitted.systems.extend(systems.iter().copied());
                 }
                 // Nothing a region can be narrowed by. What this admits is
                 // scattered across the galaxy rather than gathered anywhere,
-                // so it is fetched in its own right and not as part of a place.
+                // so it is fetched in its own right and not as part of a
+                // place. Asked on its own it leaves the region asked for as it
+                // stands, rather than narrowing it to two empty lists, which
+                // is a question answered with nothing at all.
                 Filter::Recency { .. } => {}
             }
         }
@@ -780,10 +826,26 @@ const DEFAULT_DIM: f32 = 0.25;
 /// writes nothing.
 fn mark(
     filters: Res<Filters>,
+    poll: Res<Poll>,
+    time: Res<Time<Real>>,
+    mut last_cut_at: ResMut<LastCutAt>,
     systems: Query<(Entity, Ref<System>, Has<Filtered>)>,
     mut commands: Commands,
 ) {
-    let filters_changed = filters.is_changed();
+    let now = Utc::now();
+    // A span reaches back from now, so the line it draws moves whether or not
+    // anything is asked afresh, and systems cross it going the other way. Cut
+    // again on the [`Poll`], which is the same beat the answer to it is asked
+    // for on, rather than every frame: the line moves by a frame's worth in a
+    // frame, and finding out costs a walk of every system on the map.
+    let running = time.last_update().unwrap_or(time.startup());
+    let recut = filters.changed_since(now).is_some()
+        && poll.elapsed(last_cut_at.0, running);
+    if recut {
+        *last_cut_at = LastCutAt(running);
+    }
+
+    let filters_changed = filters.is_changed() || recut;
     for (entity, system, marked) in &systems {
         // A row that has changed may have changed its factions, so it is
         // asked again even while the filters stand still.
@@ -791,7 +853,7 @@ fn mark(
             continue;
         }
 
-        match (filters.admit(&system), marked) {
+        match (filters.admit(&system, now), marked) {
             (false, false) => {
                 commands.entity(entity).insert(Filtered);
             }
@@ -813,11 +875,20 @@ mod tests {
         DateTime::from_timestamp(secs, 0).expect("a moment")
     }
 
-    /// A filter admitting whatever was heard from after `secs`
-    fn since(secs: i64) -> Filter {
+    /// The moment these are asked at
+    ///
+    /// Fixed, so that a span reaching back from it lands somewhere the fixtures
+    /// can name. The filters that say nothing about time are asked at it too,
+    /// there being one way to ask.
+    fn now() -> DateTime<Utc> {
+        moment(200)
+    }
+
+    /// A filter admitting whatever was heard from within `secs` of [`now`]
+    fn within(secs: i64) -> Filter {
         Filter::Recency {
             label: format!("Last {secs}"),
-            moment: DateTime::from_timestamp(secs, 0).expect("a moment"),
+            span: Duration::seconds(secs),
         }
     }
 
@@ -846,8 +917,8 @@ mod tests {
     #[test]
     fn no_filter_admits_everything() {
         let filters = Filters::default();
-        assert!(filters.admit(&member(1, &[])));
-        assert!(filters.admit(&member(2, &[7])));
+        assert!(filters.admit(&member(1, &[]), now()));
+        assert!(filters.admit(&member(2, &[7]), now()));
     }
 
     /// A faction filter admits the systems that faction is in
@@ -856,10 +927,10 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(faction(7));
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(filters.admit(&member(2, &[3, 7])));
-        assert!(!filters.admit(&member(3, &[3])));
-        assert!(!filters.admit(&member(4, &[])));
+        assert!(filters.admit(&member(1, &[7]), now()));
+        assert!(filters.admit(&member(2, &[3, 7]), now()));
+        assert!(!filters.admit(&member(3, &[3]), now()));
+        assert!(!filters.admit(&member(4, &[]), now()));
     }
 
     /// Two filters admit what passes either
@@ -874,10 +945,10 @@ mod tests {
         filters.add(faction(7));
         filters.add(faction(9));
 
-        assert!(filters.admit(&member(1, &[7, 9])));
-        assert!(filters.admit(&member(2, &[7])));
-        assert!(filters.admit(&member(3, &[9])));
-        assert!(!filters.admit(&member(4, &[3])));
+        assert!(filters.admit(&member(1, &[7, 9]), now()));
+        assert!(filters.admit(&member(2, &[7]), now()));
+        assert!(filters.admit(&member(3, &[9]), now()));
+        assert!(!filters.admit(&member(4, &[3]), now()));
     }
 
     /// A filter turned off asks nothing
@@ -887,7 +958,7 @@ mod tests {
         filters.add(faction(7));
         filters.toggle(0);
 
-        assert!(filters.admit(&member(1, &[])));
+        assert!(filters.admit(&member(1, &[]), now()));
     }
 
     /// Turning them all off shows the sky whole, and holds on to every filter
@@ -904,7 +975,7 @@ mod tests {
 
         assert!(!filters.any_enabled());
         assert_eq!(filters.len(), 2);
-        assert!(filters.admit(&member(1, &[3])));
+        assert!(filters.admit(&member(1, &[3]), now()));
     }
 
     /// And the same gesture puts every one of them back
@@ -921,9 +992,9 @@ mod tests {
         filters.toggle_all(&[0, 1]);
         filters.toggle_all(&[0, 1]);
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(filters.admit(&member(2, &[9])));
-        assert!(!filters.admit(&member(3, &[3])));
+        assert!(filters.admit(&member(1, &[7]), now()));
+        assert!(filters.admit(&member(2, &[9]), now()));
+        assert!(!filters.admit(&member(3, &[3]), now()));
     }
 
     /// One left on is enough for the set to read as asking
@@ -952,7 +1023,7 @@ mod tests {
         filters.clear(&[0, 1]);
 
         assert_eq!(filters.len(), 0);
-        assert!(filters.admit(&member(1, &[3])));
+        assert!(filters.admit(&member(1, &[3]), now()));
     }
 
     /// What the filters admit is two lists a query can be handed
@@ -1031,7 +1102,7 @@ mod tests {
         filters.add(route(&[]));
 
         assert_eq!(filters.admitted(), Some(Admitted::default()));
-        assert!(!filters.admit(&member(1, &[7])));
+        assert!(!filters.admit(&member(1, &[7]), now()));
     }
 
     /// One of two turned off leaves the other asking
@@ -1042,8 +1113,8 @@ mod tests {
         filters.add(faction(9));
         filters.toggle(1);
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(!filters.admit(&member(2, &[9])));
+        assert!(filters.admit(&member(1, &[7]), now()));
+        assert!(!filters.admit(&member(2, &[9]), now()));
     }
 
     /// A hand-picked set holding the systems at `addresses`
@@ -1060,9 +1131,9 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(systems(&[7, 3]));
 
-        assert!(filters.admit(&member(3, &[])));
-        assert!(filters.admit(&member(7, &[])));
-        assert!(!filters.admit(&member(9, &[])));
+        assert!(filters.admit(&member(3, &[]), now()));
+        assert!(filters.admit(&member(7, &[]), now()));
+        assert!(!filters.admit(&member(9, &[]), now()));
     }
 
     /// And has no order for a panel to list it in
@@ -1094,9 +1165,9 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(route(&[7, 3, 9]));
 
-        assert!(filters.admit(&member(3, &[])));
-        assert!(filters.admit(&member(9, &[])));
-        assert!(!filters.admit(&member(4, &[])));
+        assert!(filters.admit(&member(3, &[]), now()));
+        assert!(filters.admit(&member(9, &[]), now()));
+        assert!(!filters.admit(&member(4, &[]), now()));
     }
 
     /// However the addresses are ordered, the answer is the same
@@ -1112,7 +1183,10 @@ mod tests {
 
         for address in [1, 5, 9, 2, 7] {
             let system = member(address, &[]);
-            assert_eq!(forwards.admit(&system), backwards.admit(&system));
+            assert_eq!(
+                forwards.admit(&system, now()),
+                backwards.admit(&system, now())
+            );
         }
     }
 
@@ -1166,8 +1240,8 @@ mod tests {
         filters.add(route(&[8, 9]));
 
         assert_eq!(filters.iter().count(), 2);
-        assert!(filters.admit(&member(9, &[])));
-        assert!(filters.admit(&member(1, &[])));
+        assert!(filters.admit(&member(9, &[]), now()));
+        assert!(filters.admit(&member(1, &[]), now()));
     }
 
     /// The same route asked for twice is one route
@@ -1207,13 +1281,13 @@ mod tests {
 
         let mut on_both = member(1, &[7]);
         on_both.factions = vec![7];
-        assert!(filters.admit(&on_both));
+        assert!(filters.admit(&on_both, now()));
         // On the route, though the faction is nowhere near it.
-        assert!(filters.admit(&member(2, &[])));
+        assert!(filters.admit(&member(2, &[]), now()));
         // The faction's, though the route runs elsewhere.
-        assert!(filters.admit(&member(5, &[7])));
+        assert!(filters.admit(&member(5, &[7]), now()));
         // Neither, so neither asked for it.
-        assert!(!filters.admit(&member(6, &[3])));
+        assert!(!filters.admit(&member(6, &[3]), now()));
     }
 
     /// Two filters that differ are told apart, and equal ones are not
@@ -1255,7 +1329,7 @@ mod tests {
         filters.add(faction(7));
         filters.remove(0);
 
-        assert!(filters.admit(&member(1, &[])));
+        assert!(filters.admit(&member(1, &[]), now()));
     }
 
     /// A world with nothing in it but the filters and the mark
@@ -1263,6 +1337,12 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Filters>();
+        // What `mark` cuts the spans against, and how often. Zero seconds
+        // cuts every frame, which is what a test wants: it steps the world by
+        // hand and there is no waiting in it.
+        app.insert_resource(Poll(Some(0.)));
+        app.init_resource::<LastCutAt>();
+        app.init_resource::<Time<Real>>();
         app.add_systems(Update, mark);
         app
     }
@@ -1333,27 +1413,128 @@ mod tests {
     #[test]
     fn a_filter_on_time_admits_what_came_in_since() {
         let mut filters = Filters::default();
-        filters.add(since(100));
+        filters.add(within(100));
 
-        assert!(filters.admit(&heard(1, 160)), "later than the moment");
-        assert!(filters.admit(&heard(2, 100)), "the moment itself");
-        assert!(!filters.admit(&heard(3, 40)), "earlier than the moment");
+        assert!(filters.admit(&heard(1, 160), now()), "later than the moment");
+        assert!(filters.admit(&heard(2, 100), now()), "the moment itself");
+        assert!(
+            !filters.admit(&heard(3, 40), now()),
+            "earlier than the moment"
+        );
+    }
+
+    /// A system belonging to each of `factions`, heard from at `secs`
+    fn member_heard(address: i64, factions: &[i32], secs: i64) -> System {
+        let mut system = heard(address, secs);
+        system.factions = factions.to_vec();
+        system
+    }
+
+    /// Time is a condition on the rest rather than another thing to show
+    ///
+    /// Two factions and a span mean either faction, heard from within the
+    /// span. Counted alongside the factions, the span would put every system
+    /// heard from lately onto a map asked for two factions.
+    #[test]
+    fn time_narrows_what_the_other_filters_admit() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+        filters.add(within(100));
+
+        assert!(
+            filters.admit(&member_heard(1, &[7], 160), now()),
+            "the first faction, heard from lately"
+        );
+        assert!(
+            filters.admit(&member_heard(2, &[9], 160), now()),
+            "the second faction, heard from lately"
+        );
+        assert!(
+            !filters.admit(&member_heard(3, &[7], 40), now()),
+            "a faction asked for, but not heard from since"
+        );
+        assert!(
+            !filters.admit(&member_heard(4, &[3], 160), now()),
+            "heard from lately, but no faction asked for"
+        );
+    }
+
+    /// A span asked on its own admits whatever it reaches
+    ///
+    /// Nothing else picks systems out, so there is nothing for it to be a
+    /// condition on and it stands as the whole question.
+    #[test]
+    fn a_span_asked_alone_admits_what_it_reaches() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        assert!(filters.admit(&heard(1, 160), now()));
+        assert!(!filters.admit(&heard(2, 40), now()));
+    }
+
+    /// A span reaches back from now, so what it admits changes as the clock does
+    ///
+    /// The near edge moves, and systems cross it both ways: one heard from
+    /// within the span falls out of it by being left alone. A moment worked
+    /// out once and kept would say "since 14:32" for as long as it was asked,
+    /// so systems could only ever cross into it and the count could only climb.
+    #[test]
+    fn a_span_lets_go_of_what_has_aged_out_of_it() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        let system = heard(1, 150);
+
+        assert!(filters.admit(&system, moment(200)), "inside the span");
+        assert!(
+            !filters.admit(&system, moment(300)),
+            "the span moved on and left it behind"
+        );
+    }
+
+    /// And the question put to the database moves with it
+    ///
+    /// Asked again on every poll, so the same span is a later moment each
+    /// time. Answered with whatever has crossed into it since.
+    #[test]
+    fn the_question_asked_of_the_database_moves_with_the_clock() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        assert_eq!(filters.changed_since(moment(200)), Some(moment(100)));
+        assert_eq!(filters.changed_since(moment(300)), Some(moment(200)));
     }
 
     /// It narrows no region, what it admits being gathered nowhere
     ///
     /// A faction and a route say which systems a region should be asked for. A
     /// question about time is answered from across the galaxy, so it has
-    /// nothing to add to a question about a place, and adding its systems to
-    /// that list would narrow the region to them.
+    /// nothing to add to a question about a place.
+    ///
+    /// Nothing at all rather than two empty lists. The region is asked with
+    /// whatever these hold, and a pair of empty lists asks it for no faction
+    /// and no system, which is a question the database answers with nothing.
     #[test]
     fn a_filter_on_time_narrows_no_region() {
         let mut filters = Filters::default();
-        filters.add(since(100));
+        filters.add(within(100));
 
-        let admitted = filters.admitted().expect("something was asked");
-        assert!(admitted.factions.is_empty());
-        assert!(admitted.systems.is_empty());
+        assert!(filters.admitted().is_none(), "the region was narrowed");
+    }
+
+    /// Beside a faction it leaves that faction narrowing the region
+    ///
+    /// The two are asked together: the faction says which systems the region
+    /// is wanted for, and time is asked of what comes back.
+    #[test]
+    fn a_filter_on_time_leaves_a_faction_narrowing() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(within(100));
+
+        let admitted = filters.admitted().expect("the faction asked");
+        assert_eq!(admitted.factions, vec![7]);
     }
 
     /// Asking again about time replaces the question rather than adding one
@@ -1364,11 +1545,11 @@ mod tests {
     #[test]
     fn asking_about_time_twice_asks_one_question() {
         let mut filters = Filters::default();
-        filters.ask_since("1 day", moment(100));
-        filters.ask_since("1 hour", moment(200));
+        filters.ask_within("1 day", Duration::seconds(100));
+        filters.ask_within("1 hour", Duration::seconds(50));
 
         assert_eq!(filters.len(), 1, "the first question was left standing");
-        assert_eq!(filters.changed_since(), Some(moment(200)));
+        assert_eq!(filters.changed_since(now()), Some(moment(150)));
     }
 
     /// The row a filter on time draws says the span it was asked as
@@ -1379,7 +1560,7 @@ mod tests {
     #[test]
     fn a_filter_on_time_is_named_for_its_span() {
         let mut filters = Filters::default();
-        filters.ask_since("30 days", moment(100));
+        filters.ask_within("30 days", Duration::seconds(100));
 
         assert_eq!(
             filters.get(0).map(|active| active.filter.name()),
@@ -1392,13 +1573,48 @@ mod tests {
     fn asking_nothing_of_time_leaves_the_rest() {
         let mut filters = Filters::default();
         filters.add(faction(7));
-        filters.ask_since("1 day", moment(100));
+        filters.ask_within("1 day", Duration::seconds(100));
 
         filters.ask_nothing_of_time();
 
-        assert_eq!(filters.changed_since(), None, "still asking about time");
+        assert_eq!(
+            filters.changed_since(now()),
+            None,
+            "still asking about time"
+        );
         assert_eq!(filters.len(), 1, "the faction went with it");
-        assert!(filters.admit(&member(1, &[7])), "the faction stopped asking");
+        assert!(
+            filters.admit(&member(1, &[7]), now()),
+            "the faction stopped asking"
+        );
+    }
+
+    /// Turning time off stops it asking without taking its row away
+    ///
+    /// What the control does while it is being held, its row standing above
+    /// it. The row says what is filtering, which by then is nothing.
+    #[test]
+    fn time_turned_off_stops_asking_where_it_stands() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        filters.turn_time_off("Off");
+
+        assert_eq!(filters.len(), 1, "the row went with the question");
+        assert_eq!(
+            filters.changed_since(now()),
+            None,
+            "still asking about time"
+        );
+        assert!(
+            filters.admit(&heard(1, 40), now()),
+            "still turning systems away"
+        );
+        assert_eq!(
+            filters.get(0).map(|active| active.filter.name()),
+            Some("Off"),
+            "the row still named the span it had stopped asking for"
+        );
     }
 
     /// A filter on time turned off asks nothing, as any other does
@@ -1409,10 +1625,10 @@ mod tests {
     #[test]
     fn a_disabled_filter_on_time_asks_nothing() {
         let mut filters = Filters::default();
-        filters.ask_since("1 day", moment(100));
+        filters.ask_within("1 day", Duration::seconds(100));
         filters.toggle(0);
 
-        assert_eq!(filters.changed_since(), None);
+        assert_eq!(filters.changed_since(now()), None);
     }
 
     /// The control's far end asks nothing, and its near end asks for a minute

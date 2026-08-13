@@ -358,7 +358,10 @@ fn fetch_changed(
     poll: Res<Poll>,
     db: Res<Db>,
 ) {
-    let Some(moment) = filters.changed_since() else { return };
+    // Worked out here rather than carried by the filter, a span's near edge
+    // moving with the clock. So the same question put again is about a later
+    // moment, and the index it is asked under is a fresh one.
+    let Some(moment) = filters.changed_since(Utc::now()) else { return };
     let index = FetchIndex::Changed(moment);
     let now = time.last_update().unwrap_or(time.startup());
 

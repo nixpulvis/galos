@@ -24,6 +24,7 @@ use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
+use chrono::Utc;
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
 use std::{
@@ -602,7 +603,7 @@ pub fn spawn_systems(
             // Asked here as well as in `filter::mark`, since a mark applied
             // by a command lands at the next sync point and the star would
             // be drawn once at full strength before it arrived.
-            let excluded = !filters.admit(&system);
+            let excluded = !filters.admit(&system, Utc::now());
             let drawn = star(&system, color_by, roundness, materials, excluded);
             let mut spawned = commands.spawn((
                 placement(&system, grid),
