@@ -1035,6 +1035,9 @@ fn main_bar(
                         asking,
                     );
                     taken |= response.gained_focus();
+                    // Carried out so the press that shuts the form can let go
+                    // of it. See [`let_go_of`].
+                    let box_id = response.id;
                     // Where the gear stands, the two of them being one row.
                     let middle = response.rect.center().y;
                     // Both answer a name, so neither is any answer at all
@@ -1157,7 +1160,7 @@ fn main_bar(
                         );
                     }
 
-                    (taken, middle)
+                    (taken, middle, box_id)
                 })
                 .inner
         });
@@ -1179,17 +1182,36 @@ fn main_bar(
             .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
     // Two moments, and nothing else: a field in the form takes focus, or a
     // press lands off the form. Moments rather than states, so that neither
-    // can undo the other. A field goes on holding focus after the press that
-    // shut the form, and asking whether it holds focus would open the form
-    // again the very next frame.
-    let (took_focus, middle) = bar.inner;
+    // can undo the other. Asking whether a field holds focus would open the
+    // form again the very next frame.
+    let (took_focus, middle, box_id) = bar.inner;
     if took_focus {
         search.expanded = true;
     }
     if dismissed {
         search.expanded = false;
+        let_go_of(ctx, box_id);
     }
     (shut, middle)
+}
+
+/// Let go of the box, the press that shut the form having not been a click
+///
+/// The form is shut by a press. Egui lets go of the focus on a click, which is
+/// a press and a release it did not read as a drag, so the two part company
+/// whenever the pointer moves between the two halves of a gesture. Over a map
+/// dragged to turn it, that is most of them.
+///
+/// What that leaves is a box holding the focus with the form shut, and focus is
+/// what opens the form. A box already holding it cannot take it again, so the
+/// next click on it opens nothing and the user has to click away and back to
+/// say what they had already said.
+///
+/// Named rather than surrendered outright, so that only this box lets go. A
+/// press lands off the bar whenever it lands on the settings pane, and a value
+/// being clicked into there is a field that has just taken the focus.
+fn let_go_of(ctx: &egui::Context, box_id: egui::Id) {
+    ctx.memory_mut(|memory| memory.surrender_focus(box_id));
 }
 
 /// The whole of the bar's searching
@@ -5589,6 +5611,85 @@ mod tests {
         let (_, editing) = fields(egui::RawInput::default(), &mut value);
 
         (resting, editing, value)
+    }
+
+    /// A gesture at `from`, released `drift` further on
+    ///
+    /// Egui reads a press and a release apart as a drag rather than a click,
+    /// and it is a click it lets go of the focus on. Zero drift is a click.
+    fn dragged(from: egui::Pos2, drift: f32) -> Vec<egui::RawInput> {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let to = egui::pos2(from.x + drift, from.y);
+        let frame = |events| egui::RawInput { events, ..Default::default() };
+
+        vec![
+            frame(vec![egui::Event::PointerMoved(from), button(from, true)]),
+            frame(vec![egui::Event::PointerMoved(to)]),
+            frame(vec![button(to, false)]),
+        ]
+    }
+
+    /// A press that shuts the form takes the focus off the box above it
+    ///
+    /// The form is shut by a press and egui lets the focus go on a click, so a
+    /// gesture that drifts between the two parts them: the box is left holding
+    /// the focus the form opens on, and the next click on it opens nothing.
+    /// Over a map dragged to turn it, most clicks drift.
+    ///
+    /// The drag is what makes this worth a test. Driven as a click it passes
+    /// against the unfixed code, egui having let go of the focus itself.
+    #[test]
+    fn a_press_that_shuts_the_form_lets_go_of_the_box() {
+        let ctx = crate::tests::context();
+        let mut value: Option<String> = None;
+
+        let draw = |input, value: &mut Option<String>| {
+            let mut field = (egui::Rect::NOTHING, egui::Id::NULL);
+            let _ = ctx.run_ui(input, |ui| {
+                let drawn = singleline(ui, value, "Search", 0., false);
+                field = (drawn.rect, drawn.id);
+            });
+            field
+        };
+
+        // Two passes with nothing happening, to place it, then a click in it.
+        draw(egui::RawInput::default(), &mut value);
+        let (rect, box_id) = draw(egui::RawInput::default(), &mut value);
+        for input in dragged(rect.center(), 0.) {
+            draw(input, &mut value);
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(box_id),
+            "the click never put the caret in the box",
+        );
+
+        // And a gesture well away from it, drifting as one over the map does.
+        let away = egui::pos2(rect.right() + 300., rect.bottom() + 300.);
+        for input in dragged(away, 100.) {
+            draw(input, &mut value);
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(box_id),
+            "egui let the focus go by itself, so nothing here is needed",
+        );
+
+        // Which is the press the form is shut by, so it is where the box is
+        // let go of.
+        let_go_of(&ctx, box_id);
+        draw(egui::RawInput::default(), &mut value);
+
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            None,
+            "the box kept the focus the form opens on",
+        );
     }
 
     /// A field says what it wants whether or not the caret is in it
