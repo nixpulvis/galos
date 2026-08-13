@@ -146,6 +146,12 @@ impl FetchIndex {
 /// while one switched off asks for what was never fetched and is answered at
 /// the throttle.
 ///
+/// Part of, at one moment. A radius holds a smaller radius for good; a span
+/// slides, so the narrower one asked later reaches systems heard from since the
+/// wider one was answered. That is the poll's to bring in, and it brings the
+/// same arrivals in for a span nobody has touched, the window having moved
+/// under it either way.
+///
 /// Spelled out rather than compared as [`Option`]s, whose own ordering puts
 /// [`None`] below every [`Some`] and would read asking nothing about time as
 /// the narrowest question of the lot.
