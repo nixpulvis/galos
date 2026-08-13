@@ -21,7 +21,6 @@ impl Outfitting {
         let mut tx = db.pool.begin().await?;
 
         Market::touch(
-            db,
             &mut tx,
             timestamp,
             outfitting.market_id,

@@ -53,6 +53,7 @@ use galos_db::{
     stations::Station, system_signals::SystemSignal, systems::System, Database,
 };
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 /// Where these tests write, or nothing and they stand down
 ///
@@ -172,6 +173,7 @@ const PLACED: i64 = 900_000_018;
 const LATE: i64 = 900_000_019;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
+const CROWDED: i64 = 900_000_022;
 
 /// A market is keyed by its own id, so these stand apart from the addresses
 const CARRIER_MARKET: i64 = 128_900_001;
@@ -1652,4 +1654,68 @@ async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
         stocked[0].module_name, "Int_Engine_B",
         "the late message rewrote the bay",
     );
+}
+
+/// More trade messages at once than the pool has connections to answer with
+///
+/// Each of these opens a transaction and then has to find the system its market
+/// stands in. Asked of the pool rather than of the transaction it is already
+/// holding, that second question waits on a connection its five neighbours are
+/// holding transactions open on, and none of them can answer until one of the
+/// others lets go. Nothing does, so they all wait out the acquire timeout.
+///
+/// Eight against a pool of five, so more than one has to be waiting on a
+/// connection at once for this to say anything.
+#[async_std::test]
+async fn trade_messages_do_not_wait_on_each_other() {
+    let Some(url) = database_url() else { return };
+    let db = Database::from_url(&url).await.expect("a database");
+    // The market points at the station, so it goes first.
+    forget_market(128_016_388).await;
+    forget(CROWDED).await;
+
+    System::create(
+        &db,
+        CROWDED,
+        "Test Crowded",
+        Some(Coordinate { x: 0., y: 0., z: 0. }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    Station::create(&db, at(0), "test", CROWDED, "Test Crowded Station")
+        .await
+        .expect("station should write");
+
+    let mut running = Vec::new();
+    for _ in 0..8 {
+        let db = db.clone();
+        running.push(async_std::task::spawn(async move {
+            let outfitting = JournalOutfitting {
+                system_name: "Test Crowded".into(),
+                station_name: "Test Crowded Station".into(),
+                market_id: 128_016_388,
+                modules: vec![Module::Named("Hpt_ChaffLauncher_Tiny".into())],
+            };
+            Outfitting::from_journal(&db, at(0), &outfitting).await
+        }));
+    }
+
+    // Waited on under a bound, since what goes wrong here is waiting rather
+    // than failing: connections held against each other are released by the
+    // acquire timeout, which is longer than a test should sit for.
+    for running in running {
+        async_std::future::timeout(Duration::from_secs(20), running)
+            .await
+            .expect("the messages should not be waiting on each other")
+            .expect("every message should be written");
+    }
 }

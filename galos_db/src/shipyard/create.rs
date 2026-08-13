@@ -25,7 +25,6 @@ impl Shipyard {
         let mut tx = db.pool.begin().await?;
 
         Market::touch(
-            db,
             &mut tx,
             timestamp,
             shipyard.market_id,

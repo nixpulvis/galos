@@ -1,5 +1,4 @@
 use super::Market;
-use crate::systems::System;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Market as JournalMarket;
@@ -26,24 +25,29 @@ impl Market {
     /// otherwise put it back there. The stamp is the newest heard from any of
     /// the four kinds of trade message, so it says when the market was last
     /// placed and nothing about how fresh any one of its tables is.
+    /// Asked of the transaction rather than of the pool, which is what keeps a
+    /// caller to one connection. The pool hands out five, and a caller holding
+    /// its transaction while it waits for a second connection is a caller
+    /// waiting on a connection that the four beside it are already holding.
+    ///
+    /// Nothing found is a system this database has not heard of, which is the
+    /// market waiting for one. A failure to answer is not an answer of no, and
+    /// goes back to the caller: filing the market as waiting on that would
+    /// leave it waiting on a system that already exists, for a write that may
+    /// never come.
     pub(crate) async fn touch(
-        db: &Database,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         timestamp: DateTime<Utc>,
         market_id: i64,
         system_name: &str,
         station_name: &str,
     ) -> Result<Market, Error> {
-        let address = match System::fetch_by_name(db, system_name).await {
-            Ok(system) => Some(system.address),
-            // There is no such system yet, so the market waits for one.
-            Err(Error::Sqlx(sqlx::Error::RowNotFound)) => None,
-            // Anything else is the database failing to answer, which is not
-            // the same as an answer of no. Filing the market as waiting on
-            // that would leave it waiting on a system that already exists,
-            // for a write that may never come.
-            Err(err) => return Err(err),
-        };
+        let address = sqlx::query_scalar!(
+            "SELECT address FROM systems WHERE name = $1",
+            system_name.to_uppercase(),
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
 
         let row = sqlx::query!(
             r#"
@@ -99,7 +103,6 @@ impl Market {
         let mut tx = db.pool.begin().await?;
 
         let placed = Market::touch(
-            db,
             &mut tx,
             timestamp,
             market.market_id,
