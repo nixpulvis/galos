@@ -2658,7 +2658,7 @@ fn watch_control(ui: &mut Ui, watch: &mut Watch, active: &mut Filters) {
             // Worked out here and not where it is asked. `Utc::now` is the one
             // thing in this that cannot be tested, so it is read at the one
             // place that turns a span into a moment.
-            Some(span) => active.ask_since(Utc::now() - span),
+            Some(span) => active.ask_since(watch.name(), Utc::now() - span),
             None => active.ask_nothing_of_time(),
         }
     }

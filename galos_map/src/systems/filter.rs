@@ -537,10 +537,12 @@ impl Filters {
     /// answer holds the later one's, so the pair would draw what the wider of
     /// them draws and read as a control that had stopped responding.
     ///
-    /// The row says the moment rather than the span it was asked as, which
-    /// holds still while a span does not. "Since 20:47" goes on being true.
-    pub fn ask_since(&mut self, moment: DateTime<Utc>) {
-        let label = format!("Since {}", moment.format("%H:%M"));
+    /// The row says the span it was asked as, `span` being one of the names in
+    /// [`SPANS`]. A moment on its own reads as a time of day with no date
+    /// against it, which says nothing at all once the span reaching back to it
+    /// is longer than a day.
+    pub fn ask_since(&mut self, span: &str, moment: DateTime<Utc>) {
+        let label = format!("Last {span}");
         let asked = Filter::Recency { label, moment };
         match self
             .0
@@ -729,7 +731,7 @@ mod tests {
     /// A filter admitting whatever was heard from after `secs`
     fn since(secs: i64) -> Filter {
         Filter::Recency {
-            label: format!("Since {secs}"),
+            label: format!("Last {secs}"),
             moment: DateTime::from_timestamp(secs, 0).expect("a moment"),
         }
     }
@@ -1277,11 +1279,27 @@ mod tests {
     #[test]
     fn asking_about_time_twice_asks_one_question() {
         let mut filters = Filters::default();
-        filters.ask_since(moment(100));
-        filters.ask_since(moment(200));
+        filters.ask_since("1 day", moment(100));
+        filters.ask_since("1 hour", moment(200));
 
         assert_eq!(filters.len(), 1, "the first question was left standing");
         assert_eq!(filters.changed_since(), Some(moment(200)));
+    }
+
+    /// The row a filter on time draws says the span it was asked as
+    ///
+    /// A moment on its own reads as a time of day with no date against it, so
+    /// a row naming one says nothing the user can act on once the span
+    /// reaching back to it is longer than a day.
+    #[test]
+    fn a_filter_on_time_is_named_for_its_span() {
+        let mut filters = Filters::default();
+        filters.ask_since("30 days", moment(100));
+
+        assert_eq!(
+            filters.get(0).map(|active| active.filter.name()),
+            Some("Last 30 days")
+        );
     }
 
     /// Sliding the control off stops asking about time and nothing else
@@ -1289,7 +1307,7 @@ mod tests {
     fn asking_nothing_of_time_leaves_the_rest() {
         let mut filters = Filters::default();
         filters.add(faction(7));
-        filters.ask_since(moment(100));
+        filters.ask_since("1 day", moment(100));
 
         filters.ask_nothing_of_time();
 
@@ -1306,7 +1324,7 @@ mod tests {
     #[test]
     fn a_disabled_filter_on_time_asks_nothing() {
         let mut filters = Filters::default();
-        filters.ask_since(moment(100));
+        filters.ask_since("1 day", moment(100));
         filters.toggle(0);
 
         assert_eq!(filters.changed_since(), None);
