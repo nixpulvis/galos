@@ -72,10 +72,25 @@ pub struct Clock {
 /// rail touched would measure a turn of its own body from a count of somebody
 /// else's.
 struct Held {
-    /// What the rail is geared to
+    /// What the slider is geared to
     period: f64,
     /// The whole turns it set out from
     turns: f64,
+}
+
+impl Held {
+    /// Whether `at` still stands in the turn this was taken for
+    ///
+    /// Measured rather than trusted. A drag that never sees its own end leaves
+    /// the anchor standing, and the clock may have been wound anywhere since by
+    /// another body's slider, so an anchor is only worth measuring from where
+    /// the reading could have come from it.
+    ///
+    /// The far end counts. A slider run to it lands exactly on the beginning of
+    /// the next turn and is held there, which is what the anchor is for.
+    fn holds(&self, at: f64) -> bool {
+        at >= self.turns * self.period && at <= (self.turns + 1.) * self.period
+    }
 }
 
 impl Clock {
@@ -121,7 +136,9 @@ impl Clock {
             return;
         }
         let whole = match &self.held {
-            Some(held) if held.period == period => held.turns,
+            Some(held) if held.period == period && held.holds(self.at) => {
+                held.turns
+            }
             _ => (self.at / period).floor(),
         };
         self.at = (whole + through) * period;
@@ -1079,6 +1096,32 @@ mod tests {
         assert_eq!(
             clock.at, once,
             "the clock ran away while the rail was held"
+        );
+    }
+
+    /// An anchor left standing by a drag that never ended is not measured from
+    ///
+    /// `drag_stopped` may never arrive: a panel shut with the pointer down
+    /// leaves the anchor where it is. The clock can be wound anywhere else
+    /// before that body's slider is touched again, and measuring from a turn
+    /// the system left long ago throws the whole of it back to that turn.
+    #[test]
+    fn an_anchor_from_a_drag_that_never_ended_is_let_go_of() {
+        let day = 86_400.;
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        // A drag that begins and never sees its own end.
+        clock.hold(period);
+        // And the clock moves on, wound by some other body's slider.
+        clock.at = 900. * day;
+
+        clock.wind_to(period, 0.5);
+
+        assert_eq!(
+            clock.at,
+            2.5 * period,
+            "the anchor threw the system back to the turn it was taken in"
         );
     }
 
