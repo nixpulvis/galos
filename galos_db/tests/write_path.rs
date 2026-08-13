@@ -195,6 +195,7 @@ const PLACED: i64 = 900_000_018;
 const LATE: i64 = 900_000_019;
 const LATE_VISIT: i64 = 900_000_037;
 const LATE_FILLS: i64 = 900_000_038;
+const TRADE_STATION: i64 = 900_000_039;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
@@ -213,6 +214,7 @@ const BLACK_MARKET: i64 = 128_016_387;
 const CROWDED_MARKET: i64 = 128_016_388;
 const FULLER_STATION: i64 = 128_016_389;
 const STALE_STATION: i64 = 128_016_390;
+const STATION_MARKET: i64 = 128_016_391;
 const SETTLEMENT_MARKET: i64 = 3_510_085_376;
 const SETTLEMENT_AGAIN: i64 = 3_510_085_377;
 
@@ -566,7 +568,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
         market_id: OUTFITTING,
         modules: vec![priced("Int_Engine_A", 100), priced("Int_Engine_B", 200)],
     };
-    Outfitting::from_journal(&db, at(0), &first)
+    Outfitting::from_journal(&db, at(0), "test", &first)
         .await
         .expect("outfitting should write");
 
@@ -574,7 +576,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
         modules: vec![priced("Int_Engine_B", 250)],
         ..first
     };
-    Outfitting::from_journal(&db, at(60), &second)
+    Outfitting::from_journal(&db, at(60), "test", &second)
         .await
         .expect("outfitting should write again");
 
@@ -585,6 +587,55 @@ async fn an_outfitting_message_replaces_what_came_before() {
     assert_eq!(stocked.len(), 1);
     assert_eq!(stocked[0].module_name, "Int_Engine_B");
     assert_eq!(stocked[0].buy_price, Some(250));
+}
+
+/// A trade message writes the station its market hangs off
+///
+/// A market names its station by key, so the station has to be on record before
+/// the market may point at it, and a trade message is often the only thing that
+/// ever says the station is there: nothing docks at most of them while anybody
+/// is watching. Written where the system is known, that being what a station
+/// needs to belong to.
+#[async_std::test]
+async fn a_trade_message_writes_the_station_it_names() {
+    let db = db!();
+    forget_market(STATION_MARKET).await;
+    forget(TRADE_STATION).await;
+
+    System::set_body_counts(
+        &db,
+        TRADE_STATION,
+        "Test Trade Station",
+        Some(somewhere(23.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let market = JournalMarket {
+        market_id: STATION_MARKET,
+        system_name: "Test Trade Station".into(),
+        station_name: "Test Trade Station Port".into(),
+        commodities: vec![],
+    };
+
+    let placed = Market::from_journal(&db, at(0), "trader", &market)
+        .await
+        .expect("the market should write");
+
+    assert_eq!(
+        placed.system_address,
+        Some(TRADE_STATION),
+        "the market never found the system it names",
+    );
+
+    let station = Station::fetch(&db, TRADE_STATION, "Test Trade Station Port")
+        .await
+        .expect("the station the market points at should be on record");
+    assert_eq!(station.updated_by, "trader");
 }
 
 /// A module from the older schema is stocked without a price
@@ -618,7 +669,7 @@ async fn an_unpriced_module_is_still_stocked() {
         market_id: UNPRICED,
         modules: vec![Module::Named("Hpt_ChaffLauncher_Tiny".into())],
     };
-    Outfitting::from_journal(&db, at(0), &outfitting)
+    Outfitting::from_journal(&db, at(0), "test", &outfitting)
         .await
         .expect("outfitting should write");
 
@@ -662,12 +713,12 @@ async fn a_shipyard_message_replaces_what_came_before() {
         ships: vec!["SideWinder".into(), "Eagle".into()],
         allow_cobra_mk_iv: Some(false),
     };
-    Shipyard::from_journal(&db, at(0), &yard)
+    Shipyard::from_journal(&db, at(0), "test", &yard)
         .await
         .expect("shipyard should write");
 
     let second = JournalShipyard { ships: vec!["SideWinder".into()], ..yard };
-    Shipyard::from_journal(&db, at(60), &second)
+    Shipyard::from_journal(&db, at(60), "test", &second)
         .await
         .expect("shipyard should write again");
 
@@ -716,7 +767,7 @@ async fn a_black_market_sale_does_not_retire_the_others() {
             sell_price: price,
             prohibited: true,
         };
-        BlackMarket::from_journal(&db, when, 128016387, &sale)
+        BlackMarket::from_journal(&db, when, "test", 128016387, &sale)
             .await
             .expect("sale should write");
     }
@@ -1741,15 +1792,19 @@ async fn a_late_message_does_not_put_a_carrier_back() {
         commodities: vec![],
     };
 
-    Market::from_journal(&db, at(600), &docked_at("Test Carrier Here"))
+    Market::from_journal(&db, at(600), "test", &docked_at("Test Carrier Here"))
         .await
         .expect("the newer message should write");
 
     // The system it jumped out of, named by a sender catching up.
-    let placed =
-        Market::from_journal(&db, at(0), &docked_at("Test Carrier Gone"))
-            .await
-            .expect("the late message should write");
+    let placed = Market::from_journal(
+        &db,
+        at(0),
+        "test",
+        &docked_at("Test Carrier Gone"),
+    )
+    .await
+    .expect("the late message should write");
 
     assert_eq!(
         placed.system_name, "TEST CARRIER HERE",
@@ -1785,6 +1840,7 @@ async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
     Outfitting::from_journal(
         &db,
         at(600),
+        "test",
         &stocking(priced("Int_Engine_B", 250)),
     )
     .await
@@ -1793,6 +1849,7 @@ async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
     Outfitting::from_journal(
         &db,
         at(0),
+        "test",
         &stocking(priced("Int_Engine_A", 100)),
     )
     .await
@@ -1858,7 +1915,7 @@ async fn trade_messages_do_not_wait_on_each_other() {
                 market_id: CROWDED_MARKET,
                 modules: vec![Module::Named("Hpt_ChaffLauncher_Tiny".into())],
             };
-            Outfitting::from_journal(&db, at(0), &outfitting).await
+            Outfitting::from_journal(&db, at(0), "test", &outfitting).await
         }));
     }
 

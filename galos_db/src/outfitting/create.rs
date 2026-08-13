@@ -14,6 +14,7 @@ impl Outfitting {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
+        user: &str,
         outfitting: &JournalOutfitting,
     ) -> Result<(), Error> {
         // The bay is emptied and refilled together. Between the two it sells
@@ -23,6 +24,7 @@ impl Outfitting {
         Market::touch(
             &mut tx,
             timestamp,
+            user,
             outfitting.market_id,
             &outfitting.system_name,
             &outfitting.station_name,

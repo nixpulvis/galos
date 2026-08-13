@@ -35,9 +35,17 @@ impl Market {
     /// goes back to the caller: filing the market as waiting on that would
     /// leave it waiting on a system that already exists, for a write that may
     /// never come.
+    ///
+    /// The station is written here, where the address it needs has just been
+    /// read. A market points at its station by key, so the station has to be
+    /// there first, and asking a second time for an address already in hand is
+    /// a query on the busiest path the sync has. Nothing else is claimed about
+    /// it: a trade message says a station is there and says nothing about what
+    /// it is like, so `updated_at` goes on naming whoever last described it.
     pub(crate) async fn touch(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         timestamp: DateTime<Utc>,
+        user: &str,
         market_id: i64,
         system_name: &str,
         station_name: &str,
@@ -48,6 +56,23 @@ impl Market {
         )
         .fetch_optional(&mut **tx)
         .await?;
+
+        if let Some(address) = address {
+            sqlx::query!(
+                "
+                INSERT INTO stations
+                    (system_address, name, updated_at, updated_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (system_address, name) DO NOTHING
+                ",
+                address,
+                station_name,
+                timestamp.naive_utc(),
+                user,
+            )
+            .execute(&mut **tx)
+            .await?;
+        }
 
         let row = sqlx::query!(
             r#"
@@ -95,6 +120,7 @@ impl Market {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
+        user: &str,
         market: &JournalMarket,
     ) -> Result<Market, Error> {
         // The market and its commodities go in together. Between clearing the
@@ -105,6 +131,7 @@ impl Market {
         let placed = Market::touch(
             &mut tx,
             timestamp,
+            user,
             market.market_id,
             &market.system_name,
             &market.station_name,

@@ -17,6 +17,7 @@ impl BlackMarket {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
+        user: &str,
         market_id: i64,
         sale: &JournalBlackMarket,
     ) -> Result<(), Error> {
@@ -25,6 +26,7 @@ impl BlackMarket {
         Market::touch(
             &mut tx,
             timestamp,
+            user,
             market_id,
             &sale.system_name,
             &sale.station_name,

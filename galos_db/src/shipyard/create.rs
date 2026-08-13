@@ -18,6 +18,7 @@ impl Shipyard {
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
+        user: &str,
         shipyard: &JournalShipyard,
     ) -> Result<(), Error> {
         // Emptied and refilled together, so that the yard is never seen
@@ -27,6 +28,7 @@ impl Shipyard {
         Market::touch(
             &mut tx,
             timestamp,
+            user,
             shipyard.market_id,
             &shipyard.system_name,
             &shipyard.station_name,

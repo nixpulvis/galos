@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO stations\n                    (system_address, name, updated_at, updated_by)\n                VALUES ($1, $2, $3, $4)\n                ON CONFLICT (system_address, name) DO NOTHING\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Timestamp",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61b95628bafcbe0faeb95e6882c4e7695a90a93341798f12af8e4fa931afb8f5"
+}

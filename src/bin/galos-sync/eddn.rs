@@ -160,37 +160,6 @@ async fn ensure_system(
     }
 }
 
-/// Note the station a market message names, where its system is known
-///
-/// Trade data names its system by name and never by address, so the system may
-/// well be one nothing has heard of. The market itself records the name and
-/// waits for the system either way; the station can only be written once there
-/// is a system for it to belong to, which is what the market's key onto it
-/// needs.
-///
-/// Best effort by design. A market whose station could not be written is still
-/// worth recording, and `System::create` links both up when the system turns
-/// up later.
-async fn ensure_station_for_market(
-    db: &Database,
-    timestamp: DateTime<Utc>,
-    user: &str,
-    system_name: &str,
-    station_name: &str,
-    what: &str,
-) {
-    let Ok(system) = System::fetch_by_name(db, system_name).await else {
-        return;
-    };
-
-    match Station::create(db, timestamp, user, system.address, station_name)
-        .await
-    {
-        Ok(_) => info!(station = %station_name, "{}", what),
-        Err(err) => warn!(station = %station_name, error = %err, "{}", what),
-    }
-}
-
 /// Record how many bodies a system holds
 ///
 /// The honk, the all-found tally and a nav beacon all report it, so they all
@@ -684,17 +653,7 @@ fn process_message(
             Message::Commodity(
                 ref e @ Entry { event: ref m @ JournalMarket { .. }, .. },
             ) => {
-                ensure_station_for_market(
-                    db,
-                    e.timestamp,
-                    user,
-                    &m.system_name,
-                    &m.station_name,
-                    "commodity",
-                )
-                .await;
-
-                match Market::from_journal(db, e.timestamp, &m).await {
+                match Market::from_journal(db, e.timestamp, user, &m).await {
                     // A market can arrive before anything that would create
                     // the system it names, and is recorded with no system to
                     // belong to until that turns up. The name it gave is all
@@ -715,17 +674,7 @@ fn process_message(
             // could not be reached at all until messages were placed by their
             // `$schemaRef`.
             Message::Outfitting(ref e @ Entry { event: ref o, .. }) => {
-                ensure_station_for_market(
-                    db,
-                    e.timestamp,
-                    user,
-                    &o.system_name,
-                    &o.station_name,
-                    "outfitting",
-                )
-                .await;
-
-                match Outfitting::from_journal(db, e.timestamp, o).await {
+                match Outfitting::from_journal(db, e.timestamp, user, o).await {
                     Ok(_) => info!(
                         station = %o.station_name,
                         modules = o.modules.len(),
@@ -738,17 +687,7 @@ fn process_message(
             }
 
             Message::Shipyard(ref e @ Entry { event: ref s, .. }) => {
-                ensure_station_for_market(
-                    db,
-                    e.timestamp,
-                    user,
-                    &s.system_name,
-                    &s.station_name,
-                    "shipyard",
-                )
-                .await;
-
-                match Shipyard::from_journal(db, e.timestamp, s).await {
+                match Shipyard::from_journal(db, e.timestamp, user, s).await {
                     Ok(_) => info!(
                         station = %s.station_name,
                         ships = s.ships.len(),
@@ -768,18 +707,14 @@ fn process_message(
                     return;
                 };
 
-                ensure_station_for_market(
+                match BlackMarket::from_journal(
                     db,
                     e.timestamp,
                     user,
-                    &b.system_name,
-                    &b.station_name,
-                    "black market",
+                    market_id,
+                    b,
                 )
-                .await;
-
-                match BlackMarket::from_journal(db, e.timestamp, market_id, b)
-                    .await
+                .await
                 {
                     Ok(_) => {
                         info!(station = %b.station_name, commodity = %b.name, "black market")
