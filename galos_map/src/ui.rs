@@ -1011,6 +1011,11 @@ fn main_bar(
             .shadow(egui::Shadow::NONE);
     }
 
+    // Whether a gesture is still under way anywhere, which is what says a
+    // control held mid-drag is still being held. Read before the bar is drawn,
+    // the control that took the hold being drawn well below the rows it holds.
+    let dragging = ctx.egui_is_using_pointer();
+
     let bar = egui::Area::new(egui::Id::new("main-bar"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
@@ -1120,6 +1125,10 @@ fn main_bar(
                     // control that asked out from under the pointer. Drawn
                     // from a copy, since a row let go of during a gesture that
                     // cannot reach it is nothing the user asked for.
+                    //
+                    // Asked of egui rather than taken from the control, which
+                    // says when a drag begins and may never say that it ended.
+                    filter.standstill.settle(dragging);
                     let mut standing;
                     let rows = match filter.standstill.rows(&filter.active) {
                         Some(held) => {

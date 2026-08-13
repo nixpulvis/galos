@@ -496,6 +496,25 @@ impl Standstill {
         self.asked = false;
     }
 
+    /// Let go where the drag this was taken for is over
+    ///
+    /// `dragging` is whether the pointer is still down on something. Measured
+    /// rather than trusted, as [`crate::systems::bodies::Clock`]'s anchor is:
+    /// the control says when a drag begins and when it ends, and the end may
+    /// never be said at all. A form shut with the pointer down takes the
+    /// control off screen, and a widget that is not drawn is one egui reports
+    /// nothing further about.
+    ///
+    /// Left held, the bar goes on drawing its rows from a copy, and a row
+    /// drawn from a copy is a row whose buttons do nothing: every toggle,
+    /// every close and every panel opened lands on something that is dropped
+    /// at the end of the frame.
+    pub fn settle(&mut self, dragging: bool) {
+        if !dragging {
+            self.release();
+        }
+    }
+
     /// `rows` as they are to be drawn, where a control is being held
     ///
     /// Nothing where none is, the rows being drawn as they stand.
@@ -1715,6 +1734,49 @@ mod tests {
         filters.toggle(0);
 
         assert_eq!(filters.changed_since(now()), None);
+    }
+
+    /// A hold whose drag never ended is let go of
+    ///
+    /// The control says when a drag begins and may never say that it ended: a
+    /// form shut with the pointer down takes it off screen, and egui says
+    /// nothing further about a widget it is no longer drawing. Left held, the
+    /// bar goes on drawing its rows from a copy, and every toggle, close and
+    /// panel opened on one lands on something dropped at the end of the frame.
+    #[test]
+    fn a_hold_whose_drag_never_ended_is_let_go_of() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let mut standstill = Standstill::default();
+        standstill.hold(&filters);
+        assert!(standstill.rows(&filters).is_some(), "the press took no hold");
+
+        standstill.settle(false);
+
+        assert!(
+            standstill.rows(&filters).is_none(),
+            "the rows were held after the gesture that held them",
+        );
+    }
+
+    /// And one whose drag is still under way is left where it is
+    ///
+    /// Which is the whole point of the hold: a row arriving mid-drag takes the
+    /// control down a row and out from under the pointer.
+    #[test]
+    fn a_hold_is_kept_while_the_drag_is_under_way() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let mut standstill = Standstill::default();
+        standstill.hold(&filters);
+        standstill.settle(true);
+
+        assert!(
+            standstill.rows(&filters).is_some(),
+            "the hold was let go of mid-drag",
+        );
     }
 
     /// The control's far end asks nothing, and its near end asks for a minute
