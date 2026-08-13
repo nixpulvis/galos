@@ -44,7 +44,7 @@ use elite_journal::entry::market::{
 use elite_journal::station::{
     LandingPads, Service, Station as JournalStation, StationType,
 };
-use elite_journal::system::Coordinate;
+use elite_journal::system::{Coordinate, System as JournalSystem};
 use elite_journal::Allegiance;
 use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
@@ -193,6 +193,7 @@ const SHARED_B: i64 = 900_000_016;
 const ORPHANED: i64 = 900_000_017;
 const PLACED: i64 = 900_000_018;
 const LATE: i64 = 900_000_019;
+const LATE_VISIT: i64 = 900_000_037;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
@@ -1573,6 +1574,63 @@ async fn a_count_delivered_late_does_not_put_the_stamp_back() {
     let stored = System::fetch(&db, LATE_COUNT).await.expect("should read");
     assert_eq!(stored.body_count, Some(40));
     assert_eq!(stored.non_body_count, Some(7), "the late count was refused");
+    assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
+    assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+}
+
+/// A visit delivered late does not put a system back to what it said
+///
+/// Every message that names a system in passing writes it this way: a scan, a
+/// docking, a codex sighting, an arrival. What a system stands at changes with
+/// time, so an older reading of its allegiance is not the same reading twice,
+/// and taken it would leave the row saying what the galaxy was when that
+/// message was sent. [`System::create`] refuses one for the same reason, and
+/// the two write the same row.
+///
+/// The stamp matters twice over: the map's filter on time asks this column
+/// which systems have been heard from lately, so a row put back in time drops
+/// off a map that should be drawing it.
+#[async_std::test]
+async fn a_visit_delivered_late_does_not_undo_a_newer_one() {
+    let db = db!();
+    forget(LATE_VISIT).await;
+
+    let visit = |population, allegiance| JournalSystem {
+        address: LATE_VISIT,
+        name: "Test Late Visit".into(),
+        pos: Some(somewhere(21.0)),
+        population: Some(population),
+        allegiance: Some(allegiance),
+        ..JournalSystem::new(LATE_VISIT, "Test Late Visit")
+    };
+
+    System::from_journal(
+        &db,
+        at(600),
+        "newer",
+        &visit(4_000_000, Allegiance::Empire),
+    )
+    .await
+    .expect("the newer visit should write");
+
+    // Sent ten minutes before and handed over after, as an uploader that
+    // batches and reconnects does.
+    System::from_journal(
+        &db,
+        at(0),
+        "older",
+        &visit(1_000, Allegiance::Federation),
+    )
+    .await
+    .expect("the late visit should be taken without erroring");
+
+    let stored = System::fetch(&db, LATE_VISIT).await.expect("should read");
+    assert_eq!(stored.population, 4_000_000, "the late reading won");
+    assert_eq!(
+        stored.allegiance,
+        Some(Allegiance::Empire),
+        "the system changed hands backwards",
+    );
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
 }

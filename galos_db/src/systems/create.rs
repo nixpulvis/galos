@@ -158,7 +158,7 @@ impl System {
         let position =
             system.pos.map(|p| Coordinate { x: p.x, y: p.y, z: p.z });
         let economies = Economies::new(system.economy, system.second_economy);
-        sqlx::query!(
+        let done = sqlx::query!(
             r#"
             INSERT INTO systems
                 (address,
@@ -184,6 +184,12 @@ impl System {
                 secondary_economy = COALESCE($9, systems.secondary_economy),
                 updated_at = $10,
                 updated_by = $11
+            -- As [`Self::create`] asks it, this being the same row written
+            -- from the other end. What a system stands at changes with time,
+            -- so a message carrying an older reading of it is not repeating
+            -- itself, and taken it would put the row back to what the galaxy
+            -- was when it was sent.
+            WHERE systems.updated_at <= $10
             "#,
             system.address as i64,
             system.name,
@@ -200,6 +206,15 @@ impl System {
         .execute(&db.pool)
         .await?;
 
+        if done.rows_affected() == 0 {
+            crate::turned_away("system", timestamp);
+        }
+
+        // Asked whatever became of the row above. A faction and a conflict are
+        // rows of their own, each with a stamp of its own and its own say in
+        // whether a message is worth taking, and a market waiting on this
+        // system waits on the system existing rather than on this message
+        // being the newest thing said about it.
         for faction in &system.factions {
             let faction_id = Faction::create(db, &faction.name).await?.id;
             SystemFaction::from_journal(
