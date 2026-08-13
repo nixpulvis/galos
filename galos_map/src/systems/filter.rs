@@ -69,14 +69,6 @@ impl Default for LastCutAt {
     }
 }
 
-/// How many systems a question about time is answered with at most
-///
-/// An hour of the feed touches about nine thousand of them, so this is a few
-/// hours of it. The bound is there because the question has a far end that means
-/// every system on record, and neither the map nor a list of rows is any use
-/// holding a million of them.
-pub(crate) const MOST: i64 = 10_000;
-
 /// How far back the control over time offers to look, longest first
 ///
 /// Named spans rather than a bare number of seconds. The interesting end of
@@ -169,8 +161,11 @@ pub enum Filter {
     Systems { label: String, systems: Vec<i64> },
     /// The systems heard from since a moment
     ///
-    /// Bounded by [`MOST`], the far end of the control putting this question
-    /// being every system on record.
+    /// Whatever the span reaches, which at its widest is most of the sky: all
+    /// but a fiftieth of the systems on record have been heard from inside
+    /// thirty days. What holds the answer down is the spyglass, which is the
+    /// one control over how much sky is being asked about and the one the user
+    /// can see.
     ///
     /// What the feed is doing, drawn. The others ask something about a system
     /// that holds still while it is asked; this one goes stale as it is

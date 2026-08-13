@@ -181,12 +181,6 @@ const NAMED_ONLY: i64 = 900_000_033;
 const BOUND_NEWEST: i64 = 900_000_034;
 const BOUND_NEXT: i64 = 900_000_035;
 const BOUND_OLDEST: i64 = 900_000_036;
-
-/// As many as the map ever asks a region for at once
-///
-/// Its own name here rather than reached out of `galos_map`, which these tests
-/// do not depend on. What it is matters only where a test is about the bound.
-const MOST: i64 = 10_000;
 const CLUSTER: i64 = 900_000_008;
 const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
@@ -1862,7 +1856,7 @@ async fn a_region_asked_about_time_alone_leaves_out_what_is_older() {
         10.,
         middle_of(7000.),
         None,
-        Some((at(400), MOST)),
+        Some(at(400)),
     )
     .await
     .expect("the region should answer");
@@ -1892,7 +1886,7 @@ async fn a_region_asked_by_address_and_time_wants_both() {
         10.,
         middle_of(7100.),
         Some((&[], &named)),
-        Some((at(400), MOST)),
+        Some(at(400)),
     )
     .await
     .expect("the region should answer");
@@ -1928,7 +1922,7 @@ async fn a_region_asked_by_faction_and_time_wants_both() {
         10.,
         middle_of(7200.),
         Some((&[faction.id], &[])),
-        Some((at(400), MOST)),
+        Some(at(400)),
     )
     .await
     .expect("the region should answer");
@@ -1962,14 +1956,15 @@ async fn a_region_asked_by_address_alone_keeps_what_is_old() {
     assert!(addresses(&found).contains(&NAMED_ONLY));
 }
 
-/// The bound keeps the newest of what a span reaches
+/// A span answers with everything it reaches, however much that is
 ///
-/// The reach runs the whole way to the galaxy and the far end of the control
-/// putting this question is every system on record, so what comes back is
-/// bounded. Newest first, so what the bound drops is the oldest news rather
-/// than an arbitrary slice of it.
+/// The whole of what the filter admits and no slice of it. A count kept back
+/// would drop systems the filter says yes to, so the map would draw a sky
+/// narrowed by something no row and no filter can account for, and the widest
+/// span -- which excludes almost nothing -- would be the one that took the most
+/// away.
 #[async_std::test]
-async fn a_bounded_region_keeps_the_newest_of_what_it_reaches() {
+async fn a_span_answers_with_everything_it_reaches() {
     let db = db!();
     for address in [BOUND_NEWEST, BOUND_NEXT, BOUND_OLDEST] {
         forget(address).await;
@@ -1983,17 +1978,13 @@ async fn a_bounded_region_keeps_the_newest_of_what_it_reaches() {
         10.,
         middle_of(7400.),
         None,
-        Some((at(0), 2)),
+        Some(at(0)),
     )
     .await
     .expect("the region should answer");
 
     let found = addresses(&found);
-    assert_eq!(found.len(), 2, "the bound was not kept: {found:?}");
     assert!(found.contains(&BOUND_NEWEST), "the newest");
     assert!(found.contains(&BOUND_NEXT), "the next newest");
-    assert!(
-        !found.contains(&BOUND_OLDEST),
-        "the oldest, which the bound drops"
-    );
+    assert!(found.contains(&BOUND_OLDEST), "the oldest, kept as well");
 }

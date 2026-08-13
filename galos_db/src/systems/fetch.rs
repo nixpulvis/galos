@@ -444,21 +444,21 @@ impl System {
     /// hand by then and say the same thing without the planner having to
     /// guess at it.
     ///
-    /// `since` narrows it again, to what has been heard from since a moment,
-    /// and bounds what comes back: the reach runs to the whole galaxy and the
-    /// far end of the control putting that question is every system on record.
-    /// Newest first, so what the bound drops is the oldest news.
+    /// `since` narrows it again, to what has been heard from since a moment.
+    /// Narrowing only, as the two lists are: what it leaves out is what the
+    /// filter excludes, and the region is what says how much sky is being
+    /// asked about.
     pub async fn fetch_in_range_of_point(
         db: &Database,
         range: f64,
         center: [f64; 3],
         admitting: Option<(&[i32], &[i64])>,
-        since: Option<(DateTime<Utc>, i64)>,
+        since: Option<DateTime<Utc>>,
     ) -> Result<Vec<Self>, Error> {
         let admitted = match (admitting, since) {
-            (Some((factions, addresses)), Some((moment, most))) => Some(
+            (Some((factions, addresses)), Some(moment)) => Some(
                 Self::admitted_in_range_since(
-                    db, range, center, factions, addresses, moment, most,
+                    db, range, center, factions, addresses, moment,
                 )
                 .await?,
             ),
@@ -466,9 +466,9 @@ impl System {
                 Self::admitted_in_range(db, range, center, factions, addresses)
                     .await?,
             ),
-            (None, Some((moment, most))) => Some(
-                Self::changed_in_range(db, range, center, moment, most).await?,
-            ),
+            (None, Some(moment)) => {
+                Some(Self::changed_in_range(db, range, center, moment).await?)
+            }
             (None, None) => None,
         };
         if let Some(admitted) = admitted {
@@ -592,28 +592,22 @@ impl System {
         factions: &[i32],
         addresses: &[i64],
         moment: DateTime<Utc>,
-        most: i64,
     ) -> Result<Vec<i64>, Error> {
         let rows = sqlx::query!(
             r#"
-            SELECT address, updated_at
-            FROM (
-                SELECT address, updated_at
-                FROM systems
-                WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
-                  AND address = ANY($5)
-                  AND updated_at >= $7
-                UNION
-                SELECT systems.address, systems.updated_at
-                FROM systems
-                JOIN system_factions
-                  ON system_factions.system_address = systems.address
-                WHERE system_factions.faction_id = ANY($6)
-                  AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
-                  AND systems.updated_at >= $7
-            ) AS admitted
-            ORDER BY updated_at DESC
-            LIMIT $8
+            SELECT address
+            FROM systems
+            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND address = ANY($5)
+              AND updated_at >= $7
+            UNION
+            SELECT systems.address
+            FROM systems
+            JOIN system_factions
+              ON system_factions.system_address = systems.address
+            WHERE system_factions.faction_id = ANY($6)
+              AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND systems.updated_at >= $7
             "#,
             range,
             center[0],
@@ -622,7 +616,6 @@ impl System {
             addresses,
             factions,
             moment.naive_utc(),
-            most,
         )
         .fetch_all(&db.pool)
         .await?;
@@ -635,12 +628,15 @@ impl System {
     /// What a question about time alone narrows a region to. No union, nothing
     /// being admitted by name or by faction: the stamp is the whole of what is
     /// asked, and it drives from the index on it.
+    ///
+    /// Unordered, as the other two are. What comes back is a set of addresses
+    /// for [`Self::fetch_many`] to read rows for, and it reads them in whatever
+    /// order it finds them, so sorting here is a sort nothing looks at.
     async fn changed_in_range(
         db: &Database,
         range: f64,
         center: [f64; 3],
         moment: DateTime<Utc>,
-        most: i64,
     ) -> Result<Vec<i64>, Error> {
         let rows = sqlx::query!(
             r#"
@@ -648,15 +644,12 @@ impl System {
             FROM systems
             WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
               AND updated_at >= $5
-            ORDER BY updated_at DESC
-            LIMIT $6
             "#,
             range,
             center[0],
             center[1],
             center[2],
             moment.naive_utc(),
-            most,
         )
         .fetch_all(&db.pool)
         .await?;

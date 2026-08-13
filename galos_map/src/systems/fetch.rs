@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::filter::{Admitted, DimTo, Filters, MOST};
+use crate::systems::filter::{Admitted, DimTo, Filters};
 use crate::systems::selection::Selection;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Db, search::Search};
@@ -236,11 +236,8 @@ fn fetch_spyglass(
     // clock, so a region that carried it would be somewhere new every time it
     // was worked out, and the map would ask again at the throttle rather than
     // waiting out the poll.
-    let since = if dim.0 == 0. {
-        filters.changed_since(Utc::now()).map(|moment| (moment, MOST))
-    } else {
-        None
-    };
+    let since =
+        if dim.0 == 0. { filters.changed_since(Utc::now()) } else { None };
     let index =
         FetchIndex::Region(center, spyglass.radius as i32, admitted.clone());
     let now = time.last_update().unwrap_or(time.startup());
