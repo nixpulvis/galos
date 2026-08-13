@@ -15,6 +15,7 @@ use crate::Db;
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::bodies::mark_if_wound;
 use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::{Picked, Selection};
 use crate::ui::MARGIN;
@@ -565,8 +566,12 @@ fn panels(
                 Subject::System(system) => {
                     described(ui, system, &names, &mut centered, &mut wanted)
                 }
-                Subject::Star(star) => star_described(ui, star, &mut clock),
-                Subject::Body(body) => body_described(ui, body, &mut clock),
+                Subject::Star(star) => mark_if_wound(&mut clock, |clock| {
+                    star_described(ui, star, clock)
+                }),
+                Subject::Body(body) => mark_if_wound(&mut clock, |clock| {
+                    body_described(ui, body, clock)
+                }),
                 Subject::Filter { filter, systems } => admitted(
                     ui,
                     filter,

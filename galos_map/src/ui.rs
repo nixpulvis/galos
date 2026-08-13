@@ -16,7 +16,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::systems::bodies::spawn::ShowOrbits;
-use crate::systems::bodies::{Clock, Contents};
+use crate::systems::bodies::{Clock, Contents, mark_if_wound};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
@@ -760,7 +760,7 @@ pub fn chrome(
         heading(ui, "System View", true);
         ui.checkbox(&mut settings.show_body_names.0, "Show Labels");
         ui.checkbox(&mut settings.show_orbits.0, "Orbit Lines");
-        clock_readout(ui, &mut settings.clock);
+        mark_if_wound(&mut settings.clock, |clock| clock_readout(ui, clock));
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing

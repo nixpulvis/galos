@@ -128,6 +128,32 @@ impl Clock {
     }
 }
 
+/// Draw `with` against the clock, and mark it changed only where it moved
+///
+/// A [`ResMut`] counts as written for being handed out, and a panel is handed
+/// the clock every frame it is open whether or not the slider was touched. What
+/// reads the mark rebuilds every star, body and orbit line in the held system,
+/// so the handing alone would rebuild them all every frame a panel stood open.
+///
+/// The reading is what is compared, and not the turn a drag set out from: the
+/// places are worked out from the reading, and taking hold of the slider moves
+/// nothing until it is dragged.
+pub(crate) fn mark_if_wound<T>(
+    clock: &mut impl DetectChangesMut<Inner = Clock>,
+    with: impl FnOnce(&mut Clock) -> T,
+) -> T {
+    let wound = clock.bypass_change_detection();
+    let was = wound.at;
+    let drawn = with(&mut *wound);
+    let moved = wound.at != was;
+
+    if moved {
+        clock.set_changed();
+    }
+
+    drawn
+}
+
 /// The one system the map is holding the insides of
 ///
 /// A resource rather than a component, because there is only ever one and
@@ -1054,6 +1080,67 @@ mod tests {
             clock.at, once,
             "the clock ran away while the rail was held"
         );
+    }
+
+    /// A world holding a clock nothing has written to yet
+    fn holding_a_clock() -> World {
+        let mut world = World::new();
+        world.init_resource::<Clock>();
+        // Making it is a write like any other, and this is about what happens
+        // after it exists.
+        world.clear_trackers();
+        world.increment_change_tick();
+
+        world
+    }
+
+    /// Whether anything has written to the clock `world` holds
+    fn written(world: &World) -> bool {
+        world.get_resource_ref::<Clock>().unwrap().is_changed()
+    }
+
+    /// A panel that only reads the clock does not count as winding it
+    ///
+    /// A panel is handed the clock every frame it is open, and being handed a
+    /// [`ResMut`] is what marks a resource written. What reads that mark
+    /// rebuilds every star, body and orbit line in the held system, so a panel
+    /// left standing open would rebuild the whole of it every frame.
+    #[test]
+    fn a_panel_reading_the_clock_does_not_wind_it() {
+        let mut world = holding_a_clock();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.through(86_400.);
+        });
+
+        assert!(!written(&world), "an untouched slider wound the clock");
+    }
+
+    /// Taking hold of the slider does not either, until it is dragged
+    ///
+    /// A drag begins on the press, and the turn it sets out from is worked out
+    /// then. Nothing has moved yet, so nothing needs redrawing.
+    #[test]
+    fn taking_hold_of_the_slider_does_not_wind_the_clock() {
+        let mut world = holding_a_clock();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.hold(86_400.);
+        });
+
+        assert!(!written(&world), "holding the slider wound the clock");
+    }
+
+    /// Dragging one does
+    #[test]
+    fn dragging_the_slider_winds_the_clock() {
+        let mut world = holding_a_clock();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.wind_to(86_400., 0.5);
+        });
+
+        assert!(written(&world), "a dragged slider left the map where it was");
     }
 
     /// A rail run from end to end runs the clock on by one turn of its body
