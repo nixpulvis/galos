@@ -442,7 +442,16 @@ pub struct Entry {
 
 /// Every filter the user has added
 #[derive(Resource, Default, Clone)]
-pub struct Filters(Vec<Entry>);
+pub struct Filters {
+    asked: Vec<Entry>,
+    /// How many times this has been asked for something
+    ///
+    /// Counted because a [`ResMut`] reads as written for being handed out, and
+    /// the bar is handed the filters every frame it draws whether or not the
+    /// user touched anything. What reads that mark puts a query on the wire,
+    /// so a set that was only drawn has to be told from one that was asked.
+    revision: u32,
+}
 
 /// The time filter's row, held back while a control is held
 ///
@@ -492,7 +501,7 @@ impl Standstill {
         if !self.asked
             && let Some(at) = standing.timed()
         {
-            standing.0.remove(at);
+            standing.asked.remove(at);
         }
 
         Some(standing)
@@ -500,9 +509,17 @@ impl Standstill {
 }
 
 impl Filters {
+    /// How many times these have been asked for something
+    ///
+    /// Compared before and after the bar is drawn, so that a set only drawn is
+    /// not reported as one the user changed.
+    pub fn revision(&self) -> u32 {
+        self.revision
+    }
+
     /// Where the filter on time stands, where one is being asked
     fn timed(&self) -> Option<usize> {
-        self.0
+        self.asked
             .iter()
             .position(|active| matches!(active.filter, Filter::Recency { .. }))
     }
@@ -529,7 +546,7 @@ impl Filters {
         // asked on its own admits whatever it reaches rather than nothing.
         let mut picked = None;
 
-        for active in self.0.iter().filter(|active| active.enabled) {
+        for active in self.asked.iter().filter(|active| active.enabled) {
             match &active.filter {
                 timed @ Filter::Recency { .. } => {
                     if !timed.admits(system, now) {
@@ -550,39 +567,42 @@ impl Filters {
     /// Asking the same thing twice picks out nothing further and leaves two
     /// rows that have to be turned off one at a time.
     pub fn add(&mut self, filter: Filter) {
-        if self.0.iter().any(|active| active.filter == filter) {
+        if self.asked.iter().any(|active| active.filter == filter) {
             return;
         }
-        self.0.push(Entry { filter, enabled: true });
+        self.asked.push(Entry { filter, enabled: true });
+        self.revision += 1;
     }
 
     /// Stop asking the filter at `index`
     pub fn remove(&mut self, index: usize) {
-        if index < self.0.len() {
-            self.0.remove(index);
+        if index < self.asked.len() {
+            self.asked.remove(index);
+            self.revision += 1;
         }
     }
 
     /// The filters in the order they were added
     pub fn iter(&self) -> impl Iterator<Item = &Entry> {
-        self.0.iter()
+        self.asked.iter()
     }
 
     /// Turn the filter at `index` on or off
     pub fn toggle(&mut self, index: usize) {
-        if let Some(active) = self.0.get_mut(index) {
+        if let Some(active) = self.asked.get_mut(index) {
             active.enabled = !active.enabled;
+            self.revision += 1;
         }
     }
 
     /// How many filters are being held, turned on or not
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.asked.len()
     }
 
     /// Whether none is held at all, which is a map showing the whole sky
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.asked.is_empty()
     }
 
     /// Whether any filter is turned on
@@ -590,12 +610,12 @@ impl Filters {
     /// Which is whether the map is picking anything out. With every filter
     /// off the sky is drawn whole, as it is with none of them held at all.
     pub fn any_enabled(&self) -> bool {
-        self.0.iter().any(|active| active.enabled)
+        self.asked.iter().any(|active| active.enabled)
     }
 
     /// The filter standing in the `index`th place
     pub fn get(&self, index: usize) -> Option<&Entry> {
-        self.0.get(index)
+        self.asked.get(index)
     }
 
     /// Turn every filter at `rows` off, or every one back on
@@ -612,13 +632,14 @@ impl Filters {
     /// reason to turn the factions off with them.
     pub fn toggle_all(&mut self, rows: &[usize]) {
         let on = rows.iter().any(|index| {
-            self.0.get(*index).is_some_and(|active| active.enabled)
+            self.asked.get(*index).is_some_and(|active| active.enabled)
         });
         for index in rows {
-            if let Some(active) = self.0.get_mut(*index) {
+            if let Some(active) = self.asked.get_mut(*index) {
                 active.enabled = !on;
             }
         }
+        self.revision += 1;
     }
 
     /// Stop asking every filter at `rows`
@@ -648,7 +669,7 @@ impl Filters {
         let label = format!("Last {said}");
         let asked = Filter::Recency { label, span };
         match self
-            .0
+            .asked
             .iter_mut()
             .find(|active| matches!(active.filter, Filter::Recency { .. }))
         {
@@ -656,8 +677,9 @@ impl Filters {
                 active.filter = asked;
                 active.enabled = true;
             }
-            None => self.0.push(Entry { filter: asked, enabled: true }),
+            None => self.asked.push(Entry { filter: asked, enabled: true }),
         }
+        self.revision += 1;
     }
 
     /// Stop asking about time, leaving the row standing and saying `said`
@@ -671,7 +693,7 @@ impl Filters {
     /// a question that is no longer being put.
     pub fn turn_time_off(&mut self, said: &str) {
         if let Some(active) = self
-            .0
+            .asked
             .iter_mut()
             .find(|active| matches!(active.filter, Filter::Recency { .. }))
         {
@@ -679,6 +701,7 @@ impl Filters {
                 *label = said.to_owned();
             }
             active.enabled = false;
+            self.revision += 1;
         }
     }
 
@@ -687,8 +710,9 @@ impl Filters {
     /// Its own way out rather than [`Self::remove`] by index, the control being
     /// slid to nothing rather than a row being let go of.
     pub fn ask_nothing_of_time(&mut self) {
-        self.0
+        self.asked
             .retain(|active| !matches!(active.filter, Filter::Recency { .. }));
+        self.revision += 1;
     }
 
     /// The moment an enabled filter on time names, where one is asked
@@ -700,7 +724,7 @@ impl Filters {
     /// The earliest of them where several are somehow asked, that being the one
     /// whose answer holds the others.
     pub fn changed_since(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        self.0
+        self.asked
             .iter()
             .filter(|active| active.enabled)
             .filter_map(|active| match &active.filter {
@@ -724,7 +748,7 @@ impl Filters {
         let mut admitted = Admitted::default();
         let mut asked = false;
 
-        for active in self.0.iter().filter(|active| active.enabled) {
+        for active in self.asked.iter().filter(|active| active.enabled) {
             match &active.filter {
                 Filter::Faction { id, .. } => {
                     asked = true;
@@ -1471,6 +1495,61 @@ mod tests {
 
         assert!(filters.admit(&heard(1, 160), now()));
         assert!(!filters.admit(&heard(2, 40), now()));
+    }
+
+    /// Reading the filters is not asking anything of them
+    ///
+    /// What the bar leans on. It is handed the filters every frame it draws,
+    /// and being handed a [`ResMut`] is what marks a resource written, so the
+    /// bar compares this before and after and marks them only where it moved.
+    /// Left to the handing alone, every frame would read as the user having
+    /// changed a filter, and what reads that puts a query on the wire.
+    #[test]
+    fn reading_the_filters_asks_nothing_of_them() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let settled = filters.revision();
+        let _ = filters.admit(&member(1, &[7]), now());
+        let _ = filters.admitted();
+        let _ = filters.changed_since(now());
+        let _ = filters.len();
+        let _ = filters.any_enabled();
+
+        assert_eq!(filters.revision(), settled, "reading counted as asking");
+    }
+
+    /// And every way of asking something of them says so
+    #[test]
+    fn every_way_of_asking_moves_the_revision() {
+        let mut filters = Filters::default();
+        let mut settled = filters.revision();
+
+        let mut moved = |filters: &Filters, what: &str| {
+            assert_ne!(filters.revision(), settled, "{what} said nothing");
+            settled = filters.revision();
+        };
+
+        filters.add(faction(7));
+        moved(&filters, "adding a filter");
+
+        filters.toggle(0);
+        moved(&filters, "turning one off");
+
+        filters.toggle_all(&[0]);
+        moved(&filters, "turning the set over");
+
+        filters.ask_within("1 day", Duration::seconds(100));
+        moved(&filters, "asking about time");
+
+        filters.turn_time_off("Off");
+        moved(&filters, "turning time off");
+
+        filters.ask_nothing_of_time();
+        moved(&filters, "letting go of time");
+
+        filters.remove(0);
+        moved(&filters, "dropping a filter");
     }
 
     /// A span reaches back from now, so what it admits changes as the clock does

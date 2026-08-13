@@ -573,6 +573,13 @@ pub fn chrome(
     // on.
     let ctx = contexts.ctx_mut()?;
 
+    // What the filters stood at before the bar was drawn. The bar is handed
+    // them every frame and a `ResMut` reads as written for being handed out,
+    // so they are drawn against without that counting and marked below only
+    // where the user asked something of them. What reads the mark asks the
+    // database again, once a poll at best and once a frame at worst.
+    let asked_at = filter.active.revision();
+
     // The pane first, since where it has reached is where the gear stands.
     let edge = settings_pane(ctx, open.0, |ui| {
         heading(ui, "Spyglass", false);
@@ -848,6 +855,10 @@ pub fn chrome(
     // means.
     press.settle(&buttons, over_ui.0 || shut);
 
+    if filter.active.revision() != asked_at {
+        filter.active.set_changed();
+    }
+
     Ok(())
 }
 
@@ -1090,7 +1101,7 @@ fn main_bar(
                         center,
                         &mut went,
                         panels,
-                        &mut filter.active,
+                        filter.active.bypass_change_detection(),
                         &mut place,
                     );
                     if let Some(position) = went {
@@ -1115,7 +1126,7 @@ fn main_bar(
                             standing = held;
                             &mut standing
                         }
-                        None => &mut *filter.active,
+                        None => filter.active.bypass_change_detection(),
                     };
                     applied(ui, rows, panels, &mut place);
                     // Two numbers only where there is a sky behind what is
@@ -2595,7 +2606,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     // The field and the list go with it. What was typed is a row by now, and
     // the field's next job is the next faction.
     if let Some(faction) = faction_list(ui, filter.found.iter()) {
-        filter.active.add(Filter::Faction {
+        filter.active.bypass_change_detection().add(Filter::Faction {
             id: faction.id,
             name: faction.name.clone(),
         });
@@ -2606,7 +2617,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     watch_control(
         ui,
         &mut filter.watch,
-        &mut filter.active,
+        filter.active.bypass_change_detection(),
         &mut filter.standstill,
     );
 
