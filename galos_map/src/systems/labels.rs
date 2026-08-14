@@ -551,6 +551,9 @@ pub fn choose_names(
         .and_then(|held| systems.get(held).ok())
         .map(|(_, system, ..)| system.position());
 
+    // What a name has to fall inside some of to be worth laying out at all.
+    let screen = Rect::from_corners(Vec2::ZERO, viewport);
+
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
@@ -614,8 +617,7 @@ pub fn choose_names(
             // and room granted for less than that is a name laid over the next
             // one along.
             let rect =
-                name_rect(at, &plate_for(system, hop, from), indicator.0);
-            let screen = Rect::from_corners(Vec2::ZERO, viewport);
+                name_rect_of(at, plate_width(system, hop, from), indicator.0);
             if screen.intersect(rect).is_empty() {
                 return None;
             }
@@ -636,8 +638,7 @@ pub fn choose_names(
             else {
                 continue;
             };
-            let rect = name_rect(place, &body.name, indicator.0);
-            let screen = Rect::from_corners(Vec2::ZERO, viewport);
+            let rect = name_rect_of(place, capitals(&body.name), indicator.0);
             if screen.intersect(rect).is_empty() {
                 continue;
             }
@@ -841,8 +842,18 @@ fn marked_score(pointed_at: bool, selected: bool) -> f32 {
 /// otherwise given, and a name laid over its own system is a name that cannot
 /// be read.
 pub(super) fn name_rect(at: Vec2, name: &str, clear: f32) -> Rect {
+    name_rect_of(at, name.chars().count(), clear)
+}
+
+/// The same rectangle, for whoever knows how wide a name is without holding it
+///
+/// A name's width is its letter count, [`FONT`] being monospaced, so what the
+/// layout is measuring is a number and not any particular words. The sky is
+/// laid out every frame and setting the words to count them is a heap
+/// allocation per system per frame, thrown away as soon as it is measured.
+pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
     let size = NAME_HEIGHT;
-    let width = name.chars().count() as f32 * ADVANCE * size;
+    let width = letters as f32 * ADVANCE * size;
     let margin = size * CROWDING;
 
     // `face_camera` puts a name up and to the right of what it names by this
@@ -964,10 +975,45 @@ pub(super) fn plate_for(
     stop: bool,
     from: Option<DVec3>,
 ) -> String {
-    let jump =
-        from.filter(|_| stop).map(|from| (system.position() - from).length());
+    plate_words(&system.name, jump_to(system, stop, from))
+}
 
-    plate_words(&system.name, jump)
+/// How many letters that plate sets
+///
+/// What [`plate_for`] would come to, for whoever is laying a name out rather
+/// than setting one. The layout wants a width and a width is a letter count,
+/// so the words themselves are never wanted and the whole sky is measured
+/// without a string being built for any of it.
+///
+/// A stop is the exception and sets its words to be counted. What it says is a
+/// number formatted to a place, whose length is a question about rounding, and
+/// there are two stops on a map against a sky of systems.
+pub(super) fn plate_width(
+    system: &System,
+    stop: bool,
+    from: Option<DVec3>,
+) -> usize {
+    match jump_to(system, stop, from) {
+        Some(jump) => plate_words(&system.name, Some(jump)).chars().count(),
+        None => capitals(&system.name),
+    }
+}
+
+/// How far the jump to `system` is, where it is a stop that says one
+///
+/// `from` is where a jump is measured from, which is the system the camera is
+/// standing in. Nothing where the map is holding none, which is also when
+/// nothing is a stop.
+fn jump_to(system: &System, stop: bool, from: Option<DVec3>) -> Option<f64> {
+    from.filter(|_| stop).map(|from| (system.position() - from).length())
+}
+
+/// How many letters `name` sets in capitals
+///
+/// Without setting them. Nearly every letter is one letter in capitals, and a
+/// few are two, which [`char::to_uppercase`] answers a letter at a time.
+fn capitals(name: &str) -> usize {
+    name.chars().map(|letter| letter.to_uppercase().count()).sum()
 }
 
 /// A name, and `jump` beside it where there is one
@@ -1328,6 +1374,61 @@ mod tests {
         assert_eq!(said(&Text3d::new(&resting)), Some(resting.as_str()));
         assert_eq!(said(&Text3d::new(&stop)), Some(stop.as_str()));
         assert_ne!(said(&Text3d::new(&resting)), Some(stop.as_str()));
+    }
+
+    /// A plate is measured at the width it will be set at
+    ///
+    /// What the layout rests on. The sky is measured without any of its words
+    /// being set, so nothing holds the count to the string but this: room
+    /// granted for fewer letters than a plate sets is a name laid over the
+    /// next one along.
+    #[test]
+    fn a_plate_is_measured_at_the_width_it_sets() {
+        for name in ["sol", "SOL", "Shinrarta Dezhra", "LHS 3447", "straße"] {
+            let system = crate::systems::tests::named(1, name);
+
+            assert_eq!(
+                plate_width(&system, false, None),
+                plate_for(&system, false, None).chars().count(),
+                "{name} was granted the room for something else"
+            );
+        }
+    }
+
+    /// A system called `name`, standing `away` light years along the x axis
+    fn stop(name: &str, away: f64) -> System {
+        let mut system = crate::systems::tests::named(1, name);
+        system.position = [away, 0., 0.];
+        system
+    }
+
+    /// And so is a stop, whose plate says the jump to it as well
+    ///
+    /// The jump is a number set to a place, so how many letters it takes is a
+    /// question about rounding rather than about magnitude: 9.96 light years
+    /// is set as four and 9.94 as three.
+    #[test]
+    fn a_stop_is_measured_at_the_width_it_sets() {
+        let from = Some(DVec3::ZERO);
+        for away in [0.04, 6.74, 9.94, 9.96, 99.99, 123.45, 1234.5] {
+            let system = stop("lung", away);
+
+            assert_eq!(
+                plate_width(&system, true, from),
+                plate_for(&system, true, from).chars().count(),
+                "a stop {away} off was granted the room for something else"
+            );
+        }
+    }
+
+    /// A letter whose capital is two letters takes the room of two
+    ///
+    /// Which is the whole reason the count is taken a letter at a time rather
+    /// than off the length of the name.
+    #[test]
+    fn a_letter_that_doubles_in_capitals_is_counted_twice() {
+        assert_eq!(capitals("straße"), 7);
+        assert_eq!(capitals("straße"), "straße".to_uppercase().chars().count());
     }
 
     /// A camera at the origin, looking the way `Quat::IDENTITY` faces
