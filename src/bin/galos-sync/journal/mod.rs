@@ -1,3 +1,29 @@
+//! Importing what the game wrote while it was being played
+//!
+//! A journal directory read once, in the order it happened, and written to
+//! the database through [`record`] -- the same thing the EDDN subscriber
+//! writes through, the events being the same events.
+//
+// TODO: Publishing, which is the direction this does not go yet. Everything
+// read here is something EDDN wants and is not getting from this commander,
+// and the reading is already done.
+//
+// What it would take that importing does not is the augmentation described
+// at `read`: a sender has to add `StarSystem` and `StarPos` to events the
+// game writes without them, tracked from the last arrival, cross-checked
+// against whatever `SystemAddress` the event carries, and the message
+// dropped where the two disagree. Importing is excused that because the row
+// is already there to point at; a sender has nobody to point at and has to
+// say the whole thing.
+//
+// Reading a directory the way this does is a better place to do it from than
+// a live sender has. The files are whole and in order before anything is
+// looked at, so where a sender is guessing from what it has seen so far,
+// this can look forward and back and know. What it does not have is the rest
+// of what a sender owes EDDN -- the personal fields stripped, the `horizons`
+// and `odyssey` flags off `LoadGame`, a schema and a header wrapped around
+// each message, and the gateway's rules about how much and how often.
+
 use crate::Run;
 use async_std::task;
 use elite_journal::entry::{Entry, Event, NavRoute};
@@ -192,6 +218,24 @@ fn logs(dir: &Path) -> Vec<PathBuf> {
 // be handed a system with no name: it cannot create the row, and does not
 // need to, since nothing is scanned in a system that was not arrived in
 // first and arriving is the one thing that still parses.
+//
+// The other way to do it is the way EDDN gets them, which is worth writing
+// down because nothing about it is guessable from a schema. `StarPos` is in
+// the game's journal on three events and no others -- `Location`, `FSDJump`
+// and `CarrierJump` -- so a sender keeps a running note of where the
+// commander is from those three and copies it into everything sent
+// afterwards. EDDN does not let it copy blindly: where an event carries a
+// `SystemAddress` of its own, that has to match the noted one before a name
+// or a position is attached, and a message that does not match is dropped
+// rather than mended, the game having a habit of pausing its journal and
+// resuming it with events missing. A stale position files a scan under the
+// wrong system, which is worse than filing it nowhere.
+//
+// Not needed to read a journal. Everything downstream hangs off
+// `SystemAddress`, which the game does write on all of these, and the
+// arrival that would have been copied from is the thing that already wrote
+// the system row. It is needed to send one -- see the note at the top of
+// this module.
 fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
     let file = match File::open(path) {
         Ok(file) => file,
