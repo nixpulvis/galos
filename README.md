@@ -38,3 +38,5 @@ pg_restore -Cd postgres < latest.dump
 
 [`DATABASE.md`](./DATABASE.md) has the restores that leave EDDN running, why
 the one above does not, and the monthly Spansh galaxy dump import.
+[`ROUTING.md`](./ROUTING.md) is a design note for long-range route plotting,
+and is not built.
