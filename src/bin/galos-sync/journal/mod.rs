@@ -1,11 +1,11 @@
 use crate::Run;
 use async_std::task;
-use elite_journal::entry::{parse_journal_file, Entry, Event, NavRoute};
+use elite_journal::entry::{Entry, Event, NavRoute};
 use galos_db::Database;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::ffi::OsStr;
-use std::fs;
-use std::io::{stderr, IsTerminal};
+use std::fs::{self, File};
+use std::io::{stderr, BufRead, BufReader, IsTerminal};
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tracing::{info, warn};
@@ -84,15 +84,10 @@ impl Run for Cli {
         // file's own first entry is what says where the file belongs.
         let mut journals: Vec<(PathBuf, Vec<Entry<Event>>)> = paths
             .into_iter()
-            .filter_map(|path| match parse_journal_file(&path) {
-                Ok(mut entries) => {
-                    entries.sort_by_key(|entry| entry.timestamp);
-                    Some((path, entries))
-                }
-                Err(err) => {
-                    warn!(file = %path.display(), error = %err, "unreadable journal");
-                    None
-                }
+            .filter_map(|path| {
+                let mut entries = read(&path)?;
+                entries.sort_by_key(|entry| entry.timestamp);
+                Some((path, entries))
             })
             .collect();
         journals.sort_by_key(|(_, entries)| {
@@ -167,6 +162,82 @@ fn logs(dir: &Path) -> Vec<PathBuf> {
                 && path.extension().and_then(OsStr::to_str) == Some("log")
         })
         .collect()
+}
+
+/// Read one journal file, saying what in it could not be read
+///
+/// `parse_journal_file` drops a line it cannot parse and says nothing, and
+/// what it drops is not the odd corrupt line. Every event here is one this
+/// claims to write, since an event nothing models is read as
+/// [`Event::Other`] rather than failing -- so a line counted here is a scan,
+/// or a honk, or a codex entry, going in the bin while the bar fills to the
+/// end and the import reports itself finished.
+///
+/// Which is what is happening. Said once a file with a count and a reason
+/// rather than once a line, since a journal that hits this hits it thousands
+/// of times over and the reason is the same every time.
+///
+// TODO: Teach `elite_journal` the shape the game writes, which is what this
+// is counting. Its events are modelled on what EDDN forwards, and EDDN makes
+// the uploader add `StarPos` and `StarSystem` before sending; the game writes
+// neither. So `Scan`, `ScanBaryCentre`, `FSSDiscoveryScan`,
+// `FSSAllBodiesFound`, `NavBeaconScan`, `SAASignalsFound`, `FSSBodySignals`,
+// `ApproachSettlement` and `CodexEntry` all fail on a real journal over a
+// missing field, and `FSSSignalDiscovered` fails for a second reason -- the
+// game writes one signal an event where EDDN sends a system's worth. Only
+// `Location`, `FSDJump`, `CarrierJump` and `Docked` survive the trip.
+//
+// Making those two fields optional and reading the single-signal shape is
+// most of it. What follows here is `record::ensure_system`, which would then
+// be handed a system with no name: it cannot create the row, and does not
+// need to, since nothing is scanned in a system that was not arrived in
+// first and arriving is the one thing that still parses.
+fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            warn!(file = %path.display(), error = %err, "unreadable journal");
+            return None;
+        }
+    };
+
+    let mut entries = Vec::new();
+    let mut unread = 0;
+    let mut why = None;
+
+    for line in BufReader::new(file).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                warn!(file = %path.display(), error = %err, "unreadable journal");
+                return None;
+            }
+        };
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str(&line) {
+            Ok(entry) => entries.push(entry),
+            Err(err) => {
+                unread += 1;
+                why.get_or_insert_with(|| err.to_string());
+            }
+        }
+    }
+
+    if unread > 0 {
+        warn!(
+            file = %path.display(),
+            unread = unread,
+            read = entries.len(),
+            first = %why.unwrap_or_default(),
+            "entries this cannot read",
+        );
+    }
+
+    Some(entries)
 }
 
 /// The files the game keeps beside its logs
