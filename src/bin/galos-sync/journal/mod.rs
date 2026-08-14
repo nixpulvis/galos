@@ -24,6 +24,10 @@ pub mod record;
 /// rather than per run: two directories are as likely to be two commanders as
 /// one, and a name carried over from the last import would be a guess about
 /// someone else's journal.
+///
+/// Written only where a whole directory was imported. A single file is read
+/// out of a directory rather than being what is in it, and one archived log
+/// does not get to say whose the rest are.
 const COMMANDER: &str = ".galos-commander";
 
 /// Who a journal is filed under when nothing anywhere says
@@ -60,8 +64,10 @@ impl Run for Cli {
         };
 
         // A directory is a journal directory. A single file is one of the
-        // files in one, so the directory holding it is asked the same
-        // questions -- who flew this -- and told the answer afterwards.
+        // files in one, so the directory holding it is asked who flew this --
+        // and is not told anything back. One file is not the directory's, and
+        // an archived log imported on its own would otherwise leave its
+        // commander behind for everything imported there afterwards.
         let dir = if meta.is_dir() {
             path.to_owned()
         } else {
@@ -130,12 +136,13 @@ impl Run for Cli {
         }
         bar.finish();
 
-        let user = forced.or(known.as_deref()).unwrap_or(UNKNOWN);
         if meta.is_dir() {
+            let user = forced.or(known.as_deref()).unwrap_or(UNKNOWN);
             sidecars(db, &dir, user);
-        }
-        if let Some(name) = forced.or(known.as_deref()) {
-            remember(&dir, name);
+
+            if let Some(name) = forced.or(known.as_deref()) {
+                remember(&dir, name);
+            }
         }
     }
 }
