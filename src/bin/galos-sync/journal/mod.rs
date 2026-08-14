@@ -1,7 +1,7 @@
 use crate::Run;
 use async_std::task;
-use elite_journal::entry::{self, Event};
-use galos_db::{systems::System, Database};
+use elite_journal::entry;
+use galos_db::Database;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use structopt::StructOpt;
@@ -32,34 +32,9 @@ impl Run for Cli {
             .unwrap()
             .progress_chars("##-"));
         for entry in bar.wrap_iter(entries.into_iter()) {
-            task::block_on(async {
-                let option = match entry.event {
-                    Event::Location(e) => Some(e.system),
-                    Event::FsdJump(e) => Some(e.system),
-                    _ => None,
-                };
-
-                if let Some(system) = option {
-                    // TODO: Take user as arg or something.
-                    let result = System::from_journal(
-                        db,
-                        entry.timestamp,
-                        "JOURNAL",
-                        &system,
-                    )
-                    .await;
-                    match result {
-                        Ok(_) => bar.set_message(format!(
-                            "[{}] {}",
-                            entry.timestamp, system.name
-                        )),
-                        Err(err) => bar.set_message(format!(
-                            "[ERROR {}] {}",
-                            entry.timestamp, err
-                        )),
-                    }
-                }
-            });
+            bar.set_message(entry.timestamp.to_string());
+            // TODO: Take user as arg or something.
+            task::block_on(record::entry(db, &entry, "JOURNAL"));
         }
         bar.finish();
     }
