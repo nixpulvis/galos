@@ -7,6 +7,9 @@ Spansh publishes a snapshot of every system it knows about. We take the
 skeleton from it — address, name, position, and the class of the primary star
 — and nothing else. EDDN and the journals own everything that moves.
 
+`MERGING.md` has the machinery this shares with restoring, and the reasoning
+behind the statements below. This file is the procedure.
+
 ## Two kinds of run
 
 | | Skeleton | Star class |
@@ -35,7 +38,7 @@ up; the next run is whole.
 The initial load is the only one that behaves differently, because it is
 inserting on the order of a hundred million rows rather than a few million.
 
-- `pg_dump -Fc elite_development > pre-spansh.dump`
+- `pg_dump -Fd -j4 -f backups/pre-spansh elite_development`
 - Confirm ~60 GB free, plus ~10 GB for staging.
 - Stop EDDN sync.
 - Drop `systems_position_idx` and `systems_name_trgm`, load, then rebuild
@@ -94,8 +97,8 @@ work.
 
 3. **Stage.** `TRUNCATE spansh_systems`, then stream the gz through
    `COPY spansh_systems (address, name, x, y, z) FROM STDIN WITH (FORMAT csv)`.
-   Never a row-at-a-time insert: `System::create` costs two round trips per
-   system, which is days at this size.
+   A star class run names `star_class` in that column list too and leaves out
+   whatever its source has not got.
 
 4. **Merge, as two statements.** New systems and known systems mean
    different things and do not belong in one upsert.
@@ -128,63 +131,35 @@ WHERE t.address = s.address
 
 ## Why those statements are shaped that way
 
-Three things about this database break under the obvious upsert, and each
-one is invisible when it happens.
+A dump knows less than we do. It has no BGS state, no factions, no stations,
+and no idea when any of what it does carry was true. So it takes the first
+rule in `MERGING.md`: **fill nulls only, never advance `updated_at`, and date
+what it inserts to `epoch`.** (b) is a backfill and nothing else, and (a)
+introduces systems we have merely learnt exist rather than seen.
 
-**`updated_at` must not move, and new rows start at `epoch`.** EDDN passes
-the event's own timestamp and the journal importer passes the journal's, not
-`now()`. `create.rs` only writes when `systems.updated_at < $11`. Stamp rows
-with the dump's date and every later message older than that date is dropped
-silently and forever — a journal replay of an old flight, most of all. So
-(b) leaves `updated_at` and `updated_by` where it found them, and (a) dates
-what it inserts to `epoch` rather than to the snapshot. That is also the
-truer reading: we have not observed those systems, only learnt that they
-exist, and the first real sighting of one should always win. `updated_by`
-still carries the dump's date, which is where to look for a row's age.
-
-**The `IS NULL` predicate in (b) is not an optimisation.** An `UPDATE` in
-Postgres is a delete and an insert. Firing one on every row leaves a hundred
-million dead tuples, roughly doubles the heap, and hands autovacuum a job it
-will not finish. Matching only the rows actually missing something also
-makes the statement idempotent, which is what lets a run be repeated,
-resumed, or taken monthly against the whole file without thinking about it.
-
-**`ON CONFLICT DO NOTHING` carries no target on purpose.** `systems.position`
-is `UNIQUE`. A dump row colliding on coordinates with an existing row under a
-different address raises a violation that `ON CONFLICT (address)` does not
-catch, and it takes the whole chunk down with it. Bare `DO NOTHING` covers
-every constraint on the table.
+The rest of the shape — two statements instead of one upsert, the untargeted
+`ON CONFLICT DO NOTHING` because `position` is `UNIQUE` too, and the `IS NULL`
+predicate that keeps a hundred million dead tuples from appearing — is the
+general machinery, and `MERGING.md` says why each part is there.
 
 ## Why EDDN can keep running through it
 
-We hold a GIST index over `systems.position`, and a monthly run offers it a
-hundred million rows. It is left alone anyway, because almost none of those
-rows reach it.
+We hold a GIST index over `systems.position` and a monthly run offers it a
+hundred million rows, which sounds like a reason to stop the stream. It is
+not, because almost none of those rows reach the index: `ON CONFLICT DO
+NOTHING` checks the unique indexes before writing and skips a conflicting row
+whole, so the systems already on record cost a couple of btree probes each
+and no index writes at all. Only the few million genuinely new ones are
+written, which is the order EDDN itself writes in a month. `MERGING.md` has
+the locking in full.
 
-`ON CONFLICT DO NOTHING` does not insert and then tidy up. Postgres checks
-the unique indexes for a conflict first, and on finding one skips the row
-whole: no heap tuple, so no GIST entry, and nothing written to any other
-index either. The systems we already have — nearly all of them — cost two
-btree probes each and touch the position index zero times. Only genuinely
-new systems are inserted into it, a few million in a month, which is the
-same order of write as EDDN itself produces in that time. The run is a large
-read against the indexes, not a large write.
+Order between the two writers does not matter either. (b) only fills nulls
+and never advances `updated_at`, and (a) dates its rows to `epoch`, so a
+system written by the import and by EDDN in either order ends up the same.
 
-Nothing here takes a lock that excludes anyone. The import and EDDN both
-hold `RowExclusiveLock` on `systems`, which is compatible with itself;
-concurrent writers are the ordinary case. `ACCESS EXCLUSIVE` is what
-dropping or rebuilding an index takes, and that is the whole reason the
-first load wants EDDN stopped and a monthly one does not.
-
-Row level contention is rarer still. `DO NOTHING` does not lock the row it
-conflicts with — `DO UPDATE` would — so EDDN is never queued behind the
-hundred million rows we decline to write. Statement (b) matches only what is
-missing a column, which after the first run is close to nothing, and so
-locks close to nothing.
-
-Order does not matter either. (b) only fills nulls and never advances
-`updated_at`, and (a) dates its rows to `epoch`, so a system written by the
-import and by EDDN in either order ends up the same.
+The first load is the exception, and only because it drops indexes to rebuild
+them — that is an `ACCESS EXCLUSIVE` lock, and the one thing here that
+genuinely requires EDDN to be stopped.
 
 ## Checking it worked
 

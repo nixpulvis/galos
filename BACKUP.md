@@ -86,22 +86,25 @@ before adding a retention tier rather than after.
 
 ## Restoring
 
-Restoring into a running database is possible only for part of one. If the
-cluster is gone there is nothing running to restore into. So the question
-is always which of these three a given incident needs, and the answer is
-usually the first.
+Three paths. The question an incident asks is which one it needs, not which
+is most thorough, and all three write into a database that is running and
+taking EDDN — including losing the cluster, which gets a running database
+made for it first.
+
+`MERGING.md` has the machinery they share: staging, which side wins, and why
+none of this locks EDDN out.
 
 ### Merge restore — EDDN never stops
 
-The primary tool. Nothing here takes a lock that excludes a writer; it is
-the same shape as the Spansh merge, with a backup as the source instead of
-a dump.
+The one to reach for. It is the Spansh merge with a backup as the source
+instead of a dump.
 
-Restore the backup into a scratch database beside the live one, then move
+Restore the backup into the scratch database beside the live one, then move
 just the rows the incident touched across a pipe:
 
 ```sh
-pg_restore -C -d postgres -j4 backups/2026-08-13    # becomes galos_restore
+createdb galos_restore
+pg_restore -d galos_restore -j4 backups/2026-08-13
 
 psql elite_development -c \
   'CREATE TABLE restore_systems (LIKE systems INCLUDING DEFAULTS)'
@@ -110,6 +113,9 @@ psql galos_restore -c "COPY (SELECT * FROM systems
                              WHERE updated_by LIKE 'Spansh dump%') TO STDOUT" \
   | psql elite_development -c 'COPY restore_systems FROM STDIN'
 ```
+
+Not `pg_restore -C`: it creates the database named inside the dump, which is
+the live one.
 
 Then reconcile, scoped to the incident:
 
@@ -126,11 +132,11 @@ WHERE t.address = b.address
 ```
 
 **Scope by the incident, never by comparing wholesale.** EDDN is writing
-while this runs, and a restore that replaces every row it can reach will
-push good new data back to yesterday. What identifies the damage is
-`updated_by`, or a window of `updated_at` around when it happened, or a list
-of addresses recorded while doing the damage — which is the argument for
-recording them.
+while this runs, and a restore that replaces every row it can reach will push
+good new data back to yesterday. What identifies the damage is `updated_by`,
+or a window of `updated_at` around when it happened, or a list of addresses
+recorded while doing the damage — the third rule in `MERGING.md`, and the
+reason every bulk write leaves a fingerprint.
 
 Where the damage was a deletion rather than a bad write, the statement is an
 insert instead, and `ON CONFLICT DO NOTHING` keeps it from touching anything
@@ -205,11 +211,11 @@ ON CONFLICT (address) DO UPDATE SET
 WHERE systems.updated_at < EXCLUDED.updated_at;
 ```
 
-That is `System::create`'s own rule, which is what the guard was for. Note
-that it is the opposite of the rule in `SPANSH.md`: a dump is poorer than
-what is on record, so it fills nulls and never advances the timestamp, while
-a backup is fuller than what is on record and may. Do not carry either rule
-across to the other.
+That is `System::create`'s own rule, which is what its guard was for, and the
+second of the three in `MERGING.md`. It is the opposite of the one the Spansh
+import follows, for the reason set out there: a dump knows less than we do
+and may only fill holes, while a backup knows more than a rebuilt database
+and may overwrite.
 
 #### Faction ids do not survive this
 
@@ -274,10 +280,10 @@ hour a clean restore would take. That is the trade being made, and it is
 usually the right one: the database is up and recording for all of it.
 
 It also wants disk for the scratch copy alongside the live one, so budget
-twice the database. And `systems.position` is `UNIQUE`, so a backup row
-whose coordinates now belong to a system EDDN inserted first will abort the
+twice the database. And `systems.position` is `UNIQUE`, so a backup row whose
+coordinates now belong to a system EDDN inserted first will abort the
 statement it is in — chunk the merge, or drop that constraint, which
-`SPANSH.md` argues for on its own account.
+`MERGING.md` argues for on its own account.
 
 The old `pg_restore -Cd postgres` from the README still exists and is still
 the fastest way to get all the data back. It is now the choice you make when
@@ -285,16 +291,15 @@ the stream matters less than the history, which is rarely.
 
 ## Testing that any of this works
 
-A backup nobody has restored is not a backup. Restore into a scratch
+A backup nobody has restored is not a backup. Restore into the scratch
 database monthly, alongside the Spansh import so the two share one slot in
 the calendar, and check row counts against the live database and against the
-previous test.
+previous test. `MERGING.md` lists what else that database is for, which is
+the argument for keeping one rather than making one each time.
 
-That scratch database is also where a migration gets tried before it is run
-for real, and where the routing work can be measured at scale without
-touching anything EDDN is writing to. Every migration in `galos_db` has a
-`.down.sql`, which is worth keeping true; a migration that cannot be reversed
-turns a merge restore into a cluster restore.
+Every migration in `galos_db` has a `.down.sql`, which is worth keeping true:
+a migration that cannot be reversed turns a merge restore into a cluster
+restore.
 
 ## The order to reach for things
 

@@ -37,4 +37,5 @@ pg_restore -Cd postgres < latest.dump
 ```
 
 [`BACKUP.md`](./BACKUP.md) has the restores that leave EDDN running, and why
-the one above does not.
+the one above does not. [`SPANSH.md`](./SPANSH.md) has the monthly galaxy
+dump import, and [`MERGING.md`](./MERGING.md) the machinery those two share.
