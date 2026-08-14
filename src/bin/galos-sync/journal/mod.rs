@@ -2,9 +2,10 @@ use crate::Run;
 use async_std::task;
 use elite_journal::entry::{parse_journal_file, Entry, Event};
 use galos_db::Database;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{stderr, IsTerminal};
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tracing::warn;
@@ -51,13 +52,7 @@ impl Run for Cli {
             entries.first().map(|entry| entry.timestamp)
         });
 
-        let bar = ProgressBar::new(
-            journals.iter().map(|(_, e)| e.len() as u64).sum(),
-        );
-        bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
-            .unwrap()
-            .progress_chars("##-"));
+        let bar = progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
         for (path, entries) in &journals {
             bar.set_message(
                 path.file_name()
@@ -65,11 +60,19 @@ impl Run for Cli {
                     .to_string_lossy()
                     .into_owned(),
             );
-            task::block_on(async {
-                for entry in entries {
-                    // TODO: Take user as arg or something.
-                    record::entry(db, entry, "JOURNAL").await;
-                }
+            // The bar and the log are drawn on the same terminal, and a line
+            // printed under a bar lands on top of it. Standing the bar down
+            // for the length of a file leaves the log the terminal while that
+            // file is written, and costs one redraw a file. Per entry it
+            // would cost two writes for every line of every journal ever
+            // flown, which is the whole import.
+            bar.suspend(|| {
+                task::block_on(async {
+                    for entry in entries {
+                        // TODO: Take user as arg or something.
+                        record::entry(db, entry, "JOURNAL").await;
+                    }
+                })
             });
             bar.inc(entries.len() as u64);
         }
@@ -97,4 +100,22 @@ fn logs(dir: &Path) -> Vec<PathBuf> {
                 && path.extension().and_then(OsStr::to_str) == Some("log")
         })
         .collect()
+}
+
+/// How far along an import is, where there is someone to show
+///
+/// Redirected, the bar is turned off rather than written out: what it draws is
+/// a line rewritten in place, and a file of those is not a log of anything.
+fn progress(entries: u64) -> ProgressBar {
+    let bar = ProgressBar::new(entries);
+    bar.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
+        .unwrap()
+        .progress_chars("##-"));
+
+    if !stderr().is_terminal() {
+        bar.set_draw_target(ProgressDrawTarget::hidden());
+    }
+
+    bar
 }
