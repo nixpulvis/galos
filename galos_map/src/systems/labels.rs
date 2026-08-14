@@ -883,13 +883,21 @@ pub fn respawn(
     standing_in: Query<&System>,
     seen_as: Res<ApparentSize>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
-    unnamed: Query<&Children, (Or<(With<System>, With<Body>)>, Without<Named>)>,
+    // Whatever lost its name since this last ran, rather than everything that
+    // does not have one. Nearly every name is the same name it was last frame,
+    // and asking the other way round is a walk of the whole sky, and of every
+    // child hung under it, to find the handful with a plate to take down.
+    mut unnamed: RemovedComponents<Named>,
+    children_of: Query<&Children>,
     labels: Query<Entity, With<Label>>,
     // The words on a plate already up, which only a system's ever change.
     mut plates: Query<&mut Text3d, With<Label>>,
     materials: Res<LabelMaterials>,
 ) {
-    for children in &unnamed {
+    for entity in unnamed.read() {
+        // Nothing where the thing itself has gone, which is the other way a
+        // name is lost. Its children went with it, plate and all.
+        let Ok(children) = children_of.get(entity) else { continue };
         for child in children.iter() {
             if let Ok(label) = labels.get(child) {
                 commands.entity(label).despawn();
@@ -1771,5 +1779,129 @@ mod tests {
             "the center measured {} deep, not the {expected} the camera sits at",
             depth(&camera, center)
         );
+    }
+
+    /// A world holding the colors a plate is set in, and nothing else
+    ///
+    /// Nothing is being flown into, so no system is the one the map is holding
+    /// and no plate says a jump.
+    fn plated() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<DimTo>();
+        app.init_resource::<ApparentSize>();
+        app.add_systems(Startup, init_materials);
+        app
+    }
+
+    /// Take the name off whatever holds one, as [`choose_names`] does
+    ///
+    /// By command, which is the whole of what is being tested in
+    /// [`a_name_dropped_this_frame_is_answered_this_frame`]: a removal has to
+    /// have landed and been recorded before [`respawn`] reads for it.
+    fn drop_names(named: Query<Entity, With<Named>>, mut commands: Commands) {
+        for entity in &named {
+            commands.entity(entity).remove::<Named>();
+        }
+    }
+
+    /// How many plates are up
+    fn up(app: &mut App) -> usize {
+        let mut labels =
+            app.world_mut().query_filtered::<Entity, With<Label>>();
+        labels.iter(app.world()).count()
+    }
+
+    /// A system that has won a name
+    fn winner(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((crate::systems::tests::named(1, "Sol"), Named))
+            .id()
+    }
+
+    /// A system that has won a name is given a plate
+    ///
+    /// What the rest of these rest on. A system without a [`Named`] has no
+    /// label at all, so there is nothing to hide and no mesh built for a name
+    /// that would not be read.
+    #[test]
+    fn a_system_that_wins_a_name_is_given_a_plate() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        winner(&mut app);
+
+        app.update();
+
+        assert_eq!(up(&mut app), 1, "the winner went unnamed");
+    }
+
+    /// And keeps it for as long as it holds the name
+    ///
+    /// The other half of what the plate is looked up for. A plate torn down
+    /// and put back would rebuild its mesh every frame.
+    #[test]
+    fn a_system_that_keeps_its_name_keeps_its_plate() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        winner(&mut app);
+
+        app.update();
+        app.update();
+
+        assert_eq!(up(&mut app), 1, "the plate was put up twice over");
+    }
+
+    /// A system that loses its name loses its plate
+    #[test]
+    fn a_system_that_loses_its_name_loses_its_plate() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        let system = winner(&mut app);
+
+        app.update();
+        app.world_mut().entity_mut(system).remove::<Named>();
+        app.update();
+
+        assert_eq!(up(&mut app), 0, "the plate outlived the name");
+    }
+
+    /// A name taken away this frame is answered this frame
+    ///
+    /// [`choose_names`] takes a name away by command and this runs after it in
+    /// the same frame, so the removal has landed and been recorded by the time
+    /// it is read for. Answered a frame late, every name the layout dropped
+    /// would be drawn once more over whatever took its place.
+    #[test]
+    fn a_name_dropped_this_frame_is_answered_this_frame() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        winner(&mut app);
+
+        // Up first, so that what the next frame does is take it down.
+        app.update();
+        assert_eq!(up(&mut app), 1);
+
+        app.add_systems(Update, drop_names.before(respawn));
+        app.update();
+
+        assert_eq!(up(&mut app), 0, "the plate outlived the frame it was lost");
+    }
+
+    /// A system despawned outright takes its plate with it
+    ///
+    /// The other way a name is lost, and the one where there is nothing left
+    /// to look up: the children went with the system.
+    #[test]
+    fn a_system_that_goes_takes_its_plate_with_it() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        let system = winner(&mut app);
+
+        app.update();
+        app.world_mut().entity_mut(system).despawn();
+        app.update();
+
+        assert_eq!(up(&mut app), 0, "the plate outlived its system");
     }
 }
