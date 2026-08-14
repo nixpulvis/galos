@@ -740,24 +740,33 @@ fn hits(
 /// Read from what is hovered rather than from coming and going, so that
 /// moving straight from one system to the next cannot leave the cursor
 /// behind whichever of the two events happens to arrive last.
+///
+/// Written only where it changed. What sets the cursor on the window looks at
+/// the icon only when it has been marked as written, and an insert is a write
+/// whether or not the icon differs, so writing regardless asks the platform to
+/// set the same cursor over again every frame.
 pub fn point_the_cursor(
     hovered: Res<HoverMap>,
     clickable: Query<(), Or<(With<Indicator>, With<Label>)>>,
-
-    window: Query<Entity, With<PrimaryWindow>>,
+    // Whatever the window is showing, which is nothing until this has run
+    // once.
+    window: Query<(Entity, Option<&CursorIcon>), With<PrimaryWindow>>,
     mut commands: Commands,
 ) {
-    let Ok(window) = window.single() else { return };
+    let Ok((window, shown)) = window.single() else { return };
     let over_something = hovered
         .values()
         .flat_map(|hits| hits.keys())
         .any(|entity| clickable.contains(*entity));
 
-    commands.entity(window).insert(if over_something {
+    let wanted = if over_something {
         CursorIcon::System(SystemCursorIcon::Pointer)
     } else {
         CursorIcon::default()
-    });
+    };
+    if shown != Some(&wanted) {
+        commands.entity(window).insert(wanted);
+    }
 }
 
 /// Ring the system the pointer is over
@@ -1603,5 +1612,119 @@ mod tests {
             !app.world().entity(system).contains::<PointedAt>(),
             "the system answered over the body inside it"
         );
+    }
+
+    /// How many times the cursor was written
+    #[derive(Resource, Default)]
+    struct Sets(usize);
+
+    fn count_sets(
+        mut sets: ResMut<Sets>,
+        windows: Query<(), Changed<CursorIcon>>,
+    ) {
+        sets.0 += windows.iter().count();
+    }
+
+    /// A world holding a window, with nothing under the pointer
+    fn windowed() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<HoverMap>();
+        app.init_resource::<Sets>();
+        app.world_mut().spawn(PrimaryWindow);
+        app.add_systems(Update, (point_the_cursor, count_sets).chain());
+        app
+    }
+
+    /// Put `entity` under the pointer
+    fn hover(app: &mut App, entity: Entity) {
+        let mut over = EntityHashMap::default();
+        over.insert(
+            entity,
+            HitData {
+                camera: Entity::PLACEHOLDER,
+                depth: 0.,
+                position: None,
+                normal: None,
+                extra: None,
+            },
+        );
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+    }
+
+    /// What the window is showing
+    fn cursor(app: &mut App) -> Option<CursorIcon> {
+        let mut windows = app
+            .world_mut()
+            .query_filtered::<&CursorIcon, With<PrimaryWindow>>();
+        windows.iter(app.world()).next().cloned()
+    }
+
+    /// How many times the cursor has been written so far
+    fn sets(app: &App) -> usize {
+        app.world().resource::<Sets>().0
+    }
+
+    /// The cursor points while something worth clicking is under it
+    #[test]
+    fn the_cursor_points_at_what_can_be_clicked() {
+        let mut app = windowed();
+        let system = app.world_mut().spawn(Indicator(0.)).id();
+        hover(&mut app, system);
+
+        app.update();
+
+        assert_eq!(
+            cursor(&mut app),
+            Some(CursorIcon::System(SystemCursorIcon::Pointer))
+        );
+    }
+
+    /// And rests over sky with nothing in it
+    #[test]
+    fn the_cursor_rests_over_empty_sky() {
+        let mut app = windowed();
+
+        app.update();
+
+        assert_eq!(cursor(&mut app), Some(CursorIcon::default()));
+    }
+
+    /// A frame that moves the pointer onto something writes the cursor
+    #[test]
+    fn reaching_something_worth_clicking_writes_the_cursor() {
+        let mut app = windowed();
+        app.update();
+        app.update();
+        let settled = sets(&app);
+
+        let system = app.world_mut().spawn(Indicator(0.)).id();
+        hover(&mut app, system);
+        app.update();
+
+        assert!(sets(&app) > settled, "the cursor was left resting");
+    }
+
+    /// A frame that moves the pointer nowhere leaves the cursor alone
+    ///
+    /// What sets the cursor on the window looks at the icon only where it has
+    /// been marked as written, so writing it regardless asks the platform to
+    /// set the same cursor over again every frame.
+    #[test]
+    fn a_resting_frame_leaves_the_cursor_alone() {
+        let mut app = windowed();
+        let system = app.world_mut().spawn(Indicator(0.)).id();
+        hover(&mut app, system);
+
+        // The first frame writes whatever the window was not already showing,
+        // and the second is the first that could be said to be resting.
+        app.update();
+        app.update();
+        let settled = sets(&app);
+
+        app.update();
+        assert_eq!(sets(&app), settled, "wrote a cursor that had not changed");
     }
 }
