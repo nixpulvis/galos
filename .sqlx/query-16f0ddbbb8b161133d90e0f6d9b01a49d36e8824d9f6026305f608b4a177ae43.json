@@ -1,0 +1,170 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                market_id,\n                faction,\n                government,\n                allegiance,\n                services,\n                economies,\n                body_id,\n                body_name,\n                latitude,\n                longitude,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)\n            ON CONFLICT (system_address, name)\n            DO UPDATE SET\n                market_id = COALESCE($3, stations.market_id),\n                faction = COALESCE($4, stations.faction),\n                government = COALESCE($5, stations.government),\n                allegiance = COALESCE($6, stations.allegiance),\n                services = COALESCE($7, stations.services),\n                economies = COALESCE($8, stations.economies),\n                body_id = $9,\n                body_name = $10,\n                latitude = COALESCE($11, stations.latitude),\n                longitude = COALESCE($12, stations.longitude),\n                updated_at = $13,\n                updated_by = $14\n            WHERE stations.updated_at <= $13\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Int8",
+        "Varchar",
+        {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy",
+                "Megaconstruction"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid",
+                "FrontlineSolutions"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "service[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "service",
+                  "kind": {
+                    "Enum": [
+                      "Autodock",
+                      "Blackmarket",
+                      "CarrierFuel",
+                      "CarrierManagement",
+                      "Commodities",
+                      "Contacts",
+                      "CrewLounge",
+                      "Dock",
+                      "Engineer",
+                      "Exploration",
+                      "Facilitator",
+                      "FlightController",
+                      "Initiatives",
+                      "MaterialTrader",
+                      "Missions",
+                      "MissionsGenerated",
+                      "Modulepacks",
+                      "Outfitting",
+                      "Powerplay",
+                      "Rearm",
+                      "Refuel",
+                      "Repair",
+                      "SearchRescue",
+                      "Shipyard",
+                      "Shop",
+                      "StationMenu",
+                      "StationOperations",
+                      "TechBroker",
+                      "Tuning",
+                      "VoucherRedemption",
+                      "Livery",
+                      "SocialSpace",
+                      "Bartender",
+                      "VistaGenomics",
+                      "PioneerSupplies",
+                      "ApexInterstellar",
+                      "FrontlineSolutions",
+                      "RegisteringColonisation",
+                      "ColonisationContribution",
+                      "OnDockMission",
+                      "SquadronBank",
+                      "Refinery",
+                      "CarrierVendor"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "economyshare[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "economyshare",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "name",
+                        {
+                          "Custom": {
+                            "name": "economy",
+                            "kind": {
+                              "Enum": [
+                                "Agriculture",
+                                "Carrier",
+                                "Colony",
+                                "Extraction",
+                                "HighTech",
+                                "Industrial",
+                                "Military",
+                                "Prison",
+                                "Refinery",
+                                "Service",
+                                "Terraforming",
+                                "Tourism",
+                                "Undefined",
+                                "Rescue"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      [
+                        "proportion",
+                        "Float8"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Int2",
+        "Varchar",
+        "Float8",
+        "Float8",
+        "Timestamp",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "16f0ddbbb8b161133d90e0f6d9b01a49d36e8824d9f6026305f608b4a177ae43"
+}

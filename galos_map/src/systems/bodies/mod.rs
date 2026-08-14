@@ -24,8 +24,153 @@ pub mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
+    app.init_resource::<Clock>();
     app.add_plugins(fetch::plugin);
     app.add_plugins(spawn::plugin);
+}
+
+/// How long the map has run a system on from when its things were scanned
+///
+/// Seconds, and one reading for the whole system, so what is drawn is always a
+/// single moment rather than an arrangement composed body by body.
+///
+/// Set from a body's own panel rather than from one control over the system,
+/// because a system has no span that suits all of it: the slowest body of one
+/// takes a median 993 times as long to come round as its fastest, and in Sol it
+/// is four million times. Each panel gears this to its own body's period, so
+/// a slider is one orbit of the body it stands under whatever that body's
+/// orbit is worth in seconds.
+///
+/// Zero draws every thing where its own scan put it. The bodies of one system
+/// are scanned a median one minute forty-five apart against periods mostly over
+/// a year, so zero is very nearly one moment rather than a smear -- which is
+/// also why one reading serves the whole system instead of each body being
+/// advanced from an epoch of its own.
+#[derive(Resource, Default)]
+pub struct Clock {
+    /// The seconds themselves
+    pub at: f64,
+    /// The whole turns the slider being dragged set out from, while one is
+    ///
+    /// A slider covers one turn of its own body, and a phase is cyclic: its
+    /// far end is the same place on the orbit as its near end, one turn later.
+    /// Which turn that is has to hold still while the slider is dragged, or
+    /// the reading moves under the drag: worked out afresh each frame from the
+    /// clock it is itself setting, a slider run to its far end lands on the
+    /// next turn, reads back as no phase at all, and asks for the turn after
+    /// that.
+    ///
+    /// One of these for the map rather than one per slider, there being one
+    /// pointer and so one slider ever being dragged.
+    held: Option<Held>,
+}
+
+/// The slider a drag has hold of
+///
+/// The period is carried so that the anchor is only ever applied to the
+/// slider it was taken for. A drag that never sees its own end -- a panel shut
+/// while the pointer is down -- would otherwise leave the anchor standing, and
+/// the next slider touched would measure a turn of its own body from a count
+/// of somebody else's.
+struct Held {
+    /// What the slider is geared to
+    period: f64,
+    /// The whole turns it set out from
+    turns: f64,
+}
+
+impl Held {
+    /// Whether `at` still stands in the turn this was taken for
+    ///
+    /// Measured rather than trusted. A drag that never sees its own end leaves
+    /// the anchor standing, and the clock may have been wound anywhere since by
+    /// another body's slider, so an anchor is only worth measuring from where
+    /// the reading could have come from it.
+    ///
+    /// The far end counts. A slider run to it lands exactly on the beginning of
+    /// the next turn and is held there, which is what the anchor is for.
+    fn holds(&self, at: f64) -> bool {
+        at >= self.turns * self.period && at <= (self.turns + 1.) * self.period
+    }
+}
+
+impl Clock {
+    /// Where `period` stands in its own turn, from none of it to all
+    ///
+    /// What a slider geared to one body reads.
+    pub fn through(&self, period: f64) -> f64 {
+        if period <= 0. {
+            return 0.;
+        }
+        let turns = self.at / period;
+        turns - turns.floor()
+    }
+
+    /// Take hold of the turn a slider over `period` is setting out from
+    ///
+    /// Said when a drag begins, so that [`Self::wind_to`] measures from where
+    /// the slider started rather than from where it has since put the clock.
+    pub fn hold(&mut self, period: f64) {
+        if period > 0. {
+            self.held =
+                Some(Held { period, turns: (self.at / period).floor() });
+        }
+    }
+
+    /// Let go of it, the drag being over
+    pub fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// Move to where `period` stands `through` of the way round its turn
+    ///
+    /// Within the turn the slider set out from, so dragging one moves the map
+    /// by at most a single period of the body it is geared to, and moves it
+    /// evenly: a slider run from end to end runs the clock on by exactly one
+    /// turn of that body, with nothing anywhere in the system jumping on the
+    /// way.
+    ///
+    /// A moon's slider therefore barely stirs the planet it goes round.
+    /// Reaching for the first turn instead would throw the whole system back to
+    /// the beginning every time a moon was nudged.
+    pub fn wind_to(&mut self, period: f64, through: f64) {
+        if period <= 0. {
+            return;
+        }
+        let whole = match &self.held {
+            Some(held) if held.period == period && held.holds(self.at) => {
+                held.turns
+            }
+            _ => (self.at / period).floor(),
+        };
+        self.at = (whole + through) * period;
+    }
+}
+
+/// Draw `with` against the clock, and mark it changed only where it moved
+///
+/// A [`ResMut`] counts as written for being handed out, and a panel is handed
+/// the clock every frame it is open whether or not the slider was touched. What
+/// reads the mark rebuilds every star, body and orbit line in the held system,
+/// so the handing alone would rebuild them all every frame a panel stood open.
+///
+/// The reading is what is compared, and not the turn a drag set out from: the
+/// places are worked out from the reading, and taking hold of the slider moves
+/// nothing until it is dragged.
+pub(crate) fn mark_if_wound<T>(
+    clock: &mut impl DetectChangesMut<Inner = Clock>,
+    with: impl FnOnce(&mut Clock) -> T,
+) -> T {
+    let wound = clock.bypass_change_detection();
+    let was = wound.at;
+    let drawn = with(&mut *wound);
+    let moved = wound.at != was;
+
+    if moved {
+        clock.set_changed();
+    }
+
+    drawn
 }
 
 /// The one system the map is holding the insides of
@@ -79,14 +224,14 @@ impl Contents {
         self.revision
     }
 
-    /// Take in what the database said, if it said anything new
+    /// Hold what the database said, if it said anything new
     ///
     /// The rows are compared rather than taken as fresh because the poll asks
     /// whether anything changed and the answer is usually no. Everything
     /// inside a system is despawned and drawn again from scratch when what is
     /// held changes, so an answer repeating the last one has to leave both the
     /// rows and the revision exactly as they were.
-    pub(super) fn know(
+    pub(super) fn hold(
         &mut self,
         stars: Vec<DbStar>,
         bodies: Vec<DbBody>,
@@ -109,8 +254,8 @@ impl Contents {
     ///
     /// What the shell asks before it begins to clear: an answer of nothing is
     /// still an answer, and a system with no bodies on record is one the map
-    /// knows about rather than one it has yet to ask after.
-    pub fn known(&self, address: i64) -> bool {
+    /// holds rather than one it has yet to ask after.
+    pub fn holds(&self, address: i64) -> bool {
         self.of == Some(address)
             && matches!(self.state, FetchState::Known { .. })
     }
@@ -335,14 +480,20 @@ impl Contents {
 }
 
 /// The orbit a body was recorded on
+///
+/// TODO: A node and an anomaly nobody reported are read as zero, here and in
+/// the two below, which draws the thing at periapsis. Worth answering properly
+/// if that stops being rare: the path is known and the place along it is not,
+/// a null `mean_anomaly` is how to tell the two apart, and the panel is where
+/// it can be said in words rather than guessed at in space.
 fn recorded_body(body: &DbBody) -> Orbit {
     Orbit::recorded(
         body.orbit.semi_major_axis,
         body.orbit.eccentricity,
         body.orbit.orbital_inclination,
         body.orbit.periapsis,
-        body.orbit.ascending_node,
-        body.orbit.mean_anomaly,
+        body.orbit.ascending_node.unwrap_or(0.),
+        body.orbit.mean_anomaly.unwrap_or(0.),
         body.orbit.orbital_period,
     )
 }
@@ -359,8 +510,8 @@ fn recorded_center(center: &DbBarycenter) -> Orbit {
             orbit.eccentricity,
             orbit.orbital_inclination,
             orbit.periapsis,
-            orbit.ascending_node,
-            orbit.mean_anomaly,
+            orbit.ascending_node.unwrap_or(0.),
+            orbit.mean_anomaly.unwrap_or(0.),
             orbit.orbital_period,
         )
     })
@@ -378,8 +529,8 @@ fn recorded_star(star: &DbStar) -> Orbit {
             orbit.eccentricity,
             orbit.orbital_inclination,
             orbit.periapsis,
-            orbit.ascending_node,
-            orbit.mean_anomaly,
+            orbit.ascending_node.unwrap_or(0.),
+            orbit.mean_anomaly.unwrap_or(0.),
             orbit.orbital_period,
         )
     })
@@ -422,7 +573,10 @@ mod tests {
     use galos_db::bodies::Parent;
 
     /// A body `a` metres out on a circle, with no size of its own
-    fn body(a: f32) -> DbBody {
+    ///
+    /// Reached from [`super::spawn`]'s tests as well, which drive the same rows
+    /// through the systems that draw and move them.
+    pub(crate) fn body(a: f32) -> DbBody {
         DbBody {
             system_address: 1,
             id: 1,
@@ -437,7 +591,7 @@ mod tests {
             mass: 0.,
             radius: 0.,
             gravity: 0.,
-            temperature: 0.,
+            temperature: Some(0.),
             surface: None,
             orbit: JournalOrbit {
                 semi_major_axis: a,
@@ -445,8 +599,8 @@ mod tests {
                 orbital_inclination: 0.,
                 periapsis: 0.,
                 orbital_period: 0.,
-                ascending_node: 0.,
-                mean_anomaly: 0.,
+                ascending_node: Some(0.),
+                mean_anomaly: Some(0.),
             },
             spin: JournalSpin { period: 0., tilt: 0. },
             discovery: JournalDiscovery { discovered: false, mapped: false },
@@ -461,8 +615,8 @@ mod tests {
             orbital_inclination: 0.,
             periapsis: 0.,
             orbital_period: 1.,
-            ascending_node: 0.,
-            mean_anomaly: 0.,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
         }
     }
 
@@ -712,7 +866,7 @@ mod tests {
     }
 
     /// Contents that came back holding `bodies`
-    fn known(bodies: Vec<DbBody>) -> Contents {
+    fn holding(bodies: Vec<DbBody>) -> Contents {
         Contents {
             of: Some(1),
             revision: 0,
@@ -732,13 +886,13 @@ mod tests {
     /// Nor has one that came back with nothing in it
     #[test]
     fn a_system_with_nothing_on_record_has_no_extent() {
-        assert_eq!(known(vec![]).extent(), None);
+        assert_eq!(holding(vec![]).extent(), None);
     }
 
     /// The extent reaches the furthest body, not the last one read
     #[test]
     fn the_extent_reaches_the_outermost_body() {
-        let contents = known(vec![body(1e11), body(5e12), body(3e11)]);
+        let contents = holding(vec![body(1e11), body(5e12), body(3e11)]);
 
         assert_eq!(contents.extent(), Some(5e12));
     }
@@ -753,7 +907,7 @@ mod tests {
         let mut eccentric = body(2e12);
         eccentric.orbit.eccentricity = 0.5;
 
-        assert_eq!(known(vec![eccentric]).extent(), Some(3e12));
+        assert_eq!(holding(vec![eccentric]).extent(), Some(3e12));
     }
 
     /// A body's own size counts, so the shell holds the whole of it
@@ -762,7 +916,7 @@ mod tests {
         let mut wide = body(5e12);
         wide.radius = 7e7;
 
-        assert_eq!(known(vec![wide]).extent(), Some(5e12 + 7e7));
+        assert_eq!(holding(vec![wide]).extent(), Some(5e12 + 7e7));
     }
 
     /// A body sitting at the centre does not make an extent of nothing
@@ -772,7 +926,7 @@ mod tests {
     /// about how far it reaches.
     #[test]
     fn a_body_at_the_centre_leaves_the_extent_unsaid() {
-        assert_eq!(known(vec![body(0.)]).extent(), None);
+        assert_eq!(holding(vec![body(0.)]).extent(), None);
     }
 
     /// The extent is measured from the middle, not from what a thing goes round
@@ -842,7 +996,7 @@ mod tests {
         let mut escaping = body(1e12);
         escaping.orbit.eccentricity = 1.;
 
-        let extent = known(vec![escaping]).extent().unwrap();
+        let extent = holding(vec![escaping]).extent().unwrap();
         assert!(extent.is_finite(), "the extent ran away to {extent}");
         assert!(extent < 2e12, "the extent reached {extent}");
     }
@@ -856,10 +1010,10 @@ mod tests {
     #[test]
     fn a_poll_finding_nothing_new_moves_nothing() {
         let mut contents = Contents::default();
-        contents.know(vec![], vec![body(1e9)], vec![]);
+        contents.hold(vec![], vec![body(1e9)], vec![]);
 
         let first = contents.revision();
-        contents.know(vec![], vec![body(1e9)], vec![]);
+        contents.hold(vec![], vec![body(1e9)], vec![]);
 
         assert_eq!(
             contents.revision(),
@@ -877,12 +1031,12 @@ mod tests {
     #[test]
     fn a_body_arriving_mid_scan_is_taken_in() {
         let mut contents = Contents::default();
-        contents.know(vec![], vec![body(1e9)], vec![]);
+        contents.hold(vec![], vec![body(1e9)], vec![]);
         let first = contents.revision();
 
         let mut arriving = body(2e9);
         arriving.id = 2;
-        contents.know(vec![], vec![body(1e9), arriving], vec![]);
+        contents.hold(vec![], vec![body(1e9), arriving], vec![]);
 
         assert_ne!(
             contents.revision(),
@@ -890,5 +1044,212 @@ mod tests {
             "a body that was not there before read as the same rows"
         );
         assert_eq!(contents.bodies().len(), 2);
+    }
+
+    /// A slider reads where its own body stands in the turn it is in
+    #[test]
+    fn a_slider_reads_its_own_bodys_turn() {
+        let day = 86_400.;
+        // A quarter through its second turn of a four hundred day orbit.
+        let clock = Clock { at: 500. * day, ..default() };
+
+        assert_eq!(clock.through(400. * day), 0.25);
+    }
+
+    /// Dragging a slider stays in the turn its body is already in
+    ///
+    /// The point of gearing a slider to one body: a moon's covers one of its
+    /// own orbits, so dragging it moves the map by at most that. Winding to the
+    /// fraction of the first turn instead would throw the whole system back to
+    /// the beginning every time a moon was nudged.
+    #[test]
+    fn dragging_a_moons_slider_barely_moves_the_map() {
+        let day = 86_400.;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        clock.wind_to(day, 0.5);
+
+        assert_eq!(
+            clock.at,
+            500.5 * day,
+            "the map went back to the first turn"
+        );
+    }
+
+    /// A slider held at its far end leaves the map where it is
+    ///
+    /// A phase is cyclic, so the far end of a slider is the same place on the
+    /// orbit as its near end, one turn on. Worked out afresh from the clock
+    /// each frame, that reads back as no phase at all and asks for the turn
+    /// after it, and a slider held there ran the whole system on a period every
+    /// frame.
+    #[test]
+    fn a_slider_held_at_its_far_end_stays_put() {
+        let day = 86_400.;
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        clock.hold(period);
+        clock.wind_to(period, 1.);
+        let once = clock.at;
+        for _ in 0..30 {
+            clock.wind_to(period, 1.);
+        }
+
+        assert_eq!(
+            clock.at, once,
+            "the clock ran away while the slider was held"
+        );
+    }
+
+    /// An anchor left standing by a drag that never ended is not measured from
+    ///
+    /// `drag_stopped` may never arrive: a panel shut with the pointer down
+    /// leaves the anchor where it is. The clock can be wound anywhere else
+    /// before that body's slider is touched again, and measuring from a turn
+    /// the system left long ago throws the whole of it back to that turn.
+    #[test]
+    fn an_anchor_from_a_drag_that_never_ended_is_let_go_of() {
+        let day = 86_400.;
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        // A drag that begins and never sees its own end.
+        clock.hold(period);
+        // And the clock moves on, wound by some other body's slider.
+        clock.at = 900. * day;
+
+        clock.wind_to(period, 0.5);
+
+        assert_eq!(
+            clock.at,
+            2.5 * period,
+            "the anchor threw the system back to the turn it was taken in"
+        );
+    }
+
+    /// A world holding a clock nothing has written to yet
+    fn holding_a_clock() -> World {
+        let mut world = World::new();
+        world.init_resource::<Clock>();
+        // Making it is a write like any other, and this is about what happens
+        // after it exists.
+        world.clear_trackers();
+        world.increment_change_tick();
+
+        world
+    }
+
+    /// Whether anything has written to the clock `world` holds
+    fn written(world: &World) -> bool {
+        world.get_resource_ref::<Clock>().unwrap().is_changed()
+    }
+
+    /// A panel that only reads the clock does not count as winding it
+    ///
+    /// A panel is handed the clock every frame it is open, and being handed a
+    /// [`ResMut`] is what marks a resource written. What reads that mark
+    /// rebuilds every star, body and orbit line in the held system, so a panel
+    /// left standing open would rebuild the whole of it every frame.
+    #[test]
+    fn a_panel_reading_the_clock_does_not_wind_it() {
+        let mut world = holding_a_clock();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.through(86_400.);
+        });
+
+        assert!(!written(&world), "an untouched slider wound the clock");
+    }
+
+    /// Taking hold of the slider does not either, until it is dragged
+    ///
+    /// A drag begins on the press, and the turn it sets out from is worked out
+    /// then. Nothing has moved yet, so nothing needs redrawing.
+    #[test]
+    fn taking_hold_of_the_slider_does_not_wind_the_clock() {
+        let mut world = holding_a_clock();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.hold(86_400.);
+        });
+
+        assert!(!written(&world), "holding the slider wound the clock");
+    }
+
+    /// Dragging one does
+    #[test]
+    fn dragging_the_slider_winds_the_clock() {
+        let mut world = holding_a_clock();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.wind_to(86_400., 0.5);
+        });
+
+        assert!(written(&world), "a dragged slider left the map where it was");
+    }
+
+    /// A slider run from end to end runs the clock on by one turn of its body
+    ///
+    /// Evenly, and that is the point of it. The clock is shared, so every other
+    /// body moves by whatever span this slider asks for; a slider that reached
+    /// backwards at its far end would leave its own body where it was, the two
+    /// ends being one place on its orbit, and jump everything else in the
+    /// system by nearly a whole turn of it.
+    #[test]
+    fn a_slider_run_end_to_end_moves_the_map_evenly() {
+        let day = 86_400.;
+        let period = 400. * day;
+        let mut clock = Clock { at: 500. * day, ..default() };
+        clock.hold(period);
+
+        let mut readings = Vec::new();
+        for step in 0..=20 {
+            clock.wind_to(period, step as f64 / 20.);
+            readings.push(clock.at);
+        }
+
+        let ran_on = readings[20] - readings[0];
+        assert_eq!(ran_on, period, "end to end was not one turn");
+        // Nothing anywhere in the system jumps, which is this being monotone.
+        for pair in readings.windows(2) {
+            let step = pair[1] - pair[0];
+            assert!(step > 0., "the clock went backwards by {}", -step);
+            assert!(step <= period / 20. + 1., "the clock jumped {step}");
+        }
+    }
+
+    /// An anchor moves the slider it was taken for and no other
+    ///
+    /// A drag that never sees its own end leaves the anchor standing: a panel
+    /// shut with the pointer down draws no slider that frame, so nothing says
+    /// the drag is over. The next slider touched must measure its own body's
+    /// turn rather than a count of somebody else's, which for a moon holding a
+    /// planet's count is a clock thrown a long way from anywhere.
+    #[test]
+    fn an_anchor_moves_only_the_slider_it_was_taken_for() {
+        let day = 86_400.;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        // A drag of the planet's slider that never ends.
+        clock.hold(400. * day);
+        // Then the moon's slider is touched.
+        clock.wind_to(day, 0.5);
+
+        assert_eq!(
+            clock.at,
+            500.5 * day,
+            "the moon's slider measured from the planet's turn",
+        );
+    }
+
+    /// A thing whose period nobody recorded has no turn to be a fraction of
+    #[test]
+    fn an_unrecorded_period_has_no_phase() {
+        let mut clock = Clock { at: 500. * 86_400., ..default() };
+
+        assert_eq!(clock.through(0.), 0.);
+        clock.wind_to(0., 0.5);
+        assert_eq!(clock.at, 500. * 86_400., "the map moved on nothing");
     }
 }

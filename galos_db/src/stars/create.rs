@@ -13,6 +13,10 @@ impl Star {
         star: &JournalStar,
         system_address: i64,
     ) -> Result<Star, Error> {
+        // Kept where a scan names none, as a body's and a ring's are. A
+        // primary star has no ancestor to name, and nothing tells that apart
+        // from a scan that left the field out, so the two are stored the same
+        // way and read back the same way.
         let parents = Parent::chain(&star.parents);
         let (parent_ids, parent_types) = Parent::columns(&parents);
         let parent_id = parent_ids.first().copied();
@@ -57,11 +61,14 @@ impl Star {
             ON CONFLICT (system_address, id)
             DO UPDATE SET
                 name = $3,
-                parent_id = $4,
-                parent_ids = $5,
-                parent_types = $6,
-                updated_at = $7,
-                updated_by = $8,
+                parent_id = COALESCE($4, stars.parent_id),
+                parent_ids = COALESCE($5, stars.parent_ids),
+                parent_types = COALESCE($6, stars.parent_types),
+                -- A message delivered late is still taken, for whatever it
+                -- fills in below, and does not put the reading back in time.
+                updated_at = GREATEST(stars.updated_at, $7),
+                updated_by = CASE WHEN $7 >= stars.updated_at
+                    THEN $8 ELSE stars.updated_by END,
 
                 absolute_magnitude = $9,
                 age_my = $10,
@@ -71,28 +78,28 @@ impl Star {
                 stellar_mass = $14,
                 subclass = $15,
 
-                ascending_node = $16,
+                ascending_node = COALESCE($16, stars.ascending_node),
                 axial_tilt = $17,
-                eccentricity = $18,
-                mean_anomaly = $19,
-                orbital_inclination = $20,
-                orbital_period = $21,
-                periapsis = $22,
+                eccentricity = COALESCE($18, stars.eccentricity),
+                mean_anomaly = COALESCE($19, stars.mean_anomaly),
+                orbital_inclination = COALESCE($20, stars.orbital_inclination),
+                orbital_period = COALESCE($21, stars.orbital_period),
+                periapsis = COALESCE($22, stars.periapsis),
                 radius = $23,
                 rotation_period = $24,
-                semi_major_axis = $25,
+                semi_major_axis = COALESCE($25, stars.semi_major_axis),
                 temperature = $26,
 
-                was_mapped = $27,
-                was_discovered = $28
+                was_mapped = stars.was_mapped OR $27,
+                was_discovered = stars.was_discovered OR $28
             RETURNING *
             ",
             system_address,
             star.id,
             star.name,
             parent_id,
-            &parent_ids,
-            &parent_types,
+            (!parent_ids.is_empty()).then_some(&parent_ids[..]),
+            (!parent_types.is_empty()).then_some(&parent_types[..]),
             timestamp.naive_utc(),
             user,
             star.absolute_magnitude,
@@ -102,10 +109,10 @@ impl Star {
             star.star_class,
             star.stellar_mass,
             star.subclass,
-            orbit.map(|orbit| orbit.ascending_node),
+            orbit.and_then(|orbit| orbit.ascending_node),
             star.spin.tilt,
             orbit.map(|orbit| orbit.eccentricity),
-            orbit.map(|orbit| orbit.mean_anomaly),
+            orbit.and_then(|orbit| orbit.mean_anomaly),
             orbit.map(|orbit| orbit.orbital_inclination),
             orbit.map(|orbit| orbit.orbital_period),
             orbit.map(|orbit| orbit.periapsis),
@@ -123,7 +130,9 @@ impl Star {
             system_address: row.system_address,
             id: row.id,
             name: row.name,
-            parents,
+            // Read back rather than answered with, since the row may hold an
+            // ancestry this scan did not name.
+            parents: Parent::rows(row.parent_ids, row.parent_types),
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
 

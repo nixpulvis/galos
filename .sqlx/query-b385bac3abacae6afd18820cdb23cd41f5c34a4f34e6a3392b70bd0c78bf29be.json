@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM shipyard WHERE market_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b385bac3abacae6afd18820cdb23cd41f5c34a4f34e6a3392b70bd0c78bf29be"
+}

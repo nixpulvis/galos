@@ -15,14 +15,16 @@
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
-use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::ShowOrbits;
+use crate::systems::bodies::{Clock, Contents, mark_if_wound};
 use crate::systems::despawn::Despawn;
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
+    SPANS, Standstill, Watch,
 };
 use crate::systems::info::Panels;
+use crate::systems::info::lasting;
 use crate::systems::labels::NameRadius;
 use crate::systems::labels::ShowBodyNames;
 use crate::systems::pointing::PRIMARY;
@@ -320,6 +322,19 @@ const FIELD_GAP: f32 = 4.;
 /// slider here reaches: the spyglass runs to 110,000 light years.
 const VALUE_WIDTH: f32 = 56.;
 
+/// The name the time control's own `Ui` is spelled out under
+///
+/// Global, so that what is inside it is numbered from this name alone and not
+/// from how many widgets stand above it in the bar.
+const WATCH: &str = "watch-control";
+
+/// How much of the watch slider's row the span beside it is given
+///
+/// Wider than [`VALUE_WIDTH`], the reading being a name rather than a number.
+/// Enough for "15 minutes", the longest of [`SPANS`], which comes to 69.25 in
+/// the face the map letters its controls in.
+const SPAN_WIDTH: f32 = 70.;
+
 /// Hold a slider's value in a box of its own
 ///
 /// A slider left to draw its own value sizes that box to the number in it, so
@@ -342,12 +357,13 @@ fn value_box(ui: &mut Ui, value: egui::DragValue<'_>) -> Response {
 /// whole pane, so that a slider indented under a checkbox fills what is left
 /// of its line rather than running out past it.
 ///
-/// What the rail leaves is the box holding the value and the gap between the
-/// two, so the row ends flush with whatever it is standing in.
-fn fill_width(ui: &mut Ui) {
+/// What the slider leaves is `beside`, for whatever stands at the end of the row
+/// reading it out, and the gap between the two, so the row ends flush with
+/// whatever it is standing in.
+fn fill_width(ui: &mut Ui, beside: f32) {
     let gap = ui.spacing().item_spacing.x;
     ui.spacing_mut().slider_width =
-        (ui.available_width() - VALUE_WIDTH - gap).max(0.);
+        (ui.available_width() - beside - gap).max(0.);
 }
 
 /// How wide the dot standing for the selection is drawn
@@ -421,7 +437,7 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
     let ceiling = ceiling.clamp(Spyglass::FLOOR, Spyglass::CEILING);
     // Read before the rail borrows it, and the reason it is read at all.
     let speed = (*radius * RADIUS_DRAG).max(f32::EPSILON) as f64;
-    fill_width(ui);
+    fill_width(ui, VALUE_WIDTH);
 
     ui.horizontal(|ui| {
         ui.add(
@@ -483,6 +499,7 @@ pub struct Settings<'w> {
     poll: ResMut<'w, Poll>,
     name_radius: ResMut<'w, NameRadius>,
     show_orbits: ResMut<'w, ShowOrbits>,
+    clock: ResMut<'w, Clock>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
     unit: ResMut<'w, RulerUnit>,
@@ -529,6 +546,9 @@ pub struct FilterBar<'w, 's> {
     pending: Res<'w, Resolving>,
     /// How faintly what they exclude is drawn
     dim: ResMut<'w, DimTo>,
+    /// Where the control over time stands
+    watch: ResMut<'w, Watch>,
+    standstill: ResMut<'w, Standstill>,
 }
 
 pub fn chrome(
@@ -552,6 +572,13 @@ pub fn chrome(
     // else settles a press. See what that says about the frame it is missed
     // on.
     let ctx = contexts.ctx_mut()?;
+
+    // What the filters stood at before the bar was drawn. The bar is handed
+    // them every frame and a `ResMut` reads as written for being handed out,
+    // so they are drawn against without that counting and marked below only
+    // where the user asked something of them. What reads the mark asks the
+    // database again, once a poll at best and once a frame at worst.
+    let asked_at = filter.active.revision();
 
     // The pane first, since where it has reached is where the gear stands.
     let edge = settings_pane(ctx, open.0, |ui| {
@@ -641,7 +668,7 @@ pub fn chrome(
                 // way of a busy sky.
                 ui.label("Brightness (%)");
                 let mut bright = settings.bright.0 * 100.;
-                fill_width(ui);
+                fill_width(ui, VALUE_WIDTH);
                 let slider = ui
                     .horizontal(|ui| {
                         let rail = ui.add(
@@ -754,6 +781,7 @@ pub fn chrome(
         heading(ui, "System View", true);
         ui.checkbox(&mut settings.show_body_names.0, "Show Labels");
         ui.checkbox(&mut settings.show_orbits.0, "Orbit Lines");
+        mark_if_wound(&mut settings.clock, |clock| clock_readout(ui, clock));
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
@@ -761,7 +789,7 @@ pub fn chrome(
         heading(ui, "Filters", true);
         ui.label("Filtered Opacity (%)");
         let mut showing = filter.dim.0 * 100.;
-        fill_width(ui);
+        fill_width(ui, VALUE_WIDTH);
         let slider = ui
             .horizontal(|ui| {
                 let rail = ui.add(
@@ -826,6 +854,10 @@ pub fn chrome(
     // landed on the sky, that being what shutting a form by pressing off it
     // means.
     press.settle(&buttons, over_ui.0 || shut);
+
+    if filter.active.revision() != asked_at {
+        filter.active.set_changed();
+    }
 
     Ok(())
 }
@@ -979,6 +1011,11 @@ fn main_bar(
             .shadow(egui::Shadow::NONE);
     }
 
+    // Whether a gesture is still under way anywhere, which is what says a
+    // control held mid-drag is still being held. Read before the bar is drawn,
+    // the control that took the hold being drawn well below the rows it holds.
+    let dragging = ctx.egui_is_using_pointer();
+
     let bar = egui::Area::new(egui::Id::new("main-bar"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
@@ -998,6 +1035,9 @@ fn main_bar(
                         asking,
                     );
                     taken |= response.gained_focus();
+                    // Carried out so the press that shuts the form can let go
+                    // of it. See [`let_go_of`].
+                    let box_id = response.id;
                     // Where the gear stands, the two of them being one row.
                     let middle = response.rect.center().y;
                     // Both answer a name, so neither is any answer at all
@@ -1069,7 +1109,7 @@ fn main_bar(
                         center,
                         &mut went,
                         panels,
-                        &mut filter.active,
+                        filter.active.bypass_change_detection(),
                         &mut place,
                     );
                     if let Some(position) = went {
@@ -1082,7 +1122,25 @@ fn main_bar(
                     // is and for the same reason. A half lit sky with
                     // nothing on screen to say why is the one thing a filter
                     // must not leave behind.
-                    applied(ui, &mut filter.active, panels, &mut place);
+                    //
+                    // From wherever the rows are being held while a control
+                    // is held, so that asking for a filter does not move the
+                    // control that asked out from under the pointer. Drawn
+                    // from a copy, since a row let go of during a gesture that
+                    // cannot reach it is nothing the user asked for.
+                    //
+                    // Asked of egui rather than taken from the control, which
+                    // says when a drag begins and may never say that it ended.
+                    filter.standstill.settle(dragging);
+                    let mut standing;
+                    let rows = match filter.standstill.rows(&filter.active) {
+                        Some(held) => {
+                            standing = held;
+                            &mut standing
+                        }
+                        None => filter.active.bypass_change_detection(),
+                    };
+                    applied(ui, rows, panels, &mut place);
                     // Two numbers only where there is a sky behind what is
                     // picked out and the user can see it: something has to be
                     // excluded, and what is excluded has to be drawn.
@@ -1102,7 +1160,7 @@ fn main_bar(
                         );
                     }
 
-                    (taken, middle)
+                    (taken, middle, box_id)
                 })
                 .inner
         });
@@ -1124,17 +1182,36 @@ fn main_bar(
             .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
     // Two moments, and nothing else: a field in the form takes focus, or a
     // press lands off the form. Moments rather than states, so that neither
-    // can undo the other. A field goes on holding focus after the press that
-    // shut the form, and asking whether it holds focus would open the form
-    // again the very next frame.
-    let (took_focus, middle) = bar.inner;
+    // can undo the other. Asking whether a field holds focus would open the
+    // form again the very next frame.
+    let (took_focus, middle, box_id) = bar.inner;
     if took_focus {
         search.expanded = true;
     }
     if dismissed {
         search.expanded = false;
+        let_go_of(ctx, box_id);
     }
     (shut, middle)
+}
+
+/// Let go of the box, the press that shut the form having not been a click
+///
+/// The form is shut by a press. Egui lets go of the focus on a click, which is
+/// a press and a release it did not read as a drag, so the two part company
+/// whenever the pointer moves between the two halves of a gesture. Over a map
+/// dragged to turn it, that is most of them.
+///
+/// What that leaves is a box holding the focus with the form shut, and focus is
+/// what opens the form. A box already holding it cannot take it again, so the
+/// next click on it opens nothing and the user has to click away and back to
+/// say what they had already said.
+///
+/// Named rather than surrendered outright, so that only this box lets go. A
+/// press lands off the bar whenever it lands on the settings pane, and a value
+/// being clicked into there is a field that has just taken the focus.
+fn let_go_of(ctx: &egui::Context, box_id: egui::Id) {
+    ctx.memory_mut(|memory| memory.surrender_focus(box_id));
 }
 
 /// The whole of the bar's searching
@@ -2265,7 +2342,13 @@ fn section_rows(
                 )
         });
 
-        let buttons = lay_out_buttons(ui);
+        // No info button where nothing could be said: a span admits the
+        // galaxy over and what it admits is on the map already.
+        let buttons = if active.filter.worth_describing() {
+            lay_out_buttons(ui)
+        } else {
+            lay_out_close(ui)
+        };
 
         // Whatever the dot, the hops and the marks leave. Faction names run
         // long, and one laid out against no bound is painted out past the
@@ -2560,7 +2643,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     // The field and the list go with it. What was typed is a row by now, and
     // the field's next job is the next faction.
     if let Some(faction) = faction_list(ui, filter.found.iter()) {
-        filter.active.add(Filter::Faction {
+        filter.active.bypass_change_detection().add(Filter::Faction {
             id: faction.id,
             name: faction.name.clone(),
         });
@@ -2568,7 +2651,134 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
         filter.found.clear();
     }
 
+    watch_control(
+        ui,
+        &mut filter.watch,
+        filter.active.bypass_change_detection(),
+        &mut filter.standstill,
+    );
+
     response.gained_focus()
+}
+
+/// Say how far the system has been run on, and offer the way back
+///
+/// The sliders that move it are under the bodies themselves, each geared to
+/// its own orbit, there being no span that suits a whole system. What is left
+/// here is the reading they share and the one thing none of them can do: a
+/// slider moves
+/// the map within the turn its body is already in, so no amount of dragging one
+/// ever comes back to the moment the scans were taken.
+fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
+    ui.add_space(FIELD_GAP);
+    ui.horizontal(|ui| {
+        ui.label("Run on");
+        if clock.at == 0. {
+            ui.label(egui::RichText::new("not at all").weak());
+        } else {
+            ui.label(lasting(clock.at as f32));
+            if ui.button("Reset").clicked() {
+                clock.at = 0.;
+            }
+        }
+    });
+}
+
+/// Ask for a filter by how lately a system was updated
+///
+/// A slider over named spans rather than a field to type a time into. What is
+/// being asked is roughly how fresh, and the spans are the answers anybody
+/// wants: the far end of a typed time is a database going back years and the
+/// near end is the last minute.
+///
+/// The label names what is being asked about and the span says how far back,
+/// so the two read as "Last Updated" over "6 hours".
+///
+/// Only on a change, as the opacity beside it is. Asking is what marks the
+/// filters as changed, and what reads that mark puts a fresh question to the
+/// database.
+///
+/// Answers the slider, so that a caller can say whether it is being dragged.
+fn watch_control(
+    ui: &mut Ui,
+    watch: &mut Watch,
+    active: &mut Filters,
+    standstill: &mut Standstill,
+) -> Response {
+    ui.add_space(FIELD_GAP);
+    ui.label("Last Updated");
+
+    let mut standing = Watch(watch.0);
+    fill_width(ui, SPAN_WIDTH);
+    // Spelled out, and global so that the name is the whole of it. Egui
+    // otherwise numbers a widget by how many were drawn before it, and this
+    // one is drawn under the rows the filters make: asking for a filter here
+    // adds a row above, every widget below it is renumbered, and egui follows
+    // a drag by id. The slider the user pressed stops existing mid-gesture and
+    // the drag is dropped.
+    //
+    // `push_id` does not answer it. A child `Ui` given a name still takes the
+    // count it was made at into the ids of what it holds, so the widgets
+    // inside are renumbered along with everything else.
+    let slider = ui
+        .scope_builder(
+            egui::UiBuilder::new().id_salt(WATCH).global_scope(true),
+            |ui| {
+                ui.horizontal(|ui| {
+                    let slider = ui.add(
+                        egui::Slider::new(&mut standing.0, 0..=SPANS.len() - 1)
+                            .show_value(false),
+                    );
+                    // Beside the slider rather than in the box egui draws its
+                    // own reading in. That box is a field to type the value
+                    // into, and what it would take is one of nine places along
+                    // the slider, where what the user is reading is a span. So
+                    // the box is turned off and the span said here.
+                    //
+                    // Read off the slider rather than off `watch`, which is
+                    // not written until the drag is over: taken from there the
+                    // name would say the span the slider set out from all the
+                    // way through a drag.
+                    ui.label(standing.name());
+                    slider
+                })
+                .inner
+            },
+        )
+        .inner;
+
+    // Taken before the drag is allowed to ask for anything, so what is held
+    // is how the rows stood when the press landed and not how they stood after
+    // the first step of the drag had already added one.
+    if slider.drag_started() {
+        standstill.hold(active);
+    }
+
+    if slider.changed() {
+        watch.0 = standing.0;
+        match watch.span() {
+            // Worked out here and not where it is asked. `Utc::now` is the one
+            // thing in this that cannot be tested, so it is read at the one
+            // place that turns a span into a moment.
+            Some(span) => active.ask_within(watch.name(), span),
+            // Its row stands above this control, so letting go of it mid-drag
+            // would take the control up a row and out from under the pointer.
+            // It stops asking where it stands instead, and says so.
+            None if slider.dragged() => active.turn_time_off(watch.name()),
+            None => active.ask_nothing_of_time(),
+        }
+    }
+
+    // Let go of at the far end, so what stopped asking during the drag is let
+    // go of now that moving the rows is nothing to the gesture.
+    if slider.drag_stopped() {
+        standstill.release();
+        if watch.span().is_none() {
+            active.ask_nothing_of_time();
+        }
+    }
+
+    slider
 }
 
 /// The factions a search found, and which of them was clicked
@@ -4239,6 +4449,216 @@ mod tests {
 
     /// The row over the set says how many are held, and is drawn over two
     ///
+    /// The time control says which span it is standing on
+    ///
+    /// Egui draws a slider's own reading inside the box `show_value` turns
+    /// off, and that box is turned off here because what it offers is a field
+    /// to type a number into where these are named spans. Without a word
+    /// beside it the control is nine positions and nothing to tell them apart.
+    #[test]
+    fn the_time_control_says_which_span_it_stands_on() {
+        let mut watch = Watch(1);
+        let mut active = Filters::default();
+        let mut standstill = Standstill::default();
+
+        let said = words(|ui| {
+            watch_control(ui, &mut watch, &mut active, &mut standstill);
+        });
+
+        assert!(said.contains(&"30 days".to_owned()), "{said:?}");
+    }
+
+    /// And says so for the whole of its travel, the widest name included
+    ///
+    /// The slider is sized to leave [`SPAN_WIDTH`] for the name, which is the
+    /// one thing that would quietly go wrong: a name too wide for the room
+    /// left it is drawn off the end of the row it stands in.
+    #[test]
+    fn every_span_is_named_beside_the_control() {
+        for (place, (name, _)) in SPANS.iter().enumerate() {
+            let mut watch = Watch(place);
+            let mut active = Filters::default();
+            let mut standstill = Standstill::default();
+
+            let said = words(|ui| {
+                watch_control(ui, &mut watch, &mut active, &mut standstill);
+            });
+
+            assert!(said.contains(&(*name).to_owned()), "{name}: {said:?}");
+        }
+    }
+
+    /// The rows drawn from `filters`, with `standstill` holding them or not
+    fn drawn_rows(filters: &Filters, standstill: &Standstill) -> Vec<String> {
+        words(|ui| {
+            let mut standing =
+                standstill.rows(filters).unwrap_or_else(|| filters.clone());
+            let mut panels = Panels::default();
+            applied(ui, &mut standing, &mut panels, &mut 0);
+        })
+    }
+
+    /// A time filter's row offers no panel
+    ///
+    /// The other filters name a set of systems worth reading as a list. A span
+    /// admits the galaxy over and changes while it is being read, so a panel
+    /// about one is a question over every system on record answered with an
+    /// arbitrary slice of the newest. What it admits is on the map already.
+    #[test]
+    fn a_time_filters_row_offers_no_panel() {
+        let mut filters = Filters::default();
+        filters.ask_within("1 day", chrono::Duration::days(1));
+
+        let said = drawn_rows(&filters, &Standstill::default());
+
+        assert!(said.contains(&CLOSE.to_owned()), "no way to let go: {said:?}");
+        assert!(!said.contains(&INFO.to_owned()), "a panel was offered");
+    }
+
+    /// Where a faction's does
+    #[test]
+    fn a_faction_filters_row_offers_a_panel() {
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 1, name: "Empire".into() });
+
+        let said = drawn_rows(&filters, &Standstill::default());
+
+        assert!(said.contains(&INFO.to_owned()), "no panel offered: {said:?}");
+    }
+
+    /// The rows stand still while the time control is held
+    ///
+    /// They are drawn above it, so a row appearing while it is being dragged
+    /// takes the control down out from under the pointer. What the drag asks
+    /// for goes in as it is asked, and the sky is filtered by it; the row for
+    /// it waits until the drag is over.
+    #[test]
+    fn the_rows_stand_still_while_the_time_control_is_held() {
+        let mut before = Filters::default();
+        before.add(Filter::Faction { id: 1, name: "Empire".into() });
+
+        let mut standstill = Standstill::default();
+        standstill.hold(&before);
+
+        // What the drag asks for, which the sky is filtered by at once.
+        let mut asked = before.clone();
+        asked.ask_within("1 day", chrono::Duration::days(1));
+
+        assert_eq!(
+            drawn_rows(&asked, &standstill),
+            drawn_rows(&before, &Standstill::default()),
+            "a row landed under the pointer"
+        );
+
+        standstill.release();
+        assert_ne!(
+            drawn_rows(&asked, &standstill),
+            drawn_rows(&before, &Standstill::default()),
+            "the row never landed"
+        );
+    }
+
+    /// A row already there reads live while the control is held
+    ///
+    /// Only its being there is held. What it says follows the drag, so a span
+    /// dragged from one to the next says the span it has reached rather than
+    /// the one the press landed on.
+    #[test]
+    fn a_held_time_filter_still_reads_live() {
+        let mut asked = Filters::default();
+        asked.ask_within("1 day", chrono::Duration::days(1));
+
+        let mut standstill = Standstill::default();
+        standstill.hold(&asked);
+
+        asked.ask_within("6 hours", chrono::Duration::hours(6));
+
+        let said = drawn_rows(&asked, &standstill);
+        assert!(said.contains(&"Last 6 hours".to_owned()), "{said:?}");
+        assert!(!said.contains(&"Last 1 day".to_owned()), "{said:?}");
+    }
+
+    /// A control slid to its far end says so where its row stands
+    ///
+    /// The row stays until the gesture is over, a row going out from under the
+    /// pointer taking the control up a row the same way one arriving takes it
+    /// down. What it says is what is filtering, which by then is nothing, so
+    /// it reads as the control does rather than as the span it was asked as.
+    #[test]
+    fn a_time_filter_slid_off_says_so_before_it_goes() {
+        let mut asked = Filters::default();
+        asked.ask_within("1 day", chrono::Duration::days(1));
+
+        let mut standstill = Standstill::default();
+        standstill.hold(&asked);
+
+        // Dragged to the far end, which stops asking where the row stands.
+        asked.turn_time_off("Off");
+
+        let said = drawn_rows(&asked, &standstill);
+        assert!(said.contains(&"Off".to_owned()), "{said:?}");
+        assert!(
+            !said.contains(&"Last 1 day".to_owned()),
+            "the row kept the span it had stopped asking for"
+        );
+    }
+
+    /// The control's id under `rows` filter rows standing above it
+    fn watch_id(rows: usize) -> egui::Id {
+        let mut got = None;
+        let ctx = crate::tests::context();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut filters = Filters::default();
+            for id in 0..rows {
+                filters.add(Filter::Faction {
+                    id: id as i32,
+                    name: format!("Faction {id}"),
+                });
+            }
+            let mut panels = Panels::default();
+            applied(ui, &mut filters, &mut panels, &mut 0);
+
+            let mut watch = Watch(1);
+            let mut active = Filters::default();
+            let mut standstill = Standstill::default();
+            got = Some(
+                watch_control(ui, &mut watch, &mut active, &mut standstill).id,
+            );
+        });
+
+        got.expect("the control drew")
+    }
+
+    /// The control keeps its id as rows come and go above it
+    ///
+    /// Egui numbers a widget by how many were drawn before it and follows a
+    /// drag by id, so a row appearing above this one mid-drag would leave the
+    /// user dragging a widget that no longer exists. Asking for a filter here
+    /// is what adds that row, so the control moves the moment it is used.
+    #[test]
+    fn the_time_control_keeps_its_id_under_rows() {
+        assert_eq!(watch_id(0), watch_id(1), "one row renamed the control");
+        assert_eq!(watch_id(1), watch_id(3), "three rows renamed the control");
+    }
+
+    /// Left alone it asks nothing of time
+    ///
+    /// The moment a span works out to is read from the clock when the control
+    /// is moved. Written every frame instead, it would move every frame and
+    /// put a fresh question to the database each time.
+    #[test]
+    fn a_time_control_left_alone_asks_nothing() {
+        let mut watch = Watch(1);
+        let mut active = Filters::default();
+        let mut standstill = Standstill::default();
+
+        painted(|ui| {
+            watch_control(ui, &mut watch, &mut active, &mut standstill);
+        });
+
+        assert!(active.admitted().is_none(), "an untouched control asked");
+    }
+
     /// Not over one, where it would be a second control for what the row
     /// beneath it already does.
     #[test]
@@ -5191,6 +5611,85 @@ mod tests {
         let (_, editing) = fields(egui::RawInput::default(), &mut value);
 
         (resting, editing, value)
+    }
+
+    /// A gesture at `from`, released `drift` further on
+    ///
+    /// Egui reads a press and a release apart as a drag rather than a click,
+    /// and it is a click it lets go of the focus on. Zero drift is a click.
+    fn dragged(from: egui::Pos2, drift: f32) -> Vec<egui::RawInput> {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let to = egui::pos2(from.x + drift, from.y);
+        let frame = |events| egui::RawInput { events, ..Default::default() };
+
+        vec![
+            frame(vec![egui::Event::PointerMoved(from), button(from, true)]),
+            frame(vec![egui::Event::PointerMoved(to)]),
+            frame(vec![button(to, false)]),
+        ]
+    }
+
+    /// A press that shuts the form takes the focus off the box above it
+    ///
+    /// The form is shut by a press and egui lets the focus go on a click, so a
+    /// gesture that drifts between the two parts them: the box is left holding
+    /// the focus the form opens on, and the next click on it opens nothing.
+    /// Over a map dragged to turn it, most clicks drift.
+    ///
+    /// The drag is what makes this worth a test. Driven as a click it passes
+    /// against the unfixed code, egui having let go of the focus itself.
+    #[test]
+    fn a_press_that_shuts_the_form_lets_go_of_the_box() {
+        let ctx = crate::tests::context();
+        let mut value: Option<String> = None;
+
+        let draw = |input, value: &mut Option<String>| {
+            let mut field = (egui::Rect::NOTHING, egui::Id::NULL);
+            let _ = ctx.run_ui(input, |ui| {
+                let drawn = singleline(ui, value, "Search", 0., false);
+                field = (drawn.rect, drawn.id);
+            });
+            field
+        };
+
+        // Two passes with nothing happening, to place it, then a click in it.
+        draw(egui::RawInput::default(), &mut value);
+        let (rect, box_id) = draw(egui::RawInput::default(), &mut value);
+        for input in dragged(rect.center(), 0.) {
+            draw(input, &mut value);
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(box_id),
+            "the click never put the caret in the box",
+        );
+
+        // And a gesture well away from it, drifting as one over the map does.
+        let away = egui::pos2(rect.right() + 300., rect.bottom() + 300.);
+        for input in dragged(away, 100.) {
+            draw(input, &mut value);
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(box_id),
+            "egui let the focus go by itself, so nothing here is needed",
+        );
+
+        // Which is the press the form is shut by, so it is where the box is
+        // let go of.
+        let_go_of(&ctx, box_id);
+        draw(egui::RawInput::default(), &mut value);
+
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            None,
+            "the box kept the focus the form opens on",
+        );
     }
 
     /// A field says what it wants whether or not the caret is in it

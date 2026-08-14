@@ -31,7 +31,7 @@ pub struct Body {
     /// Measured at the cloud tops where there is no surface, which is why
     /// these are not part of [`Surface`]
     pub gravity: f32,
-    pub temperature: f32,
+    pub temperature: Option<f32>,
 
     /// [`None`] for a gas giant, which has no surface to record
     pub surface: Option<Surface>,
@@ -85,6 +85,23 @@ impl Parent {
                 let (ty, id) = parent.iter().next()?;
                 Some(Parent { ty: Some(ty.clone()), id: *id })
             })
+            .collect()
+    }
+
+    /// The chain a pair of stored arrays holds, nearest first
+    ///
+    /// The ids are what a chain is walked by. The kinds went unrecorded until
+    /// they were stored alongside, so a row may have the one without the
+    /// other, and the ids are what decides how long the chain is.
+    pub(crate) fn rows(
+        ids: Option<Vec<i16>>,
+        types: Option<Vec<String>>,
+    ) -> Vec<Self> {
+        let types = types.unwrap_or_default();
+        ids.unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(depth, id)| Parent { ty: types.get(depth).cloned(), id })
             .collect()
     }
 

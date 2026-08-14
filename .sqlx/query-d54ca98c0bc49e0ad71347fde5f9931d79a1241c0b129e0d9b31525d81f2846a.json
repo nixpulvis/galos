@@ -1,0 +1,500 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO stations (\n                system_address,\n                name,\n                ty,\n                dist_from_star_ls,\n                market_id,\n                landing_pads,\n                faction,\n                government,\n                allegiance,\n                services,\n                economies,\n                updated_at,\n                updated_by)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n            ON CONFLICT (system_address, name)\n            DO UPDATE SET\n                ty = COALESCE($3, stations.ty),\n                dist_from_star_ls =\n                    COALESCE($4, stations.dist_from_star_ls),\n                market_id = COALESCE($5, stations.market_id),\n                landing_pads = COALESCE($6, stations.landing_pads),\n                faction = COALESCE($7, stations.faction),\n                government = COALESCE($8, stations.government),\n                allegiance = COALESCE($9, stations.allegiance),\n                services = COALESCE($10, stations.services),\n                economies = COALESCE($11, stations.economies),\n                updated_at = $12,\n                updated_by = $13\n            WHERE stations.updated_at <= $12\n            RETURNING\n                system_address,\n                name,\n                ty as \"ty: StationType\",\n                dist_from_star_ls,\n                market_id,\n                landing_pads as \"landing_pads: LandingPads\",\n                faction,\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                services as \"services: Vec<Service>\",\n                economies as \"economies: Vec<EconomyShare>\",\n                updated_at,\n                updated_by,\n                body_id,\n                body_name,\n                latitude,\n                longitude\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "ty: StationType",
+        "type_info": {
+          "Custom": {
+            "name": "stationtype",
+            "kind": {
+              "Enum": [
+                "AsteroidBase",
+                "Coriolis",
+                "CraterOutpost",
+                "CraterPort",
+                "FleetCarrier",
+                "MegaShip",
+                "Ocellus",
+                "Orbis",
+                "Outpost",
+                "SurfaceStation",
+                "OnFootSettlement",
+                "Dodec",
+                "SpaceConstructionDepot",
+                "PlanetaryConstructionDepot"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "dist_from_star_ls",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 4,
+        "name": "market_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "landing_pads: LandingPads",
+        "type_info": {
+          "Custom": {
+            "name": "landingpads",
+            "kind": {
+              "Composite": [
+                [
+                  "large",
+                  "Int2"
+                ],
+                [
+                  "medium",
+                  "Int2"
+                ],
+                [
+                  "small",
+                  "Int2"
+                ]
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "faction",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "government: Government",
+        "type_info": {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy",
+                "Megaconstruction"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "allegiance: Allegiance",
+        "type_info": {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid",
+                "FrontlineSolutions"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "services: Vec<Service>",
+        "type_info": {
+          "Custom": {
+            "name": "service[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "service",
+                  "kind": {
+                    "Enum": [
+                      "Autodock",
+                      "Blackmarket",
+                      "CarrierFuel",
+                      "CarrierManagement",
+                      "Commodities",
+                      "Contacts",
+                      "CrewLounge",
+                      "Dock",
+                      "Engineer",
+                      "Exploration",
+                      "Facilitator",
+                      "FlightController",
+                      "Initiatives",
+                      "MaterialTrader",
+                      "Missions",
+                      "MissionsGenerated",
+                      "Modulepacks",
+                      "Outfitting",
+                      "Powerplay",
+                      "Rearm",
+                      "Refuel",
+                      "Repair",
+                      "SearchRescue",
+                      "Shipyard",
+                      "Shop",
+                      "StationMenu",
+                      "StationOperations",
+                      "TechBroker",
+                      "Tuning",
+                      "VoucherRedemption",
+                      "Livery",
+                      "SocialSpace",
+                      "Bartender",
+                      "VistaGenomics",
+                      "PioneerSupplies",
+                      "ApexInterstellar",
+                      "FrontlineSolutions",
+                      "RegisteringColonisation",
+                      "ColonisationContribution",
+                      "OnDockMission",
+                      "SquadronBank",
+                      "Refinery",
+                      "CarrierVendor"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "economies: Vec<EconomyShare>",
+        "type_info": {
+          "Custom": {
+            "name": "economyshare[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "economyshare",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "name",
+                        {
+                          "Custom": {
+                            "name": "economy",
+                            "kind": {
+                              "Enum": [
+                                "Agriculture",
+                                "Carrier",
+                                "Colony",
+                                "Extraction",
+                                "HighTech",
+                                "Industrial",
+                                "Military",
+                                "Prison",
+                                "Refinery",
+                                "Service",
+                                "Terraforming",
+                                "Tourism",
+                                "Undefined",
+                                "Rescue"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      [
+                        "proportion",
+                        "Float8"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "body_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 14,
+        "name": "body_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "latitude",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 16,
+        "name": "longitude",
+        "type_info": "Float8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        {
+          "Custom": {
+            "name": "stationtype",
+            "kind": {
+              "Enum": [
+                "AsteroidBase",
+                "Coriolis",
+                "CraterOutpost",
+                "CraterPort",
+                "FleetCarrier",
+                "MegaShip",
+                "Ocellus",
+                "Orbis",
+                "Outpost",
+                "SurfaceStation",
+                "OnFootSettlement",
+                "Dodec",
+                "SpaceConstructionDepot",
+                "PlanetaryConstructionDepot"
+              ]
+            }
+          }
+        },
+        "Float8",
+        "Int8",
+        {
+          "Custom": {
+            "name": "landingpads",
+            "kind": {
+              "Composite": [
+                [
+                  "large",
+                  "Int2"
+                ],
+                [
+                  "medium",
+                  "Int2"
+                ],
+                [
+                  "small",
+                  "Int2"
+                ]
+              ]
+            }
+          }
+        },
+        "Varchar",
+        {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy",
+                "Megaconstruction"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid",
+                "FrontlineSolutions"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "service[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "service",
+                  "kind": {
+                    "Enum": [
+                      "Autodock",
+                      "Blackmarket",
+                      "CarrierFuel",
+                      "CarrierManagement",
+                      "Commodities",
+                      "Contacts",
+                      "CrewLounge",
+                      "Dock",
+                      "Engineer",
+                      "Exploration",
+                      "Facilitator",
+                      "FlightController",
+                      "Initiatives",
+                      "MaterialTrader",
+                      "Missions",
+                      "MissionsGenerated",
+                      "Modulepacks",
+                      "Outfitting",
+                      "Powerplay",
+                      "Rearm",
+                      "Refuel",
+                      "Repair",
+                      "SearchRescue",
+                      "Shipyard",
+                      "Shop",
+                      "StationMenu",
+                      "StationOperations",
+                      "TechBroker",
+                      "Tuning",
+                      "VoucherRedemption",
+                      "Livery",
+                      "SocialSpace",
+                      "Bartender",
+                      "VistaGenomics",
+                      "PioneerSupplies",
+                      "ApexInterstellar",
+                      "FrontlineSolutions",
+                      "RegisteringColonisation",
+                      "ColonisationContribution",
+                      "OnDockMission",
+                      "SquadronBank",
+                      "Refinery",
+                      "CarrierVendor"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "economyshare[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "economyshare",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "name",
+                        {
+                          "Custom": {
+                            "name": "economy",
+                            "kind": {
+                              "Enum": [
+                                "Agriculture",
+                                "Carrier",
+                                "Colony",
+                                "Extraction",
+                                "HighTech",
+                                "Industrial",
+                                "Military",
+                                "Prison",
+                                "Refinery",
+                                "Service",
+                                "Terraforming",
+                                "Tourism",
+                                "Undefined",
+                                "Rescue"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      [
+                        "proportion",
+                        "Float8"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Timestamp",
+        "Varchar"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "d54ca98c0bc49e0ad71347fde5f9931d79a1241c0b129e0d9b31525d81f2846a"
+}

@@ -45,7 +45,7 @@ impl Body {
         let composition_ice = crust.map(|crust| crust.ice);
         let composition_rock = crust.map(|crust| crust.rock);
         let composition_metal = crust.map(|crust| crust.metal);
-        let landable = surface.is_some_and(|surface| surface.landable);
+        let landable = surface.map(|surface| surface.landable);
         let atmosphere = surface.and_then(|surface| surface.atmosphere.clone());
         let volcanism = surface.and_then(|surface| surface.volcanism.clone());
         let terraform_state =
@@ -105,36 +105,40 @@ impl Body {
 
                 was_mapped,
                 was_discovered)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                COALESCE($12, false), COALESCE($13, false), $14, $15, $16, $17,
                 $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
                 $34, $35, $36)
             ON CONFLICT (system_address, id)
             DO UPDATE SET
                 name = $1,
-                parent_id = $3,
-                parent_ids = $4,
-                parent_types = $5,
-                updated_at = $7,
-                updated_by = $8,
+                parent_id = COALESCE($3, bodies.parent_id),
+                parent_ids = COALESCE($4, bodies.parent_ids),
+                parent_types = COALESCE($5, bodies.parent_types),
+                -- A message delivered late is still taken, for whatever it
+                -- fills in below, and does not put the reading back in time.
+                updated_at = GREATEST(bodies.updated_at, $7),
+                updated_by = CASE WHEN $7 >= bodies.updated_at
+                    THEN $8 ELSE bodies.updated_by END,
 
-                body_type = $9,
-                distance_from_arrival = $10,
+                body_type = COALESCE($9, bodies.body_type),
+                distance_from_arrival = COALESCE($10, bodies.distance_from_arrival),
                 planet_class = $11,
-                tidal_lock = $12,
-                landable = $13,
-                terraform_state = $14,
-                atmosphere = $15,
-                atmosphere_type = $16,
-                volcanism = $17,
+                tidal_lock = COALESCE($12, bodies.tidal_lock),
+                landable = COALESCE($13, bodies.landable),
+                terraform_state = COALESCE($14, bodies.terraform_state),
+                atmosphere = COALESCE($15, bodies.atmosphere),
+                atmosphere_type = COALESCE($16, bodies.atmosphere_type),
+                volcanism = COALESCE($17, bodies.volcanism),
 
                 mass = $18,
                 radius = $19,
                 gravity = $20,
-                temperature = $21,
-                surface_pressure = $22,
-                composition_ice = $23,
-                composition_rock = $24,
-                composition_metal = $25,
+                temperature = COALESCE($21, bodies.temperature),
+                surface_pressure = COALESCE($22, bodies.surface_pressure),
+                composition_ice = COALESCE($23, bodies.composition_ice),
+                composition_rock = COALESCE($24, bodies.composition_rock),
+                composition_metal = COALESCE($25, bodies.composition_metal),
                 semi_major_axis = $26,
                 eccentricity = $27,
                 orbital_inclination = $28,
@@ -142,18 +146,18 @@ impl Body {
                 orbital_period = $30,
                 rotation_period = $31,
                 axial_tilt = $32,
-                ascending_node = $33,
-                mean_anomaly = $34,
+                ascending_node = COALESCE($33, bodies.ascending_node),
+                mean_anomaly = COALESCE($34, bodies.mean_anomaly),
 
-                was_mapped = $35,
-                was_discovered = $36
+                was_mapped = bodies.was_mapped OR $35,
+                was_discovered = bodies.was_discovered OR $36
             RETURNING *
             ",
             body.name,
             body.id,
             parent_id,
-            &parent_ids,
-            &parent_types,
+            (!parent_ids.is_empty()).then_some(&parent_ids[..]),
+            (!parent_types.is_empty()).then_some(&parent_types[..]),
             system_address,
             timestamp.naive_utc(),
             user,
@@ -189,42 +193,70 @@ impl Body {
         .fetch_one(&mut *tx)
         .await?;
 
-        // A scan states the whole of what a body is made of, so what it
-        // leaves out the body no longer carries.
-        sqlx::query!(
-            "DELETE FROM body_materials WHERE system_address = $1 AND body_id = $2",
-            system_address,
-            body.id,
-        )
-        .execute(&mut *tx)
-        .await?;
+        // Only where the scan looked at a surface. One that did states the
+        // whole of what the body is made of, so what it leaves out the body no
+        // longer carries; one that did not says nothing on the subject, and a
+        // gas giant and a basic scan both carry no materials for want of
+        // having looked rather than for want of anything being there.
+        if body.surface.is_some() {
+            sqlx::query!(
+                "DELETE FROM body_materials WHERE system_address = $1 AND body_id = $2",
+                system_address,
+                body.id,
+            )
+            .execute(&mut *tx)
+            .await?;
 
-        sqlx::query!(
-            // The rows this writes were just cleared, so nothing here can meet
-            // one already stored. `DISTINCT ON` answers for the other way a
-            // conflict arises, which is one scan naming a material twice: two
-            // rows conflicting inside a single statement is an error rather
-            // than something `ON CONFLICT` can settle. The first reading wins.
+            sqlx::query!(
+                // The rows this writes were just cleared, so nothing here can
+                // meet one already stored. `DISTINCT ON` answers for the other
+                // way a conflict arises, which is one scan naming a material
+                // twice: two rows conflicting inside a single statement is an
+                // error rather than something `ON CONFLICT` can settle. The
+                // first reading wins.
+                "
+                INSERT INTO body_materials (system_address, body_id, name, percent)
+                SELECT DISTINCT ON (name) $1, $2, name, percent
+                FROM UNNEST($3::varchar[], $4::double precision[]) AS m(name, percent)
+                ORDER BY name
+                ",
+                system_address,
+                body.id,
+                &material_names,
+                &material_percents,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Read back rather than handed on from the scan. A scan that did not
+        // look at a surface leaves the stored materials where they are, so what
+        // is on record is not what arrived, and every other field below comes
+        // off the row for the same reason.
+        let materials = sqlx::query!(
             "
-            INSERT INTO body_materials (system_address, body_id, name, percent)
-            SELECT DISTINCT ON (name) $1, $2, name, percent
-            FROM UNNEST($3::varchar[], $4::double precision[]) AS m(name, percent)
+            SELECT name, percent
+            FROM body_materials
+            WHERE system_address = $1 AND body_id = $2
             ORDER BY name
             ",
             system_address,
             body.id,
-            &material_names,
-            &material_percents,
         )
-        .execute(&mut *tx)
-        .await?;
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|row| Material { name: row.name, percent: row.percent })
+        .collect::<Vec<_>>();
 
         tx.commit().await?;
 
         Ok(Body {
             system_address: row.system_address,
             id: row.id,
-            parents,
+            // Read back rather than answered with, since the row may hold an
+            // ancestry this scan did not name.
+            parents: Parent::rows(row.parent_ids, row.parent_types),
             name: row.name,
             body_type: row.body_type.map(|ty| ty.as_str().into()),
             distance_from_arrival: row.distance_from_arrival,

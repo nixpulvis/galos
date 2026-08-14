@@ -1,5 +1,6 @@
 use super::{Economies, System};
 use crate::{escaped, Database, Error};
+use chrono::{DateTime, Utc};
 use elite_journal::prelude::*;
 use geozero::wkb;
 use std::collections::HashMap;
@@ -18,6 +19,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -48,6 +51,8 @@ impl System {
                 row.secondary_economy,
             ),
             factions: row.factions,
+            body_count: row.body_count,
+            non_body_count: row.non_body_count,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })
@@ -70,6 +75,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -100,6 +107,8 @@ impl System {
                 row.secondary_economy,
             ),
             factions: row.factions,
+            body_count: row.body_count,
+            non_body_count: row.non_body_count,
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })
@@ -121,6 +130,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -154,6 +165,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -212,6 +225,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -260,6 +275,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -283,6 +300,8 @@ impl System {
                 s1.allegiance as "allegiance: Allegiance",
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
+                s1.body_count,
+                s1.non_body_count,
                 s1.updated_at,
                 s1.updated_by,
                 COALESCE((
@@ -318,6 +337,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -341,6 +362,8 @@ impl System {
                 s1.allegiance as "allegiance: Allegiance",
                 s1.primary_economy as "primary_economy: Economy",
                 s1.secondary_economy as "secondary_economy: Economy",
+                s1.body_count,
+                s1.non_body_count,
                 s1.updated_at,
                 s1.updated_by,
                 COALESCE((
@@ -376,6 +399,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -418,16 +443,35 @@ impl System {
     /// magnitude longer than asking for the whole table. The addresses are in
     /// hand by then and say the same thing without the planner having to
     /// guess at it.
+    ///
+    /// `since` narrows it again, to what has been heard from since a moment.
+    /// Narrowing only, as the two lists are: what it leaves out is what the
+    /// filter excludes, and the region is what says how much sky is being
+    /// asked about.
     pub async fn fetch_in_range_of_point(
         db: &Database,
         range: f64,
         center: [f64; 3],
         admitting: Option<(&[i32], &[i64])>,
+        since: Option<DateTime<Utc>>,
     ) -> Result<Vec<Self>, Error> {
-        if let Some((factions, addresses)) = admitting {
-            let admitted =
+        let admitted = match (admitting, since) {
+            (Some((factions, addresses)), Some(moment)) => Some(
+                Self::admitted_in_range_since(
+                    db, range, center, factions, addresses, moment,
+                )
+                .await?,
+            ),
+            (Some((factions, addresses)), None) => Some(
                 Self::admitted_in_range(db, range, center, factions, addresses)
-                    .await?;
+                    .await?,
+            ),
+            (None, Some(moment)) => {
+                Some(Self::changed_in_range(db, range, center, moment).await?)
+            }
+            (None, None) => None,
+        };
+        if let Some(admitted) = admitted {
             return Self::fetch_many(db, &admitted).await;
         }
 
@@ -443,6 +487,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by
             FROM systems
@@ -463,6 +509,8 @@ impl System {
             .into_iter()
             .map(|row| System {
                 factions: present.remove(&row.address).unwrap_or_default(),
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 address: row.address,
                 name: row.name,
                 position: row
@@ -530,6 +578,85 @@ impl System {
         Ok(rows.into_iter().filter_map(|row| row.address).collect())
     }
 
+    /// [`Self::admitted_in_range`], of those heard from since `moment`
+    ///
+    /// The stamp goes on both halves rather than around the two, so that each
+    /// still drives from what it drove from before: put outside, it would be a
+    /// filter over the union and leave the halves reaching for everything in
+    /// range again.
+    #[allow(clippy::too_many_arguments)]
+    async fn admitted_in_range_since(
+        db: &Database,
+        range: f64,
+        center: [f64; 3],
+        factions: &[i32],
+        addresses: &[i64],
+        moment: DateTime<Utc>,
+    ) -> Result<Vec<i64>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT address
+            FROM systems
+            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND address = ANY($5)
+              AND updated_at >= $7
+            UNION
+            SELECT systems.address
+            FROM systems
+            JOIN system_factions
+              ON system_factions.system_address = systems.address
+            WHERE system_factions.faction_id = ANY($6)
+              AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND systems.updated_at >= $7
+            "#,
+            range,
+            center[0],
+            center[1],
+            center[2],
+            addresses,
+            factions,
+            moment.naive_utc(),
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows.into_iter().filter_map(|row| row.address).collect())
+    }
+
+    /// Which systems within `range` of `center` were heard from since `moment`
+    ///
+    /// What a question about time alone narrows a region to. No union, nothing
+    /// being admitted by name or by faction: the stamp is the whole of what is
+    /// asked, and it drives from the index on it.
+    ///
+    /// Unordered, as the other two are. What comes back is a set of addresses
+    /// for [`Self::fetch_many`] to read rows for, and it reads them in whatever
+    /// order it finds them, so sorting here is a sort nothing looks at.
+    async fn changed_in_range(
+        db: &Database,
+        range: f64,
+        center: [f64; 3],
+        moment: DateTime<Utc>,
+    ) -> Result<Vec<i64>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT address
+            FROM systems
+            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND updated_at >= $5
+            "#,
+            range,
+            center[0],
+            center[1],
+            center[2],
+            moment.naive_utc(),
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|row| row.address).collect())
+    }
+
     /// Which factions are present in each of `addresses`, by address
     ///
     /// Kept to what was asked about, so the work grows with what is being
@@ -590,6 +717,8 @@ impl System {
                 allegiance as "allegiance: Allegiance",
                 primary_economy as "primary_economy: Economy",
                 secondary_economy as "secondary_economy: Economy",
+                body_count,
+                non_body_count,
                 updated_at,
                 updated_by,
                 COALESCE((
@@ -622,6 +751,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })
@@ -644,6 +775,8 @@ impl System {
                 systems.allegiance as "allegiance: Allegiance",
                 systems.primary_economy as "primary_economy: Economy",
                 systems.secondary_economy as "secondary_economy: Economy",
+                systems.body_count,
+                systems.non_body_count,
                 systems.updated_at,
                 systems.updated_by,
                 COALESCE((
@@ -678,6 +811,8 @@ impl System {
                     row.secondary_economy,
                 ),
                 factions: row.factions,
+                body_count: row.body_count,
+                non_body_count: row.non_body_count,
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
             })

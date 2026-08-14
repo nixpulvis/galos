@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT * FROM body_signals\n             WHERE system_address = $1 AND body_id = $2\n             ORDER BY signal_type\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "body_id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "signal_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3ee99c98a80fed1896146b0ad3b96133fdc50194c00070802e6477ace1259fce"
+}

@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO barycenters (\n                system_address,\n                id,\n                updated_at,\n                updated_by,\n\n                semi_major_axis,\n                eccentricity,\n                orbital_inclination,\n                periapsis,\n                orbital_period,\n                ascending_node,\n                mean_anomaly)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                -- A message delivered late is still taken, for whatever it\n                -- fills in below, and does not put the reading back in time.\n                updated_at = GREATEST(barycenters.updated_at, $3),\n                updated_by = CASE WHEN $3 >= barycenters.updated_at\n                    THEN $4 ELSE barycenters.updated_by END,\n\n                semi_major_axis = COALESCE($5, barycenters.semi_major_axis),\n                eccentricity = COALESCE($6, barycenters.eccentricity),\n                orbital_inclination = COALESCE($7, barycenters.orbital_inclination),\n                periapsis = COALESCE($8, barycenters.periapsis),\n                orbital_period = COALESCE($9, barycenters.orbital_period),\n                ascending_node = COALESCE($10, barycenters.ascending_node),\n                mean_anomaly = COALESCE($11, barycenters.mean_anomaly)\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 5,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 7,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 8,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 9,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 10,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Timestamp",
+        "Varchar",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "68becdec282394db58e84ed402044107c7f7a587f3973cda65af05a7313ecd4d"
+}

@@ -15,6 +15,7 @@ use crate::Db;
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::bodies::mark_if_wound;
 use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::{Picked, Selection};
 use crate::ui::MARGIN;
@@ -499,6 +500,7 @@ fn panels(
     mut selection: ResMut<Selection>,
     mut filters: ResMut<Filters>,
     mut selected: ResMut<crate::systems::route::SelectedRoute>,
+    mut clock: ResMut<crate::systems::bodies::Clock>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
 ) -> Result {
@@ -564,8 +566,12 @@ fn panels(
                 Subject::System(system) => {
                     described(ui, system, &names, &mut centered, &mut wanted)
                 }
-                Subject::Star(star) => star_described(ui, star),
-                Subject::Body(body) => body_described(ui, body),
+                Subject::Star(star) => mark_if_wound(&mut clock, |clock| {
+                    star_described(ui, star, clock)
+                }),
+                Subject::Body(body) => mark_if_wound(&mut clock, |clock| {
+                    body_described(ui, body, clock)
+                }),
                 Subject::Filter { filter, systems } => admitted(
                     ui,
                     filter,
@@ -662,6 +668,12 @@ fn described(
         |ui| {
             let [x, y, z] = system.position;
             field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
+            // Two rows rather than one, because the two counts are reported
+            // separately: the all-found tally and a nav beacon give the bodies
+            // alone, and only the honk ever counts the belts and rings. Either
+            // can stand known while the other is not.
+            field(ui, "Bodies", named(&system.body_count));
+            field(ui, "Belts and rings", named(&system.non_body_count));
             field(ui, "Population", crate::ui::thousands(system.population));
             field(ui, "Allegiance", named(&system.allegiance));
             field(ui, "Government", named(&system.government));
@@ -703,14 +715,21 @@ const GRAVITY: f64 = 9.80665;
 const ATMOSPHERE: f64 = 101_325.;
 
 /// Seconds in a day
-const DAY: f64 = 86_400.;
+pub(crate) const DAY: f64 = 86_400.;
+
+/// Days in an Earth year, for reading a span too long to say in days
+const YEAR: f64 = 365.25;
 
 /// Everything the map knows about one star
 ///
 /// Read in the units a star is talked about in rather than the ones it is
 /// stored in: suns for its size and its mass, days for its turn, and light
 /// seconds for how far out it stands.
-fn star_described(ui: &mut Ui, star: &DbStar) {
+fn star_described(
+    ui: &mut Ui,
+    star: &DbStar,
+    clock: &mut crate::systems::bodies::Clock,
+) {
     egui::Grid::new(("star-fields", star.system_address, star.id))
         .num_columns(2)
         .show(ui, |ui| {
@@ -738,7 +757,7 @@ fn star_described(ui: &mut Ui, star: &DbStar) {
             );
             field(ui, "Magnitude", format!("{:.2}", star.absolute_magnitude));
             turning(ui, &star.spin);
-            circling(ui, star.orbit.as_ref());
+            circling(ui, star.orbit.as_ref(), clock);
             found(ui, &star.discovery);
             field(
                 ui,
@@ -749,7 +768,11 @@ fn star_described(ui: &mut Ui, star: &DbStar) {
 }
 
 /// Everything the map knows about one body
-fn body_described(ui: &mut Ui, body: &DbBody) {
+fn body_described(
+    ui: &mut Ui,
+    body: &DbBody,
+    clock: &mut crate::systems::bodies::Clock,
+) {
     egui::Grid::new(("body-fields", body.system_address, body.id))
         .num_columns(2)
         .show(ui, |ui| {
@@ -776,11 +799,18 @@ fn body_described(ui: &mut Ui, body: &DbBody) {
                 "Gravity",
                 format!("{:.2} g", body.gravity as f64 / GRAVITY),
             );
-            field(ui, "Temperature", format!("{:.0} K", body.temperature));
+            field(
+                ui,
+                "Temperature",
+                match body.temperature {
+                    Some(heat) => format!("{heat:.0} K"),
+                    None => UNKNOWN.into(),
+                },
+            );
             standing(ui, &body.surface);
             field(ui, "Tidal lock", yes_no(body.tidal_lock));
             turning(ui, &body.spin);
-            circling(ui, Some(&body.orbit));
+            circling(ui, Some(&body.orbit), clock);
             found(ui, &body.discovery);
             field(
                 ui,
@@ -825,7 +855,11 @@ fn turning(ui: &mut Ui, spin: &Spin) {
 ///
 /// Nothing to say for the one that goes round nothing, which is the star a
 /// system arrives at.
-fn circling(ui: &mut Ui, orbit: Option<&Orbit>) {
+fn circling(
+    ui: &mut Ui,
+    orbit: Option<&Orbit>,
+    clock: &mut crate::systems::bodies::Clock,
+) {
     let Some(orbit) = orbit else {
         field(ui, "Orbit", "Goes round nothing".into());
         return;
@@ -837,6 +871,54 @@ fn circling(ui: &mut Ui, orbit: Option<&Orbit>) {
     under(ui, "Period", lasting(orbit.orbital_period));
     under(ui, "Eccentricity", format!("{:.4}", orbit.eccentricity));
     under(ui, "Inclination", format!("{:.1}°", orbit.orbital_inclination));
+    turned(ui, orbit.orbital_period as f64, clock);
+}
+
+/// Where round its orbit this thing stands, and a slider to move it by
+///
+/// Geared to this orbit alone, so the whole slider is one turn of this body
+/// however long that is: a system has no span that suits all of it, the slowest
+/// body of one taking a median 993 times as long to come round as its fastest.
+///
+/// It moves the whole system, which is one moment and not an arrangement built
+/// body by body. So dragging this stirs everything else by the same span of
+/// time, which for something far slower is imperceptible and for something far
+/// faster is a blur -- and either is the truth about what a year of this body
+/// does to its neighbours.
+///
+/// Nothing to drag where the period is unrecorded, there being no turn to be a
+/// fraction of.
+fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
+    ui.horizontal(|ui| {
+        ui.add_space(NEST);
+        ui.label(egui::RichText::new("Phase").strong());
+    });
+
+    let mut through = clock.through(period) * 100.;
+    let moved = ui
+        .add_enabled_ui(period > 0., |ui| {
+            ui.add(
+                egui::Slider::new(&mut through, 0.0..=100.)
+                    .suffix("%")
+                    .max_decimals(1),
+            )
+        })
+        .inner;
+    // The turn the drag sets out from is taken hold of before anything is
+    // written, so that the whole of the drag measures from one place. See
+    // [`crate::systems::bodies::Clock::hold`].
+    if moved.drag_started() {
+        clock.hold(period);
+    }
+    // Only on a change, or the clock is written every frame a panel is open and
+    // every body in the system is put back where it already stands.
+    if moved.changed() {
+        clock.wind_to(period, through / 100.);
+    }
+    if moved.drag_stopped() {
+        clock.release();
+    }
+    ui.end_row();
 }
 
 /// What is known about a thing rather than about the thing itself
@@ -851,12 +933,21 @@ fn found(ui: &mut Ui, discovery: &Discovery) {
 ///
 /// Days for anything that turns slowly, which is most of what is scanned, and
 /// hours for the rest. A period in seconds is eight digits nobody reads.
-fn lasting(seconds: f32) -> String {
+pub(crate) fn lasting(seconds: f32) -> String {
     if seconds <= 0. {
         return UNKNOWN.into();
     }
     let days = seconds as f64 / DAY;
-    if days >= 1. {
+    // Years for the long end, which a system's outermost bodies live at: the
+    // slowest body of a system takes a median eighteen years to come round, and
+    // six thousand days is a number nobody reads either.
+    if days >= YEAR {
+        // Earth years, said so. Every unit here is Earth's and the rest go
+        // unremarked, but a year is the one that reads as a thing a system might
+        // have of its own, and beside an orbit measured in them it would be
+        // saying that an orbit lasts an orbit.
+        format!("{:.1} Earth years", days / YEAR)
+    } else if days >= 1. {
         format!("{days:.1} days")
     } else {
         format!("{:.1} hours", days * 24.)
@@ -1174,7 +1265,7 @@ fn named<T: Display>(value: &Option<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::tests::system;
+    use crate::systems::tests::{system, tallied};
     use crate::tests::{context, painted, words};
     use chrono::DateTime;
     use elite_journal::Allegiance;
@@ -1253,6 +1344,44 @@ mod tests {
         })
     }
 
+    /// What a system's own panel reads as, line by line
+    fn panel(system: &System) -> Vec<String> {
+        words(|ui| {
+            described(ui, system, &known(&[]), &mut None, &mut None);
+        })
+    }
+
+    /// What stands in the answer column beside `name`
+    fn beside(painted: &[String], name: &str) -> String {
+        let at = painted
+            .iter()
+            .position(|word| word == name)
+            .unwrap_or_else(|| panic!("{name} was painted"));
+        painted[at + 1].clone()
+    }
+
+    /// A tallied system says how much of itself there is to find
+    #[test]
+    fn a_tallied_system_says_what_it_holds() {
+        let painted = panel(&tallied(1, Some(12), Some(3)));
+
+        assert_eq!(beside(&painted, "Bodies"), "12");
+        assert_eq!(beside(&painted, "Belts and rings"), "3");
+    }
+
+    /// A system tallied for its bodies alone still answers for its belts
+    ///
+    /// Only the honk counts the belts and rings, so a system counted by the
+    /// all-found tally has the one and not the other. Dropping the row would
+    /// read as a system with no belts rather than one nobody has honked.
+    #[test]
+    fn a_system_tallied_for_its_bodies_alone_says_so() {
+        let painted = panel(&tallied(1, Some(12), None));
+
+        assert_eq!(beside(&painted, "Bodies"), "12");
+        assert_eq!(beside(&painted, "Belts and rings"), UNKNOWN);
+    }
+
     /// Both halves are written out, under a header naming what they are
     #[test]
     fn an_economy_reads_as_its_two_halves() {
@@ -1311,7 +1440,7 @@ mod tests {
             mass: 0.69,
             radius: 5.485766e6,
             gravity: 9.13869,
-            temperature: 298.70755,
+            temperature: Some(298.70755),
             surface: None,
             orbit: JournalOrbit {
                 semi_major_axis: 1.0023064e11,
@@ -1319,8 +1448,8 @@ mod tests {
                 orbital_inclination: 1.5,
                 periapsis: 0.,
                 orbital_period: 8.6e7,
-                ascending_node: 0.,
-                mean_anomaly: 0.,
+                ascending_node: Some(0.),
+                mean_anomaly: Some(0.),
             },
             spin: JournalSpin { period: 3.6254802e6, tilt: 0.373026 },
             discovery: JournalDiscovery { discovered: false, mapped: true },
@@ -1329,7 +1458,13 @@ mod tests {
 
     /// What a body's panel says
     fn body_said() -> Vec<String> {
-        words(|ui| body_described(ui, &founders()))
+        words(|ui| {
+            body_described(
+                ui,
+                &founders(),
+                &mut crate::systems::bodies::Clock::default(),
+            )
+        })
     }
 
     /// A body's panel reads in the units a body is talked about in
@@ -1387,6 +1522,12 @@ mod tests {
         assert_eq!(lasting(3.6254802e6), "42.0 days");
         assert_eq!(lasting(3600.), "1.0 hours");
         assert_eq!(lasting(0.), UNKNOWN);
+        // The long end, which a system's outermost bodies live at. Six
+        // thousand days is as unreadable as eight digits of seconds.
+        assert_eq!(
+            lasting((18.5 * 365.25 * DAY as f64) as f32),
+            "18.5 Earth years",
+        );
     }
 
     /// The names down the left of a panel are written as brightly as a header

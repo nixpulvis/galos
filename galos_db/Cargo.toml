@@ -12,6 +12,10 @@ dotenv = "*"
 chrono = "*"
 pathfinding = "*"
 ordered-float = "*"
+# The write paths say when they turn a message away for being older than what
+# is on record. A refusal is otherwise a no-op that leaves no trace, so a feed
+# looks equally healthy whether the guards are working or never firing.
+tracing = "*"
 elite_journal = { path = "../elite_journal", features = ["with-postgis-sqlx"] }
 # A coordinate is written and read as a geometry column here, which is what
 # `with-postgis-sqlx` is: geozero's own `Encode`, `Decode` and `Type` for the

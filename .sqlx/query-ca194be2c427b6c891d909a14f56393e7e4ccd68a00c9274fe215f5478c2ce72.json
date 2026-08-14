@@ -1,0 +1,134 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO rings (\n                system_address,\n                id,\n                name,\n                updated_at,\n                updated_by,\n\n                distance_from_arrival,\n                was_discovered,\n                was_mapped,\n                parent_ids,\n                parent_types,\n\n                semi_major_axis,\n                eccentricity,\n                orbital_inclination,\n                periapsis,\n                orbital_period,\n                ascending_node,\n                mean_anomaly)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,\n                $14, $15, $16, $17)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                -- A message delivered late is still taken, for whatever it\n                -- fills in below. What it does not do is put the reading back\n                -- in time, or call the row what it was called when it was\n                -- sent.\n                name = CASE WHEN $4 >= rings.updated_at\n                    THEN $3 ELSE rings.name END,\n                updated_at = GREATEST(rings.updated_at, $4),\n                updated_by = CASE WHEN $4 >= rings.updated_at\n                    THEN $5 ELSE rings.updated_by END,\n\n                distance_from_arrival =\n                    COALESCE($6, rings.distance_from_arrival),\n                was_discovered = rings.was_discovered OR $7,\n                was_mapped = rings.was_mapped OR $8,\n                parent_ids = COALESCE($9, rings.parent_ids),\n                parent_types = COALESCE($10, rings.parent_types),\n\n                semi_major_axis = $11,\n                eccentricity = $12,\n                orbital_inclination = $13,\n                periapsis = $14,\n                orbital_period = $15,\n                ascending_node = COALESCE($16, rings.ascending_node),\n                mean_anomaly = COALESCE($17, rings.mean_anomaly)\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "distance_from_arrival",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "parent_ids",
+        "type_info": "Int2Array"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_types",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 10,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 11,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 12,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 13,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 14,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 15,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 16,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Varchar",
+        "Timestamp",
+        "Varchar",
+        "Float4",
+        "Bool",
+        "Bool",
+        "Int2Array",
+        "VarcharArray",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4",
+        "Float4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "ca194be2c427b6c891d909a14f56393e7e4ccd68a00c9274fe215f5478c2ce72"
+}

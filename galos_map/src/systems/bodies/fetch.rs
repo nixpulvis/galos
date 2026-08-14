@@ -215,5 +215,5 @@ pub(super) fn collect(
         answer.bodies.len(),
         answer.centers.len()
     );
-    contents.know(answer.stars, answer.bodies, answer.centers);
+    contents.hold(answer.stars, answer.bodies, answer.centers);
 }

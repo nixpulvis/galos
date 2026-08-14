@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO markets (\n                id,\n                system_address,\n                system_name,\n                station_name,\n                updated_at)\n            VALUES ($1, $2, UPPER($3), $4, $5)\n            ON CONFLICT (id)\n            DO UPDATE SET\n                system_address = CASE WHEN $5 >= markets.updated_at\n                    THEN $2 ELSE markets.system_address END,\n                system_name = CASE WHEN $5 >= markets.updated_at\n                    THEN UPPER($3) ELSE markets.system_name END,\n                station_name = CASE WHEN $5 >= markets.updated_at\n                    THEN $4 ELSE markets.station_name END,\n                updated_at = GREATEST(markets.updated_at, $5)\n            RETURNING\n                id,\n                system_address,\n                system_name,\n                station_name,\n                updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "system_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "station_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Varchar",
+        "Timestamp"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "894c42912711cbd206e859e40f78d0f0595555a9d56f92dfbf9a9110c4c373d5"
+}

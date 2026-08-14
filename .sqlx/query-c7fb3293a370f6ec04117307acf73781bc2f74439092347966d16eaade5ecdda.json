@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO shipyard (market_id, ship_name, listed_at)\n                VALUES ($1, $2, $3)\n                ON CONFLICT (market_id, ship_name)\n                DO UPDATE SET listed_at = $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Timestamp"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7fb3293a370f6ec04117307acf73781bc2f74439092347966d16eaade5ecdda"
+}

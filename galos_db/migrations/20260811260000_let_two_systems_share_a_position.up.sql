@@ -1,0 +1,15 @@
+-- A position is measured, and two of them being equal is not a contradiction.
+--
+-- `create_systems` declared it UNIQUE. What that turns a disagreement about
+-- where something is into is the loss of everything else the message said: a
+-- system whose position was already claimed was refused whole, name,
+-- population, allegiance and all. Neche, Skeggiko O and HIP 25396 were each
+-- refused that way, repeatedly.
+--
+-- A system is identified by its address, which is unique and is what every
+-- write conflicts on. Nothing keys on the position: the GIST index below serves
+-- the spatial queries and does not care whether two rows share a point. And a
+-- coordinate arrives rounded to a thirty-second of a light year, from an
+-- uploader, about a galaxy of four hundred billion systems, so two of them
+-- landing on one point is a thing to expect rather than to forbid.
+ALTER TABLE systems DROP CONSTRAINT systems_position_key;

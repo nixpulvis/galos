@@ -1,0 +1,118 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT *\n            FROM rings\n            WHERE system_address = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "distance_from_arrival",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "parent_ids",
+        "type_info": "Int2Array"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_types",
+        "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 10,
+        "name": "semi_major_axis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 11,
+        "name": "eccentricity",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 12,
+        "name": "orbital_inclination",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 13,
+        "name": "periapsis",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 14,
+        "name": "orbital_period",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 15,
+        "name": "ascending_node",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 16,
+        "name": "mean_anomaly",
+        "type_info": "Float4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "292abac4bce60cb5818511b13204a834b964d3c79215b242a15679e0b4f1f123"
+}

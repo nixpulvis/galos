@@ -50,7 +50,7 @@ pub fn plugin(app: &mut App) {
     // selection by a frame.
     app.add_systems(
         Update,
-        (clear_when_nothing_is_clicked, follow_selection)
+        (clear_when_nothing_is_clicked, clear_not_drawn, follow_selection)
             .chain()
             .in_set(MapSet::Present)
             .after(super::pointing::point_at),
@@ -422,6 +422,51 @@ fn follow_selection(
     }
 }
 
+/// Let go of a system the filters have taken off the map
+///
+/// A filter excluding a system draws it faintly, and at a [`DimTo`] of zero
+/// does not draw it at all. The spyglass is then free to despawn it, so what
+/// is picked out is a system with nothing on the map and nothing coming: a
+/// ring around empty sky, and a row naming somewhere the user can no longer
+/// see or point at.
+///
+/// Read off the mark rather than asked of the filters again. A span's near
+/// edge moves with the clock, so asking here would answer a moment later than
+/// [`crate::systems::filter::mark`] last cut, and a system would be let go of
+/// seconds before the star it named stopped being drawn. One decision, made
+/// where the mark is made, and both the sky and the selection follow it.
+///
+/// Only at zero. Above it the system is still drawn, faintly, and a selection
+/// on one the filters exclude is a selection the user can see and let go of
+/// for themselves.
+///
+/// Systems alone. A body is let go of by [`follow_selection`] when it stops
+/// being drawn, which is what leaving its system does.
+fn clear_not_drawn(
+    mut selection: ResMut<Selection>,
+    dim: Res<DimTo>,
+    excluded: Query<&System, (With<Selected>, With<Filtered>)>,
+) {
+    if dim.0 != 0. {
+        return;
+    }
+
+    // Asked of what is both picked out and excluded, which is a handful of a
+    // handful, and written only where there is something to let go of: a
+    // settled selection marked as changed every frame is a query on the wire
+    // every frame.
+    let dropping: Vec<i64> =
+        excluded.iter().map(|system| system.address).collect();
+    if dropping.is_empty() {
+        return;
+    }
+
+    selection.0.retain(|one| match one {
+        Picked::System(system) => !dropping.contains(&system.address),
+        Picked::Body(_) => true,
+    });
+}
+
 /// Let go of the selection when a click lands on nothing
 ///
 /// The same two questions a click on a system is weighed by, so that the two
@@ -580,19 +625,11 @@ pub(super) fn going(color: Srgba, standing: f32) -> Srgba {
 /// What color a selected system's ring is drawn in
 ///
 /// It dims with the star it is drawn around, so that a selection the filters
-/// exclude does not read as one they have let go of.
-///
-/// Where that star is not drawn at all there is nothing to dim with, and a
-/// mark faded to nothing is no mark. So the ring stands at full strength and
-/// says where the system is with nothing drawn inside it, which is the whole
-/// of what is left to say: the filters have taken the sky away and the user
-/// has picked this one out of it regardless.
+/// exclude does not read as one they have let go of. Drawn at nothing where
+/// the star is, which is a ring around a system that is not there: at that
+/// point the selection itself goes, by [`clear_not_drawn`].
 fn ringed(dim: &DimTo, filtered: bool) -> Srgba {
-    if filtered && dim.0 == 0. {
-        SELECTION
-    } else {
-        dim.as_drawn(SELECTION, filtered)
-    }
+    dim.as_drawn(SELECTION, filtered)
 }
 
 #[cfg(test)]
@@ -1052,14 +1089,100 @@ mod tests {
         assert_eq!(ringed(&DimTo(0.15), false), SELECTION);
     }
 
-    /// And stands at full strength where there is no star to dim with
+    /// And goes out with it
     ///
-    /// At an opacity of nothing the star is not drawn, so a ring dimmed to
-    /// match it would be no ring, and the one thing left to say is where the
-    /// system the user picked out is.
+    /// At an opacity of nothing the star is not drawn and the map is free to
+    /// despawn it, so a ring left standing would be a mark around empty sky.
+    /// The selection goes at that point, by [`clear_not_drawn`],
+    /// and this is what is drawn in the frame before it does.
     #[test]
-    fn a_ring_with_no_star_stands_at_full_strength() {
-        assert_eq!(ringed(&DimTo(0.), true), SELECTION);
+    fn a_ring_goes_out_with_its_star() {
+        assert_eq!(ringed(&DimTo(0.), true).alpha, 0.);
+    }
+
+    /// A world holding the selection and how faintly to draw what is excluded
+    fn filtered_map(dim: f32) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Selection>();
+        app.insert_resource(DimTo(dim));
+        app.add_systems(Update, clear_not_drawn);
+        app
+    }
+
+    /// A system picked out and marked as excluded, as the map would have it
+    fn excluded(app: &mut App, address: i64) {
+        app.world_mut().spawn((system(address), Selected, Filtered));
+        app.world_mut().resource_mut::<Selection>().set(picked(address));
+    }
+
+    /// A system the filters exclude is let go of once it stops being drawn
+    ///
+    /// At an opacity of nothing it is not on the map and the spyglass may
+    /// despawn it, so what is picked out is somewhere the user can no longer
+    /// see, point at, or fly to.
+    #[test]
+    fn a_system_the_filters_exclude_is_let_go_of_at_nothing() {
+        let mut app = filtered_map(0.);
+        excluded(&mut app, 1);
+
+        app.update();
+
+        assert!(
+            app.world().resource::<Selection>().is_empty(),
+            "a ring was left around a system that is not drawn"
+        );
+    }
+
+    /// And is kept while it is still drawn, however faintly
+    ///
+    /// Above nothing the user can see what they picked out and let go of it
+    /// themselves, which is theirs to decide rather than the filters'.
+    #[test]
+    fn a_system_the_filters_exclude_is_kept_while_it_is_drawn() {
+        let mut app = filtered_map(0.15);
+        excluded(&mut app, 1);
+
+        app.update();
+
+        assert_eq!(app.world().resource::<Selection>().len(), 1);
+    }
+
+    /// A system the filters admit is kept at any opacity
+    #[test]
+    fn a_system_the_filters_admit_is_kept_at_nothing() {
+        let mut app = filtered_map(0.);
+        app.world_mut().spawn((system(1), Selected));
+        app.world_mut().resource_mut::<Selection>().set(picked(1));
+
+        app.update();
+
+        assert_eq!(app.world().resource::<Selection>().len(), 1);
+    }
+
+    /// A selection with nothing to let go of is not written to
+    ///
+    /// The same thing [`a_settled_selection_holds_still`] holds for the mark,
+    /// and it matters more here: this is asked every frame the filters are
+    /// drawn at nothing, which is for as long as the user leaves them there.
+    #[test]
+    fn a_selection_with_nothing_to_drop_is_left_alone() {
+        let mut app = filtered_map(0.);
+        app.world_mut().spawn((system(1), Selected));
+        app.world_mut().resource_mut::<Selection>().set(picked(1));
+        app.update();
+        app.update();
+
+        let changed_at =
+            app.world().resource_ref::<Selection>().last_changed().get();
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource_ref::<Selection>().last_changed().get(),
+            changed_at,
+            "the selection was written to with nothing to let go of"
+        );
     }
 
     /// What is not excluded is never dimmed, whatever the opacity

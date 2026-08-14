@@ -1,0 +1,200 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                systems.address,\n                systems.name,\n                systems.position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                systems.population,\n                systems.security as \"security: Security\",\n                systems.government as \"government: Government\",\n                systems.allegiance as \"allegiance: Allegiance\",\n                systems.primary_economy as \"primary_economy: Economy\",\n                systems.secondary_economy as \"secondary_economy: Economy\",\n                systems.body_count,\n                systems.non_body_count,\n                systems.updated_at,\n                systems.updated_by,\n                COALESCE((\n                    SELECT array_agg(faction_id)\n                    FROM system_factions\n                    WHERE system_address = systems.address\n                ), ARRAY[]::integer[]) AS \"factions!\"\n            FROM systems\n            JOIN system_factions ON system_factions.system_address = systems.address\n            JOIN factions ON factions.id = system_factions.faction_id\n            WHERE factions.name ILIKE $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "position!: Option<wkb::Decode<Coordinate>>",
+        "type_info": {
+          "Custom": {
+            "name": "geometry",
+            "kind": "Simple"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "population",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "security: Security",
+        "type_info": {
+          "Custom": {
+            "name": "security",
+            "kind": {
+              "Enum": [
+                "Low",
+                "Medium",
+                "High"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "government: Government",
+        "type_info": {
+          "Custom": {
+            "name": "government",
+            "kind": {
+              "Enum": [
+                "Anarchy",
+                "Carrier",
+                "Communism",
+                "Confederacy",
+                "Cooperative",
+                "Corporate",
+                "Democracy",
+                "Dictatorship",
+                "Engineer",
+                "Feudal",
+                "Patronage",
+                "Prison",
+                "PrisonColony",
+                "Theocracy",
+                "Megaconstruction"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "allegiance: Allegiance",
+        "type_info": {
+          "Custom": {
+            "name": "allegiance",
+            "kind": {
+              "Enum": [
+                "Alliance",
+                "Empire",
+                "Federation",
+                "Guardian",
+                "Independent",
+                "PilotsFederation",
+                "PlayerPilots",
+                "Thargoid",
+                "FrontlineSolutions"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "primary_economy: Economy",
+        "type_info": {
+          "Custom": {
+            "name": "economy",
+            "kind": {
+              "Enum": [
+                "Agriculture",
+                "Carrier",
+                "Colony",
+                "Extraction",
+                "HighTech",
+                "Industrial",
+                "Military",
+                "Prison",
+                "Refinery",
+                "Service",
+                "Terraforming",
+                "Tourism",
+                "Undefined",
+                "Rescue"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "secondary_economy: Economy",
+        "type_info": {
+          "Custom": {
+            "name": "economy",
+            "kind": {
+              "Enum": [
+                "Agriculture",
+                "Carrier",
+                "Colony",
+                "Extraction",
+                "HighTech",
+                "Industrial",
+                "Military",
+                "Prison",
+                "Refinery",
+                "Service",
+                "Terraforming",
+                "Tourism",
+                "Undefined",
+                "Rescue"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "body_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "non_body_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "factions!",
+        "type_info": "Int4Array"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "97e87f248b5f8ab43054dce36022662768ae820c4ebf4ea689c8f5a458f80f8a"
+}

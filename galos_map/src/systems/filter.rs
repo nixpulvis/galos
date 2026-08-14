@@ -5,6 +5,11 @@
 //! what is picked out rather than cutting into it, every filter being
 //! something the user asked to see.
 //!
+//! Except the one on time, which is asked of all of them. A span names no
+//! systems, only how lately one was heard from, so two factions and a span
+//! mean either faction heard from within it. Counted alongside the factions it
+//! would put the whole of the last hour onto a map asked for two factions.
+//!
 //! This is a layer over the map rather than a mode. The spyglass goes on
 //! fetching by region, the camera stays where it is, and nothing is
 //! despawned.
@@ -20,14 +25,20 @@ use crate::Db;
 use crate::schedule::MapSet;
 use crate::search::Pending;
 use crate::systems::System;
+use crate::systems::fetch::Poll;
+use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
+use chrono::{DateTime, Duration, Utc};
 use galos_db::Database;
 use galos_db::factions::Faction as DbFaction;
 use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
+    app.init_resource::<LastCutAt>();
+    app.init_resource::<Watch>();
+    app.init_resource::<Standstill>();
     app.init_resource::<DimTo>();
     app.init_resource::<LookupNote>();
     app.init_resource::<Resolving>();
@@ -42,6 +53,63 @@ pub fn plugin(app: &mut App) {
         Update,
         mark.in_set(MapSet::Populate).after(super::spawn::spawn),
     );
+}
+
+/// When the filters were last cut afresh against the clock
+///
+/// Its own memory rather than the fetch's. A span's near edge moves with the
+/// clock, so what it admits has to be settled again as time passes, and that
+/// is a walk of every system on the map rather than a query.
+#[derive(Resource)]
+struct LastCutAt(Instant);
+
+impl Default for LastCutAt {
+    fn default() -> LastCutAt {
+        LastCutAt(Instant::now())
+    }
+}
+
+/// How far back the control over time offers to look, longest first
+///
+/// Named spans rather than a bare number of seconds. The interesting end of
+/// this is the last few minutes and the far end is a database going back years,
+/// so a slider laid out evenly in seconds would spend nearly all of its
+/// length in country nobody wants and cross the useful part in a pixel.
+///
+/// Nothing at the near end. A span reaching back forever admits every system on
+/// record, which is what asking nothing does, and putting the question anyway
+/// would fetch ten thousand rows to say so.
+pub(crate) const SPANS: [(&str, Option<i64>); 9] = [
+    ("Off", None),
+    ("30 days", Some(30 * 24 * 60 * 60)),
+    ("7 days", Some(7 * 24 * 60 * 60)),
+    ("1 day", Some(24 * 60 * 60)),
+    ("6 hours", Some(6 * 60 * 60)),
+    ("1 hour", Some(60 * 60)),
+    ("15 minutes", Some(15 * 60)),
+    ("5 minutes", Some(5 * 60)),
+    ("1 minute", Some(60)),
+];
+
+/// Where the control over time stands, by its place in [`SPANS`]
+///
+/// Kept rather than read back off [`Filter::Recency`], which is not there at
+/// all while the control sits at its far end, and is left standing but asking
+/// nothing while a drag passes through it. The control has a place either way,
+/// and it is the place the user put it.
+#[derive(Resource, Default)]
+pub struct Watch(pub usize);
+
+impl Watch {
+    /// What the control says it is set to
+    pub fn name(&self) -> &'static str {
+        SPANS.get(self.0).map(|(name, _)| *name).unwrap_or("Off")
+    }
+
+    /// How far back it reaches, or nothing where it is off
+    pub fn span(&self) -> Option<Duration> {
+        SPANS.get(self.0).and_then(|(_, secs)| *secs).map(Duration::seconds)
+    }
 }
 
 /// One question asked of every system
@@ -91,18 +159,57 @@ pub enum Filter {
     ///
     /// `label` says how many, a hand-picked set having no name of its own.
     Systems { label: String, systems: Vec<i64> },
+    /// The systems heard from since a moment
+    ///
+    /// Whatever falls inside the span, which at its widest is most of the sky:
+    /// all but a fiftieth of the systems on record have been heard from inside
+    /// thirty days. What holds the answer down is the spyglass, which is the
+    /// one control over how much sky is being asked about and the one the user
+    /// can see.
+    ///
+    /// What the feed is doing, drawn. The others ask something about a system
+    /// that holds still while it is asked; this one goes stale as it is
+    /// answered, since the moment it names sits at a fixed distance behind now
+    /// and everything crosses it eventually.
+    ///
+    /// So it is the one filter that is edited rather than added. Asking again
+    /// with a moment a second later is the same question, not a second one, and
+    /// [`Filters::add`] would refuse the second anyway for being a duplicate of
+    /// nothing it recognises.
+    ///
+    /// The database keeps when a system last changed and not a trail of every
+    /// time it did, so `moment` bounds a window whose other end is always now.
+    /// It cannot be slid back to look at the galaxy as it stood: parked in the
+    /// past it picks out what has not been heard from since, which is the same
+    /// question read the other way round.
+    Recency { label: String, span: Duration },
 }
 
 impl Filter {
     /// Whether this filter admits `system`
-    fn admits(&self, system: &System) -> bool {
+    fn admits(&self, system: &System, now: DateTime<Utc>) -> bool {
         match self {
             Filter::Faction { id, .. } => system.factions.contains(id),
             Filter::Route { systems, .. } => systems.contains(&system.address),
             Filter::Systems { systems, .. } => {
                 systems.contains(&system.address)
             }
+            Filter::Recency { span, .. } => system.updated_at >= now - *span,
         }
+    }
+
+    /// Whether a panel could say anything about what this admits
+    ///
+    /// A faction, a route and a hand-picked set each admit a set of systems
+    /// worth reading as a list: a few, or a few tens, settled and standing
+    /// still while the panel is open.
+    ///
+    /// A span admits neither. What it holds is scattered across the galaxy and
+    /// changes while it is being read, so a list of it is a question over every
+    /// system on record answered with an arbitrary slice of the newest. What a
+    /// span admits is on the map already, which is where it is worth looking.
+    pub fn worth_describing(&self) -> bool {
+        !matches!(self, Filter::Recency { .. })
     }
 
     /// Whether this is a route
@@ -131,7 +238,9 @@ impl Filter {
     /// system it does not admit at all.
     pub fn place_of(&self, address: i64) -> Option<usize> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { systems, .. } => {
                 systems.iter().position(|on| *on == address)
             }
@@ -149,7 +258,9 @@ impl Filter {
     /// jumps lie between them is what it was plotted to find out.
     pub fn hops(&self) -> Option<usize> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { systems, .. } => systems.len().checked_sub(1),
         }
     }
@@ -164,7 +275,9 @@ impl Filter {
     /// each pair of systems the route runs through.
     pub fn range(&self) -> Option<&str> {
         match self {
-            Filter::Faction { .. } | Filter::Systems { .. } => None,
+            Filter::Faction { .. }
+            | Filter::Systems { .. }
+            | Filter::Recency { .. } => None,
             Filter::Route { range, .. } => Some(range),
         }
     }
@@ -173,9 +286,9 @@ impl Filter {
     pub fn name(&self) -> &str {
         match self {
             Filter::Faction { name, .. } => name,
-            Filter::Route { label, .. } | Filter::Systems { label, .. } => {
-                label
-            }
+            Filter::Route { label, .. }
+            | Filter::Systems { label, .. }
+            | Filter::Recency { label, .. } => label,
         }
     }
 
@@ -196,6 +309,9 @@ impl Filter {
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 DbSystem::fetch_many(db, systems).await.unwrap_or_default()
             }
+            // Nothing describes a span, so nothing asks this of one. See
+            // [`Self::worth_describing`].
+            Filter::Recency { .. } => Vec::new(),
         }
     }
 }
@@ -332,28 +448,144 @@ pub struct Entry {
 }
 
 /// Every filter the user has added
+#[derive(Resource, Default, Clone)]
+pub struct Filters {
+    asked: Vec<Entry>,
+    /// How many times this has been asked for something
+    ///
+    /// Counted because a [`ResMut`] reads as written for being handed out, and
+    /// the bar is handed the filters every frame it draws whether or not the
+    /// user touched anything. What reads that mark puts a query on the wire,
+    /// so a set that was only drawn has to be told from one that was asked.
+    revision: u32,
+}
+
+/// The time filter's row, held back while a control is held
+///
+/// The rows are drawn above the controls that ask for filters, so a filter
+/// asked for part way through a gesture puts a row above the control being
+/// used and takes it down a row. Egui follows a drag by the widget it began
+/// on, and a control that has moved is one the pointer is no longer over.
+///
+/// Only a row that was not there when the press landed is held back, and only
+/// while the control is held. One that was there is drawn as it stands, so
+/// what it says follows the drag: a span dragged from one to the next says the
+/// span it has reached, and dragged to the far end says it is off.
+///
+/// Nothing holds a row the other way, because nothing takes one away mid-drag.
+/// A control slid to its far end stops asking without letting go of its row,
+/// by [`Filters::turn_time_off`], and the row goes when the control does.
 #[derive(Resource, Default)]
-pub struct Filters(Vec<Entry>);
+pub struct Standstill {
+    /// Whether a control is being held
+    held: bool,
+    /// Whether a filter on time was being asked when the press landed
+    asked: bool,
+}
+
+impl Standstill {
+    /// Hold the rows where the press finds them in `rows`
+    pub fn hold(&mut self, rows: &Filters) {
+        self.held = true;
+        self.asked = rows.timed().is_some();
+    }
+
+    /// Let them catch up with what has been asked for
+    pub fn release(&mut self) {
+        self.held = false;
+        self.asked = false;
+    }
+
+    /// Let go where the drag this was taken for is over
+    ///
+    /// `dragging` is whether the pointer is still down on something. Measured
+    /// rather than trusted, as [`crate::systems::bodies::Clock`]'s anchor is:
+    /// the control says when a drag begins and when it ends, and the end may
+    /// never be said at all. A form shut with the pointer down takes the
+    /// control off screen, and a widget that is not drawn is one egui reports
+    /// nothing further about.
+    ///
+    /// Left held, the bar goes on drawing its rows from a copy, and a row
+    /// drawn from a copy is a row whose buttons do nothing: every toggle,
+    /// every close and every panel opened lands on something that is dropped
+    /// at the end of the frame.
+    pub fn settle(&mut self, dragging: bool) {
+        if !dragging {
+            self.release();
+        }
+    }
+
+    /// `rows` as they are to be drawn, where a control is being held
+    ///
+    /// Nothing where none is, the rows being drawn as they stand.
+    pub fn rows(&self, rows: &Filters) -> Option<Filters> {
+        if !self.held {
+            return None;
+        }
+
+        let mut standing = rows.clone();
+        if !self.asked
+            && let Some(at) = standing.timed()
+        {
+            standing.asked.remove(at);
+        }
+
+        Some(standing)
+    }
+}
 
 impl Filters {
-    /// Whether any enabled filter admits `system`
+    /// How many times these have been asked for something
     ///
-    /// Any of them, so each one adds to what is shown rather than cutting
-    /// into it. Every filter is something the user asked to see, and a second
-    /// ask is a second thing wanted, not a condition on the first: asking for
-    /// a faction and then for a route means both, where taking the systems
-    /// they share would usually mean nothing at all, the two rarely
-    /// overlapping.
+    /// Compared before and after the bar is drawn, so that a set only drawn is
+    /// not reported as one the user changed.
+    pub fn revision(&self) -> u32 {
+        self.revision
+    }
+
+    /// Where the filter on time stands, where one is being asked
+    fn timed(&self) -> Option<usize> {
+        self.asked
+            .iter()
+            .position(|active| matches!(active.filter, Filter::Recency { .. }))
+    }
+
+    /// Whether the enabled filters admit `system`
+    ///
+    /// The filters that pick systems out admit between them, so each adds to
+    /// what is shown rather than cutting into it. Every one is something the
+    /// user asked to see, and a second ask is a second thing wanted rather
+    /// than a condition on the first: asking for a faction and then for a
+    /// route means both, where taking the systems they share would usually
+    /// mean nothing at all, the two rarely overlapping.
+    ///
+    /// Time is asked of all of them instead. It names no systems, only how
+    /// lately one was heard from, so a faction and a span together mean that
+    /// faction's systems heard from within it. Counted as one more thing to
+    /// show, a span would put the whole of the last hour onto a map asked for
+    /// one faction.
     ///
     /// Nothing asked for admits everything. A map with no filter on it is a
     /// map showing the sky rather than an empty one.
-    pub fn admit(&self, system: &System) -> bool {
-        let mut asked =
-            self.0.iter().filter(|active| active.enabled).peekable();
-        if asked.peek().is_none() {
-            return true;
+    pub fn admit(&self, system: &System, now: DateTime<Utc>) -> bool {
+        // Nothing while no filter picks systems out, which is what says a span
+        // asked on its own admits whatever it reaches rather than nothing.
+        let mut picked = None;
+
+        for active in self.asked.iter().filter(|active| active.enabled) {
+            match &active.filter {
+                timed @ Filter::Recency { .. } => {
+                    if !timed.admits(system, now) {
+                        return false;
+                    }
+                }
+                picking => {
+                    *picked.get_or_insert(false) |= picking.admits(system, now);
+                }
+            }
         }
-        asked.any(|active| active.filter.admits(system))
+
+        picked.unwrap_or(true)
     }
 
     /// Add `filter`, unless it is already being asked
@@ -361,39 +593,42 @@ impl Filters {
     /// Asking the same thing twice picks out nothing further and leaves two
     /// rows that have to be turned off one at a time.
     pub fn add(&mut self, filter: Filter) {
-        if self.0.iter().any(|active| active.filter == filter) {
+        if self.asked.iter().any(|active| active.filter == filter) {
             return;
         }
-        self.0.push(Entry { filter, enabled: true });
+        self.asked.push(Entry { filter, enabled: true });
+        self.revision += 1;
     }
 
     /// Stop asking the filter at `index`
     pub fn remove(&mut self, index: usize) {
-        if index < self.0.len() {
-            self.0.remove(index);
+        if index < self.asked.len() {
+            self.asked.remove(index);
+            self.revision += 1;
         }
     }
 
     /// The filters in the order they were added
     pub fn iter(&self) -> impl Iterator<Item = &Entry> {
-        self.0.iter()
+        self.asked.iter()
     }
 
     /// Turn the filter at `index` on or off
     pub fn toggle(&mut self, index: usize) {
-        if let Some(active) = self.0.get_mut(index) {
+        if let Some(active) = self.asked.get_mut(index) {
             active.enabled = !active.enabled;
+            self.revision += 1;
         }
     }
 
     /// How many filters are being held, turned on or not
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.asked.len()
     }
 
     /// Whether none is held at all, which is a map showing the whole sky
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.asked.is_empty()
     }
 
     /// Whether any filter is turned on
@@ -401,12 +636,12 @@ impl Filters {
     /// Which is whether the map is picking anything out. With every filter
     /// off the sky is drawn whole, as it is with none of them held at all.
     pub fn any_enabled(&self) -> bool {
-        self.0.iter().any(|active| active.enabled)
+        self.asked.iter().any(|active| active.enabled)
     }
 
     /// The filter standing in the `index`th place
     pub fn get(&self, index: usize) -> Option<&Entry> {
-        self.0.get(index)
+        self.asked.get(index)
     }
 
     /// Turn every filter at `rows` off, or every one back on
@@ -423,13 +658,14 @@ impl Filters {
     /// reason to turn the factions off with them.
     pub fn toggle_all(&mut self, rows: &[usize]) {
         let on = rows.iter().any(|index| {
-            self.0.get(*index).is_some_and(|active| active.enabled)
+            self.asked.get(*index).is_some_and(|active| active.enabled)
         });
         for index in rows {
-            if let Some(active) = self.0.get_mut(*index) {
+            if let Some(active) = self.asked.get_mut(*index) {
                 active.enabled = !on;
             }
         }
+        self.revision += 1;
     }
 
     /// Stop asking every filter at `rows`
@@ -442,6 +678,93 @@ impl Filters {
         for index in rows.into_iter().rev() {
             self.remove(index);
         }
+    }
+
+    /// Ask about what has been heard from since `moment`
+    ///
+    /// Replacing whatever moment was being asked about, rather than standing
+    /// beside it. Two of these are not two things wanted: the earlier one's
+    /// answer holds the later one's, so the pair would draw what the wider of
+    /// them draws and read as a control that had stopped responding.
+    ///
+    /// The row says the span it was asked as, `span` being one of the names in
+    /// [`SPANS`]. A moment on its own reads as a time of day with no date
+    /// against it, which says nothing at all once the span reaching back to it
+    /// is longer than a day.
+    pub fn ask_within(&mut self, said: &str, span: Duration) {
+        let label = format!("Last {said}");
+        let asked = Filter::Recency { label, span };
+        match self
+            .asked
+            .iter_mut()
+            .find(|active| matches!(active.filter, Filter::Recency { .. }))
+        {
+            Some(active) => {
+                active.filter = asked;
+                active.enabled = true;
+            }
+            None => self.asked.push(Entry { filter: asked, enabled: true }),
+        }
+        self.revision += 1;
+    }
+
+    /// Stop asking about time, leaving the row standing and saying `said`
+    ///
+    /// What the control does while it is being held. Its row is drawn above
+    /// it, so a row going out from under the pointer takes the control up a
+    /// row and out from under it too.
+    ///
+    /// The row says what is filtering, which by now is nothing, so it reads as
+    /// the control does. A row left saying the span it was asked as would name
+    /// a question that is no longer being put.
+    pub fn turn_time_off(&mut self, said: &str) {
+        if let Some(active) = self
+            .asked
+            .iter_mut()
+            .find(|active| matches!(active.filter, Filter::Recency { .. }))
+        {
+            if let Filter::Recency { label, .. } = &mut active.filter {
+                *label = said.to_owned();
+            }
+            active.enabled = false;
+            self.revision += 1;
+        }
+    }
+
+    /// Stop asking about time at all
+    ///
+    /// Its own way out rather than [`Self::remove`] by index, the control being
+    /// slid to nothing rather than a row being let go of.
+    pub fn ask_nothing_of_time(&mut self) {
+        self.asked
+            .retain(|active| !matches!(active.filter, Filter::Recency { .. }));
+        self.revision += 1;
+    }
+
+    /// How far back an enabled filter on time looks, where one is asked
+    ///
+    /// Read apart from [`Self::admitted`] because what it admits is nowhere in
+    /// particular, so it is fetched in its own right rather than as part of a
+    /// question about a region.
+    ///
+    /// The span rather than the moment it reaches back to. A moment is a
+    /// different value every time it is worked out, so a region carrying one
+    /// would be somewhere new every frame; the span moves only when the user
+    /// moves the control, which is exactly when the region is a new question.
+    /// Whoever puts the question turns it into a moment against the clock they
+    /// ask at.
+    ///
+    /// The longest where several are somehow asked, that being the one whose
+    /// answer holds the others.
+    pub fn span(&self) -> Option<Duration> {
+        self.asked
+            .iter()
+            .filter(|active| active.enabled)
+            .filter_map(|active| match &active.filter {
+                Filter::Recency { span, .. } => Some(*span),
+                _ => None,
+            })
+            .max()
     }
 
     /// What the filters admit, as a query can ask it
@@ -458,14 +781,24 @@ impl Filters {
         let mut admitted = Admitted::default();
         let mut asked = false;
 
-        for active in self.0.iter().filter(|active| active.enabled) {
-            asked = true;
+        for active in self.asked.iter().filter(|active| active.enabled) {
             match &active.filter {
-                Filter::Faction { id, .. } => admitted.factions.push(*id),
+                Filter::Faction { id, .. } => {
+                    asked = true;
+                    admitted.factions.push(*id);
+                }
                 Filter::Route { systems, .. }
                 | Filter::Systems { systems, .. } => {
-                    admitted.systems.extend(systems.iter().copied())
+                    asked = true;
+                    admitted.systems.extend(systems.iter().copied());
                 }
+                // Nothing a region can be narrowed by. What this admits is
+                // scattered across the galaxy rather than gathered anywhere,
+                // so it is fetched in its own right and not as part of a
+                // place. Asked on its own it leaves the region asked for as it
+                // stands, rather than narrowing it to two empty lists, which
+                // is a question answered with nothing at all.
+                Filter::Recency { .. } => {}
             }
         }
 
@@ -550,10 +883,26 @@ const DEFAULT_DIM: f32 = 0.25;
 /// writes nothing.
 fn mark(
     filters: Res<Filters>,
+    poll: Res<Poll>,
+    time: Res<Time<Real>>,
+    mut last_cut_at: ResMut<LastCutAt>,
     systems: Query<(Entity, Ref<System>, Has<Filtered>)>,
     mut commands: Commands,
 ) {
-    let filters_changed = filters.is_changed();
+    let now = Utc::now();
+    // A span reaches back from now, so the line it draws moves whether or not
+    // anything is asked afresh, and systems cross it going the other way. Cut
+    // again on the [`Poll`], which is the same beat the answer to it is asked
+    // for on, rather than every frame: the line moves by a frame's worth in a
+    // frame, and finding out costs a walk of every system on the map.
+    let running = time.last_update().unwrap_or(time.startup());
+    let recut =
+        filters.span().is_some() && poll.elapsed(last_cut_at.0, running);
+    if recut {
+        *last_cut_at = LastCutAt(running);
+    }
+
+    let filters_changed = filters.is_changed() || recut;
     for (entity, system, marked) in &systems {
         // A row that has changed may have changed its factions, so it is
         // asked again even while the filters stand still.
@@ -561,7 +910,7 @@ fn mark(
             continue;
         }
 
-        match (filters.admit(&system), marked) {
+        match (filters.admit(&system, now), marked) {
             (false, false) => {
                 commands.entity(entity).insert(Filtered);
             }
@@ -576,7 +925,29 @@ fn mark(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::tests::system;
+    use crate::systems::tests::{heard, system};
+
+    /// A moment `secs` after the epoch
+    fn moment(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(secs, 0).expect("a moment")
+    }
+
+    /// The moment these are asked at
+    ///
+    /// Fixed, so that a span reaching back from it lands somewhere the fixtures
+    /// can name. The filters that say nothing about time are asked at it too,
+    /// there being one way to ask.
+    fn now() -> DateTime<Utc> {
+        moment(200)
+    }
+
+    /// A filter admitting whatever was heard from within `secs` of [`now`]
+    fn within(secs: i64) -> Filter {
+        Filter::Recency {
+            label: format!("Last {secs}"),
+            span: Duration::seconds(secs),
+        }
+    }
 
     /// A faction filter, by id, called after it
     fn faction(id: i32) -> Filter {
@@ -603,8 +974,8 @@ mod tests {
     #[test]
     fn no_filter_admits_everything() {
         let filters = Filters::default();
-        assert!(filters.admit(&member(1, &[])));
-        assert!(filters.admit(&member(2, &[7])));
+        assert!(filters.admit(&member(1, &[]), now()));
+        assert!(filters.admit(&member(2, &[7]), now()));
     }
 
     /// A faction filter admits the systems that faction is in
@@ -613,10 +984,10 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(faction(7));
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(filters.admit(&member(2, &[3, 7])));
-        assert!(!filters.admit(&member(3, &[3])));
-        assert!(!filters.admit(&member(4, &[])));
+        assert!(filters.admit(&member(1, &[7]), now()));
+        assert!(filters.admit(&member(2, &[3, 7]), now()));
+        assert!(!filters.admit(&member(3, &[3]), now()));
+        assert!(!filters.admit(&member(4, &[]), now()));
     }
 
     /// Two filters admit what passes either
@@ -631,10 +1002,10 @@ mod tests {
         filters.add(faction(7));
         filters.add(faction(9));
 
-        assert!(filters.admit(&member(1, &[7, 9])));
-        assert!(filters.admit(&member(2, &[7])));
-        assert!(filters.admit(&member(3, &[9])));
-        assert!(!filters.admit(&member(4, &[3])));
+        assert!(filters.admit(&member(1, &[7, 9]), now()));
+        assert!(filters.admit(&member(2, &[7]), now()));
+        assert!(filters.admit(&member(3, &[9]), now()));
+        assert!(!filters.admit(&member(4, &[3]), now()));
     }
 
     /// A filter turned off asks nothing
@@ -644,7 +1015,7 @@ mod tests {
         filters.add(faction(7));
         filters.toggle(0);
 
-        assert!(filters.admit(&member(1, &[])));
+        assert!(filters.admit(&member(1, &[]), now()));
     }
 
     /// Turning them all off shows the sky whole, and holds on to every filter
@@ -661,7 +1032,7 @@ mod tests {
 
         assert!(!filters.any_enabled());
         assert_eq!(filters.len(), 2);
-        assert!(filters.admit(&member(1, &[3])));
+        assert!(filters.admit(&member(1, &[3]), now()));
     }
 
     /// And the same gesture puts every one of them back
@@ -678,9 +1049,9 @@ mod tests {
         filters.toggle_all(&[0, 1]);
         filters.toggle_all(&[0, 1]);
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(filters.admit(&member(2, &[9])));
-        assert!(!filters.admit(&member(3, &[3])));
+        assert!(filters.admit(&member(1, &[7]), now()));
+        assert!(filters.admit(&member(2, &[9]), now()));
+        assert!(!filters.admit(&member(3, &[3]), now()));
     }
 
     /// One left on is enough for the set to read as asking
@@ -709,7 +1080,7 @@ mod tests {
         filters.clear(&[0, 1]);
 
         assert_eq!(filters.len(), 0);
-        assert!(filters.admit(&member(1, &[3])));
+        assert!(filters.admit(&member(1, &[3]), now()));
     }
 
     /// What the filters admit is two lists a query can be handed
@@ -788,7 +1159,7 @@ mod tests {
         filters.add(route(&[]));
 
         assert_eq!(filters.admitted(), Some(Admitted::default()));
-        assert!(!filters.admit(&member(1, &[7])));
+        assert!(!filters.admit(&member(1, &[7]), now()));
     }
 
     /// One of two turned off leaves the other asking
@@ -799,8 +1170,8 @@ mod tests {
         filters.add(faction(9));
         filters.toggle(1);
 
-        assert!(filters.admit(&member(1, &[7])));
-        assert!(!filters.admit(&member(2, &[9])));
+        assert!(filters.admit(&member(1, &[7]), now()));
+        assert!(!filters.admit(&member(2, &[9]), now()));
     }
 
     /// A hand-picked set holding the systems at `addresses`
@@ -817,9 +1188,9 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(systems(&[7, 3]));
 
-        assert!(filters.admit(&member(3, &[])));
-        assert!(filters.admit(&member(7, &[])));
-        assert!(!filters.admit(&member(9, &[])));
+        assert!(filters.admit(&member(3, &[]), now()));
+        assert!(filters.admit(&member(7, &[]), now()));
+        assert!(!filters.admit(&member(9, &[]), now()));
     }
 
     /// And has no order for a panel to list it in
@@ -851,9 +1222,9 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(route(&[7, 3, 9]));
 
-        assert!(filters.admit(&member(3, &[])));
-        assert!(filters.admit(&member(9, &[])));
-        assert!(!filters.admit(&member(4, &[])));
+        assert!(filters.admit(&member(3, &[]), now()));
+        assert!(filters.admit(&member(9, &[]), now()));
+        assert!(!filters.admit(&member(4, &[]), now()));
     }
 
     /// However the addresses are ordered, the answer is the same
@@ -869,7 +1240,10 @@ mod tests {
 
         for address in [1, 5, 9, 2, 7] {
             let system = member(address, &[]);
-            assert_eq!(forwards.admit(&system), backwards.admit(&system));
+            assert_eq!(
+                forwards.admit(&system, now()),
+                backwards.admit(&system, now())
+            );
         }
     }
 
@@ -923,8 +1297,8 @@ mod tests {
         filters.add(route(&[8, 9]));
 
         assert_eq!(filters.iter().count(), 2);
-        assert!(filters.admit(&member(9, &[])));
-        assert!(filters.admit(&member(1, &[])));
+        assert!(filters.admit(&member(9, &[]), now()));
+        assert!(filters.admit(&member(1, &[]), now()));
     }
 
     /// The same route asked for twice is one route
@@ -964,13 +1338,13 @@ mod tests {
 
         let mut on_both = member(1, &[7]);
         on_both.factions = vec![7];
-        assert!(filters.admit(&on_both));
+        assert!(filters.admit(&on_both, now()));
         // On the route, though the faction is nowhere near it.
-        assert!(filters.admit(&member(2, &[])));
+        assert!(filters.admit(&member(2, &[]), now()));
         // The faction's, though the route runs elsewhere.
-        assert!(filters.admit(&member(5, &[7])));
+        assert!(filters.admit(&member(5, &[7]), now()));
         // Neither, so neither asked for it.
-        assert!(!filters.admit(&member(6, &[3])));
+        assert!(!filters.admit(&member(6, &[3]), now()));
     }
 
     /// Two filters that differ are told apart, and equal ones are not
@@ -1012,7 +1386,7 @@ mod tests {
         filters.add(faction(7));
         filters.remove(0);
 
-        assert!(filters.admit(&member(1, &[])));
+        assert!(filters.admit(&member(1, &[]), now()));
     }
 
     /// A world with nothing in it but the filters and the mark
@@ -1020,6 +1394,12 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Filters>();
+        // What `mark` cuts the spans against, and how often. Zero seconds
+        // cuts every frame, which is what a test wants: it steps the world by
+        // hand and there is no waiting in it.
+        app.insert_resource(Poll(Some(0.)));
+        app.init_resource::<LastCutAt>();
+        app.init_resource::<Time<Real>>();
         app.add_systems(Update, mark);
         app
     }
@@ -1084,5 +1464,334 @@ mod tests {
         app.update();
 
         assert!(app.world().entity(outside).contains::<Filtered>());
+    }
+
+    /// A filter on time admits what has been heard from since
+    #[test]
+    fn a_filter_on_time_admits_what_came_in_since() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        assert!(filters.admit(&heard(1, 160), now()), "later than the moment");
+        assert!(filters.admit(&heard(2, 100), now()), "the moment itself");
+        assert!(
+            !filters.admit(&heard(3, 40), now()),
+            "earlier than the moment"
+        );
+    }
+
+    /// A system belonging to each of `factions`, heard from at `secs`
+    fn member_heard(address: i64, factions: &[i32], secs: i64) -> System {
+        let mut system = heard(address, secs);
+        system.factions = factions.to_vec();
+        system
+    }
+
+    /// Time is a condition on the rest rather than another thing to show
+    ///
+    /// Two factions and a span mean either faction, heard from within the
+    /// span. Counted alongside the factions, the span would put every system
+    /// heard from lately onto a map asked for two factions.
+    #[test]
+    fn time_narrows_what_the_other_filters_admit() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(faction(9));
+        filters.add(within(100));
+
+        assert!(
+            filters.admit(&member_heard(1, &[7], 160), now()),
+            "the first faction, heard from lately"
+        );
+        assert!(
+            filters.admit(&member_heard(2, &[9], 160), now()),
+            "the second faction, heard from lately"
+        );
+        assert!(
+            !filters.admit(&member_heard(3, &[7], 40), now()),
+            "a faction asked for, but not heard from since"
+        );
+        assert!(
+            !filters.admit(&member_heard(4, &[3], 160), now()),
+            "heard from lately, but no faction asked for"
+        );
+    }
+
+    /// A span asked on its own admits whatever it reaches
+    ///
+    /// Nothing else picks systems out, so there is nothing for it to be a
+    /// condition on and it stands as the whole question.
+    #[test]
+    fn a_span_asked_alone_admits_what_it_reaches() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        assert!(filters.admit(&heard(1, 160), now()));
+        assert!(!filters.admit(&heard(2, 40), now()));
+    }
+
+    /// Reading the filters is not asking anything of them
+    ///
+    /// What the bar leans on. It is handed the filters every frame it draws,
+    /// and being handed a [`ResMut`] is what marks a resource written, so the
+    /// bar compares this before and after and marks them only where it moved.
+    /// Left to the handing alone, every frame would read as the user having
+    /// changed a filter, and what reads that puts a query on the wire.
+    #[test]
+    fn reading_the_filters_asks_nothing_of_them() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let settled = filters.revision();
+        let _ = filters.admit(&member(1, &[7]), now());
+        let _ = filters.admitted();
+        let _ = filters.span();
+        let _ = filters.len();
+        let _ = filters.any_enabled();
+
+        assert_eq!(filters.revision(), settled, "reading counted as asking");
+    }
+
+    /// And every way of asking something of them says so
+    #[test]
+    fn every_way_of_asking_moves_the_revision() {
+        let mut filters = Filters::default();
+        let mut settled = filters.revision();
+
+        let mut moved = |filters: &Filters, what: &str| {
+            assert_ne!(filters.revision(), settled, "{what} said nothing");
+            settled = filters.revision();
+        };
+
+        filters.add(faction(7));
+        moved(&filters, "adding a filter");
+
+        filters.toggle(0);
+        moved(&filters, "turning one off");
+
+        filters.toggle_all(&[0]);
+        moved(&filters, "turning the set over");
+
+        filters.ask_within("1 day", Duration::seconds(100));
+        moved(&filters, "asking about time");
+
+        filters.turn_time_off("Off");
+        moved(&filters, "turning time off");
+
+        filters.ask_nothing_of_time();
+        moved(&filters, "letting go of time");
+
+        filters.remove(0);
+        moved(&filters, "dropping a filter");
+    }
+
+    /// A span reaches back from now, so what it admits changes as the clock does
+    ///
+    /// The near edge moves, and systems cross it both ways: one heard from
+    /// within the span falls out of it by being left alone. A moment worked
+    /// out once and kept would say "since 14:32" for as long as it was asked,
+    /// so systems could only ever cross into it and the count could only climb.
+    #[test]
+    fn a_span_lets_go_of_what_has_aged_out_of_it() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        let system = heard(1, 150);
+
+        assert!(filters.admit(&system, moment(200)), "inside the span");
+        assert!(
+            !filters.admit(&system, moment(300)),
+            "the span moved on and left it behind"
+        );
+    }
+
+    /// And the span itself holds still while it does
+    ///
+    /// Which is what the region is keyed on. The moment it works out to is a
+    /// different value every frame, so a region carrying one would never be the
+    /// question it was last time; the span is the same question until the user
+    /// moves the control, and whoever puts it turns it into a moment against
+    /// the clock they ask at.
+    #[test]
+    fn the_span_holds_still_while_the_clock_runs() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        assert_eq!(filters.span(), Some(Duration::seconds(100)));
+        assert_eq!(filters.span(), Some(Duration::seconds(100)));
+    }
+
+    /// It narrows no region, what it admits being gathered nowhere
+    ///
+    /// A faction and a route say which systems a region should be asked for. A
+    /// question about time is answered from across the galaxy, so it has
+    /// nothing to add to a question about a place.
+    ///
+    /// Nothing at all rather than two empty lists. The region is asked with
+    /// whatever these hold, and a pair of empty lists asks it for no faction
+    /// and no system, which is a question the database answers with nothing.
+    #[test]
+    fn a_filter_on_time_narrows_no_region() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        assert!(filters.admitted().is_none(), "the region was narrowed");
+    }
+
+    /// Beside a faction it leaves that faction narrowing the region
+    ///
+    /// The two are asked together: the faction says which systems the region
+    /// is wanted for, and time is asked of what comes back.
+    #[test]
+    fn a_filter_on_time_leaves_a_faction_narrowing() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(within(100));
+
+        let admitted = filters.admitted().expect("the faction asked");
+        assert_eq!(admitted.factions, vec![7]);
+    }
+
+    /// Asking again about time replaces the question rather than adding one
+    ///
+    /// Two of these would draw what the wider of them draws, since the earlier
+    /// moment's answer holds the later one's. The control would look like it
+    /// had stopped responding once it had been moved twice.
+    #[test]
+    fn asking_about_time_twice_asks_one_question() {
+        let mut filters = Filters::default();
+        filters.ask_within("1 day", Duration::seconds(100));
+        filters.ask_within("1 hour", Duration::seconds(50));
+
+        assert_eq!(filters.len(), 1, "the first question was left standing");
+        assert_eq!(filters.span(), Some(Duration::seconds(50)));
+    }
+
+    /// The row a filter on time draws says the span it was asked as
+    ///
+    /// A moment on its own reads as a time of day with no date against it, so
+    /// a row naming one says nothing the user can act on once the span
+    /// reaching back to it is longer than a day.
+    #[test]
+    fn a_filter_on_time_is_named_for_its_span() {
+        let mut filters = Filters::default();
+        filters.ask_within("30 days", Duration::seconds(100));
+
+        assert_eq!(
+            filters.get(0).map(|active| active.filter.name()),
+            Some("Last 30 days")
+        );
+    }
+
+    /// Sliding the control off stops asking about time and nothing else
+    #[test]
+    fn asking_nothing_of_time_leaves_the_rest() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.ask_within("1 day", Duration::seconds(100));
+
+        filters.ask_nothing_of_time();
+
+        assert_eq!(filters.span(), None, "still asking about time");
+        assert_eq!(filters.len(), 1, "the faction went with it");
+        assert!(
+            filters.admit(&member(1, &[7]), now()),
+            "the faction stopped asking"
+        );
+    }
+
+    /// Turning time off stops it asking without taking its row away
+    ///
+    /// What the control does while it is being held, its row standing above
+    /// it. The row says what is filtering, which by then is nothing.
+    #[test]
+    fn time_turned_off_stops_asking_where_it_stands() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        filters.turn_time_off("Off");
+
+        assert_eq!(filters.len(), 1, "the row went with the question");
+        assert_eq!(filters.span(), None, "still asking about time");
+        assert!(
+            filters.admit(&heard(1, 40), now()),
+            "still turning systems away"
+        );
+        assert_eq!(
+            filters.get(0).map(|active| active.filter.name()),
+            Some("Off"),
+            "the row still named the span it had stopped asking for"
+        );
+    }
+
+    /// A filter on time turned off asks nothing, as any other does
+    ///
+    /// The fetch behind it reads this, so a disabled row that still answered
+    /// would go on pulling ten thousand rows a poll for a question the user
+    /// had switched off.
+    #[test]
+    fn a_disabled_filter_on_time_asks_nothing() {
+        let mut filters = Filters::default();
+        filters.ask_within("1 day", Duration::seconds(100));
+        filters.toggle(0);
+
+        assert_eq!(filters.span(), None);
+    }
+
+    /// A hold whose drag never ended is let go of
+    ///
+    /// The control says when a drag begins and may never say that it ended: a
+    /// form shut with the pointer down takes it off screen, and egui says
+    /// nothing further about a widget it is no longer drawing. Left held, the
+    /// bar goes on drawing its rows from a copy, and every toggle, close and
+    /// panel opened on one lands on something dropped at the end of the frame.
+    #[test]
+    fn a_hold_whose_drag_never_ended_is_let_go_of() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let mut standstill = Standstill::default();
+        standstill.hold(&filters);
+        assert!(standstill.rows(&filters).is_some(), "the press took no hold");
+
+        standstill.settle(false);
+
+        assert!(
+            standstill.rows(&filters).is_none(),
+            "the rows were held after the gesture that held them",
+        );
+    }
+
+    /// And one whose drag is still under way is left where it is
+    ///
+    /// Which is the whole point of the hold: a row arriving mid-drag takes the
+    /// control down a row and out from under the pointer.
+    #[test]
+    fn a_hold_is_kept_while_the_drag_is_under_way() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+
+        let mut standstill = Standstill::default();
+        standstill.hold(&filters);
+        standstill.settle(true);
+
+        assert!(
+            standstill.rows(&filters).is_some(),
+            "the hold was let go of mid-drag",
+        );
+    }
+
+    /// The control's far end asks nothing, and its near end asks for a minute
+    ///
+    /// The spans and what they are called are one table read by index, so this
+    /// is what says the two halves of it still line up.
+    #[test]
+    fn the_control_reaches_from_nothing_to_a_minute() {
+        assert_eq!(Watch(0).name(), "Off");
+        assert_eq!(Watch(0).span(), None);
+
+        let nearest = Watch(SPANS.len() - 1);
+        assert_eq!(nearest.name(), "1 minute");
+        assert_eq!(nearest.span(), Some(Duration::seconds(60)));
     }
 }

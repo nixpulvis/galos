@@ -24,6 +24,7 @@ use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
+use chrono::Utc;
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
 use std::{
@@ -602,7 +603,7 @@ pub fn spawn_systems(
             // Asked here as well as in `filter::mark`, since a mark applied
             // by a command lands at the next sync point and the star would
             // be drawn once at full strength before it arrived.
-            let excluded = !filters.admit(&system);
+            let excluded = !filters.admit(&system, Utc::now());
             let drawn = star(&system, color_by, roundness, materials, excluded);
             let mut spawned = commands.spawn((
                 placement(&system, grid),
@@ -819,7 +820,10 @@ fn allegiance_hue(system: &System) -> Hue {
         Some(Allegiance::Alliance) => Hue::Green,
         Some(Allegiance::Empire) => Hue::Cyan,
         Some(Allegiance::Federation) => Hue::Red,
-        Some(Allegiance::PilotsFederation) => Hue::Orange,
+        // A company rather than a power, as the Pilots Federation is
+        Some(Allegiance::PilotsFederation | Allegiance::FrontlineSolutions) => {
+            Hue::Orange
+        }
         Some(Allegiance::PlayerPilots) => Hue::Yellow,
         Some(Allegiance::Independent) => Hue::Yellow,
         Some(Allegiance::Guardian) => Hue::Blue,
@@ -831,7 +835,9 @@ fn allegiance_hue(system: &System) -> Hue {
 fn government_hue(system: &System) -> Hue {
     match system.government {
         Some(Government::Anarchy) => Hue::Yellow,
-        Some(Government::Carrier) => Hue::Green,
+        // Neither is a way of governing anybody. A carrier answers to whoever
+        // owns it, and a megaconstruction site to whoever is building it.
+        Some(Government::Carrier | Government::Megaconstruction) => Hue::Green,
         Some(Government::Communism) => Hue::Red,
         Some(Government::Confederacy) => Hue::Red,
         Some(Government::Cooperative) => Hue::Orange,
@@ -880,6 +886,8 @@ impl TryFrom<&DbSystem> for System {
             security: system.security,
             economies: system.economies,
             factions: system.factions.clone(),
+            body_count: system.body_count,
+            non_body_count: system.non_body_count,
             updated_at: system.updated_at,
         })
     }
@@ -901,6 +909,8 @@ mod tests {
             allegiance: None,
             economies: None,
             factions: Vec::new(),
+            body_count: None,
+            non_body_count: None,
             updated_at: chrono::DateTime::UNIX_EPOCH,
             updated_by: String::new(),
         }

@@ -1,0 +1,12 @@
+-- Asking which systems changed lately is a filter the map puts. It names a
+-- region as well, but there is no narrowing to be had from that first: an hour
+-- of the feed touches some five thousand of the 1,166,417 rows, scattered
+-- across four hundred and twenty-two 100 light year bands, so a region holds
+-- almost none of them and a sequential scan is the alternative. The plan bears
+-- it out, driving from this index and testing the region as a filter.
+--
+-- The direction is spare. What is asked is a range, `updated_at >= $1`, which
+-- a btree walks either way round, so this reads the same ascending. It is
+-- written descending because that is the end every such question starts from,
+-- and it costs nothing to say so.
+CREATE INDEX systems_updated_at ON systems USING btree (updated_at DESC);

@@ -250,7 +250,7 @@ pub fn size_by_distance(
             // Only the one system the map is holding the insides of can say
             // how far it reaches. Every other is drawn at the stand-in, which
             // is what not knowing looks like.
-            let extent = if contents.known(system.address) {
+            let extent = if contents.holds(system.address) {
                 contents.extent().unwrap_or(STAND_IN)
             } else {
                 STAND_IN

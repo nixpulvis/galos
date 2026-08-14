@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO clusters (\n                system_address,\n                id,\n                name,\n                updated_at,\n                updated_by,\n\n                distance_from_arrival,\n                was_discovered,\n                was_mapped,\n                parent_ids,\n                parent_types)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ON CONFLICT (system_address, id)\n            DO UPDATE SET\n                -- A message delivered late is still taken, for whatever it\n                -- fills in below. What it does not do is put the reading back\n                -- in time, or call the row what it was called when it was\n                -- sent.\n                name = CASE WHEN $4 >= clusters.updated_at\n                    THEN $3 ELSE clusters.name END,\n                updated_at = GREATEST(clusters.updated_at, $4),\n                updated_by = CASE WHEN $4 >= clusters.updated_at\n                    THEN $5 ELSE clusters.updated_by END,\n\n                distance_from_arrival =\n                    COALESCE($6, clusters.distance_from_arrival),\n                was_discovered = clusters.was_discovered OR $7,\n                was_mapped = clusters.was_mapped OR $8,\n                parent_ids = COALESCE($9, clusters.parent_ids),\n                parent_types = COALESCE($10, clusters.parent_types)\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_address",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "distance_from_arrival",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 6,
+        "name": "was_discovered",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "was_mapped",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "parent_ids",
+        "type_info": "Int2Array"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_types",
+        "type_info": "VarcharArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Varchar",
+        "Timestamp",
+        "Varchar",
+        "Float4",
+        "Bool",
+        "Bool",
+        "Int2Array",
+        "VarcharArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "61dc33eba74e394fae18b52b631a5ba3964610c86a67dc0497126467dbe5c6e9"
+}

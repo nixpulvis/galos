@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO system_signals (\n                    system_address,\n                    name,\n                    updated_at,\n                    updated_by,\n\n                    signal_type,\n                    is_station,\n                    uss_type,\n                    spawning_state,\n                    spawning_faction,\n                    spawning_power,\n                    opposing_power,\n                    threat_level)\n                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n                ON CONFLICT (system_address, name)\n                DO UPDATE SET\n                    updated_at = $3,\n                    updated_by = $4,\n\n                    signal_type = $5,\n                    is_station = $6,\n                    uss_type = $7,\n                    spawning_state = $8,\n                    spawning_faction = $9,\n                    spawning_power = $10,\n                    opposing_power = $11,\n                    threat_level = $12\n                WHERE system_signals.updated_at <= $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Timestamp",
+        "Varchar",
+        "Varchar",
+        "Bool",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "791f2c093421703c945af6ab5418cc36f38a2b5e6a7fe50c8965d698e3d82d54"
+}
