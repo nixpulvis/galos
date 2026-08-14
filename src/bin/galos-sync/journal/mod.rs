@@ -1,6 +1,8 @@
 use crate::Run;
 use async_std::task;
-use elite_journal::entry::{parse_journal_file, Entry, Event};
+use elite_journal::entry::{
+    parse_journal_file, parse_status_file, Entry, Event, NavRoute,
+};
 use galos_db::Database;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::ffi::OsStr;
@@ -15,8 +17,9 @@ pub mod record;
 /// Where a journal directory remembers whose it is
 ///
 /// The `.log` files name the commander who flew them, and that is the answer
-/// wherever it is given. It is not always given: a session continued into a
-/// second file picks up without introducing itself again.
+/// wherever it is given. Two things beside them do not. `NavRoute.json` says
+/// where a ship is going and nothing about who is flying it, and a session
+/// continued into a second file picks up without introducing itself again.
 ///
 /// So the directory is asked to remember. What the logs said is written here
 /// and read back when nothing in front of us says otherwise. Per directory
@@ -42,6 +45,13 @@ pub struct Cli {
         help = "Whose journal this is, overriding what the files say"
     )]
     pub user: Option<String>,
+    // TODO: `Market.json`, `Shipyard.json` and `Outfitting.json`, which the
+    // game keeps beside its logs and rewrites at every station. Nothing reads
+    // them yet: `elite_journal` models these three on the shape EDDN sends,
+    // which is not the shape the game writes -- camelCase against Pascal,
+    // `commodities` against `Items`, and item fields that differ under both.
+    // Reading them needs types for the game's shape in `elite_journal`, which
+    // convert into the ones `record::market` and its neighbors already take.
 }
 
 impl Run for Cli {
@@ -122,6 +132,10 @@ impl Run for Cli {
         }
         bar.finish();
 
+        let user = forced.or(known.as_deref()).unwrap_or(UNKNOWN);
+        if meta.is_dir() {
+            sidecars(db, &dir, user);
+        }
         if let Some(name) = forced.or(known.as_deref()) {
             remember(&dir, name);
         }
@@ -148,6 +162,35 @@ fn logs(dir: &Path) -> Vec<PathBuf> {
                 && path.extension().and_then(OsStr::to_str) == Some("log")
         })
         .collect()
+}
+
+/// The files the game keeps beside its logs
+///
+/// Each holds the whole of something as it stands rather than a record of it
+/// changing, and is rewritten in place. Only the ones something here reads are
+/// looked for; the rest -- `Status.json`, `Cargo.json`, `ShipLocker.json` and
+/// their like -- describe a ship and a commander rather than a galaxy, and
+/// there is nowhere to put them.
+fn sidecars(db: &Database, dir: &Path, user: &str) {
+    let route = dir.join("NavRoute.json");
+    if !route.is_file() {
+        return;
+    }
+
+    match parse_status_file::<_, NavRoute>(&route) {
+        Ok(entry) => {
+            let NavRoute::Route(ref destinations) = entry.event;
+            task::block_on(record::nav_route(
+                db,
+                entry.timestamp,
+                user,
+                destinations,
+            ))
+        }
+        Err(err) => {
+            warn!(file = %route.display(), error = %err, "unreadable nav route")
+        }
+    }
 }
 
 /// Who flew these entries, where they say
