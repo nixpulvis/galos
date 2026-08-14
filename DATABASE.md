@@ -51,6 +51,15 @@ update — that data is gone today, because EDDN cannot be asked twice. Keep a
 few days of spool files and the fix is to correct the parser and drain them
 again.
 
+**It has to be managed, or it is just a slower way to lose data.** A buffer
+nobody watches fills the disk, and a full disk stops the appending that was
+the whole point. So: rotate the files rather than growing one, delete them
+once drained and past their retention window, put a ceiling on total spool
+size and decide now what happens when it is reached — dropping the oldest
+undrained messages is a real answer, silently wedging is not. The depth of
+the spool is also the best signal there is that the database is unwell, and
+is worth reporting somewhere alongside `max(updated_at)`.
+
 What it is worth against downtime depends on how long the database is away,
 and [losing the
 cluster](#losing-the-cluster--stand-up-an-empty-one-backfill-underneath-it)
