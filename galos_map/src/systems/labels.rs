@@ -1129,9 +1129,12 @@ pub fn face_camera(
 
             // The plate is drawn at the body's own scale otherwise, and a
             // body's scale is its radius in metres.
-            label.scale = Vec3::splat(height / SIZE / at.scale().x.max(1e-6));
-            label.translation = offset / at.scale().x.max(1e-6);
-            label.rotation = orbit.rotation;
+            let own = at.scale().x.max(1e-6);
+            label.set_if_neq(Transform {
+                translation: offset / own,
+                rotation: orbit.rotation,
+                scale: Vec3::splat(height / SIZE / own),
+            });
             continue;
         };
 
@@ -1160,9 +1163,14 @@ pub fn face_camera(
         let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
             + orbit.rotation * Vec3::Y * (height * RISE);
 
-        label.scale = Vec3::splat(scale);
-        label.translation = offset;
-        label.rotation = orbit.rotation;
+        // Only where it moved, as everything the camera decides the size of
+        // is. A plate carries a mesh, so a transform written regardless hands
+        // every name on screen back to the renderer every frame.
+        label.set_if_neq(Transform {
+            translation: offset,
+            rotation: orbit.rotation,
+            scale: Vec3::splat(scale),
+        });
     }
 }
 
@@ -2004,5 +2012,88 @@ mod tests {
         app.update();
 
         assert_eq!(up(&mut app), 0, "the plate outlived its system");
+    }
+
+    /// How many names were placed
+    #[derive(Resource, Default)]
+    struct Placings(usize);
+
+    fn count_placings(
+        mut placings: ResMut<Placings>,
+        labels: Query<(), (Changed<Transform>, With<Label>)>,
+    ) {
+        placings.0 += labels.iter().count();
+    }
+
+    /// A world holding a camera and a system wearing a name
+    fn facing() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Placings>();
+        app.add_systems(Update, (face_camera, count_placings).chain());
+        app.world_mut().spawn((
+            OrbitCamera {
+                eye: DVec3::ZERO,
+                rotation: Quat::IDENTITY,
+                ..default()
+            },
+            crate::systems::tests::seeing(),
+            GlobalTransform::default(),
+        ));
+
+        // Down the axis the camera looks along, a name being sized by how far
+        // into the view its system lies rather than by how far off it is.
+        let mut standing = crate::systems::tests::system(1);
+        standing.position = [0., 0., -5.];
+        // No mark to stand off, the gap a name is given being enough on its
+        // own to place one.
+        let system =
+            app.world_mut().spawn((standing, Indicator::default())).id();
+        let label = app.world_mut().spawn((Label, Transform::default())).id();
+        app.world_mut().entity_mut(system).add_child(label);
+        app
+    }
+
+    /// How many names have been placed so far
+    fn placings(app: &App) -> usize {
+        app.world().resource::<Placings>().0
+    }
+
+    /// A frame that moves nothing leaves a name where it stands
+    ///
+    /// A plate carries a mesh, so a transform written regardless hands every
+    /// name on screen back to the renderer every frame.
+    #[test]
+    fn a_resting_frame_leaves_a_name_where_it_stands() {
+        let mut app = facing();
+
+        // The name arriving is a change of its own, and the frame after it is
+        // the first that could be said to be resting.
+        app.update();
+        app.update();
+        let settled = placings(&app);
+
+        app.update();
+        assert_eq!(placings(&app), settled, "placed a name that had not moved");
+    }
+
+    /// And a camera that has moved still turns it
+    ///
+    /// Which is the whole of what this does: a name is offset along the
+    /// camera's own axes and sized by how far into the view it lies, so both
+    /// answers move the moment the camera does.
+    #[test]
+    fn a_name_is_placed_again_when_the_camera_moves() {
+        let mut app = facing();
+        app.update();
+        app.update();
+        let settled = placings(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(0., 0., -2.);
+        app.update();
+
+        assert!(placings(&app) > settled, "left a name where it was standing");
     }
 }
