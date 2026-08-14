@@ -449,6 +449,28 @@ mod tests {
         assert_eq!(shell(extent, 1e12, 1.), held);
     }
 
+    /// A mark is gone well before the camera reaches the shell it stood for
+    ///
+    /// The whole exchange is ratios of a system's own reach, so this holds for
+    /// a system of any size at once: a mark is gone twenty reaches out and the
+    /// shell surface is at [`MARGIN`], sixteen times nearer. Reversed, a
+    /// camera would fly into a lit sphere drawn over the very bodies the mark
+    /// was standing in for.
+    ///
+    /// The two constants sit in different modules and nothing else holds them
+    /// to each other. [`super::bodies::spawn::WORTH_HIDING`] is where the fade
+    /// ends, and everything read off it is read in radians; `MARGIN` is a
+    /// multiple of a length.
+    #[test]
+    fn a_mark_is_gone_before_the_camera_reaches_the_shell() {
+        let gone_at = 1. / super::super::bodies::spawn::WORTH_HIDING;
+
+        assert!(
+            gone_at > MARGIN * 4.,
+            "a mark lasts to {gone_at} reaches, against a shell at {MARGIN}"
+        );
+    }
+
     /// A shell only encloses the camera once it has settled onto its system
     ///
     /// What [`NEAREST`] is for. A mark is an angle, and an angle subtends a

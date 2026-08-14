@@ -132,7 +132,7 @@ const WORTH_MARKING: f32 = 0.0125;
 /// view and a mark standing in for it would be standing over the thing itself.
 /// Four times [`WORTH_MARKING`], which is a quarter of the distance, and long
 /// enough that the fade reads as one thing becoming another.
-const WORTH_HIDING: f32 = 0.05;
+pub(crate) const WORTH_HIDING: f32 = 0.05;
 
 /// The system whose insides the map is drawing, if any
 ///
