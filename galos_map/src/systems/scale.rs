@@ -262,7 +262,13 @@ pub fn size_by_distance(
             };
 
             let size = shell(extent, away, prominence);
-            drawn.scale = Vec3::splat(size);
+            // Only where it moved, as `size_inside` is. A scale assigned
+            // regardless marks every shell in the sky changed every frame, and
+            // both the transform propagation and the mesh extraction that read
+            // it are gated on that mark.
+            if drawn.scale.x != size {
+                drawn.scale = Vec3::splat(size);
+            }
 
             // Measured out along the line to the system rather than into the
             // view, which is what the size itself is measured by. A mark off
@@ -373,7 +379,12 @@ pub fn size_uniformly(
     // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
     // transparent when they are too far away.
     for (mut drawn, child_of, mut mesh) in shells.iter_mut() {
-        drawn.scale = Vec3::splat(size);
+        // Only where it moved, as everything that sizes a shell is. The size
+        // here is one number for the whole map, so past the frame a shell is
+        // spawned this never writes at all.
+        if drawn.scale.x != size {
+            drawn.scale = Vec3::splat(size);
+        }
 
         let Some((eye, cot_half_fov, height)) = seen else { continue };
         let Ok(system) = systems.get(child_of.parent()) else { continue };
@@ -391,7 +402,7 @@ pub fn size_uniformly(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::tests::system;
+    use crate::systems::tests::{at, system};
 
     /// A shell always holds the system it stands around
     ///
@@ -622,5 +633,137 @@ mod tests {
         app.world_mut().entity_mut(entity).despawn();
         app.update();
         assert_eq!(mean(&app), 0., "averaged an empty map to a NaN");
+    }
+
+    /// How many shells were written to
+    #[derive(Resource, Default)]
+    struct Writes(usize);
+
+    fn count_writes(
+        mut writes: ResMut<Writes>,
+        shells: Query<(), (Changed<Transform>, With<Shell>)>,
+    ) {
+        writes.0 += shells.iter().count();
+    }
+
+    /// A world holding a camera and whatever shells are hung in it
+    ///
+    /// The camera carries a viewport of its own, answering nothing for its
+    /// size otherwise, that being the render target's to say and nothing here
+    /// bringing one up.
+    fn sky() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<SystemsStats>();
+        app.init_resource::<Writes>();
+        app.init_resource::<crate::systems::bodies::Contents>();
+        app.insert_resource(ScalePopulation(false));
+        app.add_plugins(crate::systems::roundness::plugin);
+        app.world_mut().spawn((OrbitCamera::default(), looking()));
+        app
+    }
+
+    /// A camera that can say how large its view is and how wide it opens
+    ///
+    /// Both are the render target's to answer, and nothing here brings one up,
+    /// so they are written in by hand. Without them a camera answers nothing
+    /// for its viewport and everything sized against one stands down.
+    fn looking() -> Camera {
+        let lens = PerspectiveProjection::default();
+        Camera {
+            computed: bevy::camera::ComputedCameraValues {
+                target_info: Some(bevy::camera::RenderTargetInfo {
+                    physical_size: UVec2::new(800, 600),
+                    scale_factor: 1.,
+                }),
+                clip_from_view: Projection::Perspective(lens)
+                    .get_clip_from_view(),
+                ..default()
+            },
+            ..default()
+        }
+    }
+
+    /// A system `away` light years off, with a shell standing around it
+    fn shelled(app: &mut App, address: i64, away: f64) {
+        let system = app.world_mut().spawn(at(address, away)).id();
+        let shell = app
+            .world_mut()
+            .spawn((Shell, Transform::default(), Mesh3d::default()))
+            .id();
+        app.world_mut().entity_mut(system).add_child(shell);
+    }
+
+    /// What has been written to a shell so far
+    fn writes(app: &App) -> usize {
+        app.world().resource::<Writes>().0
+    }
+
+    /// A frame that moves nothing leaves a shell's size alone
+    ///
+    /// Both the transform propagation and the mesh extraction that read a
+    /// shell's size look only at what changed since the last frame. Assigning
+    /// it regardless hands them every star in the sky every frame, whether or
+    /// not the camera has moved.
+    #[test]
+    fn a_resting_frame_leaves_a_shell_alone() {
+        let mut app = sky();
+        app.add_systems(Update, (size_by_distance, count_writes).chain());
+        shelled(&mut app, 1, 5.);
+
+        // The shell arriving is itself a change, so the first frame is counted
+        // whatever this system does. It is the second that says whether a
+        // resting frame writes.
+        app.update();
+        let settled = writes(&app);
+
+        app.update();
+        assert_eq!(writes(&app), settled, "sized a shell that had not moved");
+    }
+
+    /// And a camera that has moved still resizes it
+    ///
+    /// Which is what the size is for. A guard that held through a zoom would
+    /// leave every mark in the sky drawn at whatever it was when the camera
+    /// last stood still.
+    #[test]
+    fn a_shell_is_sized_again_when_the_camera_moves() {
+        let mut app = sky();
+        app.add_systems(Update, (size_by_distance, count_writes).chain());
+        shelled(&mut app, 1, 5.);
+
+        app.update();
+        app.update();
+        let settled = writes(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(2., 0., 0.);
+        app.update();
+
+        assert!(writes(&app) > settled, "left a shell at the size it was");
+    }
+
+    /// A shell drawn at one size for the whole map is written once
+    ///
+    /// This view draws every system the same size whatever the camera is
+    /// doing, so past the frame a shell is spawned there is never anything to
+    /// write at all.
+    #[test]
+    fn an_evenly_drawn_shell_is_sized_once() {
+        let mut app = sky();
+        app.add_systems(Update, (size_uniformly, count_writes).chain());
+        shelled(&mut app, 1, 5.);
+
+        app.update();
+        let settled = writes(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(2., 0., 0.);
+        app.update();
+
+        assert_eq!(writes(&app), settled, "sized a shell that draws one size");
     }
 }
