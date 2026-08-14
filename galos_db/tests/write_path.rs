@@ -44,7 +44,7 @@ use elite_journal::entry::market::{
 use elite_journal::station::{
     LandingPads, Service, Station as JournalStation, StationType,
 };
-use elite_journal::system::{Coordinate, System as JournalSystem};
+use elite_journal::system::{Coordinate, Security, System as JournalSystem};
 use elite_journal::Allegiance;
 use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
@@ -195,6 +195,7 @@ const PLACED: i64 = 900_000_018;
 const LATE: i64 = 900_000_019;
 const LATE_VISIT: i64 = 900_000_037;
 const LATE_FILLS: i64 = 900_000_038;
+const LATE_CREATE: i64 = 900_000_041;
 const TRADE_STATION: i64 = 900_000_039;
 const RENAMED: i64 = 900_000_040;
 const LATE_COUNT: i64 = 900_000_020;
@@ -1780,6 +1781,61 @@ async fn an_older_visit_fills_in_what_a_system_has_never_held() {
     );
     assert_eq!(stored.updated_at, at(600), "the fill-in moved the stamp");
     assert_eq!(stored.updated_by, "scan", "the sender went with it");
+}
+
+/// The same holds where a system is written by name rather than from a journal
+///
+/// [`System::create`] and [`System::from_journal`] write one row and must agree
+/// about a late message, but they are two statements with two sets of numbered
+/// parameters, written out by hand. A transposition in one would not show in the
+/// other, and neither would show in what `sqlx` checks: every comparison here is
+/// against the one timestamp the statement takes.
+#[async_std::test]
+async fn a_late_create_wins_nothing_and_fills_what_is_blank() {
+    let db = db!();
+    forget(LATE_CREATE).await;
+
+    let wrote = |secs, population, allegiance, security, user| {
+        System::create(
+            &db,
+            LATE_CREATE,
+            "Test Late Create",
+            Some(somewhere(25.0)),
+            None,
+            Some(population),
+            security,
+            None,
+            Some(allegiance),
+            None,
+            at(secs),
+            user,
+        )
+    };
+
+    wrote(600, 4_000_000, Allegiance::Empire, None, "newer")
+        .await
+        .expect("the newer write should land");
+
+    // Sent earlier, carrying a worse reading of two things the row has and the
+    // only reading of one it has not.
+    wrote(0, 1_000, Allegiance::Federation, Some(Security::High), "older")
+        .await
+        .expect("the late write should land");
+
+    let stored = System::fetch(&db, LATE_CREATE).await.expect("should read");
+    assert_eq!(stored.population, 4_000_000, "the late reading won");
+    assert_eq!(
+        stored.allegiance,
+        Some(Allegiance::Empire),
+        "the system changed hands backwards",
+    );
+    assert_eq!(
+        stored.security,
+        Some(Security::High),
+        "the blank the late message could fill was left blank",
+    );
+    assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
+    assert_eq!(stored.updated_by, "newer", "the sender went back with it");
 }
 
 /// The later reading of a signal wins, whichever of the two arrives first
