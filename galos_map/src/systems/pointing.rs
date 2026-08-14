@@ -469,7 +469,13 @@ pub fn size_indicators(
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
         let shell = drawn * INDICATOR_MARGIN / per_pixel;
 
-        indicator.0 = shell.max(INDICATOR_MIN_RADIUS);
+        // Only where it moved, as everything asked of every system every frame
+        // is. Nothing watches a mark for changes today, and writing one
+        // regardless is how that stops being safe without anyone meaning it to.
+        let wanted = shell.max(INDICATOR_MIN_RADIUS);
+        if indicator.0 != wanted {
+            indicator.0 = wanted;
+        }
     }
 }
 
@@ -503,7 +509,11 @@ pub fn size_bodies(
         let into_view = depth_of(orbit, offset).max(1.);
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
 
-        indicator.0 = body_mark(body.radius, per_pixel);
+        // Only where it moved, as a system's mark is.
+        let wanted = body_mark(body.radius, per_pixel);
+        if indicator.0 != wanted {
+            indicator.0 = wanted;
+        }
     }
 }
 
@@ -1612,6 +1622,93 @@ mod tests {
             !app.world().entity(system).contains::<PointedAt>(),
             "the system answered over the body inside it"
         );
+    }
+
+    /// How many marks were written
+    #[derive(Resource, Default)]
+    struct Marks(usize);
+
+    fn count_marks(
+        mut marks: ResMut<Marks>,
+        systems: Query<(), (Changed<Indicator>, With<System>)>,
+    ) {
+        marks.0 += systems.iter().count();
+    }
+
+    /// A world holding a camera and a system with a shell drawn around it
+    ///
+    /// The shell is a tenth of a light year across, which is far wider than
+    /// one is really drawn. Anything smaller marks at [`INDICATOR_MIN_RADIUS`]
+    /// from five light years off, and a floor is the same number wherever the
+    /// camera stands, so a shell that reaches over it is what leaves the mark
+    /// with anything to say.
+    fn sized() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Marks>();
+        app.add_systems(Update, (size_indicators, count_marks).chain());
+        app.world_mut().spawn((looking(), crate::systems::tests::seeing()));
+
+        // Down the axis the camera looks along, a mark being measured by how
+        // far into the view its system lies rather than by how far off it is.
+        let mut standing = crate::systems::tests::system(1);
+        standing.position = [0., 0., -5.];
+        let system =
+            app.world_mut().spawn((standing, Indicator::default())).id();
+        let wide = (0.1 * crate::space::LIGHT_YEAR) as f32;
+        let shell = app
+            .world_mut()
+            .spawn((
+                Shell,
+                Transform::from_scale(Vec3::splat(wide)),
+                Visibility::default(),
+            ))
+            .id();
+        app.world_mut().entity_mut(system).add_child(shell);
+        app
+    }
+
+    /// How many marks have been written so far
+    fn marks(app: &App) -> usize {
+        app.world().resource::<Marks>().0
+    }
+
+    /// A frame that moves nothing leaves a system's mark alone
+    ///
+    /// The mark is asked of every system every frame, and nothing watches one
+    /// for changes today. Writing it regardless is how that stops being safe
+    /// without anyone meaning it to.
+    #[test]
+    fn a_resting_frame_leaves_a_mark_alone() {
+        let mut app = sized();
+
+        // The system arriving is a change of its own, and the frame after it
+        // is the first that could be said to be resting.
+        app.update();
+        app.update();
+        let settled = marks(&app);
+
+        app.update();
+        assert_eq!(marks(&app), settled, "wrote a mark that had not moved");
+    }
+
+    /// And a camera that has moved still remarks it
+    ///
+    /// Which is what the mark is worked out for: it is held in pixels, so
+    /// where the camera stands is the whole of what decides it.
+    #[test]
+    fn a_mark_is_written_again_when_the_camera_moves() {
+        let mut app = sized();
+        app.update();
+        app.update();
+        let settled = marks(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(0., 0., -2.);
+        app.update();
+
+        assert!(marks(&app) > settled, "left a mark at the size it was");
     }
 
     /// How many times the cursor was written
