@@ -1,8 +1,6 @@
 use crate::Run;
 use async_std::task;
-use elite_journal::entry::{
-    parse_journal_file, parse_status_file, Entry, Event, NavRoute,
-};
+use elite_journal::entry::{parse_journal_file, Entry, Event, NavRoute};
 use galos_db::Database;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::ffi::OsStr;
@@ -177,7 +175,19 @@ fn sidecars(db: &Database, dir: &Path, user: &str) {
         return;
     }
 
-    match parse_status_file::<_, NavRoute>(&route) {
+    // Read here rather than through `parse_status_file`, which opens the file
+    // behind an `unwrap`. This runs after every log has been written, and a
+    // route the filesystem would not hand over is no reason to take the whole
+    // import down at the end of it.
+    let json = match fs::read_to_string(&route) {
+        Ok(json) => json,
+        Err(err) => {
+            warn!(file = %route.display(), error = %err, "unreadable nav route");
+            return;
+        }
+    };
+
+    match serde_json::from_str::<Entry<NavRoute>>(&json) {
         Ok(entry) => {
             let NavRoute::Route(ref destinations) = entry.event;
             task::block_on(record::nav_route(

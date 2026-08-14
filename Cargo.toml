@@ -18,13 +18,11 @@ edsm = { path = "./edsm" }
 galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
 prettytable-rs = "*"
+serde_json = "*"
 tui = "*"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 galos_map= { path = "./galos_map" }
-
-[dev-dependencies]
-serde_json = "*"
 
 [target.'cfg(unix)'.dependencies]
 eddn = { path = "./eddn" }
