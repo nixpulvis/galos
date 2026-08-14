@@ -54,8 +54,11 @@ Staging is thrown away and rebuilt each run. The history is kept forever —
 it is the only thing that remembers what happened last month.
 
 ```sql
+-- No key and no indexes. The merge joins this against `systems` and never
+-- seeks into it, and a btree built across a hundred million rows during the
+-- COPY is the slowest part of the run for nothing.
 CREATE UNLOGGED TABLE spansh_systems (
-    address bigint PRIMARY KEY, name text,
+    address bigint, name text,
     x float8, y float8, z float8, star_class varchar
 );
 
@@ -103,7 +106,7 @@ INSERT INTO systems (address, name, position, primary_star_class,
                      updated_at, updated_by)
 SELECT s.address, UPPER(s.name),
        ST_SetSRID(ST_MakePoint(s.x, s.y, s.z), 0),
-       s.star_class, :dump_date, 'Spansh dump ' || :dump_date
+       s.star_class, 'epoch', 'Spansh dump ' || :dump_date
 FROM spansh_systems s
 ON CONFLICT DO NOTHING;
 
@@ -128,12 +131,16 @@ WHERE t.address = s.address
 Three things about this database break under the obvious upsert, and each
 one is invisible when it happens.
 
-**`updated_at` must not move.** EDDN passes the event's own timestamp and
-the journal importer passes the journal's, not `now()`. `create.rs` only
-writes when `systems.updated_at < $11`. Stamp a hundred million rows with
-the dump's date and every later message older than that date is dropped
-silently and forever — a journal replay of an old flight, most of all. A
-backfill leaves `updated_at` and `updated_by` where it found them.
+**`updated_at` must not move, and new rows start at `epoch`.** EDDN passes
+the event's own timestamp and the journal importer passes the journal's, not
+`now()`. `create.rs` only writes when `systems.updated_at < $11`. Stamp rows
+with the dump's date and every later message older than that date is dropped
+silently and forever — a journal replay of an old flight, most of all. So
+(b) leaves `updated_at` and `updated_by` where it found them, and (a) dates
+what it inserts to `epoch` rather than to the snapshot. That is also the
+truer reading: we have not observed those systems, only learnt that they
+exist, and the first real sighting of one should always win. `updated_by`
+still carries the dump's date, which is where to look for a row's age.
 
 **The `IS NULL` predicate in (b) is not an optimisation.** An `UPDATE` in
 Postgres is a delete and an insert. Firing one on every row leaves a hundred
@@ -147,6 +154,37 @@ is `UNIQUE`. A dump row colliding on coordinates with an existing row under a
 different address raises a violation that `ON CONFLICT (address)` does not
 catch, and it takes the whole chunk down with it. Bare `DO NOTHING` covers
 every constraint on the table.
+
+## Why EDDN can keep running through it
+
+We hold a GIST index over `systems.position`, and a monthly run offers it a
+hundred million rows. It is left alone anyway, because almost none of those
+rows reach it.
+
+`ON CONFLICT DO NOTHING` does not insert and then tidy up. Postgres checks
+the unique indexes for a conflict first, and on finding one skips the row
+whole: no heap tuple, so no GIST entry, and nothing written to any other
+index either. The systems we already have — nearly all of them — cost two
+btree probes each and touch the position index zero times. Only genuinely
+new systems are inserted into it, a few million in a month, which is the
+same order of write as EDDN itself produces in that time. The run is a large
+read against the indexes, not a large write.
+
+Nothing here takes a lock that excludes anyone. The import and EDDN both
+hold `RowExclusiveLock` on `systems`, which is compatible with itself;
+concurrent writers are the ordinary case. `ACCESS EXCLUSIVE` is what
+dropping or rebuilding an index takes, and that is the whole reason the
+first load wants EDDN stopped and a monthly one does not.
+
+Row level contention is rarer still. `DO NOTHING` does not lock the row it
+conflicts with — `DO UPDATE` would — so EDDN is never queued behind the
+hundred million rows we decline to write. Statement (b) matches only what is
+missing a column, which after the first run is close to nothing, and so
+locks close to nothing.
+
+Order does not matter either. (b) only fills nulls and never advances
+`updated_at`, and (a) dates its rows to `epoch`, so a system written by the
+import and by EDDN in either order ends up the same.
 
 ## Checking it worked
 
