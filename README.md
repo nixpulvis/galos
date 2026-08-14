@@ -31,6 +31,10 @@ cargo sqlx database reset --source galos_db/migrations/
 # Create a backup.
 pg_dump -Fc elite_development > latest.dump
 
-# Restore from backup.
+# Restore from backup. Note that `-C` takes the database away while it runs,
+# and EDDN drops every message it is handed meanwhile.
 pg_restore -Cd postgres < latest.dump
 ```
+
+[`BACKUP.md`](./BACKUP.md) has the restores that leave EDDN running, and why
+the one above does not.
