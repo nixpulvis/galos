@@ -28,13 +28,19 @@ database downtime costs spool depth rather than data, and a full restore —
 the one operation that cannot avoid taking the database away — becomes free
 in the only currency that matters.
 
-This is a change to `galos-sync eddn` and it is not written yet. It is worth
-saying plainly that it is worth more than everything else in this document:
-with it, a two hour restore loses nothing; without it, a two hour restore
-loses two hours of a stream that will never carry that data again.
+This is a change to `galos-sync eddn` and it is not written yet.
 
-Until it exists, read the rest of this as ways to keep the unavailable
-window small.
+How much it is worth depends on how long the database is away, and the
+procedure for losing the cluster below gets that down to about a minute by
+starting EDDN against an empty database and merging history in underneath
+it. What remains is the gap before anyone notices, which the spool covers
+and nothing else here does.
+
+So the order of work is: know quickly that it has happened, be able to hand
+EDDN a database in a minute, and then spool so that even that minute and the
+noticing before it cost nothing. Something watching that `max(updated_at)`
+in `systems` is still moving is the cheapest of the three and currently the
+one that is missing.
 
 ## Backing up
 
@@ -158,21 +164,124 @@ table's identity, not its name, so renaming `systems` out of the way leaves
 all of them still pointing at it under its new name, and the replacement
 arrives with no children. `systems` is restored by merging, above.
 
-### Restoring the cluster — the one with real downtime
+### Losing the cluster — stand up an empty one, backfill underneath it
 
-For corruption, a lost disk, or a mistake wide enough that no fingerprint
-describes it. Either PITR against the WAL archive, or:
+For corruption, a lost disk, or a mistake too wide for any fingerprint to
+describe. The obvious order is to restore and then start EDDN again, and it
+is the wrong way round: it makes the stream wait on hours of history it does
+not need in order to record what is happening now.
 
-```sh
-pg_restore -Cd postgres < backups/latest.dump
+Turn it over. What EDDN needs is a database that exists, which takes a
+minute. History can arrive underneath it afterwards.
+
+1. **Make the database and migrate it.** `cargo sqlx database setup`. Keep
+   a migrated empty database around and this is instead
+   `CREATE DATABASE elite_development TEMPLATE elite_empty`, which is close
+   to instant and does not depend on the migrations running cleanly under
+   pressure.
+2. **Restore `factions` and `articles` into it before starting EDDN.** They
+   are small enough to be seconds, and their keys are the reason — see
+   below.
+3. **Point `DATABASE_URL` at it and start `galos-sync eddn`.** Downtime ends
+   here, a minute or two from the decision, and everything after this point
+   happens with the stream already recording.
+4. Restore the backup into a scratch database beside the live one.
+5. Merge it in, table by table, in the order below, for as long as it takes.
+
+#### What decides a row
+
+The backup is richer than the live database and older than it. Neither fact
+wins on its own; the row's own timestamp does:
+
+```sql
+INSERT INTO systems SELECT * FROM restore_systems
+ON CONFLICT (address) DO UPDATE SET
+    name = EXCLUDED.name, position = EXCLUDED.position,
+    population = EXCLUDED.population, security = EXCLUDED.security,
+    government = EXCLUDED.government, allegiance = EXCLUDED.allegiance,
+    primary_economy = EXCLUDED.primary_economy,
+    secondary_economy = EXCLUDED.secondary_economy,
+    updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
+WHERE systems.updated_at < EXCLUDED.updated_at;
 ```
 
-`-C` creates the database, which means nothing may be connected to it, which
-means EDDN is down from here until it finishes. This is the command in the
-README and it is the full downtime path; reach for it third, not first.
+That is `System::create`'s own rule, which is what the guard was for. Note
+that it is the opposite of the rule in `SPANSH.md`: a dump is poorer than
+what is on record, so it fills nulls and never advances the timestamp, while
+a backup is fuller than what is on record and may. Do not carry either rule
+across to the other.
 
-Restore to a scratch database and swap names if you can, rather than
-restoring over the live one — it turns most of the outage into a rename.
+#### Faction ids do not survive this
+
+The one thing that will corrupt data quietly rather than fail loudly.
+
+`factions.id` is a `serial`. Its real key is `lower(name)`, and
+`create.rs` inserts by name and lets Postgres hand out the number. So a
+fresh database taking EDDN invents its own ids, in the order factions happen
+to be mentioned — while `system_factions`, `system_faction_influences`,
+`system_faction_states` and `conflicts` in the backup all refer to the ids
+the *old* database handed out.
+
+Merge those straight in and the foreign keys are satisfied, because the ids
+exist. They just point at other factions. Influence, states and war history
+get filed under whoever happens to hold that number now, and nothing
+anywhere reports an error.
+
+Restoring `factions` before EDDN starts, at step 2, avoids the whole thing:
+the ids are the backup's, EDDN adds new factions after them, and every child
+row means what it says. `articles` has a `serial` too and is standalone, so
+it rides along for the same reason.
+
+If EDDN has already run against an empty `factions` — recovery began before
+this was noticed — the ids have to be translated rather than trusted:
+
+```sql
+INSERT INTO factions (name) SELECT name FROM restore_factions
+ON CONFLICT (lower(name)) DO NOTHING;
+
+CREATE TABLE faction_id_map AS
+SELECT b.id AS old_id, f.id AS new_id
+FROM restore_factions b
+JOIN factions f ON lower(f.name) = lower(b.name);
+```
+
+and every child row's `faction_id` goes through `faction_id_map` on its way
+in. Everything else in the schema is keyed on something the game issued —
+system addresses, body and star ids, station and market names — so nothing
+else needs this.
+
+#### The order to merge in
+
+Parents before children, or the foreign keys reject the child.
+
+| | Tables |
+|---|---|
+| 1 | `systems`, `factions`, `articles` |
+| 2 | `bodies`, `stars`, `stations`, `barycenters`, `system_factions` |
+| 3 | `body_materials`, `markets`, `system_faction_influences`, `system_faction_states`, `conflicts` |
+| 4 | `commodities` |
+
+Within that, do `systems` first and unhurriedly: the map and the router are
+useful again the moment it lands, and the faction tables can trail by a day
+without anyone noticing.
+
+#### What it costs
+
+Merging is slower than restoring — every row goes through an upsert and the
+indexes are live throughout, where a restore into an empty database bulk
+copies and builds indexes once at the end. Expect hours rather than the
+hour a clean restore would take. That is the trade being made, and it is
+usually the right one: the database is up and recording for all of it.
+
+It also wants disk for the scratch copy alongside the live one, so budget
+twice the database. And `systems.position` is `UNIQUE`, so a backup row
+whose coordinates now belong to a system EDDN inserted first will abort the
+statement it is in — chunk the merge, or drop that constraint, which
+`SPANSH.md` argues for on its own account.
+
+The old `pg_restore -Cd postgres` from the README still exists and is still
+the fastest way to get all the data back. It is now the choice you make when
+the stream matters less than the history, which is rarely.
 
 ## Testing that any of this works
 
@@ -195,4 +304,4 @@ turns a merge restore into a cluster restore.
 | A table damaged, identifiable rows | merge restore | up |
 | A table damaged, nothing references it | restore beside, rename swap | milliseconds |
 | Bad migration | `.down.sql`, then merge restore | up |
-| Cluster corrupt or lost | PITR, or `pg_restore -C` | down, and this is what the spool is for |
+| Cluster corrupt or lost | empty database, EDDN onto it, backfill underneath | a minute, plus however long it took to notice |
