@@ -29,20 +29,36 @@ is arranged to take about a minute.
 
 ### The spool
 
-Write each envelope to an append only file as it arrives, before anything
-looks at Postgres, and drain the file into the database separately. Then
-downtime costs spool depth rather than data.
+**Nothing below exists yet.** It is a change to `galos-sync eddn`, described
+here because the rest of this document keeps referring to it.
 
-This is a change to `galos-sync eddn` and it is not written yet. What it is
-worth depends on how long the database is away, and [losing the
+Receiving a message and storing it are one action at the moment, which is
+what makes a database problem a data problem. A spool splits them in two.
+The receiving loop's only job becomes appending the raw envelope to a file
+and moving on, which has one failure mode — a full disk — where writing to
+Postgres has many. A separate consumer reads that file into the database and
+remembers how far it got. While Postgres is away the file grows; when it
+comes back the consumer drains it. Downtime becomes a queue rather than a
+hole.
+
+It wants one piece of state, a position in the file, updated in the same
+transaction as the work it describes. That is `lines_done` in
+`spansh_import` again, and worth building the same way for the same reason.
+
+It also makes *parsing* recoverable, which nothing else here does. If
+`elite_journal` mishandles an event — a new field, a shape changed by a game
+update — that data is gone today, because EDDN cannot be asked twice. Keep a
+few days of spool files and the fix is to correct the parser and drain them
+again.
+
+What it is worth against downtime depends on how long the database is away,
+and [losing the
 cluster](#losing-the-cluster--stand-up-an-empty-one-backfill-underneath-it)
-already gets that down to a minute. What remains is the gap before anyone
-notices, which the spool covers and nothing else here does.
-
-So: know quickly that it has happened, be able to hand EDDN a database in a
-minute, then spool so that even that costs nothing. Something watching that
-`max(updated_at)` in `systems` is still moving is the cheapest of the three
-and currently the one that is missing.
+already gets that to about a minute. What remains is the gap before anyone
+notices. So: know quickly that it has happened, be able to hand EDDN a
+database in a minute, then spool so that even that costs nothing. Something
+watching that `max(updated_at)` in `systems` is still moving is the cheapest
+of the three and currently the one that is missing.
 
 ## Writing into a live database
 
