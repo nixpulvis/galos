@@ -6,6 +6,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use structopt::StructOpt;
 
+pub mod record;
+
 #[derive(StructOpt, Debug)]
 pub struct Cli {
     #[structopt(name = "PATH")]
