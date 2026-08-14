@@ -660,29 +660,9 @@ mod tests {
         app.init_resource::<crate::systems::bodies::Contents>();
         app.insert_resource(ScalePopulation(false));
         app.add_plugins(crate::systems::roundness::plugin);
-        app.world_mut().spawn((OrbitCamera::default(), looking()));
+        app.world_mut()
+            .spawn((OrbitCamera::default(), crate::systems::tests::seeing()));
         app
-    }
-
-    /// A camera that can say how large its view is and how wide it opens
-    ///
-    /// Both are the render target's to answer, and nothing here brings one up,
-    /// so they are written in by hand. Without them a camera answers nothing
-    /// for its viewport and everything sized against one stands down.
-    fn looking() -> Camera {
-        let lens = PerspectiveProjection::default();
-        Camera {
-            computed: bevy::camera::ComputedCameraValues {
-                target_info: Some(bevy::camera::RenderTargetInfo {
-                    physical_size: UVec2::new(800, 600),
-                    scale_factor: 1.,
-                }),
-                clip_from_view: Projection::Perspective(lens)
-                    .get_clip_from_view(),
-                ..default()
-            },
-            ..default()
-        }
     }
 
     /// A system `away` light years off, with a shell standing around it

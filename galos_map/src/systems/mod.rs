@@ -478,6 +478,31 @@ pub(crate) mod tests {
         system
     }
 
+    /// A camera that can say how large its view is and how wide it opens
+    ///
+    /// Both are the render target's to answer, and a test brings no render
+    /// target up, so they are written in by hand. Without them a camera
+    /// answers nothing for its viewport and everything sized against one
+    /// stands down.
+    ///
+    /// Shared because everything the camera decides the size of is tested the
+    /// same way: hand it a view, step the world, and read what came out.
+    pub(crate) fn seeing() -> Camera {
+        let lens = PerspectiveProjection::default();
+        Camera {
+            computed: bevy::camera::ComputedCameraValues {
+                target_info: Some(bevy::camera::RenderTargetInfo {
+                    physical_size: UVec2::new(800, 600),
+                    scale_factor: 1.,
+                }),
+                clip_from_view: Projection::Perspective(lens)
+                    .get_clip_from_view(),
+                ..default()
+            },
+            ..default()
+        }
+    }
+
     /// A world holding one camera at the origin, and nothing else
     fn map(radius: f32, clear: bool, dim: f32) -> App {
         let mut app = App::new();
