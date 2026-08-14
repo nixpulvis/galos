@@ -48,13 +48,6 @@
 //! different distance for every system, the exchange running from eighty of
 //! its own reaches out to twenty, and asks the same question of each.
 //!
-//! Under that sits a floor. The galaxy's plane cannot be ruled below
-//! [`ruled::finest`] at all, so a view finer than that belongs to a system's
-//! plane whatever the fade says, or the ruling on screen runs out of lines with
-//! nothing asked for to replace it. It never has a say on an approach to a
-//! system: a mark is gone twenty reaches out, a hundred thousand light seconds
-//! for the tightest system there is, and the view from there is far wider than
-//! the galaxy's finest cell.
 use crate::camera::OrbitCamera;
 use crate::ruled::{
     self, Decade, DistanceUnit, EDGE_ON, FIGURES_ACROSS, Family, INK, Located,
@@ -274,25 +267,6 @@ fn unit_for(own: DistanceUnit, asked: RulerUnit) -> DistanceUnit {
         RulerUnit::LightSeconds => LIGHT_SECONDS,
         RulerUnit::Automatic => own,
     }
-}
-
-/// And how far through it the zoom alone puts the map
-///
-/// A floor under the fade rather than a measure of its own. The galaxy's plane
-/// cannot be ruled below `floor` at all, so a view finer than that has to
-/// belong to a system's plane whatever the fade says. Left out, the ruling on
-/// screen runs out of lines with nothing having been asked for to replace it.
-///
-/// It says nothing on any ordinary approach. A system reaches at least
-/// [`crate::systems::bodies::STAND_IN`], so the tightest fade there is ends a
-/// hundred thousand light seconds out, and the view from there is far wider
-/// than the finest cell the galaxy can carry. What it is there for is a camera
-/// zoomed in on something near it while the system it is holding is still a
-/// long way off.
-///
-/// Both are in light years.
-fn spent(across: f64, floor: f64) -> f32 {
-    (across.max(f64::MIN_POSITIVE) / floor).log10().clamp(0., 1.) as f32
 }
 
 /// How much of the galaxy's ruling is drawn, and how much of a system's, as
@@ -550,19 +524,15 @@ fn rule(
     // The one is spent before the other begins, so that two ladders which
     // share no cell size are never on screen together. They change hands as
     // the mark standing for the held system goes out, on the very figure that
-    // fade is drawn from, and the zoom is only a floor under the answer.
-    let (out_there, down_here) = match outside.single() {
-        Ok(grid) => {
-            // Whichever mark is furthest out, rather than the one over the
-            // system whose plane is up. Only the system being drawn ever goes
-            // out, so the two are the same but for the moment the map changes
-            // hands: there the one just let go of carries the ruler back as
-            // its mark comes in, rather than the sky changing hands twice.
-            let standing = marks.iter().map(|mark| mark.0).fold(1., f32::min);
-            handover(standing.min(spent(across, finest(LIGHT_YEARS, grid))))
-        }
-        Err(_) => (0., 0.),
-    };
+    // fade is drawn from.
+    //
+    // Whichever mark is furthest out, rather than the one over the system
+    // whose plane is up. Only the system being drawn ever goes out, so the two
+    // are the same but for the moment the map changes hands: there the one
+    // just let go of carries the ruler back as its mark comes in, rather than
+    // the sky changing hands twice.
+    let standing = marks.iter().map(|mark| mark.0).fold(1., f32::min);
+    let (out_there, down_here) = handover(standing);
 
     let galaxy = lit
         .then(|| outside.single().ok())
@@ -697,11 +667,6 @@ mod tests {
     use crate::systems::bodies::STAND_IN;
     use crate::systems::bodies::spawn::standing_for;
 
-    /// The finest cell the galaxy's own plane can be ruled in, in light years
-    fn floor() -> f64 {
-        finest(LIGHT_YEARS, &crate::space::galaxy_grid())
-    }
-
     /// The two spaces are never ruled at the same time
     ///
     /// A light year is `3.15576e7` light seconds, so the two ladders share no
@@ -768,65 +733,6 @@ mod tests {
 
         assert_eq!(handover(standing_for(&wide, eye)), (0., 1.));
         assert_eq!(handover(standing_for(&ordinary, eye)), (1., 0.));
-    }
-
-    /// The galaxy hands the sky on before its own ladder gives out
-    ///
-    /// What the whole handover rests on. The galaxy's plane cannot be ruled
-    /// below [`ruled::finest`] at all, so a handover that had not finished by
-    /// then would leave the view with nothing on it: the ruling the map was
-    /// showing runs out of lines and the one that should have replaced it has
-    /// not been asked for. [`spent`] is the floor that says so, whatever the
-    /// shells are doing.
-    #[test]
-    fn the_galaxy_hands_over_before_its_ladder_gives_out() {
-        let floor = floor();
-
-        for across in zooms() {
-            let (out, _) = handover(spent(across, floor));
-            if out > 0. {
-                let drawn = ruling(across, floor).drawn;
-                assert!(
-                    drawn > 0.,
-                    "{across} across drew the galaxy at {out} with {drawn} \
-                     of a ladder left to draw it with"
-                );
-            }
-        }
-    }
-
-    /// A view too fine for the galaxy is a view a system rules
-    #[test]
-    fn a_view_finer_than_the_galaxy_can_rule_belongs_to_a_system() {
-        let floor = floor();
-
-        for across in zooms().filter(|across| *across < floor) {
-            assert_eq!(handover(spent(across, floor)).1, 1., "{across} across");
-        }
-    }
-
-    /// And the floor leaves an ordinary approach to the fade
-    ///
-    /// A mark begins to go eighty of its system's reaches out and is gone by
-    /// twenty, which for the tightest system there is runs from four hundred
-    /// thousand light seconds down to a hundred thousand. The view anywhere in
-    /// that is far wider than the galaxy's finest cell, so the fade is the
-    /// smaller of the two measures the whole way in and the floor never gets a
-    /// say.
-    #[test]
-    fn the_floor_leaves_an_ordinary_approach_to_the_fade() {
-        let system = crate::systems::tests::reaching(1, 0., STAND_IN);
-
-        for ly in [0.02, 0.012, 0.008, 0.005, 0.0035, 0.0032] {
-            // A camera flying at the system it is looking at takes in about as
-            // much sky as it stands back.
-            let standing = standing_for(&system, DVec3::new(ly, 0., 0.));
-            assert!(
-                standing <= spent(ly, floor()),
-                "{ly} ly out, the zoom stood further through the exchange \
-                 than the fade did"
-            );
-        }
     }
 
     /// Below the floor the ladder stops rather than going on
