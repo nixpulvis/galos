@@ -33,7 +33,7 @@
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{ApparentSize, Body};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_POINTS,
@@ -524,11 +524,11 @@ fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
     spyglass: Res<Spyglass>,
-    seen_as: Res<ApparentSize>,
+    holding: Res<HeldSystem>,
     selected: Query<
         (
-            Entity,
             &System,
+            &Strength,
             &GlobalTransform,
             &Indicator,
             Has<Filtered>,
@@ -567,13 +567,13 @@ fn ring(
         }
     }
 
-    for (entity, system, at, indicator, filtered, hop) in &selected {
+    for (system, mark, at, indicator, filtered, hop) in &selected {
         // A stop a route reaches is ringed by [`super::pointing::ring`],
         // in this same color, while the map is holding a system. Everything
         // drawn for a stop then is drawn where the camera can see it rather
         // than where the stop is, and a ring drawn here would be out at the
         // stop's true distance with the rest of the mark a jump nearer.
-        if hop && seen_as.of().is_some() {
+        if hop && holding.of().is_some() {
             continue;
         }
 
@@ -587,7 +587,7 @@ fn ring(
         if !spyglass.reaches(orbit.center, position) {
             continue;
         }
-        let standing = seen_as.standing_for(entity);
+        let standing = mark.0;
         if standing <= 0. {
             continue;
         }

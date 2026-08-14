@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::spawn::{ApparentSize, Body};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
     Label, depth, depth_of, name_rect, screen_offset, screen_position,
@@ -793,12 +793,12 @@ pub fn point_the_cursor(
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
-    seen_as: Res<ApparentSize>,
+    holding: Res<HeldSystem>,
     // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (Entity, &GlobalTransform, &System, &Indicator, Has<Filtered>),
+        (&GlobalTransform, &System, &Strength, &Indicator, Has<Filtered>),
         (With<PointedAt>, Without<Selected>),
     >,
     // Whatever inside a system is pointed at, which carries no filter and no
@@ -811,9 +811,8 @@ pub fn ring(
     // is pointing at them, that being the whole of what the mark is for, and
     // whatever the filters say, as they are drawn regardless of those too.
     hops: Query<(
-        Entity,
         &GlobalTransform,
-        &System,
+        &Strength,
         &Indicator,
         &crate::systems::route::Hop,
         Has<Selected>,
@@ -835,7 +834,7 @@ pub fn ring(
     //
     // Only while the map is holding a system, which is what a stop is reached
     // from and what [`super::selection::ring`] stands back for.
-    if seen_as.of().is_some()
+    if holding.of().is_some()
         && let Ok(eye) = eye_at.single()
     {
         let right = orbit.rotation * Vec3::X;
@@ -847,8 +846,8 @@ pub fn ring(
         // A point `at` pixels from the middle of the screen, drawn out there.
         let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
-        for (entity, at, _, indicator, hop, picked) in &hops {
-            let standing = seen_as.standing_for(entity);
+        for (at, mark, indicator, hop, picked) in &hops {
+            let standing = mark.0;
             if standing <= 0. {
                 continue;
             }
@@ -970,8 +969,8 @@ pub fn ring(
         }
     }
 
-    for (entity, at, system, indicator, filtered) in &pointed_at {
-        let standing = seen_as.standing_for(entity);
+    for (at, system, mark, indicator, filtered) in &pointed_at {
+        let standing = mark.0;
         if standing <= 0. {
             continue;
         }

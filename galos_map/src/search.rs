@@ -358,6 +358,7 @@ pub(crate) mod tests {
             factions: vec![],
             body_count: None,
             non_body_count: None,
+            reach: None,
             updated_at: chrono::DateTime::UNIX_EPOCH,
             updated_by: String::new(),
         }

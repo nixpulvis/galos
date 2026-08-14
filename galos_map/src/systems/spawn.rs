@@ -2,7 +2,7 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
-use crate::systems::bodies::spawn::{Body, Placed};
+use crate::systems::bodies::spawn::{Body, Placed, Strength};
 use crate::systems::{
     System,
     fetch::FetchIndex,
@@ -41,9 +41,8 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
     app.add_systems(Update, redim.in_set(MapSet::Populate));
-    // Reads how large the held system looks, which `bodies` settles while it
-    // decides whether to draw what is inside it. That is `Populate`'s work and
-    // this is `Present`'s, so the sets already say which comes first.
+    // Reads where the camera is standing, which `Camera` settles, and the sets
+    // already say that comes first.
     app.add_systems(Update, shells.in_set(MapSet::Present));
 
     app.add_observer(select_on_click);
@@ -69,13 +68,16 @@ pub struct SystemMaterials {
     bright: Vec<Handle<StandardMaterial>>,
     /// The same colors, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
-    /// What the one shell on its way out is painted in
+    /// The same colors again, in every step of the fade a shell goes out
+    /// through
     ///
-    /// One handle rather than a set, because only one system is ever being
-    /// closed on. Repainted every frame a shell is fading, which is what
-    /// recoloring a shared asset is good for and why the fading shell may not
-    /// share one with anything else.
-    fading: Handle<StandardMaterial>,
+    /// Laid out as [`Hue::ALL`] by step, so a shell part way out follows its
+    /// own hue and its own strength to a handle and nothing has to be assigned
+    /// or repainted. Which is what lets two of them be part way at once: only
+    /// the held system's mark goes out, but the one just let go of is still
+    /// coming back while the next is going, and a single handle repainted per
+    /// frame would draw both at whichever strength was written last.
+    fading: Vec<Handle<StandardMaterial>>,
 }
 
 impl SystemMaterials {
@@ -89,7 +91,27 @@ impl SystemMaterials {
         let set = if dimmed { &self.dim } else { &self.bright };
         &set[hue as usize]
     }
+
+    /// And the handle for `hue` at `strength` of the way out
+    ///
+    /// Stepped to [`FADE_STEPS`], the whole fade being painted once rather
+    /// than a handle repainted per shell per frame.
+    fn going(&self, hue: Hue, strength: f32) -> &Handle<StandardMaterial> {
+        let step =
+            (strength.clamp(0., 1.) * FADE_STEPS as f32).round() as usize;
+
+        &self.fading[hue as usize * (FADE_STEPS + 1) + step]
+    }
 }
+
+/// How many steps a shell is drawn going out in
+///
+/// The strength runs the alpha and the emission together, and a mark does not
+/// always go out at the pace [`super::bodies::spawn::GOES_OUT_IN`] bounds: a
+/// camera coming in slowly leaves the distance in charge, and the fade can
+/// take seconds. So the steps are cut fine enough not to be seen at that pace
+/// either, under a percent of the strength apiece.
+const FADE_STEPS: usize = 128;
 
 /// The colors a star may be drawn in
 ///
@@ -670,33 +692,32 @@ fn update(
 /// nothing left over at the size it is; and for a system that is one star and
 /// nothing else it sits all but exactly on that star's surface.
 ///
-/// The fading shell is painted into a handle of its own, and one handle does
-/// because only one system is ever being closed on. Every other shell points
-/// at the shared handle for its hue, so nothing else is repainted by a fade.
+/// A shell on its way out points at a handle painted for that step of the fade,
+/// and every other shell at the shared handle for its hue. So a fade repaints
+/// nothing, and any number of shells may be fading at once.
 ///
 /// Decided afresh each frame and written only where it differs, as
 /// [`super::labels::tint_marked_names`] is. A mark is applied by a command and
 /// so lands a frame after the filter that asked for it, which leaves nothing
 /// that both runs after the mark and can still see what changed.
 pub(super) fn shells(
-    systems: Query<(&System, Has<Filtered>)>,
-    seen_as: Res<super::bodies::spawn::ApparentSize>,
+    systems: Query<(&System, &Strength, Has<Filtered>)>,
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
     materials: Res<SystemMaterials>,
-    mut assets: ResMut<Assets<StandardMaterial>>,
     mut shells: Query<
         (&ChildOf, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility),
         With<Shell>,
     >,
 ) {
     for (child_of, mut material, mut visibility) in &mut shells {
-        let Ok((system, filtered)) = systems.get(child_of.parent()) else {
+        let Ok((system, mark, filtered)) = systems.get(child_of.parent())
+        else {
             continue;
         };
         // Its own visibility rather than its system's. `super::visibility`
         // owns that one, and a shell inherits it either way.
-        let standing = seen_as.standing_for(child_of.parent());
+        let standing = mark.0;
         if standing <= 0. {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
@@ -709,10 +730,7 @@ pub(super) fn shells(
             // the filters were drawing faintly does not come back to full
             // strength on its way out.
             let strength = if filtered { dim.0 } else { 1. };
-            if let Some(mut fading) = assets.get_mut(&materials.fading) {
-                *fading = star_material(hue.color(), strength * standing);
-            }
-            &materials.fading
+            materials.going(hue, strength * standing)
         } else {
             materials.get(hue, filtered)
         };
@@ -813,9 +831,13 @@ fn init_materials(
     };
     let bright = set(1.);
     let dim = set(dim.0);
-    // Painted afresh every frame a shell is fading, so what it holds until
-    // then is only somewhere to start.
-    let fading = assets.add(star_material(Hue::Grey.color(), 1.));
+    let mut fading = Vec::with_capacity(Hue::ALL.len() * (FADE_STEPS + 1));
+    for hue in Hue::ALL {
+        for step in 0..=FADE_STEPS {
+            let strength = step as f32 / FADE_STEPS as f32;
+            fading.push(assets.add(star_material(hue.color(), strength)));
+        }
+    }
 
     commands.insert_resource(SystemMaterials { bright, dim, fading });
 }
@@ -893,6 +915,7 @@ impl TryFrom<&DbSystem> for System {
             factions: system.factions.clone(),
             body_count: system.body_count,
             non_body_count: system.non_body_count,
+            reach: system.reach,
             updated_at: system.updated_at,
         })
     }
@@ -916,6 +939,7 @@ mod tests {
             factions: Vec::new(),
             body_count: None,
             non_body_count: None,
+            reach: None,
             updated_at: chrono::DateTime::UNIX_EPOCH,
             updated_by: String::new(),
         }
@@ -1043,13 +1067,12 @@ mod tests {
 
     /// A world holding the colors and whatever shells are painted out of them
     ///
-    /// Nothing is being closed on, so every shell stands whole and takes the
-    /// shared handle for its hue rather than the one that fades.
+    /// Nothing keeps the marks up in it, so every shell stands whole and takes
+    /// the shared handle for its hue rather than a step of the fade.
     fn painted() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Assets<StandardMaterial>>();
-        app.init_resource::<crate::systems::bodies::spawn::ApparentSize>();
         app.init_resource::<DimTo>();
         app.init_resource::<Repaints>();
         app.insert_resource(ColorBy::Allegiance);

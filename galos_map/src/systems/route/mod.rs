@@ -2,6 +2,7 @@ use crate::camera::{FRAMING_MARGIN, MoveCamera};
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
 use crate::systems::System;
+use crate::systems::bodies::spawn::{HeldSystem, Strength};
 use crate::systems::filter::{Filter, Filters};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
@@ -153,6 +154,19 @@ pub enum Hop {
     Next,
 }
 
+/// How strongly the mark for the system the map is holding is drawn
+///
+/// Whole where the map holds nothing, which is the camera out among the stars.
+/// Read off the system rather than worked out here, so that a route fading in
+/// as the camera descends and the mark it is fading in behind are the one
+/// figure and go together.
+fn standing(holding: &HeldSystem, marks: &Query<&Strength>) -> f32 {
+    holding
+        .of()
+        .and_then(|system| marks.get(system).ok())
+        .map_or(1., |strength| strength.0)
+}
+
 /// Which systems `routes` reach from `here`, and which way each of them lies
 ///
 /// Every route the map is showing, in whatever order they are handed over, so
@@ -217,7 +231,8 @@ fn hops(
     filters: Res<Filters>,
     selected: Res<SelectedRoute>,
     contents: Res<crate::systems::bodies::Contents>,
-    seen_as: Res<crate::systems::bodies::spawn::ApparentSize>,
+    holding: Res<HeldSystem>,
+    marks: Query<&Strength>,
     systems: Query<(Entity, &System, Option<&Hop>)>,
     mut commands: Commands,
 ) {
@@ -228,7 +243,7 @@ fn hops(
     let routes = front
         .into_iter()
         .chain(shown(&filters).filter(|route| Some(*route) != front));
-    let reached = reaching(routes, contents.of(), seen_as.standing());
+    let reached = reaching(routes, contents.of(), standing(&holding, &marks));
 
     for (entity, system, held) in &systems {
         let wanted = reached
@@ -487,12 +502,13 @@ pub fn strength(is_active: bool) -> f32 {
 fn emphasise(
     filters: Res<Filters>,
     selected: Res<SelectedRoute>,
-    seen_as: Res<crate::systems::bodies::spawn::ApparentSize>,
+    holding: Res<HeldSystem>,
+    marks: Query<&Strength>,
     lines: Query<(&Route, &MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let active = active(&filters, &selected.0);
-    let standing = seen_as.standing();
+    let standing = standing(&holding, &marks);
 
     for (line, material) in &lines {
         let Some(mut material) = materials.get_mut(&material.0) else {

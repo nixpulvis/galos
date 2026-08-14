@@ -56,6 +56,7 @@ pub fn plugin(app: &mut App) {
 /// Clones because a selection holds one, and a system may be selected before
 /// the map has fetched it or after it has been despawned.
 #[derive(Component, Clone)]
+#[require(bodies::spawn::Strength)]
 pub struct System {
     address: i64,
     name: String,
@@ -87,6 +88,17 @@ pub struct System {
     /// or the honk, and the belts and rings from the honk alone.
     body_count: Option<i32>,
     non_body_count: Option<i32>,
+    /// How far the system reaches from its arrival star, in metres
+    ///
+    /// What the shell standing for the system is drawn at. Carried on every
+    /// system rather than asked about the one the camera is nearest, so that
+    /// two systems side by side are drawn the same size whichever of them the
+    /// map happens to be looking into.
+    ///
+    /// [`None`] where the database has nothing on record and where nothing has
+    /// asked. Both are the map unable to say how far the system reaches, and
+    /// both are drawn at [`bodies::STAND_IN`].
+    reach: Option<f32>,
     updated_at: DateTime<Utc>,
 }
 
@@ -105,6 +117,17 @@ impl System {
     /// both of its ends in the bar, which is not.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// How far the system reaches from its arrival star, in metres
+    ///
+    /// Never under [`bodies::STAND_IN`], which stands in for a system the map
+    /// cannot say the size of and is a floor under one that says it is smaller
+    /// than a mark. A star with nothing on record around it reaches a
+    /// twenty-five thousandth of that, and a shell drawn there is a skin on
+    /// the star rather than a mark around the system.
+    pub fn reach(&self) -> f32 {
+        self.reach.unwrap_or_default().max(bodies::STAND_IN)
     }
 }
 
@@ -425,6 +448,7 @@ pub(crate) mod tests {
             factions: vec![],
             body_count: None,
             non_body_count: None,
+            reach: None,
             updated_at: DateTime::UNIX_EPOCH,
         }
     }
@@ -475,6 +499,17 @@ pub(crate) mod tests {
     pub(crate) fn at(address: i64, away: f64) -> System {
         let mut system = system(address);
         system.position = [away, 0., 0.];
+        system
+    }
+
+    /// A system reaching `metres` from its arrival star
+    ///
+    /// Shared for the same reason [`named`] is. Systems run from a light
+    /// second across to a fifth of a light year, so anything drawing one whole
+    /// is tested over that range.
+    pub(crate) fn reaching(address: i64, away: f64, metres: f32) -> System {
+        let mut system = at(address, away);
+        system.reach = Some(metres);
         system
     }
 

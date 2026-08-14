@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{ApparentSize, Body};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
@@ -285,6 +285,7 @@ const CENTER_REACH: f32 = 2.;
 type Candidate<'a, T> = (
     Entity,
     T,
+    &'a Strength,
     &'a Visibility,
     &'a Indicator,
     Has<Filtered>,
@@ -511,7 +512,7 @@ pub fn choose_names(
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
-    seen_as: Res<ApparentSize>,
+    holding: Res<HeldSystem>,
     time: Res<Time<Real>>,
 ) {
     let clear = |commands: &mut Commands| {
@@ -546,7 +547,7 @@ pub fn choose_names(
     // Where a jump is measured from, for the stops that say one. Looked up in
     // the same query the layout goes over: the system the camera is standing
     // in is one of the systems on the map.
-    let from = seen_as
+    let from = holding
         .of()
         .and_then(|held| systems.get(held).ok())
         .map(|(_, system, ..)| system.position());
@@ -558,7 +559,9 @@ pub fn choose_names(
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system, visibility, indicator, filtered, hop)| {
+        .filter_map(|candidate| {
+            let (entity, system, mark, visibility, indicator, filtered, hop) =
+                candidate;
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -587,8 +590,7 @@ pub fn choose_names(
             // rather than marked, and its name belongs to the mark. The star
             // it arrives at being drawn ends it just as surely, that star
             // carrying the name from there on.
-            let stands = seen_as.standing_for(entity) > 0.
-                && carried != Some(system.address);
+            let stands = mark.0 > 0. && carried != Some(system.address);
 
             // A stop a route reaches is named whatever else is set. It is
             // one of two systems out of the whole sky that the viewer is being
@@ -892,7 +894,7 @@ pub fn respawn(
     // granted room for on the frame the camera arrives and the system it is
     // arriving in has not yet let go of its own name.
     standing_in: Query<&System>,
-    seen_as: Res<ApparentSize>,
+    holding: Res<HeldSystem>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     // Whatever lost its name since this last ran, rather than everything that
     // does not have one. Nearly every name is the same name it was last frame,
@@ -932,7 +934,7 @@ pub fn respawn(
 
     // Where a jump is measured from. Nothing where the map is holding no
     // system, which is also when nothing is a stop.
-    let from = seen_as
+    let from = holding
         .of()
         .and_then(|held| standing_in.get(held).ok())
         .map(|held| held.position());
@@ -1899,7 +1901,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Assets<StandardMaterial>>();
         app.init_resource::<DimTo>();
-        app.init_resource::<ApparentSize>();
+        app.init_resource::<HeldSystem>();
         app.add_systems(Startup, init_materials);
         app
     }
