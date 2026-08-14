@@ -80,9 +80,14 @@ pub struct SystemMaterials {
 
 impl SystemMaterials {
     /// The handle for `hue`, at the strength `dimmed` asks for
-    fn get(&self, hue: Hue, dimmed: bool) -> Handle<StandardMaterial> {
+    ///
+    /// Lent rather than handed over. This is asked of every shell every frame
+    /// and the answer nearly always matches what the shell already points at,
+    /// so a handle taken by value would be an atomic pair per star per frame
+    /// spent on a comparison.
+    fn get(&self, hue: Hue, dimmed: bool) -> &Handle<StandardMaterial> {
         let set = if dimmed { &self.dim } else { &self.bright };
-        set[hue as usize].clone()
+        &set[hue as usize]
     }
 }
 
@@ -707,12 +712,12 @@ pub(super) fn shells(
             if let Some(mut fading) = assets.get_mut(&materials.fading) {
                 *fading = star_material(hue.color(), strength * standing);
             }
-            materials.fading.clone()
+            &materials.fading
         } else {
             materials.get(hue, filtered)
         };
-        if material.0 != wanted {
-            material.0 = wanted;
+        if material.0 != *wanted {
+            material.0 = wanted.clone();
         }
     }
 }
@@ -780,7 +785,7 @@ fn star(
         Shell,
         // Fitted by `super::scale` before the first draw, as the size is.
         Mesh3d(roundness.coarsest()),
-        MeshMaterial3d(materials.get(hue(system, color_by), dimmed)),
+        MeshMaterial3d(materials.get(hue(system, color_by), dimmed).clone()),
         Transform::default(),
         NotShadowCaster,
     )
@@ -1020,5 +1025,103 @@ mod tests {
         last.doubled(clickable(1), 0.1);
         assert!(!last.doubled(clickable(1), 0.2));
         assert!(last.doubled(clickable(1), 0.3));
+    }
+
+    /// How many shells were repainted
+    #[derive(Resource, Default)]
+    struct Repaints(usize);
+
+    fn count_repaints(
+        mut repaints: ResMut<Repaints>,
+        shells: Query<
+            (),
+            (Changed<MeshMaterial3d<StandardMaterial>>, With<Shell>),
+        >,
+    ) {
+        repaints.0 += shells.iter().count();
+    }
+
+    /// A world holding the colors and whatever shells are painted out of them
+    ///
+    /// Nothing is being closed on, so every shell stands whole and takes the
+    /// shared handle for its hue rather than the one that fades.
+    fn painted() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<crate::systems::bodies::spawn::ApparentSize>();
+        app.init_resource::<DimTo>();
+        app.init_resource::<Repaints>();
+        app.insert_resource(ColorBy::Allegiance);
+        app.add_systems(Startup, init_materials);
+        app.add_systems(Update, (shells, count_repaints).chain());
+        app
+    }
+
+    /// A system with a shell standing around it
+    fn shelled(app: &mut App) -> Entity {
+        let system =
+            app.world_mut().spawn(crate::systems::tests::system(1)).id();
+        let shell = app
+            .world_mut()
+            .spawn((
+                Shell,
+                MeshMaterial3d::<StandardMaterial>::default(),
+                Visibility::default(),
+            ))
+            .id();
+        app.world_mut().entity_mut(system).add_child(shell);
+        system
+    }
+
+    /// How many shells have been repainted so far
+    fn repaints(app: &App) -> usize {
+        app.world().resource::<Repaints>().0
+    }
+
+    /// A frame that changes nothing leaves a shell's paint alone
+    ///
+    /// What the color is decided afresh each frame and written only where it
+    /// differs is for. Every shell in the sky is asked this every frame, and
+    /// the answer nearly always matches the handle it already points at.
+    #[test]
+    fn a_resting_frame_leaves_a_shell_painted_as_it_was() {
+        let mut app = painted();
+        shelled(&mut app);
+
+        // The shell arriving is a change of its own, and the frame after it is
+        // the first that could be said to be resting.
+        app.update();
+        app.update();
+        let settled = repaints(&app);
+
+        app.update();
+        assert_eq!(
+            repaints(&app),
+            settled,
+            "repainted a shell that had not moved"
+        );
+    }
+
+    /// And one whose system falls out of the filters is painted again
+    ///
+    /// Which is what the answer is worked out for. A guard that held through a
+    /// filter would leave the whole sky at full strength.
+    #[test]
+    fn a_filtered_shell_is_painted_again() {
+        let mut app = painted();
+        let system = shelled(&mut app);
+
+        app.update();
+        app.update();
+        let settled = repaints(&app);
+
+        app.world_mut().entity_mut(system).insert(Filtered);
+        app.update();
+
+        assert!(
+            repaints(&app) > settled,
+            "left a dimmed shell at full strength"
+        );
     }
 }
