@@ -43,9 +43,11 @@ const ASK_WITHIN: f32 = 5.;
 /// How far the camera may drift before the map lets a system go, in light
 /// years
 ///
-/// Wider than [`ASK_WITHIN`], so that a camera sitting on the line between two
-/// systems does not spend every frame swapping which of them is held. What is
-/// held is dropped only once something else is clearly nearer.
+/// Held wider than [`ASK_WITHIN`], so that a camera sitting on the line between
+/// two systems does not spend every frame swapping which of them is held. What
+/// is held is dropped only once something else is clearly nearer. Narrower and
+/// the hysteresis runs backwards: a system would be let go of before anything
+/// else was near enough to be asked about.
 const HOLD_WITHIN: f32 = 7.;
 
 /// Which of `systems` the map should be holding, by address
@@ -269,6 +271,18 @@ mod tests {
         let alpha_centauri = (2, 4.4);
 
         assert_eq!(worth_holding([alpha_centauri, sol].into_iter()), Some(1));
+    }
+
+    /// A system is held out further than it is asked about
+    ///
+    /// Which way round the two reaches go is the whole of the hysteresis. The
+    /// other way a system would be let go of before anything else was near
+    /// enough to be asked after, and a camera sitting between two of them
+    /// would swap which it held every frame.
+    #[test]
+    fn a_system_is_held_further_out_than_it_is_asked_about() {
+        assert!(holds_still(1., ASK_WITHIN as f64));
+        assert!(!holds_still(1., HOLD_WITHIN as f64 + 1.));
     }
 
     /// A system out of reach of the crosshair is no candidate at all

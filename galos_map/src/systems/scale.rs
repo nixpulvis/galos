@@ -168,6 +168,11 @@ const MARK: f32 = (8.5e-2 * crate::space::LIGHT_YEAR) as f32;
 /// sky: a twelfth of a light year seen from a tenth of one is fifty degrees
 /// across, and a system whose mark the camera is already inside cannot be
 /// flown into.
+///
+/// Which is what this and [`ANGULAR`] are held to: the two of them together,
+/// at the most [`POP_MAX`] can make of a mark, stay well under one, so a mark
+/// is always a smaller length than the distance it is seen from.
+/// `a_mark_never_encloses_the_camera` is what holds them.
 const NEAREST: f32 = 4e-3;
 
 /// How large a system is drawn from far off, in radians
@@ -189,6 +194,13 @@ const ANGULAR: f32 = 4e-4;
 /// How much larger than its system a shell is drawn
 ///
 /// Enough that the outermost orbit sits inside rather than on the surface.
+///
+/// Held under the inverse of [`super::bodies::spawn::WORTH_HIDING`], which is
+/// twenty reaches, so a mark is gone by the time the camera can reach the
+/// shell it stood for. The only figure here held against one in another
+/// module, and the two are not in the same units: that one is an angle and
+/// this a multiple of a length, so the comparison takes an inversion.
+/// `a_mark_is_gone_before_the_camera_reaches_the_shell` is what holds it.
 const MARGIN: f32 = 1.2;
 
 /// How large a system is drawn, in metres
