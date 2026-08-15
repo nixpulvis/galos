@@ -500,7 +500,7 @@ impl LabelMaterials {
 /// arrangement of a few hundred overlapping rectangles is not worth solving
 /// each frame, and taking them in order of what the viewer most wants to see
 /// gives them the ones that matter.
-pub fn choose_names(
+pub(crate) fn choose_names(
     mut commands: Commands,
     camera: Query<(&OrbitCamera, &Camera)>,
     radius: Res<NameRadius>,
@@ -515,6 +515,7 @@ pub fn choose_names(
     selection: Query<(), With<Selected>>,
     holding: Res<HeldSystem>,
     time: Res<Time<Real>>,
+    mut layout: Local<Layout>,
 ) {
     let clear = |commands: &mut Commands| {
         for entity in &named {
@@ -556,78 +557,79 @@ pub fn choose_names(
     // What a name has to fall inside some of to be worth laying out at all.
     let screen = Rect::from_corners(Vec2::ZERO, viewport);
 
+    let Layout { wanted, placed } = &mut *layout;
+
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
-    let mut wanted: Vec<(Entity, Rect, f32)> = systems
-        .iter()
-        .filter_map(|candidate| {
-            let (entity, system, mark, visibility, indicator, filtered, hop) =
-                candidate;
-            // Pointing at a system asks for its name whatever else has
-            // been set, so it answers to neither of the tests below.
-            //
-            // Only once the pointer has come to rest, though. A system
-            // crossed on the way to another would otherwise take a name,
-            // and with it the place of the name being reached for.
-            let pointed_at = pointing
-                .get(entity)
-                .is_ok_and(|at| at.settled(time.elapsed_secs()));
+    wanted.clear();
+    wanted.extend(systems.iter().filter_map(|candidate| {
+        let (entity, system, mark, visibility, indicator, filtered, hop) =
+            candidate;
+        // Pointing at a system asks for its name whatever else has
+        // been set, so it answers to neither of the tests below.
+        //
+        // Only once the pointer has come to rest, though. A system
+        // crossed on the way to another would otherwise take a name,
+        // and with it the place of the name being reached for.
+        let pointed_at = pointing
+            .get(entity)
+            .is_ok_and(|at| at.settled(time.elapsed_secs()));
 
-            // Selecting one asks the same, and for longer: the whole point
-            // of a selection is that it stays marked out while the user
-            // moves around it, and a mark that says which star without
-            // saying which system is half an answer.
-            //
-            // Only while it is drawn, though. Unlike a point, a selection
-            // outlives the spyglass hiding its star, and a name is laid out
-            // in screen space whether or not it is rendered, so one asked
-            // for by a hidden star would take the place of a name that
-            // could be read.
-            let selected =
-                selection.contains(entity) && *visibility != Visibility::Hidden;
+        // Selecting one asks the same, and for longer: the whole point
+        // of a selection is that it stays marked out while the user
+        // moves around it, and a mark that says which star without
+        // saying which system is half an answer.
+        //
+        // Only while it is drawn, though. Unlike a point, a selection
+        // outlives the spyglass hiding its star, and a name is laid out
+        // in screen space whether or not it is rendered, so one asked
+        // for by a hidden star would take the place of a name that
+        // could be read.
+        let selected =
+            selection.contains(entity) && *visibility != Visibility::Hidden;
 
-            // And the map still standing a mark in for the system at all,
-            // which beats every other claim: past there the system is drawn
-            // rather than marked, and its name belongs to the mark. The star
-            // it arrives at being drawn ends it just as surely, that star
-            // carrying the name from there on.
-            let stands = mark.0 > 0. && carried != Some(system.address);
+        // And the map still standing a mark in for the system at all,
+        // which beats every other claim: past there the system is drawn
+        // rather than marked, and its name belongs to the mark. The star
+        // it arrives at being drawn ends it just as surely, that star
+        // carrying the name from there on.
+        let stands = mark.0 > 0. && carried != Some(system.address);
 
-            // A stop a route reaches is named whatever else is set. It is
-            // one of two systems out of the whole sky that the viewer is being
-            // told to look at, and a mark saying look there without saying
-            // where there is is half an answer.
-            if !worth_naming(
-                stands,
-                show_names.0,
-                filtered,
-                pointed_at || hop,
-                selected,
-            ) {
-                return None;
-            }
+        // A stop a route reaches is named whatever else is set. It is
+        // one of two systems out of the whole sky that the viewer is being
+        // told to look at, and a mark saying look there without saying
+        // where there is is half an answer.
+        if !worth_naming(
+            stands,
+            show_names.0,
+            filtered,
+            pointed_at || hop,
+            selected,
+        ) {
+            return None;
+        }
 
-            let position = DVec3::from(system.position);
-            let from_center = (position - orbit.center).length() as f32;
-            // Further out than names were asked to reach, and not one of the
-            // two the map is marking out.
-            if !pointed_at && !selected && !hop && from_center > reach {
-                return None;
-            }
-            let at = screen_position(orbit, cot_half_fov, viewport, position)?;
-            // The words that will be set rather than the name alone. A stop
-            // carries the jump to it, which is a good part of the width again,
-            // and room granted for less than that is a name laid over the next
-            // one along.
-            let rect =
-                name_rect_of(at, plate_width(system, hop, from), indicator.0);
-            if screen.intersect(rect).is_empty() {
-                return None;
-            }
-            let score = name_score(from_center, pointed_at, selected);
-            Some((entity, rect, score))
-        })
-        .collect();
+        let position = DVec3::from(system.position);
+        let from_center = (position - orbit.center).length() as f32;
+        // Further out than names were asked to reach, and not one of the
+        // two the map is marking out.
+        if !pointed_at && !selected && !hop && from_center > reach {
+            return None;
+        }
+        let at = screen_position(orbit, cot_half_fov, viewport, position)?;
+        // The words that will be set rather than the name alone. A stop
+        // carries the jump to it, which is a good part of the width again,
+        // and room granted for less than that is a name laid over the next
+        // one along.
+        let rect =
+            name_rect_of(at, plate_width(system, hop, from), indicator.0);
+        if screen.intersect(rect).is_empty() {
+            return None;
+        }
+        let score = name_score(from_center, pointed_at, selected);
+
+        Some((entity, rect, score))
+    }));
 
     // Everything inside the system the camera is in. Its own switch, since a
     // system's name and a body's are asked for at different moments: the sky
@@ -685,7 +687,7 @@ pub fn choose_names(
         }
     }
 
-    let winners = place(&mut wanted, viewport, &mut Placed::default());
+    let winners = place(wanted, viewport, placed);
 
     // Only what changed hands. Nearly every name is the same name it was
     // last frame, and taking one away to give it straight back moves its
@@ -710,6 +712,20 @@ pub fn choose_names(
 /// 92 by 20 pixels at [`NAME_HEIGHT`], and the width is what to size by,
 /// names being far wider than they are tall.
 const BUCKET: f32 = NAME_HEIGHT * 8.;
+
+/// The scratch a frame of names is laid out in
+///
+/// Held across frames so that a couple of thousand candidates and the grid
+/// they are packed into are not allocated and thrown away sixty times a
+/// second. Both are cleared before they are read, so nothing carries over but
+/// the memory.
+#[derive(Default)]
+pub(crate) struct Layout {
+    /// The candidates, with the rectangle each would occupy and its score
+    wanted: Vec<(Entity, Rect, f32)>,
+    /// Where the names already placed sit
+    placed: Placed,
+}
 
 /// Where the names already placed sit, bucketed by screen position
 ///
