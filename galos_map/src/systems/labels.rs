@@ -635,12 +635,12 @@ pub fn choose_names(
     if let Ok(eye) = eye_at.single() {
         for (entity, body, at, indicator) in &bodies {
             let offset = (at.translation() - eye.translation()).as_dvec3();
-            let Some(place) =
+            let Some(spot) =
                 screen_offset(orbit, cot_half_fov, viewport, offset)
             else {
                 continue;
             };
-            let rect = name_rect_of(place, capitals(&body.name), indicator.0);
+            let rect = name_rect_of(spot, capitals(&body.name), indicator.0);
             if screen.intersect(rect).is_empty() {
                 continue;
             }
@@ -684,26 +684,7 @@ pub fn choose_names(
         }
     }
 
-    // Best first, so that what is dropped is dropped in favour of something
-    // the viewer wanted more. Ties are settled by which entity it is, which
-    // is arbitrary but the same arbitrary answer every frame.
-    //
-    // Something has to settle them, and the order they were gathered in
-    // cannot: handing one of a tied pair a `Named` moves it to another
-    // archetype and so to another place in the order they are read in, and the
-    // two would trade one place between them every frame, which is a flicker
-    // rather than a choice.
-    wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
-
-    let mut kept: Vec<Rect> = Vec::new();
-    let mut winners = EntityHashSet::default();
-    for (entity, rect, _) in wanted {
-        if kept.iter().any(|taken| !taken.intersect(rect).is_empty()) {
-            continue;
-        }
-        kept.push(rect);
-        winners.insert(entity);
-    }
+    let winners = place(&mut wanted);
 
     // Only what changed hands. Nearly every name is the same name it was
     // last frame, and taking one away to give it straight back moves its
@@ -719,6 +700,35 @@ pub fn choose_names(
             commands.entity(entity).insert(Named);
         }
     }
+}
+
+/// Which candidates fit, taken best first
+///
+/// Greedy rather than optimal. The best arrangement of a few hundred
+/// overlapping rectangles is not worth solving each frame, and taking them in
+/// the order the viewer wants them gives them the ones that matter.
+fn place(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
+    // Best first, so that what is dropped is dropped in favour of something
+    // the viewer wanted more. Ties are settled by which entity it is, which
+    // is arbitrary but the same arbitrary answer every frame.
+    //
+    // Something has to settle them, and the order they were gathered in
+    // cannot: handing one of a tied pair a `Named` moves it to another
+    // archetype and so to another place in the order they are read in, and the
+    // two would trade one place between them every frame, which is a flicker
+    // rather than a choice.
+    candidates.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+
+    let mut kept: Vec<Rect> = Vec::new();
+    let mut winners = EntityHashSet::default();
+    for (entity, rect, _) in candidates.iter() {
+        if kept.iter().any(|taken| !taken.intersect(*rect).is_empty()) {
+            continue;
+        }
+        kept.push(*rect);
+        winners.insert(*entity);
+    }
+    winners
 }
 
 /// What being inside the system the camera is in is worth to a name
@@ -2150,5 +2160,67 @@ mod tests {
         app.update();
 
         assert!(placings(&app) > settled, "left a name where it was standing");
+    }
+
+    fn candidate(index: u32, rect: Rect, score: f32) -> (Entity, Rect, f32) {
+        (Entity::from_raw_u32(index).expect("a test entity"), rect, score)
+    }
+
+    fn won<const N: usize>(indices: [u32; N]) -> EntityHashSet {
+        indices
+            .into_iter()
+            .map(|index| Entity::from_raw_u32(index).expect("a test entity"))
+            .collect()
+    }
+
+    /// A name clear of everything already placed is kept
+    #[test]
+    fn a_name_clear_of_the_rest_is_kept() {
+        let mut candidates = [
+            candidate(1, Rect::new(0., 0., 10., 10.), 2.),
+            candidate(2, Rect::new(20., 0., 30., 10.), 1.),
+        ];
+
+        assert_eq!(place(&mut candidates), won([1, 2]));
+    }
+
+    /// A name over one already placed is dropped
+    #[test]
+    fn a_name_over_one_already_placed_is_dropped() {
+        let mut candidates = [
+            candidate(1, Rect::new(0., 0., 10., 10.), 2.),
+            candidate(2, Rect::new(5., 5., 15., 15.), 1.),
+        ];
+
+        assert_eq!(place(&mut candidates), won([1]));
+    }
+
+    /// Of two names that overlap, the better scored one is kept
+    ///
+    /// Whichever order they arrive in. What the viewer wanted more decides,
+    /// and the order candidates are gathered in is an accident of which
+    /// archetype each system sits in.
+    #[test]
+    fn the_better_scored_of_two_that_overlap_is_kept() {
+        let better = candidate(1, Rect::new(0., 0., 10., 10.), 10.);
+        let worse = candidate(2, Rect::new(5., 5., 15., 15.), 1.);
+
+        assert_eq!(place(&mut [better, worse]), won([1]));
+        assert_eq!(place(&mut [worse, better]), won([1]));
+    }
+
+    /// Two names that only touch are both kept
+    ///
+    /// Which pins the room [`CROWDING`] already leaves around a name: the
+    /// margin is inside each rectangle, so rectangles meeting edge to edge
+    /// are two names with their full clearance between them.
+    #[test]
+    fn two_names_that_only_touch_are_both_kept() {
+        let mut candidates = [
+            candidate(1, Rect::new(0., 0., 10., 10.), 2.),
+            candidate(2, Rect::new(10., 0., 20., 10.), 1.),
+        ];
+
+        assert_eq!(place(&mut candidates), won([1, 2]));
     }
 }
