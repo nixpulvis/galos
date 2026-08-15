@@ -666,8 +666,14 @@ pub fn choose_names(
                 continue;
             }
 
+            // How large the body itself looks, rather than the mark drawn to
+            // aim at it.
+            let depth = depth_of(orbit, offset).max(1.);
             let score = body_name_score(
-                indicator.0,
+                looks(
+                    body.radius,
+                    world_per_pixel(cot_half_fov, viewport.y, depth),
+                ),
                 body.ancestors,
                 body.star,
                 body.primary,
@@ -683,11 +689,10 @@ pub fn choose_names(
     // is arbitrary but the same arbitrary answer every frame.
     //
     // Something has to settle them, and the order they were gathered in
-    // cannot: a body drawn too small to measure scores exactly the floor, so
-    // a system's moons are routinely tied, and handing one of them a `Named`
-    // moves it to another archetype and so to another place in the order they
-    // are read in. Two names would then trade one place between them every
-    // frame, which is a flicker rather than a choice.
+    // cannot: handing one of a tied pair a `Named` moves it to another
+    // archetype and so to another place in the order they are read in, and the
+    // two would trade one place between them every frame, which is a flicker
+    // rather than a choice.
     wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
 
     let mut kept: Vec<Rect> = Vec::new();
@@ -743,6 +748,19 @@ const BODY_NAME_REACH: f32 = 20.;
 /// would take is smaller than the room a name needs.
 const DEEPEST: u8 = 4;
 
+/// How large a body looks, as a radius in logical pixels
+///
+/// Its own size, rather than the mark [`super::pointing`] draws to aim at it.
+/// That mark is floored so there is always something to point at, and from
+/// anywhere a whole system is in view nearly everything in it sits at the
+/// floor: Pluto is under it from a light second and a quarter out and is
+/// twenty thousand light seconds from the star. Measured by the mark, Pluto
+/// and Charon are the same size, and which of the two is named comes down to
+/// which entity it is.
+fn looks(radius: f32, per_pixel: f32) -> f32 {
+    radius / per_pixel.max(f32::MIN_POSITIVE)
+}
+
 /// How much a body deserves to have its name drawn
 ///
 /// Four claims, each settled before the next is asked.
@@ -764,8 +782,9 @@ const DEEPEST: u8 = 4;
 /// middle and count the same ancestors, and a star is what the system is
 /// named for.
 ///
-/// Then its own apparent size. Bigger first, which is nearly always the order
-/// the viewer would have chosen: the worlds before the specks.
+/// Then how large it looks, which is [`looks`] and not the mark drawn to aim
+/// at it. Bigger first, which is nearly always the order the viewer would have
+/// chosen: the worlds before the specks.
 ///
 /// The four are nested rather than added together. [`INSIDE_WEIGHT`] is cut
 /// into a step per depth and one more for the arrival star, being a star takes
@@ -1632,6 +1651,40 @@ mod tests {
         let speck = body_name_score(0.1, 2, false, false, false, false);
 
         assert!(world > speck, "the world scored {world} against {speck}");
+    }
+
+    /// The larger of a pair under the mark's floor is named first
+    ///
+    /// Pluto and Charon go round the same point, so nothing above size tells
+    /// them apart, and a mark is floored at four pixels so there is always
+    /// something to point at. Scored by that mark the two tie exactly and
+    /// which is named comes down to which entity it is, which is how Charon
+    /// took the name.
+    #[test]
+    fn the_larger_of_a_pair_under_the_marks_floor_is_named_first() {
+        // A hundred light seconds off the pair, where Pluto draws a twentieth
+        // of a pixel across and Charon about half of that. Both are far under
+        // the four the mark stops at.
+        let per_pixel = 2.3e7;
+        let scored = |radius| {
+            body_name_score(
+                looks(radius, per_pixel),
+                2,
+                false,
+                false,
+                false,
+                false,
+            )
+        };
+
+        let pluto = scored(1.153e6);
+        let charon = scored(603_500.);
+
+        assert!(
+            looks(1.153e6, per_pixel) < 4.,
+            "Pluto drew larger than the floor a mark stops at"
+        );
+        assert!(pluto > charon, "Pluto scored {pluto} against {charon}");
     }
 
     /// The star a system arrives at outranks everything else in the system
