@@ -1,0 +1,45 @@
+[package]
+name = "galos_market"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+
+# A workspace of its own, so that nothing outside this folder knows the crate
+# is here. It is a prototype, and the repository is not carrying it yet: the
+# root manifest lists no member for it, the root lock file has never heard of
+# eframe, and `.sqlx` holds no query of its own.
+#
+# What that costs is a second `target`, and reading the database without
+# `galos_db`. Its pool is private to it, so a crate outside cannot ask it
+# anything, and the reads below are this crate's own. If this earns a place in
+# the map, they are what moves to `galos_db::markets` first.
+[workspace]
+
+[dependencies]
+async-std = { version = "*", features = ["attributes"] }
+chrono = "*"
+dotenv = "*"
+# egui 0.34, which is what `bevy_egui` 0.40 draws the map's chrome with. The
+# version is held to the map's on purpose: what is drawn here is meant to be
+# moved there, and a widget written against another egui would not go.
+eframe = "0.34"
+egui_extras = "0.34"
+# Egui says what it thinks is wrong through `log` and nowhere else, so
+# something has to be listening for any of it to be heard.
+env_logger = "0.11"
+
+[dependencies.sqlx]
+version = "^0.8"
+# The queries here are checked when they run rather than when they compile.
+# `query!` would want its offline data written into the `.sqlx` at the root of
+# the repository, which is tracked, and this crate is not.
+features = ["runtime-async-std-native-tls", "postgres", "chrono"]
+
+# What the root manifest sets for the rest of the repository. A debug build of
+# an egui program that leaves its dependencies unoptimised does not hold 60
+# frames a second.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
