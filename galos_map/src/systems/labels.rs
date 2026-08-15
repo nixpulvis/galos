@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{ApparentSize, Body};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
@@ -285,6 +285,7 @@ const CENTER_REACH: f32 = 2.;
 type Candidate<'a, T> = (
     Entity,
     T,
+    &'a Strength,
     &'a Visibility,
     &'a Indicator,
     Has<Filtered>,
@@ -511,7 +512,7 @@ pub fn choose_names(
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
-    seen_as: Res<ApparentSize>,
+    holding: Res<HeldSystem>,
     time: Res<Time<Real>>,
 ) {
     let clear = |commands: &mut Commands| {
@@ -546,16 +547,21 @@ pub fn choose_names(
     // Where a jump is measured from, for the stops that say one. Looked up in
     // the same query the layout goes over: the system the camera is standing
     // in is one of the systems on the map.
-    let from = seen_as
+    let from = holding
         .of()
         .and_then(|held| systems.get(held).ok())
         .map(|(_, system, ..)| system.position());
+
+    // What a name has to fall inside some of to be worth laying out at all.
+    let screen = Rect::from_corners(Vec2::ZERO, viewport);
 
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
     let mut wanted: Vec<(Entity, Rect, f32)> = systems
         .iter()
-        .filter_map(|(entity, system, visibility, indicator, filtered, hop)| {
+        .filter_map(|candidate| {
+            let (entity, system, mark, visibility, indicator, filtered, hop) =
+                candidate;
             // Pointing at a system asks for its name whatever else has
             // been set, so it answers to neither of the tests below.
             //
@@ -584,8 +590,7 @@ pub fn choose_names(
             // rather than marked, and its name belongs to the mark. The star
             // it arrives at being drawn ends it just as surely, that star
             // carrying the name from there on.
-            let stands = seen_as.standing_for(entity) > 0.
-                && carried != Some(system.address);
+            let stands = mark.0 > 0. && carried != Some(system.address);
 
             // A stop a route reaches is named whatever else is set. It is
             // one of two systems out of the whole sky that the viewer is being
@@ -614,8 +619,7 @@ pub fn choose_names(
             // and room granted for less than that is a name laid over the next
             // one along.
             let rect =
-                name_rect(at, &plate_for(system, hop, from), indicator.0);
-            let screen = Rect::from_corners(Vec2::ZERO, viewport);
+                name_rect_of(at, plate_width(system, hop, from), indicator.0);
             if screen.intersect(rect).is_empty() {
                 return None;
             }
@@ -636,8 +640,7 @@ pub fn choose_names(
             else {
                 continue;
             };
-            let rect = name_rect(place, &body.name, indicator.0);
-            let screen = Rect::from_corners(Vec2::ZERO, viewport);
+            let rect = name_rect_of(place, capitals(&body.name), indicator.0);
             if screen.intersect(rect).is_empty() {
                 continue;
             }
@@ -841,8 +844,18 @@ fn marked_score(pointed_at: bool, selected: bool) -> f32 {
 /// otherwise given, and a name laid over its own system is a name that cannot
 /// be read.
 pub(super) fn name_rect(at: Vec2, name: &str, clear: f32) -> Rect {
+    name_rect_of(at, name.chars().count(), clear)
+}
+
+/// The same rectangle, for whoever knows how wide a name is without holding it
+///
+/// A name's width is its letter count, [`FONT`] being monospaced, so what the
+/// layout is measuring is a number and not any particular words. The sky is
+/// laid out every frame and setting the words to count them is a heap
+/// allocation per system per frame, thrown away as soon as it is measured.
+pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
     let size = NAME_HEIGHT;
-    let width = name.chars().count() as f32 * ADVANCE * size;
+    let width = letters as f32 * ADVANCE * size;
     let margin = size * CROWDING;
 
     // `face_camera` puts a name up and to the right of what it names by this
@@ -881,15 +894,23 @@ pub fn respawn(
     // granted room for on the frame the camera arrives and the system it is
     // arriving in has not yet let go of its own name.
     standing_in: Query<&System>,
-    seen_as: Res<ApparentSize>,
+    holding: Res<HeldSystem>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
-    unnamed: Query<&Children, (Or<(With<System>, With<Body>)>, Without<Named>)>,
+    // Whatever lost its name since this last ran, rather than everything that
+    // does not have one. Nearly every name is the same name it was last frame,
+    // and asking the other way round is a walk of the whole sky, and of every
+    // child hung under it, to find the handful with a plate to take down.
+    mut unnamed: RemovedComponents<Named>,
+    children_of: Query<&Children>,
     labels: Query<Entity, With<Label>>,
     // The words on a plate already up, which only a system's ever change.
     mut plates: Query<&mut Text3d, With<Label>>,
     materials: Res<LabelMaterials>,
 ) {
-    for children in &unnamed {
+    for entity in unnamed.read() {
+        // Nothing where the thing itself has gone, which is the other way a
+        // name is lost. Its children went with it, plate and all.
+        let Ok(children) = children_of.get(entity) else { continue };
         for child in children.iter() {
             if let Ok(label) = labels.get(child) {
                 commands.entity(label).despawn();
@@ -913,7 +934,7 @@ pub fn respawn(
 
     // Where a jump is measured from. Nothing where the map is holding no
     // system, which is also when nothing is a stop.
-    let from = seen_as
+    let from = holding
         .of()
         .and_then(|held| standing_in.get(held).ok())
         .map(|held| held.position());
@@ -956,10 +977,45 @@ pub(super) fn plate_for(
     stop: bool,
     from: Option<DVec3>,
 ) -> String {
-    let jump =
-        from.filter(|_| stop).map(|from| (system.position() - from).length());
+    plate_words(&system.name, jump_to(system, stop, from))
+}
 
-    plate_words(&system.name, jump)
+/// How many letters that plate sets
+///
+/// What [`plate_for`] would come to, for whoever is laying a name out rather
+/// than setting one. The layout wants a width and a width is a letter count,
+/// so the words themselves are never wanted and the whole sky is measured
+/// without a string being built for any of it.
+///
+/// A stop is the exception and sets its words to be counted. What it says is a
+/// number formatted to a place, whose length is a question about rounding, and
+/// there are two stops on a map against a sky of systems.
+pub(super) fn plate_width(
+    system: &System,
+    stop: bool,
+    from: Option<DVec3>,
+) -> usize {
+    match jump_to(system, stop, from) {
+        Some(jump) => plate_words(&system.name, Some(jump)).chars().count(),
+        None => capitals(&system.name),
+    }
+}
+
+/// How far the jump to `system` is, where it is a stop that says one
+///
+/// `from` is where a jump is measured from, which is the system the camera is
+/// standing in. Nothing where the map is holding none, which is also when
+/// nothing is a stop.
+fn jump_to(system: &System, stop: bool, from: Option<DVec3>) -> Option<f64> {
+    from.filter(|_| stop).map(|from| (system.position() - from).length())
+}
+
+/// How many letters `name` sets in capitals
+///
+/// Without setting them. Nearly every letter is one letter in capitals, and a
+/// few are two, which [`char::to_uppercase`] answers a letter at a time.
+fn capitals(name: &str) -> usize {
+    name.chars().map(|letter| letter.to_uppercase().count()).sum()
 }
 
 /// A name, and `jump` beside it where there is one
@@ -1075,9 +1131,12 @@ pub fn face_camera(
 
             // The plate is drawn at the body's own scale otherwise, and a
             // body's scale is its radius in metres.
-            label.scale = Vec3::splat(height / SIZE / at.scale().x.max(1e-6));
-            label.translation = offset / at.scale().x.max(1e-6);
-            label.rotation = orbit.rotation;
+            let own = at.scale().x.max(1e-6);
+            label.set_if_neq(Transform {
+                translation: offset / own,
+                rotation: orbit.rotation,
+                scale: Vec3::splat(height / SIZE / own),
+            });
             continue;
         };
 
@@ -1106,9 +1165,14 @@ pub fn face_camera(
         let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
             + orbit.rotation * Vec3::Y * (height * RISE);
 
-        label.scale = Vec3::splat(scale);
-        label.translation = offset;
-        label.rotation = orbit.rotation;
+        // Only where it moved, as everything the camera decides the size of
+        // is. A plate carries a mesh, so a transform written regardless hands
+        // every name on screen back to the renderer every frame.
+        label.set_if_neq(Transform {
+            translation: offset,
+            rotation: orbit.rotation,
+            scale: Vec3::splat(scale),
+        });
     }
 }
 
@@ -1320,6 +1384,61 @@ mod tests {
         assert_eq!(said(&Text3d::new(&resting)), Some(resting.as_str()));
         assert_eq!(said(&Text3d::new(&stop)), Some(stop.as_str()));
         assert_ne!(said(&Text3d::new(&resting)), Some(stop.as_str()));
+    }
+
+    /// A plate is measured at the width it will be set at
+    ///
+    /// What the layout rests on. The sky is measured without any of its words
+    /// being set, so nothing holds the count to the string but this: room
+    /// granted for fewer letters than a plate sets is a name laid over the
+    /// next one along.
+    #[test]
+    fn a_plate_is_measured_at_the_width_it_sets() {
+        for name in ["sol", "SOL", "Shinrarta Dezhra", "LHS 3447", "straße"] {
+            let system = crate::systems::tests::named(1, name);
+
+            assert_eq!(
+                plate_width(&system, false, None),
+                plate_for(&system, false, None).chars().count(),
+                "{name} was granted the room for something else"
+            );
+        }
+    }
+
+    /// A system called `name`, standing `away` light years along the x axis
+    fn stop(name: &str, away: f64) -> System {
+        let mut system = crate::systems::tests::named(1, name);
+        system.position = [away, 0., 0.];
+        system
+    }
+
+    /// And so is a stop, whose plate says the jump to it as well
+    ///
+    /// The jump is a number set to a place, so how many letters it takes is a
+    /// question about rounding rather than about magnitude: 9.96 light years
+    /// is set as four and 9.94 as three.
+    #[test]
+    fn a_stop_is_measured_at_the_width_it_sets() {
+        let from = Some(DVec3::ZERO);
+        for away in [0.04, 6.74, 9.94, 9.96, 99.99, 123.45, 1234.5] {
+            let system = stop("lung", away);
+
+            assert_eq!(
+                plate_width(&system, true, from),
+                plate_for(&system, true, from).chars().count(),
+                "a stop {away} off was granted the room for something else"
+            );
+        }
+    }
+
+    /// A letter whose capital is two letters takes the room of two
+    ///
+    /// Which is the whole reason the count is taken a letter at a time rather
+    /// than off the length of the name.
+    #[test]
+    fn a_letter_that_doubles_in_capitals_is_counted_twice() {
+        assert_eq!(capitals("straße"), 7);
+        assert_eq!(capitals("straße"), "straße".to_uppercase().chars().count());
     }
 
     /// A camera at the origin, looking the way `Quat::IDENTITY` faces
@@ -1771,5 +1890,212 @@ mod tests {
             "the center measured {} deep, not the {expected} the camera sits at",
             depth(&camera, center)
         );
+    }
+
+    /// A world holding the colors a plate is set in, and nothing else
+    ///
+    /// Nothing is being flown into, so no system is the one the map is holding
+    /// and no plate says a jump.
+    fn plated() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<DimTo>();
+        app.init_resource::<HeldSystem>();
+        app.add_systems(Startup, init_materials);
+        app
+    }
+
+    /// Take the name off whatever holds one, as [`choose_names`] does
+    ///
+    /// By command, which is the whole of what is being tested in
+    /// [`a_name_dropped_this_frame_is_answered_this_frame`]: a removal has to
+    /// have landed and been recorded before [`respawn`] reads for it.
+    fn drop_names(named: Query<Entity, With<Named>>, mut commands: Commands) {
+        for entity in &named {
+            commands.entity(entity).remove::<Named>();
+        }
+    }
+
+    /// How many plates are up
+    fn up(app: &mut App) -> usize {
+        let mut labels =
+            app.world_mut().query_filtered::<Entity, With<Label>>();
+        labels.iter(app.world()).count()
+    }
+
+    /// A system that has won a name
+    fn winner(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((crate::systems::tests::named(1, "Sol"), Named))
+            .id()
+    }
+
+    /// A system that has won a name is given a plate
+    ///
+    /// What the rest of these rest on. A system without a [`Named`] has no
+    /// label at all, so there is nothing to hide and no mesh built for a name
+    /// that would not be read.
+    #[test]
+    fn a_system_that_wins_a_name_is_given_a_plate() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        winner(&mut app);
+
+        app.update();
+
+        assert_eq!(up(&mut app), 1, "the winner went unnamed");
+    }
+
+    /// And keeps it for as long as it holds the name
+    ///
+    /// The other half of what the plate is looked up for. A plate torn down
+    /// and put back would rebuild its mesh every frame.
+    #[test]
+    fn a_system_that_keeps_its_name_keeps_its_plate() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        winner(&mut app);
+
+        app.update();
+        app.update();
+
+        assert_eq!(up(&mut app), 1, "the plate was put up twice over");
+    }
+
+    /// A system that loses its name loses its plate
+    #[test]
+    fn a_system_that_loses_its_name_loses_its_plate() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        let system = winner(&mut app);
+
+        app.update();
+        app.world_mut().entity_mut(system).remove::<Named>();
+        app.update();
+
+        assert_eq!(up(&mut app), 0, "the plate outlived the name");
+    }
+
+    /// A name taken away this frame is answered this frame
+    ///
+    /// [`choose_names`] takes a name away by command and this runs after it in
+    /// the same frame, so the removal has landed and been recorded by the time
+    /// it is read for. Answered a frame late, every name the layout dropped
+    /// would be drawn once more over whatever took its place.
+    #[test]
+    fn a_name_dropped_this_frame_is_answered_this_frame() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        winner(&mut app);
+
+        // Up first, so that what the next frame does is take it down.
+        app.update();
+        assert_eq!(up(&mut app), 1);
+
+        app.add_systems(Update, drop_names.before(respawn));
+        app.update();
+
+        assert_eq!(up(&mut app), 0, "the plate outlived the frame it was lost");
+    }
+
+    /// A system despawned outright takes its plate with it
+    ///
+    /// The other way a name is lost, and the one where there is nothing left
+    /// to look up: the children went with the system.
+    #[test]
+    fn a_system_that_goes_takes_its_plate_with_it() {
+        let mut app = plated();
+        app.add_systems(Update, respawn);
+        let system = winner(&mut app);
+
+        app.update();
+        app.world_mut().entity_mut(system).despawn();
+        app.update();
+
+        assert_eq!(up(&mut app), 0, "the plate outlived its system");
+    }
+
+    /// How many names were placed
+    #[derive(Resource, Default)]
+    struct Placings(usize);
+
+    fn count_placings(
+        mut placings: ResMut<Placings>,
+        labels: Query<(), (Changed<Transform>, With<Label>)>,
+    ) {
+        placings.0 += labels.iter().count();
+    }
+
+    /// A world holding a camera and a system wearing a name
+    fn facing() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Placings>();
+        app.add_systems(Update, (face_camera, count_placings).chain());
+        app.world_mut().spawn((
+            OrbitCamera {
+                eye: DVec3::ZERO,
+                rotation: Quat::IDENTITY,
+                ..default()
+            },
+            crate::systems::tests::seeing(),
+            GlobalTransform::default(),
+        ));
+
+        // Down the axis the camera looks along, a name being sized by how far
+        // into the view its system lies rather than by how far off it is.
+        let mut standing = crate::systems::tests::system(1);
+        standing.position = [0., 0., -5.];
+        // No mark to stand off, the gap a name is given being enough on its
+        // own to place one.
+        let system =
+            app.world_mut().spawn((standing, Indicator::default())).id();
+        let label = app.world_mut().spawn((Label, Transform::default())).id();
+        app.world_mut().entity_mut(system).add_child(label);
+        app
+    }
+
+    /// How many names have been placed so far
+    fn placings(app: &App) -> usize {
+        app.world().resource::<Placings>().0
+    }
+
+    /// A frame that moves nothing leaves a name where it stands
+    ///
+    /// A plate carries a mesh, so a transform written regardless hands every
+    /// name on screen back to the renderer every frame.
+    #[test]
+    fn a_resting_frame_leaves_a_name_where_it_stands() {
+        let mut app = facing();
+
+        // The name arriving is a change of its own, and the frame after it is
+        // the first that could be said to be resting.
+        app.update();
+        app.update();
+        let settled = placings(&app);
+
+        app.update();
+        assert_eq!(placings(&app), settled, "placed a name that had not moved");
+    }
+
+    /// And a camera that has moved still turns it
+    ///
+    /// Which is the whole of what this does: a name is offset along the
+    /// camera's own axes and sized by how far into the view it lies, so both
+    /// answers move the moment the camera does.
+    #[test]
+    fn a_name_is_placed_again_when_the_camera_moves() {
+        let mut app = facing();
+        app.update();
+        app.update();
+        let settled = placings(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(0., 0., -2.);
+        app.update();
+
+        assert!(placings(&app) > settled, "left a name where it was standing");
     }
 }

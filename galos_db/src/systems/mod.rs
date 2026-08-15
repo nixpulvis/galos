@@ -35,6 +35,18 @@ pub struct System {
     /// from either of the other two.
     pub non_body_count: Option<i32>,
 
+    /// How far the system reaches from the star it arrives at, in metres
+    ///
+    /// The furthest of everything on record, measured to the far side of what
+    /// is drawn for it. Systems run from a light second across to a fifth of a
+    /// light year, so anything drawing a system as a whole has to be told
+    /// rather than assume.
+    ///
+    /// [`None`] where nothing is on record, which is the database unable to
+    /// say how far the system reaches rather than a system that reaches
+    /// nowhere.
+    pub reach: Option<f32>,
+
     // TODO: Find an elegent way to represent this.
     // & = foreign key = belongs_to
     // pub controlling_faction: &Faction,

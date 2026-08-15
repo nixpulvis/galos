@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::spawn::{ApparentSize, Body};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
     Label, depth, depth_of, name_rect, screen_offset, screen_position,
@@ -469,7 +469,13 @@ pub fn size_indicators(
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
         let shell = drawn * INDICATOR_MARGIN / per_pixel;
 
-        indicator.0 = shell.max(INDICATOR_MIN_RADIUS);
+        // Only where it moved, as everything asked of every system every frame
+        // is. Nothing watches a mark for changes today, and writing one
+        // regardless is how that stops being safe without anyone meaning it to.
+        let wanted = shell.max(INDICATOR_MIN_RADIUS);
+        if indicator.0 != wanted {
+            indicator.0 = wanted;
+        }
     }
 }
 
@@ -503,7 +509,11 @@ pub fn size_bodies(
         let into_view = depth_of(orbit, offset).max(1.);
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
 
-        indicator.0 = body_mark(body.radius, per_pixel);
+        // Only where it moved, as a system's mark is.
+        let wanted = body_mark(body.radius, per_pixel);
+        if indicator.0 != wanted {
+            indicator.0 = wanted;
+        }
     }
 }
 
@@ -740,24 +750,33 @@ fn hits(
 /// Read from what is hovered rather than from coming and going, so that
 /// moving straight from one system to the next cannot leave the cursor
 /// behind whichever of the two events happens to arrive last.
+///
+/// Written only where it changed. What sets the cursor on the window looks at
+/// the icon only when it has been marked as written, and an insert is a write
+/// whether or not the icon differs, so writing regardless asks the platform to
+/// set the same cursor over again every frame.
 pub fn point_the_cursor(
     hovered: Res<HoverMap>,
     clickable: Query<(), Or<(With<Indicator>, With<Label>)>>,
-
-    window: Query<Entity, With<PrimaryWindow>>,
+    // Whatever the window is showing, which is nothing until this has run
+    // once.
+    window: Query<(Entity, Option<&CursorIcon>), With<PrimaryWindow>>,
     mut commands: Commands,
 ) {
-    let Ok(window) = window.single() else { return };
+    let Ok((window, shown)) = window.single() else { return };
     let over_something = hovered
         .values()
         .flat_map(|hits| hits.keys())
         .any(|entity| clickable.contains(*entity));
 
-    commands.entity(window).insert(if over_something {
+    let wanted = if over_something {
         CursorIcon::System(SystemCursorIcon::Pointer)
     } else {
         CursorIcon::default()
-    });
+    };
+    if shown != Some(&wanted) {
+        commands.entity(window).insert(wanted);
+    }
 }
 
 /// Ring the system the pointer is over
@@ -774,12 +793,12 @@ pub fn point_the_cursor(
 pub fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
-    seen_as: Res<ApparentSize>,
+    holding: Res<HeldSystem>,
     // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (Entity, &GlobalTransform, &System, &Indicator, Has<Filtered>),
+        (&GlobalTransform, &System, &Strength, &Indicator, Has<Filtered>),
         (With<PointedAt>, Without<Selected>),
     >,
     // Whatever inside a system is pointed at, which carries no filter and no
@@ -792,9 +811,8 @@ pub fn ring(
     // is pointing at them, that being the whole of what the mark is for, and
     // whatever the filters say, as they are drawn regardless of those too.
     hops: Query<(
-        Entity,
         &GlobalTransform,
-        &System,
+        &Strength,
         &Indicator,
         &crate::systems::route::Hop,
         Has<Selected>,
@@ -816,7 +834,7 @@ pub fn ring(
     //
     // Only while the map is holding a system, which is what a stop is reached
     // from and what [`super::selection::ring`] stands back for.
-    if seen_as.of().is_some()
+    if holding.of().is_some()
         && let Ok(eye) = eye_at.single()
     {
         let right = orbit.rotation * Vec3::X;
@@ -828,8 +846,8 @@ pub fn ring(
         // A point `at` pixels from the middle of the screen, drawn out there.
         let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
-        for (entity, at, _, indicator, hop, picked) in &hops {
-            let standing = seen_as.standing_for(entity);
+        for (at, mark, indicator, hop, picked) in &hops {
+            let standing = mark.0;
             if standing <= 0. {
                 continue;
             }
@@ -951,8 +969,8 @@ pub fn ring(
         }
     }
 
-    for (entity, at, system, indicator, filtered) in &pointed_at {
-        let standing = seen_as.standing_for(entity);
+    for (at, system, mark, indicator, filtered) in &pointed_at {
+        let standing = mark.0;
         if standing <= 0. {
             continue;
         }
@@ -1603,5 +1621,206 @@ mod tests {
             !app.world().entity(system).contains::<PointedAt>(),
             "the system answered over the body inside it"
         );
+    }
+
+    /// How many marks were written
+    #[derive(Resource, Default)]
+    struct Marks(usize);
+
+    fn count_marks(
+        mut marks: ResMut<Marks>,
+        systems: Query<(), (Changed<Indicator>, With<System>)>,
+    ) {
+        marks.0 += systems.iter().count();
+    }
+
+    /// A world holding a camera and a system with a shell drawn around it
+    ///
+    /// The shell is a tenth of a light year across, which is far wider than
+    /// one is really drawn. Anything smaller marks at [`INDICATOR_MIN_RADIUS`]
+    /// from five light years off, and a floor is the same number wherever the
+    /// camera stands, so a shell that reaches over it is what leaves the mark
+    /// with anything to say.
+    fn sized() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Marks>();
+        app.add_systems(Update, (size_indicators, count_marks).chain());
+        app.world_mut().spawn((looking(), crate::systems::tests::seeing()));
+
+        // Down the axis the camera looks along, a mark being measured by how
+        // far into the view its system lies rather than by how far off it is.
+        let mut standing = crate::systems::tests::system(1);
+        standing.position = [0., 0., -5.];
+        let system =
+            app.world_mut().spawn((standing, Indicator::default())).id();
+        let wide = (0.1 * crate::space::LIGHT_YEAR) as f32;
+        let shell = app
+            .world_mut()
+            .spawn((
+                Shell,
+                Transform::from_scale(Vec3::splat(wide)),
+                Visibility::default(),
+            ))
+            .id();
+        app.world_mut().entity_mut(system).add_child(shell);
+        app
+    }
+
+    /// How many marks have been written so far
+    fn marks(app: &App) -> usize {
+        app.world().resource::<Marks>().0
+    }
+
+    /// A frame that moves nothing leaves a system's mark alone
+    ///
+    /// The mark is asked of every system every frame, and nothing watches one
+    /// for changes today. Writing it regardless is how that stops being safe
+    /// without anyone meaning it to.
+    #[test]
+    fn a_resting_frame_leaves_a_mark_alone() {
+        let mut app = sized();
+
+        // The system arriving is a change of its own, and the frame after it
+        // is the first that could be said to be resting.
+        app.update();
+        app.update();
+        let settled = marks(&app);
+
+        app.update();
+        assert_eq!(marks(&app), settled, "wrote a mark that had not moved");
+    }
+
+    /// And a camera that has moved still remarks it
+    ///
+    /// Which is what the mark is worked out for: it is held in pixels, so
+    /// where the camera stands is the whole of what decides it.
+    #[test]
+    fn a_mark_is_written_again_when_the_camera_moves() {
+        let mut app = sized();
+        app.update();
+        app.update();
+        let settled = marks(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(0., 0., -2.);
+        app.update();
+
+        assert!(marks(&app) > settled, "left a mark at the size it was");
+    }
+
+    /// How many times the cursor was written
+    #[derive(Resource, Default)]
+    struct Sets(usize);
+
+    fn count_sets(
+        mut sets: ResMut<Sets>,
+        windows: Query<(), Changed<CursorIcon>>,
+    ) {
+        sets.0 += windows.iter().count();
+    }
+
+    /// A world holding a window, with nothing under the pointer
+    fn windowed() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<HoverMap>();
+        app.init_resource::<Sets>();
+        app.world_mut().spawn(PrimaryWindow);
+        app.add_systems(Update, (point_the_cursor, count_sets).chain());
+        app
+    }
+
+    /// Put `entity` under the pointer
+    fn hover(app: &mut App, entity: Entity) {
+        let mut over = EntityHashMap::default();
+        over.insert(
+            entity,
+            HitData {
+                camera: Entity::PLACEHOLDER,
+                depth: 0.,
+                position: None,
+                normal: None,
+                extra: None,
+            },
+        );
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+    }
+
+    /// What the window is showing
+    fn cursor(app: &mut App) -> Option<CursorIcon> {
+        let mut windows = app
+            .world_mut()
+            .query_filtered::<&CursorIcon, With<PrimaryWindow>>();
+        windows.iter(app.world()).next().cloned()
+    }
+
+    /// How many times the cursor has been written so far
+    fn sets(app: &App) -> usize {
+        app.world().resource::<Sets>().0
+    }
+
+    /// The cursor points while something worth clicking is under it
+    #[test]
+    fn the_cursor_points_at_what_can_be_clicked() {
+        let mut app = windowed();
+        let system = app.world_mut().spawn(Indicator(0.)).id();
+        hover(&mut app, system);
+
+        app.update();
+
+        assert_eq!(
+            cursor(&mut app),
+            Some(CursorIcon::System(SystemCursorIcon::Pointer))
+        );
+    }
+
+    /// And rests over sky with nothing in it
+    #[test]
+    fn the_cursor_rests_over_empty_sky() {
+        let mut app = windowed();
+
+        app.update();
+
+        assert_eq!(cursor(&mut app), Some(CursorIcon::default()));
+    }
+
+    /// A frame that moves the pointer onto something writes the cursor
+    #[test]
+    fn reaching_something_worth_clicking_writes_the_cursor() {
+        let mut app = windowed();
+        app.update();
+        app.update();
+        let settled = sets(&app);
+
+        let system = app.world_mut().spawn(Indicator(0.)).id();
+        hover(&mut app, system);
+        app.update();
+
+        assert!(sets(&app) > settled, "the cursor was left resting");
+    }
+
+    /// A frame that moves the pointer nowhere leaves the cursor alone
+    ///
+    /// What sets the cursor on the window looks at the icon only where it has
+    /// been marked as written, so writing it regardless asks the platform to
+    /// set the same cursor over again every frame.
+    #[test]
+    fn a_resting_frame_leaves_the_cursor_alone() {
+        let mut app = windowed();
+        let system = app.world_mut().spawn(Indicator(0.)).id();
+        hover(&mut app, system);
+
+        // The first frame writes whatever the window was not already showing,
+        // and the second is the first that could be said to be resting.
+        app.update();
+        app.update();
+        let settled = sets(&app);
+
+        app.update();
+        assert_eq!(sets(&app), settled, "wrote a cursor that had not changed");
     }
 }

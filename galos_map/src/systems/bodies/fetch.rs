@@ -9,8 +9,8 @@ use crate::Db;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
+use crate::systems::bodies::spawn::Strength;
 use crate::systems::fetch::Poll;
-use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
@@ -43,10 +43,40 @@ const ASK_WITHIN: f32 = 5.;
 /// How far the camera may drift before the map lets a system go, in light
 /// years
 ///
-/// Wider than [`ASK_WITHIN`], so that a camera sitting on the line between two
-/// systems does not spend every frame swapping which of them is held. What is
-/// held is dropped only once something else is clearly nearer.
+/// Held wider than [`ASK_WITHIN`], so that a camera sitting on the line between
+/// two systems does not spend every frame swapping which of them is held. What
+/// is held is dropped only once something else is clearly nearer. Narrower and
+/// the hysteresis runs backwards: a system would be let go of before anything
+/// else was near enough to be asked about.
 const HOLD_WITHIN: f32 = 7.;
+
+/// Which of `systems` the map should be holding, by address
+///
+/// Whichever is nearest what the camera is looking at, each given as its
+/// address and how far off it is.
+///
+/// Nearest rather than largest in the sky. A system is drawn as itself once it
+/// takes up enough of the view, and how much that is follows its own reach, so
+/// the widest of them are drawn as themselves from light years off: Alpha
+/// Centauri fills more of the sky from Sol than Sol does from a hundredth of a
+/// light year out. Asked which system takes up the most, a camera standing on
+/// Sol answers Alpha Centauri.
+fn worth_holding(systems: impl Iterator<Item = (i64, f64)>) -> Option<i64> {
+    systems
+        .filter(|(_, away)| *away <= ASK_WITHIN as f64)
+        .min_by(|(_, one), (_, other)| one.total_cmp(other))
+        .map(|(address, _)| address)
+}
+
+/// Whether a system already held goes on being held
+///
+/// Being inside it is enough on its own, however far the crosshair has been
+/// panned from it. Otherwise it holds while it is anywhere near, which is what
+/// keeps a camera standing between two systems from swapping between them
+/// every frame.
+fn holds_still(standing: f32, away: f64) -> bool {
+    standing < 1. || away <= HOLD_WITHIN as f64
+}
 
 /// What is outstanding, and when it was asked
 #[derive(Resource, Default)]
@@ -128,7 +158,7 @@ pub(super) struct Rows {
 /// having when it is about to be flown into, and only one can be.
 fn choose(
     camera: Query<&OrbitCamera>,
-    systems: Query<&System>,
+    systems: Query<(&System, &Strength)>,
     db: Res<Db>,
     time: Res<Time<Real>>,
     poll: Res<Poll>,
@@ -140,24 +170,18 @@ fn choose(
     };
     let now = time.last_update().unwrap_or(time.startup());
 
-    let nearest = systems
-        .iter()
-        .map(|system| {
-            (system.address, center.distance(DVec3::from(system.position)))
-        })
-        .filter(|(_, away)| *away <= ASK_WITHIN as f64)
-        .min_by(|(_, one), (_, other)| one.total_cmp(other))
-        .map(|(address, _)| address);
+    let nearest = worth_holding(systems.iter().map(|(system, _)| {
+        (system.address, center.distance(system.position()))
+    }));
 
-    // What is held stays held while it is anywhere near, so that standing
-    // between two systems does not swap between them every frame. Only
-    // something else coming within reach displaces it.
+    // What is held stays held while the camera is inside it, and while it is
+    // anywhere near and nothing else is nearer, so that standing between two
+    // systems does not swap between them every frame.
     if let Some(held) = contents.of()
         && nearest.is_none_or(|near| near == held)
-        && systems.iter().any(|system| {
+        && systems.iter().any(|(system, standing)| {
             system.address == held
-                && center.distance(DVec3::from(system.position))
-                    <= HOLD_WITHIN as f64
+                && holds_still(standing.0, center.distance(system.position()))
         })
     {
         // A system is scanned while the camera stands in it, and the rows land
@@ -216,4 +240,66 @@ pub(super) fn collect(
         answer.centers.len()
     );
     contents.hold(answer.stars, answer.bodies, answer.centers);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The crosshair says which system the map holds
+    ///
+    /// Nearest to what the camera is looking at, which is where the user has
+    /// put themselves.
+    #[test]
+    fn the_crosshair_says_which_system_is_held() {
+        let near = (1, 0.1);
+        let far = (2, 3.);
+
+        assert_eq!(worth_holding([far, near].into_iter()), Some(1));
+    }
+
+    /// A wide neighbour does not take the map from where the camera is
+    ///
+    /// Alpha Centauri reaches a fifth of a light year, so from Sol it fills
+    /// three times as much of the sky as Sol's own system does from a
+    /// hundredth of a light year out. Held by whichever fills the most, a
+    /// camera standing on Sol holds Alpha Centauri, rules the plane about it
+    /// and snaps to Sol at the end of the zoom.
+    #[test]
+    fn a_wide_neighbour_does_not_take_the_map_from_where_the_camera_is() {
+        let sol = (1, 0.01);
+        let alpha_centauri = (2, 4.4);
+
+        assert_eq!(worth_holding([alpha_centauri, sol].into_iter()), Some(1));
+    }
+
+    /// A system is held out further than it is asked about
+    ///
+    /// Which way round the two reaches go is the whole of the hysteresis. The
+    /// other way a system would be let go of before anything else was near
+    /// enough to be asked after, and a camera sitting between two of them
+    /// would swap which it held every frame.
+    #[test]
+    fn a_system_is_held_further_out_than_it_is_asked_about() {
+        assert!(holds_still(1., ASK_WITHIN as f64));
+        assert!(!holds_still(1., HOLD_WITHIN as f64 + 1.));
+    }
+
+    /// A system out of reach of the crosshair is no candidate at all
+    #[test]
+    fn a_system_out_of_reach_is_left_alone() {
+        assert_eq!(worth_holding([(1, 9.)].into_iter()), None);
+    }
+
+    /// A system being closed on is held though the crosshair has left it behind
+    ///
+    /// What is drawn hangs off the system being held: its contents, the grid
+    /// they stand in and the plane the ruler hands the sky to. Letting go of
+    /// one whose mark is still going out takes all of that away mid fade.
+    #[test]
+    fn a_system_being_closed_on_is_held_from_further_off() {
+        assert!(holds_still(0.3, 20.));
+        assert!(holds_still(1., 1.));
+        assert!(!holds_still(1., 9.));
+    }
 }

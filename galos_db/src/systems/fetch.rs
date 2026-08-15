@@ -35,8 +35,10 @@ impl System {
         )
         .fetch_one(&db.pool)
         .await?;
+        let reaching = Self::reaches(db, &[row.address]).await?;
 
         Ok(System {
+            reach: reaching.get(&row.address).copied(),
             address: row.address,
             name: row.name,
             position: row
@@ -91,8 +93,10 @@ impl System {
         )
         .fetch_one(&db.pool)
         .await?;
+        let reaching = Self::reaches(db, &[row.address]).await?;
 
         Ok(System {
+            reach: reaching.get(&row.address).copied(),
             address: row.address,
             name: row.name,
             position: row
@@ -148,9 +152,13 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
+        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
+        let mut reaching = Self::reaches(db, &found).await?;
+
         Ok(rows
             .into_iter()
             .map(|row| System {
+                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -258,9 +266,13 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
+        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
+        let mut reaching = Self::reaches(db, &found).await?;
+
         Ok(rows
             .into_iter()
             .map(|row| System {
+                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -320,9 +332,13 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
+        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
+        let mut reaching = Self::reaches(db, &found).await?;
+
         Ok(rows
             .into_iter()
             .map(|row| System {
+                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -382,9 +398,13 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
+        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
+        let mut reaching = Self::reaches(db, &found).await?;
+
         Ok(rows
             .into_iter()
             .map(|row| System {
+                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -504,10 +524,12 @@ impl System {
 
         let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
         let mut present = Self::system_factions(db, &found).await?;
+        let mut reaching = Self::reaches(db, &found).await?;
 
         Ok(rows
             .into_iter()
             .map(|row| System {
+                reach: reaching.remove(&row.address),
                 factions: present.remove(&row.address).unwrap_or_default(),
                 body_count: row.body_count,
                 non_body_count: row.non_body_count,
@@ -694,6 +716,71 @@ impl System {
         Ok(present)
     }
 
+    /// How far each of `addresses` reaches from its arrival star, in metres
+    ///
+    /// The furthest thing on record, measured to the far side of what is drawn
+    /// for it: how far from arrival the scan put it or the far end of its
+    /// orbit, whichever is greater, with its own radius on top. A scan records
+    /// where a thing stood on the day, so the orbit is what says how far it
+    /// ever gets, and the recorded distance is what says how far its parent
+    /// stands from the middle.
+    ///
+    /// The points a close pair goes round count as well. Nothing stands at
+    /// one, but the pair rides its ellipse, and a pair scanned near periapsis
+    /// says nothing about how far that ellipse reaches.
+    ///
+    /// Eccentricity is held short of one. What is recorded is a scan rather
+    /// than a solution, and a parabola read literally reaches forever.
+    ///
+    /// The `299792458` is the metres in a light second, the distances from
+    /// arrival being recorded in those and everything else in metres.
+    ///
+    /// Systems with nothing on record are simply absent, which is what the
+    /// caller reads as not knowing.
+    async fn reaches(
+        db: &Database,
+        addresses: &[i64],
+    ) -> Result<HashMap<i64, f32>, Error> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT system_address AS "address!",
+                   MAX(GREATEST(away, apoapsis) + radius) AS "reach!"
+            FROM (
+                SELECT system_address,
+                       (COALESCE(distance_from_arrival, 0) * 299792458)::real
+                           AS away,
+                       (semi_major_axis
+                           * (1 + LEAST(eccentricity, 0.99)))::real AS apoapsis,
+                       radius
+                FROM bodies
+                WHERE system_address = ANY($1)
+              UNION ALL
+                SELECT system_address,
+                       (distance_from_arrival_ls * 299792458)::real,
+                       (COALESCE(semi_major_axis, 0)
+                           * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real,
+                       radius
+                FROM stars
+                WHERE system_address = ANY($1)
+              UNION ALL
+                SELECT system_address,
+                       0::real,
+                       (COALESCE(semi_major_axis, 0)
+                           * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real,
+                       0::real
+                FROM barycenters
+                WHERE system_address = ANY($1)
+            ) reaching
+            GROUP BY system_address
+            "#,
+            addresses,
+        )
+        .fetch_all(&db.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|row| (row.address, row.reach)).collect())
+    }
+
     /// The systems at any of `addresses`
     ///
     /// One query for a set of them, since what asks is holding a list it
@@ -734,9 +821,13 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
+        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
+        let mut reaching = Self::reaches(db, &found).await?;
+
         Ok(rows
             .into_iter()
             .map(|row| System {
+                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -794,9 +885,13 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
+        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
+        let mut reaching = Self::reaches(db, &found).await?;
+
         Ok(rows
             .into_iter()
             .map(|row| System {
+                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row

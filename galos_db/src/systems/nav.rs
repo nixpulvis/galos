@@ -44,6 +44,12 @@ impl System {
 
         rows.into_iter()
             .map(|row| System {
+                // Asked once per step of a search over the whole neighbourhood,
+                // and a jump is measured between two positions. How far either
+                // system reaches from its own star says nothing about whether
+                // the ship can get there, and asking would put a second query
+                // under every step.
+                reach: None,
                 address: row.address,
                 name: row.name,
                 position: row

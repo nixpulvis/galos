@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT system_address AS \"address!\",\n                   MAX(GREATEST(away, apoapsis) + radius) AS \"reach!\"\n            FROM (\n                SELECT system_address,\n                       (COALESCE(distance_from_arrival, 0) * 299792458)::real\n                           AS away,\n                       (semi_major_axis\n                           * (1 + LEAST(eccentricity, 0.99)))::real AS apoapsis,\n                       radius\n                FROM bodies\n                WHERE system_address = ANY($1)\n              UNION ALL\n                SELECT system_address,\n                       (distance_from_arrival_ls * 299792458)::real,\n                       (COALESCE(semi_major_axis, 0)\n                           * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real,\n                       radius\n                FROM stars\n                WHERE system_address = ANY($1)\n              UNION ALL\n                SELECT system_address,\n                       0::real,\n                       (COALESCE(semi_major_axis, 0)\n                           * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real,\n                       0::real\n                FROM barycenters\n                WHERE system_address = ANY($1)\n            ) reaching\n            GROUP BY system_address\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "reach!",
+        "type_info": "Float4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "144ad4a50f3ffd3f3373abc84938a03a3d2eca0f2de30c9edb13521ea34a8d1c"
+}

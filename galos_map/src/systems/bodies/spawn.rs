@@ -16,6 +16,24 @@
 //!
 //! Bodies keep a little emission of their own regardless, so that a system
 //! whose star is not on record is dim rather than invisible.
+//!
+//! # The ladder
+//!
+//! Four figures decide what is drawn for a system as the camera comes in, and
+//! they are four points on one axis: how much of the sky the system takes up,
+//! which is its own reach over how far off it is. Held in that order, and
+//! declared in it, so a figure out of place is a number out of order:
+//!
+//! | | |
+//! |---|---|
+//! | [`WORTH_KEEPING`] | 0.008, what is inside is taken away again |
+//! | [`WORTH_DRAWING`] | 0.01, what is inside is drawn |
+//! | [`WORTH_MARKING`] | 0.0125, the mark standing for it starts to go |
+//! | [`WORTH_HIDING`] | 0.05, there is nothing of the mark left |
+//!
+//! So the contents arrive and leave behind a mark at full strength, and what
+//! is watched is one thing becoming another, which
+//! `the_contents_come_and_go_before_the_mark_gives_way` holds them to.
 
 use super::{Clock, Contents, orbit::Orbits};
 use crate::camera::OrbitCamera;
@@ -36,7 +54,7 @@ use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<DrawnContents>();
-    app.init_resource::<ApparentSize>();
+    app.init_resource::<HeldSystem>();
     app.insert_resource(ShowOrbits(true));
     app.add_systems(Startup, init_materials);
     // After the rows have been taken in, so that a system's contents can be
@@ -51,6 +69,12 @@ pub fn plugin(app: &mut App) {
     // After whatever it moves exists. A body spawned this frame is already
     // standing where the clock says, `draw` having read the same clock.
     app.add_systems(Update, wind.in_set(MapSet::Populate).after(draw));
+    // Reads where the camera came to rest, which `Camera` settles, and is read
+    // by everything drawn in `Present`.
+    app.add_systems(
+        Update,
+        fade.in_set(MapSet::Camera).after(crate::camera::orbit_camera),
+    );
 }
 
 /// Whether the lines a system's contents trace are drawn
@@ -90,7 +114,15 @@ fn show_orbits(
     }
 }
 
-/// How large a system has to look before what is in it is drawn, in radians
+/// How small a system may look before what is in it is taken away again, in
+/// radians
+///
+/// Under [`WORTH_DRAWING`], so a camera sitting on the line does not spawn and
+/// despawn a system's insides every frame. Under [`WORTH_MARKING`] as well, so
+/// that the taking away happens behind a whole mark as the drawing did.
+const WORTH_KEEPING: f32 = 0.008;
+
+/// And how large it has to look before what is in it is drawn
 ///
 /// About half a degree, at which the whole system is some twenty pixels across
 /// and everything in it is a speck. Which is the point: the mark standing for
@@ -103,15 +135,7 @@ fn show_orbits(
 /// business — so nothing waits on the database at this range.
 const WORTH_DRAWING: f32 = 0.01;
 
-/// And how small before it is taken away again
-///
-/// Lower than it took to draw, so a camera sitting on the line does not spawn
-/// and despawn a system's insides every frame. Lower than [`WORTH_MARKING`]
-/// as well, so that the taking away happens behind a whole mark as the drawing
-/// did.
-const WORTH_KEEPING: f32 = 0.008;
-
-/// How large a system has to look before the mark standing for it starts to go
+/// And how large before the mark standing for it starts to go
 ///
 /// Past [`WORTH_DRAWING`], so what the mark stands in for is already there
 /// when the mark begins to give way to it. The two bands do not overlap and
@@ -120,60 +144,131 @@ const WORTH_KEEPING: f32 = 0.008;
 /// into another.
 const WORTH_MARKING: f32 = 0.0125;
 
-/// And how large before there is nothing of it left
+/// And how large before there is nothing of the mark left
 ///
 /// About three degrees, by which point the system fills a good part of the
 /// view and a mark standing in for it would be standing over the thing itself.
 /// Four times [`WORTH_MARKING`], which is a quarter of the distance, and long
 /// enough that the fade reads as one thing becoming another.
-const WORTH_HIDING: f32 = 0.05;
+///
+/// The far end of the ladder, and the one figure outside this module reads:
+/// [`crate::systems::scale::MARGIN`] is held under its inverse, so a mark is
+/// gone before the camera can reach the shell it stood for.
+pub(crate) const WORTH_HIDING: f32 = 0.05;
 
-/// How large the system the map is holding looks, in radians
+/// The system whose insides the map is drawing, if any
 ///
-/// Its own reach over how far off it is, which is the one question deciding
-/// whether what is inside it is drawn. Published because the mark standing for
-/// that system answers the same question from the other side: a shell has to
-/// be gone by the time the system itself is drawn, and a ring around a system
-/// the camera is standing inside is a ring around the view.
-///
-/// One system at a time, as the drawing is, and nothing at all until there is
-/// one in hand whose reach the map can say.
+/// [`Contents`] says which by address, and outlives the entity: the spyglass
+/// may drag a system off the map while the camera is still standing in it.
+/// This is the entity, for whoever has to reach the system itself rather than
+/// its rows, and it names the one system whose mark may go out.
 #[derive(Resource, Default)]
-pub struct ApparentSize(Option<(Entity, f32)>);
+pub struct HeldSystem(Option<Entity>);
 
-impl ApparentSize {
-    /// How much of the mark standing for `system` is left, from one to nothing
-    ///
-    /// The whole of it for every system but the one being held, none of it
-    /// once the camera is inside that one, and the way between over
-    /// [`WORTH_MARKING`] to [`WORTH_HIDING`].
-    pub fn standing_for(&self, system: Entity) -> f32 {
-        let Some((held, seen)) = self.0 else { return 1. };
-        if held != system {
-            return 1.;
-        }
-
-        let through = (seen - WORTH_MARKING) / (WORTH_HIDING - WORTH_MARKING);
-        1. - through.clamp(0., 1.)
-    }
-
-    /// Which system the map is holding, if any
-    ///
-    /// For whoever has to draw from it rather than at it: a line leaving the
-    /// system the camera is standing in has to know where that is.
+impl HeldSystem {
+    /// Which system that is, if the map is drawing one
     pub fn of(&self) -> Option<Entity> {
-        self.0.map(|(system, _)| system)
+        self.0
     }
+}
 
-    /// How much of the mark is left for whatever the map is holding
-    ///
-    /// [`Self::standing_for`] without having to name the system, for whoever
-    /// is drawn across the whole sky rather than at one place in it. One while
-    /// the camera is out among the systems, and nothing once it has descended
-    /// into one of them.
-    pub fn standing(&self) -> f32 {
-        self.0.map_or(1., |(system, _)| self.standing_for(system))
+/// How strongly the mark standing for a system is drawn, from one to nothing
+///
+/// What is drawn, which follows what the distance asks at a bounded rate
+/// rather than exactly. Read by everything that goes out with a system: its
+/// shell, the rings around it, its name, the routes reaching it and the ruled
+/// plane under it, so that the whole of it goes together.
+#[derive(Component)]
+pub struct Strength(pub f32);
+
+impl Default for Strength {
+    /// Whole, as a system too far off to be closed on is
+    fn default() -> Self {
+        Strength(1.)
     }
+}
+
+/// How long a mark takes to go out, in seconds
+///
+/// How much of a mark should be left is a question about how far off the
+/// system is, and the camera is free to cross the whole band in a frame or
+/// two. A flight covers four light years in ninety frames and spends three of
+/// them inside the band; a drag flicked across the view is not far behind.
+/// Only a scroll crosses it slowly, being multiplicative and asked for a click
+/// at a time, and it is the one path that ever looked like a fade.
+///
+/// So the distance says what a mark should come to and this says how fast what
+/// is drawn may follow it. Half a second: long enough to read as one thing
+/// becoming another, short enough that a mark is not left standing over the
+/// system it stands for.
+///
+/// A bound rather than a pace, so raising it slows only the paths that cross
+/// the band faster than this. A camera coming in on the wheel is slower than
+/// this the whole way and never touches it.
+pub(crate) const GOES_OUT_IN: f32 = 0.5;
+
+/// Draw every mark a step nearer what is wanted of it
+///
+/// Every system every frame, and written only where it moved, which past the
+/// one being closed on is none of them.
+fn fade(
+    time: Res<Time<Real>>,
+    camera: Query<&OrbitCamera>,
+    holding: Res<HeldSystem>,
+    mut systems: Query<(Entity, &System, &mut Strength)>,
+) {
+    let Ok(eye) = camera.single().map(|camera| camera.eye) else { return };
+    let drawing = holding.of();
+    let step = time.delta_secs() / GOES_OUT_IN;
+
+    for (entity, system, mut standing) in &mut systems {
+        // Only the one system whose insides the map is holding may give way to
+        // them. Every other mark stands whole however near the camera comes:
+        // there is nothing drawn behind it, so a mark going out there is a
+        // system going out altogether. Alpha Centauri reaches a fifth of a
+        // light year, and by its own measure its mark is nearly gone from Sol.
+        let wanted = if Some(entity) == drawing {
+            standing_for(system, eye)
+        } else {
+            1.
+        };
+        // A system arriving is drawn at whatever its distance asks rather than
+        // fading in from whole. It is one the map has just been told about,
+        // not one the camera has come up on.
+        let drawn = if standing.is_added() {
+            wanted
+        } else {
+            standing.0 + (wanted - standing.0).clamp(-step, step)
+        };
+
+        if standing.0 != drawn {
+            standing.0 = drawn;
+        }
+    }
+}
+
+/// How much of the mark standing for `system` is left, from one to nothing,
+/// seen from `eye`
+///
+/// The whole of it while the system is a speck, none of it once the system is
+/// large enough to stand for itself, and the way between over
+/// [`WORTH_MARKING`] to [`WORTH_HIDING`].
+///
+/// What the distance asks for rather than what is drawn, which is
+/// [`Strength`]. Nothing outside [`fade`] wants this one, and it is asked only
+/// of the system the map is holding: a mark may only go out where what it
+/// stands for is drawn in its place.
+pub(crate) fn standing_for(system: &System, eye: DVec3) -> f32 {
+    let away = space::metres(eye - system.position()).length() as f32;
+
+    fading(system.reach() / away.max(1.))
+}
+
+/// How much of a mark is left for something looking `seen` radians across
+fn fading(seen: f32) -> f32 {
+    let through = (seen - WORTH_MARKING) / (WORTH_HIDING - WORTH_MARKING);
+
+    1. - through.clamp(0., 1.)
 }
 
 /// How far past the system a star's light is allowed to reach
@@ -530,30 +625,50 @@ fn draw(
     orbit_material: Res<OrbitMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnContents>,
-    mut seen_as: ResMut<ApparentSize>,
+    mut holding: ResMut<HeldSystem>,
     mut commands: Commands,
 ) {
     let Ok((eye_entity, eye)) = camera.single().map(|(e, c)| (e, c.eye)) else {
-        seen_as.0 = None;
+        holding.0 = None;
         return;
     };
 
     // How large the system being held looks from here, which is the one
     // question deciding whether any of this is worth drawing.
-    let apparent =
-        contents.of().zip(contents.extent()).and_then(|(address, extent)| {
-            let system = systems.iter().find(|(_, s)| s.address == address)?;
-            let away = space::metres(eye - DVec3::from(system.1.position))
-                .length() as f32;
-            Some((address, system.0, extent / away.max(1.)))
+    //
+    // The system's own reach rather than what its rows come to, so this is the
+    // very figure the marks standing for it fade on and the two happen
+    // together. What the rows come to is still what says whether there are any:
+    // nothing is drawn until they are in.
+    let apparent = contents
+        .of()
+        .filter(|_| contents.extent().is_some())
+        .and_then(|address| {
+            let (entity, system) =
+                systems.iter().find(|(_, s)| s.address == address)?;
+            let away = space::metres(eye - system.position()).length() as f32;
+            Some((address, entity, system.reach() / away.max(1.)))
         });
+
+    // Whether an answer about somewhere new is on the wire while what is drawn
+    // is the answer before it. It stands until there is something to put in
+    // its place: taking a system down for the few frames a query takes and
+    // putting it back is a system blinking as the camera moves, with the plane
+    // ruled inside it going too.
+    let holding_over =
+        drawn.0.is_some() && apparent.is_none() && contents.of().is_some();
 
     // Said before anything is decided from it, since the marks standing for
     // this system answer it as well and one of the ways below is to leave
-    // everything as it is.
-    seen_as.0 = apparent.map(|(_, entity, seen)| (entity, seen));
+    // everything as it is. The two go together: a mark may only go out where
+    // what it stands for is drawn, so whichever system is named here is the
+    // one drawn below.
+    if !holding_over {
+        holding.0 = apparent.map(|(_, entity, _)| entity);
+    }
 
     let wanted = match (drawn.0, apparent) {
+        _ if holding_over => return,
         // Nothing held, or too small to bother with.
         (_, None) => None,
         // Already drawn, from the rows as they stand, and still worth keeping.
@@ -1197,14 +1312,165 @@ mod tests {
         assert_eq!(body, line, "the line was left behind at {line}");
     }
 
-    /// One of the systems on the map
-    fn on_the_map(which: u32) -> Entity {
-        Entity::from_raw_u32(which).expect("a system")
+    /// How much of the mark for a system looking `seen` radians across is left
+    fn standing(seen: f32) -> f32 {
+        fading(seen)
     }
 
-    /// How much of the mark for the held system is left, at `seen` radians
-    fn standing(seen: f32) -> f32 {
-        ApparentSize(Some((on_the_map(1), seen))).standing_for(on_the_map(1))
+    /// A world holding a camera `away` light years from one system
+    ///
+    /// The marks are kept up in it, and the camera is stood wherever a test
+    /// wants it rather than flown there: what is being asked is how fast a
+    /// mark follows the camera, not how the camera moves.
+    fn approaching(away: f64) -> App {
+        let mut app = App::new();
+        app.init_resource::<Time<Real>>();
+        app.world_mut()
+            .spawn(OrbitCamera { eye: DVec3::new(away, 0., 0.), ..default() });
+        // A system of the middling sort, at the origin. Its mark goes out
+        // between 0.0127 light years and 0.0032.
+        let held = app
+            .world_mut()
+            .spawn(crate::systems::tests::reaching(1, 0., 1.5e12))
+            .id();
+        // Held, since a mark only goes out where the map is drawing what it
+        // stands for.
+        app.insert_resource(HeldSystem(Some(held)));
+        app.add_systems(Update, fade);
+        app.update();
+        app
+    }
+
+    /// And one the map is not holding
+    fn beside(away: f64) -> App {
+        let mut app = approaching(away);
+        app.insert_resource(HeldSystem::default());
+        app
+    }
+
+    /// A mark over a system the map is not holding stands whole
+    ///
+    /// However near the camera comes. Only one system's insides are drawn at a
+    /// time, so a mark going out anywhere else is a system going out with
+    /// nothing put in its place: Alpha Centauri reaches a fifth of a light
+    /// year, and by its own measure its mark is all but gone from Sol.
+    #[test]
+    fn a_mark_the_map_is_not_holding_stands_whole() {
+        let mut app = beside(0.001);
+
+        for _ in 0..30 {
+            stepped(&mut app, 0.001);
+        }
+        assert_eq!(drawn(&mut app), 1., "a system went out with nothing drawn");
+    }
+
+    /// How much of that system's mark is drawn
+    fn drawn(app: &mut App) -> f32 {
+        app.world_mut().query::<&Strength>().single(app.world()).unwrap().0
+    }
+
+    /// Stand the camera `away` light years off and draw a frame
+    fn stepped(app: &mut App, away: f64) -> f32 {
+        {
+            let world = app.world_mut();
+            let mut cameras = world.query::<&mut OrbitCamera>();
+            cameras.single_mut(world).unwrap().eye = DVec3::new(away, 0., 0.);
+        }
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_secs_f64(1. / 60.));
+        app.update();
+
+        drawn(app)
+    }
+
+    /// A mark goes out at its own pace, however the camera got there
+    ///
+    /// The distance says what a mark should come to, and the camera is free to
+    /// cross the whole band between two frames: a flight spends three frames
+    /// of its ninety in there, and a drag flicked across the view is not far
+    /// behind. Only a scroll crosses it slowly, and it was the one path that
+    /// ever looked like a fade.
+    #[test]
+    fn a_mark_goes_out_at_its_own_pace() {
+        let mut app = approaching(0.02);
+        assert_eq!(drawn(&mut app), 1.);
+
+        // The camera arrives the whole way in, as a flight lands.
+        let after = stepped(&mut app, 0.001);
+        assert!(after > 0.95, "a mark went out in one frame, to {after}");
+
+        // And is gone half a second later.
+        for _ in 0..30 {
+            stepped(&mut app, 0.001);
+        }
+        assert_eq!(drawn(&mut app), 0.);
+    }
+
+    /// And comes back at the same pace
+    #[test]
+    fn a_mark_comes_back_at_its_own_pace() {
+        let mut app = approaching(0.001);
+
+        let after = stepped(&mut app, 0.02);
+        assert!(after < 0.05, "a mark came back in one frame, to {after}");
+    }
+
+    /// A system arriving under the camera is drawn where it stands
+    ///
+    /// Rather than fading in from whole. It is a system the map has just been
+    /// told about, not one the camera has come up on, and a mark fading in
+    /// over what it stands for is the one thing the whole band is arranged to
+    /// avoid.
+    #[test]
+    fn a_system_arriving_is_drawn_where_it_stands() {
+        let mut app = approaching(0.001);
+
+        assert_eq!(drawn(&mut app), 0., "a mark faded in over its own system");
+    }
+
+    /// A mark goes out on the approach to the system it stands for
+    ///
+    /// Every one of them, on its own reach and its own distance. Read off the
+    /// one system the map is holding instead, every other mark in the sky
+    /// stands whole until the map changes hands and then drops to wherever the
+    /// camera has already got to, which is what panning onto a system while
+    /// zoomed in did.
+    #[test]
+    fn a_mark_goes_out_on_the_approach_to_its_own_system() {
+        // A system of the middling sort, at the origin.
+        let system = crate::systems::tests::reaching(1, 0., 1.5e12);
+        let from = |ly: f64| standing_for(&system, DVec3::new(ly, 0., 0.));
+
+        assert_eq!(from(0.02), 1., "a mark had begun to go from 0.02 ly off");
+        assert_eq!(from(0.001), 0., "a mark was still standing 0.001 ly off");
+
+        let mut before = 1.;
+        for ly in [0.012, 0.008, 0.006, 0.005, 0.004, 0.0035] {
+            let left = from(ly);
+            assert!(
+                left < before,
+                "{ly} ly off left {left} of a mark, against {before} for one \
+                 further out"
+            );
+            before = left;
+        }
+    }
+
+    /// And a wider system's goes out from further away
+    ///
+    /// Which is what makes the fade a question about the system rather than
+    /// about the camera. Alpha Centauri reaches a fifth of a light year and is
+    /// drawn as itself from light years off; its neighbours are marks until
+    /// the camera is a hundredth of one away.
+    #[test]
+    fn a_wider_system_goes_out_from_further_off() {
+        let wide = crate::systems::tests::reaching(1, 0., 2.1e15);
+        let ordinary = crate::systems::tests::reaching(2, 0., 1.5e12);
+        let eye = DVec3::new(2., 0., 0.);
+
+        assert_eq!(standing_for(&wide, eye), 0.);
+        assert_eq!(standing_for(&ordinary, eye), 1.);
     }
 
     /// A mark is gone by the time the camera is inside the system
@@ -1261,18 +1527,6 @@ mod tests {
             assert!((0. ..1.).contains(&left), "{seen} left {left}");
             before = left;
         }
-    }
-
-    /// Every other system's mark stands whole
-    ///
-    /// Only one system is ever being closed on, and the rest of the sky is
-    /// not fading out because the camera is flying into one of them.
-    #[test]
-    fn a_mark_for_some_other_system_stands_whole() {
-        let held = ApparentSize(Some((on_the_map(1), WORTH_DRAWING)));
-
-        assert_eq!(held.standing_for(on_the_map(2)), 1.);
-        assert_eq!(ApparentSize::default().standing_for(on_the_map(1)), 1.);
     }
 
     /// A body is found where the system holding it put it

@@ -4,17 +4,16 @@
 //! its own scale is invisible from the next one over, so what is drawn is
 //! whatever keeps it on screen and tells the viewer something.
 //!
-//! [`View::Systems`] blends the two: a mark that says a system is there, held
-//! at a size in the world so the sky reads as depth, and the system's own
-//! extent, which is what is left once the camera is near enough for the mark
-//! to have been squeezed down to nothing. [`View::Stars`] does not, and is the
-//! older of the two.
+//! [`View::Systems`] draws whichever of two is wider: a mark that says a
+//! system is there, held at a size in the world so the sky reads as depth, and
+//! the system's own extent, which takes over once the camera is near enough
+//! for the mark to have been squeezed down under it. [`View::Stars`] draws one
+//! size for the whole map, and is the older of the two.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
-use super::bodies::STAND_IN;
 use super::bodies::spawn::Body;
 use super::labels::{depth_of, world_per_pixel};
 use super::roundness::Roundness;
@@ -169,6 +168,11 @@ const MARK: f32 = (8.5e-2 * crate::space::LIGHT_YEAR) as f32;
 /// sky: a twelfth of a light year seen from a tenth of one is fifty degrees
 /// across, and a system whose mark the camera is already inside cannot be
 /// flown into.
+///
+/// Which is what this and [`ANGULAR`] are held to: the two of them together,
+/// at the most [`POP_MAX`] can make of a mark, stay well under one, so a mark
+/// is always a smaller length than the distance it is seen from.
+/// `a_mark_never_encloses_the_camera` is what holds them.
 const NEAREST: f32 = 4e-3;
 
 /// How large a system is drawn from far off, in radians
@@ -190,22 +194,34 @@ const ANGULAR: f32 = 4e-4;
 /// How much larger than its system a shell is drawn
 ///
 /// Enough that the outermost orbit sits inside rather than on the surface.
+///
+/// Held under the inverse of [`super::bodies::spawn::WORTH_HIDING`], which is
+/// twenty reaches, so a mark is gone by the time the camera can reach the
+/// shell it stood for. The only figure here held against one in another
+/// module, and the two are not in the same units: that one is an angle and
+/// this a multiple of a length, so the comparison takes an inversion.
+/// `a_mark_is_gone_before_the_camera_reaches_the_shell` is what holds it.
 const MARGIN: f32 = 1.2;
 
 /// How large a system is drawn, in metres
 ///
-/// The system itself, and a mark around it saying one is there. A system at
+/// The wider of the system itself and a mark saying one is there. A system at
 /// its true size is invisible from the next one over, and a mark is no use
-/// once the camera is inside the system, so the two are added and each
-/// answers for the range the other cannot.
+/// once the camera is inside the system, so each answers for the range the
+/// other cannot.
 ///
 /// The mark is [`MARK`] across the middle of the map, which is a size in the
 /// world: twice as far off draws about half as large, and the sky reads as
 /// depth. It gives way to an angle at either end, where a size in the world is
 /// too large to get past or too small to see. Being an angle holds it still on
 /// screen as the camera moves, and close in that is what lets the system's own
-/// extent come up through it: the shell settles onto the outermost orbit
-/// rather than arriving at it.
+/// extent come up through it: the mark shrinks into the shell rather than the
+/// shell arriving out of it.
+///
+/// The wider rather than the two added, so that how far a system reaches
+/// cannot swell a mark that is still doing its job. Systems reach anywhere from
+/// a light second to a fifth of a light year, and added in, the widest of them
+/// draw as a ball among their neighbours' dots from light years off.
 ///
 /// `prominence` scales the mark and not the system. A busy system is worth a
 /// larger mark; it is not worth a larger volume, and a quarter of one would
@@ -213,13 +229,19 @@ const MARGIN: f32 = 1.2;
 fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
     let mark = MARK.min(NEAREST * away) + ANGULAR * away;
 
-    extent * MARGIN + mark * prominence
+    (extent * MARGIN).max(mark * prominence)
 }
 
 /// Draw each system large enough to be seen from where the camera is
 ///
 /// The size goes on the [`Shell`], not on the [`System`] holding it, so that
 /// labels and anything else hanging off the system keep their own size.
+///
+/// How far a system reaches is read off the system itself, which every one of
+/// them carries. Asking the system the map is holding the insides of instead
+/// would draw one star in the sky by what it is and the rest by what they are
+/// assumed to be, and hand that difference from star to star as the camera
+/// moves.
 ///
 /// Distance is measured between two absolute galactic positions, the
 /// camera's [`OrbitCamera::eye`] and the system's. A system's `Transform`
@@ -230,7 +252,6 @@ fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
 pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
-    contents: Res<super::bodies::Contents>,
     camera: Query<(&OrbitCamera, &Camera)>,
     systems: Query<&System>,
     roundness: Res<Roundness>,
@@ -247,14 +268,7 @@ pub fn size_by_distance(
             let Ok(system) = systems.get(child_of.parent()) else { continue };
             let away = crate::space::metres(eye - DVec3::from(system.position))
                 .length() as f32;
-            // Only the one system the map is holding the insides of can say
-            // how far it reaches. Every other is drawn at the stand-in, which
-            // is what not knowing looks like.
-            let extent = if contents.holds(system.address) {
-                contents.extent().unwrap_or(STAND_IN)
-            } else {
-                STAND_IN
-            };
+            let extent = system.reach();
             let prominence = if scale_population.0 {
                 population_factor(system.population, stats.population_mean)
             } else {
@@ -262,7 +276,13 @@ pub fn size_by_distance(
             };
 
             let size = shell(extent, away, prominence);
-            drawn.scale = Vec3::splat(size);
+            // Only where it moved, as `size_inside` is. A scale assigned
+            // regardless marks every shell in the sky changed every frame, and
+            // both the transform propagation and the mesh extraction that read
+            // it are gated on that mark.
+            if drawn.scale.x != size {
+                drawn.scale = Vec3::splat(size);
+            }
 
             // Measured out along the line to the system rather than into the
             // view, which is what the size itself is measured by. A mark off
@@ -373,7 +393,12 @@ pub fn size_uniformly(
     // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
     // transparent when they are too far away.
     for (mut drawn, child_of, mut mesh) in shells.iter_mut() {
-        drawn.scale = Vec3::splat(size);
+        // Only where it moved, as everything that sizes a shell is. The size
+        // here is one number for the whole map, so past the frame a shell is
+        // spawned this never writes at all.
+        if drawn.scale.x != size {
+            drawn.scale = Vec3::splat(size);
+        }
 
         let Some((eye, cot_half_fov, height)) = seen else { continue };
         let Ok(system) = systems.get(child_of.parent()) else { continue };
@@ -391,7 +416,8 @@ pub fn size_uniformly(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::tests::system;
+    use crate::systems::bodies::STAND_IN;
+    use crate::systems::tests::{at, reaching, system};
 
     /// A shell always holds the system it stands around
     ///
@@ -421,21 +447,83 @@ mod tests {
 
     /// A shell settles onto its system rather than arriving at it
     ///
-    /// Halving the distance halves what is left over above the true size, so
-    /// there is no distance at which the shell stops shrinking and nothing to
-    /// cross.
+    /// The mark shrinks as the camera comes in and stops counting for anything
+    /// once the system it stands for is the wider of the two. From there the
+    /// shell holds still at the system's own extent, so there is no distance
+    /// at which it steps.
     #[test]
     fn a_shell_settles_onto_its_system() {
         let extent = 1.7e14;
         let held = extent * MARGIN;
 
-        let far = shell(extent, 1e16, 1.) - held;
-        let near = shell(extent, 5e15, 1.) - held;
+        assert!(shell(extent, 1e18, 1.) > held, "the mark had already gone");
+        assert_eq!(shell(extent, 1e16, 1.), held);
+        assert_eq!(shell(extent, 1e12, 1.), held);
+    }
+
+    /// A mark is gone well before the camera reaches the shell it stood for
+    ///
+    /// The whole exchange is ratios of a system's own reach, so this holds for
+    /// a system of any size at once: a mark is gone twenty reaches out and the
+    /// shell surface is at [`MARGIN`], sixteen times nearer. Reversed, a
+    /// camera would fly into a lit sphere drawn over the very bodies the mark
+    /// was standing in for.
+    ///
+    /// The two constants sit in different modules and nothing else holds them
+    /// to each other. [`super::bodies::spawn::WORTH_HIDING`] is where the fade
+    /// ends, and everything read off it is read in radians; `MARGIN` is a
+    /// multiple of a length.
+    #[test]
+    fn a_mark_is_gone_before_the_camera_reaches_the_shell() {
+        let gone_at = 1. / super::super::bodies::spawn::WORTH_HIDING;
 
         assert!(
-            (far / near - 2.).abs() < 1e-3,
-            "half the distance left {near} over against {far}"
+            gone_at > MARGIN * 4.,
+            "a mark lasts to {gone_at} reaches, against a shell at {MARGIN}"
         );
+    }
+
+    /// A shell only encloses the camera once it has settled onto its system
+    ///
+    /// What [`NEAREST`] is for. A mark is an angle, and an angle subtends a
+    /// smaller length than the distance it is seen from, so a shell still
+    /// drawn as one stands further off than it is wide and cannot be a sphere
+    /// the camera is already inside.
+    #[test]
+    fn a_mark_never_encloses_the_camera() {
+        // A metre out to the far rim of the galaxy.
+        for away in [1f32, 1e9, 1e13, 1e17, 4.7e20] {
+            // A system of no size at all, so the mark is the whole of what is
+            // drawn, and as large as a population can make one.
+            let drawn = shell(0., away, POP_MAX);
+
+            assert!(
+                drawn < away,
+                "a mark drawn {drawn}m wide was seen from {away}m"
+            );
+        }
+    }
+
+    /// Learning how far a system reaches leaves its mark alone
+    ///
+    /// The map draws every system at [`STAND_IN`] until it has asked what is
+    /// inside one, which it does five light years out. All but the widest
+    /// hundredth of systems reach under 1e14 metres, and from five light years
+    /// the mark is wider than any of those, so the answer landing writes the
+    /// size that was already there.
+    #[test]
+    fn learning_how_far_a_system_reaches_leaves_its_mark_alone() {
+        let away = 5. * crate::space::LIGHT_YEAR as f32;
+        let unknown = shell(STAND_IN, away, 1.);
+
+        for extent in [STAND_IN, 1e13, 1e14] {
+            let known = shell(extent, away, 1.);
+            assert_eq!(
+                known, unknown,
+                "a system reaching {extent}m drew {known}m where the map \
+                 had been drawing {unknown}m"
+            );
+        }
     }
 
     /// How much of the sky a system the map knows nothing about takes up from
@@ -622,5 +710,158 @@ mod tests {
         app.world_mut().entity_mut(entity).despawn();
         app.update();
         assert_eq!(mean(&app), 0., "averaged an empty map to a NaN");
+    }
+
+    /// A system is drawn to its own reach, whatever the map is looking into
+    ///
+    /// Every system carries how far it reaches, so a wide one is drawn as what
+    /// it is from wherever it is looked at. Asked of the system the camera
+    /// happens to be nearest instead, one star in the sky is drawn by what it
+    /// is and the rest by what they are assumed to be, and the difference
+    /// jumps from star to star as the crosshair moves.
+    #[test]
+    fn a_shell_is_drawn_to_its_own_systems_reach() {
+        let mut app = sky();
+        app.add_systems(Update, size_by_distance);
+        // Alpha Centauri, which holds Proxima six million light seconds out,
+        // and a neighbour of the middling sort beside it.
+        shelled(&mut app, reaching(1, 5., 2.1e15));
+        shelled(&mut app, at(2, 5.));
+        app.update();
+
+        let away = 5. * crate::space::LIGHT_YEAR as f32;
+        assert_eq!(drawn(&mut app, 1), shell(2.1e15, away, 1.));
+        assert_eq!(drawn(&mut app, 2), shell(STAND_IN, away, 1.));
+    }
+
+    /// How many shells were written to
+    #[derive(Resource, Default)]
+    struct Writes(usize);
+
+    fn count_writes(
+        mut writes: ResMut<Writes>,
+        shells: Query<(), (Changed<Transform>, With<Shell>)>,
+    ) {
+        writes.0 += shells.iter().count();
+    }
+
+    /// A world holding a camera and whatever shells are hung in it
+    ///
+    /// The camera carries a viewport of its own, answering nothing for its
+    /// size otherwise, that being the render target's to say and nothing here
+    /// bringing one up.
+    fn sky() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<SystemsStats>();
+        app.init_resource::<Writes>();
+        app.insert_resource(ScalePopulation(false));
+        app.add_plugins(crate::systems::roundness::plugin);
+        app.world_mut()
+            .spawn((OrbitCamera::default(), crate::systems::tests::seeing()));
+        app
+    }
+
+    /// A system with a shell standing around it
+    fn shelled(app: &mut App, system: System) {
+        let system = app.world_mut().spawn(system).id();
+        let shell = app
+            .world_mut()
+            .spawn((Shell, Transform::default(), Mesh3d::default()))
+            .id();
+        app.world_mut().entity_mut(system).add_child(shell);
+    }
+
+    /// How large the shell around the system at `address` was drawn
+    fn drawn(app: &mut App, address: i64) -> f32 {
+        let mut shells = app
+            .world_mut()
+            .query_filtered::<(&Transform, &ChildOf), With<Shell>>();
+        let mut systems = app.world_mut().query::<&System>();
+        let world = app.world();
+        shells
+            .iter(world)
+            .find(|(_, child_of)| {
+                systems
+                    .get(world, child_of.parent())
+                    .is_ok_and(|system| system.address == address)
+            })
+            .expect("a shell around that system")
+            .0
+            .scale
+            .x
+    }
+
+    /// What has been written to a shell so far
+    fn writes(app: &App) -> usize {
+        app.world().resource::<Writes>().0
+    }
+
+    /// A frame that moves nothing leaves a shell's size alone
+    ///
+    /// Both the transform propagation and the mesh extraction that read a
+    /// shell's size look only at what changed since the last frame. Assigning
+    /// it regardless hands them every star in the sky every frame, whether or
+    /// not the camera has moved.
+    #[test]
+    fn a_resting_frame_leaves_a_shell_alone() {
+        let mut app = sky();
+        app.add_systems(Update, (size_by_distance, count_writes).chain());
+        shelled(&mut app, at(1, 5.));
+
+        // The shell arriving is itself a change, so the first frame is counted
+        // whatever this system does. It is the second that says whether a
+        // resting frame writes.
+        app.update();
+        let settled = writes(&app);
+
+        app.update();
+        assert_eq!(writes(&app), settled, "sized a shell that had not moved");
+    }
+
+    /// And a camera that has moved still resizes it
+    ///
+    /// Which is what the size is for. A guard that held through a zoom would
+    /// leave every mark in the sky drawn at whatever it was when the camera
+    /// last stood still.
+    #[test]
+    fn a_shell_is_sized_again_when_the_camera_moves() {
+        let mut app = sky();
+        app.add_systems(Update, (size_by_distance, count_writes).chain());
+        shelled(&mut app, at(1, 5.));
+
+        app.update();
+        app.update();
+        let settled = writes(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(2., 0., 0.);
+        app.update();
+
+        assert!(writes(&app) > settled, "left a shell at the size it was");
+    }
+
+    /// A shell drawn at one size for the whole map is written once
+    ///
+    /// This view draws every system the same size whatever the camera is
+    /// doing, so past the frame a shell is spawned there is never anything to
+    /// write at all.
+    #[test]
+    fn an_evenly_drawn_shell_is_sized_once() {
+        let mut app = sky();
+        app.add_systems(Update, (size_uniformly, count_writes).chain());
+        shelled(&mut app, at(1, 5.));
+
+        app.update();
+        let settled = writes(&app);
+
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        cameras.single_mut(app.world_mut()).unwrap().eye =
+            DVec3::new(2., 0., 0.);
+        app.update();
+
+        assert_eq!(writes(&app), settled, "sized a shell that draws one size");
     }
 }
