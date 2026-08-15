@@ -35,7 +35,10 @@
 //! is watched is one thing becoming another, which
 //! `the_contents_come_and_go_before_the_mark_gives_way` holds them to.
 
-use super::{Clock, Contents, orbit::Orbits};
+use super::{
+    Clock, Contents,
+    orbit::{Orbits, Spacing},
+};
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::space;
@@ -51,6 +54,7 @@ use big_space::prelude::*;
 use galos_db::bodies::Body as DbBody;
 use galos_db::stars::Star as DbStar;
 use std::collections::HashSet;
+use std::f64::consts::PI;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<DrawnContents>();
@@ -69,6 +73,12 @@ pub fn plugin(app: &mut App) {
     // After whatever it moves exists. A body spawned this frame is already
     // standing where the clock says, `draw` having read the same clock.
     app.add_systems(Update, wind.in_set(MapSet::Populate).after(draw));
+    // After the camera has settled where it is standing, that being what says
+    // how much of a ring to lay out.
+    app.add_systems(
+        Update,
+        redash.in_set(MapSet::Present).after(crate::camera::orbit_camera),
+    );
     // Reads where the camera came to rest, which `Camera` settles, and is read
     // by everything drawn in `Present`.
     app.add_systems(
@@ -95,6 +105,30 @@ pub struct OrbitLine {
     /// line is a flat child of the system like everything else: nothing moves
     /// it by inheritance.
     pub about: Option<i16>,
+    /// Where the ring's own points are measured from, about whatever it goes
+    /// round
+    ///
+    /// Which is where the thing riding the line stood when it was drawn. The
+    /// points are held as offsets from there so that the ones near what rides
+    /// the line are small numbers: a mesh is `f32`, and the ring Pluto and
+    /// Charon go round reaches 5.9e12 metres, where one float stands 524
+    /// kilometres from the next. Measured from the parent instead, the whole
+    /// line snaps between those as the camera moves, a quarter of Pluto's own
+    /// orbit at a step, and rotating close in on the pair sweeps it through a
+    /// couple of hundred of them.
+    pub pin: DVec3,
+    /// Which ring this is, where it is drawn in dashes
+    ///
+    /// A dashed ring is laid closest where the camera stands, so it has to be
+    /// laid again as the camera moves and has to say which ring to ask about.
+    /// [`None`] for a line drawn whole, which is laid about the thing riding it
+    /// and left alone.
+    pub dashed: Option<i16>,
+    /// How its points were laid, when they last were
+    ///
+    /// What [`redash`] compares against to know whether the camera has moved far
+    /// enough to be worth laying them again.
+    pub spacing: Spacing,
 }
 
 /// Draw the orbit lines, or do not, as the view asks
@@ -289,30 +323,16 @@ const LIGHT_REACH: f32 = 4.;
 /// How many points an orbit is drawn with
 ///
 /// Enough that the roundest orbit does not read as a polygon at the size an
-/// orbit is ever looked at: a circle drawn five hundred pixels across is off
-/// by a hundredth of one between its points.
+/// orbit is ever looked at: laid evenly, a circle drawn five hundred pixels
+/// across is off by a hundredth of one between its points.
 ///
 /// Few enough that a system of a hundred bodies is some tens of thousands of
 /// vertices rather than a mesh worth thinking about. Unlike a body's sphere
 /// these are a mesh apiece, every orbit being its own ellipse, so the count is
-/// paid per line.
+/// paid per line. It is the whole budget for a ring however wide the ring is
+/// against the view: what changes with the view is where along the ring the
+/// points fall, not how many there are. See [`Spacing`].
 const ORBIT_POINTS: usize = 512;
-
-/// How many dashes an orbit with nothing standing on it is drawn in
-///
-/// A count around the ring rather than a length in the world, which is the
-/// other way round from a route's [`crate::systems::route::DASH`]. A route is
-/// a run of legs of wildly different lengths and a share of one cannot be read
-/// at more than one zoom, so its dashes are held at a distance instead. An
-/// orbit is a closed ring seen whole or not at all, and the ellipses in one
-/// system run from a few thousand kilometres to light hours across. A length
-/// would leave the small ones solid and the wide ones a dotted haze; a count
-/// draws every ring as a ring of dashes whatever its size.
-///
-/// Thirty two, which reads as dashes rather than as a chain of ticks by the
-/// time the ring is a few hundred pixels across, and merges into a line below
-/// that, where a dashed ring and a solid one say the same thing anyway.
-const DASHES: usize = 32;
 
 /// Which system's insides are drawn, and which answer about it they were drawn
 /// from
@@ -613,7 +633,7 @@ fn init_materials(
 /// cost with nothing to show for it.
 #[allow(clippy::too_many_arguments)]
 fn draw(
-    camera: Query<(Entity, &OrbitCamera)>,
+    camera: Query<(Entity, &OrbitCamera, Option<&Projection>)>,
     map: Res<crate::space::Map>,
     systems: Query<(Entity, &System)>,
     inside: Query<Entity, With<Inside>>,
@@ -628,7 +648,9 @@ fn draw(
     mut holding: ResMut<HeldSystem>,
     mut commands: Commands,
 ) {
-    let Ok((eye_entity, eye)) = camera.single().map(|(e, c)| (e, c.eye)) else {
+    let Ok((eye_entity, eye, across)) =
+        camera.single().map(|(e, c, lens)| (e, c.eye, seen_across(c, lens)))
+    else {
         holding.0 = None;
         return;
     };
@@ -714,6 +736,13 @@ fn draw(
 
     let grid = space::system_grid();
     let orbits = contents.orbits();
+    // Where the camera stands, in the terms the orbits are worked out in,
+    // which is what says which piece of a ring is worth laying out. Those are
+    // measured from the point the system's stars go round and what is drawn is
+    // measured from the star it arrives at, so the middle stands between them.
+    let standing = systems.get(entity).map_or(DVec3::ZERO, |(_, system)| {
+        space::metres(eye - system.position())
+    });
     let mut commands = commands.entity(entity);
     commands.insert(grid.clone());
     // Down into the system with them.
@@ -779,6 +808,8 @@ fn draw(
             bare.contains(&id),
             middle,
             clock.at,
+            standing + middle,
+            across,
             &orbits,
             &grid,
             &mut meshes,
@@ -944,25 +975,41 @@ fn drawn_orbit(
     bare: bool,
     middle: DVec3,
     clock: f64,
+    eye: DVec3,
+    across: f64,
     orbits: &Orbits,
     grid: &Grid,
     meshes: &mut Assets<Mesh>,
     material: &OrbitMaterial,
 ) -> Option<impl Bundle> {
-    let path = orbits.path(id, ORBIT_POINTS)?;
     let about =
         parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, clock));
-    let (cell, offset) = placed(about - middle, grid);
+    // A ring drawn in dashes is laid closest where the camera stands, so that
+    // its dashes can be cut close enough together to be seen there. One with
+    // something standing on it is laid closest about that thing, being a line
+    // that has to pass through it rather than a run of marks.
+    let spacing = if bare {
+        laid(orbits, id, orbits.nearest(id, eye - about), across)
+    } else {
+        Spacing::even(orbits.anomaly(id, clock), ORBIT_POINTS)
+    };
+    let path = orbits.path(id, &spacing)?;
+    // Measured from where the line is pinned rather than from what it goes
+    // round, so that the points near what rides it are small numbers. The
+    // ring is put back where it belongs by hanging it there.
+    let pin = path[path.len() / 2];
+    let (cell, offset) = placed(about + pin - middle, grid);
 
-    let points: Vec<Vec3> = path.into_iter().map(|p| p.as_vec3()).collect();
+    let points: Vec<Vec3> =
+        path.into_iter().map(|p| (p - pin).as_vec3()).collect();
     let mesh = if bare {
-        meshes.add(LineList { points: dashed(&points) })
+        meshes.add(LineList { points: dashed(&points, spacing.run) })
     } else {
         meshes.add(LineStrip { points })
     };
     Some((
         Inside,
-        OrbitLine { about: parent },
+        OrbitLine { about: parent, pin, dashed: bare.then_some(id), spacing },
         cell,
         Transform::from_translation(offset),
         Mesh3d(mesh),
@@ -970,17 +1017,145 @@ fn drawn_orbit(
     ))
 }
 
-/// A closed path, cut into [`DASHES`] dashes, as the pairs a [`LineList`] draws
+/// How a dashed ring's points are laid, for a camera standing `at` round it
+fn laid(orbits: &Orbits, id: i16, at: f64, across: f64) -> Spacing {
+    Spacing::round(at, orbits.finest(id, across), ORBIT_POINTS)
+}
+
+/// How far off its dashes may drift before a ring is laid again
 ///
-/// The dashes are cut out of the points the whole ring was drawn with rather
-/// than measured along it afresh, so a dash bends exactly as the line it came
-/// from does. A dash and the gap after it are the same length, which is what
-/// makes the run read as a dashed line rather than as marks left by one.
-fn dashed(path: &[Vec3]) -> Vec<Vec3> {
+/// As a ratio of the dash the view asks for where the camera stands. Zooming
+/// out asks for a longer dash and panning walks off the close-laid part of the
+/// ring into the open, and both show up here as the drawn dash and the wanted
+/// one parting company. A third is under what the eye reads as a change of
+/// spacing.
+const RELAID_AT: f64 = 1.33;
+
+/// Whether a ring laid to `was` is worth laying again for a camera at `now`
+///
+/// The dash `now` asks for where it stands, against the dash `was` actually
+/// carries there. A ring the view holds whole answers the same either way, its
+/// points being laid evenly and its dashes counted round rather than measured
+/// against the view, so it is laid once and left alone.
+fn relaid(was: &Spacing, now: &Spacing) -> bool {
+    let along = turn(now.at - was.at);
+    let drawn = was.run as f64 * was.step(along);
+    let wanted = now.run as f64 * now.finest;
+
+    !(1. / RELAID_AT..=RELAID_AT).contains(&(wanted / drawn))
+}
+
+/// An angle taken the short way round, within half a turn of nothing
+///
+/// How far round a ring the camera has moved, which crossing the start of the
+/// ring would otherwise read as a whole turn.
+fn turn(angle: f64) -> f64 {
+    let turn = angle.rem_euclid(std::f64::consts::TAU);
+    if turn > PI { turn - std::f64::consts::TAU } else { turn }
+}
+
+/// Lay each dashed ring out again as the camera moves
+///
+/// The piece of a ring that is drawn is chosen from how much sky the camera
+/// takes in and from what it is looking at, so it is a different piece at
+/// every zoom and everywhere along the ring. Zooming out leaves its dashes too
+/// far apart to read and panning runs off the end of it, so both are watched.
+///
+/// The points and where the line hangs both move, the piece being laid out
+/// about somewhere new. The mesh is rebuilt under the handle the line already
+/// holds, so nothing downstream has to be told.
+///
+/// Only the rings drawn in dashes. A line with something standing on it is
+/// drawn whole and laid out once.
+fn redash(
+    camera: Query<(&OrbitCamera, Option<&Projection>)>,
+    holding: Res<HeldSystem>,
+    systems: Query<&System>,
+    grids: Query<&Grid>,
+    contents: Res<Contents>,
+    clock: Res<Clock>,
+    mut lines: Query<(
+        &mut OrbitLine,
+        &ChildOf,
+        &Mesh3d,
+        &mut CellCoord,
+        &mut Transform,
+    )>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    let Ok((orbit, lens)) = camera.single() else { return };
+    let Some(system) = holding.of().and_then(|held| systems.get(held).ok())
+    else {
+        return;
+    };
+
+    let across = seen_across(orbit, lens);
+    let orbits = contents.orbits();
+    let middle = contents.middle(&orbits, clock.at);
+    let standing = space::metres(orbit.eye - system.position()) + middle;
+
+    for (mut line, of, mesh, mut cell, mut at) in &mut lines {
+        let Some(id) = line.dashed else { continue };
+        let Ok(grid) = grids.get(of.parent()) else { continue };
+
+        let about = line
+            .about
+            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
+        let spacing =
+            laid(&orbits, id, orbits.nearest(id, standing - about), across);
+
+        // Only where enough has moved to be worth the work, which past a
+        // scroll click or two, or a drag of the same, is no ring at all.
+        if !relaid(&line.spacing, &spacing) {
+            continue;
+        }
+
+        let Some(path) = orbits.path(id, &spacing) else { continue };
+        // The middle of the run, which is where its points are laid closest.
+        let pin = path[path.len() / 2];
+        let points: Vec<Vec3> =
+            path.into_iter().map(|p| (p - pin).as_vec3()).collect();
+
+        // Nothing to write to where the mesh has already gone. How it was laid
+        // is left as it was, so it is tried again rather than taken as done.
+        let cut = LineList { points: dashed(&points, spacing.run) };
+        if meshes.insert(&mesh.0, cut.into()).is_err() {
+            continue;
+        }
+
+        let (into, offset) = placed(about + pin - middle, grid);
+        cell.set_if_neq(into);
+        at.translation = offset;
+        line.pin = pin;
+        line.spacing = spacing;
+    }
+}
+
+/// How much sky the camera takes in, top to bottom, in metres
+///
+/// What a ring's own size is weighed against to know how much of it to lay
+/// out. Twice what the camera answers, which is measured about what it is
+/// looking at, and in metres because a system is laid out in them while the
+/// camera answers in light years.
+fn seen_across(camera: &OrbitCamera, lens: Option<&Projection>) -> f64 {
+    2. * crate::camera::framed(camera.radius, lens) as f64 * space::LIGHT_YEAR
+}
+
+/// A closed path, cut into dashes of `run` steps, as a [`LineList`]'s pairs
+///
+/// The dashes are cut out of the points the ring was laid with rather than
+/// measured along it afresh, so a dash bends exactly as the line it came from
+/// does, and a run laid closest beside the camera puts its shortest dashes
+/// there. A dash and the gap after it are the same length, which is what makes
+/// the run read as a dashed line rather than as marks left by one.
+fn dashed(path: &[Vec3], run: usize) -> Vec<Vec3> {
     let segments = path.len().saturating_sub(1);
     // Never nothing, so a path too short to cut is drawn every other segment
     // rather than not at all.
-    let run = (segments / (DASHES * 2)).max(1);
+    let run = run.max(1);
 
     let mut points = Vec::with_capacity(segments);
     for segment in 0..segments {
@@ -1045,13 +1220,63 @@ fn wind(
         let about = line
             .about
             .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
-        put(grid, about, &mut cell, &mut at);
+        put(grid, about + line.pin, &mut cell, &mut at);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ring laid to a view a hundred thousandth of it across
+    fn laid_at(at: f64) -> Spacing {
+        Spacing::round(at, 1e-6, ORBIT_POINTS)
+    }
+
+    /// A ring standing still is not laid again
+    #[test]
+    fn a_ring_the_camera_is_still_beside_is_left_alone() {
+        assert!(!relaid(&laid_at(2.), &laid_at(2.)));
+        // Nor for a nudge of the zoom.
+        assert!(!relaid(
+            &laid_at(2.),
+            &Spacing::round(2., 1.1e-6, ORBIT_POINTS)
+        ));
+    }
+
+    /// Zooming past what its dashes can carry lays it again
+    #[test]
+    fn zooming_lays_a_ring_again() {
+        assert!(relaid(&laid_at(2.), &Spacing::round(2., 2e-6, ORBIT_POINTS)));
+        assert!(relaid(&laid_at(2.), &Spacing::round(2., 5e-7, ORBIT_POINTS)));
+    }
+
+    /// And so does panning along it, before the dashes there are unreadable
+    ///
+    /// The points open out from where the camera stood, so panning along a ring
+    /// walks off the close-laid part of it into the open. Left to the zoom
+    /// alone, the dashes ahead of a pan stretch out without bound.
+    #[test]
+    fn panning_along_a_ring_lays_it_again() {
+        let was = laid_at(2.);
+        // How far round its own dashes open out by what is worth redrawing for.
+        let along = (RELAID_AT - 1.) * was.finest / was.flare;
+
+        assert!(relaid(&was, &laid_at(2. + 1.1 * along)));
+        assert!(relaid(&was, &laid_at(2. - 1.1 * along)));
+        assert!(!relaid(&was, &laid_at(2. + 0.5 * along)));
+    }
+
+    /// A ring the view holds whole is laid once and left alone
+    ///
+    /// Its points are laid evenly and its dashes counted round it rather than
+    /// measured against the view, so nothing the camera does asks for another.
+    #[test]
+    fn a_ring_smaller_than_the_view_is_never_laid_again() {
+        let was = Spacing::round(0., 1., ORBIT_POINTS);
+
+        assert!(!relaid(&was, &Spacing::round(1., 100., ORBIT_POINTS)));
+    }
 
     /// A ring drawn with `points` points, closing on itself
     fn ring(points: usize) -> Vec<Vec3> {
@@ -1073,12 +1298,18 @@ mod tests {
     }
 
     /// An orbit with nothing on it comes out in dashes
+    ///
+    /// However many steps make one: eight of them cut a ring of five hundred
+    /// and twelve into thirty two dashes, and one apiece cuts it into as many
+    /// as it has room for.
     #[test]
     fn a_bare_orbit_is_cut_into_dashes() {
-        let drawn = dashed(&ring(ORBIT_POINTS));
+        for (run, dashes) in [(8, 32), (4, 64), (1, ORBIT_POINTS / 2)] {
+            let drawn = dashed(&ring(ORBIT_POINTS), run);
 
-        assert_eq!(drawn.len() % 2, 0, "a line list is drawn from pairs");
-        assert_eq!(counted(&drawn), DASHES);
+            assert_eq!(drawn.len() % 2, 0, "a line list is drawn from pairs");
+            assert_eq!(counted(&drawn), dashes, "a run of {run} steps");
+        }
     }
 
     /// A dash and the gap after it are the same length
@@ -1088,7 +1319,7 @@ mod tests {
     #[test]
     fn a_dash_is_as_long_as_the_gap_after_it() {
         let whole = ring(ORBIT_POINTS);
-        let drawn = dashed(&whole);
+        let drawn = dashed(&whole, 8);
 
         assert_eq!(
             drawn.len() / 2,
@@ -1101,12 +1332,14 @@ mod tests {
     /// Every dash is cut from the points the whole ring was drawn with
     ///
     /// So that a dash bends the way the line it came from does, rather than
-    /// cutting the corner between two places on it.
+    /// cutting the corner between two places on it. It is also what puts the
+    /// shortest dashes where the ring's points are laid closest, which is
+    /// beside the camera.
     #[test]
     fn the_dashes_are_cut_from_the_line_itself() {
         let whole = ring(ORBIT_POINTS);
 
-        for point in dashed(&whole) {
+        for point in dashed(&whole, 8) {
             assert!(
                 whole.contains(&point),
                 "{point} is not on the ring it was cut from"
@@ -1114,16 +1347,16 @@ mod tests {
         }
     }
 
-    /// A path too short to cut into that many is still dashed
+    /// A run of no steps at all is still a run of one
     ///
-    /// Nothing offers one today, every orbit being drawn with the same count.
-    /// The floor is so that one which did comes back as a dashed line rather
+    /// Nothing offers one today, a [`Spacing`] holding its run at one or more.
+    /// The floor is so that a ring which did comes back as a dashed line rather
     /// than as no line at all.
     #[test]
-    fn a_path_too_short_to_cut_is_still_dashed() {
-        let drawn = dashed(&ring(4));
+    fn a_run_of_no_steps_is_still_dashed() {
+        let drawn = dashed(&ring(ORBIT_POINTS), 0);
 
-        assert_eq!(drawn.len() / 2, 2, "the short ring lost its dashes");
+        assert_eq!(counted(&drawn), ORBIT_POINTS / 2);
     }
 
     /// Turning the orbit lines off hides them, and on brings them back
@@ -1134,7 +1367,15 @@ mod tests {
         app.add_systems(Update, show_orbits);
         let line = app
             .world_mut()
-            .spawn((OrbitLine { about: None }, Visibility::Inherited))
+            .spawn((
+                OrbitLine {
+                    about: None,
+                    pin: DVec3::ZERO,
+                    dashed: None,
+                    spacing: Spacing::even(0., ORBIT_POINTS),
+                },
+                Visibility::Inherited,
+            ))
             .id();
 
         app.world_mut().resource_mut::<ShowOrbits>().0 = false;
@@ -1213,8 +1454,9 @@ mod tests {
     /// so a test can say whether they moved together.
     ///
     /// The one body's period is the system's year, it being the only thing here
-    /// that goes round anything.
-    fn wound(out: f64, through: f64) -> (DVec3, DVec3) {
+    /// that goes round anything. `pin` is where the line's own points are
+    /// measured from, which its anchor has to carry as well.
+    fn wound(out: f64, through: f64, pin: DVec3) -> (DVec3, DVec3) {
         use super::super::{Clock, Contents, FetchState};
 
         let mut app = App::new();
@@ -1270,7 +1512,12 @@ mod tests {
         let line = app
             .world_mut()
             .spawn((
-                OrbitLine { about: Some(1) },
+                OrbitLine {
+                    about: Some(1),
+                    pin,
+                    dashed: None,
+                    spacing: Spacing::even(0., ORBIT_POINTS),
+                },
                 cell,
                 Transform::from_translation(offset),
                 ChildOf(system),
@@ -1290,12 +1537,32 @@ mod tests {
     /// Standing further through the year carries a body along its orbit
     #[test]
     fn moving_through_the_year_moves_a_body() {
-        let (still, _) = wound(1e11, 0.);
-        let (later, _) = wound(1e11, 0.5);
+        let (still, _) = wound(1e11, 0., DVec3::ZERO);
+        let (later, _) = wound(1e11, 0.5, DVec3::ZERO);
 
         assert!(
             still.distance(later) > 1e10,
             "the body stayed at {still} half a year on",
+        );
+    }
+
+    /// A line is hung where its points are measured from
+    ///
+    /// The ring is held as offsets from where it is pinned, so anything
+    /// placing it has to put that back. Left out, every line whose points are
+    /// measured from anywhere but its parent is drawn a whole pin away from
+    /// where it belongs.
+    #[test]
+    fn a_line_is_hung_where_its_points_are_measured_from() {
+        let pin = DVec3::new(3e9, -1e9, 7e8);
+
+        let (_, about) = wound(1e11, 0.25, DVec3::ZERO);
+        let (_, hung) = wound(1e11, 0.25, pin);
+
+        assert!(
+            (hung - about - pin).length() < 1.,
+            "a line pinned at {pin} hung {}m off",
+            (hung - about - pin).length()
         );
     }
 
@@ -1307,7 +1574,7 @@ mod tests {
     /// point its planet set out from.
     #[test]
     fn moving_through_the_year_moves_a_line_with_its_anchor() {
-        let (body, line) = wound(1e11, 0.5);
+        let (body, line) = wound(1e11, 0.5, DVec3::ZERO);
 
         assert_eq!(body, line, "the line was left behind at {line}");
     }

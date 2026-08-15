@@ -44,23 +44,31 @@ pub const CROSS: f32 = 11.;
 /// them on screen at once.
 pub const READS: f32 = 8.;
 
-/// How far off the plane the middle's numbers are hung, in pixels
+/// How far below the mark the middle's numbers are hung, in pixels
 ///
 /// The two rulers lie in the plane and their numbers run along them. The third
 /// is about the plane itself, so it is hung along the one direction on screen
 /// that neither ruler runs in. Drawn where they cross it reads as one more
 /// number in the row.
 ///
-/// Under the plane rather than over it, which is the opposite side from the one
-/// a pair on the plane is written on. The two are then on either side of the
-/// lines they are both about, and the middle is read against a clear row rather
-/// than into a number.
+/// Below the mark rather than above, which is the opposite side from the one a
+/// pair on the plane is written on. The two are then on either side of the
+/// lines they are both about, and the middle is read against a clear row
+/// rather than into a number.
 ///
-/// Far enough down to clear what is drawn around the place itself. The arms of
-/// the cross reach [`CROSS`] from it and the ring around a thing picked out
-/// reaches further still, so a row hung to clear the cross alone lands inside
-/// the ring of a selection the camera is looking straight at.
-pub const LIFT: f32 = 24.;
+/// Far enough down to clear what is drawn around the place itself, which is
+/// more than the arms of the cross at [`CROSS`]. A place worth locating is
+/// usually a system, and a system is drawn as a shell: sixteen pixels of one
+/// down a 1080 line window while its mark still stands whole, and the row is
+/// [`READS`] tall about its middle, so it needs that and half its own height
+/// and some air.
+///
+/// No drop clears a shell at every distance. One settles onto the system it
+/// stands for and goes on growing as the camera comes in, reaching forty
+/// pixels through the middle of its own fade and sixty-five by the end of it.
+/// This clears it through the first of that, by which point the shell is on
+/// its way out anyway.
+pub const LIFT: f32 = 32.;
 
 /// And how far to the side of a dropped line its own number stands, in pixels
 ///
@@ -378,12 +386,14 @@ struct ReadoutText {
 /// how far off the plane it went. In a settled order, so that a readout goes
 /// on saying what it said last frame while nothing has changed.
 ///
-/// `sideways` is which way the right of the view runs through the world.
+/// `sideways` and `downward` are which way the right and the foot of the view
+/// run through the world.
 fn spoken(
     plane: &Plane,
     reading: &Reading,
     plumbs: &Plumbs,
     sideways: Vec3,
+    downward: Vec3,
 ) -> Vec<ReadoutText> {
     let reach = plane.reach;
     // What the plane can say about one place on it, hung under the mark there.
@@ -392,13 +402,12 @@ fn spoken(
     // same way.
     let placed = |from_eye: DVec3, at: DVec3, gives_way: bool| ReadoutText {
         from_eye,
-        // Along the one direction neither ruler runs in, and under the plane
-        // rather than over it, which is the opposite side from the one a pair
-        // on the plane is written on. The two are then on either side of the
-        // lines they are both about. Squared up on the plane it comes to
-        // nothing on screen and the row sits on its own mark, which is a view
-        // with no room for a third number in it anyway.
-        hung: plane.facing * Vec3::NEG_Y * LIFT,
+        // Down the view rather than under the plane. Hung along the plane's
+        // own normal it stands the same distance below the mark only while the
+        // camera is square on to the ruling, and squared up on the plane it
+        // comes to nothing on screen at all and the row sits on its own mark.
+        // Down the view it is [`LIFT`] below wherever the camera is standing.
+        hung: downward * LIFT,
         anchor: TextAnchor::CENTER,
         gives_way,
         hue: plane.color,
@@ -528,7 +537,8 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
                     continue;
                 }
                 let sideways = facing * Vec3::X;
-                for one in spoken(plane, reading, plumbs, sideways) {
+                let downward = facing * Vec3::NEG_Y;
+                for one in spoken(plane, reading, plumbs, sideways, downward) {
                     inks.push(drawn_at(
                         one.ink * reading.strength,
                         reading.bright,
@@ -923,7 +933,8 @@ mod tests {
         let (plane, reading) = looking(100.);
         let painted = plane.numbers.strength;
 
-        let says = spoken(&plane, &reading, &Plumbs::default(), Vec3::X);
+        let says =
+            spoken(&plane, &reading, &Plumbs::default(), Vec3::X, Vec3::NEG_Y);
         let middle = says.first().expect("the middle is said");
 
         let stood = drawn_at(middle.ink * reading.strength, reading.bright);
@@ -954,7 +965,7 @@ mod tests {
         let plumbs =
             Plumbs(vec![Plumb { top, foot, middle: (top + foot) / 2., at }]);
 
-        let says = spoken(&plane, &reading, &plumbs, Vec3::X);
+        let says = spoken(&plane, &reading, &plumbs, Vec3::X, Vec3::NEG_Y);
         assert_eq!(says.len(), 3, "the middle, the foot and the offset");
         // The foot says all three, and it says them where the foot stands.
         assert_eq!(says[1].from_eye, foot);
@@ -975,13 +986,15 @@ mod tests {
     fn the_middle_goes_quiet_when_it_is_not_asked_for() {
         let (plane, mut reading) = looking(100.);
         assert_eq!(
-            spoken(&plane, &reading, &Plumbs::default(), Vec3::X).len(),
+            spoken(&plane, &reading, &Plumbs::default(), Vec3::X, Vec3::NEG_Y)
+                .len(),
             1
         );
 
         reading.middle = false;
         assert!(
-            spoken(&plane, &reading, &Plumbs::default(), Vec3::X).is_empty()
+            spoken(&plane, &reading, &Plumbs::default(), Vec3::X, Vec3::NEG_Y)
+                .is_empty()
         );
     }
 
@@ -1010,7 +1023,9 @@ mod tests {
         let (mut plane, reading) = looking(100.);
         plane.color = Color::srgb(0.2, 0.4, 0.6);
 
-        for one in spoken(&plane, &reading, &Plumbs::default(), Vec3::X) {
+        for one in
+            spoken(&plane, &reading, &Plumbs::default(), Vec3::X, Vec3::NEG_Y)
+        {
             assert_eq!(one.hue, plane.color, "{} came out wrong", one.said);
         }
     }
@@ -1037,15 +1052,35 @@ mod tests {
             (seen - DVec3::NEG_X * step).length() < step * 1e-6,
             "a step off the plane came out {seen}"
         );
+    }
 
-        // And the row of numbers is hung under the plane the same way, which
-        // is the other way along the same line.
-        let says = spoken(&plane, &reading, &Plumbs::default(), Vec3::X);
-        let hung = says.first().expect("the middle is said").hung;
-        assert!(
-            (hung - Vec3::X * LIFT).length() < LIFT * 1e-6,
-            "the row was hung {hung}"
-        );
+    /// The row of numbers hangs down the view, whatever the plane is doing
+    ///
+    /// The same distance under the mark from every angle. Hung along the
+    /// plane's own normal instead it stands that far under only while the
+    /// camera is square on to the ruling, and squared up on the plane the
+    /// normal runs into the view and the row lands on the mark it is about.
+    #[test]
+    fn the_numbers_hang_down_the_view() {
+        let (mut plane, reading) = looking(100.);
+
+        for turn in [0., 0.7, std::f32::consts::FRAC_PI_2, 2.6] {
+            plane.facing = Quat::from_rotation_z(turn);
+
+            let says = spoken(
+                &plane,
+                &reading,
+                &Plumbs::default(),
+                Vec3::X,
+                Vec3::NEG_Y,
+            );
+            let hung = says.first().expect("the middle is said").hung;
+
+            assert!(
+                (hung - Vec3::NEG_Y * LIFT).length() < LIFT * 1e-6,
+                "a plane turned {turn} hung the row {hung}"
+            );
+        }
     }
 
     /// An app holding a plane, a camera and the systems that draw over it
@@ -1151,7 +1186,7 @@ mod tests {
                 middle: (top + foot) / 2.,
                 at,
             }]);
-            spoken(&plane, &reading, &plumbs, Vec3::X)
+            spoken(&plane, &reading, &plumbs, Vec3::X, Vec3::NEG_Y)
         };
         let place = |says: &ReadoutText| {
             where_drawn(says, Quat::IDENTITY, viewport, 1.)
