@@ -16,6 +16,24 @@
 //!
 //! Bodies keep a little emission of their own regardless, so that a system
 //! whose star is not on record is dim rather than invisible.
+//!
+//! # The ladder
+//!
+//! Four figures decide what is drawn for a system as the camera comes in, and
+//! they are four points on one axis: how much of the sky the system takes up,
+//! which is its own reach over how far off it is. Held in that order, and
+//! declared in it, so a figure out of place is a number out of order:
+//!
+//! | | |
+//! |---|---|
+//! | [`WORTH_KEEPING`] | 0.008, what is inside is taken away again |
+//! | [`WORTH_DRAWING`] | 0.01, what is inside is drawn |
+//! | [`WORTH_MARKING`] | 0.0125, the mark standing for it starts to go |
+//! | [`WORTH_HIDING`] | 0.05, there is nothing of the mark left |
+//!
+//! So the contents arrive and leave behind a mark at full strength, and what
+//! is watched is one thing becoming another, which
+//! `the_contents_come_and_go_before_the_mark_gives_way` holds them to.
 
 use super::{Clock, Contents, orbit::Orbits};
 use crate::camera::OrbitCamera;
@@ -96,7 +114,15 @@ fn show_orbits(
     }
 }
 
-/// How large a system has to look before what is in it is drawn, in radians
+/// How small a system may look before what is in it is taken away again, in
+/// radians
+///
+/// Under [`WORTH_DRAWING`], so a camera sitting on the line does not spawn and
+/// despawn a system's insides every frame. Under [`WORTH_MARKING`] as well, so
+/// that the taking away happens behind a whole mark as the drawing did.
+const WORTH_KEEPING: f32 = 0.008;
+
+/// And how large it has to look before what is in it is drawn
 ///
 /// About half a degree, at which the whole system is some twenty pixels across
 /// and everything in it is a speck. Which is the point: the mark standing for
@@ -109,15 +135,7 @@ fn show_orbits(
 /// business — so nothing waits on the database at this range.
 const WORTH_DRAWING: f32 = 0.01;
 
-/// And how small before it is taken away again
-///
-/// Lower than it took to draw, so a camera sitting on the line does not spawn
-/// and despawn a system's insides every frame. Lower than [`WORTH_MARKING`]
-/// as well, so that the taking away happens behind a whole mark as the drawing
-/// did.
-const WORTH_KEEPING: f32 = 0.008;
-
-/// How large a system has to look before the mark standing for it starts to go
+/// And how large before the mark standing for it starts to go
 ///
 /// Past [`WORTH_DRAWING`], so what the mark stands in for is already there
 /// when the mark begins to give way to it. The two bands do not overlap and
@@ -126,12 +144,16 @@ const WORTH_KEEPING: f32 = 0.008;
 /// into another.
 const WORTH_MARKING: f32 = 0.0125;
 
-/// And how large before there is nothing of it left
+/// And how large before there is nothing of the mark left
 ///
 /// About three degrees, by which point the system fills a good part of the
 /// view and a mark standing in for it would be standing over the thing itself.
 /// Four times [`WORTH_MARKING`], which is a quarter of the distance, and long
 /// enough that the fade reads as one thing becoming another.
+///
+/// The far end of the ladder, and the one figure outside this module reads:
+/// [`crate::systems::scale::MARGIN`] is held under its inverse, so a mark is
+/// gone before the camera can reach the shell it stood for.
 pub(crate) const WORTH_HIDING: f32 = 0.05;
 
 /// The system whose insides the map is drawing, if any
