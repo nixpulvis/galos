@@ -95,6 +95,18 @@ pub struct OrbitLine {
     /// line is a flat child of the system like everything else: nothing moves
     /// it by inheritance.
     pub about: Option<i16>,
+    /// Where the ring's own points are measured from, about whatever it goes
+    /// round
+    ///
+    /// Which is where the thing riding the line stood when it was drawn. The
+    /// points are held as offsets from there so that the ones near what rides
+    /// the line are small numbers: a mesh is `f32`, and the ring Pluto and
+    /// Charon go round reaches 5.9e12 metres, where one float stands 524
+    /// kilometres from the next. Measured from the parent instead, the whole
+    /// line snaps between those as the camera moves, a quarter of Pluto's own
+    /// orbit at a step, and rotating close in on the pair sweeps it through a
+    /// couple of hundred of them.
+    pub pin: DVec3,
 }
 
 /// Draw the orbit lines, or do not, as the view asks
@@ -952,9 +964,14 @@ fn drawn_orbit(
     let path = orbits.path(id, ORBIT_POINTS, clock)?;
     let about =
         parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, clock));
-    let (cell, offset) = placed(about - middle, grid);
+    // Measured from where the line is pinned rather than from what it goes
+    // round, so that the points near what rides it are small numbers. The
+    // ring is put back where it belongs by hanging it there.
+    let pin = path[0];
+    let (cell, offset) = placed(about + pin - middle, grid);
 
-    let points: Vec<Vec3> = path.into_iter().map(|p| p.as_vec3()).collect();
+    let points: Vec<Vec3> =
+        path.into_iter().map(|p| (p - pin).as_vec3()).collect();
     let mesh = if bare {
         meshes.add(LineList { points: dashed(&points) })
     } else {
@@ -962,7 +979,7 @@ fn drawn_orbit(
     };
     Some((
         Inside,
-        OrbitLine { about: parent },
+        OrbitLine { about: parent, pin },
         cell,
         Transform::from_translation(offset),
         Mesh3d(mesh),
@@ -1045,7 +1062,7 @@ fn wind(
         let about = line
             .about
             .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
-        put(grid, about, &mut cell, &mut at);
+        put(grid, about + line.pin, &mut cell, &mut at);
     }
 }
 
@@ -1134,7 +1151,10 @@ mod tests {
         app.add_systems(Update, show_orbits);
         let line = app
             .world_mut()
-            .spawn((OrbitLine { about: None }, Visibility::Inherited))
+            .spawn((
+                OrbitLine { about: None, pin: DVec3::ZERO },
+                Visibility::Inherited,
+            ))
             .id();
 
         app.world_mut().resource_mut::<ShowOrbits>().0 = false;
@@ -1213,8 +1233,9 @@ mod tests {
     /// so a test can say whether they moved together.
     ///
     /// The one body's period is the system's year, it being the only thing here
-    /// that goes round anything.
-    fn wound(out: f64, through: f64) -> (DVec3, DVec3) {
+    /// that goes round anything. `pin` is where the line's own points are
+    /// measured from, which its anchor has to carry as well.
+    fn wound(out: f64, through: f64, pin: DVec3) -> (DVec3, DVec3) {
         use super::super::{Clock, Contents, FetchState};
 
         let mut app = App::new();
@@ -1270,7 +1291,7 @@ mod tests {
         let line = app
             .world_mut()
             .spawn((
-                OrbitLine { about: Some(1) },
+                OrbitLine { about: Some(1), pin },
                 cell,
                 Transform::from_translation(offset),
                 ChildOf(system),
@@ -1290,12 +1311,32 @@ mod tests {
     /// Standing further through the year carries a body along its orbit
     #[test]
     fn moving_through_the_year_moves_a_body() {
-        let (still, _) = wound(1e11, 0.);
-        let (later, _) = wound(1e11, 0.5);
+        let (still, _) = wound(1e11, 0., DVec3::ZERO);
+        let (later, _) = wound(1e11, 0.5, DVec3::ZERO);
 
         assert!(
             still.distance(later) > 1e10,
             "the body stayed at {still} half a year on",
+        );
+    }
+
+    /// A line is hung where its points are measured from
+    ///
+    /// The ring is held as offsets from where it is pinned, so anything
+    /// placing it has to put that back. Left out, every line whose points are
+    /// measured from anywhere but its parent is drawn a whole pin away from
+    /// where it belongs.
+    #[test]
+    fn a_line_is_hung_where_its_points_are_measured_from() {
+        let pin = DVec3::new(3e9, -1e9, 7e8);
+
+        let (_, about) = wound(1e11, 0.25, DVec3::ZERO);
+        let (_, hung) = wound(1e11, 0.25, pin);
+
+        assert!(
+            (hung - about - pin).length() < 1.,
+            "a line pinned at {pin} hung {}m off",
+            (hung - about - pin).length()
         );
     }
 
@@ -1307,7 +1348,7 @@ mod tests {
     /// point its planet set out from.
     #[test]
     fn moving_through_the_year_moves_a_line_with_its_anchor() {
-        let (body, line) = wound(1e11, 0.5);
+        let (body, line) = wound(1e11, 0.5, DVec3::ZERO);
 
         assert_eq!(body, line, "the line was left behind at {line}");
     }
