@@ -132,7 +132,7 @@ impl Orbit {
     ///
     /// The eccentric anomaly, which is the angle [`Orbit::place`] is written
     /// in and the one [`Orbit::path`] is stepped through.
-    fn anomaly(&self, since: f64) -> f64 {
+    pub fn anomaly(&self, since: f64) -> f64 {
         let mean = match self.period {
             Some(period) => {
                 self.mean_anomaly + std::f64::consts::TAU * since / period
@@ -144,39 +144,82 @@ impl Orbit {
         eccentric_anomaly(mean, self.eccentricity)
     }
 
-    /// The whole path, as `steps` points, the first and last being the same
-    /// place
+    /// The whole ring, as the points `spacing` lays round it
     ///
     /// Stepped through the eccentric anomaly rather than the mean one, which
     /// spreads the points evenly around the ellipse rather than crowding them
     /// where the body dawdles.
     ///
-    /// Set out from where the body stands at `since` rather than from
-    /// periapsis, so one point of the ring is exactly where the thing riding
-    /// it is drawn. What is drawn is a ring of chords inscribed in the
-    /// ellipse, and every chord cuts inside the curve: at the scale of the
-    /// point Pluto and Charon go round, five hundred and twelve of them sag a
-    /// hundred and ten thousand kilometres at the middle, which is fifty-four
-    /// times the radius of Pluto's own orbit about it. Started anywhere else
-    /// the pair floats off its own line.
+    /// The first and last are the same place, half a turn either way from
+    /// where the points are laid closest, so the run closes on itself whatever
+    /// the spacing.
     ///
-    /// It fixes the line to the one place worth fixing it to. A chord leaves
-    /// the curve as the square of the distance along it, so from a point
-    /// pinned on the body the line is within a kilometre of the truth across
-    /// any view that can see the body at all, and only wanders out where
-    /// there is nothing to compare it against.
-    pub fn path(&self, steps: usize, since: f64) -> Vec<DVec3> {
-        if self.semi_major_axis <= 0. || steps < 2 {
+    /// What is drawn is a ring of chords inscribed in the ellipse, and every
+    /// chord cuts inside the curve. That is why the middle of the run matters:
+    /// at the scale of the point Pluto and Charon go round, five hundred and
+    /// twelve even chords sag a hundred and ten thousand kilometres, which is
+    /// fifty-four times the radius of Pluto's own orbit about it. A chord
+    /// leaves the curve as the square of its length, so the run is laid about
+    /// whatever the line has to pass through — the thing riding it, or the
+    /// camera — and the sag there falls to nothing.
+    pub fn path(&self, spacing: &Spacing) -> Vec<DVec3> {
+        if self.semi_major_axis <= 0. {
             return Vec::new();
         }
-        let from = self.anomaly(since);
-        (0..=steps)
-            .map(|step| {
-                let turn =
-                    from + std::f64::consts::TAU * step as f64 / steps as f64;
-                self.place(turn)
-            })
-            .collect()
+
+        spacing.anomalies().map(|anomaly| self.place(anomaly)).collect()
+    }
+
+    /// How far apart to lay a ring's points where the camera stands, in radians
+    ///
+    /// [`CROSSING`] dashes fall across a view, and a dash and the gap after it
+    /// are a step each, so a view holds twice that many steps. `across` is how
+    /// much sky the camera takes in, and a radian of a ring is about its
+    /// semi-major axis of arc, which is what turns the one into the other.
+    ///
+    /// A ring smaller than the view asks for a step wider than the ring, and
+    /// gets one: [`Spacing::round`] lays no ring coarser than evenly.
+    pub fn finest(&self, across: f64) -> f64 {
+        if self.semi_major_axis <= 0. {
+            return std::f64::consts::PI;
+        }
+
+        across / (2. * CROSSING as f64 * self.semi_major_axis)
+    }
+
+    /// How far round the ring the point nearest `to` sits
+    ///
+    /// Which is where a piece of the ring is laid out about, `to` being where
+    /// the camera stands. Read off the ellipse rather than guessed from the
+    /// angle: the two part company as the orbit stretches, and the piece drawn
+    /// is a few views wide where the ring is a hundred thousand of them round,
+    /// so being out by a degree is being out by everything.
+    ///
+    /// Swept coarsely and then closed in on, the distance to a point falling
+    /// away smoothly on either side of the nearest.
+    pub fn nearest(&self, to: DVec3) -> f64 {
+        let sweep = 64;
+        let step = std::f64::consts::TAU / sweep as f64;
+        let away = |turn: f64| self.place(turn).distance(to);
+
+        let coarse = (0..sweep)
+            .map(|k| k as f64 * step)
+            .min_by(|one, other| away(*one).total_cmp(&away(*other)))
+            .unwrap_or(0.);
+
+        // Closed in on from either side of it, which halves what is left over
+        // each time round and is under a metre of the ring by the end.
+        let (mut low, mut high) = (coarse - step, coarse + step);
+        for _ in 0..64 {
+            let third = (high - low) / 3.;
+            if away(low + third) < away(high - third) {
+                high -= third;
+            } else {
+                low += third;
+            }
+        }
+
+        (low + high) / 2.
     }
 
     /// Where the body stands at an eccentric anomaly of `anomaly`
@@ -205,6 +248,158 @@ impl Orbit {
         // the other way up, so the last two are swapped on the way out.
         DVec3::new(placed.x, placed.z, placed.y)
     }
+}
+
+/// How the points of a ring are laid round it
+///
+/// A ring is a closed line and is drawn whole however close the camera stands,
+/// so the points cannot simply be spread evenly. The ring Pluto and Charon go
+/// round is three hundred thousand views round by the time the camera is beside
+/// the pair, and spread evenly there each step of it is hundreds of views long:
+/// what is drawn is one dash across the sky, or the gap after it and nothing at
+/// all. Laid closest where the camera stands and opening out from there, the
+/// same count of points reads as dashes beside it and still closes behind it.
+///
+/// Each step is a fixed share wider than the one before, so nowhere along the
+/// run does the spacing jump. The share falls out of closing the ring in the
+/// points there are, so the wider a ring is against the view the faster it
+/// opens.
+#[derive(Clone, Copy, Debug)]
+pub struct Spacing {
+    /// Where round the ring the points are laid closest together
+    pub at: f64,
+    /// How far apart they are there, in radians
+    pub finest: f64,
+    /// How much wider a step grows per radian round from `at`
+    ///
+    /// Nothing for a run laid evenly, which is what a ring the view already
+    /// holds is given.
+    pub flare: f64,
+    /// How many steps to either side, the run closing at half a turn
+    pub steps: usize,
+    /// How many steps make a dash, where the ring is drawn in them
+    ///
+    /// One wherever the points are laid to the view, a step being a dash and
+    /// the next its gap. More where a ring the view holds is laid evenly with
+    /// more points than its dashes want. See [`DASHES`].
+    pub run: usize,
+}
+
+/// How many dashes of a ring fall across the view beside the camera
+///
+/// A dash and the gap after it are a step each, so a view holds twice this many
+/// steps. Eight reads as a dashed line rather than as a chain of ticks, and is
+/// about what [`DASHES`] comes to on a ring one view across, so nothing steps as
+/// a ring grows past the view.
+const CROSSING: usize = 8;
+
+/// How few dashes a ring is ever drawn in
+///
+/// [`CROSSING`] alone would cut a ring smaller than the view into two or three
+/// dashes, which reads as a pair of arcs rather than as a ring. A ring the view
+/// holds whole is drawn in this many however small it is, and only past there
+/// does the view take over the count.
+///
+/// A count around the ring rather than a length in the world, which is the other
+/// way round from a route's [`crate::systems::route::DASH`]. A route is a run of
+/// legs of wildly different lengths and a share of one cannot be read at more
+/// than one zoom, so its dashes are held at a distance instead.
+const DASHES: usize = 32;
+
+impl Spacing {
+    /// Points laid evenly round the ring, `points` of them
+    ///
+    /// What a ring no wider than the view is drawn with, and what a line with
+    /// something standing on it is drawn with at any width: a run laid to the
+    /// view is laid about the camera, and such a line has to pass through its
+    /// own body instead.
+    ///
+    /// Cut into as few as [`DASHES`] dashes, which is what a ring smaller than
+    /// the view wants.
+    pub fn even(at: f64, points: usize) -> Spacing {
+        let steps = (points / 2).max(1);
+        Spacing {
+            at,
+            finest: std::f64::consts::PI / steps as f64,
+            flare: 0.,
+            steps,
+            run: (steps / DASHES).max(1),
+        }
+    }
+
+    /// Points laid `finest` apart at `at`, opening out to close the ring
+    ///
+    /// `points` is the whole budget for the ring, half of it laid either side.
+    /// Where laying them evenly is already closer than `finest` asks, they are
+    /// laid evenly and the dashes cut from more than one step apiece.
+    pub fn round(at: f64, finest: f64, points: usize) -> Spacing {
+        let even = Spacing::even(at, points);
+        if !finest.is_finite() || finest <= 0. {
+            return even;
+        }
+
+        if finest < even.finest {
+            let flare = flare(finest, even.steps);
+            return Spacing { finest, flare, run: 1, ..even };
+        }
+
+        let run = (finest / even.finest).round() as usize;
+        Spacing { run: run.min(even.run), ..even }
+    }
+
+    /// How wide the step is `from` radians round from where they are closest
+    ///
+    /// Each step is `finest` plus what it has opened out by, and it opens by a
+    /// flat share of how far round it is, which is what a run growing by a fixed
+    /// share of itself comes to.
+    pub fn step(&self, from: f64) -> f64 {
+        self.finest + self.flare * from.abs()
+    }
+
+    /// Every anomaly the ring is drawn at, from half a turn behind `at` to half
+    /// a turn ahead of it
+    pub fn anomalies(&self) -> impl Iterator<Item = f64> + '_ {
+        let steps = self.steps as isize;
+        (-steps..=steps).map(move |step| self.at + self.along(step))
+    }
+
+    /// How far round from `at` the `step`th point lands, signed
+    fn along(&self, step: isize) -> f64 {
+        let (side, step) = (step.signum() as f64, step.unsigned_abs() as f64);
+        if self.flare <= 0. {
+            return side * step * self.finest;
+        }
+
+        side * self.finest / self.flare * ((step * self.flare).exp() - 1.)
+    }
+}
+
+/// How fast a run of `steps` laid `finest` apart has to open to close the ring
+///
+/// Each step being a fixed share wider than the one before, `steps` of them
+/// reach `finest/f · (e^(steps·f) - 1)`, and this is the `f` that puts the last
+/// of them half a turn round. That reach grows with `f`, so it is closed in on
+/// by halving.
+///
+/// Halved rather than solved outright: the equation has no closed form, and a
+/// few dozen of them settle it to the last bit a double holds. It is asked once
+/// a ring, and only where the camera has moved far enough to be worth laying one
+/// out again.
+fn flare(finest: f64, steps: usize) -> f64 {
+    let reach = |f: f64| finest / f * ((steps as f64 * f).exp() - 1.);
+    // Wide enough for any ring: opening this fast reaches half a turn from a
+    // step far smaller than any view asks for.
+    let (mut low, mut high) = (0., 600. / steps as f64);
+
+    for _ in 0..64 {
+        let middle = (low + high) / 2.;
+        if reach(middle) < std::f64::consts::PI {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    (low + high) / 2.
 }
 
 /// Solve `E - e·sin E = M` for `E`
@@ -273,21 +468,33 @@ impl Orbits {
         self.0.iter().map(|(id, (parent, _))| (*id, *parent))
     }
 
-    /// The path `id` traces about whatever it goes round, as `steps` points
+    /// The ring `id` traces about whatever it goes round, as `spacing` lays it
     ///
     /// Relative to its parent rather than to the system, so a moon's line is
     /// the small circle it makes about its planet and belongs wherever the
     /// planet is. Nothing for something that does not go round anything, which
     /// is what a system's primary comes back as.
-    pub fn path(
-        &self,
-        id: i16,
-        steps: usize,
-        since: f64,
-    ) -> Option<Vec<DVec3>> {
+    pub fn path(&self, id: i16, spacing: &Spacing) -> Option<Vec<DVec3>> {
         let (_, orbit) = self.0.get(&id)?;
-        let path = orbit.path(steps, since);
+        let path = orbit.path(spacing);
         (!path.is_empty()).then_some(path)
+    }
+
+    /// How far round `id`'s ring the point nearest `to` sits
+    pub fn nearest(&self, id: i16, to: DVec3) -> f64 {
+        self.0.get(&id).map_or(0., |(_, orbit)| orbit.nearest(to))
+    }
+
+    /// How far round `id`'s ring it stands, `since` seconds after the epoch
+    pub fn anomaly(&self, id: i16, since: f64) -> f64 {
+        self.0.get(&id).map_or(0., |(_, orbit)| orbit.anomaly(since))
+    }
+
+    /// How far apart to lay `id`'s points where the camera stands, in radians
+    pub fn finest(&self, id: i16, across: f64) -> f64 {
+        self.0
+            .get(&id)
+            .map_or(std::f64::consts::PI, |(_, orbit)| orbit.finest(across))
     }
 
     /// Where `id` sits within its system, in metres from where the walk ends
@@ -506,9 +713,9 @@ mod tests {
         let mut orbit = circle(1e11);
         orbit.eccentricity = 0.3;
 
-        let path = orbit.path(64, 0.);
+        let path = orbit.path(&Spacing::even(0., 64));
 
-        assert_eq!(path.len(), 65, "a path of 64 steps wants 65 points");
+        assert_eq!(path.len(), 65, "a budget of 64 points wants 65 of them");
         assert!(
             path[0].distance(path[64]) < 1.,
             "the path did not close on itself"
@@ -532,7 +739,7 @@ mod tests {
         for since in [0., 137., 600., 1e4] {
             let at = orbit.at(since);
             let nearest = orbit
-                .path(64, since)
+                .path(&Spacing::even(orbit.anomaly(since), 64))
                 .into_iter()
                 .map(|point| point.distance(at))
                 .fold(f64::MAX, f64::min);
@@ -544,10 +751,134 @@ mod tests {
         }
     }
 
+    /// A ring drawn for a camera standing beside it at `across` metres of sky
+    ///
+    /// The point Pluto and Charon go round, as the database has it, which is
+    /// the widest ring the map draws anything on.
+    fn seen(across: f64) -> (Orbit, Spacing, Vec<DVec3>) {
+        let mut orbit = circle(5.874e12);
+        orbit.eccentricity = 0.248;
+        let spacing = Spacing::round(0., orbit.finest(across), 512);
+
+        let path = orbit.path(&spacing);
+        (orbit, spacing, path)
+    }
+
+    /// A ring reads as dashes at every zoom
+    ///
+    /// The whole of what laying the points closest beside the camera is for.
+    /// Spread evenly, a ring this size has steps seven hundred views long by
+    /// the time the camera is beside the pair: what is drawn there is one dash
+    /// across the sky, or the gap after it and nothing at all.
+    ///
+    /// Counted as the points that fall across the view, every other pair of
+    /// which is a dash. A lower bound and no upper one: seen whole the ring
+    /// carries the lot, and what goes wrong is a view with one dash across it
+    /// or none.
+    #[test]
+    fn a_ring_reads_as_dashes_at_every_zoom() {
+        // From the ring seen whole down to a view showing the pair alone.
+        for across in [1e13, 1e11, 1e9, 1e8, 1e7, 1e6] {
+            let (orbit, spacing, path) = seen(across);
+            let at = orbit.place(0.);
+            let near = path
+                .iter()
+                .filter(|point| point.distance(at) < across / 2.)
+                .count();
+            let dashes = near / (2 * spacing.run);
+
+            assert!(
+                (CROSSING / 2..=2 * CROSSING).contains(&dashes),
+                "{across}m across drew {dashes} dashes across the view"
+            );
+        }
+    }
+
+    /// And is drawn all the way round however close the camera stands
+    ///
+    /// A ring is a closed line, and the only thing that ends it is coming back
+    /// to where it started. Drawn as the piece of it that crosses the view, it
+    /// stops wherever the piece runs out, and the gap is in plain sight
+    /// whenever the ring is anywhere near the size of the view.
+    #[test]
+    fn a_ring_is_drawn_whole_at_every_zoom() {
+        for across in [1e13, 1e11, 1e9, 1e7, 1e6] {
+            let (_, _, path) = seen(across);
+            let ends = path[0].distance(path[path.len() - 1]);
+
+            assert!(
+                ends < 5.874e12 * 1e-6,
+                "{across}m across left the ring open by {ends}m"
+            );
+        }
+    }
+
+    /// And opens out smoothly from where the camera stands to the far side
+    ///
+    /// The points are laid closest beside the camera and further apart the
+    /// further round they are, and how much further has to be a share of what
+    /// they already were. Opened out any faster the run reads as a ring of
+    /// dashes with a few long chords let into it.
+    #[test]
+    fn a_rings_points_open_out_smoothly() {
+        for across in [1e13, 1e9, 1e6, 1e3] {
+            let (_, _, path) = seen(across);
+            let steps: Vec<f64> =
+                path.windows(2).map(|two| two[0].distance(two[1])).collect();
+            let opened = steps
+                .windows(2)
+                .map(|two| two[1] / two[0])
+                .fold(0f64, f64::max);
+
+            assert!(
+                opened < 1.25,
+                "{across}m across left one step {opened} times the last"
+            );
+        }
+    }
+
+    /// A ring the view holds whole is laid evenly, in a fixed count of dashes
+    ///
+    /// Laid to the view alone a small ring would be cut into two or three
+    /// dashes and read as a pair of arcs rather than as a ring.
+    #[test]
+    fn a_ring_the_view_holds_is_laid_evenly() {
+        let orbit = circle(1e11);
+        // A view ten times the width of the ring.
+        let spacing = Spacing::round(0., orbit.finest(2e12), 512);
+
+        assert_eq!(spacing.flare, 0., "a ring the view holds was crowded");
+        assert_eq!(2 * spacing.steps / (2 * spacing.run), DASHES);
+    }
+
+    /// The piece of a ring laid out is the piece the camera stands beside
+    ///
+    /// Read off the ellipse rather than guessed from the angle round it. The
+    /// two part company as an orbit stretches, and the piece drawn is a few
+    /// views wide where the ring is a hundred thousand of them round, so being
+    /// out by a degree is being out by everything.
+    #[test]
+    fn the_piece_of_a_ring_beside_the_camera_is_found() {
+        let mut orbit = circle(5.874e12);
+        orbit.eccentricity = 0.248;
+
+        for turn in [0., 1., 2.5, 4., 6.] {
+            let on = orbit.place(turn);
+            // A camera standing a little off the ring there.
+            let found = orbit.nearest(on * 1.0000001);
+            let missed = orbit.place(found).distance(on);
+
+            assert!(
+                missed < 1e7,
+                "a camera beside {turn} round found {found}, {missed}m off"
+            );
+        }
+    }
+
     /// A body sitting at the centre has no path to draw
     #[test]
     fn a_body_at_the_centre_has_no_path() {
-        assert!(circle(0.).path(64, 0.).is_empty());
+        assert!(circle(0.).path(&Spacing::even(0., 64)).is_empty());
     }
 
     /// A moon is placed beside the planet it goes round

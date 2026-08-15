@@ -566,6 +566,7 @@ fn reach(semi_major_axis: f32, eccentricity: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::bodies::orbit::Spacing;
     use elite_journal::body::{
         Discovery as JournalDiscovery, Orbit as JournalOrbit,
         Spin as JournalSpin,
@@ -772,7 +773,7 @@ mod tests {
         // Two stars, one body, one barycenter.
         assert_eq!(held, vec![1, 2, 10, 11]);
         assert!(
-            orbits.path(10, 64, 0.).is_some(),
+            orbits.path(10, &Spacing::even(0., 512)).is_some(),
             "the barycenter was offered no path"
         );
     }
@@ -856,7 +857,10 @@ mod tests {
         let reaches =
             contents.extent().expect("the pair reaches somewhere") as f64;
 
-        for point in orbits.path(10, 64, 0.).expect("the center has a path") {
+        for point in orbits
+            .path(10, &Spacing::even(0., 512))
+            .expect("the center has a path")
+        {
             let out = (about + point).length();
             assert!(
                 out <= reaches,
