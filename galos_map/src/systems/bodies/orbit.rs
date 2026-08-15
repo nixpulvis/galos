@@ -124,6 +124,15 @@ impl Orbit {
             return DVec3::ZERO;
         }
 
+        self.place(self.anomaly(since))
+    }
+
+    /// How far round the ellipse the body stands, `since` seconds after the
+    /// epoch it was recorded at
+    ///
+    /// The eccentric anomaly, which is the angle [`Orbit::place`] is written
+    /// in and the one [`Orbit::path`] is stepped through.
+    fn anomaly(&self, since: f64) -> f64 {
         let mean = match self.period {
             Some(period) => {
                 self.mean_anomaly + std::f64::consts::TAU * since / period
@@ -132,7 +141,7 @@ impl Orbit {
             None => self.mean_anomaly,
         };
 
-        self.place(eccentric_anomaly(mean, self.eccentricity))
+        eccentric_anomaly(mean, self.eccentricity)
     }
 
     /// The whole path, as `steps` points, the first and last being the same
@@ -141,13 +150,30 @@ impl Orbit {
     /// Stepped through the eccentric anomaly rather than the mean one, which
     /// spreads the points evenly around the ellipse rather than crowding them
     /// where the body dawdles.
-    pub fn path(&self, steps: usize) -> Vec<DVec3> {
+    ///
+    /// Set out from where the body stands at `since` rather than from
+    /// periapsis, so one point of the ring is exactly where the thing riding
+    /// it is drawn. What is drawn is a ring of chords inscribed in the
+    /// ellipse, and every chord cuts inside the curve: at the scale of the
+    /// point Pluto and Charon go round, five hundred and twelve of them sag a
+    /// hundred and ten thousand kilometres at the middle, which is fifty-four
+    /// times the radius of Pluto's own orbit about it. Started anywhere else
+    /// the pair floats off its own line.
+    ///
+    /// It fixes the line to the one place worth fixing it to. A chord leaves
+    /// the curve as the square of the distance along it, so from a point
+    /// pinned on the body the line is within a kilometre of the truth across
+    /// any view that can see the body at all, and only wanders out where
+    /// there is nothing to compare it against.
+    pub fn path(&self, steps: usize, since: f64) -> Vec<DVec3> {
         if self.semi_major_axis <= 0. || steps < 2 {
             return Vec::new();
         }
+        let from = self.anomaly(since);
         (0..=steps)
             .map(|step| {
-                let turn = std::f64::consts::TAU * step as f64 / steps as f64;
+                let turn =
+                    from + std::f64::consts::TAU * step as f64 / steps as f64;
                 self.place(turn)
             })
             .collect()
@@ -253,9 +279,14 @@ impl Orbits {
     /// the small circle it makes about its planet and belongs wherever the
     /// planet is. Nothing for something that does not go round anything, which
     /// is what a system's primary comes back as.
-    pub fn path(&self, id: i16, steps: usize) -> Option<Vec<DVec3>> {
+    pub fn path(
+        &self,
+        id: i16,
+        steps: usize,
+        since: f64,
+    ) -> Option<Vec<DVec3>> {
         let (_, orbit) = self.0.get(&id)?;
-        let path = orbit.path(steps);
+        let path = orbit.path(steps, since);
         (!path.is_empty()).then_some(path)
     }
 
@@ -475,7 +506,7 @@ mod tests {
         let mut orbit = circle(1e11);
         orbit.eccentricity = 0.3;
 
-        let path = orbit.path(64);
+        let path = orbit.path(64, 0.);
 
         assert_eq!(path.len(), 65, "a path of 64 steps wants 65 points");
         assert!(
@@ -484,10 +515,39 @@ mod tests {
         );
     }
 
+    /// A line passes through the thing riding it
+    ///
+    /// What is drawn is a ring of chords inscribed in the ellipse, and every
+    /// chord cuts inside the curve. Started at periapsis the body lands
+    /// between two points and floats off its own line: at the scale of the
+    /// point Pluto and Charon go round, a hundred and ten thousand kilometres
+    /// off it, against the two thousand of Pluto's own orbit.
+    #[test]
+    fn a_line_passes_through_what_rides_it() {
+        let mut orbit = circle(1e11);
+        orbit.eccentricity = 0.3;
+        orbit.mean_anomaly = 1.1;
+
+        // Whenever it is asked, and wherever the body has got to by then.
+        for since in [0., 137., 600., 1e4] {
+            let at = orbit.at(since);
+            let nearest = orbit
+                .path(64, since)
+                .into_iter()
+                .map(|point| point.distance(at))
+                .fold(f64::MAX, f64::min);
+
+            assert!(
+                nearest < 1.,
+                "{since} on left the body {nearest}m off its own line"
+            );
+        }
+    }
+
     /// A body sitting at the centre has no path to draw
     #[test]
     fn a_body_at_the_centre_has_no_path() {
-        assert!(circle(0.).path(64).is_empty());
+        assert!(circle(0.).path(64, 0.).is_empty());
     }
 
     /// A moon is placed beside the planet it goes round

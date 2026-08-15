@@ -949,7 +949,7 @@ fn drawn_orbit(
     meshes: &mut Assets<Mesh>,
     material: &OrbitMaterial,
 ) -> Option<impl Bundle> {
-    let path = orbits.path(id, ORBIT_POINTS)?;
+    let path = orbits.path(id, ORBIT_POINTS, clock)?;
     let about =
         parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, clock));
     let (cell, offset) = placed(about - middle, grid);

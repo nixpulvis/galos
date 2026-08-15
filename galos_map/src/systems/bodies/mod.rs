@@ -772,7 +772,7 @@ mod tests {
         // Two stars, one body, one barycenter.
         assert_eq!(held, vec![1, 2, 10, 11]);
         assert!(
-            orbits.path(10, 64).is_some(),
+            orbits.path(10, 64, 0.).is_some(),
             "the barycenter was offered no path"
         );
     }
@@ -856,7 +856,7 @@ mod tests {
         let reaches =
             contents.extent().expect("the pair reaches somewhere") as f64;
 
-        for point in orbits.path(10, 64).expect("the center has a path") {
+        for point in orbits.path(10, 64, 0.).expect("the center has a path") {
             let out = (about + point).length();
             assert!(
                 out <= reaches,
