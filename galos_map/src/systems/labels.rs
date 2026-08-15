@@ -14,6 +14,7 @@ use bevy_rich_text3d::{
     LoadFonts, Text3d, Text3dPlugin, Text3dSegment, Text3dStyling, TextAnchor,
     TextAtlas,
 };
+use std::ops::RangeInclusive;
 
 pub(crate) fn plugin(app: &mut App) {
     // Only if it is not already there, and appended rather than set. The
@@ -684,7 +685,7 @@ pub fn choose_names(
         }
     }
 
-    let winners = place(&mut wanted);
+    let winners = place(&mut wanted, viewport, &mut Placed::default());
 
     // Only what changed hands. Nearly every name is the same name it was
     // last frame, and taking one away to give it straight back moves its
@@ -702,12 +703,98 @@ pub fn choose_names(
     }
 }
 
+/// How large a bucket in the placement grid is, in pixels
+///
+/// About one name's rectangle, so a name falls across roughly four buckets
+/// and is tested only against what those four hold. A ten letter name is some
+/// 92 by 20 pixels at [`NAME_HEIGHT`], and the width is what to size by,
+/// names being far wider than they are tall.
+const BUCKET: f32 = NAME_HEIGHT * 8.;
+
+/// Where the names already placed sit, bucketed by screen position
+///
+/// A candidate overlaps only what is near it, so testing it against every
+/// name placed so far asks a question about the far side of the screen to
+/// learn about a rectangle twenty pixels wide.
+#[derive(Default)]
+struct Placed {
+    /// Indices into `rects`, by bucket
+    buckets: Vec<Vec<u32>>,
+    rects: Vec<Rect>,
+    /// Buckets across the viewport
+    columns: usize,
+    /// Buckets down it
+    rows: usize,
+}
+
+impl Placed {
+    /// Empty the grid and size it to the viewport, keeping its allocations
+    fn reset(&mut self, viewport: Vec2) {
+        self.columns = ((viewport.x / BUCKET).ceil() as usize).max(1);
+        self.rows = ((viewport.y / BUCKET).ceil() as usize).max(1);
+        self.rects.clear();
+        self.buckets.resize_with(self.columns * self.rows, Vec::new);
+        for bucket in &mut self.buckets {
+            bucket.clear();
+        }
+    }
+
+    /// The buckets a rectangle falls across, as inclusive ranges
+    ///
+    /// Clamped to the grid rather than dropped outside it. A name is laid out
+    /// once any part of it is on screen, so a rectangle running off an edge is
+    /// ordinary and still has to be tested against its neighbors.
+    fn span(
+        &self,
+        rect: Rect,
+    ) -> (RangeInclusive<usize>, RangeInclusive<usize>) {
+        let bucket = |along: f32, of: usize| {
+            ((along / BUCKET).max(0.) as usize).min(of.saturating_sub(1))
+        };
+        (
+            bucket(rect.min.x, self.columns)..=bucket(rect.max.x, self.columns),
+            bucket(rect.min.y, self.rows)..=bucket(rect.max.y, self.rows),
+        )
+    }
+
+    /// Whether a rectangle clears every name already placed
+    fn clear_of(&self, rect: Rect) -> bool {
+        let (columns, rows) = self.span(rect);
+        for row in rows {
+            for column in columns.clone() {
+                for &taken in &self.buckets[row * self.columns + column] {
+                    if !self.rects[taken as usize].intersect(rect).is_empty() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Take a rectangle's place, in every bucket it falls across
+    fn hold(&mut self, rect: Rect) {
+        let (columns, rows) = self.span(rect);
+        let taken = self.rects.len() as u32;
+        self.rects.push(rect);
+        for row in rows {
+            for column in columns.clone() {
+                self.buckets[row * self.columns + column].push(taken);
+            }
+        }
+    }
+}
+
 /// Which candidates fit, taken best first
 ///
 /// Greedy rather than optimal. The best arrangement of a few hundred
 /// overlapping rectangles is not worth solving each frame, and taking them in
 /// the order the viewer wants them gives them the ones that matter.
-fn place(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
+fn place(
+    candidates: &mut [(Entity, Rect, f32)],
+    viewport: Vec2,
+    placed: &mut Placed,
+) -> EntityHashSet {
     // Best first, so that what is dropped is dropped in favour of something
     // the viewer wanted more. Ties are settled by which entity it is, which
     // is arbitrary but the same arbitrary answer every frame.
@@ -719,13 +806,13 @@ fn place(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
     // rather than a choice.
     candidates.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
 
-    let mut kept: Vec<Rect> = Vec::new();
+    placed.reset(viewport);
     let mut winners = EntityHashSet::default();
     for (entity, rect, _) in candidates.iter() {
-        if kept.iter().any(|taken| !taken.intersect(*rect).is_empty()) {
+        if !placed.clear_of(*rect) {
             continue;
         }
-        kept.push(*rect);
+        placed.hold(*rect);
         winners.insert(*entity);
     }
     winners
@@ -2162,6 +2249,9 @@ mod tests {
         assert!(placings(&app) > settled, "left a name where it was standing");
     }
 
+    /// A 1080p screen, which is what the figures in the plan are quoted at
+    const VIEWPORT: Vec2 = Vec2::new(1920., 1080.);
+
     fn candidate(index: u32, rect: Rect, score: f32) -> (Entity, Rect, f32) {
         (Entity::from_raw_u32(index).expect("a test entity"), rect, score)
     }
@@ -2173,6 +2263,10 @@ mod tests {
             .collect()
     }
 
+    fn placing(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
+        place(candidates, VIEWPORT, &mut Placed::default())
+    }
+
     /// A name clear of everything already placed is kept
     #[test]
     fn a_name_clear_of_the_rest_is_kept() {
@@ -2181,7 +2275,7 @@ mod tests {
             candidate(2, Rect::new(20., 0., 30., 10.), 1.),
         ];
 
-        assert_eq!(place(&mut candidates), won([1, 2]));
+        assert_eq!(placing(&mut candidates), won([1, 2]));
     }
 
     /// A name over one already placed is dropped
@@ -2192,7 +2286,7 @@ mod tests {
             candidate(2, Rect::new(5., 5., 15., 15.), 1.),
         ];
 
-        assert_eq!(place(&mut candidates), won([1]));
+        assert_eq!(placing(&mut candidates), won([1]));
     }
 
     /// Of two names that overlap, the better scored one is kept
@@ -2205,8 +2299,65 @@ mod tests {
         let better = candidate(1, Rect::new(0., 0., 10., 10.), 10.);
         let worse = candidate(2, Rect::new(5., 5., 15., 15.), 1.);
 
-        assert_eq!(place(&mut [better, worse]), won([1]));
-        assert_eq!(place(&mut [worse, better]), won([1]));
+        assert_eq!(placing(&mut [better, worse]), won([1]));
+        assert_eq!(placing(&mut [worse, better]), won([1]));
+    }
+
+    /// The grid chooses what a plain linear scan chooses
+    ///
+    /// Bucketing changes how the question is asked and not the answer, so the
+    /// two agree over any spread of rectangles. Pseudo random rather than hand
+    /// picked, since what is hand picked is what was already thought of, and
+    /// seeded so that a failure can be looked at twice.
+    #[test]
+    fn the_grid_chooses_what_a_linear_scan_chooses() {
+        // What `place` did before it bucketed.
+        fn scanning(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
+            candidates.sort_unstable_by(|a, b| {
+                b.2.total_cmp(&a.2).then(a.0.cmp(&b.0))
+            });
+
+            let mut kept: Vec<Rect> = Vec::new();
+            let mut winners = EntityHashSet::default();
+            for (entity, rect, _) in candidates.iter() {
+                if kept.iter().any(|taken| !taken.intersect(*rect).is_empty()) {
+                    continue;
+                }
+                kept.push(*rect);
+                winners.insert(*entity);
+            }
+            winners
+        }
+
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+
+        // Up to a couple of thousand, which is what the dense parts of the
+        // database offer, and rectangles wide enough to run off the edges,
+        // which is what the grid has to clamp rather than drop.
+        for names in [1_u32, 20, 500, 2_000] {
+            let mut candidates: Vec<_> = (1..=names)
+                .map(|index| {
+                    let left = next() * VIEWPORT.x;
+                    let top = next() * VIEWPORT.y;
+                    let width = 40. + next() * 120.;
+                    let rect =
+                        Rect::new(left, top, left + width, top + NAME_HEIGHT);
+                    candidate(index, rect, next())
+                })
+                .collect();
+
+            assert_eq!(
+                placing(&mut candidates.clone()),
+                scanning(&mut candidates),
+                "the grid and a scan parted over {names} names"
+            );
+        }
     }
 
     /// Two names that only touch are both kept
@@ -2221,6 +2372,6 @@ mod tests {
             candidate(2, Rect::new(10., 0., 20., 10.), 1.),
         ];
 
-        assert_eq!(place(&mut candidates), won([1, 2]));
+        assert_eq!(placing(&mut candidates), won([1, 2]));
     }
 }
