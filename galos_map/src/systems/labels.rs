@@ -199,8 +199,40 @@ const ADVANCE: f32 = 0.7;
 
 /// How much of a name's own height is kept clear around it
 ///
-/// Names that merely touch are still hard to read apart.
+/// Names that merely touch are still hard to read apart. This is the tight
+/// figure, which is what a name gets up close and what it gets at the center
+/// of the view at any distance. [`room`] is what widens it elsewhere.
 const CROWDING: f32 = 0.35;
+
+/// How far the camera stands off before names are given any more room, in
+/// light years
+///
+/// Below this the map is among a handful of systems, where [`CROWDING`] alone
+/// is all the clearance a name wants.
+const TIGHT_TO: f32 = 50.;
+
+/// Where names are given all the extra room, in light years
+///
+/// Ten times [`TIGHT_TO`]. Around here a screen stops holding a field that
+/// can be read and starts holding a wall of text, every name legible on its
+/// own and the field of them saying nothing.
+const LOOSE_FROM: f32 = 500.;
+
+/// How many times [`CROWDING`]'s room a name is given at the far end
+///
+/// A judgement about what a star field should look like rather than something
+/// derived, so it wants looking at with the map running. Four takes a ten
+/// letter name's rectangle from about 92 by 20 pixels to 126 by 54, so
+/// roughly a third as many of them survive a wide view.
+const SPREAD_BY: f32 = 4.;
+
+/// How far the tightly packed middle reaches, as a fraction of the viewport's
+/// height
+///
+/// The room a name is given relaxes toward the loose figure over this
+/// distance, so the middle is a well around what the camera is pointed at
+/// rather than a disc with a rim.
+const RELAX: f32 = 0.25;
 
 /// How strongly being what the camera looks at argues for a name being shown
 ///
@@ -557,6 +589,11 @@ pub(crate) fn choose_names(
     // What a name has to fall inside some of to be worth laying out at all.
     let screen = Rect::from_corners(Vec2::ZERO, viewport);
 
+    // Where the camera is pointed, which is the tightly packed middle that
+    // [`room`] measures out from. The point the camera orbits projects here
+    // by construction, so this is that point without the projection.
+    let middle = viewport / 2.;
+
     let Layout { wanted, placed } = &mut *layout;
 
     // Everything close enough to name and in front of the camera, with the
@@ -628,6 +665,11 @@ pub(crate) fn choose_names(
         }
         let score = name_score(from_center, pointed_at, selected);
 
+        // Grown after the test above rather than before it, so that what is
+        // laid out at all is still decided by the name itself. The room is
+        // for the packing to read and nothing else.
+        let apart = (at - middle).length();
+        let rect = rect.inflate(room(orbit.radius, apart, viewport));
         Some((entity, rect, score))
     }));
 
@@ -647,6 +689,8 @@ pub(crate) fn choose_names(
             if screen.intersect(rect).is_empty() {
                 continue;
             }
+            let apart = (spot - middle).length();
+            let rect = rect.inflate(room(orbit.radius, apart, viewport));
 
             // Pointing at a body or picking it out is asking for it by name,
             // which the switch has no more business refusing than it does for
@@ -977,6 +1021,54 @@ fn marked_score(pointed_at: bool, selected: bool) -> f32 {
 /// be read.
 pub(super) fn name_rect(at: Vec2, name: &str, clear: f32) -> Rect {
     name_rect_of(at, name.chars().count(), clear)
+}
+
+/// How much further apart names are held than [`CROWDING`] holds them, in
+/// pixels
+///
+/// Zero up close and zero at the center of the view, so the near map is left
+/// exactly as it was and whatever the camera is pointed at stays packed as
+/// tightly as it ever was. It grows with how far the camera stands off and
+/// with how far from the center a name sits.
+///
+/// This is room around a name and no part of the name itself. A name is drawn
+/// from the left edge and middle that [`name_rect_of`] works out, neither of
+/// which the margin enters, so widening it moves no character on screen. It
+/// only makes names compete harder for a place.
+fn room(radius: f32, apart: f32, viewport: Vec2) -> f32 {
+    NAME_HEIGHT
+        * CROWDING
+        * (SPREAD_BY - 1.)
+        * pulled_back(radius)
+        * relaxed(apart, viewport)
+}
+
+/// How far the camera has pulled back, from none of the way to all of it
+///
+/// Eased over `log10` of the radius, the map reading distance in e-folds
+/// wherever it reads it at all, and smoothed so both ends are flat. A linear
+/// ramp would twitch the whole field as the camera drifted across either one.
+fn pulled_back(radius: f32) -> f32 {
+    let e_folds = |ly: f32| ly.max(1.).log10();
+    smoothed(
+        (e_folds(radius) - e_folds(TIGHT_TO))
+            / (e_folds(LOOSE_FROM) - e_folds(TIGHT_TO)),
+    )
+}
+
+/// How far a name has relaxed out of the tightly packed middle
+///
+/// Exponential rather than linear, so the middle has a soft edge instead of a
+/// rim. It never quite arrives, which is what keeps every name in the corners
+/// from being given exactly the same room and reading as a border.
+fn relaxed(apart: f32, viewport: Vec2) -> f32 {
+    1. - (-apart / (RELAX * viewport.y).max(1.)).exp()
+}
+
+/// A smoothstep, held to its ends
+fn smoothed(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    t * t * (3. - 2. * t)
 }
 
 /// The same rectangle, for whoever knows how wide a name is without holding it
@@ -2283,6 +2375,39 @@ mod tests {
         place(candidates, VIEWPORT, &mut Placed::default())
     }
 
+    /// Seeded, so a failure can be looked at twice
+    fn noise() -> impl FnMut() -> f32 {
+        let mut seed = 0x2545_f491_u32;
+        move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        }
+    }
+
+    /// A scattered field of ten letter names, scored without regard to where
+    /// they sit, so that what survives is decided by the room they are given
+    /// and by nothing else
+    ///
+    /// Scattered rather than a lattice. A lattice quantizes the answer, since
+    /// room that grows by less than one step of it changes nothing, and a
+    /// star field is not laid out on a grid anyway. One seed, so the two
+    /// standoffs are handed the same positions and the same scores and differ
+    /// only in the room.
+    fn scattered(radius: f32) -> Vec<(Entity, Rect, f32)> {
+        let mut next = noise();
+        (1..=600)
+            .map(|index| {
+                let at = Vec2::new(next() * VIEWPORT.x, next() * VIEWPORT.y);
+                let apart = (at - VIEWPORT / 2.).length();
+                let rect = name_rect_of(at, 10, 0.)
+                    .inflate(room(radius, apart, VIEWPORT));
+                candidate(index, rect, next())
+            })
+            .collect()
+    }
+
     /// A name clear of everything already placed is kept
     #[test]
     fn a_name_clear_of_the_rest_is_kept() {
@@ -2317,6 +2442,117 @@ mod tests {
 
         assert_eq!(placing(&mut [better, worse]), won([1]));
         assert_eq!(placing(&mut [worse, better]), won([1]));
+    }
+
+    /// A name at the center of the view is given no more room than it ever was
+    ///
+    /// However far the camera stands off. What it is pointed at is what is
+    /// being read, so that packs as tightly pulled back as it does up close.
+    #[test]
+    fn a_name_at_the_center_is_given_no_extra_room() {
+        for radius in [0.1, 1., 10., TIGHT_TO, LOOSE_FROM, 50_000.] {
+            assert_eq!(room(radius, 0., VIEWPORT), 0., "standing off {radius}");
+        }
+    }
+
+    /// Up close every name is given the room it always was
+    #[test]
+    fn up_close_no_name_is_given_extra_room() {
+        for apart in [0., 100., 540., VIEWPORT.length()] {
+            assert_eq!(
+                room(TIGHT_TO, apart, VIEWPORT),
+                0.,
+                "{apart} pixels out"
+            );
+        }
+    }
+
+    /// Pulled back, a name off the center is given more room than one on it
+    #[test]
+    fn pulled_back_the_edges_are_held_further_apart_than_the_middle() {
+        let middle = room(LOOSE_FROM, 0., VIEWPORT);
+        let edge = room(LOOSE_FROM, VIEWPORT.y / 2., VIEWPORT);
+
+        assert!(edge > middle, "the edge got {edge} against {middle}");
+    }
+
+    /// The room only ever grows, with the standoff and with the distance out
+    ///
+    /// A name that tightened as the camera pulled further back would read as
+    /// the field deciding something, which it is not.
+    #[test]
+    fn room_grows_with_both_distances_and_gives_none_back() {
+        let mut widest = 0.;
+        for radius in [0.1, 25., TIGHT_TO, 100., 250., LOOSE_FROM, 50_000.] {
+            let wide = room(radius, 400., VIEWPORT);
+            assert!(wide >= widest, "standing off {radius} gave room back");
+            widest = wide;
+        }
+
+        let mut widest = 0.;
+        for apart in [0., 50., 100., 200., 400., 800., 1_600.] {
+            let wide = room(LOOSE_FROM, apart, VIEWPORT);
+            assert!(wide >= widest, "{apart} pixels out gave room back");
+            widest = wide;
+        }
+    }
+
+    /// The far corner of a wide view is given very nearly the whole spread
+    ///
+    /// [`relaxed`] approaches its end rather than reaching it, so the corner
+    /// is short of [`SPREAD_BY`] by the tail of an exponential and no more.
+    #[test]
+    fn the_far_corner_of_a_wide_view_is_given_the_whole_spread() {
+        let tight = NAME_HEIGHT * CROWDING;
+        let corner = tight + room(LOOSE_FROM, VIEWPORT.length(), VIEWPORT);
+
+        assert!(
+            corner > tight * (SPREAD_BY - 0.1),
+            "the corner was given {corner} against a full {}",
+            tight * SPREAD_BY
+        );
+    }
+
+    /// Pulling the camera back leaves fewer names on screen
+    ///
+    /// The two halves together. [`room`] widens the rectangles and [`place`]
+    /// fits fewer of them, and neither says this on its own.
+    #[test]
+    fn pulling_the_camera_back_leaves_fewer_names() {
+        let close = placing(&mut scattered(TIGHT_TO)).len();
+        let far = placing(&mut scattered(LOOSE_FROM)).len();
+
+        assert!(far < close, "{far} names pulled back against {close} close");
+    }
+
+    /// A wide view keeps the middle denser than the edges
+    ///
+    /// Which is the whole point of measuring the room out from the center.
+    /// Scored without regard to position, so the margin is what decides and
+    /// not the score, where the map's own [`CENTER_WEIGHT`] would decide it
+    /// twice over.
+    #[test]
+    fn a_wide_view_keeps_the_middle_denser_than_the_edges() {
+        let candidates = scattered(LOOSE_FROM);
+        let kept = placing(&mut candidates.clone());
+
+        let share = |inside: bool| {
+            let (mut all, mut won) = (0, 0);
+            for (entity, rect, _) in &candidates {
+                let apart = (rect.center() - VIEWPORT / 2.).length();
+                if (apart < VIEWPORT.y / 4.) != inside {
+                    continue;
+                }
+                all += 1;
+                won += usize::from(kept.contains(entity));
+            }
+            won as f32 / all as f32
+        };
+
+        let middle = share(true);
+        let edges = share(false);
+
+        assert!(middle > edges, "the middle kept {middle} against {edges}");
     }
 
     /// The grid chooses what a plain linear scan chooses
