@@ -357,6 +357,19 @@ fn worth_naming(
     stands && (pointed_at || selected || (shown && !filtered))
 }
 
+/// How strongly standing in front of the middle argues for a name
+///
+/// A name is drawn over whatever is behind it, so of two systems along nearly
+/// one line of sight the near one is the one worth naming: its name covers
+/// the field beyond it, where naming the far one lays a name over the near
+/// stars as well and hides what is in front.
+///
+/// In the same light years as everything else, and at one it exactly answers
+/// the penalty a system pays for standing off the middle. A system directly
+/// in front of the middle therefore scores as one at the middle does, and one
+/// directly behind pays that distance twice.
+const NEARER_WEIGHT: f32 = 1.;
+
 /// How far the center bonus reaches, in light years
 ///
 /// It falls to half at this distance. The point the camera orbits is usually
@@ -731,7 +744,13 @@ pub(crate) fn choose_names(
         if screen.intersect(rect).is_empty() {
             return None;
         }
-        let score = name_score(from_center, pointed_at, selected);
+        // How far in front of the middle the system stands, in light years.
+        // Measured down the view rather than to the eye, so two systems side
+        // by side on screen are compared on which is nearer and not on which
+        // sits further from the middle of the window.
+        let ahead = orbit.radius
+            - depth(orbit, position) / crate::space::LIGHT_YEAR as f32;
+        let score = name_score(from_center, ahead, pointed_at, selected);
 
         // Grown after the test above rather than before it, so that what is
         // laid out at all is still decided by the name itself. The room is
@@ -1059,9 +1078,15 @@ fn body_name_score(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(from_center: f32, pointed_at: bool, selected: bool) -> f32 {
+fn name_score(
+    from_center: f32,
+    ahead: f32,
+    pointed_at: bool,
+    selected: bool,
+) -> f32 {
     let centered = CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
     marked_score(pointed_at, selected) + centered - from_center
+        + NEARER_WEIGHT * ahead
 }
 
 /// What being marked out is worth, to a system and a body alike
@@ -2077,6 +2102,40 @@ mod tests {
         assert!(body_name_score(0., DEEPEST, false, false, false, true) > star);
     }
 
+    /// Of two systems along one line of sight, the near one is named first
+    ///
+    /// A name is drawn over whatever stands behind it, so naming the far one
+    /// lays it over the near stars as well and hides what is in front. Both
+    /// of these stand the same distance off the middle, one ahead of it and
+    /// one behind, so the only thing separating them is which is nearer.
+    #[test]
+    fn a_system_in_front_is_named_before_one_behind() {
+        let away = 20.;
+        let front = name_score(away, away, false, false);
+        let back = name_score(away, -away, false, false);
+
+        assert!(front > back, "{front} was no better than {back}");
+    }
+
+    /// Standing in front of the middle answers the cost of standing off it
+    ///
+    /// What [`NEARER_WEIGHT`] at one buys, and what keeps the near half of a
+    /// view competing with the middle rather than with the far half. The two
+    /// part by the center bonus falling away and by nothing else.
+    #[test]
+    fn a_system_in_front_of_the_middle_scores_as_one_at_it() {
+        let away = 20.;
+        let bonus = CENTER_WEIGHT / (1. + (away / CENTER_REACH).powi(2));
+
+        let at = name_score(0., 0., false, false);
+        let front = name_score(away, away, false, false);
+
+        assert!(
+            (front - (at - CENTER_WEIGHT + bonus)).abs() < 1e-3,
+            "{front} against {at} less a bonus of {bonus}"
+        );
+    }
+
     /// Names are offered in order of nearness to the center
     ///
     /// The score falls the whole way out, so the greedy pass takes the
@@ -2085,10 +2144,11 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(0., false, false);
+        let mut nearer = name_score(0., 0., false, false);
         for step in 1..=1000 {
             let further = name_score(
                 step as f32 * DEFAULT_NAME_RADIUS / 1000.,
+                0.,
                 false,
                 false,
             );
@@ -2155,10 +2215,10 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_centered() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(DEFAULT_NAME_RADIUS, true, false);
+        let pointed = name_score(DEFAULT_NAME_RADIUS, 0., true, false);
 
         // The system at the center, which is otherwise the best there is.
-        let centered = name_score(0., false, false);
+        let centered = name_score(0., 0., false, false);
 
         assert!(
             pointed > centered,
@@ -2174,8 +2234,8 @@ mod tests {
     /// the point on the center, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
-        let pointed = name_score(0., true, false);
+        let selected = name_score(DEFAULT_NAME_RADIUS, 0., false, true);
+        let pointed = name_score(0., 0., true, false);
 
         assert!(
             selected > pointed,
@@ -2190,8 +2250,8 @@ mod tests {
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
-        let both = name_score(DEFAULT_NAME_RADIUS, true, true);
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
+        let both = name_score(DEFAULT_NAME_RADIUS, 0., true, true);
+        let selected = name_score(DEFAULT_NAME_RADIUS, 0., false, true);
 
         assert_eq!(both, selected);
     }
