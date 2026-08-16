@@ -681,7 +681,8 @@ pub(crate) fn choose_names(
     // by construction, so this is that point without the projection.
     let middle = viewport / 2.;
 
-    let Layout { wanted, placed } = &mut *layout;
+    let Layout { wanted, placed, rings } = &mut *layout;
+    rings.clear();
 
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
@@ -756,6 +757,10 @@ pub(crate) fn choose_names(
         // sits further from the middle of the window.
         let ahead = orbit.radius
             - depth(orbit, position) / crate::space::LIGHT_YEAR as f32;
+        if selected {
+            rings.push((entity, ringed(at, indicator.0)));
+        }
+
         let score = name_score(
             LabelWeight::System { from_center, ahead },
             pointed_at,
@@ -800,6 +805,9 @@ pub(crate) fn choose_names(
             // in for, so there is no mark whose going takes its name, and the
             // filters are about systems.
             let selected = selection.contains(entity);
+            if selected {
+                rings.push((entity, ringed(spot, indicator.0)));
+            }
             if !worth_naming(
                 true,
                 show_body_names.0,
@@ -830,7 +838,7 @@ pub(crate) fn choose_names(
         }
     }
 
-    let winners = place(wanted, viewport, placed);
+    let winners = place(wanted, viewport, placed, rings);
 
     // Only what changed hands. Nearly every name is the same name it was
     // last frame, and taking one away to give it straight back moves its
@@ -868,6 +876,8 @@ pub(crate) struct Layout {
     wanted: Vec<(Entity, Rect, f32)>,
     /// Where the names already placed sit
     placed: Placed,
+    /// The rings drawn around what is picked out, and what each belongs to
+    rings: Vec<(Entity, Rect)>,
 }
 
 /// Where the names already placed sit, bucketed by screen position
@@ -944,6 +954,15 @@ impl Placed {
     }
 }
 
+/// The square on screen a ring drawn at `at` takes up
+///
+/// [`Indicator`] is a radius in pixels, a mark being nine pixels across
+/// whether the camera is a light year off or fifty thousand, so the ring is
+/// the same size on screen wherever what it rings has got to.
+fn ringed(at: Vec2, radius: f32) -> Rect {
+    Rect::from_center_size(at, Vec2::splat(radius * 2.))
+}
+
 /// Which candidates fit, taken best first
 ///
 /// Greedy rather than optimal. The best arrangement of a few hundred
@@ -953,6 +972,7 @@ fn place(
     candidates: &mut [(Entity, Rect, f32)],
     viewport: Vec2,
     placed: &mut Placed,
+    rings: &[(Entity, Rect)],
 ) -> EntityHashSet {
     // Best first, so that what is dropped is dropped in favour of something
     // the viewer wanted more. Ties are settled by which entity it is, which
@@ -968,7 +988,16 @@ fn place(
     placed.reset(viewport);
     let mut winners = EntityHashSet::default();
     for (entity, rect, _) in candidates.iter() {
-        if !placed.clear_of(*rect) {
+        // A ring is what the map is pointing at, so it keeps its place and
+        // the name gives way. Never to its own ring: a name stands off the
+        // ring of what it names by construction, but the room it is granted
+        // reaches back over it, and a thing picked out losing its own name to
+        // its own mark is the one answer that helps nobody.
+        let ringed_over = rings.iter().any(|(of, ring)| {
+            of != entity && !ring.intersect(*rect).is_empty()
+        });
+
+        if ringed_over || !placed.clear_of(*rect) {
             continue;
         }
         placed.hold(*rect);
@@ -2802,7 +2831,14 @@ mod tests {
     }
 
     fn placing(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
-        place(candidates, VIEWPORT, &mut Placed::default())
+        ringing(candidates, &[])
+    }
+
+    fn ringing(
+        candidates: &mut [(Entity, Rect, f32)],
+        rings: &[(Entity, Rect)],
+    ) -> EntityHashSet {
+        place(candidates, VIEWPORT, &mut Placed::default(), rings)
     }
 
     /// Seeded, so a failure can be looked at twice
@@ -2999,6 +3035,37 @@ mod tests {
         let edges = share(false);
 
         assert!(middle > edges, "the middle kept {middle} against {edges}");
+    }
+
+    /// A ring takes the name of anything else that would cover it
+    ///
+    /// What the map is pointing at keeps its place and the name gives way,
+    /// since a name over the ring hides the one mark saying which system is
+    /// picked out.
+    #[test]
+    fn a_ring_hides_a_name_drawn_over_it() {
+        let ring = (
+            candidate(9, Rect::new(0., 0., 0., 0.), 0.).0,
+            ringed(Vec2::new(50., 50.), 20.),
+        );
+
+        let over = candidate(1, Rect::new(40., 40., 90., 60.), 1.);
+        let clear = candidate(2, Rect::new(200., 40., 250., 60.), 1.);
+
+        assert_eq!(ringing(&mut [over, clear], &[ring]), won([2]));
+    }
+
+    /// A ring never takes the name of what it rings
+    ///
+    /// A name stands off the ring of what it names, but the room it is
+    /// granted reaches back over it, and a system picked out losing its name
+    /// to its own mark helps nobody.
+    #[test]
+    fn a_ring_leaves_the_name_of_what_it_rings_alone() {
+        let owner = candidate(1, Rect::new(40., 40., 90., 60.), 1.);
+        let ring = (owner.0, ringed(Vec2::new(50., 50.), 20.));
+
+        assert_eq!(ringing(&mut [owner], &[ring]), won([1]));
     }
 
     /// The grid chooses what a plain linear scan chooses
