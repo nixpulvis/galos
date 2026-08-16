@@ -128,6 +128,15 @@ pub fn faded(from_eye: DVec3, reach: f64) -> f32 {
 pub fn drawn_at(strength: f32, bright: f32) -> f32 {
     (strength * bright).clamp(0., 1.)
 }
+/// The gizmos a ruled plane draws, kept in the scene with the plane itself
+///
+/// A group of their own so that moving the annotation gizmos onto the overlay
+/// leaves these where they were. What they draw is part of the ruling rather
+/// than a note over it, so it is occluded by the galaxy exactly as the plane
+/// is, and drawing it in front would read as floating loose.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub(crate) struct RulerMarks;
+
 /// Where a plane's rulers stand, and what they are said in
 ///
 /// Written by whoever rules the plane, every frame, before anything here is
@@ -707,10 +716,15 @@ fn lettered(text: &Text3d) -> Option<&str> {
 /// Gizmos rather than meshes, every one of them moving every frame. Which puts
 /// them in the same pass as the plane, so a line dropped to the ruling is drawn
 /// exactly as the ruling's own lines are.
+///
+/// [`RulerMarks`] is what keeps that true. The map's other gizmos, the rings
+/// and the leaders, were moved onto the overlay to be drawn over the galaxy
+/// with the names, and these belong in it: a line dropped to a plane that is
+/// itself in the scene has to be occluded by whatever the plane is.
 pub(super) fn marks(
     planes: Query<(&Plane, &Reading, &Plumbs)>,
     eyes: Query<(&Transform, &Camera), With<FloatingOrigin>>,
-    mut gizmos: Gizmos,
+    mut gizmos: Gizmos<RulerMarks>,
 ) {
     let Ok((at, camera)) = eyes.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
@@ -768,7 +782,13 @@ pub(super) fn marks(
 /// Laid in the plane rather than across the screen, so a cross out towards the
 /// horizon is foreshortened the way the cells around it are, and a cross on a
 /// tilted plane lies in that plane.
-fn cross(gizmos: &mut Gizmos, at: Vec3, facing: Quat, arm: f32, color: Color) {
+fn cross(
+    gizmos: &mut Gizmos<RulerMarks>,
+    at: Vec3,
+    facing: Quat,
+    arm: f32,
+    color: Color,
+) {
     for axis in [Vec3::X, Vec3::Z] {
         let along = facing * axis * arm;
         gizmos.line(at - along, at + along, color);
