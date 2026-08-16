@@ -13,6 +13,24 @@ use big_space::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
 pub fn plugin(app: &mut App) {
+    // Rings, leaders and the ruler's marks are annotation, the same as a
+    // name, so they belong over the galaxy with the names rather than in it.
+    // Left in the scene they are drawn before the overlay and a ground laid
+    // over them takes them off the map, which is worst for the ring around
+    // whatever is picked out: the one mark that should never be covered.
+    //
+    // In front of the grounds as well as on their layer. A ring is drawn
+    // around a star and a ground beside it, at depths that are near enough
+    // to trade places as the camera turns, so the order wants settling
+    // outright rather than by arithmetic.
+    app.insert_gizmo_config(
+        DefaultGizmoConfigGroup,
+        GizmoConfig {
+            render_layers: RenderLayers::layer(OVERLAY),
+            depth_bias: -1.,
+            ..default()
+        },
+    );
     app.add_message::<MoveCamera>();
     app.add_systems(Update, move_camera.in_set(MapSet::Camera));
     // Reads what `move_camera` and the spyglass asked for, and is the only
