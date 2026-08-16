@@ -1440,7 +1440,7 @@ fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
         Label,
         // Over the galaxy rather than in it, which is the whole reason a name
         // is legible over a thick field at all.
-        RenderLayers::layer(crate::camera::OVERLAY),
+        RenderLayers::layer(crate::camera::NAMES),
         Text3d::new(name),
         Text3dStyling {
             size: SIZE,
@@ -1669,7 +1669,7 @@ pub fn init_materials(
 fn ground(materials: &LabelMaterials, mesh: &GroundMesh) -> impl Bundle {
     (
         Ground,
-        RenderLayers::layer(crate::camera::OVERLAY),
+        RenderLayers::layer(crate::camera::NAMES),
         Mesh3d(mesh.0.clone()),
         MeshMaterial3d(materials.ground.clone()),
         Transform::default(),
