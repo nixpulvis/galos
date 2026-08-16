@@ -212,21 +212,28 @@ const SET_WIDTH: f32 = 1233. / 2048.;
 /// gaps between its letters are full of them has no shape to recognise. The
 /// ground is what makes the word a figure again.
 ///
-/// Part way translucent, so the field it covers is quieted rather than cut
-/// out of the map. It can be read straight, without allowing for what shows
-/// through, because it is drawn on [`crate::camera::OVERLAY`]: the only other
-/// thing on that layer is the words it carries, so what shows through is the
-/// galaxy as the first camera left it and never a star drawn over the top.
-const GROUND: Srgba = Srgba::new(0.02, 0.02, 0.04, 0.75);
+/// Solid, and it has to be. Blended, a ground is ordered against its own
+/// words by which mesh is further off, bevy measuring that to the middle of
+/// each; a ground's middle is half a name to the side of the words it carries,
+/// so the two are apart sideways as well as in depth and the sideways part
+/// swings as the camera turns. The order flips mid-rotation and a dark ground
+/// over white letters greys them out.
+///
+/// Depth cannot settle it. Pushing the ground back far enough to beat the
+/// swing is far enough for perspective to shrink it and drag it toward the
+/// middle of the view, so it no longer sits under its words. Opaque takes the
+/// question away: opaque geometry is drawn before anything blended and writes
+/// depth as it goes, so the words resolve against a ground already down.
+const GROUND: Srgba = Srgba::new(0.03, 0.03, 0.05, 1.);
 
 /// How far behind its words a ground sits, in multiples of [`SIZE`]
 ///
-/// Both are blended now, so which is drawn first is decided by which is
-/// further from the camera, and a ground is offset sideways from the words it
-/// carries as well as behind them. Far enough back that the depth decides it
-/// and the sideways offset cannot, while staying depth along the view, which
-/// no camera facing the plate can see as a gap.
-const SET_BACK: f32 = 2.;
+/// Enough that the words clear it in the depth test and no more. The ground
+/// is drawn under a perspective camera, so distance is not free: pushed back
+/// it is drawn smaller and nearer the middle of the view, and a ground that
+/// has drifted off its own words is worse than one that never moved. A single
+/// [`SIZE`] costs under a percent of its size.
+const SET_BACK: f32 = 1.;
 
 /// How far the ground reaches past the words, as a fraction of [`NAME_HEIGHT`]
 ///
@@ -1597,7 +1604,7 @@ pub fn init_materials(
         // texture is what makes the letters letters.
         ground: assets.add(StandardMaterial {
             base_color: GROUND.into(),
-            alpha_mode: AlphaMode::Blend,
+            alpha_mode: AlphaMode::Opaque,
             unlit: true,
             ..default()
         }),
