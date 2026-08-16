@@ -6,6 +6,7 @@ use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{Shell, ShowNames};
 use crate::systems::{Spyglass, System};
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
@@ -541,7 +542,7 @@ pub(crate) fn choose_names(
     show_body_names: Res<ShowBodyNames>,
     systems: Query<Candidate<'_, &'static System>>,
     bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
-    eye_at: Query<&GlobalTransform, With<Camera>>,
+    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
@@ -1277,6 +1278,9 @@ pub(super) fn said(words: &Text3d) -> Option<&str> {
 fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
     (
         Label,
+        // Over the galaxy rather than in it, which is the whole reason a name
+        // is legible over a thick field at all.
+        RenderLayers::layer(crate::camera::OVERLAY),
         Text3d::new(name),
         Text3dStyling {
             size: SIZE,
@@ -1317,7 +1321,7 @@ pub fn face_camera(
     // the scheduler can prove this query is disjoint from the one above, and
     // from every other system that reads a star's transform.
     bodies: Query<(&GlobalTransform, &Indicator), Without<Label>>,
-    eye_at: Query<&GlobalTransform, (With<Camera>, Without<Label>)>,
+    eye_at: Query<&GlobalTransform, (With<OrbitCamera>, Without<Label>)>,
     mut labels: Query<
         (&mut Transform, &ChildOf),
         (With<Label>, Without<System>),

@@ -539,7 +539,7 @@ fn ring(
     // Whatever inside a system is picked out, which carries neither a filter
     // nor a galactic position of its own.
     inside: Query<(&GlobalTransform, &Indicator), (With<Body>, With<Selected>)>,
-    eye_at: Query<&GlobalTransform, With<Camera>>,
+    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
     dim: Res<DimTo>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };

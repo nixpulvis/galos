@@ -1,6 +1,7 @@
 use crate::schedule::MapSet;
 use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Exposure, Hdr};
 use bevy::input::mouse::{
     AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit,
@@ -426,6 +427,45 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
             ..default()
         },
         Bloom::NATURAL,
+        // The names, drawn over the galaxy rather than in it.
+        children![overlay()],
+    )
+}
+
+/// The layer everything drawn over the galaxy rather than in it belongs to
+///
+/// A camera with no [`RenderLayers`] draws layer zero and so does an entity,
+/// which is every star, body and plane. Nothing on this one reaches the main
+/// camera at all.
+pub const OVERLAY: usize = 1;
+
+/// A second camera over the first, drawing the names and nothing else
+///
+/// Names are annotation and not scenery. Drawn in the scene they are subject
+/// to it: a star nearer than a name is blended over the top of it, and no
+/// depth a name is placed at wins, the stars being on both sides of it.
+///
+/// A camera of its own settles that by not sharing a depth buffer. This one
+/// clears its own, so names resolve against each other and against nothing
+/// else, and it keeps its color, so what the first camera drew stands.
+///
+/// It carries no [`Bloom`] either. A name is not a light source, and blooming
+/// one spreads it over the dark edge that is supposed to hold it apart from
+/// whatever is behind it.
+///
+/// A child of the camera it shadows, so the pose and the cell it is measured
+/// from come down the hierarchy and there is no second copy to keep in step.
+fn overlay() -> impl Bundle {
+    (
+        Camera3d::default(),
+        Hdr,
+        Camera {
+            // After the galaxy, and over what it left.
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        RenderLayers::layer(OVERLAY),
     )
 }
 
@@ -663,6 +703,56 @@ pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The map looks through two cameras, and only one of them is the eye
+    ///
+    /// Every system that asks where the viewer stands narrows by
+    /// `OrbitCamera` rather than by `Camera`, so the overlay is invisible to
+    /// them. A bare `With<Camera>` would match both and `single` would fail,
+    /// which takes the names off the map rather than reporting anything.
+    #[test]
+    fn only_the_orbit_camera_answers_for_the_eye() {
+        let source = include_str!("systems/labels.rs");
+        let pointing = include_str!("systems/pointing.rs");
+        let selection = include_str!("systems/selection.rs");
+
+        for (name, text) in [
+            ("labels", source),
+            ("pointing", pointing),
+            ("selection", selection),
+        ] {
+            assert!(
+                !text.contains("With<Camera>"),
+                "{name} asks for a camera without saying which"
+            );
+        }
+    }
+
+    /// The overlay draws after the galaxy and keeps what it drew
+    #[test]
+    fn the_overlay_is_drawn_over_the_galaxy() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let camera = app.world_mut().spawn(overlay()).id();
+
+        let overlay = app.world().entity(camera);
+        let camera = overlay.get::<Camera>().expect("a camera");
+
+        assert_eq!(camera.order, 1, "drawn before the galaxy");
+        assert!(
+            matches!(camera.clear_color, ClearColorConfig::None),
+            "wiped what the galaxy drew"
+        );
+        assert_eq!(
+            overlay.get::<RenderLayers>(),
+            Some(&RenderLayers::layer(OVERLAY)),
+            "not held to the overlay layer"
+        );
+        assert!(
+            overlay.get::<Bloom>().is_none(),
+            "a name is not a light source"
+        );
+    }
     use crate::systems::pointing::PRIMARY;
     use crate::ui::PressOwner;
     use bevy::input::mouse::AccumulatedMouseScroll;
