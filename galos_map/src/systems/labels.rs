@@ -251,18 +251,21 @@ const TIGHT_TO: f32 = 50.;
 
 /// Where names are given all the extra room, in light years
 ///
-/// Ten times [`TIGHT_TO`]. Around here a screen stops holding a field that
-/// can be read and starts holding a wall of text, every name legible on its
-/// own and the field of them saying nothing.
-const LOOSE_FROM: f32 = 500.;
+/// Three times [`TIGHT_TO`], not ten. The room is eased over `log10`, so a
+/// wide gap between the two ends spends most of the range part way: at five
+/// hundred the ramp stood at a fifth of the way by a hundred light years and
+/// under half by a hundred and fifty, which is where the map is actually
+/// flown, so most of the spread was never reaching the view that needed it.
+const LOOSE_FROM: f32 = 150.;
 
 /// How many times [`CROWDING`]'s room a name is given at the far end
 ///
 /// A judgement about what a star field should look like rather than something
-/// derived, so it wants looking at with the map running. Four takes a ten
-/// letter name's rectangle from about 92 by 20 pixels to 126 by 54, so
-/// roughly a third as many of them survive a wide view.
-const SPREAD_BY: f32 = 4.;
+/// derived, so it wants looking at with the map running. Measured over a six
+/// hundred name field at full spread, this places 63 of them: 42% of what the
+/// middle offers, 15% of the band around it and 4% at the edge. Twenty four
+/// placed 97, which read as a wall.
+const SPREAD_BY: f32 = 48.;
 
 /// How far the tightly packed middle reaches, as a fraction of the viewport's
 /// height
@@ -270,7 +273,12 @@ const SPREAD_BY: f32 = 4.;
 /// The room a name is given relaxes toward the loose figure over this
 /// distance, so the middle is a well around what the camera is pointed at
 /// rather than a disc with a rim.
-const RELAX: f32 = 0.25;
+///
+/// Where [`relaxed`] turns over, so the plateau reaches about this far and the
+/// room is nearly all given up by twice it. Two thirds of the height puts the
+/// turn around the middle of the way out, which leaves a dense core, a
+/// thinning band around it and a sparse edge.
+const RELAX: f32 = 0.7;
 
 /// How strongly being what the camera looks at argues for a name being shown
 ///
@@ -1111,11 +1119,20 @@ fn pulled_back(radius: f32) -> f32 {
 
 /// How far a name has relaxed out of the tightly packed middle
 ///
-/// Exponential rather than linear, so the middle has a soft edge instead of a
-/// rim. It never quite arrives, which is what keeps every name in the corners
-/// from being given exactly the same room and reading as a border.
+/// Cubed inside the exponential, and that is what makes a middle at all. A
+/// plain `1 - exp(-x)` is steepest at zero, so the room starts growing at once
+/// and the part of the view that should be densest is where the falloff bites
+/// hardest: raising the spread then thins the middle as fast as the edge and
+/// the field comes out evenly sparse, which is the thing being fixed rather
+/// than a milder version of it.
+///
+/// Cubed, the curve leaves the middle alone, turns over around [`RELAX`] and
+/// is spent soon after. A dense core reads against a sparse edge, and it still
+/// never quite arrives, so the corners are not all given exactly the same room
+/// and do not read as a border.
 fn relaxed(apart: f32, viewport: Vec2) -> f32 {
-    1. - (-apart / (RELAX * viewport.y).max(1.)).exp()
+    let out = apart / (RELAX * viewport.y).max(1.);
+    1. - (-out * out * out).exp()
 }
 
 /// A smoothstep, held to its ends
@@ -2574,6 +2591,22 @@ mod tests {
                 "{apart} pixels out"
             );
         }
+    }
+
+    /// The middle of a wide view is a plateau and not just the top of a slope
+    ///
+    /// What [`relaxed`] is cubed for. A tenth of the way out should still be
+    /// packed about as tightly as the middle itself, where a curve steepest at
+    /// zero would already have given away a good part of the room.
+    #[test]
+    fn the_middle_of_a_wide_view_is_a_plateau() {
+        let near = room(LOOSE_FROM, VIEWPORT.y / 10., VIEWPORT);
+        let out = room(LOOSE_FROM, VIEWPORT.y / 2., VIEWPORT);
+
+        assert!(
+            near < out / 10.,
+            "a tenth of the way out already gave up {near} of {out}"
+        );
     }
 
     /// Pulled back, a name off the center is given more room than one on it
