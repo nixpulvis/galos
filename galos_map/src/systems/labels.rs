@@ -6,6 +6,7 @@ use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{Shell, ShowNames};
 use crate::systems::{Spyglass, System};
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
@@ -14,6 +15,7 @@ use bevy_rich_text3d::{
     LoadFonts, Text3d, Text3dPlugin, Text3dSegment, Text3dStyling, TextAnchor,
     TextAtlas,
 };
+use std::ops::RangeInclusive;
 
 pub(crate) fn plugin(app: &mut App) {
     // Only if it is not already there, and appended rather than set. The
@@ -28,7 +30,7 @@ pub(crate) fn plugin(app: &mut App) {
         .font_embedded
         .push(epaint_default_fonts::HACK_REGULAR);
     app.insert_resource(NameRadius {
-        follow_spyglass: true,
+        follow_spyglass: false,
         radius: DEFAULT_NAME_RADIUS,
     });
     app.insert_resource(ShowBodyNames(true));
@@ -51,7 +53,7 @@ pub(crate) fn plugin(app: &mut App) {
     // is said here. Ordering them costs nothing and fixes which goes first.
     app.add_systems(
         Update,
-        (choose_names, respawn, face_camera)
+        (choose_names, respawn, back_names, face_camera)
             .chain()
             .in_set(MapSet::Present)
             // Both read which system is pointed at, which is decided this
@@ -98,7 +100,12 @@ pub(crate) const MIN_DEPTH: f32 = 1.;
 /// How far a name is drawn from what the camera looks at, to begin with
 ///
 /// What [`NameRadius`] starts at, and what the tests measure against.
-const DEFAULT_NAME_RADIUS: f32 = 100.;
+///
+/// Twenty light years is a few dozen systems around whatever is being looked
+/// at, which is what a name is for: reading where you are, not labelling the
+/// whole of what is loaded. The spyglass reaches much further and should, the
+/// stars being worth drawing long after their names would be worth reading.
+const DEFAULT_NAME_RADIUS: f32 = 20.;
 
 /// How tall a system's name draws, in logical pixels
 ///
@@ -116,9 +123,10 @@ pub(super) const NAME_HEIGHT: f32 = 12.;
 pub struct NameRadius {
     /// Take the spyglass's reach rather than the one below
     ///
-    /// On to begin with. The spyglass already answers how much of the
-    /// galaxy is being looked at, and a name belongs to something drawn, so
-    /// there is rarely a second answer worth giving.
+    /// Off to begin with. The spyglass answers how much of the galaxy is
+    /// drawn, which is not the same question as how much of it is worth
+    /// naming: it reaches hundreds of light years, and names read at that
+    /// range are a wall of them over a field nobody is looking at.
     pub follow_spyglass: bool,
     /// How far names reach when not following, in light years
     pub radius: f32,
@@ -196,10 +204,94 @@ const LEADER_GAP: f32 = 0.15;
 /// being prevented.
 const ADVANCE: f32 = 0.7;
 
+/// What [`FONT`] actually sets a character at, as a fraction of the size
+///
+/// The set width, where [`ADVANCE`] is the room a name is granted. The two
+/// differ on purpose and the difference is which way each errs: room granted
+/// short overlaps two names, so [`ADVANCE`] rounds up; a ground drawn long
+/// runs on past the word it carries, so this rounds to the truth.
+const SET_WIDTH: f32 = 1233. / 2048.;
+
+/// The dark ground a name is set on
+///
+/// A name is read over a field of stars, and a word whose counters and the
+/// gaps between its letters are full of them has no shape to recognise. The
+/// ground is what makes the word a figure again.
+///
+/// Solid, and it has to be. Blended, a ground is ordered against its own
+/// words by which mesh is further off, bevy measuring that to the middle of
+/// each; a ground's middle is half a name to the side of the words it carries,
+/// so the two are apart sideways as well as in depth and the sideways part
+/// swings as the camera turns. The order flips mid-rotation and a dark ground
+/// over white letters greys them out.
+///
+/// Depth cannot settle it. Pushing the ground back far enough to beat the
+/// swing is far enough for perspective to shrink it and drag it toward the
+/// middle of the view, so it no longer sits under its words. Opaque takes the
+/// question away: opaque geometry is drawn before anything blended and writes
+/// depth as it goes, so the words resolve against a ground already down.
+const GROUND: Srgba = Srgba::new(0.03, 0.03, 0.05, 1.);
+
+/// How far behind its words a ground sits, in multiples of [`SIZE`]
+///
+/// Enough that the words clear it in the depth test and no more. The ground
+/// is drawn under a perspective camera, so distance is not free: pushed back
+/// it is drawn smaller and nearer the middle of the view, and a ground that
+/// has drifted off its own words is worse than one that never moved. A single
+/// [`SIZE`] costs under a percent of its size.
+const SET_BACK: f32 = 1.;
+
+/// How far the ground reaches past the words, as a fraction of [`NAME_HEIGHT`]
+///
+/// Enough that the letters are not set against its edge, and no more. A ground
+/// wider than the word it carries reads as a box on the map rather than as the
+/// word standing clear of what is behind it.
+const GROUND_PAD: f32 = 0.3;
+
 /// How much of a name's own height is kept clear around it
 ///
-/// Names that merely touch are still hard to read apart.
+/// Names that merely touch are still hard to read apart. This is the tight
+/// figure, which is what a name gets up close and what it gets at the center
+/// of the view at any distance. [`room`] is what widens it elsewhere.
 const CROWDING: f32 = 0.35;
+
+/// How far the camera stands off before names are given any more room, in
+/// light years
+///
+/// Below this the map is among a handful of systems, where [`CROWDING`] alone
+/// is all the clearance a name wants.
+const TIGHT_TO: f32 = 50.;
+
+/// Where names are given all the extra room, in light years
+///
+/// Three times [`TIGHT_TO`], not ten. The room is eased over `log10`, so a
+/// wide gap between the two ends spends most of the range part way: at five
+/// hundred the ramp stood at a fifth of the way by a hundred light years and
+/// under half by a hundred and fifty, which is where the map is actually
+/// flown, so most of the spread was never reaching the view that needed it.
+const LOOSE_FROM: f32 = 150.;
+
+/// How many times [`CROWDING`]'s room a name is given at the far end
+///
+/// A judgement about what a star field should look like rather than something
+/// derived, so it wants looking at with the map running. Measured over a six
+/// hundred name field at full spread, this places 63 of them: 42% of what the
+/// middle offers, 15% of the band around it and 4% at the edge. Twenty four
+/// placed 97, which read as a wall.
+const SPREAD_BY: f32 = 48.;
+
+/// How far the tightly packed middle reaches, as a fraction of the viewport's
+/// height
+///
+/// The room a name is given relaxes toward the loose figure over this
+/// distance, so the middle is a well around what the camera is pointed at
+/// rather than a disc with a rim.
+///
+/// Where [`relaxed`] turns over, so the plateau reaches about this far and the
+/// room is nearly all given up by twice it. Two thirds of the height puts the
+/// turn around the middle of the way out, which leaves a dense core, a
+/// thinning band around it and a sparse edge.
+const RELAX: f32 = 0.7;
 
 /// How strongly being what the camera looks at argues for a name being shown
 ///
@@ -271,6 +363,19 @@ fn worth_naming(
     stands && (pointed_at || selected || (shown && !filtered))
 }
 
+/// How strongly standing in front of the middle argues for a name
+///
+/// A name is drawn over whatever is behind it, so of two systems along nearly
+/// one line of sight the near one is the one worth naming: its name covers
+/// the field beyond it, where naming the far one lays a name over the near
+/// stars as well and hides what is in front.
+///
+/// In the same light years as everything else, and at one it exactly answers
+/// the penalty a system pays for standing off the middle. A system directly
+/// in front of the middle therefore scores as one at the middle does, and one
+/// directly behind pays that distance twice.
+const NEARER_WEIGHT: f32 = 1.;
+
 /// How far the center bonus reaches, in light years
 ///
 /// It falls to half at this distance. The point the camera orbits is usually
@@ -327,6 +432,18 @@ pub struct Named;
 /// A marker for system name labels
 #[derive(Component)]
 pub struct Label;
+
+/// The quad a name is set on, hung under the [`Label`] it carries
+///
+/// A child rather than part of the plate, since the words are a text mesh the
+/// crate rebuilds whenever they change and this is one rectangle that only
+/// ever moves and resizes.
+#[derive(Component)]
+struct Ground;
+
+/// The one quad every [`Ground`] is drawn from, a unit square in its own XY
+#[derive(Resource)]
+pub(crate) struct GroundMesh(Handle<Mesh>);
 
 /// How far in front of the camera a point is, in metres
 ///
@@ -441,6 +558,9 @@ pub(crate) fn screen_offset(
 pub struct LabelMaterials {
     bright: [Handle<StandardMaterial>; 3],
     dim: [Handle<StandardMaterial>; 3],
+    /// One for every name. A ground takes no tint, being what the tint is
+    /// read against.
+    ground: Handle<StandardMaterial>,
 }
 
 /// Which color a name is drawn in, given what its system is
@@ -499,7 +619,7 @@ impl LabelMaterials {
 /// arrangement of a few hundred overlapping rectangles is not worth solving
 /// each frame, and taking them in order of what the viewer most wants to see
 /// gives them the ones that matter.
-pub fn choose_names(
+pub(crate) fn choose_names(
     mut commands: Commands,
     camera: Query<(&OrbitCamera, &Camera)>,
     radius: Res<NameRadius>,
@@ -508,12 +628,13 @@ pub fn choose_names(
     show_body_names: Res<ShowBodyNames>,
     systems: Query<Candidate<'_, &'static System>>,
     bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
-    eye_at: Query<&GlobalTransform, With<Camera>>,
+    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
     holding: Res<HeldSystem>,
     time: Res<Time<Real>>,
+    mut layout: Local<Layout>,
 ) {
     let clear = |commands: &mut Commands| {
         for entity in &named {
@@ -555,78 +676,104 @@ pub fn choose_names(
     // What a name has to fall inside some of to be worth laying out at all.
     let screen = Rect::from_corners(Vec2::ZERO, viewport);
 
+    // Where the camera is pointed, which is the tightly packed middle that
+    // [`room`] measures out from. The point the camera orbits projects here
+    // by construction, so this is that point without the projection.
+    let middle = viewport / 2.;
+
+    let Layout { wanted, placed, rings } = &mut *layout;
+    rings.clear();
+
     // Everything close enough to name and in front of the camera, with the
     // rectangle its name would occupy and how much it deserves one.
-    let mut wanted: Vec<(Entity, Rect, f32)> = systems
-        .iter()
-        .filter_map(|candidate| {
-            let (entity, system, mark, visibility, indicator, filtered, hop) =
-                candidate;
-            // Pointing at a system asks for its name whatever else has
-            // been set, so it answers to neither of the tests below.
-            //
-            // Only once the pointer has come to rest, though. A system
-            // crossed on the way to another would otherwise take a name,
-            // and with it the place of the name being reached for.
-            let pointed_at = pointing
-                .get(entity)
-                .is_ok_and(|at| at.settled(time.elapsed_secs()));
+    wanted.clear();
+    wanted.extend(systems.iter().filter_map(|candidate| {
+        let (entity, system, mark, visibility, indicator, filtered, hop) =
+            candidate;
+        // Pointing at a system asks for its name whatever else has
+        // been set, so it answers to neither of the tests below.
+        //
+        // Only once the pointer has come to rest, though. A system
+        // crossed on the way to another would otherwise take a name,
+        // and with it the place of the name being reached for.
+        let pointed_at = pointing
+            .get(entity)
+            .is_ok_and(|at| at.settled(time.elapsed_secs()));
 
-            // Selecting one asks the same, and for longer: the whole point
-            // of a selection is that it stays marked out while the user
-            // moves around it, and a mark that says which star without
-            // saying which system is half an answer.
-            //
-            // Only while it is drawn, though. Unlike a point, a selection
-            // outlives the spyglass hiding its star, and a name is laid out
-            // in screen space whether or not it is rendered, so one asked
-            // for by a hidden star would take the place of a name that
-            // could be read.
-            let selected =
-                selection.contains(entity) && *visibility != Visibility::Hidden;
+        // Selecting one asks the same, and for longer: the whole point
+        // of a selection is that it stays marked out while the user
+        // moves around it, and a mark that says which star without
+        // saying which system is half an answer.
+        //
+        // Only while it is drawn, though. Unlike a point, a selection
+        // outlives the spyglass hiding its star, and a name is laid out
+        // in screen space whether or not it is rendered, so one asked
+        // for by a hidden star would take the place of a name that
+        // could be read.
+        let selected =
+            selection.contains(entity) && *visibility != Visibility::Hidden;
 
-            // And the map still standing a mark in for the system at all,
-            // which beats every other claim: past there the system is drawn
-            // rather than marked, and its name belongs to the mark. The star
-            // it arrives at being drawn ends it just as surely, that star
-            // carrying the name from there on.
-            let stands = mark.0 > 0. && carried != Some(system.address);
+        // And the map still standing a mark in for the system at all,
+        // which beats every other claim: past there the system is drawn
+        // rather than marked, and its name belongs to the mark. The star
+        // it arrives at being drawn ends it just as surely, that star
+        // carrying the name from there on.
+        let stands = mark.0 > 0. && carried != Some(system.address);
 
-            // A stop a route reaches is named whatever else is set. It is
-            // one of two systems out of the whole sky that the viewer is being
-            // told to look at, and a mark saying look there without saying
-            // where there is is half an answer.
-            if !worth_naming(
-                stands,
-                show_names.0,
-                filtered,
-                pointed_at || hop,
-                selected,
-            ) {
-                return None;
-            }
+        // A stop a route reaches is named whatever else is set. It is
+        // one of two systems out of the whole sky that the viewer is being
+        // told to look at, and a mark saying look there without saying
+        // where there is is half an answer.
+        if !worth_naming(
+            stands,
+            show_names.0,
+            filtered,
+            pointed_at || hop,
+            selected,
+        ) {
+            return None;
+        }
 
-            let position = DVec3::from(system.position);
-            let from_center = (position - orbit.center).length() as f32;
-            // Further out than names were asked to reach, and not one of the
-            // two the map is marking out.
-            if !pointed_at && !selected && !hop && from_center > reach {
-                return None;
-            }
-            let at = screen_position(orbit, cot_half_fov, viewport, position)?;
-            // The words that will be set rather than the name alone. A stop
-            // carries the jump to it, which is a good part of the width again,
-            // and room granted for less than that is a name laid over the next
-            // one along.
-            let rect =
-                name_rect_of(at, plate_width(system, hop, from), indicator.0);
-            if screen.intersect(rect).is_empty() {
-                return None;
-            }
-            let score = name_score(from_center, pointed_at, selected);
-            Some((entity, rect, score))
-        })
-        .collect();
+        let position = DVec3::from(system.position);
+        let from_center = (position - orbit.center).length() as f32;
+        // Further out than names were asked to reach, and not one of the
+        // two the map is marking out.
+        if !pointed_at && !selected && !hop && from_center > reach {
+            return None;
+        }
+        let at = screen_position(orbit, cot_half_fov, viewport, position)?;
+        // The words that will be set rather than the name alone. A stop
+        // carries the jump to it, which is a good part of the width again,
+        // and room granted for less than that is a name laid over the next
+        // one along.
+        let rect =
+            name_rect_of(at, plate_width(system, hop, from), indicator.0);
+        if screen.intersect(rect).is_empty() {
+            return None;
+        }
+        // How far in front of the middle the system stands, in light years.
+        // Measured down the view rather than to the eye, so two systems side
+        // by side on screen are compared on which is nearer and not on which
+        // sits further from the middle of the window.
+        let ahead = orbit.radius
+            - depth(orbit, position) / crate::space::LIGHT_YEAR as f32;
+        if selected {
+            rings.push((entity, ringed(at, indicator.0)));
+        }
+
+        let score = name_score(
+            LabelWeight::System { from_center, ahead },
+            pointed_at,
+            selected,
+        );
+
+        // Grown after the test above rather than before it, so that what is
+        // laid out at all is still decided by the name itself. The room is
+        // for the packing to read and nothing else.
+        let apart = (at - middle).length();
+        let rect = rect.inflate(room(orbit.radius, apart, viewport));
+        Some((entity, rect, score))
+    }));
 
     // Everything inside the system the camera is in. Its own switch, since a
     // system's name and a body's are asked for at different moments: the sky
@@ -635,15 +782,17 @@ pub fn choose_names(
     if let Ok(eye) = eye_at.single() {
         for (entity, body, at, indicator) in &bodies {
             let offset = (at.translation() - eye.translation()).as_dvec3();
-            let Some(place) =
+            let Some(spot) =
                 screen_offset(orbit, cot_half_fov, viewport, offset)
             else {
                 continue;
             };
-            let rect = name_rect_of(place, capitals(&body.name), indicator.0);
+            let rect = name_rect_of(spot, capitals(&body.name), indicator.0);
             if screen.intersect(rect).is_empty() {
                 continue;
             }
+            let apart = (spot - middle).length();
+            let rect = rect.inflate(room(orbit.radius, apart, viewport));
 
             // Pointing at a body or picking it out is asking for it by name,
             // which the switch has no more business refusing than it does for
@@ -656,6 +805,9 @@ pub fn choose_names(
             // in for, so there is no mark whose going takes its name, and the
             // filters are about systems.
             let selected = selection.contains(entity);
+            if selected {
+                rings.push((entity, ringed(spot, indicator.0)));
+            }
             if !worth_naming(
                 true,
                 show_body_names.0,
@@ -669,14 +821,16 @@ pub fn choose_names(
             // How large the body itself looks, rather than the mark drawn to
             // aim at it.
             let depth = depth_of(orbit, offset).max(1.);
-            let score = body_name_score(
-                looks(
-                    body.radius,
-                    world_per_pixel(cot_half_fov, viewport.y, depth),
-                ),
-                body.ancestors,
-                body.star,
-                body.primary,
+            let score = name_score(
+                LabelWeight::Body {
+                    under: body.ancestors,
+                    star: body.star,
+                    primary: body.primary,
+                    apparent: looks(
+                        body.radius,
+                        world_per_pixel(cot_half_fov, viewport.y, depth),
+                    ),
+                },
                 pointed_at,
                 selected,
             );
@@ -684,26 +838,7 @@ pub fn choose_names(
         }
     }
 
-    // Best first, so that what is dropped is dropped in favour of something
-    // the viewer wanted more. Ties are settled by which entity it is, which
-    // is arbitrary but the same arbitrary answer every frame.
-    //
-    // Something has to settle them, and the order they were gathered in
-    // cannot: handing one of a tied pair a `Named` moves it to another
-    // archetype and so to another place in the order they are read in, and the
-    // two would trade one place between them every frame, which is a flicker
-    // rather than a choice.
-    wanted.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
-
-    let mut kept: Vec<Rect> = Vec::new();
-    let mut winners = EntityHashSet::default();
-    for (entity, rect, _) in wanted {
-        if kept.iter().any(|taken| !taken.intersect(rect).is_empty()) {
-            continue;
-        }
-        kept.push(rect);
-        winners.insert(entity);
-    }
+    let winners = place(wanted, viewport, placed, rings);
 
     // Only what changed hands. Nearly every name is the same name it was
     // last frame, and taking one away to give it straight back moves its
@@ -719,6 +854,156 @@ pub fn choose_names(
             commands.entity(entity).insert(Named);
         }
     }
+}
+
+/// How large a bucket in the placement grid is, in pixels
+///
+/// About one name's rectangle, so a name falls across roughly four buckets
+/// and is tested only against what those four hold. A ten letter name is some
+/// 92 by 20 pixels at [`NAME_HEIGHT`], and the width is what to size by,
+/// names being far wider than they are tall.
+const BUCKET: f32 = NAME_HEIGHT * 8.;
+
+/// The scratch a frame of names is laid out in
+///
+/// Held across frames so that a couple of thousand candidates and the grid
+/// they are packed into are not allocated and thrown away sixty times a
+/// second. Both are cleared before they are read, so nothing carries over but
+/// the memory.
+#[derive(Default)]
+pub(crate) struct Layout {
+    /// The candidates, with the rectangle each would occupy and its score
+    wanted: Vec<(Entity, Rect, f32)>,
+    /// Where the names already placed sit
+    placed: Placed,
+    /// The rings drawn around what is picked out, and what each belongs to
+    rings: Vec<(Entity, Rect)>,
+}
+
+/// Where the names already placed sit, bucketed by screen position
+///
+/// A candidate overlaps only what is near it, so testing it against every
+/// name placed so far asks a question about the far side of the screen to
+/// learn about a rectangle twenty pixels wide.
+#[derive(Default)]
+struct Placed {
+    /// Indices into `rects`, by bucket
+    buckets: Vec<Vec<u32>>,
+    rects: Vec<Rect>,
+    /// Buckets across the viewport
+    columns: usize,
+    /// Buckets down it
+    rows: usize,
+}
+
+impl Placed {
+    /// Empty the grid and size it to the viewport, keeping its allocations
+    fn reset(&mut self, viewport: Vec2) {
+        self.columns = ((viewport.x / BUCKET).ceil() as usize).max(1);
+        self.rows = ((viewport.y / BUCKET).ceil() as usize).max(1);
+        self.rects.clear();
+        self.buckets.resize_with(self.columns * self.rows, Vec::new);
+        for bucket in &mut self.buckets {
+            bucket.clear();
+        }
+    }
+
+    /// The buckets a rectangle falls across, as inclusive ranges
+    ///
+    /// Clamped to the grid rather than dropped outside it. A name is laid out
+    /// once any part of it is on screen, so a rectangle running off an edge is
+    /// ordinary and still has to be tested against its neighbors.
+    fn span(
+        &self,
+        rect: Rect,
+    ) -> (RangeInclusive<usize>, RangeInclusive<usize>) {
+        let bucket = |along: f32, of: usize| {
+            ((along / BUCKET).max(0.) as usize).min(of.saturating_sub(1))
+        };
+        (
+            bucket(rect.min.x, self.columns)..=bucket(rect.max.x, self.columns),
+            bucket(rect.min.y, self.rows)..=bucket(rect.max.y, self.rows),
+        )
+    }
+
+    /// Whether a rectangle clears every name already placed
+    fn clear_of(&self, rect: Rect) -> bool {
+        let (columns, rows) = self.span(rect);
+        for row in rows {
+            for column in columns.clone() {
+                for &taken in &self.buckets[row * self.columns + column] {
+                    if !self.rects[taken as usize].intersect(rect).is_empty() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Take a rectangle's place, in every bucket it falls across
+    fn hold(&mut self, rect: Rect) {
+        let (columns, rows) = self.span(rect);
+        let taken = self.rects.len() as u32;
+        self.rects.push(rect);
+        for row in rows {
+            for column in columns.clone() {
+                self.buckets[row * self.columns + column].push(taken);
+            }
+        }
+    }
+}
+
+/// The square on screen a ring drawn at `at` takes up
+///
+/// [`Indicator`] is a radius in pixels, a mark being nine pixels across
+/// whether the camera is a light year off or fifty thousand, so the ring is
+/// the same size on screen wherever what it rings has got to.
+fn ringed(at: Vec2, radius: f32) -> Rect {
+    Rect::from_center_size(at, Vec2::splat(radius * 2.))
+}
+
+/// Which candidates fit, taken best first
+///
+/// Greedy rather than optimal. The best arrangement of a few hundred
+/// overlapping rectangles is not worth solving each frame, and taking them in
+/// the order the viewer wants them gives them the ones that matter.
+fn place(
+    candidates: &mut [(Entity, Rect, f32)],
+    viewport: Vec2,
+    placed: &mut Placed,
+    rings: &[(Entity, Rect)],
+) -> EntityHashSet {
+    // Best first, so that what is dropped is dropped in favour of something
+    // the viewer wanted more. Ties are settled by which entity it is, which
+    // is arbitrary but the same arbitrary answer every frame.
+    //
+    // Something has to settle them, and the order they were gathered in
+    // cannot: handing one of a tied pair a `Named` moves it to another
+    // archetype and so to another place in the order they are read in, and the
+    // two would trade one place between them every frame, which is a flicker
+    // rather than a choice.
+    candidates.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+
+    placed.reset(viewport);
+    let mut winners = EntityHashSet::default();
+    for (entity, rect, _) in candidates.iter() {
+        // A ring is what the map is pointing at, so it keeps its place and
+        // the name gives way. Never to its own ring: a name stands off the
+        // ring of what it names by construction, but the room it is granted
+        // reaches back over it, and a thing picked out losing its own name to
+        // its own mark is the one answer that helps nobody.
+        let ringed_over = rings.iter().any(|(of, ring)| {
+            of != entity && !ring.intersect(*rect).is_empty()
+        });
+
+        if ringed_over || !placed.clear_of(*rect) {
+            continue;
+        }
+        placed.hold(*rect);
+        winners.insert(*entity);
+    }
+    winners
 }
 
 /// What being inside the system the camera is in is worth to a name
@@ -792,24 +1077,6 @@ fn looks(radius: f32, per_pixel: f32) -> f32 {
 /// enough to cross a claim above it. The whole of it stays inside
 /// [`INSIDE_WEIGHT`], so nothing inside a system outranks whatever is pointed
 /// at or picked out.
-fn body_name_score(
-    apparent: f32,
-    under: u8,
-    star: bool,
-    primary: bool,
-    pointed_at: bool,
-    selected: bool,
-) -> f32 {
-    // A rank apiece for the depths, and one over them all for the star the
-    // system arrives at.
-    let step = INSIDE_WEIGHT / (DEEPEST + 2) as f32;
-    let rank = if primary { DEEPEST + 1 } else { DEEPEST - under.min(DEEPEST) };
-    let depth = rank as f32 * step;
-    let sun = if star { step / 2. } else { 0. };
-    let size = (step / 2.) * apparent / (apparent + BODY_NAME_REACH);
-
-    marked_score(pointed_at, selected) + depth + sun + size
-}
 
 /// How much a system deserves to have its name drawn
 ///
@@ -834,9 +1101,55 @@ fn body_name_score(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(from_center: f32, pointed_at: bool, selected: bool) -> f32 {
-    let centered = CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
-    marked_score(pointed_at, selected) + centered - from_center
+/// What a name's weight is worked out from
+///
+/// The two are weighed on different things because they are seen in different
+/// places. A system is out in the sky, where where it stands is the whole of
+/// what distinguishes it. A body is only ever drawn while the camera is
+/// inside its system, where every one of them stands in much the same place,
+/// so what it is has to do the distinguishing instead.
+///
+/// Held apart here rather than in two functions, so that what they share, the
+/// marks and how the terms are added up, cannot be changed for one and left
+/// behind for the other.
+enum LabelWeight {
+    /// A system in the sky, by where it stands relative to the middle of the
+    /// view: light years off it, and light years in front of it
+    System { from_center: f32, ahead: f32 },
+    /// A body inside the system the camera is in, by what it is: how far
+    /// under the arrival star it orbits, whether it is a star, whether it is
+    /// the one the system arrives at, and how large it looks
+    Body { under: u8, star: bool, primary: bool, apparent: f32 },
+}
+
+/// How much a thing deserves the name it is asking for
+///
+/// One number line for both, since [`choose_names`] sorts systems and bodies
+/// together and hands the best of them what room there is.
+fn name_score(weight: LabelWeight, pointed_at: bool, selected: bool) -> f32 {
+    let standing = match weight {
+        LabelWeight::System { from_center, ahead } => {
+            let centered =
+                CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
+            centered - from_center + NEARER_WEIGHT * ahead
+        }
+        LabelWeight::Body { under, star, primary, apparent } => {
+            // A rank apiece for the depths, and one over them all for the
+            // star the system arrives at.
+            let step = INSIDE_WEIGHT / (DEEPEST + 2) as f32;
+            let rank = if primary {
+                DEEPEST + 1
+            } else {
+                DEEPEST - under.min(DEEPEST)
+            };
+            let sun = if star { step / 2. } else { 0. };
+            let size = (step / 2.) * apparent / (apparent + BODY_NAME_REACH);
+
+            rank as f32 * step + sun + size
+        }
+    };
+
+    marked_score(pointed_at, selected) + standing
 }
 
 /// What being marked out is worth, to a system and a body alike
@@ -864,6 +1177,63 @@ fn marked_score(pointed_at: bool, selected: bool) -> f32 {
 /// be read.
 pub(super) fn name_rect(at: Vec2, name: &str, clear: f32) -> Rect {
     name_rect_of(at, name.chars().count(), clear)
+}
+
+/// How much further apart names are held than [`CROWDING`] holds them, in
+/// pixels
+///
+/// Zero up close and zero at the center of the view, so the near map is left
+/// exactly as it was and whatever the camera is pointed at stays packed as
+/// tightly as it ever was. It grows with how far the camera stands off and
+/// with how far from the center a name sits.
+///
+/// This is room around a name and no part of the name itself. A name is drawn
+/// from the left edge and middle that [`name_rect_of`] works out, neither of
+/// which the margin enters, so widening it moves no character on screen. It
+/// only makes names compete harder for a place.
+fn room(radius: f32, apart: f32, viewport: Vec2) -> f32 {
+    NAME_HEIGHT
+        * CROWDING
+        * (SPREAD_BY - 1.)
+        * pulled_back(radius)
+        * relaxed(apart, viewport)
+}
+
+/// How far the camera has pulled back, from none of the way to all of it
+///
+/// Eased over `log10` of the radius, the map reading distance in e-folds
+/// wherever it reads it at all, and smoothed so both ends are flat. A linear
+/// ramp would twitch the whole field as the camera drifted across either one.
+fn pulled_back(radius: f32) -> f32 {
+    let e_folds = |ly: f32| ly.max(1.).log10();
+    smoothed(
+        (e_folds(radius) - e_folds(TIGHT_TO))
+            / (e_folds(LOOSE_FROM) - e_folds(TIGHT_TO)),
+    )
+}
+
+/// How far a name has relaxed out of the tightly packed middle
+///
+/// Cubed inside the exponential, and that is what makes a middle at all. A
+/// plain `1 - exp(-x)` is steepest at zero, so the room starts growing at once
+/// and the part of the view that should be densest is where the falloff bites
+/// hardest: raising the spread then thins the middle as fast as the edge and
+/// the field comes out evenly sparse, which is the thing being fixed rather
+/// than a milder version of it.
+///
+/// Cubed, the curve leaves the middle alone, turns over around [`RELAX`] and
+/// is spent soon after. A dense core reads against a sparse edge, and it still
+/// never quite arrives, so the corners are not all given exactly the same room
+/// and do not read as a border.
+fn relaxed(apart: f32, viewport: Vec2) -> f32 {
+    let out = apart / (RELAX * viewport.y).max(1.);
+    1. - (-out * out * out).exp()
+}
+
+/// A smoothstep, held to its ends
+fn smoothed(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    t * t * (3. - 2. * t)
 }
 
 /// The same rectangle, for whoever knows how wide a name is without holding it
@@ -904,7 +1274,7 @@ pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
 /// name it holds. Left alone, a plate would go on saying whatever was true the
 /// frame it was spawned.
 #[allow(clippy::too_many_arguments)]
-pub fn respawn(
+pub(crate) fn respawn(
     mut commands: Commands,
     named: Query<Plated, With<Named>>,
     // Where the jump to a stop is measured from, which is the system the
@@ -925,6 +1295,7 @@ pub fn respawn(
     // The words on a plate already up, which only a system's ever change.
     mut plates: Query<&mut Text3d, With<Label>>,
     materials: Res<LabelMaterials>,
+    mesh: Res<GroundMesh>,
 ) {
     for entity in unnamed.read() {
         // Nothing where the thing itself has gone, which is the other way a
@@ -948,6 +1319,7 @@ pub fn respawn(
         let label = commands
             .spawn(nameplate(body.name.to_uppercase(), &materials))
             .id();
+        commands.entity(label).with_child(ground(&materials, &mesh));
         commands.entity(entity).add_child(label);
     }
 
@@ -978,8 +1350,37 @@ pub fn respawn(
         }
 
         let label = commands.spawn(nameplate(wanted, &materials)).id();
+        commands.entity(label).with_child(ground(&materials, &mesh));
 
         commands.entity(entity).add_child(label);
+    }
+}
+
+/// Size each ground to the words its plate is set to
+///
+/// Read off the words rather than worked out again from the system, since a
+/// stop's plate carries the jump to it and a ground has to cover whatever is
+/// actually drawn. The plate's own origin is the left edge of the words,
+/// vertically centered, and [`face_camera`] scales the whole plate, so this
+/// works in the units [`SIZE`] is written in and never in pixels.
+///
+/// [`SET_BACK`] behind the words, which is depth and not a gap: the plate
+/// faces the camera, so the two are only ever separated along the view.
+fn back_names(
+    plates: Query<&Text3d, With<Label>>,
+    mut grounds: Query<(&mut Transform, &ChildOf), With<Ground>>,
+) {
+    for (mut ground, child_of) in &mut grounds {
+        let Ok(words) = plates.get(child_of.parent()) else { continue };
+        let letters = said(words).map_or(0, |it| it.chars().count());
+        let width = letters as f32 * SET_WIDTH * SIZE;
+        let pad = SIZE * GROUND_PAD;
+
+        ground.set_if_neq(Transform {
+            translation: Vec3::new(width / 2., 0., -SET_BACK * SIZE),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::new(width + pad * 2., SIZE + pad * 2., 1.),
+        });
     }
 }
 
@@ -1072,6 +1473,9 @@ pub(super) fn said(words: &Text3d) -> Option<&str> {
 fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
     (
         Label,
+        // Over the galaxy rather than in it, which is the whole reason a name
+        // is legible over a thick field at all.
+        RenderLayers::layer(crate::camera::NAMES),
         Text3d::new(name),
         Text3dStyling {
             size: SIZE,
@@ -1112,7 +1516,7 @@ pub fn face_camera(
     // the scheduler can prove this query is disjoint from the one above, and
     // from every other system that reads a star's transform.
     bodies: Query<(&GlobalTransform, &Indicator), Without<Label>>,
-    eye_at: Query<&GlobalTransform, (With<Camera>, Without<Label>)>,
+    eye_at: Query<&GlobalTransform, (With<OrbitCamera>, Without<Label>)>,
     mut labels: Query<
         (&mut Transform, &ChildOf),
         (With<Label>, Without<System>),
@@ -1275,6 +1679,7 @@ pub fn leaders(
 
 pub fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     dim: Res<DimTo>,
     mut commands: Commands,
 ) {
@@ -1283,7 +1688,27 @@ pub fn init_materials(
     commands.insert_resource(LabelMaterials {
         bright: Tint::ALL.map(|tint| label(tint.color())),
         dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
+        // No atlas on this one. A ground is a flat rectangle and the glyph
+        // texture is what makes the letters letters.
+        ground: assets.add(StandardMaterial {
+            base_color: GROUND.into(),
+            alpha_mode: AlphaMode::Opaque,
+            unlit: true,
+            ..default()
+        }),
     });
+    commands.insert_resource(GroundMesh(meshes.add(Rectangle::new(1., 1.))));
+}
+
+/// The ground for one name, sized by [`back_names`] once it knows the words
+fn ground(materials: &LabelMaterials, mesh: &GroundMesh) -> impl Bundle {
+    (
+        Ground,
+        RenderLayers::layer(crate::camera::NAMES),
+        Mesh3d(mesh.0.clone()),
+        MeshMaterial3d(materials.ground.clone()),
+        Transform::default(),
+    )
 }
 
 /// How a name is painted in `tint`
@@ -1591,9 +2016,26 @@ mod tests {
     #[test]
     fn a_parent_is_named_before_what_goes_round_it() {
         for under in 0..DEEPEST {
-            let parent = body_name_score(0., under, false, false, false, false);
-            let child =
-                body_name_score(1e4, under + 1, false, false, false, false);
+            let parent = name_score(
+                LabelWeight::Body {
+                    under: under,
+                    star: false,
+                    primary: false,
+                    apparent: 0.,
+                },
+                false,
+                false,
+            );
+            let child = name_score(
+                LabelWeight::Body {
+                    under: under + 1,
+                    star: false,
+                    primary: false,
+                    apparent: 1e4,
+                },
+                false,
+                false,
+            );
 
             assert!(
                 parent > child,
@@ -1611,8 +2053,26 @@ mod tests {
     #[test]
     fn a_star_is_named_before_its_own_siblings() {
         // The star drawn at nothing, and the planet filling the view.
-        let star = body_name_score(0., 1, true, false, false, false);
-        let planet = body_name_score(1e4, 1, false, false, false, false);
+        let star = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: true,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
+        let planet = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: false,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
 
         assert!(star > planet, "the star scored {star} against {planet}");
     }
@@ -1625,8 +2085,26 @@ mod tests {
     /// to how the terms happen to add up.
     #[test]
     fn depth_is_asked_before_being_a_star() {
-        let deeper = body_name_score(1e4, 2, true, false, false, false);
-        let higher = body_name_score(0., 1, false, false, false, false);
+        let deeper = name_score(
+            LabelWeight::Body {
+                under: 2,
+                star: true,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
+        let higher = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: false,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
 
         assert!(higher > deeper, "{higher} did not beat {deeper}");
     }
@@ -1637,9 +2115,26 @@ mod tests {
     /// to tell the rest apart is smaller than the room a name takes.
     #[test]
     fn the_deepest_step_is_the_last_one_told_apart() {
-        let deep = body_name_score(0., DEEPEST, false, false, false, false);
-        let deeper =
-            body_name_score(0., DEEPEST + 3, false, false, false, false);
+        let deep = name_score(
+            LabelWeight::Body {
+                under: DEEPEST,
+                star: false,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
+        let deeper = name_score(
+            LabelWeight::Body {
+                under: DEEPEST + 3,
+                star: false,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
 
         assert_eq!(deep, deeper);
     }
@@ -1647,8 +2142,26 @@ mod tests {
     /// At one depth, the larger is named first
     #[test]
     fn the_larger_of_two_at_one_depth_is_named_first() {
-        let world = body_name_score(1e4, 2, false, false, false, false);
-        let speck = body_name_score(0.1, 2, false, false, false, false);
+        let world = name_score(
+            LabelWeight::Body {
+                under: 2,
+                star: false,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
+        let speck = name_score(
+            LabelWeight::Body {
+                under: 2,
+                star: false,
+                primary: false,
+                apparent: 0.1,
+            },
+            false,
+            false,
+        );
 
         assert!(world > speck, "the world scored {world} against {speck}");
     }
@@ -1667,11 +2180,13 @@ mod tests {
         // the four the mark stops at.
         let per_pixel = 2.3e7;
         let scored = |radius| {
-            body_name_score(
-                looks(radius, per_pixel),
-                2,
-                false,
-                false,
+            name_score(
+                LabelWeight::Body {
+                    under: 2,
+                    star: false,
+                    primary: false,
+                    apparent: looks(radius, per_pixel),
+                },
                 false,
                 false,
             )
@@ -1694,11 +2209,29 @@ mod tests {
     /// is the one that says which system this is.
     #[test]
     fn the_arrival_star_outranks_the_whole_system() {
-        let primary = body_name_score(0., 0, true, true, false, false);
+        let primary = name_score(
+            LabelWeight::Body {
+                under: 0,
+                star: true,
+                primary: true,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
 
         // The best anything else can do, which is a second star sitting as
         // shallow as the arrival star and filling the view.
-        let best = body_name_score(1e9, 0, true, false, false, false);
+        let best = name_score(
+            LabelWeight::Body {
+                under: 0,
+                star: true,
+                primary: false,
+                apparent: 1e9,
+            },
+            false,
+            false,
+        );
         assert!(
             primary > best,
             "the arrival star scored {primary}, under the {best} of another"
@@ -1717,8 +2250,26 @@ mod tests {
         // What `pointing` will not draw a mark under, which both stars sit at
         // from anywhere the whole system is in view.
         let floor = 4.;
-        let arrival = body_name_score(floor, 1, true, true, false, false);
-        let other = body_name_score(floor, 1, true, false, false, false);
+        let arrival = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: true,
+                primary: true,
+                apparent: floor,
+            },
+            false,
+            false,
+        );
+        let other = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: true,
+                primary: false,
+                apparent: floor,
+            },
+            false,
+            false,
+        );
 
         assert!(
             arrival > other,
@@ -1734,10 +2285,91 @@ mod tests {
     /// for itself.
     #[test]
     fn a_marked_body_outranks_a_star_at_rest() {
-        let star = body_name_score(1e4, 0, true, false, false, false);
+        let star = name_score(
+            LabelWeight::Body {
+                under: 0,
+                star: true,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
 
-        assert!(body_name_score(0., DEEPEST, false, false, true, false) > star);
-        assert!(body_name_score(0., DEEPEST, false, false, false, true) > star);
+        assert!(
+            name_score(
+                LabelWeight::Body {
+                    under: DEEPEST,
+                    star: false,
+                    primary: false,
+                    apparent: 0.
+                },
+                true,
+                false
+            ) > star
+        );
+        assert!(
+            name_score(
+                LabelWeight::Body {
+                    under: DEEPEST,
+                    star: false,
+                    primary: false,
+                    apparent: 0.
+                },
+                false,
+                true
+            ) > star
+        );
+    }
+
+    /// Of two systems along one line of sight, the near one is named first
+    ///
+    /// A name is drawn over whatever stands behind it, so naming the far one
+    /// lays it over the near stars as well and hides what is in front. Both
+    /// of these stand the same distance off the middle, one ahead of it and
+    /// one behind, so the only thing separating them is which is nearer.
+    #[test]
+    fn a_system_in_front_is_named_before_one_behind() {
+        let away = 20.;
+        let front = name_score(
+            LabelWeight::System { from_center: away, ahead: away },
+            false,
+            false,
+        );
+        let back = name_score(
+            LabelWeight::System { from_center: away, ahead: -away },
+            false,
+            false,
+        );
+
+        assert!(front > back, "{front} was no better than {back}");
+    }
+
+    /// Standing in front of the middle answers the cost of standing off it
+    ///
+    /// What [`NEARER_WEIGHT`] at one buys, and what keeps the near half of a
+    /// view competing with the middle rather than with the far half. The two
+    /// part by the center bonus falling away and by nothing else.
+    #[test]
+    fn a_system_in_front_of_the_middle_scores_as_one_at_it() {
+        let away = 20.;
+        let bonus = CENTER_WEIGHT / (1. + (away / CENTER_REACH).powi(2));
+
+        let at = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            false,
+            false,
+        );
+        let front = name_score(
+            LabelWeight::System { from_center: away, ahead: away },
+            false,
+            false,
+        );
+
+        assert!(
+            (front - (at - CENTER_WEIGHT + bonus)).abs() < 1e-3,
+            "{front} against {at} less a bonus of {bonus}"
+        );
     }
 
     /// Names are offered in order of nearness to the center
@@ -1748,10 +2380,17 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(0., false, false);
+        let mut nearer = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            false,
+            false,
+        );
         for step in 1..=1000 {
             let further = name_score(
-                step as f32 * DEFAULT_NAME_RADIUS / 1000.,
+                LabelWeight::System {
+                    from_center: step as f32 * DEFAULT_NAME_RADIUS / 1000.,
+                    ahead: 0.,
+                },
                 false,
                 false,
             );
@@ -1818,10 +2457,18 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_centered() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(DEFAULT_NAME_RADIUS, true, false);
+        let pointed = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            true,
+            false,
+        );
 
         // The system at the center, which is otherwise the best there is.
-        let centered = name_score(0., false, false);
+        let centered = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            false,
+            false,
+        );
 
         assert!(
             pointed > centered,
@@ -1837,8 +2484,16 @@ mod tests {
     /// the point on the center, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
-        let pointed = name_score(0., true, false);
+        let selected = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            false,
+            true,
+        );
+        let pointed = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            true,
+            false,
+        );
 
         assert!(
             selected > pointed,
@@ -1853,8 +2508,16 @@ mod tests {
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
-        let both = name_score(DEFAULT_NAME_RADIUS, true, true);
-        let selected = name_score(DEFAULT_NAME_RADIUS, false, true);
+        let both = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            true,
+            true,
+        );
+        let selected = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            false,
+            true,
+        );
 
         assert_eq!(both, selected);
     }
@@ -1953,6 +2616,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<Assets<Mesh>>();
         app.init_resource::<DimTo>();
         app.init_resource::<HeldSystem>();
         app.add_systems(Startup, init_materials);
@@ -2150,5 +2814,329 @@ mod tests {
         app.update();
 
         assert!(placings(&app) > settled, "left a name where it was standing");
+    }
+
+    /// A 1080p screen, which is what the figures in the plan are quoted at
+    const VIEWPORT: Vec2 = Vec2::new(1920., 1080.);
+
+    fn candidate(index: u32, rect: Rect, score: f32) -> (Entity, Rect, f32) {
+        (Entity::from_raw_u32(index).expect("a test entity"), rect, score)
+    }
+
+    fn won<const N: usize>(indices: [u32; N]) -> EntityHashSet {
+        indices
+            .into_iter()
+            .map(|index| Entity::from_raw_u32(index).expect("a test entity"))
+            .collect()
+    }
+
+    fn placing(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
+        ringing(candidates, &[])
+    }
+
+    fn ringing(
+        candidates: &mut [(Entity, Rect, f32)],
+        rings: &[(Entity, Rect)],
+    ) -> EntityHashSet {
+        place(candidates, VIEWPORT, &mut Placed::default(), rings)
+    }
+
+    /// Seeded, so a failure can be looked at twice
+    fn noise() -> impl FnMut() -> f32 {
+        let mut seed = 0x2545_f491_u32;
+        move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        }
+    }
+
+    /// A scattered field of ten letter names, scored without regard to where
+    /// they sit, so that what survives is decided by the room they are given
+    /// and by nothing else
+    ///
+    /// Scattered rather than a lattice. A lattice quantizes the answer, since
+    /// room that grows by less than one step of it changes nothing, and a
+    /// star field is not laid out on a grid anyway. One seed, so the two
+    /// standoffs are handed the same positions and the same scores and differ
+    /// only in the room.
+    fn scattered(radius: f32) -> Vec<(Entity, Rect, f32)> {
+        let mut next = noise();
+        (1..=600)
+            .map(|index| {
+                let at = Vec2::new(next() * VIEWPORT.x, next() * VIEWPORT.y);
+                let apart = (at - VIEWPORT / 2.).length();
+                let rect = name_rect_of(at, 10, 0.)
+                    .inflate(room(radius, apart, VIEWPORT));
+                candidate(index, rect, next())
+            })
+            .collect()
+    }
+
+    /// A name clear of everything already placed is kept
+    #[test]
+    fn a_name_clear_of_the_rest_is_kept() {
+        let mut candidates = [
+            candidate(1, Rect::new(0., 0., 10., 10.), 2.),
+            candidate(2, Rect::new(20., 0., 30., 10.), 1.),
+        ];
+
+        assert_eq!(placing(&mut candidates), won([1, 2]));
+    }
+
+    /// A name over one already placed is dropped
+    #[test]
+    fn a_name_over_one_already_placed_is_dropped() {
+        let mut candidates = [
+            candidate(1, Rect::new(0., 0., 10., 10.), 2.),
+            candidate(2, Rect::new(5., 5., 15., 15.), 1.),
+        ];
+
+        assert_eq!(placing(&mut candidates), won([1]));
+    }
+
+    /// Of two names that overlap, the better scored one is kept
+    ///
+    /// Whichever order they arrive in. What the viewer wanted more decides,
+    /// and the order candidates are gathered in is an accident of which
+    /// archetype each system sits in.
+    #[test]
+    fn the_better_scored_of_two_that_overlap_is_kept() {
+        let better = candidate(1, Rect::new(0., 0., 10., 10.), 10.);
+        let worse = candidate(2, Rect::new(5., 5., 15., 15.), 1.);
+
+        assert_eq!(placing(&mut [better, worse]), won([1]));
+        assert_eq!(placing(&mut [worse, better]), won([1]));
+    }
+
+    /// A name at the center of the view is given no more room than it ever was
+    ///
+    /// However far the camera stands off. What it is pointed at is what is
+    /// being read, so that packs as tightly pulled back as it does up close.
+    #[test]
+    fn a_name_at_the_center_is_given_no_extra_room() {
+        for radius in [0.1, 1., 10., TIGHT_TO, LOOSE_FROM, 50_000.] {
+            assert_eq!(room(radius, 0., VIEWPORT), 0., "standing off {radius}");
+        }
+    }
+
+    /// Up close every name is given the room it always was
+    #[test]
+    fn up_close_no_name_is_given_extra_room() {
+        for apart in [0., 100., 540., VIEWPORT.length()] {
+            assert_eq!(
+                room(TIGHT_TO, apart, VIEWPORT),
+                0.,
+                "{apart} pixels out"
+            );
+        }
+    }
+
+    /// The middle of a wide view is a plateau and not just the top of a slope
+    ///
+    /// What [`relaxed`] is cubed for. A tenth of the way out should still be
+    /// packed about as tightly as the middle itself, where a curve steepest at
+    /// zero would already have given away a good part of the room.
+    #[test]
+    fn the_middle_of_a_wide_view_is_a_plateau() {
+        let near = room(LOOSE_FROM, VIEWPORT.y / 10., VIEWPORT);
+        let out = room(LOOSE_FROM, VIEWPORT.y / 2., VIEWPORT);
+
+        assert!(
+            near < out / 10.,
+            "a tenth of the way out already gave up {near} of {out}"
+        );
+    }
+
+    /// Pulled back, a name off the center is given more room than one on it
+    #[test]
+    fn pulled_back_the_edges_are_held_further_apart_than_the_middle() {
+        let middle = room(LOOSE_FROM, 0., VIEWPORT);
+        let edge = room(LOOSE_FROM, VIEWPORT.y / 2., VIEWPORT);
+
+        assert!(edge > middle, "the edge got {edge} against {middle}");
+    }
+
+    /// The room only ever grows, with the standoff and with the distance out
+    ///
+    /// A name that tightened as the camera pulled further back would read as
+    /// the field deciding something, which it is not.
+    #[test]
+    fn room_grows_with_both_distances_and_gives_none_back() {
+        let mut widest = 0.;
+        for radius in [0.1, 25., TIGHT_TO, 100., 250., LOOSE_FROM, 50_000.] {
+            let wide = room(radius, 400., VIEWPORT);
+            assert!(wide >= widest, "standing off {radius} gave room back");
+            widest = wide;
+        }
+
+        let mut widest = 0.;
+        for apart in [0., 50., 100., 200., 400., 800., 1_600.] {
+            let wide = room(LOOSE_FROM, apart, VIEWPORT);
+            assert!(wide >= widest, "{apart} pixels out gave room back");
+            widest = wide;
+        }
+    }
+
+    /// The far corner of a wide view is given very nearly the whole spread
+    ///
+    /// [`relaxed`] approaches its end rather than reaching it, so the corner
+    /// is short of [`SPREAD_BY`] by the tail of an exponential and no more.
+    #[test]
+    fn the_far_corner_of_a_wide_view_is_given_the_whole_spread() {
+        let tight = NAME_HEIGHT * CROWDING;
+        let corner = tight + room(LOOSE_FROM, VIEWPORT.length(), VIEWPORT);
+
+        assert!(
+            corner > tight * (SPREAD_BY - 0.1),
+            "the corner was given {corner} against a full {}",
+            tight * SPREAD_BY
+        );
+    }
+
+    /// Pulling the camera back leaves fewer names on screen
+    ///
+    /// The two halves together. [`room`] widens the rectangles and [`place`]
+    /// fits fewer of them, and neither says this on its own.
+    #[test]
+    fn pulling_the_camera_back_leaves_fewer_names() {
+        let close = placing(&mut scattered(TIGHT_TO)).len();
+        let far = placing(&mut scattered(LOOSE_FROM)).len();
+
+        assert!(far < close, "{far} names pulled back against {close} close");
+    }
+
+    /// A wide view keeps the middle denser than the edges
+    ///
+    /// Which is the whole point of measuring the room out from the center.
+    /// Scored without regard to position, so the margin is what decides and
+    /// not the score, where the map's own [`CENTER_WEIGHT`] would decide it
+    /// twice over.
+    #[test]
+    fn a_wide_view_keeps_the_middle_denser_than_the_edges() {
+        let candidates = scattered(LOOSE_FROM);
+        let kept = placing(&mut candidates.clone());
+
+        let share = |inside: bool| {
+            let (mut all, mut won) = (0, 0);
+            for (entity, rect, _) in &candidates {
+                let apart = (rect.center() - VIEWPORT / 2.).length();
+                if (apart < VIEWPORT.y / 4.) != inside {
+                    continue;
+                }
+                all += 1;
+                won += usize::from(kept.contains(entity));
+            }
+            won as f32 / all as f32
+        };
+
+        let middle = share(true);
+        let edges = share(false);
+
+        assert!(middle > edges, "the middle kept {middle} against {edges}");
+    }
+
+    /// A ring takes the name of anything else that would cover it
+    ///
+    /// What the map is pointing at keeps its place and the name gives way,
+    /// since a name over the ring hides the one mark saying which system is
+    /// picked out.
+    #[test]
+    fn a_ring_hides_a_name_drawn_over_it() {
+        let ring = (
+            candidate(9, Rect::new(0., 0., 0., 0.), 0.).0,
+            ringed(Vec2::new(50., 50.), 20.),
+        );
+
+        let over = candidate(1, Rect::new(40., 40., 90., 60.), 1.);
+        let clear = candidate(2, Rect::new(200., 40., 250., 60.), 1.);
+
+        assert_eq!(ringing(&mut [over, clear], &[ring]), won([2]));
+    }
+
+    /// A ring never takes the name of what it rings
+    ///
+    /// A name stands off the ring of what it names, but the room it is
+    /// granted reaches back over it, and a system picked out losing its name
+    /// to its own mark helps nobody.
+    #[test]
+    fn a_ring_leaves_the_name_of_what_it_rings_alone() {
+        let owner = candidate(1, Rect::new(40., 40., 90., 60.), 1.);
+        let ring = (owner.0, ringed(Vec2::new(50., 50.), 20.));
+
+        assert_eq!(ringing(&mut [owner], &[ring]), won([1]));
+    }
+
+    /// The grid chooses what a plain linear scan chooses
+    ///
+    /// Bucketing changes how the question is asked and not the answer, so the
+    /// two agree over any spread of rectangles. Pseudo random rather than hand
+    /// picked, since what is hand picked is what was already thought of, and
+    /// seeded so that a failure can be looked at twice.
+    #[test]
+    fn the_grid_chooses_what_a_linear_scan_chooses() {
+        // What `place` did before it bucketed.
+        fn scanning(candidates: &mut [(Entity, Rect, f32)]) -> EntityHashSet {
+            candidates.sort_unstable_by(|a, b| {
+                b.2.total_cmp(&a.2).then(a.0.cmp(&b.0))
+            });
+
+            let mut kept: Vec<Rect> = Vec::new();
+            let mut winners = EntityHashSet::default();
+            for (entity, rect, _) in candidates.iter() {
+                if kept.iter().any(|taken| !taken.intersect(*rect).is_empty()) {
+                    continue;
+                }
+                kept.push(*rect);
+                winners.insert(*entity);
+            }
+            winners
+        }
+
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+
+        // Up to a couple of thousand, which is what the dense parts of the
+        // database offer, and rectangles wide enough to run off the edges,
+        // which is what the grid has to clamp rather than drop.
+        for names in [1_u32, 20, 500, 2_000] {
+            let mut candidates: Vec<_> = (1..=names)
+                .map(|index| {
+                    let left = next() * VIEWPORT.x;
+                    let top = next() * VIEWPORT.y;
+                    let width = 40. + next() * 120.;
+                    let rect =
+                        Rect::new(left, top, left + width, top + NAME_HEIGHT);
+                    candidate(index, rect, next())
+                })
+                .collect();
+
+            assert_eq!(
+                placing(&mut candidates.clone()),
+                scanning(&mut candidates),
+                "the grid and a scan parted over {names} names"
+            );
+        }
+    }
+
+    /// Two names that only touch are both kept
+    ///
+    /// Which pins the room [`CROWDING`] already leaves around a name: the
+    /// margin is inside each rectangle, so rectangles meeting edge to edge
+    /// are two names with their full clearance between them.
+    #[test]
+    fn two_names_that_only_touch_are_both_kept() {
+        let mut candidates = [
+            candidate(1, Rect::new(0., 0., 10., 10.), 2.),
+            candidate(2, Rect::new(10., 0., 20., 10.), 1.),
+        ];
+
+        assert_eq!(placing(&mut candidates), won([1, 2]));
     }
 }

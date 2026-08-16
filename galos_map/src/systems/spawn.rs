@@ -35,7 +35,7 @@ use std::{
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(ColorBy::Allegiance);
-    app.insert_resource(ShowNames(false));
+    app.insert_resource(ShowNames(true));
 
     app.add_systems(Startup, init_materials);
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
@@ -193,7 +193,12 @@ pub enum ColorBy {
     Security,
 }
 
-/// Determains whether or not to show system name labels
+/// Whether systems are named
+///
+/// On to begin with. Names are what makes the map readable as a place rather
+/// than as a field of dots, and how many of them are drawn is answered by
+/// [`crate::systems::labels::NameRadius`] and by the room each is given
+/// rather than by having them off.
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 

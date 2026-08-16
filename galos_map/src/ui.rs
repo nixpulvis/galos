@@ -433,26 +433,52 @@ const RADIUS_DRAG: f32 = 0.005;
 /// `ceiling` is as far as this one may reach, which for names is however far
 /// the spyglass reaches. The rail clamps to it, so a radius set wide and then
 /// hemmed in comes back to what is on offer.
+/// A radius in light years, on a log slider with a box beside it
+///
+/// `ceiling` bounds what can be asked for, and only that. A value already
+/// above it is shown held down to it and left alone underneath, so a ceiling
+/// that moves cannot quietly rewrite a setting: names asked for out to twenty
+/// light years stay asked for out to twenty when the spyglass is drawn in to
+/// five, and are back at twenty when it opens again. Writing the held figure
+/// back instead loses the asking the first frame the ceiling drops under it,
+/// with nothing to say it happened and no way to get it back but to ask again.
 fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
     let ceiling = ceiling.clamp(Spyglass::FLOOR, Spyglass::CEILING);
+    // The galaxy's own bounds do not move, so a radius outside them is out of
+    // range rather than merely out of reach, and is corrected once and kept.
+    *radius = radius.clamp(Spyglass::FLOOR, Spyglass::CEILING);
     // Read before the rail borrows it, and the reason it is read at all.
     let speed = (*radius * RADIUS_DRAG).max(f32::EPSILON) as f64;
     fill_width(ui, VALUE_WIDTH);
 
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::Slider::new(radius, Spyglass::FLOOR..=ceiling)
-                .logarithmic(true)
-                .show_value(false),
-        );
-        value_box(
-            ui,
-            egui::DragValue::new(radius)
-                .range(Spyglass::FLOOR..=ceiling)
-                .speed(speed),
-        );
-    })
-    .response
+    // What the widgets work on. They hold whatever they are given inside the
+    // range, so this is the copy that gets held rather than the setting.
+    let mut asked = radius.min(ceiling);
+
+    let response = ui
+        .horizontal(|ui| {
+            let rail = ui.add(
+                egui::Slider::new(&mut asked, Spyglass::FLOOR..=ceiling)
+                    .logarithmic(true)
+                    .show_value(false),
+            );
+            let box_ = value_box(
+                ui,
+                egui::DragValue::new(&mut asked)
+                    .range(Spyglass::FLOOR..=ceiling)
+                    .speed(speed),
+            );
+            rail.union(box_)
+        })
+        .inner;
+
+    // Only where the figure was actually asked for. Anything else is the
+    // ceiling having moved, which is not an answer to the question.
+    if response.changed() {
+        *radius = asked;
+    }
+
+    response
 }
 
 /// What the user has typed into the bar, and how much of it is out
@@ -5075,15 +5101,26 @@ mod tests {
         radius
     }
 
-    /// A radius is held inside what it is offered
+    /// A radius outside the galaxy is brought inside it
     ///
-    /// The ceiling moves: names reach no further than the spyglass does, so
-    /// one set wide and then hemmed in has to come back to what is on offer
-    /// rather than go on saying a distance the map will not draw to.
+    /// These two bounds do not move, so a radius outside them is not a
+    /// setting the map cannot honor yet but one it can never honor, and
+    /// correcting it loses nothing that could come back.
     #[test]
-    fn a_radius_is_held_within_what_is_offered() {
-        assert_eq!(drawn_radius(5e4, 100.), 100.);
+    fn a_radius_is_held_within_the_galaxy() {
         assert_eq!(drawn_radius(0.01, 100.), Spyglass::FLOOR);
+        assert_eq!(drawn_radius(5e6, 5e6), Spyglass::CEILING);
+    }
+
+    /// A ceiling that comes down does not take the setting with it
+    ///
+    /// What is asked for and what can be drawn are two questions. The
+    /// spyglass answers the second and moves as the map is flown, so letting
+    /// it write the first loses the asking the moment it drops underneath,
+    /// with nothing said and no way back but to ask again.
+    #[test]
+    fn a_radius_over_the_ceiling_is_kept() {
+        assert_eq!(drawn_radius(5e4, 100.), 5e4);
     }
 
     /// How much of the value one pixel of a `rail` pixels wide is worth
@@ -5128,15 +5165,6 @@ mod tests {
             drawn_radius(Spyglass::FLOOR, Spyglass::FLOOR),
             Spyglass::FLOOR
         );
-    }
-
-    /// And inside the galaxy, whatever ceiling it is handed
-    ///
-    /// The one the names are given is the spyglass's own radius, which is a
-    /// number the user may type.
-    #[test]
-    fn a_radius_reaches_no_further_than_the_galaxy() {
-        assert_eq!(drawn_radius(5e6, 5e6), Spyglass::CEILING);
     }
 
     /// How far a measured width may sit from the one asked for

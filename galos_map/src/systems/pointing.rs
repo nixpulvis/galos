@@ -817,7 +817,7 @@ pub fn ring(
         &crate::systems::route::Hop,
         Has<Selected>,
     )>,
-    eye_at: Query<&GlobalTransform, With<Camera>>,
+    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
     dim: Res<DimTo>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };

@@ -1,6 +1,7 @@
 use crate::schedule::MapSet;
 use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Exposure, Hdr};
 use bevy::input::mouse::{
     AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit,
@@ -12,6 +13,20 @@ use big_space::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
 pub fn plugin(app: &mut App) {
+    // Rings, leaders and the ruler's marks are annotation, the same as a
+    // name, so they belong over the galaxy with the names rather than in it.
+    // Left in the scene they are drawn before the overlay and a ground laid
+    // over them takes them off the map, which is worst for the ring around
+    // whatever is picked out: the one mark that should never be covered.
+    //
+    // In front of the grounds as well as on their layer. A ring is drawn
+    // around a star and a ground beside it, at depths that are near enough
+    // to trade places as the camera turns, so the order wants settling
+    // outright rather than by arithmetic.
+    app.insert_gizmo_config(
+        DefaultGizmoConfigGroup,
+        GizmoConfig { render_layers: RenderLayers::layer(RINGS), ..default() },
+    );
     app.add_message::<MoveCamera>();
     app.add_systems(Update, move_camera.in_set(MapSet::Camera));
     // Reads what `move_camera` and the spyglass asked for, and is the only
@@ -426,6 +441,56 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
             ..default()
         },
         Bloom::NATURAL,
+        // Drawn over the galaxy rather than in it, and in this order: the
+        // rings over the stars they mark, the names over the rings.
+        children![over(RINGS, 1), over(NAMES, 2)],
+    )
+}
+
+/// The layer the rings and the leaders are drawn on
+///
+/// A camera with no [`RenderLayers`] draws layer zero and so does an entity,
+/// which is every star, body and plane. Nothing on this one, or on [`NAMES`],
+/// reaches the main camera at all.
+pub const RINGS: usize = 1;
+
+/// The layer the names are drawn on, over [`RINGS`]
+///
+/// Three layers because there are three things to keep in order and only two
+/// would put one of them wrong. A ring has to stand over the stars, which it
+/// is a note about, and under the names, which are read. Drawn alongside the
+/// names it is subject to their grounds and they to it, at depths near enough
+/// to trade places as the camera turns.
+///
+/// A layer apiece settles it by drawing order and not by arithmetic, which is
+/// the only thing that has held: depth is not free under perspective, and
+/// `depth_bias` is a hint the sort takes rather than a rule it obeys.
+pub const NAMES: usize = 2;
+
+/// A camera over the galaxy, drawing one layer of annotation and nothing else
+///
+/// Annotation is not scenery. Drawn in the scene it is subject to it: a star
+/// nearer than a name is blended over the top of it, and no depth a name is
+/// placed at wins, the stars being on both sides of it.
+///
+/// A camera of its own settles that by not sharing a depth buffer. Each of
+/// these clears its own, so what it draws resolves against its own layer and
+/// against nothing else, and each keeps its color, so what was drawn before
+/// it stands. `order` is what stacks them, and it is the whole of what
+/// decides which covers which.
+///
+/// None of them carries [`Bloom`]. A name is not a light source, and blooming
+/// one spreads it over the dark edge that is supposed to hold it apart from
+/// whatever is behind it.
+///
+/// A child of the camera it shadows, so the pose and the cell it is measured
+/// from come down the hierarchy and there is no second copy to keep in step.
+fn over(layer: usize, order: isize) -> impl Bundle {
+    (
+        Camera3d::default(),
+        Hdr,
+        Camera { order, clear_color: ClearColorConfig::None, ..default() },
+        RenderLayers::layer(layer),
     )
 }
 
@@ -663,6 +728,65 @@ pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The map looks through two cameras, and only one of them is the eye
+    ///
+    /// Every system that asks where the viewer stands narrows by
+    /// `OrbitCamera` rather than by `Camera`, so the overlay is invisible to
+    /// them. A bare `With<Camera>` would match both and `single` would fail,
+    /// which takes the names off the map rather than reporting anything.
+    #[test]
+    fn only_the_orbit_camera_answers_for_the_eye() {
+        let source = include_str!("systems/labels.rs");
+        let pointing = include_str!("systems/pointing.rs");
+        let selection = include_str!("systems/selection.rs");
+
+        for (name, text) in [
+            ("labels", source),
+            ("pointing", pointing),
+            ("selection", selection),
+        ] {
+            assert!(
+                !text.contains("With<Camera>"),
+                "{name} asks for a camera without saying which"
+            );
+        }
+    }
+
+    /// The rings draw over the galaxy and the names over the rings
+    ///
+    /// Which covers which is decided by `order` alone, so it is the one thing
+    /// worth holding: get it backwards and a name is drawn under the ring of
+    /// whatever it names.
+    #[test]
+    fn the_names_are_drawn_over_the_rings_and_both_over_the_galaxy() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+
+        let stacked = |app: &mut App, layer, order| {
+            let id = app.world_mut().spawn(over(layer, order)).id();
+            let over = app.world().entity(id);
+            let camera = over.get::<Camera>().expect("a camera");
+
+            assert!(
+                matches!(camera.clear_color, ClearColorConfig::None),
+                "wiped what was drawn before it"
+            );
+            assert_eq!(
+                over.get::<RenderLayers>(),
+                Some(&RenderLayers::layer(layer)),
+                "not held to its own layer"
+            );
+            assert!(over.get::<Bloom>().is_none(), "annotation is not a light");
+            camera.order
+        };
+
+        let rings = stacked(&mut app, RINGS, 1);
+        let names = stacked(&mut app, NAMES, 2);
+
+        assert!(rings > 0, "the rings were drawn under the galaxy");
+        assert!(names > rings, "the names were drawn under the rings");
+    }
     use crate::systems::pointing::PRIMARY;
     use crate::ui::PressOwner;
     use bevy::input::mouse::AccumulatedMouseScroll;

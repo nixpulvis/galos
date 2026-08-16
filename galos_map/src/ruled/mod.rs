@@ -632,6 +632,9 @@ impl Plugin for RuledPlugin {
         }
         cut::wanted(app, self.face.bytes);
         app.init_resource::<read::Readouts>();
+        // Left at its defaults, which is the scene's own layer, drawn among
+        // the galaxy rather than over it.
+        app.init_gizmo_group::<read::RulerMarks>();
         app.add_systems(Startup, cut::cut_lettering(self.face.clone()));
         // The text standing over a plane is built into meshes in `PostUpdate`
         // before the transforms are propagated, so where it stands has to be
