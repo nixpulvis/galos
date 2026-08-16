@@ -750,7 +750,11 @@ pub(crate) fn choose_names(
         // sits further from the middle of the window.
         let ahead = orbit.radius
             - depth(orbit, position) / crate::space::LIGHT_YEAR as f32;
-        let score = name_score(from_center, ahead, pointed_at, selected);
+        let score = name_score(
+            LabelWeight::System { from_center, ahead },
+            pointed_at,
+            selected,
+        );
 
         // Grown after the test above rather than before it, so that what is
         // laid out at all is still decided by the name itself. The room is
@@ -803,14 +807,16 @@ pub(crate) fn choose_names(
             // How large the body itself looks, rather than the mark drawn to
             // aim at it.
             let depth = depth_of(orbit, offset).max(1.);
-            let score = body_name_score(
-                looks(
-                    body.radius,
-                    world_per_pixel(cot_half_fov, viewport.y, depth),
-                ),
-                body.ancestors,
-                body.star,
-                body.primary,
+            let score = name_score(
+                LabelWeight::Body {
+                    under: body.ancestors,
+                    star: body.star,
+                    primary: body.primary,
+                    apparent: looks(
+                        body.radius,
+                        world_per_pixel(cot_half_fov, viewport.y, depth),
+                    ),
+                },
                 pointed_at,
                 selected,
             );
@@ -1036,24 +1042,6 @@ fn looks(radius: f32, per_pixel: f32) -> f32 {
 /// enough to cross a claim above it. The whole of it stays inside
 /// [`INSIDE_WEIGHT`], so nothing inside a system outranks whatever is pointed
 /// at or picked out.
-fn body_name_score(
-    apparent: f32,
-    under: u8,
-    star: bool,
-    primary: bool,
-    pointed_at: bool,
-    selected: bool,
-) -> f32 {
-    // A rank apiece for the depths, and one over them all for the star the
-    // system arrives at.
-    let step = INSIDE_WEIGHT / (DEEPEST + 2) as f32;
-    let rank = if primary { DEEPEST + 1 } else { DEEPEST - under.min(DEEPEST) };
-    let depth = rank as f32 * step;
-    let sun = if star { step / 2. } else { 0. };
-    let size = (step / 2.) * apparent / (apparent + BODY_NAME_REACH);
-
-    marked_score(pointed_at, selected) + depth + sun + size
-}
 
 /// How much a system deserves to have its name drawn
 ///
@@ -1078,15 +1066,55 @@ fn body_name_score(
 /// every star was drawn the same size was answering a question nobody had
 /// asked. Should prominence earn a name, it should be the same prominence
 /// that earns a star its size, so that both follow whatever that becomes.
-fn name_score(
-    from_center: f32,
-    ahead: f32,
-    pointed_at: bool,
-    selected: bool,
-) -> f32 {
-    let centered = CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
-    marked_score(pointed_at, selected) + centered - from_center
-        + NEARER_WEIGHT * ahead
+/// What a name's weight is worked out from
+///
+/// The two are weighed on different things because they are seen in different
+/// places. A system is out in the sky, where where it stands is the whole of
+/// what distinguishes it. A body is only ever drawn while the camera is
+/// inside its system, where every one of them stands in much the same place,
+/// so what it is has to do the distinguishing instead.
+///
+/// Held apart here rather than in two functions, so that what they share, the
+/// marks and how the terms are added up, cannot be changed for one and left
+/// behind for the other.
+enum LabelWeight {
+    /// A system in the sky, by where it stands relative to the middle of the
+    /// view: light years off it, and light years in front of it
+    System { from_center: f32, ahead: f32 },
+    /// A body inside the system the camera is in, by what it is: how far
+    /// under the arrival star it orbits, whether it is a star, whether it is
+    /// the one the system arrives at, and how large it looks
+    Body { under: u8, star: bool, primary: bool, apparent: f32 },
+}
+
+/// How much a thing deserves the name it is asking for
+///
+/// One number line for both, since [`choose_names`] sorts systems and bodies
+/// together and hands the best of them what room there is.
+fn name_score(weight: LabelWeight, pointed_at: bool, selected: bool) -> f32 {
+    let standing = match weight {
+        LabelWeight::System { from_center, ahead } => {
+            let centered =
+                CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
+            centered - from_center + NEARER_WEIGHT * ahead
+        }
+        LabelWeight::Body { under, star, primary, apparent } => {
+            // A rank apiece for the depths, and one over them all for the
+            // star the system arrives at.
+            let step = INSIDE_WEIGHT / (DEEPEST + 2) as f32;
+            let rank = if primary {
+                DEEPEST + 1
+            } else {
+                DEEPEST - under.min(DEEPEST)
+            };
+            let sun = if star { step / 2. } else { 0. };
+            let size = (step / 2.) * apparent / (apparent + BODY_NAME_REACH);
+
+            rank as f32 * step + sun + size
+        }
+    };
+
+    marked_score(pointed_at, selected) + standing
 }
 
 /// What being marked out is worth, to a system and a body alike
@@ -1953,9 +1981,26 @@ mod tests {
     #[test]
     fn a_parent_is_named_before_what_goes_round_it() {
         for under in 0..DEEPEST {
-            let parent = body_name_score(0., under, false, false, false, false);
-            let child =
-                body_name_score(1e4, under + 1, false, false, false, false);
+            let parent = name_score(
+                LabelWeight::Body {
+                    under: under,
+                    star: false,
+                    primary: false,
+                    apparent: 0.,
+                },
+                false,
+                false,
+            );
+            let child = name_score(
+                LabelWeight::Body {
+                    under: under + 1,
+                    star: false,
+                    primary: false,
+                    apparent: 1e4,
+                },
+                false,
+                false,
+            );
 
             assert!(
                 parent > child,
@@ -1973,8 +2018,26 @@ mod tests {
     #[test]
     fn a_star_is_named_before_its_own_siblings() {
         // The star drawn at nothing, and the planet filling the view.
-        let star = body_name_score(0., 1, true, false, false, false);
-        let planet = body_name_score(1e4, 1, false, false, false, false);
+        let star = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: true,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
+        let planet = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: false,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
 
         assert!(star > planet, "the star scored {star} against {planet}");
     }
@@ -1987,8 +2050,26 @@ mod tests {
     /// to how the terms happen to add up.
     #[test]
     fn depth_is_asked_before_being_a_star() {
-        let deeper = body_name_score(1e4, 2, true, false, false, false);
-        let higher = body_name_score(0., 1, false, false, false, false);
+        let deeper = name_score(
+            LabelWeight::Body {
+                under: 2,
+                star: true,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
+        let higher = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: false,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
 
         assert!(higher > deeper, "{higher} did not beat {deeper}");
     }
@@ -1999,9 +2080,26 @@ mod tests {
     /// to tell the rest apart is smaller than the room a name takes.
     #[test]
     fn the_deepest_step_is_the_last_one_told_apart() {
-        let deep = body_name_score(0., DEEPEST, false, false, false, false);
-        let deeper =
-            body_name_score(0., DEEPEST + 3, false, false, false, false);
+        let deep = name_score(
+            LabelWeight::Body {
+                under: DEEPEST,
+                star: false,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
+        let deeper = name_score(
+            LabelWeight::Body {
+                under: DEEPEST + 3,
+                star: false,
+                primary: false,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
 
         assert_eq!(deep, deeper);
     }
@@ -2009,8 +2107,26 @@ mod tests {
     /// At one depth, the larger is named first
     #[test]
     fn the_larger_of_two_at_one_depth_is_named_first() {
-        let world = body_name_score(1e4, 2, false, false, false, false);
-        let speck = body_name_score(0.1, 2, false, false, false, false);
+        let world = name_score(
+            LabelWeight::Body {
+                under: 2,
+                star: false,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
+        let speck = name_score(
+            LabelWeight::Body {
+                under: 2,
+                star: false,
+                primary: false,
+                apparent: 0.1,
+            },
+            false,
+            false,
+        );
 
         assert!(world > speck, "the world scored {world} against {speck}");
     }
@@ -2029,11 +2145,13 @@ mod tests {
         // the four the mark stops at.
         let per_pixel = 2.3e7;
         let scored = |radius| {
-            body_name_score(
-                looks(radius, per_pixel),
-                2,
-                false,
-                false,
+            name_score(
+                LabelWeight::Body {
+                    under: 2,
+                    star: false,
+                    primary: false,
+                    apparent: looks(radius, per_pixel),
+                },
                 false,
                 false,
             )
@@ -2056,11 +2174,29 @@ mod tests {
     /// is the one that says which system this is.
     #[test]
     fn the_arrival_star_outranks_the_whole_system() {
-        let primary = body_name_score(0., 0, true, true, false, false);
+        let primary = name_score(
+            LabelWeight::Body {
+                under: 0,
+                star: true,
+                primary: true,
+                apparent: 0.,
+            },
+            false,
+            false,
+        );
 
         // The best anything else can do, which is a second star sitting as
         // shallow as the arrival star and filling the view.
-        let best = body_name_score(1e9, 0, true, false, false, false);
+        let best = name_score(
+            LabelWeight::Body {
+                under: 0,
+                star: true,
+                primary: false,
+                apparent: 1e9,
+            },
+            false,
+            false,
+        );
         assert!(
             primary > best,
             "the arrival star scored {primary}, under the {best} of another"
@@ -2079,8 +2215,26 @@ mod tests {
         // What `pointing` will not draw a mark under, which both stars sit at
         // from anywhere the whole system is in view.
         let floor = 4.;
-        let arrival = body_name_score(floor, 1, true, true, false, false);
-        let other = body_name_score(floor, 1, true, false, false, false);
+        let arrival = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: true,
+                primary: true,
+                apparent: floor,
+            },
+            false,
+            false,
+        );
+        let other = name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: true,
+                primary: false,
+                apparent: floor,
+            },
+            false,
+            false,
+        );
 
         assert!(
             arrival > other,
@@ -2096,10 +2250,41 @@ mod tests {
     /// for itself.
     #[test]
     fn a_marked_body_outranks_a_star_at_rest() {
-        let star = body_name_score(1e4, 0, true, false, false, false);
+        let star = name_score(
+            LabelWeight::Body {
+                under: 0,
+                star: true,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+        );
 
-        assert!(body_name_score(0., DEEPEST, false, false, true, false) > star);
-        assert!(body_name_score(0., DEEPEST, false, false, false, true) > star);
+        assert!(
+            name_score(
+                LabelWeight::Body {
+                    under: DEEPEST,
+                    star: false,
+                    primary: false,
+                    apparent: 0.
+                },
+                true,
+                false
+            ) > star
+        );
+        assert!(
+            name_score(
+                LabelWeight::Body {
+                    under: DEEPEST,
+                    star: false,
+                    primary: false,
+                    apparent: 0.
+                },
+                false,
+                true
+            ) > star
+        );
     }
 
     /// Of two systems along one line of sight, the near one is named first
@@ -2111,8 +2296,16 @@ mod tests {
     #[test]
     fn a_system_in_front_is_named_before_one_behind() {
         let away = 20.;
-        let front = name_score(away, away, false, false);
-        let back = name_score(away, -away, false, false);
+        let front = name_score(
+            LabelWeight::System { from_center: away, ahead: away },
+            false,
+            false,
+        );
+        let back = name_score(
+            LabelWeight::System { from_center: away, ahead: -away },
+            false,
+            false,
+        );
 
         assert!(front > back, "{front} was no better than {back}");
     }
@@ -2127,8 +2320,16 @@ mod tests {
         let away = 20.;
         let bonus = CENTER_WEIGHT / (1. + (away / CENTER_REACH).powi(2));
 
-        let at = name_score(0., 0., false, false);
-        let front = name_score(away, away, false, false);
+        let at = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            false,
+            false,
+        );
+        let front = name_score(
+            LabelWeight::System { from_center: away, ahead: away },
+            false,
+            false,
+        );
 
         assert!(
             (front - (at - CENTER_WEIGHT + bonus)).abs() < 1e-3,
@@ -2144,11 +2345,17 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(0., 0., false, false);
+        let mut nearer = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            false,
+            false,
+        );
         for step in 1..=1000 {
             let further = name_score(
-                step as f32 * DEFAULT_NAME_RADIUS / 1000.,
-                0.,
+                LabelWeight::System {
+                    from_center: step as f32 * DEFAULT_NAME_RADIUS / 1000.,
+                    ahead: 0.,
+                },
                 false,
                 false,
             );
@@ -2215,10 +2422,18 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_centered() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(DEFAULT_NAME_RADIUS, 0., true, false);
+        let pointed = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            true,
+            false,
+        );
 
         // The system at the center, which is otherwise the best there is.
-        let centered = name_score(0., 0., false, false);
+        let centered = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            false,
+            false,
+        );
 
         assert!(
             pointed > centered,
@@ -2234,8 +2449,16 @@ mod tests {
     /// the point on the center, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
-        let selected = name_score(DEFAULT_NAME_RADIUS, 0., false, true);
-        let pointed = name_score(0., 0., true, false);
+        let selected = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            false,
+            true,
+        );
+        let pointed = name_score(
+            LabelWeight::System { from_center: 0., ahead: 0. },
+            true,
+            false,
+        );
 
         assert!(
             selected > pointed,
@@ -2250,8 +2473,16 @@ mod tests {
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
-        let both = name_score(DEFAULT_NAME_RADIUS, 0., true, true);
-        let selected = name_score(DEFAULT_NAME_RADIUS, 0., false, true);
+        let both = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            true,
+            true,
+        );
+        let selected = name_score(
+            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            false,
+            true,
+        );
 
         assert_eq!(both, selected);
     }
