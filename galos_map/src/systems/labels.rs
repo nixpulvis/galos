@@ -53,7 +53,7 @@ pub(crate) fn plugin(app: &mut App) {
     // is said here. Ordering them costs nothing and fixes which goes first.
     app.add_systems(
         Update,
-        (choose_names, respawn, face_camera)
+        (choose_names, respawn, back_names, face_camera)
             .chain()
             .in_set(MapSet::Present)
             // Both read which system is pointed at, which is decided this
@@ -197,6 +197,43 @@ const LEADER_GAP: f32 = 0.15;
 /// have fitted between them; erring narrow overlaps them, which is the thing
 /// being prevented.
 const ADVANCE: f32 = 0.7;
+
+/// What [`FONT`] actually sets a character at, as a fraction of the size
+///
+/// The set width, where [`ADVANCE`] is the room a name is granted. The two
+/// differ on purpose and the difference is which way each errs: room granted
+/// short overlaps two names, so [`ADVANCE`] rounds up; a ground drawn long
+/// runs on past the word it carries, so this rounds to the truth.
+const SET_WIDTH: f32 = 1233. / 2048.;
+
+/// The dark ground a name is set on
+///
+/// A name is read over a field of stars, and a word whose counters and the
+/// gaps between its letters are full of them has no shape to recognise. The
+/// ground is what makes the word a figure again.
+///
+/// Part way translucent, so the field it covers is quieted rather than cut
+/// out of the map. It can be read straight, without allowing for what shows
+/// through, because it is drawn on [`crate::camera::OVERLAY`]: the only other
+/// thing on that layer is the words it carries, so what shows through is the
+/// galaxy as the first camera left it and never a star drawn over the top.
+const GROUND: Srgba = Srgba::new(0.02, 0.02, 0.04, 0.75);
+
+/// How far behind its words a ground sits, in multiples of [`SIZE`]
+///
+/// Both are blended now, so which is drawn first is decided by which is
+/// further from the camera, and a ground is offset sideways from the words it
+/// carries as well as behind them. Far enough back that the depth decides it
+/// and the sideways offset cannot, while staying depth along the view, which
+/// no camera facing the plate can see as a gap.
+const SET_BACK: f32 = 2.;
+
+/// How far the ground reaches past the words, as a fraction of [`NAME_HEIGHT`]
+///
+/// Enough that the letters are not set against its edge, and no more. A ground
+/// wider than the word it carries reads as a box on the map rather than as the
+/// word standing clear of what is behind it.
+const GROUND_PAD: f32 = 0.3;
 
 /// How much of a name's own height is kept clear around it
 ///
@@ -362,6 +399,18 @@ pub struct Named;
 #[derive(Component)]
 pub struct Label;
 
+/// The quad a name is set on, hung under the [`Label`] it carries
+///
+/// A child rather than part of the plate, since the words are a text mesh the
+/// crate rebuilds whenever they change and this is one rectangle that only
+/// ever moves and resizes.
+#[derive(Component)]
+struct Ground;
+
+/// The one quad every [`Ground`] is drawn from, a unit square in its own XY
+#[derive(Resource)]
+pub(crate) struct GroundMesh(Handle<Mesh>);
+
 /// How far in front of the camera a point is, in metres
 ///
 /// Depth into the view, which is not the same as the distance to the camera.
@@ -475,6 +524,9 @@ pub(crate) fn screen_offset(
 pub struct LabelMaterials {
     bright: [Handle<StandardMaterial>; 3],
     dim: [Handle<StandardMaterial>; 3],
+    /// One for every name. A ground takes no tint, being what the tint is
+    /// read against.
+    ground: Handle<StandardMaterial>,
 }
 
 /// Which color a name is drawn in, given what its system is
@@ -1110,7 +1162,7 @@ pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
 /// name it holds. Left alone, a plate would go on saying whatever was true the
 /// frame it was spawned.
 #[allow(clippy::too_many_arguments)]
-pub fn respawn(
+pub(crate) fn respawn(
     mut commands: Commands,
     named: Query<Plated, With<Named>>,
     // Where the jump to a stop is measured from, which is the system the
@@ -1131,6 +1183,7 @@ pub fn respawn(
     // The words on a plate already up, which only a system's ever change.
     mut plates: Query<&mut Text3d, With<Label>>,
     materials: Res<LabelMaterials>,
+    mesh: Res<GroundMesh>,
 ) {
     for entity in unnamed.read() {
         // Nothing where the thing itself has gone, which is the other way a
@@ -1154,6 +1207,7 @@ pub fn respawn(
         let label = commands
             .spawn(nameplate(body.name.to_uppercase(), &materials))
             .id();
+        commands.entity(label).with_child(ground(&materials, &mesh));
         commands.entity(entity).add_child(label);
     }
 
@@ -1184,8 +1238,37 @@ pub fn respawn(
         }
 
         let label = commands.spawn(nameplate(wanted, &materials)).id();
+        commands.entity(label).with_child(ground(&materials, &mesh));
 
         commands.entity(entity).add_child(label);
+    }
+}
+
+/// Size each ground to the words its plate is set to
+///
+/// Read off the words rather than worked out again from the system, since a
+/// stop's plate carries the jump to it and a ground has to cover whatever is
+/// actually drawn. The plate's own origin is the left edge of the words,
+/// vertically centered, and [`face_camera`] scales the whole plate, so this
+/// works in the units [`SIZE`] is written in and never in pixels.
+///
+/// [`SET_BACK`] behind the words, which is depth and not a gap: the plate
+/// faces the camera, so the two are only ever separated along the view.
+fn back_names(
+    plates: Query<&Text3d, With<Label>>,
+    mut grounds: Query<(&mut Transform, &ChildOf), With<Ground>>,
+) {
+    for (mut ground, child_of) in &mut grounds {
+        let Ok(words) = plates.get(child_of.parent()) else { continue };
+        let letters = said(words).map_or(0, |it| it.chars().count());
+        let width = letters as f32 * SET_WIDTH * SIZE;
+        let pad = SIZE * GROUND_PAD;
+
+        ground.set_if_neq(Transform {
+            translation: Vec3::new(width / 2., 0., -SET_BACK * SIZE),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::new(width + pad * 2., SIZE + pad * 2., 1.),
+        });
     }
 }
 
@@ -1484,6 +1567,7 @@ pub fn leaders(
 
 pub fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     dim: Res<DimTo>,
     mut commands: Commands,
 ) {
@@ -1492,7 +1576,27 @@ pub fn init_materials(
     commands.insert_resource(LabelMaterials {
         bright: Tint::ALL.map(|tint| label(tint.color())),
         dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
+        // No atlas on this one. A ground is a flat rectangle and the glyph
+        // texture is what makes the letters letters.
+        ground: assets.add(StandardMaterial {
+            base_color: GROUND.into(),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        }),
     });
+    commands.insert_resource(GroundMesh(meshes.add(Rectangle::new(1., 1.))));
+}
+
+/// The ground for one name, sized by [`back_names`] once it knows the words
+fn ground(materials: &LabelMaterials, mesh: &GroundMesh) -> impl Bundle {
+    (
+        Ground,
+        RenderLayers::layer(crate::camera::OVERLAY),
+        Mesh3d(mesh.0.clone()),
+        MeshMaterial3d(materials.ground.clone()),
+        Transform::default(),
+    )
 }
 
 /// How a name is painted in `tint`
@@ -2162,6 +2266,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<Assets<Mesh>>();
         app.init_resource::<DimTo>();
         app.init_resource::<HeldSystem>();
         app.add_systems(Startup, init_materials);
