@@ -30,7 +30,7 @@ pub(crate) fn plugin(app: &mut App) {
         .font_embedded
         .push(epaint_default_fonts::HACK_REGULAR);
     app.insert_resource(NameRadius {
-        follow_spyglass: true,
+        follow_spyglass: false,
         radius: DEFAULT_NAME_RADIUS,
     });
     app.insert_resource(ShowBodyNames(true));
@@ -100,7 +100,12 @@ pub(crate) const MIN_DEPTH: f32 = 1.;
 /// How far a name is drawn from what the camera looks at, to begin with
 ///
 /// What [`NameRadius`] starts at, and what the tests measure against.
-const DEFAULT_NAME_RADIUS: f32 = 100.;
+///
+/// Twenty light years is a few dozen systems around whatever is being looked
+/// at, which is what a name is for: reading where you are, not labelling the
+/// whole of what is loaded. The spyglass reaches much further and should, the
+/// stars being worth drawing long after their names would be worth reading.
+const DEFAULT_NAME_RADIUS: f32 = 20.;
 
 /// How tall a system's name draws, in logical pixels
 ///
@@ -118,9 +123,10 @@ pub(super) const NAME_HEIGHT: f32 = 12.;
 pub struct NameRadius {
     /// Take the spyglass's reach rather than the one below
     ///
-    /// On to begin with. The spyglass already answers how much of the
-    /// galaxy is being looked at, and a name belongs to something drawn, so
-    /// there is rarely a second answer worth giving.
+    /// Off to begin with. The spyglass answers how much of the galaxy is
+    /// drawn, which is not the same question as how much of it is worth
+    /// naming: it reaches hundreds of light years, and names read at that
+    /// range are a wall of them over a field nobody is looking at.
     pub follow_spyglass: bool,
     /// How far names reach when not following, in light years
     pub radius: f32,
