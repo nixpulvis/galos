@@ -41,20 +41,11 @@ pub mod record;
 
 /// Where a journal directory remembers whose it is
 ///
-/// The `.log` files name the commander who flew them, and that is the answer
-/// wherever it is given. Two things beside them do not. `NavRoute.json` says
-/// where a ship is going and nothing about who is flying it, and a session
-/// continued into a second file picks up without introducing itself again.
-///
-/// So the directory is asked to remember. What the logs said is written here
-/// and read back when nothing in front of us says otherwise. Per directory
-/// rather than per run: two directories are as likely to be two commanders as
-/// one, and a name carried over from the last import would be a guess about
-/// someone else's journal.
-///
-/// Written only where a whole directory was imported. A single file is read
-/// out of a directory rather than being what is in it, and one archived log
-/// does not get to say whose the rest are.
+/// A session continued into a second file introduces nobody and
+/// `NavRoute.json` never says who is flying, so the name has to come from
+/// somewhere. Per directory rather than per run: two directories are as
+/// likely to be two commanders as one, and a name carried over from the last
+/// import would be a guess about someone else's journal.
 const COMMANDER: &str = ".galos-commander";
 
 /// Who a journal is filed under when nothing anywhere says
@@ -86,11 +77,8 @@ pub struct Cli {
 impl Run for Cli {
     /// Import what the path names, ending the process where nothing was read
     ///
-    /// An import is run from cron and from a shell, and the exit status is
-    /// the whole of what either of them reads. A directory that could not be
-    /// opened and a file that could not be handed over both used to warn and
-    /// finish the bar, so the run looked exactly like one that had nothing
-    /// left to import.
+    /// The status is the whole of what cron reads, so a run that could open
+    /// nothing must not look like one with nothing left to do.
     fn run(&self, db: &Database) {
         if !self.import(db) {
             std::process::exit(1);
@@ -281,16 +269,10 @@ fn logs(dir: &Path) -> Option<Vec<PathBuf>> {
 
 /// Read one journal file, saying what in it could not be read
 ///
-/// `parse_journal_file` drops a line it cannot parse and says nothing, and
-/// what it drops is not the odd corrupt line. Every event here is one this
-/// claims to write, since an event nothing models is read as
-/// [`Event::Other`] rather than failing -- so a line counted here is a scan,
-/// or a honk, or a codex entry, going in the bin while the bar fills to the
-/// end and the import reports itself finished.
-///
-/// Which is what is happening. Said once a file with a count and a reason
-/// rather than once a line, since a journal that hits this hits it thousands
-/// of times over and the reason is the same every time.
+/// A line counted here is one this claims to write, since an event nothing
+/// models is read as [`Event::Other`] rather than failing. Said once a file
+/// with a count and a reason rather than once a line, a journal that hits
+/// this hitting it thousands of times over for the same reason.
 fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -445,13 +427,10 @@ fn progress(entries: u64) -> ProgressBar {
     bar
 }
 
-/// Whose journal a set of entries is, read from what the game writes
+/// Reading a journal directory, as far as the first write
 ///
-/// Which entry answers this decides who every row of an import is filed
-/// under, and the answer is spelled three different ways across the events
-/// that give it. A rename that stopped one of them being read would not fail
-/// anywhere: the event would simply fall through to `Other` and the file
-/// would look like one flown by nobody.
+/// What a file said, who flew it and the order it happened in are settled
+/// before a row is touched, so all of it is answerable without a database.
 #[cfg(test)]
 mod tests {
     use super::*;
