@@ -32,7 +32,7 @@ use galos_db::Database;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{stderr, BufRead, BufReader, IsTerminal};
+use std::io::{stderr, BufRead, BufReader, ErrorKind, IsTerminal};
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tracing::{info, warn};
@@ -282,21 +282,39 @@ fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
         }
     };
 
-    let mut entries = Vec::new();
+    entries(BufReader::new(file), path)
+}
+
+/// The entries in an open journal, saying what in it could not be read
+///
+/// Two kinds of failure and only one of them is a line. `InvalidData` is a
+/// torn one: `read_until` took its bytes and gave back something that is not
+/// UTF-8, so the next line is there to read and this one is counted with the
+/// lines that would not parse. Any other error took nothing, and `lines`
+/// answers it again every time it is asked, so carrying on past one is a
+/// loop with no end to it. That is the file having stopped rather than the
+/// line, and it is reported as the file.
+fn entries(journal: impl BufRead, path: &Path) -> Option<Vec<Entry<Event>>> {
+    let mut found = Vec::new();
     let mut unread = 0;
     let mut why = None;
 
-    // A line the filesystem will not hand over is counted with the ones that
-    // would not parse. `lines` is not fused, so the file goes on after one,
-    // and one torn byte in a journal of thousands is worth that one line and
-    // not the rest of them.
-    for line in BufReader::new(file).lines() {
+    for line in journal.lines() {
         let line = match line {
             Ok(line) => line,
-            Err(err) => {
+            Err(err) if err.kind() == ErrorKind::InvalidData => {
                 unread += 1;
                 why.get_or_insert_with(|| err.to_string());
                 continue;
+            }
+            Err(err) => {
+                warn!(
+                    file = %path.display(),
+                    error = %err,
+                    read = found.len(),
+                    "journal stopped being readable",
+                );
+                return None;
             }
         };
 
@@ -305,7 +323,7 @@ fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
         }
 
         match serde_json::from_str(&line) {
-            Ok(entry) => entries.push(entry),
+            Ok(entry) => found.push(entry),
             Err(err) => {
                 unread += 1;
                 why.get_or_insert_with(|| err.to_string());
@@ -317,13 +335,13 @@ fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
         warn!(
             file = %path.display(),
             unread = unread,
-            read = entries.len(),
+            read = found.len(),
             first = %why.unwrap_or_default(),
             "entries this cannot read",
         );
     }
 
-    Some(entries)
+    Some(found)
 }
 
 /// The files the game keeps beside its logs
@@ -436,7 +454,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn entries(lines: &[&str]) -> Vec<Entry<Event>> {
+    fn parse(lines: &[&str]) -> Vec<Entry<Event>> {
         lines
             .iter()
             .map(|line| serde_json::from_str(line).expect("entry should parse"))
@@ -483,7 +501,7 @@ mod tests {
     /// `Commander`, which follows the header at the top of a session
     #[test]
     fn a_journal_names_who_flew_it() {
-        let entries = entries(&[
+        let entries = parse(&[
             FILEHEADER,
             r#"{
                 "timestamp": "2026-08-08T12:00:01Z",
@@ -499,7 +517,7 @@ mod tests {
     /// `LoadGame`, which says the same thing under another key
     #[test]
     fn a_loaded_game_names_one_as_well() {
-        let entries = entries(&[
+        let entries = parse(&[
             FILEHEADER,
             r#"{
                 "timestamp": "2026-08-08T12:00:02Z",
@@ -523,7 +541,7 @@ mod tests {
     /// the ones in the file it continues.
     #[test]
     fn a_continued_journal_names_nobody() {
-        let entries = entries(&[
+        let entries = parse(&[
             FILEHEADER,
             r#"{
                 "timestamp": "2026-08-08T12:00:03Z",
@@ -560,6 +578,36 @@ mod tests {
             .expect("the file should read");
 
         assert_eq!(entries.len(), 2);
+    }
+
+    /// A journal that stops being readable is not a journal read to the end
+    ///
+    /// `BufRead::lines` answers an error that consumed nothing by answering
+    /// it again, and again, every time it is asked. So counting one and
+    /// carrying on never reaches the end of the file: the import hangs, and
+    /// says nothing while it does. Only a torn line is worth carrying on
+    /// past, and a torn line is the one whose bytes were taken.
+    #[test]
+    fn a_journal_that_stops_being_readable_is_not_read_to_the_end() {
+        /// A reader that fails the way a disk going away fails
+        struct Failing(usize);
+
+        impl std::io::Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                self.0 += 1;
+                // Ends the file rather than the test, so a reader that
+                // carries on past the error fails on the answer below
+                // instead of hanging the suite.
+                if self.0 > 100 {
+                    return Ok(0);
+                }
+                Err(std::io::Error::other("the disk went away"))
+            }
+        }
+
+        let dying = BufReader::new(Failing(0));
+
+        assert!(entries(dying, Path::new("Journal.dying.log")).is_none());
     }
 
     /// A directory that will not open is not one holding no journals
