@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
@@ -635,7 +635,7 @@ pub(crate) fn choose_names(
     // somewhere else, and through a zoom the two are a quarter of the way
     // apart. Names that were laid out clear of each other come out over one
     // another, and which of them wins changes every frame.
-    standing: crate::systems::bodies::spawn::Placed,
+    places: Places,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
@@ -792,7 +792,7 @@ pub(crate) fn choose_names(
     // is read by name and a system inside is read by looking, so one is off
     // until wanted and the other on until it is in the way.
     for (entity, body, indicator) in &bodies {
-        let Some(place) = standing.of(entity) else { continue };
+        let Some(place) = places.of(entity) else { continue };
         let Some(spot) = screen_position(orbit, cot_half_fov, viewport, place)
         else {
             continue;
@@ -1558,11 +1558,7 @@ pub fn face_camera(
     // quarter of the distance it has left every frame: every name inside a
     // system would be sized against a distance the camera had already left,
     // and would only be right once the camera stopped.
-    //
-    // Spelled out because this module has a `Placed` of its own, which is the
-    // scratch a frame of names is laid out in and nothing to do with where a
-    // body stands.
-    standing: crate::systems::bodies::spawn::Placed,
+    places: Places,
     mut labels: Query<
         (&mut Transform, &ChildOf),
         (With<Label>, Without<System>, Without<Body>),
@@ -1577,7 +1573,7 @@ pub fn face_camera(
             // A name hung off something inside a system.
             let body = child_of.parent();
             let Ok((own_size, indicator)) = bodies.get(body) else { continue };
-            let Some(place) = standing.of(body) else { continue };
+            let Some(place) = places.of(body) else { continue };
 
             // Measured to where the body stands in the galaxy, as a system's
             // name is measured to where its system stands. Both are read off

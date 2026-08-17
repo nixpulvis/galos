@@ -855,14 +855,17 @@ fn placed(place: DVec3, grid: &Grid) -> (CellCoord, Vec3) {
 ///
 /// A body is placed in its system's own grid, in metres from that system's
 /// centre, so saying where one is in the galaxy means going up to the system
-/// holding it. Two places ask it, the row the bar draws for a body picked out
-/// and the double click that flies to one, so it is answered in one.
+/// holding it. Enough callers want that walk for it to be worth writing once:
+/// the row the bar draws for a body picked out, the double click that flies to
+/// one, the mark drawn to aim at it, and both halves of naming it.
 ///
 /// Read from the grid rather than from a body's [`GlobalTransform`], which is
 /// measured from the camera in a float and has tens of kilometres of slack out
-/// at the edge of a wide system.
+/// at the edge of a wide system. It is also written during `PostUpdate`, so
+/// anything reading it in `Update` reads a frame old, which through a zoom is
+/// a quarter of the way in.
 #[derive(SystemParam)]
-pub struct Placed<'w, 's> {
+pub struct Places<'w, 's> {
     inside: Query<
         'w,
         's,
@@ -872,7 +875,7 @@ pub struct Placed<'w, 's> {
     systems: Query<'w, 's, (&'static System, &'static Grid)>,
 }
 
-impl Placed<'_, '_> {
+impl Places<'_, '_> {
     /// Where `body` stands, in light years
     ///
     /// Nothing for anything that is not a body drawn inside a system on the
@@ -1423,11 +1426,11 @@ mod tests {
     struct BodyPosition(Option<DVec3>);
 
     fn read_position(
-        placed: Placed,
+        places: Places,
         bodies: Query<Entity, With<Body>>,
         mut position: ResMut<BodyPosition>,
     ) {
-        position.0 = bodies.single().ok().and_then(|body| placed.of(body));
+        position.0 = bodies.single().ok().and_then(|body| places.of(body));
     }
 
     /// Where a body `out` metres from the middle of a system `away` light

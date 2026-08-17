@@ -2,7 +2,7 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
-use crate::systems::bodies::spawn::{Body, Placed, Strength};
+use crate::systems::bodies::spawn::{Body, Places, Strength};
 use crate::systems::{
     System,
     fetch::FetchIndex,
@@ -244,7 +244,7 @@ fn select_on_click(
     click: On<Pointer<Click>>,
     pointed_at: Query<&System, With<PointedAt>>,
     pointed_body: Query<(Entity, &Body), With<PointedAt>>,
-    placed: Placed,
+    places: Places,
     pointers: Res<PointerMap>,
     dragged: Query<&DragDistance>,
     press: Res<PressOwner>,
@@ -314,7 +314,7 @@ fn select_on_click(
     // Where it stands is read now because a body does not move, and it is the
     // one thing about a body that is not on the row it carries.
     let picked = if let Ok((entity, body)) = pointed_body.single() {
-        placed.of(entity).map(|at| {
+        places.of(entity).map(|at| {
             Picked::Body(PickedBody::new(body.address, body.id, &body.name, at))
         })
     } else {
@@ -345,7 +345,7 @@ const DOUBLE_CLICK: f32 = 0.4;
 /// same gesture and means the same thing, and what differs is only how the
 /// thing aimed at says where it stands: a system carries a galactic position
 /// of its own, and a body is placed in metres from the middle of the system
-/// holding it, so it is asked through [`Placed`].
+/// holding it, so it is asked through [`Places`].
 ///
 /// A click is weighed by the same three questions everywhere on the map: the
 /// primary button, travel short enough to be a click rather than a drag, and
@@ -363,7 +363,7 @@ fn fly_on_double_click(
     // Whatever inside a system is pointed at, which carries no galactic
     // position of its own and is asked where it stands.
     pointed_body: Query<Entity, (With<Body>, With<PointedAt>)>,
-    placed: Placed,
+    places: Places,
     time: Res<Time<Real>>,
     mut last: Local<LastClick>,
     mut camera: MessageWriter<MoveCamera>,
@@ -380,7 +380,7 @@ fn fly_on_double_click(
     // cannot both answer, and the order is what it says rather than a choice
     // being made.
     let aimed = if let Ok(body) = pointed_body.single() {
-        placed.of(body).map(|at| (body, at))
+        places.of(body).map(|at| (body, at))
     } else if let Ok((entity, system)) = pointed_at.single() {
         Some((entity, DVec3::from(system.position)))
     } else {

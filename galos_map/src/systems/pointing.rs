@@ -8,7 +8,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
     Label, depth, depth_of, name_rect, screen_offset, screen_position,
@@ -487,10 +487,9 @@ pub fn size_indicators(
 /// aiming at that is aiming at the body. The floor only takes over where a
 /// body is drawn too small to hit.
 ///
-/// Measured to where the body stands out in the galaxy, which
-/// [`crate::systems::bodies::spawn::Placed`] reads off the grid holding it. A
-/// body carries the cell and the offset it was spawned with, so where it is
-/// can be answered before anything is drawn.
+/// Measured to where the body stands out in the galaxy, which [`Places`] reads
+/// off the grid holding it. A body carries the cell and the offset it was
+/// spawned with, so where it is can be answered before anything is drawn.
 ///
 /// Which is what lets this run during `Update`. The mark decides how far a
 /// name stands off what it names, and `super::labels::choose_names` packs the
@@ -499,7 +498,7 @@ pub fn size_indicators(
 /// distance it has left every frame.
 pub fn size_bodies(
     camera: Query<(&OrbitCamera, &Camera)>,
-    standing: crate::systems::bodies::spawn::Placed,
+    places: Places,
     mut bodies: Query<(Entity, &Body, &mut Indicator)>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
@@ -507,7 +506,7 @@ pub fn size_bodies(
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     for (entity, body, mut indicator) in &mut bodies {
-        let Some(place) = standing.of(entity) else { continue };
+        let Some(place) = places.of(entity) else { continue };
         // A metre, which is as near as the camera may be pulled to anything.
         let into_view = depth(orbit, place).max(1.);
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
