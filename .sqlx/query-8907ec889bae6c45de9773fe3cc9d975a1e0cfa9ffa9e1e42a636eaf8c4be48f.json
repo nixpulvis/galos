@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE systems SET\n                    position = COALESCE($2, systems.position),\n                    body_count = $3,\n                    non_body_count =\n                        COALESCE($4, systems.non_body_count),\n                    updated_at = GREATEST(systems.updated_at, $5),\n                    updated_by = CASE WHEN $5 >= systems.updated_at\n                        THEN $6 ELSE systems.updated_by END\n                WHERE address = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        {
+          "Custom": {
+            "name": "geometry",
+            "kind": "Simple"
+          }
+        },
+        "Int4",
+        "Int4",
+        "Timestamp",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8907ec889bae6c45de9773fe3cc9d975a1e0cfa9ffa9e1e42a636eaf8c4be48f"
+}

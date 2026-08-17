@@ -8,13 +8,14 @@
 // read here is something EDDN wants and is not getting from this commander,
 // and the reading is already done.
 //
-// What it would take that importing does not is the augmentation described
-// at `read`: a sender has to add `StarSystem` and `StarPos` to events the
-// game writes without them, tracked from the last arrival, cross-checked
-// against whatever `SystemAddress` the event carries, and the message
-// dropped where the two disagree. Importing is excused that because the row
-// is already there to point at; a sender has nobody to point at and has to
-// say the whole thing.
+// What it would take that importing does not is augmentation: a sender has
+// to add `StarSystem` and `StarPos` to the events the game writes without
+// them, tracked from the last arrival, cross-checked against whatever
+// `SystemAddress` the event carries, and the message dropped where the two
+// disagree, the game having a habit of pausing its journal and resuming it
+// with events missing. Importing is excused that because the row is already
+// there to point at; a sender has nobody to point at and has to say the
+// whole thing.
 //
 // Reading a directory the way this does is a better place to do it from than
 // a live sender has. The files are whole and in order before anything is
@@ -202,40 +203,6 @@ fn logs(dir: &Path) -> Vec<PathBuf> {
 /// Which is what is happening. Said once a file with a count and a reason
 /// rather than once a line, since a journal that hits this hits it thousands
 /// of times over and the reason is the same every time.
-///
-// TODO: Teach `elite_journal` the shape the game writes, which is what this
-// is counting. Its events are modelled on what EDDN forwards, and EDDN makes
-// the uploader add `StarPos` and `StarSystem` before sending; the game writes
-// neither. So `Scan`, `ScanBaryCentre`, `FSSDiscoveryScan`,
-// `FSSAllBodiesFound`, `NavBeaconScan`, `SAASignalsFound`, `FSSBodySignals`,
-// `ApproachSettlement` and `CodexEntry` all fail on a real journal over a
-// missing field, and `FSSSignalDiscovered` fails for a second reason -- the
-// game writes one signal an event where EDDN sends a system's worth. Only
-// `Location`, `FSDJump`, `CarrierJump` and `Docked` survive the trip.
-//
-// Making those two fields optional and reading the single-signal shape is
-// most of it. What follows here is `record::ensure_system`, which would then
-// be handed a system with no name: it cannot create the row, and does not
-// need to, since nothing is scanned in a system that was not arrived in
-// first and arriving is the one thing that still parses.
-//
-// The other way to do it is the way EDDN gets them, which is worth writing
-// down because nothing about it is guessable from a schema. `StarPos` is in
-// the game's journal on three events and no others -- `Location`, `FSDJump`
-// and `CarrierJump` -- so a sender keeps a running note of where the
-// commander is from those three and copies it into everything sent
-// afterwards. EDDN does not let it copy blindly: where an event carries a
-// `SystemAddress` of its own, that has to match the noted one before a name
-// or a position is attached, and a message that does not match is dropped
-// rather than mended, the game having a habit of pausing its journal and
-// resuming it with events missing. A stale position files a scan under the
-// wrong system, which is worse than filing it nowhere.
-//
-// Not needed to read a journal. Everything downstream hangs off
-// `SystemAddress`, which the game does write on all of these, and the
-// arrival that would have been copied from is the thing that already wrote
-// the system row. It is needed to send one -- see the note at the top of
-// this module.
 fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -310,15 +277,12 @@ fn sidecars(db: &Database, dir: &Path, user: &str) {
     };
 
     match serde_json::from_str::<Entry<NavRoute>>(&json) {
-        Ok(entry) => {
-            let NavRoute::Route(ref destinations) = entry.event;
-            task::block_on(record::nav_route(
-                db,
-                entry.timestamp,
-                user,
-                destinations,
-            ))
-        }
+        Ok(entry) => task::block_on(record::nav_route(
+            db,
+            entry.timestamp,
+            user,
+            &entry.event.destinations,
+        )),
         Err(err) => {
             warn!(file = %route.display(), error = %err, "unreadable nav route")
         }

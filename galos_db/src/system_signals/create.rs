@@ -1,22 +1,24 @@
 use super::SystemSignal;
 use crate::{Database, Error};
+use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::SystemSignal as JournalSignal;
 
 impl SystemSignal {
     /// Record a system's worth of signals
     ///
-    /// The game emits one event per signal and EDDN gathers a system's worth
-    /// into a single message, so these arrive in batches. Each signal in the
-    /// batch carries its own timestamp and is written under it, rather than
-    /// under the message's -- the message is stamped with the first signal's,
-    /// which would be wrong for all the others.
+    /// A signal out of an EDDN batch carries the moment it was seen and is
+    /// written under that rather than under `timestamp`, which is the first
+    /// signal's and would be wrong for all the others. A signal the game
+    /// wrote alone carries none and takes `timestamp`, which is its own.
     pub async fn from_journal(
         db: &Database,
+        timestamp: DateTime<Utc>,
         user: &str,
         system_address: i64,
         signals: &[JournalSignal],
     ) -> Result<(), Error> {
         for signal in signals {
+            let seen = signal.timestamp.unwrap_or(timestamp);
             let done = sqlx::query!(
                 "
                 INSERT INTO system_signals (
@@ -51,7 +53,7 @@ impl SystemSignal {
                 ",
                 system_address,
                 signal.signal_name,
-                signal.timestamp.naive_utc(),
+                seen.naive_utc(),
                 user,
                 signal.signal_type,
                 signal.is_station,
@@ -66,7 +68,7 @@ impl SystemSignal {
             .await?;
 
             if done.rows_affected() == 0 {
-                crate::turned_away("system signal", signal.timestamp);
+                crate::turned_away("system signal", seen);
             }
         }
 

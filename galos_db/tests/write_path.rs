@@ -166,6 +166,8 @@ fn somewhere(n: f64) -> Coordinate {
 /// of them is that a second message changes what the first wrote.
 const COUNTS: i64 = 900_000_001;
 const COUNTS_AGAIN: i64 = 900_000_007;
+const COUNTS_UNNAMED: i64 = 900_000_048;
+const COUNTS_UNHEARD: i64 = 900_000_049;
 const BODY_SIGNALS: i64 = 900_000_002;
 const SYSTEM_SIGNALS: i64 = 900_000_003;
 const CODEX: i64 = 900_000_004;
@@ -248,7 +250,7 @@ async fn a_body_count_creates_the_system_it_counts() {
     System::set_body_counts(
         &db,
         COUNTS,
-        "Test Counts",
+        Some("Test Counts"),
         Some(somewhere(1.0)),
         40,
         Some(10),
@@ -277,7 +279,7 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
     System::set_body_counts(
         &db,
         COUNTS_AGAIN,
-        "Test Counts Again",
+        Some("Test Counts Again"),
         Some(somewhere(7.0)),
         40,
         Some(10),
@@ -290,7 +292,7 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
     System::set_body_counts(
         &db,
         COUNTS_AGAIN,
-        "Test Counts Again",
+        Some("Test Counts Again"),
         None,
         41,
         None,
@@ -307,6 +309,79 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
     assert_eq!(system.non_body_count, Some(10));
 }
 
+/// A beacon names no system, so its count is set on one already on record
+///
+/// `NavBeaconScan` as the game writes it carries an address and a body count
+/// and nothing else. A row cannot be created from that, and does not need to
+/// be: a beacon is scanned from inside the system, and arriving is what wrote
+/// the row.
+#[async_std::test]
+async fn a_count_without_a_name_reaches_a_system_already_there() {
+    let db = db!();
+
+    System::create(
+        &db,
+        COUNTS_UNNAMED,
+        "Test Unnamed Counts",
+        Some(somewhere(21.0)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    System::set_body_counts(
+        &db,
+        COUNTS_UNNAMED,
+        None,
+        None,
+        23,
+        None,
+        at(60),
+        "test",
+    )
+    .await
+    .expect("counts should write");
+
+    let system =
+        System::fetch(&db, COUNTS_UNNAMED).await.expect("system should exist");
+
+    assert_eq!(system.name, "TEST UNNAMED COUNTS");
+    assert_eq!(system.body_count, Some(23));
+}
+
+/// A count for a system nothing has named and nothing has heard of is dropped
+///
+/// There is no row to set it on and no name to make one with. The write is
+/// not an error: the count is worth nothing without the system, and the
+/// arrival that would create it is what has not happened.
+#[async_std::test]
+async fn a_count_without_a_name_or_a_system_writes_nothing() {
+    let db = db!();
+    forget(COUNTS_UNHEARD).await;
+
+    System::set_body_counts(
+        &db,
+        COUNTS_UNHEARD,
+        None,
+        None,
+        23,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("counts should not error");
+
+    assert!(System::fetch(&db, COUNTS_UNHEARD).await.is_err());
+}
+
 /// Signals land on bodies nothing has scanned, which is most of them
 ///
 /// The honk finds signals before anything identifies what it found them on. A
@@ -319,7 +394,7 @@ async fn signals_are_kept_for_a_body_that_was_never_scanned() {
     System::set_body_counts(
         &db,
         BODY_SIGNALS,
-        "Test Body Signals",
+        Some("Test Body Signals"),
         Some(somewhere(2.0)),
         4,
         None,
@@ -355,7 +430,7 @@ async fn a_signal_seen_again_is_the_same_row() {
     System::set_body_counts(
         &db,
         BODY_SIGNALS,
-        "Test Body Signals",
+        Some("Test Body Signals"),
         Some(somewhere(2.0)),
         4,
         None,
@@ -389,7 +464,7 @@ async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
     System::set_body_counts(
         &db,
         SYSTEM_SIGNALS,
-        "Test System Signals",
+        Some("Test System Signals"),
         Some(somewhere(3.0)),
         4,
         None,
@@ -401,7 +476,7 @@ async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
 
     let signals = vec![
         JournalSignal {
-            timestamp: at(0),
+            timestamp: Some(at(0)),
             signal_name: "Abraham Lincoln".into(),
             signal_type: None,
             is_station: Some(true),
@@ -413,7 +488,7 @@ async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
             threat_level: None,
         },
         JournalSignal {
-            timestamp: at(300),
+            timestamp: Some(at(300)),
             signal_name: "$USS_HighGradeEmissions;".into(),
             signal_type: Some("USS".into()),
             is_station: None,
@@ -426,7 +501,7 @@ async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
         },
     ];
 
-    SystemSignal::from_journal(&db, "test", SYSTEM_SIGNALS, &signals)
+    SystemSignal::from_journal(&db, at(0), "test", SYSTEM_SIGNALS, &signals)
         .await
         .expect("signals should write");
 
@@ -449,7 +524,7 @@ async fn a_codex_sighting_is_one_row_per_kind_per_system() {
     System::set_body_counts(
         &db,
         CODEX,
-        "Test Codex",
+        Some("Test Codex"),
         Some(somewhere(4.0)),
         4,
         None,
@@ -461,7 +536,7 @@ async fn a_codex_sighting_is_one_row_per_kind_per_system() {
 
     let entry = JournalCodex {
         system_name: "Test Codex".into(),
-        star_pos: somewhere(4.0),
+        star_pos: Some(somewhere(4.0)),
         system_address: CODEX,
         entry_id: 2100701,
         name: Some("$Codex_Ent_Sulphur_Name;".into()),
@@ -502,7 +577,7 @@ async fn a_settlement_keeps_its_place_on_the_body() {
     System::set_body_counts(
         &db,
         SETTLEMENT,
-        "Test Settlement",
+        Some("Test Settlement"),
         Some(somewhere(5.0)),
         4,
         None,
@@ -515,8 +590,8 @@ async fn a_settlement_keeps_its_place_on_the_body() {
     let settlement = ApproachSettlement {
         name: "Bloomfield Vision".into(),
         market_id: Some(SETTLEMENT_MARKET),
-        system_name: "Test Settlement".into(),
-        star_pos: somewhere(5.0),
+        system_name: Some("Test Settlement".into()),
+        star_pos: Some(somewhere(5.0)),
         system_address: SETTLEMENT,
         body_id: 12,
         body_name: "Test Settlement 4".into(),
@@ -557,7 +632,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
     System::set_body_counts(
         &db,
         TRADE,
-        "Test Trade",
+        Some("Test Trade"),
         Some(somewhere(6.0)),
         4,
         None,
@@ -619,7 +694,7 @@ async fn a_trade_message_writes_the_station_it_names() {
     System::set_body_counts(
         &db,
         TRADE_STATION,
-        "Test Trade Station",
+        Some("Test Trade Station"),
         Some(somewhere(23.0)),
         1,
         None,
@@ -663,7 +738,7 @@ async fn an_unpriced_module_is_still_stocked() {
     System::set_body_counts(
         &db,
         TRADE_UNPRICED,
-        "Test Trade Unpriced",
+        Some("Test Trade Unpriced"),
         Some(somewhere(6.0)),
         4,
         None,
@@ -702,7 +777,7 @@ async fn a_shipyard_message_replaces_what_came_before() {
     System::set_body_counts(
         &db,
         TRADE_SHIPYARD,
-        "Test Trade Shipyard",
+        Some("Test Trade Shipyard"),
         Some(somewhere(6.0)),
         4,
         None,
@@ -749,7 +824,7 @@ async fn a_black_market_sale_does_not_retire_the_others() {
     System::set_body_counts(
         &db,
         TRADE_BLACK_MARKET,
-        "Test Trade Black Market",
+        Some("Test Trade Black Market"),
         Some(somewhere(6.0)),
         4,
         None,
@@ -796,7 +871,7 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     System::set_body_counts(
         &db,
         CLUSTER,
-        "Test Cluster",
+        Some("Test Cluster"),
         Some(somewhere(8.0)),
         4,
         None,
@@ -864,7 +939,7 @@ async fn a_late_scan_does_not_rename_a_cluster() {
     System::set_body_counts(
         &db,
         RENAMED,
-        "Test Renamed",
+        Some("Test Renamed"),
         Some(somewhere(24.0)),
         4,
         None,
@@ -925,7 +1000,7 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
     System::set_body_counts(
         &db,
         RESCAN,
-        "Test Rescan",
+        Some("Test Rescan"),
         Some(somewhere(9.0)),
         1,
         None,
@@ -1047,7 +1122,7 @@ async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
     System::set_body_counts(
         &db,
         REDOCK,
-        "Test Redock",
+        Some("Test Redock"),
         Some(somewhere(10.0)),
         1,
         None,
@@ -1117,7 +1192,7 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
     System::set_body_counts(
         &db,
         STALE,
-        "Test Stale",
+        Some("Test Stale"),
         Some(somewhere(11.0)),
         1,
         None,
@@ -1184,7 +1259,7 @@ async fn a_settlement_approached_again_keeps_its_place() {
     System::set_body_counts(
         &db,
         PLACED,
-        "Test Placed",
+        Some("Test Placed"),
         Some(somewhere(18.0)),
         1,
         None,
@@ -1197,8 +1272,8 @@ async fn a_settlement_approached_again_keeps_its_place() {
     let approach = |latitude, longitude| ApproachSettlement {
         name: "Test Placed Outpost".into(),
         market_id: Some(SETTLEMENT_AGAIN),
-        system_name: "Test Placed".into(),
-        star_pos: somewhere(18.0),
+        system_name: Some("Test Placed".into()),
+        star_pos: Some(somewhere(18.0)),
         system_address: PLACED,
         body_id: 12,
         body_name: "Test Placed 4".into(),
@@ -1299,7 +1374,7 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
     System::set_body_counts(
         &db,
         RING,
-        "Test Ring",
+        Some("Test Ring"),
         Some(somewhere(13.0)),
         1,
         None,
@@ -1380,7 +1455,7 @@ async fn a_thing_once_mapped_stays_mapped() {
     System::set_body_counts(
         &db,
         UNMAPPED,
-        "Test Unmapped",
+        Some("Test Unmapped"),
         Some(somewhere(14.0)),
         1,
         None,
@@ -1485,7 +1560,7 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     System::set_body_counts(
         &db,
         ORPHANED,
-        "Test Orphaned",
+        Some("Test Orphaned"),
         Some(somewhere(17.0)),
         1,
         None,
@@ -1609,7 +1684,7 @@ async fn a_message_delivered_late_does_not_put_the_stamp_back() {
     System::set_body_counts(
         &db,
         LATE,
-        "Test Late",
+        Some("Test Late"),
         Some(somewhere(19.0)),
         1,
         None,
@@ -1679,7 +1754,7 @@ async fn a_count_delivered_late_does_not_put_the_stamp_back() {
         System::set_body_counts(
             &db,
             LATE_COUNT,
-            "Test Late Count",
+            Some("Test Late Count"),
             Some(somewhere(20.0)),
             bodies,
             non_bodies,
@@ -1868,7 +1943,7 @@ async fn the_later_reading_of_a_signal_wins() {
     System::set_body_counts(
         &db,
         LATE_SIGNAL,
-        "Test Late Signal",
+        Some("Test Late Signal"),
         Some(somewhere(21.0)),
         1,
         None,

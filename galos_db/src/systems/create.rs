@@ -278,9 +278,12 @@ impl System {
     /// which only the honk counts; the others pass [`None`] and leave
     /// whatever is there alone.
     ///
-    /// The system need not be on record. A honk is often the first thing
+    /// A named system need not be on record. A honk is often the first thing
     /// heard about somewhere, and carries a name and a position, which is
-    /// enough to write the row it belongs to.
+    /// enough to write the row it belongs to. A nav beacon names only an
+    /// address as the game writes it, and a row cannot be created from that,
+    /// so the count is set on the system if it is there and dropped if it is
+    /// not. The arrival that had to come first is what writes that row.
     ///
     /// Unlike [`System::create`] this does not refuse an older message. A
     /// count does not go stale -- a system does not gain or lose bodies --
@@ -288,16 +291,50 @@ impl System {
     /// system busy enough to be honked at is busy enough to have been written
     /// more recently by something else. What an older message does not do is
     /// put the system's reading back to when it was sent.
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_body_counts(
         db: &Database,
         address: i64,
-        name: &str,
+        name: Option<&str>,
         position: Option<Coordinate>,
         body_count: i32,
         non_body_count: Option<i32>,
         updated_at: DateTime<Utc>,
         updated_by: &str,
     ) -> Result<(), Error> {
+        let Some(name) = name else {
+            let done = sqlx::query!(
+                r#"
+                UPDATE systems SET
+                    position = COALESCE($2, systems.position),
+                    body_count = $3,
+                    non_body_count =
+                        COALESCE($4, systems.non_body_count),
+                    updated_at = GREATEST(systems.updated_at, $5),
+                    updated_by = CASE WHEN $5 >= systems.updated_at
+                        THEN $6 ELSE systems.updated_by END
+                WHERE address = $1
+                "#,
+                address,
+                position.map(|p| wkb::Encode(p)) as _,
+                body_count,
+                non_body_count,
+                updated_at.naive_utc(),
+                updated_by,
+            )
+            .execute(&db.pool)
+            .await?;
+
+            if done.rows_affected() == 0 {
+                tracing::debug!(
+                    address,
+                    "body counts for a system nothing has named",
+                );
+            }
+
+            return Ok(());
+        };
+
         sqlx::query!(
             r#"
             INSERT INTO systems

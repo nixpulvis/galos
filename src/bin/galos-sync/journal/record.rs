@@ -19,7 +19,7 @@ use elite_journal::entry::market::{
     BlackMarket as JournalBlackMarket, Market as JournalMarket,
     Outfitting as JournalOutfitting, Shipyard as JournalShipyard,
 };
-use elite_journal::entry::route::{Destination, NavRoute};
+use elite_journal::entry::route::Destination;
 use elite_journal::entry::{Entry, Event};
 use elite_journal::station::Station as JournalStation;
 use elite_journal::system::Coordinate;
@@ -47,8 +47,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 scan.system_address,
-                &scan.star_system,
-                Some(scan.star_pos),
+                Some(&scan.star_system),
+                scan.star_pos,
                 "scan",
             )
             .await;
@@ -129,8 +129,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 scan.system_address,
-                &scan.star_system,
-                Some(scan.star_pos),
+                Some(&scan.star_system),
+                scan.star_pos,
                 "scan barycenter",
             )
             .await;
@@ -187,8 +187,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.system_name,
-                Some(e.star_pos),
+                Some(&e.system_name),
+                e.star_pos,
                 e.body_count,
                 Some(e.non_body_count),
                 "fss discovery scan",
@@ -202,8 +202,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.system_name,
-                Some(e.star_pos),
+                Some(&e.system_name),
+                e.star_pos,
                 e.count,
                 None,
                 "fss all bodies found",
@@ -217,8 +217,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.star_system,
-                Some(e.star_pos),
+                e.star_system.as_deref(),
+                e.star_pos,
                 e.num_bodies,
                 None,
                 "nav beacon scan",
@@ -234,8 +234,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.system_name,
-                Some(e.star_pos),
+                e.system_name.as_deref(),
+                e.star_pos,
                 "approach settlement",
             )
             .await
@@ -265,8 +265,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.star_system,
-                Some(e.star_pos),
+                e.star_system.as_deref(),
+                e.star_pos,
                 e.body_id,
                 &e.signals,
                 "saa signals found",
@@ -280,8 +280,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.star_system,
-                Some(e.star_pos),
+                e.star_system.as_deref(),
+                e.star_pos,
                 e.body_id,
                 &e.signals,
                 "fss body signals",
@@ -289,31 +289,26 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
             .await
         }
 
-        // What hangs in a system without being a body. Arrives as a system's
-        // worth at a time.
+        // What hangs in a system without being a body. A batch of them from
+        // EDDN, one at a time from the game.
         Event::FssSignalDiscovered(e) => {
-            // The schema only says the sender "should" add these, so a batch
-            // may name no system at all. Nothing can be created from one that
-            // does not, and the signals are still worth writing if the system
-            // is already known.
-            if let Some(ref name) = e.star_system {
-                if !ensure_system(
-                    db,
-                    entry.timestamp,
-                    user,
-                    e.system_address,
-                    name,
-                    e.star_pos,
-                    "fss signal discovered",
-                )
-                .await
-                {
-                    return;
-                }
+            if !ensure_system(
+                db,
+                entry.timestamp,
+                user,
+                e.system_address,
+                e.star_system.as_deref(),
+                e.star_pos,
+                "fss signal discovered",
+            )
+            .await
+            {
+                return;
             }
 
             match SystemSignal::from_journal(
                 db,
+                entry.timestamp,
                 user,
                 e.system_address,
                 &e.signals,
@@ -321,12 +316,12 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
             .await
             {
                 Ok(_) => info!(
-                    system = %e.star_system.as_deref().unwrap_or("?"),
+                    system = %named(e.star_system.as_deref()),
                     signals = e.signals.len(),
                     "fss signal discovered",
                 ),
                 Err(err) => warn!(
-                    system = %e.star_system.as_deref().unwrap_or("?"),
+                    system = %named(e.star_system.as_deref()),
                     error = %err,
                     "fss signal discovered",
                 ),
@@ -339,8 +334,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.system_name,
-                Some(e.star_pos),
+                Some(&e.system_name),
+                e.star_pos,
                 "codex entry",
             )
             .await
@@ -369,7 +364,7 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 entry.timestamp,
                 user,
                 e.system_address,
-                &e.system_name,
+                Some(&e.system_name),
                 None,
                 "docked",
             )
@@ -402,8 +397,8 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                 }
             }
         }
-        Event::NavRoute(NavRoute::Route(destinations)) => {
-            nav_route(db, entry.timestamp, user, destinations).await
+        Event::NavRoute(plotted) => {
+            nav_route(db, entry.timestamp, user, &plotted.destinations).await
         }
         _ => {}
     }
@@ -603,19 +598,26 @@ async fn record_visit(
 /// often the first thing ever sent about the place. Each carries a name and a
 /// position, which is all it takes to write the row they need.
 ///
-/// Whether the row is there to point at, which is worth acting on where the
-/// foreign key would otherwise turn the whole message away. A scan writes its
-/// star regardless: the system may already be on record from something else,
-/// and a write refused here is not the same as no row to hang off.
+/// Whether what follows is worth attempting. A row cannot be created for a
+/// system nothing has named, so an event naming only an address writes nothing
+/// here and goes on anyway: the arrival that had to come first is what wrote
+/// that row, and where it did not the foreign key is what says so. A scan
+/// writes its star regardless: the system may already be on record from
+/// something else, and a write refused here is not the same as no row to hang
+/// off.
 async fn ensure_system(
     db: &Database,
     timestamp: DateTime<Utc>,
     user: &str,
     address: i64,
-    name: &str,
+    name: Option<&str>,
     position: Option<Coordinate>,
     what: &str,
 ) -> bool {
+    let Some(name) = name else {
+        return true;
+    };
+
     let mut system = JournalSystem::new(address, name);
     system.pos = position;
 
@@ -646,7 +648,7 @@ async fn record_body_counts(
     timestamp: DateTime<Utc>,
     user: &str,
     address: i64,
-    name: &str,
+    name: Option<&str>,
     position: Option<Coordinate>,
     body_count: i32,
     non_body_count: Option<i32>,
@@ -664,9 +666,19 @@ async fn record_body_counts(
     )
     .await
     {
-        Ok(_) => info!(system = %name, bodies = body_count, "{}", what),
-        Err(err) => warn!(system = %name, error = %err, "{}", what),
+        Ok(_) => {
+            info!(system = %named(name), bodies = body_count, "{}", what)
+        }
+        Err(err) => warn!(system = %named(name), error = %err, "{}", what),
     }
+}
+
+/// What to call a system in a log line where the event did not name one
+///
+/// Several of the events the game writes carry an address and no name. The
+/// address is on the line beside this wherever it would help.
+fn named(name: Option<&str>) -> &str {
+    name.unwrap_or("unnamed")
 }
 
 /// Record what was found on a body's surface
@@ -679,7 +691,7 @@ async fn record_body_signals(
     timestamp: DateTime<Utc>,
     user: &str,
     address: i64,
-    name: &str,
+    name: Option<&str>,
     position: Option<Coordinate>,
     body_id: i16,
     signals: &[Signal],
@@ -696,8 +708,8 @@ async fn record_body_signals(
     .await
     {
         Ok(_) => {
-            info!(system = %name, body = body_id, signals = signals.len(), "{}", what)
+            info!(system = %named(name), body = body_id, signals = signals.len(), "{}", what)
         }
-        Err(err) => warn!(system = %name, error = %err, "{}", what),
+        Err(err) => warn!(system = %named(name), error = %err, "{}", what),
     }
 }
