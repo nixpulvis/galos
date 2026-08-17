@@ -48,6 +48,7 @@ fn main() {
     app.add_plugins(grid::plugin);
     app.add_plugins(ui::plugin);
     app.add_plugins(search::plugin);
+    app.add_plugins(keys::plugin);
 
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());

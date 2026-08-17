@@ -8,6 +8,7 @@ use galos_db::Database;
 
 pub mod camera;
 pub mod grid;
+pub mod keys;
 pub mod ruled;
 pub mod schedule;
 pub mod search;

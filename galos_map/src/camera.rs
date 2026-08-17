@@ -46,7 +46,7 @@ pub fn plugin(app: &mut App) {
 ///
 /// Stopping just short of straight up keeps the up vector from flipping when
 /// the camera passes over the point it is orbiting.
-const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
+pub(crate) const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 
 /// Where the camera stands when the map opens, as a share of a quarter turn
 ///

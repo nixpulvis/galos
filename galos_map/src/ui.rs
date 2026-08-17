@@ -42,6 +42,7 @@ use galos_db::systems::System as DbSystem;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
+    app.init_resource::<Keyboard>();
     app.init_resource::<SettingsOpen>();
     app.init_resource::<PressOwner>();
     app.init_resource::<BarFields>();
@@ -130,6 +131,41 @@ pub struct PointerOverUi(pub bool);
 /// can stand clear of it.
 #[derive(Resource, Default)]
 pub struct SettingsOpen(bool);
+
+/// What the chrome has taken of the keyboard
+///
+/// The map is driven by bare keys and so is most of what a field wants, so the
+/// two have to be told apart. See [`crate::keys`], which is the whole of what
+/// reads this.
+///
+/// Two questions rather than one, because the chrome takes the keyboard at two
+/// strengths. A field being typed into takes every letter. Anything holding the
+/// focus takes only space and enter, which egui reads as a click on whatever
+/// holds it.
+///
+/// Settled at the end of the chrome's own pass and read by the next frame's
+/// [`crate::schedule::MapSet::Search`], as [`PointerOverUi`] is.
+#[derive(Resource, Default)]
+pub struct Keyboard {
+    /// Whether a field is being typed into
+    ///
+    /// A text field alone. Egui goes on holding a focus wherever tab last
+    /// reached, a checkbox on the settings pane among them, and a checkbox does
+    /// nothing with a letter. Reading [`Keyboard::focused`] instead would leave
+    /// every letter the map is driven by dead until the focus was let go of.
+    pub typing: bool,
+    /// Whether anything in the chrome holds the focus
+    ///
+    /// What a binding on space or enter has to read instead. Egui reads either
+    /// of those as a click on whatever holds the focus, so the chrome answers
+    /// them before the map does, and a control tabbed onto and left holding it
+    /// would be clicked again by every press of the key that flies the camera.
+    ///
+    /// Wider than [`Keyboard::typing`] only while the user is stepping the
+    /// chrome by keyboard: a click grants no focus, so nothing else puts it on
+    /// a control that is not a field.
+    pub focused: bool,
+}
 
 /// Whose a press is
 ///
@@ -508,6 +544,47 @@ pub struct BarFields {
     /// been clicked until it has been drawn, and whether to draw it is the
     /// question being asked.
     expanded: bool,
+    /// Whether the search box has been asked for and not yet given the caret
+    ///
+    /// Set by a key and taken by the next pass over the bar, since only the
+    /// pass that drew the box has a box to put the caret in.
+    opening: bool,
+    /// Whether the form has been asked to be put away
+    ///
+    /// The other half of [`BarFields::opening`], taken in the same place and
+    /// for the same reason: only the pass that drew the fields can let go of
+    /// the one holding the caret.
+    shutting: bool,
+}
+
+impl BarFields {
+    /// Ask for the caret to be put in the search box
+    ///
+    /// What [`crate::keys`] does with a slash. The form drops out below it as
+    /// it does for a click into the box, the focus being what opens it.
+    pub fn open(&mut self) {
+        self.opening = true;
+    }
+
+    /// Whether the box has been asked for and not yet given the caret
+    pub fn opening(&self) -> bool {
+        self.opening
+    }
+
+    /// Ask for the form to be put away and the caret taken out of it
+    ///
+    /// What [`crate::keys`] does with an escape. What was typed is left
+    /// standing, as it is when a press puts the form away: the form is shut
+    /// rather than the question thrown out, and the mark inside the box is what
+    /// takes the answer away.
+    pub fn shut(&mut self) {
+        self.shutting = true;
+    }
+
+    /// Whether the form has been asked to be put away
+    pub fn shutting(&self) -> bool {
+        self.shutting
+    }
 }
 
 /// Everything the settings pane sets
@@ -582,6 +659,7 @@ pub fn chrome(
     mut settings: Settings,
     mut bar: SearchBar,
     mut over_ui: ResMut<PointerOverUi>,
+    mut keyboard: ResMut<Keyboard>,
     mut open: ResMut<SettingsOpen>,
     mut search: ResMut<BarFields>,
     mut selection: ResMut<Selection>,
@@ -874,6 +952,10 @@ pub fn chrome(
     // `egui_wants_pointer_input` covers a drag that began on a control and
     // has since been pulled off it, which being over one does not.
     over_ui.0 = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
+    // Both strengths, since a letter and a space are taken by different
+    // things. Written together, the two being one reading of one context.
+    keyboard.typing = ctx.text_edit_focused();
+    keyboard.focused = ctx.egui_wants_keyboard_input();
 
     // Whose the press is, now that the UI has drawn and knows what it wanted
     // of it. A press spent shutting the form counts as the UI's even where it
@@ -1061,6 +1143,14 @@ fn main_bar(
                         asking,
                     );
                     taken |= response.gained_focus();
+                    // Asked for by a key, and answered here because this is
+                    // where the box is. Counted as the box having been taken,
+                    // rather than left to `gained_focus` to report a frame
+                    // later, so the form is out the moment it is asked for.
+                    if std::mem::take(&mut search.opening) {
+                        response.request_focus();
+                        taken = true;
+                    }
                     // Carried out so the press that shuts the form can let go
                     // of it. See [`let_go_of`].
                     let box_id = response.id;
@@ -1206,10 +1296,11 @@ fn main_bar(
         && dismissed
         && ctx
             .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
-    // Two moments, and nothing else: a field in the form takes focus, or a
-    // press lands off the form. Moments rather than states, so that neither
-    // can undo the other. Asking whether a field holds focus would open the
-    // form again the very next frame.
+    // Three moments, and nothing else: a field in the form takes focus, a
+    // press lands off the form, or an escape asks for it to be put away.
+    // Moments rather than states, so that none of them can undo another.
+    // Asking whether a field holds focus would open the form again the very
+    // next frame.
     let (took_focus, middle, box_id) = bar.inner;
     if took_focus {
         search.expanded = true;
@@ -1217,6 +1308,19 @@ fn main_bar(
     if dismissed {
         search.expanded = false;
         let_go_of(ctx, box_id);
+    }
+    // An escape lets go of whichever field held the caret, where a press lets
+    // go of the search box alone. A press lands somewhere, and what it lands on
+    // is entitled to the focus it has just taken; an escape lands on nothing
+    // and means the form, whichever of its fields was being typed into.
+    //
+    // Egui lets go of a bare escape's focus itself, in the pass the key
+    // arrives. Said here as well because it is what holds the two together:
+    // the form must not be shut over a field still holding the caret, which is
+    // the state [`let_go_of`] exists to keep the map out of.
+    if std::mem::take(&mut search.shutting) {
+        search.expanded = false;
+        ctx.memory_mut(|memory| memory.stop_text_input());
     }
     (shut, middle)
 }
