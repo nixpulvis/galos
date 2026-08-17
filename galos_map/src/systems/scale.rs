@@ -70,7 +70,6 @@ pub enum View {
     // and a star had a radius worth drawing. Whether a shell belongs in this
     // view at all, or only what is inside one, is the same question.
     Stars,
-    // TODO(#44): Bodies
 }
 
 #[derive(Resource, Debug)]
