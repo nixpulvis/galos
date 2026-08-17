@@ -175,8 +175,14 @@ impl Run for Cli {
         if meta.is_dir() {
             sidecars(db, &dir, known.as_deref().unwrap_or(UNKNOWN));
 
-            if let Some(name) = &known {
-                remember(&dir, name);
+            // Only what the logs said. A name given on the command line is
+            // for the run it was given on, and writing it here would file
+            // every later import of this directory under it, the ones that
+            // asked for nothing included.
+            if self.user.is_none() {
+                if let Some(name) = &known {
+                    remember(&dir, name);
+                }
             }
         }
     }
