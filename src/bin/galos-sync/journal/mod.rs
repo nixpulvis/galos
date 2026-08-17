@@ -241,12 +241,19 @@ fn replay(
     replayed
 }
 
-/// The journal files in a directory, or nothing where it cannot be read
+/// The journal files in a directory, in the order they were started
 ///
 /// Anything ending `.log`, which is every journal the game has written under
-/// either of the two names it has given them, in no particular order. A
-/// directory that will not open answers nothing rather than none of them,
-/// which is a different thing and is what the import's status turns on.
+/// either of the two names it has given them. A directory that will not open
+/// answers nothing rather than none of them, which is a different thing and
+/// is what the import's status turns on.
+///
+/// By name, which the game makes the order they were started in. `read_dir`
+/// answers in whatever order the filesystem holds them, and on a directory
+/// of any size that is a hash rather than an order. Two journals whose first
+/// entries fall in the same second tie in every sort downstream, and a stable
+/// sort breaks a tie by the order it was handed, so leaving this to the
+/// filesystem is an import that lands differently between runs.
 fn logs(dir: &Path) -> Option<Vec<PathBuf>> {
     let read = match fs::read_dir(dir) {
         Ok(read) => read,
@@ -256,15 +263,17 @@ fn logs(dir: &Path) -> Option<Vec<PathBuf>> {
         }
     };
 
-    Some(
-        read.filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path.extension().and_then(OsStr::to_str) == Some("log")
-            })
-            .collect(),
-    )
+    let mut logs: Vec<PathBuf> = read
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path.extension().and_then(OsStr::to_str) == Some("log")
+        })
+        .collect();
+
+    logs.sort();
+    Some(logs)
 }
 
 /// Read one journal file, saying what in it could not be read
@@ -621,6 +630,42 @@ mod tests {
 
         assert_eq!(logs(&dir), Some(Vec::new()));
         assert_eq!(logs(&dir.join("no-such-directory")), None);
+    }
+
+    /// The journals of a directory come back in the order they were written
+    ///
+    /// `read_dir` answers in whatever order the filesystem holds them, which
+    /// is not an order and need not be the same one twice. Two journals whose
+    /// first entries fall in the same second tie in every sort downstream,
+    /// and a tie is broken by the order they arrived in, so leaving that to
+    /// the filesystem is an import that lands differently between runs. The
+    /// game names them for when they were started, so the name is the order.
+    #[test]
+    fn the_journals_of_a_directory_are_in_the_order_they_were_started() {
+        let dir = scratch("the_journals_of_a_directory");
+
+        // Enough of them, written in the reverse of the order wanted, that a
+        // directory held by hash has room to disagree with both. Three would
+        // come back in order on a filesystem that happened to oblige and
+        // pass this whatever the code did.
+        let mut wanted: Vec<String> = (3..28)
+            .map(|day| format!("Journal.2026-08-{:02}T000000.01.log", day))
+            .collect();
+        for name in wanted.iter().rev() {
+            journal(&dir, name, b"");
+        }
+        journal(&dir, "NavRoute.json", b"{}");
+        wanted.sort();
+
+        let found: Vec<String> = logs(&dir)
+            .expect("the directory should read")
+            .iter()
+            .map(|path| {
+                path.file_name().unwrap().to_string_lossy().into_owned()
+            })
+            .collect();
+
+        assert_eq!(found, wanted);
     }
 
     /// A journal that will not open is not one holding no entries
