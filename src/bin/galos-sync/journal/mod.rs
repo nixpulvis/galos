@@ -75,10 +75,11 @@ pub struct Cli {
 }
 
 impl Run for Cli {
-    /// Import what the path names, ending the process where nothing was read
+    /// Import what the path names, ending the process where any of it was not
     ///
-    /// The status is the whole of what cron reads, so a run that could open
-    /// nothing must not look like one with nothing left to do.
+    /// The status is the whole of what cron reads, so a run that lost a
+    /// journal to the filesystem must not look like one with nothing left to
+    /// do. What could be read is written either way.
     fn run(&self, db: &Database) {
         if !self.import(db) {
             std::process::exit(1);
@@ -87,7 +88,7 @@ impl Run for Cli {
 }
 
 impl Cli {
-    /// Write what the path holds, answering whether any of it could be read
+    /// Write what the path holds, answering whether all of it could be read
     fn import(&self, db: &Database) -> bool {
         let path = Path::new(&self.path);
         let Ok(meta) = fs::metadata(path) else {
@@ -121,28 +122,32 @@ impl Cli {
         // order they happened or an import lands differently every time. A
         // file's own first entry is what says where the file belongs, which
         // is the order a commander's name carries forward in.
-        let mut journals: Vec<(PathBuf, Vec<Entry<Event>>)> = paths
-            .iter()
-            .filter_map(|path| {
-                let mut entries = read(path)?;
-                entries.sort_by_key(|entry| entry.timestamp);
-                Some((path.to_owned(), entries))
-            })
-            .collect();
+        let mut journals = Vec::new();
+        let mut refused = 0;
+        for path in &paths {
+            match read(path) {
+                Some(mut entries) => {
+                    entries.sort_by_key(|entry| entry.timestamp);
+                    journals.push((path.to_owned(), entries));
+                }
+                None => refused += 1,
+            }
+        }
         journals.sort_by_key(|(_, entries)| {
             entries.first().map(|entry| entry.timestamp)
         });
 
-        // Every file named was refused. A directory holding no journals at
-        // all is empty rather than unreadable, and is left to say so with a
-        // bar that finishes at nothing.
-        if journals.is_empty() && !paths.is_empty() {
+        // What could be read is still worth writing, and re-running costs
+        // nothing, so the refused ones do not stop the rest. They do decide
+        // the status: a journal not read is a journal not imported, and a run
+        // that lost one quietly is a run nobody goes back to.
+        if refused > 0 {
             warn!(
                 path = %path.display(),
-                files = paths.len(),
-                "no journal here could be read",
+                refused = refused,
+                read = journals.len(),
+                "journals that could not be read",
             );
-            return false;
         }
 
         // What the command line said, which outranks every file, or what the
@@ -181,9 +186,11 @@ impl Cli {
             // The bar and the log are drawn on the same terminal, and a line
             // printed under a bar lands on top of it. Standing the bar down
             // for a run of entries out of one file leaves the log the
-            // terminal while they are written, and costs one redraw a run.
-            // Per entry it would cost two writes for every line of every
-            // journal ever flown, which is the whole import.
+            // terminal while they are written. A run is usually most of a
+            // file, two journals overlapping over an afternoon rather than
+            // line by line, and where they do alternate this falls back to a
+            // redraw an entry. Which is still small beside the write that
+            // every one of those entries is waiting on.
             bar.suspend(|| {
                 task::block_on(async {
                     for (_, entry) in run {
@@ -211,7 +218,7 @@ impl Cli {
             }
         }
 
-        true
+        refused == 0
     }
 }
 
