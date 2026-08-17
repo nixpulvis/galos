@@ -108,7 +108,8 @@ impl Run for Cli {
         // buys is order: a write is refused now where something newer already
         // stands in its place, so entries have to reach the database in the
         // order they happened or an import lands differently every time. A
-        // file's own first entry is what says where the file belongs.
+        // file's own first entry is what says where the file belongs, which
+        // is the order a commander's name carries forward in.
         let mut journals: Vec<(PathBuf, Vec<Entry<Event>>)> = paths
             .into_iter()
             .filter_map(|path| {
@@ -121,52 +122,90 @@ impl Run for Cli {
             entries.first().map(|entry| entry.timestamp)
         });
 
-        // What the command line said, which outranks every file, and what is
-        // left to fall back on where a file names nobody.
-        let forced = self.user.as_deref();
-        let mut known = forced.map(str::to_owned).or_else(|| remembered(&dir));
+        // What the command line said, which outranks every file, or what the
+        // directory remembered, which is what a file introducing nobody falls
+        // back to.
+        let mut known = self.user.clone().or_else(|| remembered(&dir));
+
+        // Who each journal is filed under. A session names its commander at
+        // the top of the file it opens and a file continued from it names
+        // nobody, so the answer carries forward from the file before.
+        let users: Vec<Option<String>> = journals
+            .iter()
+            .map(|(_, entries)| {
+                if self.user.is_none() {
+                    if let Some(name) = commander(entries) {
+                        known = Some(name);
+                    }
+                }
+                known.clone()
+            })
+            .collect();
 
         let bar = progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
-        for (path, entries) in &journals {
-            if forced.is_none() {
-                if let Some(name) = commander(entries) {
-                    known = Some(name);
-                }
-            }
-            let user = forced.or(known.as_deref()).unwrap_or(UNKNOWN);
+        for run in replay(&journals).chunk_by(|(a, _), (b, _)| a == b) {
+            let journal = run[0].0;
+            let user = users[journal].as_deref().unwrap_or(UNKNOWN);
 
             bar.set_message(
-                path.file_name()
+                journals[journal]
+                    .0
+                    .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned(),
             );
             // The bar and the log are drawn on the same terminal, and a line
             // printed under a bar lands on top of it. Standing the bar down
-            // for the length of a file leaves the log the terminal while that
-            // file is written, and costs one redraw a file. Per entry it
-            // would cost two writes for every line of every journal ever
-            // flown, which is the whole import.
+            // for a run of entries out of one file leaves the log the
+            // terminal while they are written, and costs one redraw a run.
+            // Per entry it would cost two writes for every line of every
+            // journal ever flown, which is the whole import.
             bar.suspend(|| {
                 task::block_on(async {
-                    for entry in entries {
+                    for (_, entry) in run {
                         record::entry(db, entry, user).await;
                     }
                 })
             });
-            bar.inc(entries.len() as u64);
+            bar.inc(run.len() as u64);
         }
         bar.finish();
 
         if meta.is_dir() {
-            let user = forced.or(known.as_deref()).unwrap_or(UNKNOWN);
-            sidecars(db, &dir, user);
+            sidecars(db, &dir, known.as_deref().unwrap_or(UNKNOWN));
 
-            if let Some(name) = forced.or(known.as_deref()) {
+            if let Some(name) = &known {
                 remember(&dir, name);
             }
         }
     }
+}
+
+/// Every entry of every journal, in the order they happened
+///
+/// Each paired with the journal it came out of, which is what says who flew
+/// it and what the bar is showing.
+///
+/// A whole file at a time is not that order. The Live and Legacy clients
+/// write into one Saved Games directory and their files cover the same
+/// afternoons, so replaying one file before starting the next puts an older
+/// reading of a station over a newer one, which a guarded write cannot tell
+/// from an update. Sorting is stable, so entries stamped the same second are
+/// left in the order their files stand in.
+fn replay(
+    journals: &[(PathBuf, Vec<Entry<Event>>)],
+) -> Vec<(usize, &Entry<Event>)> {
+    let mut replayed: Vec<_> = journals
+        .iter()
+        .enumerate()
+        .flat_map(|(journal, (_, entries))| {
+            entries.iter().map(move |entry| (journal, entry))
+        })
+        .collect();
+
+    replayed.sort_by_key(|(_, entry)| entry.timestamp);
+    replayed
 }
 
 /// The journal files in a directory, in no particular order
@@ -493,5 +532,56 @@ mod tests {
             .expect("the file should read");
 
         assert_eq!(entries.len(), 2);
+    }
+
+    /// An entry that is nothing but the moment it happened
+    fn at(minute: &str) -> Entry<Event> {
+        serde_json::from_str(&format!(
+            r#"{{ "timestamp": "2026-08-08T{}:00Z", "event": "NavRoute" }}"#,
+            minute,
+        ))
+        .expect("entry should parse")
+    }
+
+    /// The minute each entry of a replay happened, in the order it is written
+    fn minutes(journals: &[(PathBuf, Vec<Entry<Event>>)]) -> Vec<String> {
+        replay(journals)
+            .iter()
+            .map(|(_, entry)| entry.timestamp.format("%H:%M").to_string())
+            .collect()
+    }
+
+    /// A file at a time is not the order the game wrote them in
+    ///
+    /// The Live and Legacy clients write into one Saved Games directory, so
+    /// two files covering the same afternoon is an ordinary directory rather
+    /// than a damaged one.
+    #[test]
+    fn overlapping_journals_are_replayed_in_the_order_they_happened() {
+        let journals = vec![
+            (PathBuf::from("Journal.live.log"), vec![at("12:00"), at("18:00")]),
+            (PathBuf::from("Journal.legacy.log"), vec![at("12:30")]),
+        ];
+
+        assert_eq!(minutes(&journals), ["12:00", "12:30", "18:00"]);
+    }
+
+    /// Entries stamped the same second keep the order their files are in
+    ///
+    /// The journal is stamped to the second and a busy one writes several
+    /// inside one, so this decides more than a corner case. Sorting is
+    /// stable, so what settles it is where the files stand.
+    #[test]
+    fn entries_stamped_alike_are_left_as_they_stand() {
+        let journals = vec![
+            (PathBuf::from("Journal.first.log"), vec![at("12:00")]),
+            (PathBuf::from("Journal.second.log"), vec![at("12:00")]),
+        ];
+
+        let replayed = replay(&journals);
+        assert_eq!(
+            replayed.iter().map(|(j, _)| *j).collect::<Vec<_>>(),
+            [0, 1]
+        );
     }
 }
