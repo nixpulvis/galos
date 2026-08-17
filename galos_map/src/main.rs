@@ -52,18 +52,5 @@ fn main() {
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());
 
-    // Both only append an AppExit message, so the order does not matter.
-    app.add_systems(
-        Update,
-        exit.ambiguous_with(
-            bevy::app::TerminalCtrlCHandlerPlugin::exit_on_flag,
-        ),
-    );
     app.run();
-}
-
-fn exit(keys: Res<ButtonInput<KeyCode>>, mut events: MessageWriter<AppExit>) {
-    if keys.just_pressed(KeyCode::Escape) {
-        events.write(AppExit::Success);
-    }
 }
