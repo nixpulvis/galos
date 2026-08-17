@@ -172,17 +172,19 @@ impl Run for Cli {
         }
         bar.finish();
 
-        if meta.is_dir() {
-            sidecars(db, &dir, known.as_deref().unwrap_or(UNKNOWN));
+        // Whatever is beside the logs, whether one of them or all of them
+        // were asked for. The route is where the ship is going now and there
+        // is one copy of it, so the directory holding a single file carries
+        // it just as much as the directory does.
+        sidecars(db, &dir, known.as_deref().unwrap_or(UNKNOWN));
 
-            // Only what the logs said. A name given on the command line is
-            // for the run it was given on, and writing it here would file
-            // every later import of this directory under it, the ones that
-            // asked for nothing included.
-            if self.user.is_none() {
-                if let Some(name) = &known {
-                    remember(&dir, name);
-                }
+        // Only a whole directory gets to say whose it is, and only what the
+        // logs said. A name given on the command line is for the run it was
+        // given on, and writing it here would file every later import of
+        // this directory under it, the ones that asked for nothing included.
+        if meta.is_dir() && self.user.is_none() {
+            if let Some(name) = &known {
+                remember(&dir, name);
             }
         }
     }
