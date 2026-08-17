@@ -317,11 +317,13 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
             {
                 Ok(_) => info!(
                     system = %named(e.star_system.as_deref()),
+                    address = e.system_address,
                     signals = e.signals.len(),
                     "fss signal discovered",
                 ),
                 Err(err) => warn!(
                     system = %named(e.star_system.as_deref()),
+                    address = e.system_address,
                     error = %err,
                     "fss signal discovered",
                 ),
@@ -666,10 +668,18 @@ async fn record_body_counts(
     )
     .await
     {
-        Ok(_) => {
-            info!(system = %named(name), bodies = body_count, "{}", what)
-        }
-        Err(err) => warn!(system = %named(name), error = %err, "{}", what),
+        Ok(_) => info!(
+            system = %named(name),
+            address = address,
+            bodies = body_count,
+            "{}", what
+        ),
+        Err(err) => warn!(
+            system = %named(name),
+            address = address,
+            error = %err,
+            "{}", what
+        ),
     }
 }
 
@@ -707,9 +717,18 @@ async fn record_body_signals(
     )
     .await
     {
-        Ok(_) => {
-            info!(system = %named(name), body = body_id, signals = signals.len(), "{}", what)
-        }
-        Err(err) => warn!(system = %named(name), error = %err, "{}", what),
+        Ok(_) => info!(
+            system = %named(name),
+            address = address,
+            body = body_id,
+            signals = signals.len(),
+            "{}", what
+        ),
+        Err(err) => warn!(
+            system = %named(name),
+            address = address,
+            error = %err,
+            "{}", what
+        ),
     }
 }
