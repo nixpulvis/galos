@@ -28,8 +28,10 @@
 use crate::{bar, Run};
 use async_std::task;
 use elite_journal::entry::{Entry, Event, NavRoute};
+use elite_journal::system::Coordinate;
 use galos_db::Database;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind};
@@ -170,6 +172,27 @@ impl Cli {
             })
             .collect();
 
+        // Every system the directory names, written before anything points
+        // at one. Four of the events the game writes name only an address,
+        // and the game writes them ahead of the arrival that would have made
+        // the row, so without this the foreign key turns them all away.
+        let names = gather_names(&journals);
+        task::block_on(async {
+            for (address, (journal, entry, name, pos)) in &names {
+                let user = users[*journal].as_deref().unwrap_or(UNKNOWN);
+                record::ensure_system(
+                    db,
+                    entry.timestamp,
+                    user,
+                    *address,
+                    Some(name),
+                    *pos,
+                    "system named",
+                )
+                .await;
+            }
+        });
+
         let bar = progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
         // Every line the log prints from here goes above the bar, so the bar
         // keeps the bottom line for the length of the import.
@@ -215,6 +238,68 @@ impl Cli {
 
         refused == 0
     }
+}
+
+/// Where every system this import names is, by the address it is known by
+///
+/// The reason an importer reads a whole directory before it writes any of it.
+/// The game writes an event per signal as it arrives somewhere and writes the
+/// arrival that names the system afterwards, in the same second: 55 of Sol's
+/// signals stand above its `FSDJump` in a journal here. So a system's signals
+/// reach the database ahead of the thing that would have created the system,
+/// and the foreign key turns every one of them away.
+///
+/// EDDN answers this by making a sender copy a name into every message it
+/// forwards. An importer has the whole of it in front of it instead, so it
+/// takes the name from wherever in the directory it is given. What is written
+/// from this is a name and a place. Everything else about a system is written
+/// by the events themselves, in the order they happened.
+///
+/// The first naming of an address wins, which is the earliest, so the row is
+/// stamped at the first the import knows of the place rather than the last.
+fn gather_names<'a>(
+    journals: &'a [(PathBuf, Vec<Entry<Event>>)],
+) -> BTreeMap<i64, (usize, &'a Entry<Event>, &'a str, Option<Coordinate>)> {
+    let mut names = BTreeMap::new();
+
+    for (journal, entry) in replay(journals) {
+        let said: Option<(i64, &str, Option<Coordinate>)> = match &entry.event {
+            Event::Location(e) => {
+                Some((e.system.address, &e.system.name, e.system.pos))
+            }
+            Event::CarrierJump(e) => {
+                Some((e.system.address, &e.system.name, e.system.pos))
+            }
+            Event::FsdJump(e) => {
+                Some((e.system.address, &e.system.name, e.system.pos))
+            }
+            Event::Docked(e) => Some((e.system_address, &e.system_name, None)),
+            Event::Scan(e) => {
+                Some((e.system_address, &e.star_system, e.star_pos))
+            }
+            Event::ScanBaryCentre(e) => {
+                Some((e.system_address, &e.star_system, e.star_pos))
+            }
+            Event::FssDiscoveryScan(e) => {
+                Some((e.system_address, &e.system_name, e.star_pos))
+            }
+            Event::FssAllBodiesFound(e) => {
+                Some((e.system_address, &e.system_name, e.star_pos))
+            }
+            Event::CodexEntry(e) => {
+                Some((e.system_address, &e.system_name, e.star_pos))
+            }
+            // The events the game writes without a name say nothing here.
+            // They are what this is for.
+            _ => None,
+        };
+
+        if let Some((address, name, pos)) = said {
+            names.entry(address).or_insert((journal, entry, name, pos));
+        }
+    }
+
+    names
 }
 
 /// Every entry of every journal, in the order they happened
@@ -707,6 +792,42 @@ mod tests {
         ];
 
         assert_eq!(minutes(&journals), ["12:00", "12:30", "18:00"]);
+    }
+
+    /// A system is named by an event standing below what points at it
+    ///
+    /// What the game writes on arriving somewhere: the signals it finds
+    /// first, then the jump saying where it got to, all in one second. The
+    /// signals name only an address, so read a line at a time there is
+    /// nothing to make the row from and the foreign key turns every one of
+    /// them away. Reading the directory whole is what answers it.
+    #[test]
+    fn a_system_named_below_what_points_at_it_is_still_named() {
+        let journals = vec![(
+            PathBuf::from("Journal.arriving.log"),
+            parse(&[
+                r#"{
+                    "timestamp": "2026-08-12T04:02:36Z",
+                    "event": "FSSSignalDiscovered",
+                    "SystemAddress": 10477373803,
+                    "SignalName": "Titan City"
+                }"#,
+                r#"{
+                    "timestamp": "2026-08-12T04:02:36Z",
+                    "event": "FSDJump",
+                    "StarSystem": "Sol",
+                    "StarPos": [1.0, 2.0, 3.0],
+                    "SystemAddress": 10477373803
+                }"#,
+            ]),
+        )];
+
+        let names = gather_names(&journals);
+        let (_, _, name, pos) =
+            names.get(&10477373803).expect("Sol should be named");
+
+        assert_eq!(*name, "Sol");
+        assert_eq!(pos.map(|place| place.x), Some(1.0));
     }
 
     /// Entries stamped the same second keep the order their files are in
