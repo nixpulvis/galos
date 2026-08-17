@@ -1,0 +1,50 @@
+-- no-transaction
+-- What a body lends to its system's reach is read from the index, not the row.
+--
+-- The map asks how far each system in view reaches, so it knows how large to
+-- draw the shell standing around it. That question reads five narrow columns
+-- off `bodies`, whose rows are thirty-six columns wide: twenty-four bytes
+-- wanted out of a four hundred and fifty byte row.
+--
+-- Worse, the rows for one system are nowhere near each other. Bodies arrive
+-- from the feed in the order commanders happen to scan them, so a system's ten
+-- bodies are written the width of the table apart. Asking for the 1,235
+-- systems within 50 light years of Sol reaches 8,293 body rows sitting on
+-- 4,729 distinct heap pages: one page read per 1.75 rows wanted, against the
+-- twenty-three a page holds.
+--
+-- `INCLUDE` carries the five columns in the leaf pages without making them
+-- part of the key, so the scan is answered from the index and never opens the
+-- heap at all. The entries are already in the order the query reads them,
+-- being ordered on the address it groups by.
+--
+-- Measured the day this was written, against 1,552,774 systems and 1,331,275
+-- bodies, over this and the two indexes beside it: for those same 1,235
+-- systems, 9,566 buffers touched falls to 2,952, the 7,980 of them read from
+-- disk falls to 760, and 7,091 heap blocks fall to 12. In seconds that is 1.9
+-- cold and 1.5 on a repeat, against 0.03 to 0.29. The spread is whatever else
+-- has the disk at the time, which is why the buffer counts are the figure
+-- worth keeping.
+--
+-- An index-only scan still has to know a row is visible, and it skips the heap
+-- for that only where the visibility map says a page is wholly visible. That
+-- map is written by `VACUUM`, and this table had never been vacuumed when this
+-- was added: autovacuum wants a fifth of the rows dead before it comes, and a
+-- table the feed only ever inserts into never gets there. Without a vacuum the
+-- scan falls back to the heap for every row and this index buys nothing, so
+-- run one after this.
+--
+-- Built concurrently, which takes two passes over the table instead of one and
+-- is the slower way to build it. The alternative holds writes off `bodies` for
+-- the length of the build, and the sync writing to it is a zeromq subscriber
+-- whose socket fills while it waits. `ISSUE-eddn-zmq-assert.md` is what
+-- happens then. One statement to the file for the same reason: a file of
+-- several is sent as one query and Postgres runs that in a transaction of its
+-- own, which is the one place `CONCURRENTLY` may not go.
+--
+-- Three indexes on `system_address` now stand on `bodies`, counting the
+-- primary key and the unique constraint on the name. The sync pays one more
+-- btree insert per body for it, which against the two it already pays is the
+-- cheaper half of what a row costs to write.
+CREATE INDEX CONCURRENTLY bodies_reach ON bodies (system_address)
+    INCLUDE (distance_from_arrival, semi_major_axis, eccentricity, radius);
