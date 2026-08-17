@@ -692,7 +692,7 @@ pub(crate) fn choose_names(
     // by construction, so this is that point without the projection.
     let middle = viewport / 2.;
 
-    let Layout { wanted, placed, rings } = &mut *layout;
+    let Layout { wanted, packing, rings } = &mut *layout;
     rings.clear();
 
     // Everything close enough to name and in front of the camera, with the
@@ -842,7 +842,7 @@ pub(crate) fn choose_names(
         wanted.push((entity, rect, score));
     }
 
-    let winners = place(wanted, viewport, placed, rings);
+    let winners = place(wanted, viewport, packing, rings);
 
     // Only what changed hands. Nearly every name is the same name it was
     // last frame, and taking one away to give it straight back moves its
@@ -878,19 +878,19 @@ const BUCKET: f32 = NAME_HEIGHT * 8.;
 pub(crate) struct Layout {
     /// The candidates, with the rectangle each would occupy and its score
     wanted: Vec<(Entity, Rect, f32)>,
-    /// Where the names already placed sit
-    placed: Placed,
+    /// Where the names already laid out sit
+    packing: Packing,
     /// The rings drawn around what is picked out, and what each belongs to
     rings: Vec<(Entity, Rect)>,
 }
 
-/// Where the names already placed sit, bucketed by screen position
+/// Where the names already laid out sit, bucketed by screen position
 ///
 /// A candidate overlaps only what is near it, so testing it against every
 /// name placed so far asks a question about the far side of the screen to
 /// learn about a rectangle twenty pixels wide.
 #[derive(Default)]
-struct Placed {
+struct Packing {
     /// Indices into `rects`, by bucket
     buckets: Vec<Vec<u32>>,
     rects: Vec<Rect>,
@@ -900,7 +900,7 @@ struct Placed {
     rows: usize,
 }
 
-impl Placed {
+impl Packing {
     /// Empty the grid and size it to the viewport, keeping its allocations
     fn reset(&mut self, viewport: Vec2) {
         self.columns = ((viewport.x / BUCKET).ceil() as usize).max(1);
@@ -975,7 +975,7 @@ fn ringed(at: Vec2, radius: f32) -> Rect {
 fn place(
     candidates: &mut [(Entity, Rect, f32)],
     viewport: Vec2,
-    placed: &mut Placed,
+    packing: &mut Packing,
     rings: &[(Entity, Rect)],
 ) -> EntityHashSet {
     // Best first, so that what is dropped is dropped in favour of something
@@ -989,7 +989,7 @@ fn place(
     // rather than a choice.
     candidates.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
 
-    placed.reset(viewport);
+    packing.reset(viewport);
     let mut winners = EntityHashSet::default();
     for (entity, rect, _) in candidates.iter() {
         // A ring is what the map is pointing at, so it keeps its place and
@@ -1001,10 +1001,10 @@ fn place(
             of != entity && !ring.intersect(*rect).is_empty()
         });
 
-        if ringed_over || !placed.clear_of(*rect) {
+        if ringed_over || !packing.clear_of(*rect) {
             continue;
         }
-        placed.hold(*rect);
+        packing.hold(*rect);
         winners.insert(*entity);
     }
     winners
@@ -3142,7 +3142,7 @@ mod tests {
         candidates: &mut [(Entity, Rect, f32)],
         rings: &[(Entity, Rect)],
     ) -> EntityHashSet {
-        place(candidates, VIEWPORT, &mut Placed::default(), rings)
+        place(candidates, VIEWPORT, &mut Packing::default(), rings)
     }
 
     /// Seeded, so a failure can be looked at twice
