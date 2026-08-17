@@ -6,15 +6,16 @@
 //!
 //! [`View::Systems`] draws whichever of two is wider: a mark that says a
 //! system is there, held at a size in the world so the sky reads as depth, and
-//! the system's own extent, which takes over once the camera is near enough
-//! for the mark to have been squeezed down under it. [`View::Stars`] draws one
-//! size for the whole map, and is the older of the two.
+//! the system's own extent, which is phased in over how much of the sky the
+//! system takes up and takes over once the camera is near enough for the mark
+//! to have been squeezed down under it. [`View::Stars`] draws one size for the
+//! whole map, and is the older of the two.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
-use super::bodies::spawn::Body;
+use super::bodies::spawn::{Body, WORTH_KEEPING, WORTH_SIZING};
 use super::labels::{depth_of, world_per_pixel};
 use super::roundness::Roundness;
 use super::spawn::Shell;
@@ -219,17 +220,34 @@ const MARGIN: f32 = 1.2;
 /// shell arriving out of it.
 ///
 /// The wider rather than the two added, so that how far a system reaches
-/// cannot swell a mark that is still doing its job. Systems reach anywhere from
-/// a light second to a fifth of a light year, and added in, the widest of them
-/// draw as a ball among their neighbours' dots from light years off.
+/// cannot swell a mark that is still doing its job.
+///
+/// The extent is phased in over the sky the system takes up, from
+/// [`WORTH_SIZING`] to [`WORTH_KEEPING`], and counts for nothing below that
+/// band. A mark is an angle up to twenty light years out and near enough a
+/// fixed size in the world past it, so an extent counted in full would beat it
+/// from there to the rim: the widest systems on record draw as a ball among
+/// their neighbours' dots from four hundred light years off, twenty times
+/// further than anything in them is visible. Phased in, a system takes its own
+/// size on about half again as far out as its contents are drawn, whatever
+/// size it is.
+///
+/// Full by [`WORTH_KEEPING`] rather than by
+/// [`super::bodies::spawn::WORTH_DRAWING`], which is where the contents of a
+/// system are drawn. They are kept down to the lower of the two, so a shell
+/// drawn to a part of the extent anywhere between them would stand inside the
+/// orbits still being drawn in it.
 ///
 /// `prominence` scales the mark and not the system. A busy system is worth a
 /// larger mark; it is not worth a larger volume, and a quarter of one would
 /// put the shell inside the orbits it stands around.
 fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
     let mark = MARK.min(NEAREST * away) + ANGULAR * away;
+    let seen = extent / away.max(1.);
+    let counting =
+        ((seen - WORTH_SIZING) / (WORTH_KEEPING - WORTH_SIZING)).clamp(0., 1.);
 
-    (extent * MARGIN).max(mark * prominence)
+    (extent * MARGIN * counting).max(mark * prominence)
 }
 
 /// Draw each system large enough to be seen from where the camera is
@@ -419,19 +437,22 @@ mod tests {
     use crate::systems::bodies::STAND_IN;
     use crate::systems::tests::{at, reaching, system};
 
-    /// A shell always holds the system it stands around
+    /// A shell holds the system it stands around wherever the insides are drawn
     ///
-    /// What the rest rests on. Swept over the whole range of distances the map
-    /// allows and over extents from a compact system to the widest on record,
-    /// since a floor-shaped mistake passes on a large system and fails on
-    /// every smaller one.
+    /// What the rest rests on. Out to [`WORTH_KEEPING`], which is as far off as
+    /// what fills a system is kept: past that a system is a mark saying where
+    /// it is, and a mark is smaller than the thing it stands for. Swept over
+    /// extents from a compact system to the widest on record, since a
+    /// floor-shaped mistake passes on a large system and fails on every
+    /// smaller one.
     #[test]
     fn a_shell_holds_the_system_inside_it() {
-        // A light second out to a light hour, which is compact to the widest
-        // on record.
-        for extent in [3e8f32, 1.5e12, 1.7e14, 2.1e14] {
-            // A metre out to the far rim of the galaxy.
-            for away in [1f32, 1e9, 1e13, 1e17, 4.7e20] {
+        // A light second out to a fifth of a light year, which is compact to
+        // the widest on record.
+        for extent in [3e8f32, 1.5e12, 1.7e14, 2.1e15] {
+            // A metre out to as far as the system's insides are still kept.
+            let kept = extent / WORTH_KEEPING;
+            for away in [1f32, kept * 1e-4, kept * 1e-2, kept * 0.5, kept] {
                 for prominence in [POP_MIN, 1., POP_MAX] {
                     let drawn = shell(extent, away, prominence);
 
@@ -459,6 +480,86 @@ mod tests {
         assert!(shell(extent, 1e18, 1.) > held, "the mark had already gone");
         assert_eq!(shell(extent, 1e16, 1.), held);
         assert_eq!(shell(extent, 1e12, 1.), held);
+    }
+
+    /// A wide system is a mark from far off, as any other system is
+    ///
+    /// The whole of what phasing the extent in is for. The widest systems on
+    /// record reach a fifth of a light year, and counted in full one of those
+    /// is drawn at its own size from four hundred light years out, a ball
+    /// sitting among its neighbours' dots for as long as it takes to fly the
+    /// twenty times nearer that seeing anything in it takes.
+    #[test]
+    fn a_wide_system_is_a_mark_from_far_off() {
+        let away = 100. * crate::space::LIGHT_YEAR as f32;
+        // The widest on record, one of the ordinary sort, and a system of no
+        // size at all, which is the mark and nothing else.
+        let widest = shell(2.1e15, away, 1.);
+        let ordinary = shell(1e14, away, 1.);
+        let mark = shell(0., away, 1.);
+
+        assert_eq!(
+            widest, mark,
+            "the widest system on record drew {widest}m against a mark of \
+             {mark}m from a hundred light years"
+        );
+        assert_eq!(ordinary, mark);
+    }
+
+    /// And is drawn to its own size before what fills it arrives
+    ///
+    /// The other end of the same band, and what keeps the extent from being
+    /// watched arriving: by the time there is anything inside a system to
+    /// hold, the shell holding it has settled. Over the whole range of sizes,
+    /// each read at the distance its own contents are drawn at.
+    #[test]
+    fn a_system_is_sized_before_its_insides_are_drawn() {
+        use crate::systems::bodies::spawn::WORTH_DRAWING;
+
+        for extent in [STAND_IN, 1e13, 1e14, 5e14, 1e15, 2.1e15] {
+            let away = extent / WORTH_DRAWING;
+            let drawn = shell(extent, away, 1.);
+
+            assert_eq!(
+                drawn,
+                extent * MARGIN,
+                "a system reaching {extent}m drew {drawn}m where its bodies \
+                 were being drawn, from {away}m away"
+            );
+        }
+    }
+
+    /// A shell only ever grows on screen as the camera comes in
+    ///
+    /// What says the extent arrives without a step in it. The mark and the
+    /// extent cross over as the camera closes, and in metres the shell dips
+    /// through the crossing: the mark it is still drawn at is falling while
+    /// the extent coming up under it has not caught up. On screen it does not
+    /// dip, the mark holding its angle over exactly that stretch, and the
+    /// screen is where it is watched.
+    ///
+    /// Swept from beyond the far rim in to a system's own surface, over every
+    /// size of system. The tolerance is the last bit of an `f32`: a mark held
+    /// at a fixed angle is a constant here, and it is arrived at by dividing
+    /// two numbers that both move.
+    #[test]
+    fn a_shell_only_grows_on_screen_as_the_camera_comes_in() {
+        for extent in [STAND_IN, 1e13, 1e14, 5e14, 1e15, 2.1e15] {
+            let mut away = 2000. * crate::space::LIGHT_YEAR as f32;
+            let mut before = shell(extent, away, 1.) / away;
+
+            while away > extent {
+                away *= 0.98;
+                let seen = shell(extent, away, 1.) / away;
+
+                assert!(
+                    seen >= before - before * 1e-6,
+                    "a system reaching {extent}m shrank from {before} to \
+                     {seen} radians as the camera came in to {away}m"
+                );
+                before = seen;
+            }
+        }
     }
 
     /// A mark is gone well before the camera reaches the shell it stood for

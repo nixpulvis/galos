@@ -19,13 +19,14 @@
 //!
 //! # The ladder
 //!
-//! Four figures decide what is drawn for a system as the camera comes in, and
-//! they are four points on one axis: how much of the sky the system takes up,
+//! Five figures decide what is drawn for a system as the camera comes in, and
+//! they are five points on one axis: how much of the sky the system takes up,
 //! which is its own reach over how far off it is. Held in that order, and
 //! declared in it, so a figure out of place is a number out of order:
 //!
 //! | | |
 //! |---|---|
+//! | [`WORTH_SIZING`] | 0.004, the system's own extent starts to count |
 //! | [`WORTH_KEEPING`] | 0.008, what is inside is taken away again |
 //! | [`WORTH_DRAWING`] | 0.01, what is inside is drawn |
 //! | [`WORTH_MARKING`] | 0.0125, the mark standing for it starts to go |
@@ -148,13 +149,35 @@ fn show_orbits(
     }
 }
 
+/// How large a system has to look before its own extent counts for its size,
+/// in radians
+///
+/// The bottom of the ladder, and [`crate::systems::scale::shell`] is what
+/// reads it. Below this a system is drawn as a mark and nothing else, however
+/// wide it is: a system reaching a fifth of a light year is drawn at its own
+/// size from four hundred light years off otherwise, a ball among its
+/// neighbours' dots, and none of what fills it is visible for another twenty
+/// times nearer in.
+///
+/// An angle, as the rest of the ladder is, so the widest systems and the
+/// narrowest each take their own size on at the same apparent size. The widest
+/// on record starts to count from some fifty light years out and stands at its
+/// full size by twenty-eight; the ordinary sort starts under three light years
+/// out and stands there by one and a half.
+pub(crate) const WORTH_SIZING: f32 = 4e-3;
+
 /// How small a system may look before what is in it is taken away again, in
 /// radians
 ///
 /// Under [`WORTH_DRAWING`], so a camera sitting on the line does not spawn and
 /// despawn a system's insides every frame. Under [`WORTH_MARKING`] as well, so
 /// that the taking away happens behind a whole mark as the drawing did.
-const WORTH_KEEPING: f32 = 0.008;
+///
+/// Over [`WORTH_SIZING`], and it is where the phasing in of a system's extent
+/// finishes rather than where it starts. What is inside a system is kept down
+/// to here, and a shell drawn to a part of the extent would be a shell inside
+/// the orbits still being drawn in it.
+pub(crate) const WORTH_KEEPING: f32 = 0.008;
 
 /// And how large it has to look before what is in it is drawn
 ///
@@ -167,7 +190,7 @@ const WORTH_KEEPING: f32 = 0.008;
 /// one reaching light seconds are both drawn when they are equally worth
 /// looking at. The rows arrive far earlier — that is [`super::fetch`]'s
 /// business — so nothing waits on the database at this range.
-const WORTH_DRAWING: f32 = 0.01;
+pub(crate) const WORTH_DRAWING: f32 = 0.01;
 
 /// And how large before the mark standing for it starts to go
 ///
@@ -1764,10 +1787,13 @@ mod tests {
 
     /// The two bands stand in the one order that hides both exchanges
     ///
-    /// Let go of, drawn, begins to fade, gone. Anything else has the contents
-    /// arriving or leaving in front of a mark the viewer can see through.
+    /// Sized, let go of, drawn, begins to fade, gone. Anything else has the
+    /// contents arriving or leaving in front of a mark the viewer can see
+    /// through, or a system drawn to a part of its extent while the orbits
+    /// that fill it are still there.
     #[test]
     fn the_contents_come_and_go_before_the_mark_gives_way() {
+        assert!(WORTH_SIZING < WORTH_KEEPING);
         assert!(WORTH_KEEPING < WORTH_DRAWING);
         assert!(WORTH_DRAWING <= WORTH_MARKING);
         assert!(WORTH_MARKING < WORTH_HIDING);
