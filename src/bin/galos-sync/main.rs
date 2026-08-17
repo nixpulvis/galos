@@ -3,6 +3,7 @@ use galos_db::{Database, Error};
 use std::io::{stderr, IsTerminal};
 use structopt::StructOpt;
 
+mod bar;
 mod eddb;
 mod eddn;
 mod edsm;
@@ -41,6 +42,9 @@ async fn main() -> Result<(), Error> {
     // it, dependencies included. `RUST_LOG` picks what to hear, and info
     // upwards from everything without it.
     tracing_subscriber::fmt()
+        // Above whatever bar is drawing, so the bar keeps the bottom line
+        // and the log does not land on top of it.
+        .with_writer(bar::Log)
         // Color is for a terminal. Redirected, it would be escape codes
         // around every line of the log.
         .with_ansi(stderr().is_terminal())

@@ -25,14 +25,14 @@
 // and `odyssey` flags off `LoadGame`, a schema and a header wrapped around
 // each message, and the gateway's rules about how much and how often.
 
-use crate::Run;
+use crate::{bar, Run};
 use async_std::task;
 use elite_journal::entry::{Entry, Event, NavRoute};
 use galos_db::Database;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{stderr, BufRead, BufReader, ErrorKind, IsTerminal};
+use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tracing::{info, warn};
@@ -171,6 +171,10 @@ impl Cli {
             .collect();
 
         let bar = progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
+        // Every line the log prints from here goes above the bar, so the bar
+        // keeps the bottom line for the length of the import.
+        let drawing = bar::under(&bar);
+
         for run in replay(&journals).chunk_by(|(a, _), (b, _)| a == b) {
             let journal = run[0].0;
             let user = users[journal].as_deref().unwrap_or(UNKNOWN);
@@ -183,24 +187,15 @@ impl Cli {
                     .to_string_lossy()
                     .into_owned(),
             );
-            // The bar and the log are drawn on the same terminal, and a line
-            // printed under a bar lands on top of it. Standing the bar down
-            // for a run of entries out of one file leaves the log the
-            // terminal while they are written. A run is usually most of a
-            // file, two journals overlapping over an afternoon rather than
-            // line by line, and where they do alternate this falls back to a
-            // redraw an entry. Which is still small beside the write that
-            // every one of those entries is waiting on.
-            bar.suspend(|| {
-                task::block_on(async {
-                    for (_, entry) in run {
-                        record::entry(db, entry, user).await;
-                    }
-                })
+            task::block_on(async {
+                for (_, entry) in run {
+                    record::entry(db, entry, user).await;
+                }
             });
             bar.inc(run.len() as u64);
         }
         bar.finish();
+        drop(drawing);
 
         // Whatever is beside the logs, whether one of them or all of them
         // were asked for. The route is where the ship is going now and there
@@ -444,9 +439,6 @@ fn remember(dir: &Path, name: &str) {
 }
 
 /// How far along an import is, where there is someone to show
-///
-/// Redirected, the bar is turned off rather than written out: what it draws is
-/// a line rewritten in place, and a file of those is not a log of anything.
 fn progress(entries: u64) -> ProgressBar {
     let bar = ProgressBar::new(entries);
     bar.set_style(ProgressStyle::default_bar()
@@ -454,7 +446,7 @@ fn progress(entries: u64) -> ProgressBar {
         .unwrap()
         .progress_chars("##-"));
 
-    if !stderr().is_terminal() {
+    if !bar::worth_drawing() {
         bar.set_draw_target(ProgressDrawTarget::hidden());
     }
 
