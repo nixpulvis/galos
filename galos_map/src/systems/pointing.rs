@@ -44,17 +44,18 @@ pub fn plugin(app: &mut App) {
         PreUpdate,
         hits.in_set(bevy::picking::PickingSystems::Backend),
     );
-    // Reads where a star ended up rather than deciding it, so it waits for
-    // the transforms to be worked out, as `labels::leaders` does.
-    // Both read where something inside a system ended up rather than
-    // deciding it, and a body's place is written by `big_space` during
-    // `PostUpdate`. Sized any earlier and a body just spawned would be
-    // measured from a transform that has never been worked out, which is the
-    // origin: it would be marked as though it sat on the camera.
+    // A body's mark is read by what packs the names, which runs here, so it is
+    // settled here too. Where a body stands is asked of the grid holding it
+    // rather than of the transform `big_space` writes during `PostUpdate`, so
+    // there is nothing to wait for: a body carries the cell and the offset it
+    // was spawned with, and both are answers before anything is drawn.
     app.add_systems(
-        PostUpdate,
-        (size_bodies, ring).chain().after(TransformSystems::Propagate),
+        Update,
+        size_bodies.in_set(MapSet::Present).before(super::labels::choose_names),
     );
+    // The ring is drawn where a body ended up rather than deciding it, so it
+    // waits for the transforms to be worked out, as `labels::leaders` does.
+    app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
     app.add_observer(start_drag);
     app.add_observer(track_drag);
 }
@@ -486,27 +487,29 @@ pub fn size_indicators(
 /// aiming at that is aiming at the body. The floor only takes over where a
 /// body is drawn too small to hit.
 ///
-/// Measured from the body's own [`GlobalTransform`], which [`big_space`]
-/// writes relative to the camera and which is exact this close in. A body
-/// carries no galactic position to ask about, and this is better than one:
-/// the arithmetic never leaves the neighbourhood the camera is standing in.
+/// Measured to where the body stands out in the galaxy, which
+/// [`crate::systems::bodies::spawn::Placed`] reads off the grid holding it. A
+/// body carries the cell and the offset it was spawned with, so where it is
+/// can be answered before anything is drawn.
 ///
-/// Which is why this runs in `PostUpdate`: that transform is written there,
-/// and a body sized before its own place is known is sized from the origin.
-/// Until then a body's mark is nothing at all, so a body that has just
-/// appeared catches nothing rather than catching everywhere.
+/// Which is what lets this run during `Update`. The mark decides how far a
+/// name stands off what it names, and `super::labels::choose_names` packs the
+/// names here; taken from the transform `big_space` writes in `PostUpdate`,
+/// the mark would be a frame old, and a zoom covers near a quarter of the
+/// distance it has left every frame.
 pub fn size_bodies(
-    camera: Query<(&GlobalTransform, &OrbitCamera, &Camera)>,
-    mut bodies: Query<(&GlobalTransform, &Body, &mut Indicator)>,
+    camera: Query<(&OrbitCamera, &Camera)>,
+    standing: crate::systems::bodies::spawn::Placed,
+    mut bodies: Query<(Entity, &Body, &mut Indicator)>,
 ) {
-    let Ok((eye, orbit, camera)) = camera.single() else { return };
+    let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (at, body, mut indicator) in &mut bodies {
-        let offset = (at.translation() - eye.translation()).as_dvec3();
+    for (entity, body, mut indicator) in &mut bodies {
+        let Some(place) = standing.of(entity) else { continue };
         // A metre, which is as near as the camera may be pulled to anything.
-        let into_view = depth_of(orbit, offset).max(1.);
+        let into_view = depth(orbit, place).max(1.);
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
 
         // Only where it moved, as a system's mark is.

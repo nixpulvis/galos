@@ -627,8 +627,15 @@ pub(crate) fn choose_names(
     show_names: Res<ShowNames>,
     show_body_names: Res<ShowBodyNames>,
     systems: Query<Candidate<'_, &'static System>>,
-    bodies: Query<(Entity, &Body, &GlobalTransform, &Indicator)>,
-    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
+    bodies: Query<(Entity, &Body, &Indicator)>,
+    // Where a body stands, read the same way [`face_camera`] reads it. Which
+    // names are drawn is decided by packing their boxes, and where each one
+    // lands is decided there; taken from two different answers about where a
+    // body is, the packing settles a screen the names are then drawn onto
+    // somewhere else, and through a zoom the two are a quarter of the way
+    // apart. Names that were laid out clear of each other come out over one
+    // another, and which of them wins changes every frame.
+    standing: crate::systems::bodies::spawn::Placed,
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
@@ -641,6 +648,10 @@ pub(crate) fn choose_names(
             commands.entity(entity).remove::<Named>();
         }
     };
+    // What is named already, which is worth something to it: the packing runs
+    // afresh every frame, so without this two names of much the same standing
+    // trade one place between them for as long as they are both on screen.
+    let already: EntityHashSet = named.iter().collect();
 
     let Ok((orbit, camera)) = camera.single() else {
         clear(&mut commands);
@@ -662,8 +673,8 @@ pub(crate) fn choose_names(
     // labels a few pixels apart.
     let carried = bodies
         .iter()
-        .find(|(_, body, _, _)| body.primary)
-        .map(|(_, body, _, _)| body.address);
+        .find(|(_, body, _)| body.primary)
+        .map(|(_, body, _)| body.address);
 
     // Where a jump is measured from, for the stops that say one. Looked up in
     // the same query the layout goes over: the system the camera is standing
@@ -765,6 +776,7 @@ pub(crate) fn choose_names(
             LabelWeight::System { from_center, ahead },
             pointed_at,
             selected,
+            already.contains(&entity),
         );
 
         // Grown after the test above rather than before it, so that what is
@@ -779,63 +791,55 @@ pub(crate) fn choose_names(
     // system's name and a body's are asked for at different moments: the sky
     // is read by name and a system inside is read by looking, so one is off
     // until wanted and the other on until it is in the way.
-    if let Ok(eye) = eye_at.single() {
-        for (entity, body, at, indicator) in &bodies {
-            let offset = (at.translation() - eye.translation()).as_dvec3();
-            let Some(spot) =
-                screen_offset(orbit, cot_half_fov, viewport, offset)
-            else {
-                continue;
-            };
-            let rect = name_rect_of(spot, capitals(&body.name), indicator.0);
-            if screen.intersect(rect).is_empty() {
-                continue;
-            }
-            let apart = (spot - middle).length();
-            let rect = rect.inflate(room(orbit.radius, apart, viewport));
-
-            // Pointing at a body or picking it out is asking for it by name,
-            // which the switch has no more business refusing than it does for
-            // a system.
-            let pointed_at = pointing
-                .get(entity)
-                .is_ok_and(|at| at.settled(time.elapsed_secs()));
-            // The same question the sky is asked, with the two terms a body
-            // cannot answer settled: it is drawn as itself rather than stood
-            // in for, so there is no mark whose going takes its name, and the
-            // filters are about systems.
-            let selected = selection.contains(entity);
-            if selected {
-                rings.push((entity, ringed(spot, indicator.0)));
-            }
-            if !worth_naming(
-                true,
-                show_body_names.0,
-                false,
-                pointed_at,
-                selected,
-            ) {
-                continue;
-            }
-
-            // How large the body itself looks, rather than the mark drawn to
-            // aim at it.
-            let depth = depth_of(orbit, offset).max(1.);
-            let score = name_score(
-                LabelWeight::Body {
-                    under: body.ancestors,
-                    star: body.star,
-                    primary: body.primary,
-                    apparent: looks(
-                        body.radius,
-                        world_per_pixel(cot_half_fov, viewport.y, depth),
-                    ),
-                },
-                pointed_at,
-                selected,
-            );
-            wanted.push((entity, rect, score));
+    for (entity, body, indicator) in &bodies {
+        let Some(place) = standing.of(entity) else { continue };
+        let Some(spot) = screen_position(orbit, cot_half_fov, viewport, place)
+        else {
+            continue;
+        };
+        let rect = name_rect_of(spot, capitals(&body.name), indicator.0);
+        if screen.intersect(rect).is_empty() {
+            continue;
         }
+        let apart = (spot - middle).length();
+        let rect = rect.inflate(room(orbit.radius, apart, viewport));
+
+        // Pointing at a body or picking it out is asking for it by name,
+        // which the switch has no more business refusing than it does for
+        // a system.
+        let pointed_at = pointing
+            .get(entity)
+            .is_ok_and(|at| at.settled(time.elapsed_secs()));
+        // The same question the sky is asked, with the two terms a body
+        // cannot answer settled: it is drawn as itself rather than stood
+        // in for, so there is no mark whose going takes its name, and the
+        // filters are about systems.
+        let selected = selection.contains(entity);
+        if selected {
+            rings.push((entity, ringed(spot, indicator.0)));
+        }
+        if !worth_naming(true, show_body_names.0, false, pointed_at, selected) {
+            continue;
+        }
+
+        // How large the body itself looks, rather than the mark drawn to
+        // aim at it.
+        let depth = depth(orbit, place).max(1.);
+        let score = name_score(
+            LabelWeight::Body {
+                under: body.ancestors,
+                star: body.star,
+                primary: body.primary,
+                apparent: looks(
+                    body.radius,
+                    world_per_pixel(cot_half_fov, viewport.y, depth),
+                ),
+            },
+            pointed_at,
+            selected,
+            already.contains(&entity),
+        );
+        wanted.push((entity, rect, score));
     }
 
     let winners = place(wanted, viewport, placed, rings);
@@ -1025,6 +1029,21 @@ const INSIDE_WEIGHT: f32 = 300.;
 /// the specks last.
 const BODY_NAME_REACH: f32 = 20.;
 
+/// How much better a name has to be to take a place already held
+///
+/// Two and a half, which is a tenth of what a body's own size can argue for
+/// it. Enough that a name is not handed back and forth, and small enough that
+/// a body a step further up the system, or plainly larger, still takes it.
+///
+/// What it is for. The names are packed afresh every frame, best first, and
+/// whatever will not fit is dropped; nothing carries over. Two bodies of the
+/// same standing are then told apart by their size alone, and Neptune and
+/// Uranus are within a twentieth of each other: measured, their names changed
+/// hands on sixty frames of a slow zoom, swapping back on the next frame
+/// every time, with the camera moving as little as a six-hundredth of the way
+/// in between. A place worth holding is worth holding on to.
+const HELD_WEIGHT: f32 = 2.5;
+
 /// How many steps down a system the ordering tells apart
 ///
 /// A star, its planets, their moons, and whatever a scan puts under those.
@@ -1126,7 +1145,16 @@ enum LabelWeight {
 ///
 /// One number line for both, since [`choose_names`] sorts systems and bodies
 /// together and hands the best of them what room there is.
-fn name_score(weight: LabelWeight, pointed_at: bool, selected: bool) -> f32 {
+///
+/// `held` is whether the name is drawn already, which is worth
+/// [`HELD_WEIGHT`] to it. Added here with the rest so that what a name is
+/// worth is one sum in one place, whatever kind of thing is asking.
+fn name_score(
+    weight: LabelWeight,
+    pointed_at: bool,
+    selected: bool,
+    held: bool,
+) -> f32 {
     let standing = match weight {
         LabelWeight::System { from_center, ahead } => {
             let centered =
@@ -1149,7 +1177,9 @@ fn name_score(weight: LabelWeight, pointed_at: bool, selected: bool) -> f32 {
         }
     };
 
-    marked_score(pointed_at, selected) + standing
+    let holding = if held { HELD_WEIGHT } else { 0. };
+
+    marked_score(pointed_at, selected) + standing + holding
 }
 
 /// What being marked out is worth, to a system and a body alike
@@ -1512,14 +1542,30 @@ fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
 pub fn face_camera(
     camera: Query<(&OrbitCamera, &Camera)>,
     systems: Query<(&System, &Indicator), Without<Label>>,
-    // `Without<System>` is already true of any label. It is spelled out so
-    // the scheduler can prove this query is disjoint from the one above, and
-    // from every other system that reads a star's transform.
-    bodies: Query<(&GlobalTransform, &Indicator), Without<Label>>,
-    eye_at: Query<&GlobalTransform, (With<OrbitCamera>, Without<Label>)>,
+    // A body's own scale, which is what propagation multiplies its label's by
+    // and so what the label has to be divided by. The local one rather than
+    // the `GlobalTransform` beside it: propagation runs before
+    // `super::scale::size_inside`, which is where a body's scale is decided,
+    // so the global standing here is a scale behind the local.
+    //
+    // The filters are spelled out, here and on the labels below, so the
+    // scheduler can prove the three queries disjoint. A label is neither a
+    // system nor a body, and nothing is both of those.
+    bodies: Query<(&Transform, &Indicator), (With<Body>, Without<Label>)>,
+    // Where a body stands, out of the grid holding it rather than out of the
+    // transform `big_space` writes. That transform is written during
+    // `PostUpdate`, so read here it is a frame old, and a zoom covers near a
+    // quarter of the distance it has left every frame: every name inside a
+    // system would be sized against a distance the camera had already left,
+    // and would only be right once the camera stopped.
+    //
+    // Spelled out because this module has a `Placed` of its own, which is the
+    // scratch a frame of names is laid out in and nothing to do with where a
+    // body stands.
+    standing: crate::systems::bodies::spawn::Placed,
     mut labels: Query<
         (&mut Transform, &ChildOf),
-        (With<Label>, Without<System>),
+        (With<Label>, Without<System>, Without<Body>),
     >,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
@@ -1528,16 +1574,16 @@ pub fn face_camera(
 
     for (mut label, child_of) in &mut labels {
         let Ok((system, indicator)) = systems.get(child_of.parent()) else {
-            // A name hung off something inside a system, which knows where it
-            // is relative to the camera rather than where it is in the
-            // galaxy.
-            let Ok(eye) = eye_at.single() else { continue };
-            let Ok((at, indicator)) = bodies.get(child_of.parent()) else {
-                continue;
-            };
+            // A name hung off something inside a system.
+            let body = child_of.parent();
+            let Ok((own_size, indicator)) = bodies.get(body) else { continue };
+            let Some(place) = standing.of(body) else { continue };
 
-            let offset = (at.translation() - eye.translation()).as_dvec3();
-            let into_view = depth_of(orbit, offset).max(MIN_DEPTH);
+            // Measured to where the body stands in the galaxy, as a system's
+            // name is measured to where its system stands. Both are read off
+            // what `Update` has already settled, so a name is sized by the
+            // view it is about to be drawn into rather than by the last one.
+            let into_view = depth(orbit, place).max(MIN_DEPTH);
             let world_per_pixel =
                 world_per_pixel(cot_half_fov, viewport.y, into_view);
 
@@ -1552,9 +1598,9 @@ pub fn face_camera(
             let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
                 + orbit.rotation * Vec3::Y * (height * RISE);
 
-            // The plate is drawn at the body's own scale otherwise, and a
-            // body's scale is its radius in metres.
-            let own = at.scale().x.max(1e-6);
+            // Divided out, the plate being drawn at the body's own scale
+            // otherwise, and a body's scale being its radius in metres.
+            let own = own_size.scale.x.max(1e-6);
             label.set_if_neq(Transform {
                 translation: offset / own,
                 rotation: orbit.rotation,
@@ -2004,6 +2050,69 @@ mod tests {
         }
     }
 
+    /// A body of `apparent` pixels, one of a system's own planets
+    fn planet(apparent: f32, held: bool) -> f32 {
+        name_score(
+            LabelWeight::Body {
+                under: 1,
+                star: false,
+                primary: false,
+                apparent,
+            },
+            false,
+            false,
+            held,
+        )
+    }
+
+    /// A name already drawn is not handed over to a rival of much the same size
+    ///
+    /// The packing runs afresh every frame and keeps nothing, so two bodies of
+    /// the same standing are told apart by their size alone. Neptune and
+    /// Uranus are within a twentieth of each other, and measured they traded
+    /// one place between them on sixty frames of one slow zoom.
+    #[test]
+    fn a_name_already_drawn_holds_its_place_against_its_like() {
+        // A hair larger, which is Uranus against Neptune.
+        let held = planet(100., true);
+        let rival = planet(103., false);
+
+        assert!(
+            held > rival,
+            "a name drawn at {held} gave way to one worth {rival}"
+        );
+    }
+
+    /// And gives it up to one that plainly deserves it more
+    ///
+    /// Holding a place is worth something and not everything. A body that
+    /// reads as a world where the one named is a speck has earned the name,
+    /// and so has anything a step further up the system.
+    #[test]
+    fn a_name_gives_way_to_one_that_deserves_it() {
+        let speck = planet(0.5, true);
+        let world = planet(1e4, false);
+        assert!(world > speck, "a speck kept the name off a world");
+
+        // A step up the system beats the whole of what a size can argue,
+        // holding or not.
+        let moon = name_score(
+            LabelWeight::Body {
+                under: 2,
+                star: false,
+                primary: false,
+                apparent: 1e4,
+            },
+            false,
+            false,
+            true,
+        );
+        assert!(
+            planet(0., false) > moon,
+            "a moon holding a name kept it off the planet it goes round"
+        );
+    }
+
     /// A parent is named before whatever goes round it
     ///
     /// Whatever the two are drawn at. A moon the camera happens to be beside
@@ -2025,6 +2134,7 @@ mod tests {
                 },
                 false,
                 false,
+                false,
             );
             let child = name_score(
                 LabelWeight::Body {
@@ -2033,6 +2143,7 @@ mod tests {
                     primary: false,
                     apparent: 1e4,
                 },
+                false,
                 false,
                 false,
             );
@@ -2062,6 +2173,7 @@ mod tests {
             },
             false,
             false,
+            false,
         );
         let planet = name_score(
             LabelWeight::Body {
@@ -2070,6 +2182,7 @@ mod tests {
                 primary: false,
                 apparent: 1e4,
             },
+            false,
             false,
             false,
         );
@@ -2094,6 +2207,7 @@ mod tests {
             },
             false,
             false,
+            false,
         );
         let higher = name_score(
             LabelWeight::Body {
@@ -2102,6 +2216,7 @@ mod tests {
                 primary: false,
                 apparent: 0.,
             },
+            false,
             false,
             false,
         );
@@ -2124,6 +2239,7 @@ mod tests {
             },
             false,
             false,
+            false,
         );
         let deeper = name_score(
             LabelWeight::Body {
@@ -2132,6 +2248,7 @@ mod tests {
                 primary: false,
                 apparent: 0.,
             },
+            false,
             false,
             false,
         );
@@ -2151,6 +2268,7 @@ mod tests {
             },
             false,
             false,
+            false,
         );
         let speck = name_score(
             LabelWeight::Body {
@@ -2159,6 +2277,7 @@ mod tests {
                 primary: false,
                 apparent: 0.1,
             },
+            false,
             false,
             false,
         );
@@ -2187,6 +2306,7 @@ mod tests {
                     primary: false,
                     apparent: looks(radius, per_pixel),
                 },
+                false,
                 false,
                 false,
             )
@@ -2218,6 +2338,7 @@ mod tests {
             },
             false,
             false,
+            false,
         );
 
         // The best anything else can do, which is a second star sitting as
@@ -2229,6 +2350,7 @@ mod tests {
                 primary: false,
                 apparent: 1e9,
             },
+            false,
             false,
             false,
         );
@@ -2259,6 +2381,7 @@ mod tests {
             },
             false,
             false,
+            false,
         );
         let other = name_score(
             LabelWeight::Body {
@@ -2267,6 +2390,7 @@ mod tests {
                 primary: false,
                 apparent: floor,
             },
+            false,
             false,
             false,
         );
@@ -2294,6 +2418,7 @@ mod tests {
             },
             false,
             false,
+            false,
         );
 
         assert!(
@@ -2305,7 +2430,8 @@ mod tests {
                     apparent: 0.
                 },
                 true,
-                false
+                false,
+                false,
             ) > star
         );
         assert!(
@@ -2317,7 +2443,8 @@ mod tests {
                     apparent: 0.
                 },
                 false,
-                true
+                true,
+                false,
             ) > star
         );
     }
@@ -2335,9 +2462,11 @@ mod tests {
             LabelWeight::System { from_center: away, ahead: away },
             false,
             false,
+            false,
         );
         let back = name_score(
             LabelWeight::System { from_center: away, ahead: -away },
+            false,
             false,
             false,
         );
@@ -2359,9 +2488,11 @@ mod tests {
             LabelWeight::System { from_center: 0., ahead: 0. },
             false,
             false,
+            false,
         );
         let front = name_score(
             LabelWeight::System { from_center: away, ahead: away },
+            false,
             false,
             false,
         );
@@ -2384,6 +2515,7 @@ mod tests {
             LabelWeight::System { from_center: 0., ahead: 0. },
             false,
             false,
+            false,
         );
         for step in 1..=1000 {
             let further = name_score(
@@ -2391,6 +2523,7 @@ mod tests {
                     from_center: step as f32 * DEFAULT_NAME_RADIUS / 1000.,
                     ahead: 0.,
                 },
+                false,
                 false,
                 false,
             );
@@ -2461,11 +2594,13 @@ mod tests {
             LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
             true,
             false,
+            false,
         );
 
         // The system at the center, which is otherwise the best there is.
         let centered = name_score(
             LabelWeight::System { from_center: 0., ahead: 0. },
+            false,
             false,
             false,
         );
@@ -2488,10 +2623,12 @@ mod tests {
             LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
             false,
             true,
+            false,
         );
         let pointed = name_score(
             LabelWeight::System { from_center: 0., ahead: 0. },
             true,
+            false,
             false,
         );
 
@@ -2512,11 +2649,13 @@ mod tests {
             LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
             true,
             true,
+            false,
         );
         let selected = name_score(
             LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
             false,
             true,
+            false,
         );
 
         assert_eq!(both, selected);
@@ -2776,6 +2915,171 @@ mod tests {
     /// How many names have been placed so far
     fn placings(app: &App) -> usize {
         app.world().resource::<Placings>().0
+    }
+
+    /// A world holding a camera and a body wearing a name
+    ///
+    /// The body carries a `Transform` and a `GlobalTransform` that disagree
+    /// about its scale, which is what a frame of the real map looks like:
+    /// [`crate::systems::scale::size_inside`] writes the local one after
+    /// propagation has already read it, so the global standing in a frame is
+    /// the local of the frame before.
+    fn bodied(local: f32, propagated: f32) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Placings>();
+        app.add_systems(Update, (face_camera, count_placings).chain());
+        app.world_mut().spawn((
+            OrbitCamera {
+                eye: DVec3::ZERO,
+                rotation: Quat::IDENTITY,
+                ..default()
+            },
+            crate::systems::tests::seeing(),
+            GlobalTransform::default(),
+        ));
+
+        // No [`System`], which is what sends a name down the branch that reads
+        // a body rather than the one that reads the system it hangs off.
+        let body = app
+            .world_mut()
+            .spawn((
+                Transform::from_scale(Vec3::splat(local)),
+                GlobalTransform::from(
+                    Transform::from_translation(Vec3::new(0., 0., -1e9))
+                        .with_scale(Vec3::splat(propagated)),
+                ),
+                Indicator::default(),
+            ))
+            .id();
+        let label = app.world_mut().spawn((Label, Transform::default())).id();
+        app.world_mut().entity_mut(body).add_child(label);
+        app
+    }
+
+    /// The scale of the name hung off the one body in the world
+    fn plate_scale(app: &mut App) -> f32 {
+        let mut labels =
+            app.world_mut().query_filtered::<&Transform, With<Label>>();
+        labels.iter(app.world()).next().expect("a name").scale.x
+    }
+
+    /// A world holding a camera and a system with one body inside it
+    ///
+    /// The body sits `out` metres from its system along the axis the camera
+    /// looks down, and carries a `GlobalTransform` saying it is somewhere
+    /// else. That disagreement is what a frame of the real map looks like:
+    /// `big_space` writes the global during `PostUpdate`, so the one standing
+    /// in `Update` says where the body was rather than where it is.
+    fn inside_a_system(out: f64, global: f32) -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Placings>();
+        app.add_systems(Update, (face_camera, count_placings).chain());
+        app.world_mut().spawn((
+            OrbitCamera {
+                eye: DVec3::ZERO,
+                rotation: Quat::IDENTITY,
+                ..default()
+            },
+            crate::systems::tests::seeing(),
+            GlobalTransform::default(),
+        ));
+
+        // Down the axis the camera looks along, five light years off.
+        let mut standing = crate::systems::tests::system(1);
+        standing.position = [0., 0., -5.];
+        let grid = crate::space::system_grid();
+        let (cell, offset) = grid.translation_to_grid(DVec3::new(0., 0., -out));
+        let system = app
+            .world_mut()
+            .spawn((
+                standing,
+                crate::space::system_grid(),
+                Indicator::default(),
+            ))
+            .id();
+
+        let body = app
+            .world_mut()
+            .spawn((
+                crate::systems::bodies::spawn::Body {
+                    address: 1,
+                    name: "Test 1".into(),
+                    id: 1,
+                    class: String::new(),
+                    radius: 1e6,
+                    ancestors: 0,
+                    primary: true,
+                    star: true,
+                },
+                cell,
+                Transform::from_translation(offset),
+                GlobalTransform::from(Transform::from_translation(Vec3::new(
+                    0., 0., global,
+                ))),
+                Indicator::default(),
+            ))
+            .id();
+        app.world_mut().entity_mut(system).add_child(body);
+
+        let label = app.world_mut().spawn((Label, Transform::default())).id();
+        app.world_mut().entity_mut(body).add_child(label);
+        app
+    }
+
+    /// A body's name is sized by where the body stands, not by where it stood
+    ///
+    /// The name is measured to the body out in the galaxy, read from the grid
+    /// holding it, as a system's name is measured to its system. Read off the
+    /// `GlobalTransform` instead it is a frame behind, and a zoom covers near
+    /// a quarter of the distance it has left every frame, so through one every
+    /// name inside a system is sized against a view the camera has left.
+    #[test]
+    fn a_bodys_name_is_sized_by_where_the_body_stands() {
+        // Two worlds alike but for the stale transform, which is the only
+        // thing a name may not be sized by.
+        let mut here = inside_a_system(1e12, -1e6);
+        let mut elsewhere = inside_a_system(1e12, -1e9);
+        here.update();
+        elsewhere.update();
+
+        assert_eq!(
+            plate_scale(&mut here),
+            plate_scale(&mut elsewhere),
+            "a name was sized by the transform `big_space` left behind"
+        );
+    }
+
+    /// A body's name is divided by the scale that will be applied to it
+    ///
+    /// A name is a child of what it names, so what propagation multiplies its
+    /// scale by is the body's own `Transform`. Divided by the
+    /// `GlobalTransform` instead the two are a propagation apart, and the name
+    /// is drawn at the ratio between them.
+    ///
+    /// Read as the size the name comes to once the body's scale is put back:
+    /// whatever the body is drawn at, a name is the same height on screen, and
+    /// that is the whole of what the division is for.
+    #[test]
+    fn a_bodys_name_is_divided_by_the_scale_it_will_be_multiplied_by() {
+        // A body whose drawn size moved between the two, which is every body
+        // under a pixel across through a zoom.
+        let mut app = bodied(2., 3.);
+        app.update();
+
+        let drawn = plate_scale(&mut app) * 2.;
+
+        // And the same body with the two agreeing, which is what a camera
+        // holding still leaves behind.
+        let mut still = bodied(2., 2.);
+        still.update();
+        let held = plate_scale(&mut still) * 2.;
+
+        assert_eq!(
+            drawn, held,
+            "a name was sized against a scale the body had already left"
+        );
     }
 
     /// A frame that moves nothing leaves a name where it stands
