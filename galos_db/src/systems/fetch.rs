@@ -5,6 +5,16 @@ use elite_journal::prelude::*;
 use geozero::wkb;
 use std::collections::HashMap;
 
+/// Whether `at` stands within `range` light years of `center`
+///
+/// Compared as squares. The distance itself is never reported, so a square
+/// root would be paid for on every system in a region and read by nobody.
+fn within(at: &Coordinate, center: [f64; 3], range: f64) -> bool {
+    let away = [at.x - center[0], at.y - center[1], at.z - center[2]];
+
+    away.iter().map(|d| d * d).sum::<f64>() <= range * range
+}
+
 impl System {
     pub async fn fetch(db: &Database, address: i64) -> Result<Self, Error> {
         let row = sqlx::query!(
@@ -468,12 +478,30 @@ impl System {
     /// Narrowing only, as the two lists are: what it leaves out is what the
     /// filter excludes, and the region is what says how much sky is being
     /// asked about.
+    ///
+    /// `sizing` is how far from `center` a system's reach is worth knowing, in
+    /// light years. Beyond it the systems still come back, and come back
+    /// without a reach: the caller draws those at whatever it draws a system
+    /// it cannot size, which past that distance is what they are drawn at
+    /// anyway. [`None`] asks about all of them, which is what a caller that is
+    /// not drawing a sky wants.
+    ///
+    /// It narrows the work rather than the answer, and it narrows the
+    /// expensive half. What a system holds lives in three tables and is
+    /// several rows deep in each, where the systems themselves are one row
+    /// apiece; a region wide enough to be worth drawing holds far more systems
+    /// than are near enough for their own size to show.
+    ///
+    /// Left to [`Self::fetch_many`] where a filter is admitting, that being a
+    /// question about the handful of systems a filter named rather than about
+    /// a region, and already the narrow one.
     pub async fn fetch_in_range_of_point(
         db: &Database,
         range: f64,
         center: [f64; 3],
         admitting: Option<(&[i32], &[i64])>,
         since: Option<DateTime<Utc>>,
+        sizing: Option<f64>,
     ) -> Result<Vec<Self>, Error> {
         let admitted = match (admitting, since) {
             (Some((factions, addresses)), Some(moment)) => Some(
@@ -524,7 +552,22 @@ impl System {
 
         let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
         let mut present = Self::system_factions(db, &found).await?;
-        let mut reaching = Self::reaches(db, &found).await?;
+        let mut reaching = match sizing {
+            Some(sizing) => {
+                let near: Vec<i64> = rows
+                    .iter()
+                    .filter(|row| {
+                        row.position
+                            .as_ref()
+                            .and_then(|position| position.geometry.as_ref())
+                            .is_some_and(|at| within(at, center, sizing))
+                    })
+                    .map(|row| row.address)
+                    .collect();
+                Self::reaches(db, &near).await?
+            }
+            None => Self::reaches(db, &found).await?,
+        };
 
         Ok(rows
             .into_iter()

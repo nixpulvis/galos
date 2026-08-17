@@ -204,6 +204,25 @@ const ANGULAR: f32 = 4e-4;
 /// `a_mark_is_gone_before_the_camera_reaches_the_shell` is what holds it.
 const MARGIN: f32 = 1.2;
 
+/// How far from the camera a system's own reach is worth knowing, in light
+/// years
+///
+/// Past here every system is drawn as a mark whatever it reaches, so what the
+/// database knows about the insides of one changes nothing on screen and is
+/// not asked for. [`super::fetch`] is what asks, and this is what it asks
+/// within.
+///
+/// Read off [`WORTH_SIZING`] and the widest system there is. A reach starts to
+/// count at `WORTH_SIZING` of the distance it is seen from, so the furthest a
+/// system can matter from is its own reach over that, and the widest of the
+/// 295,476 systems with anything on record reaches 2.02e15 metres, which comes
+/// to fifty-three light years. Sixty leaves room for a wider one to be found.
+///
+/// Measured over those same systems: none reaches far enough to count from
+/// fifty-five light years, three do from forty, seven from twenty, and
+/// fourteen from ten. The ordinary system stops counting inside two.
+pub(crate) const SIZED_WITHIN: f64 = 60.;
+
 /// How large a system is drawn, in metres
 ///
 /// The wider of the system itself and a mark saying one is there. A system at

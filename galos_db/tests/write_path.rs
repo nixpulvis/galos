@@ -181,6 +181,8 @@ const NAMED_ONLY: i64 = 900_000_033;
 const SPAN_NEWEST: i64 = 900_000_034;
 const SPAN_NEXT: i64 = 900_000_035;
 const SPAN_OLDEST: i64 = 900_000_036;
+const SIZED_NEAR: i64 = 900_000_042;
+const SIZED_FAR: i64 = 900_000_043;
 const CLUSTER: i64 = 900_000_008;
 const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
@@ -2094,9 +2096,117 @@ fn middle_of(middle: f64) -> [f64; 3] {
     [middle, middle, middle]
 }
 
+/// One body in the system at `address`, so it has a reach to be asked for
+///
+/// A system with nothing on record has no reach whatever is asked, which is
+/// the answer a narrowed question gives as well. Telling the two apart is the
+/// whole of what a test about the narrowing has to do, so both of its systems
+/// are scanned.
+async fn scanned(db: &Database, address: i64) {
+    let body = JournalBody {
+        id: 1,
+        name: format!("Test Sizing {address} 1"),
+        ty: None,
+        distance_from_arrival: Some(12.5),
+        parents: vec![],
+        planet_class: "Rocky body".into(),
+        tidal_lock: None,
+        mass: 1.,
+        radius: 6e6,
+        gravity: 9.8,
+        temperature: Some(300.),
+        surface: None,
+        orbit: Orbit {
+            semi_major_axis: 1e11,
+            eccentricity: 0.01,
+            orbital_inclination: 0.,
+            periapsis: 1.,
+            orbital_period: 1e7,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
+        },
+        spin: Spin { period: 80000., tilt: 0.1 },
+        discovery: Discovery { discovered: true, mapped: true },
+    };
+
+    Body::from_journal(db, at(0), "test", &body, address)
+        .await
+        .expect("a body should write");
+}
+
 /// Which of `found` came back, by address
 fn addresses(found: &[System]) -> Vec<i64> {
     found.iter().map(|system| system.address).collect()
+}
+
+/// How far a system reaches is asked about near the middle and nowhere else
+///
+/// What a sizing narrows is the work rather than the answer: every system in
+/// the region comes back either way, and the ones past the sizing come back
+/// without a reach. The caller draws those at whatever it draws a system it
+/// cannot size, which past that distance is what they are drawn at anyway.
+///
+/// Asked again without one, so that the reach the narrowed answer left out is
+/// shown to be on record. A system with nothing scanned in it has no reach to
+/// give, and a test that only looked at the narrowed answer would pass just as
+/// well if the bodies had never been written.
+#[async_std::test]
+async fn a_reach_is_asked_for_where_it_would_be_drawn() {
+    let db = db!();
+    for address in [SIZED_NEAR, SIZED_FAR] {
+        forget(address).await;
+    }
+    heard_of(&db, SIZED_NEAR, 7500., 1., 100).await;
+    heard_of(&db, SIZED_FAR, 7500., 5., 100).await;
+    scanned(&db, SIZED_NEAR).await;
+    scanned(&db, SIZED_FAR).await;
+
+    /// The reach of the system at `address`, which has to have come back
+    fn reach_of(found: &[System], address: i64) -> Option<f32> {
+        found
+            .iter()
+            .find(|system| system.address == address)
+            .expect("both systems stand in the region")
+            .reach
+    }
+
+    // Both stand in the region, the one under two light years out along the
+    // diagonal and the other under nine, so a sizing of five tells them apart.
+    let sized = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7500.),
+        None,
+        None,
+        Some(5.),
+    )
+    .await
+    .expect("the region should answer");
+
+    assert!(
+        reach_of(&sized, SIZED_NEAR).is_some(),
+        "the near system came back without the reach it was scanned for"
+    );
+    assert!(
+        reach_of(&sized, SIZED_FAR).is_none(),
+        "the far system was asked about anyway"
+    );
+
+    let whole = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7500.),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the region should answer");
+
+    assert!(
+        reach_of(&whole, SIZED_FAR).is_some(),
+        "the far system had no reach on record to leave out"
+    );
 }
 
 /// A span asked on its own narrows a region to what it reaches
@@ -2120,6 +2230,7 @@ async fn a_region_asked_about_time_alone_leaves_out_what_is_older() {
         middle_of(7000.),
         None,
         Some(at(400)),
+        None,
     )
     .await
     .expect("the region should answer");
@@ -2150,6 +2261,7 @@ async fn a_region_asked_by_address_and_time_wants_both() {
         middle_of(7100.),
         Some((&[], &named)),
         Some(at(400)),
+        None,
     )
     .await
     .expect("the region should answer");
@@ -2186,6 +2298,7 @@ async fn a_region_asked_by_faction_and_time_wants_both() {
         middle_of(7200.),
         Some((&[faction.id], &[])),
         Some(at(400)),
+        None,
     )
     .await
     .expect("the region should answer");
@@ -2211,6 +2324,7 @@ async fn a_region_asked_by_address_alone_keeps_what_is_old() {
         10.,
         middle_of(7300.),
         Some((&[], &named)),
+        None,
         None,
     )
     .await
@@ -2242,6 +2356,7 @@ async fn a_span_answers_with_everything_inside_it() {
         middle_of(7400.),
         None,
         Some(at(0)),
+        None,
     )
     .await
     .expect("the region should answer");

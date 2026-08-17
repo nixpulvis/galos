@@ -1,6 +1,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::filter::{Admitted, DimTo, Filters};
+use crate::systems::scale::SIZED_WITHIN;
 use crate::systems::selection::Selection;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Db, search::Search};
@@ -303,9 +304,16 @@ fn fetch_spyglass(
             // Worked out here rather than carried in, so that the moment is
             // taken from the clock the question is actually put at.
             let since = span.map(|span| Utc::now() - span);
-            DbSystem::fetch_in_range_of_point(&db, range, cent, narrowed, since)
-                .await
-                .unwrap_or_default()
+            DbSystem::fetch_in_range_of_point(
+                &db,
+                range,
+                cent,
+                narrowed,
+                since,
+                Some(SIZED_WITHIN),
+            )
+            .await
+            .unwrap_or_default()
         });
         tasks.fetched.insert(index.clone(), (task, now));
         tasks.last_fetched = Some(index);
