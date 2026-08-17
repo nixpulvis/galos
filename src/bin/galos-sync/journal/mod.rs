@@ -84,10 +84,27 @@ pub struct Cli {
 }
 
 impl Run for Cli {
+    /// Import what the path names, ending the process where nothing was read
+    ///
+    /// An import is run from cron and from a shell, and the exit status is
+    /// the whole of what either of them reads. A directory that could not be
+    /// opened and a file that could not be handed over both used to warn and
+    /// finish the bar, so the run looked exactly like one that had nothing
+    /// left to import.
     fn run(&self, db: &Database) {
+        if !self.import(db) {
+            std::process::exit(1);
+        }
+    }
+}
+
+impl Cli {
+    /// Write what the path holds, answering whether any of it could be read
+    fn import(&self, db: &Database) -> bool {
         let path = Path::new(&self.path);
         let Ok(meta) = fs::metadata(path) else {
-            panic!("bad path: {}", self.path);
+            warn!(path = %path.display(), "nothing to import at this path");
+            return false;
         };
 
         // A directory is a journal directory. A single file is one of the
@@ -101,8 +118,14 @@ impl Run for Cli {
             path.parent().unwrap_or(Path::new(".")).to_owned()
         };
 
-        let paths =
-            if meta.is_dir() { logs(path) } else { vec![path.to_owned()] };
+        let paths = if meta.is_dir() {
+            match logs(path) {
+                Some(paths) => paths,
+                None => return false,
+            }
+        } else {
+            vec![path.to_owned()]
+        };
 
         // Read whole, as a directory always has been read here. What that
         // buys is order: a write is refused now where something newer already
@@ -111,16 +134,28 @@ impl Run for Cli {
         // file's own first entry is what says where the file belongs, which
         // is the order a commander's name carries forward in.
         let mut journals: Vec<(PathBuf, Vec<Entry<Event>>)> = paths
-            .into_iter()
+            .iter()
             .filter_map(|path| {
-                let mut entries = read(&path)?;
+                let mut entries = read(path)?;
                 entries.sort_by_key(|entry| entry.timestamp);
-                Some((path, entries))
+                Some((path.to_owned(), entries))
             })
             .collect();
         journals.sort_by_key(|(_, entries)| {
             entries.first().map(|entry| entry.timestamp)
         });
+
+        // Every file named was refused. A directory holding no journals at
+        // all is empty rather than unreadable, and is left to say so with a
+        // bar that finishes at nothing.
+        if journals.is_empty() && !paths.is_empty() {
+            warn!(
+                path = %path.display(),
+                files = paths.len(),
+                "no journal here could be read",
+            );
+            return false;
+        }
 
         // What the command line said, which outranks every file, or what the
         // directory remembered, which is what a file introducing nobody falls
@@ -187,6 +222,8 @@ impl Run for Cli {
                 remember(&dir, name);
             }
         }
+
+        true
     }
 }
 
@@ -216,26 +253,30 @@ fn replay(
     replayed
 }
 
-/// The journal files in a directory, in no particular order
+/// The journal files in a directory, or nothing where it cannot be read
 ///
 /// Anything ending `.log`, which is every journal the game has written under
-/// either of the two names it has given them.
-fn logs(dir: &Path) -> Vec<PathBuf> {
+/// either of the two names it has given them, in no particular order. A
+/// directory that will not open answers nothing rather than none of them,
+/// which is a different thing and is what the import's status turns on.
+fn logs(dir: &Path) -> Option<Vec<PathBuf>> {
     let read = match fs::read_dir(dir) {
         Ok(read) => read,
         Err(err) => {
             warn!(dir = %dir.display(), error = %err, "unreadable directory");
-            return Vec::new();
+            return None;
         }
     };
 
-    read.filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path.extension().and_then(OsStr::to_str) == Some("log")
-        })
-        .collect()
+    Some(
+        read.filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path.extension().and_then(OsStr::to_str) == Some("log")
+            })
+            .collect(),
+    )
 }
 
 /// Read one journal file, saying what in it could not be read
@@ -540,6 +581,29 @@ mod tests {
             .expect("the file should read");
 
         assert_eq!(entries.len(), 2);
+    }
+
+    /// A directory that will not open is not one holding no journals
+    ///
+    /// They look alike from here, and the import's status turns on telling
+    /// them apart: nothing to import is a run that worked, and a directory
+    /// the filesystem refused is not.
+    #[test]
+    fn a_directory_that_will_not_open_answers_nothing() {
+        let dir = scratch("a_directory_that_will_not_open");
+
+        assert_eq!(logs(&dir), Some(Vec::new()));
+        assert_eq!(logs(&dir.join("no-such-directory")), None);
+    }
+
+    /// A journal that will not open is not one holding no entries
+    #[test]
+    fn a_journal_that_will_not_open_answers_nothing() {
+        let dir = scratch("a_journal_that_will_not_open");
+
+        let empty = read(&journal(&dir, "Journal.empty.log", b""));
+        assert_eq!(empty.map(|entries| entries.len()), Some(0));
+        assert!(read(&dir.join("no-such-journal.log")).is_none());
     }
 
     /// An entry that is nothing but the moment it happened
