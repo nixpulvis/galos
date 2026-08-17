@@ -47,11 +47,21 @@ use elite_journal::station::{
 use elite_journal::system::{Coordinate, Security, System as JournalSystem};
 use elite_journal::Allegiance;
 use galos_db::{
-    black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
-    clusters::Cluster, codex_entries::CodexEntry, factions::Faction,
-    markets::Market, outfitting::Outfitting, rings::Ring, shipyard::Shipyard,
-    stars::Star, stations::Station, system_signals::SystemSignal,
-    systems::System, Database,
+    black_market::BlackMarket,
+    bodies::Body,
+    body_signals::BodySignal,
+    clusters::Cluster,
+    codex_entries::CodexEntry,
+    factions::Faction,
+    markets::Market,
+    outfitting::Outfitting,
+    rings::Ring,
+    shipyard::Shipyard,
+    stars::Star,
+    stations::Station,
+    system_signals::SystemSignal,
+    systems::{Survey, System},
+    Database,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -183,6 +193,10 @@ const SPAN_NEXT: i64 = 900_000_035;
 const SPAN_OLDEST: i64 = 900_000_036;
 const SIZED_NEAR: i64 = 900_000_042;
 const SIZED_FAR: i64 = 900_000_043;
+const SURVEYED_STILL: i64 = 900_000_044;
+const SURVEYED_MOVED: i64 = 900_000_045;
+const SURVEYED_OVER: i64 = 900_000_046;
+const SURVEYED_NEAR: i64 = 900_000_047;
 const CLUSTER: i64 = 900_000_008;
 const RESCAN: i64 = 900_000_009;
 const REDOCK: i64 = 900_000_010;
@@ -2179,6 +2193,7 @@ async fn a_reach_is_asked_for_where_it_would_be_drawn() {
         None,
         None,
         Some(5.),
+        &[],
     )
     .await
     .expect("the region should answer");
@@ -2199,6 +2214,7 @@ async fn a_reach_is_asked_for_where_it_would_be_drawn() {
         None,
         None,
         None,
+        &[],
     )
     .await
     .expect("the region should answer");
@@ -2206,6 +2222,168 @@ async fn a_reach_is_asked_for_where_it_would_be_drawn() {
     assert!(
         reach_of(&whole, SIZED_FAR).is_some(),
         "the far system had no reach on record to leave out"
+    );
+}
+
+/// A region already surveyed is answered with what has changed since
+///
+/// The map holds every system it has been sent, so reading a region it has
+/// already read is reading the same rows twice. Zoomed out that is most of the
+/// table, several times a minute.
+///
+/// Both halves of the one question here: the system that has changed since the
+/// survey comes back, and the one that has not is left out. Asked apart, a
+/// poll that only asked what had changed while the camera drifted would lose
+/// the systems it drifted onto for good.
+#[async_std::test]
+async fn a_surveyed_region_answers_with_what_has_changed() {
+    let db = db!();
+    for address in [SURVEYED_STILL, SURVEYED_MOVED] {
+        forget(address).await;
+    }
+    // Both written before the survey is taken.
+    heard_of(&db, SURVEYED_STILL, 7600., 0., 100).await;
+    heard_of(&db, SURVEYED_MOVED, 7600., 1., 100).await;
+
+    // Taken between the two writes rather than at the clock now, so that the
+    // one before it and the one after are told apart by the moment itself.
+    let surveyed =
+        vec![Survey { center: middle_of(7600.), range: 10., at: at(300) }];
+
+    // One of them changes after the survey was taken, the other does not.
+    heard_of(&db, SURVEYED_MOVED, 7600., 1., 500).await;
+
+    let found = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7600.),
+        None,
+        None,
+        None,
+        &surveyed,
+    )
+    .await
+    .expect("the region should answer");
+
+    let found = addresses(&found);
+    assert!(
+        found.contains(&SURVEYED_MOVED),
+        "left out a system that changed after the region was surveyed"
+    );
+    assert!(
+        !found.contains(&SURVEYED_STILL),
+        "read a system the survey already answers for"
+    );
+
+    // And with nothing surveyed the region answers with both, so what the
+    // narrowed answer left out is shown to have been there to leave out.
+    let whole = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7600.),
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await
+    .expect("the region should answer");
+
+    let whole = addresses(&whole);
+    assert!(whole.contains(&SURVEYED_STILL));
+    assert!(whole.contains(&SURVEYED_MOVED));
+}
+
+/// What is near enough to be sized is read again whatever the surveys say
+///
+/// A survey answers for how far a system reaches only where it reached that
+/// system from near enough to have asked. Left out on the strength of one
+/// taken from further off, a system the caller has since come near would go on
+/// being drawn as a system of no known size for as long as it sat still.
+#[async_std::test]
+async fn what_is_near_enough_to_size_is_read_again() {
+    let db = db!();
+    forget(SURVEYED_NEAR).await;
+    heard_of(&db, SURVEYED_NEAR, 7800., 1., 100).await;
+
+    // Reaching the system and taken before it was written, so on its own this
+    // survey leaves the system out.
+    let surveyed =
+        vec![Survey { center: middle_of(7800.), range: 10., at: at(300) }];
+
+    let sized = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7800.),
+        None,
+        None,
+        // Far enough to take the system in, so its reach is being asked for.
+        Some(10.),
+        &surveyed,
+    )
+    .await
+    .expect("the region should answer");
+
+    assert!(
+        addresses(&sized).contains(&SURVEYED_NEAR),
+        "a system near enough to be sized was left to a survey that never \
+         asked how far it reaches"
+    );
+
+    // And with nothing near enough to be sized, the survey answers for it.
+    let far = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7800.),
+        None,
+        None,
+        Some(0.5),
+        &surveyed,
+    )
+    .await
+    .expect("the region should answer");
+
+    assert!(
+        !addresses(&far).contains(&SURVEYED_NEAR),
+        "read a system no nearer than the survey that already answers for it"
+    );
+}
+
+/// A region surveyed from somewhere else still answers for where it reaches
+///
+/// What keeps a camera that goes away and comes back from reading everything
+/// twice. The survey stands where the region does not, and the systems it
+/// reaches are left out of the answer wherever it was taken from.
+#[async_std::test]
+async fn a_survey_taken_elsewhere_still_answers_for_what_it_reaches() {
+    let db = db!();
+    forget(SURVEYED_OVER).await;
+    heard_of(&db, SURVEYED_OVER, 7700., 0., 100).await;
+
+    // Taken a light year off, and wide enough to reach over the system.
+    let mut center = middle_of(7700.);
+    center[0] += 1.;
+    let surveyed = vec![Survey {
+        center,
+        range: 10.,
+        at: db.now().await.expect("the database should say the time"),
+    }];
+
+    let found = System::fetch_in_range_of_point(
+        &db,
+        10.,
+        middle_of(7700.),
+        None,
+        None,
+        None,
+        &surveyed,
+    )
+    .await
+    .expect("the region should answer");
+
+    assert!(
+        !addresses(&found).contains(&SURVEYED_OVER),
+        "read a system a survey standing elsewhere already reaches"
     );
 }
 
@@ -2231,6 +2409,7 @@ async fn a_region_asked_about_time_alone_leaves_out_what_is_older() {
         None,
         Some(at(400)),
         None,
+        &[],
     )
     .await
     .expect("the region should answer");
@@ -2262,6 +2441,7 @@ async fn a_region_asked_by_address_and_time_wants_both() {
         Some((&[], &named)),
         Some(at(400)),
         None,
+        &[],
     )
     .await
     .expect("the region should answer");
@@ -2299,6 +2479,7 @@ async fn a_region_asked_by_faction_and_time_wants_both() {
         Some((&[faction.id], &[])),
         Some(at(400)),
         None,
+        &[],
     )
     .await
     .expect("the region should answer");
@@ -2326,6 +2507,7 @@ async fn a_region_asked_by_address_alone_keeps_what_is_old() {
         Some((&[], &named)),
         None,
         None,
+        &[],
     )
     .await
     .expect("the region should answer");
@@ -2357,6 +2539,7 @@ async fn a_span_answers_with_everything_inside_it() {
         None,
         Some(at(0)),
         None,
+        &[],
     )
     .await
     .expect("the region should answer");

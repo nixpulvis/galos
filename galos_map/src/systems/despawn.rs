@@ -31,16 +31,25 @@ pub struct Despawn;
 ///
 /// The camera is not touched. It hangs off the [`Map`] rather than off the
 /// galaxy, so what it is looking at can be replaced without moving it.
+///
+/// What the map had been surveyed for goes with the systems. A survey says the
+/// map can answer for a region and the database leaves that region out on the
+/// strength of it, so one left standing over an emptied map is a region that
+/// never comes back: the systems are gone and nothing asks for them again
+/// until they happen to change.
 pub fn despawn(
     mut commands: Commands,
     map: Res<Map>,
     galaxy: Res<Galaxy>,
     camera: Query<Entity, With<OrbitCamera>>,
+    mut tasks: ResMut<crate::systems::fetch::FetchTasks>,
     mut events: MessageReader<Despawn>,
 ) {
     if events.read().count() == 0 {
         return;
     }
+
+    tasks.surveyed.clear();
 
     // Up out of whatever it was standing in first. A camera that has descended
     // into a system is a child of it, and the system is about to go.
@@ -64,6 +73,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<Despawn>();
         app.add_systems(Update, despawn);
+        app.init_resource::<crate::systems::fetch::FetchTasks>();
 
         let map = app.world_mut().spawn_empty().id();
         let galaxy = app.world_mut().spawn(ChildOf(map)).id();
@@ -94,6 +104,35 @@ mod tests {
 
     fn parent(app: &App, entity: Entity) -> Option<Entity> {
         app.world().get::<ChildOf>(entity).map(|of| of.parent())
+    }
+
+    /// A clear leaves the map surveyed for nowhere
+    ///
+    /// The systems go and what says the map holds them has to go with them. A
+    /// survey lets the database leave a region out of its answer, so one left
+    /// standing over an emptied map is a region that never comes back: nothing
+    /// on screen, and nothing asking for it again until those systems happen
+    /// to change.
+    #[test]
+    fn a_clear_leaves_the_map_surveyed_for_nowhere() {
+        use crate::systems::fetch::{FetchTasks, tests::surveyed_at};
+
+        let mut app = sky(3);
+        {
+            let mut tasks = app.world_mut().resource_mut::<FetchTasks>();
+            for (center, radius, secs) in [(0, 10, 0), (100, 10, 10)] {
+                let (asked, at) = surveyed_at(center, radius, secs);
+                tasks.surveyed(asked, at);
+            }
+            assert_eq!(tasks.surveyed.len(), 2, "nothing to be cleared");
+        }
+
+        clear(&mut app);
+
+        assert!(
+            app.world().resource::<FetchTasks>().surveyed.is_empty(),
+            "an emptied map still says it holds the sky it just dropped"
+        );
     }
 
     /// A clear takes every system and what is drawn under it

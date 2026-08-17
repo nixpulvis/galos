@@ -33,6 +33,26 @@ impl Database {
 
         Ok(Database { pool })
     }
+
+    /// What the database's clock says
+    ///
+    /// For a caller keeping track of how current what it holds is. Rows carry
+    /// the database's clock in `updated_at`, and a caller comparing those
+    /// against its own is a caller trusting two clocks to agree: run a little
+    /// fast and it stamps itself later than the writes it has not seen yet,
+    /// and every one of those is missed for good.
+    ///
+    /// Read before the question it stamps rather than after, so that anything
+    /// written while the question is being answered is asked for again next
+    /// time. Asking twice costs a row; asking never loses one.
+    pub async fn now(&self) -> Result<chrono::DateTime<chrono::Utc>> {
+        let now: chrono::NaiveDateTime =
+            sqlx::query_scalar("SELECT now() AT TIME ZONE 'utc'")
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(now.and_utc())
+    }
 }
 
 /// Say that a write was turned away for being older than what is on record

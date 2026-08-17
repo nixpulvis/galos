@@ -24,7 +24,7 @@ use bevy::prelude::*;
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_db::systems::System as DbSystem;
 use std::{
@@ -450,11 +450,21 @@ pub fn spawn(
     // for the batch rather than each row having to carry its own.
     let mut arrived: Vec<DbSystem> = Vec::new();
     let mut arrived_at = time.startup();
+    // Taken down while the tasks are being walked and applied after, the walk
+    // holding the tasks and the taking writing the surveys beside them.
+    let mut answered: Vec<(FetchIndex, DateTime<Utc>)> = Vec::new();
 
     tasks.fetched.retain(|index, (task, fetched_at)| {
         let status = block_on(future::poll_once(task));
         let retain = status.is_none();
-        if let Some(new_systems) = status {
+        if let Some((new_systems, at)) = status {
+            // What the map can answer for from here on. Written where the
+            // answer lands rather than where it was asked for: until it is in
+            // hand the map holds nothing, and a question that errored leaves
+            // no moment and so leaves the region to be asked about again.
+            if let Some(at) = at {
+                answered.push((index.clone(), at));
+            }
             if let FetchIndex::Route(start, end, range) = index {
                 // A route is a line between systems, so one system is
                 // no route. Coming back with nothing is how the
@@ -510,6 +520,10 @@ pub fn spawn(
         }
         retain
     });
+
+    for (index, at) in answered {
+        tasks.surveyed(index, at);
+    }
 
     let arrived = one_per_system(arrived);
     if !arrived.is_empty() {

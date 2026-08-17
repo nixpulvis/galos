@@ -1,9 +1,32 @@
-use super::{Economies, System};
+use super::{Economies, Survey, System};
 use crate::{escaped, Database, Error};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::prelude::*;
 use geozero::wkb;
 use std::collections::HashMap;
+
+/// The surveys taken apart into a column each, as arrays go over the wire
+///
+/// Postgres takes a list of rows as one array per column and puts them back
+/// together with `unnest`, there being no array of records to bind. Read back
+/// in the order they are given here.
+///
+/// Naive times, `updated_at` being a `timestamp` without a zone and the two
+/// having to compare.
+type Spread = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<NaiveDateTime>);
+
+fn spread(surveyed: &[Survey]) -> Spread {
+    let mut spread = Spread::default();
+    for survey in surveyed {
+        spread.0.push(survey.center[0]);
+        spread.1.push(survey.center[1]);
+        spread.2.push(survey.center[2]);
+        spread.3.push(survey.range);
+        spread.4.push(survey.at.naive_utc());
+    }
+
+    spread
+}
 
 /// Whether `at` stands within `range` light years of `center`
 ///
@@ -495,6 +518,35 @@ impl System {
     /// Left to [`Self::fetch_many`] where a filter is admitting, that being a
     /// question about the handful of systems a filter named rather than about
     /// a region, and already the narrow one.
+    ///
+    /// `surveyed` is what the caller already holds, as [`Survey`]s, and what
+    /// it holds is left out of the answer. A system is left out where any one
+    /// of them reaches it and it has not changed since that one was taken, so
+    /// a caller that has flown about is answered for the union of everywhere
+    /// it has been rather than for the last place only. Empty asks for the
+    /// whole region, which is what a caller holding nothing wants.
+    ///
+    /// One question rather than two. A caller standing still wants what has
+    /// changed, and a caller that has moved wants the sky it has come to see;
+    /// asked apart, a poll that only asked what had changed while the camera
+    /// drifted would lose the systems it drifted onto for good, the next poll
+    /// reaching back only as far as this one. Asked together the two are the
+    /// same question, which is everything in range this caller cannot already
+    /// answer for.
+    ///
+    /// A survey narrowed by `admitting` or `since` must not be handed back
+    /// here. What came of one is the part of a region a filter admitted, and
+    /// leaving a whole region out on the strength of it drops every system the
+    /// filter turned away.
+    ///
+    /// Nothing within `sizing` of `center` is left out, whatever the surveys
+    /// say. They answer for how far a system reaches only where they reached
+    /// it from inside that same distance, so a system surveyed from further
+    /// off came back without one; left out on the strength of that survey it
+    /// would go on being drawn as a system of no known size for as long as it
+    /// sat still, however near the caller came to it. The sky that near is a
+    /// couple of thousand systems at the crowded end, which is what reading it
+    /// again every time costs.
     pub async fn fetch_in_range_of_point(
         db: &Database,
         range: f64,
@@ -502,6 +554,7 @@ impl System {
         admitting: Option<(&[i32], &[i64])>,
         since: Option<DateTime<Utc>>,
         sizing: Option<f64>,
+        surveyed: &[Survey],
     ) -> Result<Vec<Self>, Error> {
         let admitted = match (admitting, since) {
             (Some((factions, addresses)), Some(moment)) => Some(
@@ -523,6 +576,25 @@ impl System {
             return Self::fetch_many(db, &admitted).await;
         }
 
+        let (xs, ys, zs, ranges, ats) = spread(surveyed);
+        // Planned against what is bound rather than against parameters in
+        // general. Postgres stops looking at the values after the fifth asking
+        // of a prepared statement and settles on one plan for all of them,
+        // which for this one runs at twice the time: the arrays are the shape
+        // of the question, and a plan that cannot see whether there are none
+        // of them or eight is planned for a question nobody puts.
+        //
+        // Set for the statement rather than for the connection. The pool is
+        // shared with whatever else the caller is doing, and the sync writing
+        // through it puts the same few upserts millions of times, which is the
+        // case a held plan is for.
+        //
+        // The transaction is what `SET LOCAL` needs to be scoped by. Three
+        // round trips against a query measured in seconds.
+        let mut asking = db.pool.begin().await?;
+        sqlx::query("SET LOCAL plan_cache_mode = force_custom_plan")
+            .execute(&mut *asking)
+            .await?;
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -541,14 +613,35 @@ impl System {
                 updated_by
             FROM systems
             WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
+              AND (
+                ($10::float8 IS NOT NULL
+                 AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $10))
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM unnest($5::float8[], $6::float8[], $7::float8[],
+                              $8::float8[], $9::timestamp[])
+                      AS surveyed(x, y, z, range, at)
+                  WHERE ST_3DDWithin(
+                          ST_MakePoint(surveyed.x, surveyed.y, surveyed.z),
+                          position, surveyed.range)
+                    AND systems.updated_at <= surveyed.at
+                )
+              )
             "#,
             range,
             center[0],
             center[1],
             center[2],
+            &xs,
+            &ys,
+            &zs,
+            &ranges,
+            &ats,
+            sizing,
         )
-        .fetch_all(&db.pool)
+        .fetch_all(&mut *asking)
         .await?;
+        asking.commit().await?;
 
         let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
         let mut present = Self::system_factions(db, &found).await?;

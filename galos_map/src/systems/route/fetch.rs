@@ -23,6 +23,8 @@ pub fn fetch_route(
     let now = time.last_update().unwrap_or(time.startup());
     let task_pool = AsyncComputeTaskPool::get();
     let db = db.0.clone();
+    // No moment. A route is a line between two named systems rather than a
+    // region, so there is no sky it leaves the map able to answer for.
     let task = task_pool.spawn(async move {
         if let (Ok(a), Ok(b), Ok(r)) = (
             DbSystem::fetch_by_name(&db, &start).await,
@@ -30,10 +32,10 @@ pub fn fetch_route(
             range.parse::<f64>(),
         ) {
             if let Some(route) = a.route_to(&db, &b, r) {
-                return route.0;
+                return (route.0, None);
             }
         }
-        vec![]
+        (vec![], None)
     });
     tasks.fetched.insert(index, (task, now));
     **last_fetched_at = LastFetchedAt(now);

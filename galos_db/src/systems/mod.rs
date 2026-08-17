@@ -3,6 +3,31 @@ use chrono::{DateTime, Utc};
 use elite_journal::prelude::*;
 use std::fmt;
 
+/// A region already asked about, and the moment its answer is current as of
+///
+/// What a caller holding a sky holds is not a region but a region and a time:
+/// the systems inside `range` of `center` that have not changed since `at`.
+/// Anything else it has to ask for, and those two halves are one fact rather
+/// than two, which is why they are one type.
+///
+/// Handed back to [`System::fetch_in_range_of_point`] so that a region already
+/// covered is not read again. Several of them compose: a caller that has flown
+/// about holds the union of everywhere it has been, and a system is left out of
+/// the answer where any one of them vouches for it.
+///
+/// `at` is the database's clock, from [`crate::Database::now`], and read before
+/// the question it stamps. A caller stamping these itself is a caller trusting
+/// its clock against the one that writes `updated_at`.
+#[derive(Debug, Clone)]
+pub struct Survey {
+    /// The middle of it, in light years from the galactic center
+    pub center: [f64; 3],
+    /// How far it reaches from there, in light years
+    pub range: f64,
+    /// The moment the systems inside it are current as of
+    pub at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct System {
     pub address: i64,

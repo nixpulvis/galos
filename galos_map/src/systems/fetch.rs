@@ -7,8 +7,8 @@ use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Db, search::Search};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
-use chrono::{Duration as Span, Utc};
-use galos_db::systems::System as DbSystem;
+use chrono::{DateTime, Duration as Span, Utc};
+use galos_db::systems::{Survey as DbSurvey, System as DbSystem};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -196,12 +196,156 @@ impl fmt::Debug for FetchIndex {
     }
 }
 
+/// A region the map has an answer for, and the moment it is answered as of
+///
+/// The map holds every system it has ever been sent and puts a fresh row over
+/// an old one, so what it can answer for is the union of everywhere it has
+/// asked about. One of these per region asked, and together they are that
+/// union.
+///
+/// Kept as the region was asked for, in whole light years, so that a region
+/// asked for again is recognised as the same one. `at` is the database's
+/// clock, which is the only clock `updated_at` can be compared against.
+#[derive(Clone)]
+pub struct Survey {
+    /// What was asked, which says what the answer covers
+    pub asked: FetchIndex,
+    /// The moment the answer is current as of
+    pub at: DateTime<Utc>,
+}
+
+/// How many regions the map remembers having asked about
+///
+/// Forgetting one costs a region being read again, and never costs a system
+/// being missed, so this is a size rather than a correctness figure. Held
+/// short because a region asked again from the same place puts the old one
+/// out, so the list only grows while the camera is going somewhere new, and a
+/// camera going somewhere new is leaving the old regions behind anyway.
+const REMEMBERED: usize = 4;
+
 /// Tasks for systems in the DB which will be spawned
 #[derive(Resource, Default)]
 pub struct FetchTasks {
-    pub fetched: HashMap<FetchIndex, (Task<Vec<DbSystem>>, Instant)>,
-    pub last_fetched: Option<FetchIndex>,
+    pub fetched: HashMap<FetchIndex, (Task<Fetched>, Instant)>,
+    /// The regions already asked about, oldest first
+    ///
+    /// Written when an answer lands rather than when it is asked for: a
+    /// question still on the wire is one the map cannot answer from yet, and
+    /// one that came back an error is one it never will.
+    pub surveyed: Vec<Survey>,
 }
+
+/// What a fetch came back with, and the moment it is current as of
+///
+/// The moment is read off the database before the question is put, so that
+/// anything written while it is being answered is asked for again next time.
+///
+/// [`None`] where the question was never answered, which is a fetch that
+/// errored. Nothing is held on the strength of one, and the region is left to
+/// be asked about again.
+pub type Fetched = (Vec<DbSystem>, Option<DateTime<Utc>>);
+
+impl FetchTasks {
+    /// Take `asked` to be answered for as of `at`
+    ///
+    /// Whatever it covers that an older survey covered is now covered by this
+    /// one, so those are dropped: a camera standing still leaves one survey
+    /// standing however long it polls for, and only a camera going somewhere
+    /// new grows the list.
+    ///
+    /// The oldest go once the list is full. What that costs is a region read
+    /// again, having forgotten it was already held.
+    pub fn surveyed(&mut self, asked: FetchIndex, at: DateTime<Utc>) {
+        self.surveyed.retain(|survey| {
+            !(survey.asked.refreshes(&asked) && survey.at <= at)
+        });
+        self.surveyed.push(Survey { asked, at });
+        if self.surveyed.len() > REMEMBERED {
+            self.surveyed.remove(0);
+        }
+    }
+
+    /// The regions worth telling the database about, asking about `range`
+    ///
+    /// Only the ones asked for whole. A region narrowed by a filter was
+    /// answered with the part of it the filter admitted, and telling the
+    /// database that region is held would drop every system it turned away.
+    ///
+    /// And only the ones large enough to pay for themselves. Leaving a survey
+    /// out of the answer costs a distance measured against every system in
+    /// range, and saves carrying back the ones it reaches. A survey reaching a
+    /// tenth as far as the question holds a thousandth of the sky it is asked
+    /// against, so it is a measurement per system to save one system in a
+    /// thousand. What leaves them behind is a zoom: the map is asked about the
+    /// galaxy, and everywhere it surveyed while zoomed in is a pinprick in it.
+    pub fn whole(&self, about: IVec3, range: i32) -> Vec<DbSurvey> {
+        self.surveyed
+            .iter()
+            .filter_map(|survey| match &survey.asked {
+                FetchIndex::Region(center, radius, None, None)
+                    if worth_leaving_out(about, range, *center, *radius) =>
+                {
+                    Some(DbSurvey {
+                        center: [
+                            center.x as f64,
+                            center.y as f64,
+                            center.z as f64,
+                        ],
+                        range: *radius as f64,
+                        at: survey.at,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// Whether a survey of `radius` about `center` is worth naming to the database
+/// when asking about `range` around `about`
+///
+/// Two ways one is not. It may stand clear of the region altogether, which is
+/// what a camera that has jumped somewhere else leaves behind: a survey that
+/// reaches none of what is being asked about holds nothing back and costs a
+/// distance measured against every system in range.
+///
+/// Or it may be too small to pay for itself. A survey reaching a tenth as far
+/// as the question covers a thousandth of it, so naming it is a measurement
+/// per system to save carrying one system in a thousand. What leaves those
+/// behind is a zoom: the map is asked about the galaxy, and everywhere it
+/// surveyed while looking at a few light years is a pinprick in it.
+///
+/// Both are about what is worth doing rather than about what is true. A survey
+/// left unsaid costs those systems being read again and never costs a system
+/// being missed, so this is free to be wrong in either direction.
+fn worth_leaving_out(
+    about: IVec3,
+    range: i32,
+    center: IVec3,
+    radius: i32,
+) -> bool {
+    if (radius as f64) < range as f64 * WORTH_LEAVING_OUT {
+        return false;
+    }
+
+    // Squared, the distance itself being wanted for nothing but this.
+    let away = (about - center).as_dvec3().length_squared();
+    let reaching = (range + radius) as f64;
+
+    away < reaching * reaching
+}
+
+/// How far a survey must reach to be worth leaving out of an answer
+///
+/// As a fraction of what is being asked for. A survey holds at most the cube
+/// of this of the region it is named against, so half of it is an eighth of
+/// the sky and a tenth of it is a thousandth: below about a half the
+/// measurement costs more than the systems it saves carrying.
+///
+/// A figure about what is worth doing rather than about what is true.
+/// Forgetting a survey costs those systems being read again and never costs a
+/// system being missed, so this is free to be wrong in either direction.
+const WORTH_LEAVING_OUT: f64 = 0.5;
 
 /// Spawns tasks to load star systems from the DB
 pub fn fetch(
@@ -295,6 +439,10 @@ fn fetch_spyglass(
         let task_pool = AsyncComputeTaskPool::get();
         let db = db.0.clone();
         let radius = spyglass.radius;
+        // What the map can already answer for, which the region is asked
+        // around rather than through: everywhere it has been holds systems it
+        // would otherwise read again, and zoomed out that is most of them.
+        let surveyed = tasks.whole(center, spyglass.radius.floor() as i32);
         let task = task_pool.spawn(async move {
             let cent = [center.x as f64, center.y as f64, center.z as f64];
             let range = radius.floor() as f64;
@@ -304,19 +452,32 @@ fn fetch_spyglass(
             // Worked out here rather than carried in, so that the moment is
             // taken from the clock the question is actually put at.
             let since = span.map(|span| Utc::now() - span);
-            DbSystem::fetch_in_range_of_point(
+            // Read before the question rather than after it, so that a system
+            // written while the region is being answered is asked for again
+            // rather than taken to be held. The database's own clock, which
+            // is the one `updated_at` is written by.
+            let Ok(at) = db.now().await else {
+                return (Vec::new(), None);
+            };
+            match DbSystem::fetch_in_range_of_point(
                 &db,
                 range,
                 cent,
                 narrowed,
                 since,
                 Some(SIZED_WITHIN),
+                &surveyed,
             )
             .await
-            .unwrap_or_default()
+            {
+                Ok(found) => (found, Some(at)),
+                // No moment, so the region is not taken to be held. A question
+                // that came back an error is one the map still has to ask, and
+                // stamping it here would leave it never asking again.
+                Err(_) => (Vec::new(), None),
+            }
         });
         tasks.fetched.insert(index.clone(), (task, now));
-        tasks.last_fetched = Some(index);
         **last_fetched_at = LastFetchedAt(now);
     }
 }
@@ -360,8 +521,10 @@ fn fetch_selected(
     let task_pool = AsyncComputeTaskPool::get();
     let asking = wanted.clone();
     let db = db.0.clone();
+    // No moment, as a route has none. These are systems named outright rather
+    // than a region, so nothing about the sky is settled by their arriving.
     let task = task_pool.spawn(async move {
-        DbSystem::fetch_many(&db, &asking).await.unwrap_or_default()
+        (DbSystem::fetch_many(&db, &asking).await.unwrap_or_default(), None)
     });
     tasks.fetched.insert(FetchIndex::Systems(wanted), (task, now));
 }
@@ -391,6 +554,12 @@ fn unspawned(selected: &[i64], spawned: &HashSet<i64>) -> Vec<i64> {
 /// while the camera moves are each a real answer about where it was, and
 /// dropping the one under way for the next would leave nothing arriving at
 /// all until the camera stopped.
+///
+/// A refresh of any region already surveyed rather than of the last one only.
+/// A camera that goes somewhere and comes back is asking again for what it
+/// holds, whatever it looked at in between, and waiting out the poll for it is
+/// the difference between asking every tenth of a second and asking every ten
+/// seconds.
 pub fn spyglass_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
@@ -403,13 +572,32 @@ pub fn spyglass_condition(
         return false;
     }
 
-    tasks.last_fetched.as_ref().map_or(true, |last_fetched| {
-        if index.refreshes(last_fetched) {
-            poll.elapsed(last_fetched_at.0, now)
-        } else {
-            last_fetched_at.0 + Duration::from_millis(throttle.0) < now
-        }
-    })
+    if tasks.surveyed.is_empty() {
+        return true;
+    }
+
+    if surveyed_already(index, &tasks.surveyed) {
+        poll.elapsed(last_fetched_at.0, now)
+    } else {
+        last_fetched_at.0 + Duration::from_millis(throttle.0) < now
+    }
+}
+
+/// Whether `index` asks for a region the map can already answer for
+///
+/// Against every survey rather than the last one. A camera that goes somewhere
+/// and comes back is asking again for what it holds, whatever it looked at in
+/// between, and read against the last survey alone that is somewhere new and
+/// is asked for again every throttle for as long as it stands there.
+///
+/// Whether any one survey covers it, rather than whether they cover it
+/// between them. Two regions may hold a third between them without either
+/// holding it, and working that out is a question about spheres that this
+/// would have to answer every frame. Said no to wrongly, the region is asked
+/// for at the throttle and comes back with what the surveys do cover left out
+/// of it, which is a small answer arriving early rather than a wrong one.
+fn surveyed_already(index: &FetchIndex, surveyed: &[Survey]) -> bool {
+    surveyed.iter().any(|survey| index.refreshes(&survey.asked))
 }
 
 /// Whether a region is among the queries already on the wire
@@ -422,7 +610,7 @@ fn region_asked<'a>(mut asked: impl Iterator<Item = &'a FetchIndex>) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A region of `radius` about `center` on the x axis, asked for whole
@@ -454,6 +642,189 @@ mod tests {
     /// The map holding a star for each of `addresses`
     fn on_the_map(addresses: &[i64]) -> HashSet<i64> {
         addresses.iter().copied().collect()
+    }
+
+    /// A moment, `secs` on from an arbitrary one
+    fn at(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("a moment")
+    }
+
+    /// Standing still leaves one survey however long the map polls
+    ///
+    /// The region asked again covers what the one before it covered and is
+    /// newer, so the older goes. Without that the list fills with the same
+    /// region over and over and the oldest of them, which is the one the
+    /// database is told about, falls further and further behind.
+    #[test]
+    fn asking_again_from_the_same_place_puts_the_old_survey_out() {
+        let mut tasks = FetchTasks::default();
+        for tick in 0..20 {
+            tasks.surveyed(region(0, 10), at(tick * 10));
+        }
+
+        assert_eq!(tasks.surveyed.len(), 1, "a survey per poll was kept");
+        assert_eq!(tasks.surveyed[0].at, at(190), "the newest was not kept");
+    }
+
+    /// Going somewhere and coming back leaves both places surveyed
+    ///
+    /// The case a single remembered region cannot hold. The map holds A and B
+    /// both, so coming back to A is a question it can already answer but for
+    /// what has changed, and B is still worth remembering for the same reason.
+    #[test]
+    fn going_away_and_coming_back_holds_both_places() {
+        let mut tasks = FetchTasks::default();
+        tasks.surveyed(region(0, 10), at(0));
+        tasks.surveyed(region(100, 10), at(10));
+        tasks.surveyed(region(0, 10), at(20));
+
+        let asked: Vec<_> =
+            tasks.surveyed.iter().map(|survey| survey.asked.clone()).collect();
+        assert_eq!(asked.len(), 2, "kept {asked:?}");
+        assert!(asked.contains(&region(100, 10)), "forgot where it went");
+        assert!(asked.contains(&region(0, 10)), "forgot where it came back to");
+        // And the one it came back to is held as of when it came back, not as
+        // of when it first went.
+        let back = tasks
+            .surveyed
+            .iter()
+            .find(|survey| survey.asked == region(0, 10))
+            .expect("the region it came back to");
+        assert_eq!(back.at, at(20));
+    }
+
+    /// A wider region put over a narrower one at the same place
+    #[test]
+    fn a_wider_survey_puts_out_the_one_inside_it() {
+        let mut tasks = FetchTasks::default();
+        tasks.surveyed(region(0, 10), at(0));
+        tasks.surveyed(region(0, 50), at(10));
+
+        assert_eq!(tasks.surveyed.len(), 1);
+        assert_eq!(tasks.surveyed[0].asked, region(0, 50));
+    }
+
+    /// And the oldest go once the map has been to more places than it keeps
+    ///
+    /// Forgetting one costs that region being read again and never costs a
+    /// system, so a full list drops rather than grows.
+    #[test]
+    fn the_oldest_survey_goes_once_the_list_is_full() {
+        let mut tasks = FetchTasks::default();
+        for step in 0..(REMEMBERED as i32 + 4) {
+            tasks.surveyed(region(step * 100, 10), at(step as i64));
+        }
+
+        assert_eq!(tasks.surveyed.len(), REMEMBERED);
+        assert_eq!(
+            tasks.surveyed[0].asked,
+            region(400, 10),
+            "dropped something other than the oldest"
+        );
+    }
+
+    /// Only the regions asked for whole are told to the database
+    ///
+    /// A region narrowed by a filter came back with the part of it the filter
+    /// admitted. Telling the database that whole region is held would have it
+    /// leave out every system the filter turned away, and those would never
+    /// arrive.
+    #[test]
+    fn a_narrowed_survey_is_not_one_the_database_is_told_about() {
+        let mut tasks = FetchTasks::default();
+        tasks.surveyed(region_admitting(0, 10, 7), at(0));
+        tasks.surveyed(region_within(100, 10, 60), at(10));
+        tasks.surveyed(region(200, 10), at(20));
+
+        let whole = tasks.whole(IVec3::new(200, 0, 0), 10);
+        assert_eq!(whole.len(), 1, "told the database about a narrowed region");
+        assert_eq!(whole[0].center, [200., 0., 0.]);
+        assert_eq!(whole[0].range, 10.);
+        assert_eq!(whole[0].at, at(20));
+    }
+
+    /// A survey too small to pay for itself is not told to the database
+    ///
+    /// What a zoom leaves behind. Everywhere the map surveyed while it was
+    /// looking at a few light years is a pinprick in a question about the
+    /// galaxy, and naming one costs a distance measured against every system
+    /// in range to save carrying back the handful it reaches.
+    #[test]
+    fn a_survey_too_small_to_pay_for_itself_is_left_unsaid() {
+        let mut tasks = FetchTasks::default();
+        tasks.surveyed(region(0, 10), at(0));
+
+        let here = IVec3::ZERO;
+        assert_eq!(tasks.whole(here, 10).len(), 1, "at the size it was taken");
+        assert_eq!(tasks.whole(here, 20).len(), 1, "at twice the size");
+        assert_eq!(tasks.whole(here, 100).len(), 0, "at ten times the size");
+        assert_eq!(tasks.whole(here, 20000).len(), 0, "zoomed out to a galaxy");
+    }
+
+    /// Nor is one standing clear of what is being asked about
+    ///
+    /// What a jump somewhere else leaves behind. A survey that reaches none of
+    /// the region holds nothing back from the answer, and naming it is a
+    /// distance measured against every system in range for nothing.
+    #[test]
+    fn a_survey_standing_clear_of_the_region_is_left_unsaid() {
+        let mut tasks = FetchTasks::default();
+        tasks.surveyed(region(0, 10), at(0));
+
+        // Twenty-five light years off, which two tens do not reach across.
+        assert_eq!(tasks.whole(IVec3::new(25, 0, 0), 10).len(), 0);
+        // Nineteen, which they do.
+        assert_eq!(tasks.whole(IVec3::new(19, 0, 0), 10).len(), 1);
+    }
+
+    /// A region of `radius` about `center`, and when it was answered
+    ///
+    /// For [`super::despawn`]'s tests, which put surveys on a map to watch a
+    /// clear take them off again.
+    #[cfg(test)]
+    pub(crate) fn surveyed_at(
+        center: i32,
+        radius: i32,
+        secs: i64,
+    ) -> (FetchIndex, DateTime<Utc>) {
+        (region(center, radius), at(secs))
+    }
+
+    /// Coming back to a region already surveyed is a refresh
+    ///
+    /// So it waits out the poll rather than being asked again at the throttle.
+    /// The map holds it, and read against the last survey alone this is
+    /// somewhere new: that is the whole of what keeping a list buys.
+    #[test]
+    fn coming_back_to_a_surveyed_region_is_a_refresh() {
+        let mut tasks = FetchTasks::default();
+        tasks.surveyed(region(0, 10), at(0));
+        tasks.surveyed(region(100, 10), at(10));
+
+        assert!(
+            surveyed_already(&region(0, 10), &tasks.surveyed),
+            "the place it came back to read as somewhere new"
+        );
+        assert!(
+            surveyed_already(&region(100, 10), &tasks.surveyed),
+            "the place it went read as somewhere new"
+        );
+        assert!(
+            !surveyed_already(&region(500, 10), &tasks.surveyed),
+            "somewhere it has never been read as already held"
+        );
+    }
+
+    /// Somewhere never surveyed is a new question however many are held
+    #[test]
+    fn a_region_between_two_surveys_is_still_a_new_question() {
+        let mut tasks = FetchTasks::default();
+        tasks.surveyed(region(0, 10), at(0));
+        tasks.surveyed(region(10, 10), at(10));
+
+        // Covered by the two of them together and by neither alone, which is
+        // asked again rather than worked out.
+        assert!(!surveyed_already(&region(5, 10), &tasks.surveyed));
     }
 
     /// A region narrowed to a filter is a different question about the place
