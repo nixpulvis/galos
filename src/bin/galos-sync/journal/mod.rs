@@ -216,12 +216,17 @@ fn read(path: &Path) -> Option<Vec<Entry<Event>>> {
     let mut unread = 0;
     let mut why = None;
 
+    // A line the filesystem will not hand over is counted with the ones that
+    // would not parse. `lines` is not fused, so the file goes on after one,
+    // and one torn byte in a journal of thousands is worth that one line and
+    // not the rest of them.
     for line in BufReader::new(file).lines() {
         let line = match line {
             Ok(line) => line,
             Err(err) => {
-                warn!(file = %path.display(), error = %err, "unreadable journal");
-                return None;
+                unread += 1;
+                why.get_or_insert_with(|| err.to_string());
+                continue;
             }
         };
 
@@ -362,6 +367,7 @@ fn progress(entries: u64) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn entries(lines: &[&str]) -> Vec<Entry<Event>> {
         lines
@@ -369,6 +375,33 @@ mod tests {
             .map(|line| serde_json::from_str(line).expect("entry should parse"))
             .collect()
     }
+
+    /// A directory of this test's own, emptied before it writes anything
+    ///
+    /// Named for the test, so two running at once do not share one, and left
+    /// behind afterwards, which is what makes a failure readable.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("galos-journal").join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("a scratch directory should be made");
+        dir
+    }
+
+    /// Write a journal file, byte for byte, and answer where it went
+    fn journal(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        File::create(&path)
+            .and_then(|mut file| file.write_all(bytes))
+            .expect("a journal should be writable");
+        path
+    }
+
+    /// One line of a journal that is not valid UTF-8
+    ///
+    /// A torn write or a bad sector. `BufRead::lines` answers this line with
+    /// an error and goes on to the next one, so the file does not end here.
+    const TORN: &[u8] = b"{\"timestamp\":\"2026-08-08T12:00:01Z\",\
+        \"event\":\"Music\",\"MusicTrack\":\"\xff\xfe\"}";
 
     /// The header every journal file opens with, naming nobody
     const FILEHEADER: &str = r#"{
@@ -435,5 +468,30 @@ mod tests {
         ]);
 
         assert_eq!(commander(&entries), None);
+    }
+
+    /// A line the filesystem will not hand over costs that line and no more
+    ///
+    /// One bad byte in a file of thousands. Everything either side of it was
+    /// written by the game and is worth as much as it ever was.
+    #[test]
+    fn a_torn_line_does_not_take_the_file_with_it() {
+        let dir = scratch("a_torn_line");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(
+            br#"{"timestamp":"2026-08-08T12:00:00Z","event":"NavRoute"}"#,
+        );
+        bytes.push(b'\n');
+        bytes.extend_from_slice(TORN);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(
+            br#"{"timestamp":"2026-08-08T12:00:02Z","event":"NavRoute"}"#,
+        );
+        bytes.push(b'\n');
+
+        let entries = read(&journal(&dir, "Journal.torn.log", &bytes))
+            .expect("the file should read");
+
+        assert_eq!(entries.len(), 2);
     }
 }
