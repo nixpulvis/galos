@@ -2,40 +2,64 @@ use std::{env, error, fmt};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug)]
 pub enum Error {
-    Env(dotenv::Error),
+    /// The variable itself, unset or not UTF-8
+    DatabaseUrl(env::VarError),
+
+    /// The file that would have set it, there and unreadable
+    Dotenv(dotenv::Error),
+
     Sqlx(sqlx::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            // TODO: Pretty print, see above todo.
-            Error::Env(e) => write!(f, "{}", e),
+            Error::DatabaseUrl(env::VarError::NotUnicode(_)) => {
+                write!(f, "DATABASE_URL is set to something that is not UTF-8")
+            }
+            Error::DatabaseUrl(_) => write!(
+                f,
+                "DATABASE_URL is not set, and no .env file set it either. \
+                 Put it in the environment, or in a .env file in the \
+                 working directory or one above it, e.g. \
+                 DATABASE_URL=postgresql://postgres@localhost/galos_development"
+            ),
+            Error::Dotenv(e) => write!(f, ".env could not be read: {}", e),
             Error::Sqlx(e) => write!(f, "{}", e),
         }
     }
 }
 
+/// What `Display` says, rather than the derived form
+///
+/// A `main` returning `Result` prints its error with `Debug`, and the derived
+/// one names neither the file nor the variable it was wanted for.
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match *self {
-            Error::Env(ref e) => Some(e),
-            Error::Sqlx(ref e) => Some(e),
+        match self {
+            Error::DatabaseUrl(e) => Some(e),
+            Error::Dotenv(e) => Some(e),
+            Error::Sqlx(e) => Some(e),
         }
     }
 }
 
 impl From<dotenv::Error> for Error {
     fn from(err: dotenv::Error) -> Error {
-        Error::Env(err)
+        Error::Dotenv(err)
     }
 }
 
 impl From<env::VarError> for Error {
     fn from(err: env::VarError) -> Error {
-        Error::Env(dotenv::Error::EnvVar(err))
+        Error::DatabaseUrl(err)
     }
 }
 

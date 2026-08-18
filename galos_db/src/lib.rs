@@ -1,11 +1,11 @@
 //!  Database adapter and functions for `galos`
 //!
-//! Set `DATABASE_ENV` for configuring the connection. E.g:
+//! Set `DATABASE_URL` for configuring the connection. E.g:
 //! - `postgresql://localhost/galos_development`
 //! - `postgresql://postgres:"pw"@10.0.1.2/galos_production`
 //!
-//! Upon calling `[Database::new`] a `.env` file will also be loaded to set
-//! the `DATABASE_URL`.
+//! Upon calling [`Database::new`] a `.env` file will also be loaded to set
+//! that variable. Having no such file is not an error.
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::env;
 
@@ -19,7 +19,13 @@ pub struct Database {
 
 impl Database {
     pub async fn new() -> Result<Self> {
-        dotenv::dotenv()?;
+        // Only a missing file is passed over, `DATABASE_URL` having other
+        // places to come from. One that is there and unreadable is an error.
+        match dotenv::dotenv() {
+            Ok(_) => {}
+            Err(e) if e.not_found() => {}
+            Err(e) => return Err(Error::Dotenv(e)),
+        }
         let url = env::var("DATABASE_URL")?;
 
         let pool =
