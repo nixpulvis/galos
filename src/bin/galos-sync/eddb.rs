@@ -1,3 +1,11 @@
+//! A dump from EDDB, which is gone
+//!
+//! The site closed and stopped publishing, so nothing new arrives here and
+//! nothing this reads is newer than the day it shut. What it takes is a dump
+//! already on disk, and that is all it will ever take. The systems in one are
+//! stamped with their own `updated_at`, so the guards in `System::create`
+//! keep a newer reading from EDDN or a journal from being written over.
+
 use crate::{bar, Run};
 use async_std::task;
 use elite_journal::system::Coordinate;

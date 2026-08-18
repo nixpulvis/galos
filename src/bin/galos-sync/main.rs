@@ -20,7 +20,7 @@ pub enum Cli {
     Eddn(eddn::Cli),
     #[structopt(about = "Sync from EDSM's nightly dumps")]
     Edsm(edsm::Cli),
-    #[structopt(about = "Sync from EDDB's nightly dumps")]
+    #[structopt(about = "Sync from a saved EDDB dump; EDDB itself is gone")]
     Eddb(eddb::Cli),
 }
 
