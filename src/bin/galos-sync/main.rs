@@ -16,7 +16,6 @@ pub enum Cli {
     #[structopt(
         about = "Subscribes to EDDN to continuously sync from incoming events"
     )]
-    #[cfg(unix)]
     Eddn(eddn::Cli),
     #[structopt(about = "Sync from EDSM's nightly dumps")]
     Edsm(edsm::Cli),
@@ -28,7 +27,6 @@ impl Run for Cli {
     fn run(&self, db: &Database) {
         match self {
             Cli::Journal(cli) => cli.run(db),
-            #[cfg(unix)]
             Cli::Eddn(cli) => cli.run(db),
             Cli::Edsm(cli) => cli.run(db),
             Cli::Eddb(cli) => cli.run(db),

@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use crate::journal::record;
 use crate::Run;
 use async_std::task;
@@ -16,7 +15,8 @@ const STALL: Duration = Duration::from_secs(120);
 
 #[derive(StructOpt, Debug)]
 pub struct Cli {
-    // Type as a URL? ZMQ doesn't bother :(
+    // TODO: Take an `Endpoint`, which parses, so a bad address is a
+    // complaint about the argument rather than a panic on connecting.
     #[structopt(short = "r", long = "remote", default_value = URL, help = "ZMQ remote address")]
     pub url: String,
 
