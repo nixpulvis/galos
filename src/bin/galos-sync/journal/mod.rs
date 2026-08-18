@@ -213,9 +213,9 @@ impl Cli {
             task::block_on(async {
                 for (_, entry) in run {
                     record::entry(db, entry, user).await;
+                    bar.inc(1);
                 }
             });
-            bar.inc(run.len() as u64);
         }
         bar.finish();
         drop(drawing);
