@@ -1,9 +1,8 @@
-use crate::Run;
+use crate::{bar, Run};
 use async_std::task;
 use chrono::offset::Utc;
 use galos_db::systems::{Economies, System};
 use galos_db::Database;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use structopt::StructOpt;
 
@@ -39,11 +38,8 @@ impl Cli {
     ) {
         let mut imported = 0;
         let mut errors = HashMap::new();
-        let bar = ProgressBar::new(systems.len() as u64);
-        bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
-            .unwrap()
-            .progress_chars("##-"));
+        let bar = bar::progress(systems.len() as u64);
+        let drawing = bar::under(&bar);
         for system in bar.wrap_iter(systems.into_iter()) {
             if system.id.is_none() || system.coords.is_none() {
                 continue;
@@ -85,6 +81,9 @@ impl Cli {
                 }
             }
         }
+        bar.finish();
+        drop(drawing);
+
         println!("Imported {} systems.", imported);
         for (err, system_names) in errors {
             println!(

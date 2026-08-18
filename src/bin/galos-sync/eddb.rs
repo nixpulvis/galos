@@ -1,11 +1,10 @@
-use crate::Run;
+use crate::{bar, Run};
 use async_std::task;
 use elite_journal::system::Coordinate;
 use galos_db::{
     systems::{Economies, System},
     Database,
 };
-use indicatif::{ProgressBar, ProgressStyle};
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -23,11 +22,8 @@ impl Run for Cli {
             Err(err) => panic!("{}", err),
         };
 
-        let bar = ProgressBar::new(dump.len());
-        bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
-            .unwrap()
-            .progress_chars("##-"));
+        let bar = bar::progress(dump.len());
+        let _drawing = bar::under(&bar);
         for result in bar.wrap_iter(dump.into_iter()) {
             if let Ok(system) = result {
                 if let Some(address) = system.ed_system_address {
@@ -63,5 +59,6 @@ impl Run for Cli {
                 }
             }
         }
+        bar.finish();
     }
 }

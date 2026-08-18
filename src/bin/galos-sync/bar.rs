@@ -15,7 +15,7 @@
 //! swallows what it is asked to print, so routing through one would lose the
 //! log exactly where there is nothing else to read.
 
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::io::{self, stderr, IsTerminal, Write};
 use std::sync::{Mutex, MutexGuard};
 use tracing_subscriber::fmt::MakeWriter;
@@ -110,11 +110,30 @@ impl Drop for Line {
     }
 }
 
+/// How far along a sync is, where there is someone to show
+///
+/// One bar for every feed, so what one says it is saying holds whichever
+/// drew it. Hidden where there is no terminal, which is what leaves the log
+/// on stderr: `under` answers nothing for a hidden bar.
+pub fn progress(steps: u64) -> ProgressBar {
+    let bar = ProgressBar::new(steps);
+    bar.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
+        .unwrap()
+        .progress_chars("##-"));
+
+    if !worth_drawing() {
+        bar.set_draw_target(ProgressDrawTarget::hidden());
+    }
+
+    bar
+}
+
 /// Whether a bar drawn now would be seen
 ///
 /// What a bar draws is one line rewritten in place, and a file of those is
 /// not a log of anything, so redirected output gets no bar.
-pub fn worth_drawing() -> bool {
+fn worth_drawing() -> bool {
     stderr().is_terminal()
 }
 

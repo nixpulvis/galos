@@ -30,7 +30,6 @@ use async_std::task;
 use elite_journal::entry::{Entry, Event, NavRoute};
 use elite_journal::system::Coordinate;
 use galos_db::Database;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -193,7 +192,8 @@ impl Cli {
             }
         });
 
-        let bar = progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
+        let bar =
+            bar::progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
         // Every line the log prints from here goes above the bar, so the bar
         // keeps the bottom line for the length of the import.
         let drawing = bar::under(&bar);
@@ -521,21 +521,6 @@ fn remember(dir: &Path, name: &str) {
             warn!(file = %path.display(), error = %err, "could not be remembered")
         }
     }
-}
-
-/// How far along an import is, where there is someone to show
-fn progress(entries: u64) -> ProgressBar {
-    let bar = ProgressBar::new(entries);
-    bar.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}/{eta_precise}] {bar:40} {pos:>7}/{len:7} ({percent}%) {msg}")
-        .unwrap()
-        .progress_chars("##-"));
-
-    if !bar::worth_drawing() {
-        bar.set_draw_target(ProgressDrawTarget::hidden());
-    }
-
-    bar
 }
 
 /// Reading a journal directory, as far as the first write
