@@ -14,6 +14,7 @@ itertools = "*"
 indicatif = "*"
 chrono = "*"
 eddb = { path = "./eddb" }
+eddn = { path = "./eddn" }
 edsm = { path = "./edsm" }
 galos_db = { path = "./galos_db" }
 elite_journal = { path = "./elite_journal" }
@@ -25,7 +26,6 @@ tracing-subscriber = { version = "*", features = ["env-filter"] }
 galos_map= { path = "./galos_map" }
 
 [target.'cfg(unix)'.dependencies]
-eddn = { path = "./eddn" }
 termion = "*"
 
 [patch.crates-io]
