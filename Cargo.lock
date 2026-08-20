@@ -3490,7 +3490,7 @@ dependencies = [
 
 [[package]]
 name = "elite_journal"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "geozero",
