@@ -3335,6 +3335,7 @@ dependencies = [
  "miniz_oxide 0.4.4",
  "omq-tokio",
  "parking_lot",
+ "regex",
  "serde",
  "serde_json",
  "tracing",
