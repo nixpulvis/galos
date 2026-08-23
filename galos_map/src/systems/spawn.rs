@@ -16,7 +16,7 @@ use crate::systems::{
     system_to_vec,
 };
 use crate::ui::{Gesture, PressOwner};
-use bevy::camera::visibility::RenderLayers;
+use bevy::camera::visibility::{RenderLayers, ViewVisibility};
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -758,11 +758,17 @@ pub(super) fn shells(
             &Strength,
             Has<Filtered>,
             &mut MeshMaterial3d<StandardMaterial>,
+            &ViewVisibility,
         ),
         With<Shell>,
     >,
 ) {
-    for (system, mark, filtered, mut material) in &mut shells {
+    for (system, mark, filtered, mut material, visible) in &mut shells {
+        // Off the frame a shell is not drawn, so which handle it points at is
+        // not settled. It is settled again the frame it comes back on.
+        if !visible.get() {
+            continue;
+        }
         // How much of the mark is left. At nothing the fading material is
         // fully transparent, which is what takes a shell off screen now that
         // it shares an entity with its system: hiding the entity would take
@@ -1148,6 +1154,7 @@ mod tests {
                 Shell,
                 Strength::default(),
                 MeshMaterial3d::<StandardMaterial>::default(),
+                ViewVisibility::VISIBLE,
             ))
             .id()
     }

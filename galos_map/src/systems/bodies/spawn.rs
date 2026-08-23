@@ -48,6 +48,7 @@ use crate::systems::pointing::Indicator;
 use crate::systems::roundness::Roundness;
 use crate::systems::route::{LineList, LineStrip};
 use crate::systems::selection::Selection;
+use bevy::camera::visibility::ViewVisibility;
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -273,13 +274,19 @@ fn fade(
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     holding: Res<HeldSystem>,
-    mut systems: Query<(Entity, &System, &mut Strength)>,
+    mut systems: Query<(Entity, &System, &ViewVisibility, &mut Strength)>,
 ) {
     let Ok(eye) = camera.single().map(|camera| camera.eye) else { return };
     let drawing = holding.of();
     let step = time.delta_secs() / GOES_OUT_IN;
 
-    for (entity, system, mut standing) in &mut systems {
+    for (entity, system, visible, mut standing) in &mut systems {
+        // Off the frame a mark is not drawn, so how far out it has gone is not
+        // stepped. The one system being closed on is always on the frame, so
+        // the fade that matters is never the one skipped.
+        if !visible.get() {
+            continue;
+        }
         // Only the one system whose insides the map is holding may give way to
         // them. Every other mark stands whole however near the camera comes:
         // there is nothing drawn behind it, so a mark going out there is a
@@ -1638,7 +1645,10 @@ mod tests {
         // between 0.0127 light years and 0.0032.
         let held = app
             .world_mut()
-            .spawn(crate::systems::tests::reaching(1, 0., 1.5e12))
+            .spawn((
+                crate::systems::tests::reaching(1, 0., 1.5e12),
+                ViewVisibility::VISIBLE,
+            ))
             .id();
         // Held, since a mark only goes out where the map is drawing what it
         // stands for.

@@ -19,6 +19,7 @@ use super::bodies::spawn::{Body, WORTH_KEEPING, WORTH_SIZING};
 use super::labels::{depth_of, world_per_pixel};
 use super::roundness::Roundness;
 use super::spawn::Shell;
+use bevy::camera::visibility::ViewVisibility;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 
@@ -291,7 +292,10 @@ pub fn size_by_distance(
     stats: Res<SystemsStats>,
     camera: Query<(&OrbitCamera, &Camera)>,
     roundness: Res<Roundness>,
-    mut shells: Query<(&mut Transform, &System, &mut Mesh3d), With<Shell>>,
+    mut shells: Query<
+        (&mut Transform, &System, &mut Mesh3d, &ViewVisibility),
+        With<Shell>,
+    >,
 ) {
     if !shells.is_empty() {
         let Ok((orbit, camera)) = camera.single() else { return };
@@ -300,7 +304,13 @@ pub fn size_by_distance(
         let eye = orbit.eye;
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut drawn, system, mut mesh) in shells.iter_mut() {
+        for (mut drawn, system, mut mesh, visible) in shells.iter_mut() {
+            // Off the frame a shell is not drawn, so the size it would draw at
+            // is not worked out. Its scale is left where it last stood, which
+            // is close enough for the frame it comes back on.
+            if !visible.get() {
+                continue;
+            }
             let away = crate::space::metres(eye - DVec3::from(system.position))
                 .length() as f32;
             let extent = system.reach();
@@ -412,7 +422,10 @@ pub fn size_inside(
 pub fn size_uniformly(
     camera: Query<(&OrbitCamera, &Camera)>,
     roundness: Res<Roundness>,
-    mut shells: Query<(&mut Transform, &System, &mut Mesh3d), With<Shell>>,
+    mut shells: Query<
+        (&mut Transform, &System, &mut Mesh3d, &ViewVisibility),
+        With<Shell>,
+    >,
 ) {
     let size = (1e-2 * crate::space::LIGHT_YEAR) as f32;
     // Nothing to be round for where there is no viewport to be round in, and
@@ -426,7 +439,10 @@ pub fn size_uniformly(
 
     // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
     // transparent when they are too far away.
-    for (mut drawn, system, mut mesh) in shells.iter_mut() {
+    for (mut drawn, system, mut mesh, visible) in shells.iter_mut() {
+        if !visible.get() {
+            continue;
+        }
         // Only where it moved, as everything that sizes a shell is. The size
         // here is one number for the whole map, so past the frame a shell is
         // spawned this never writes at all.
@@ -881,8 +897,13 @@ mod tests {
 
     /// A system with a shell standing around it
     fn shelled(app: &mut App, system: System) {
-        app.world_mut()
-            .spawn((system, Shell, Transform::default(), Mesh3d::default()));
+        app.world_mut().spawn((
+            system,
+            Shell,
+            Transform::default(),
+            Mesh3d::default(),
+            ViewVisibility::VISIBLE,
+        ));
     }
 
     /// How large the shell around the system at `address` was drawn

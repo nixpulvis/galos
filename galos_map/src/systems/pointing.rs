@@ -17,6 +17,7 @@ use crate::systems::labels::{
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
 use bevy::camera::RenderTarget;
+use bevy::camera::visibility::ViewVisibility;
 use bevy::ecs::entity::EntityHashMap;
 use bevy::math::DVec3;
 use bevy::picking::backend::{HitData, PointerHits};
@@ -450,7 +451,7 @@ pub(super) fn point_at(
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
     mut systems: Query<
-        (&System, &Transform, &Visibility, &Strength, &mut Indicator),
+        (&System, &Transform, &ViewVisibility, &Strength, &mut Indicator),
         With<Shell>,
     >,
 ) {
@@ -458,16 +459,20 @@ pub fn size_indicators(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (system, shell, shown, mark, mut indicator) in &mut systems {
-        // A shell too faint to see, or a system the spyglass has hidden, is
-        // not aimed at: a mark taken from one would put the whole viewport up
-        // as its target. The fade leaves the mark on the system entity now,
-        // so its strength is read here rather than a child shell's visibility.
-        let drawn = if *shown != Visibility::Hidden && mark.0 > 0. {
-            shell.scale.x
-        } else {
-            0.
-        };
+    for (system, shell, view, mark, mut indicator) in &mut systems {
+        // Off the frame the mark cannot be aimed at, so the pixels it would
+        // take are not worked out; held at the floor so a hidden or off-screen
+        // system is no easier to hit than an absent one. A hidden system reads
+        // as off the frame here, its inherited visibility being what culling
+        // asks first.
+        if !view.get() {
+            if indicator.0 != INDICATOR_MIN_RADIUS {
+                indicator.0 = INDICATOR_MIN_RADIUS;
+            }
+            continue;
+        }
+
+        let drawn = if mark.0 > 0. { shell.scale.x } else { 0. };
 
         // A metre, which is as near as the camera may be pulled to anything.
         // What the floor is for is the sign rather than the distance.
@@ -1665,8 +1670,8 @@ mod tests {
             Shell,
             Indicator::default(),
             Transform::from_scale(Vec3::splat(wide)),
-            Visibility::default(),
             Strength::default(),
+            ViewVisibility::VISIBLE,
         ));
         app
     }
