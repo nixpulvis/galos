@@ -1,0 +1,12 @@
+[package]
+name = "galos_photometry"
+version = "0.0.1"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2024"
+rust-version.workspace = true
+
+# Pure physics: apparent magnitude, flux, combined magnitude, blackbody colour,
+# and the class fallback table. No database, no renderer, so the bake that runs
+# beside Postgres and the map that draws without one can both read it, and
+# neither pulls in the other to do so.
+[dependencies]

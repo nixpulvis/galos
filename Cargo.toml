@@ -58,6 +58,8 @@ members = [
     "eddb",
     "edsm",
     "galos_db",
+    "galos_photometry",
+    "galos_index",
     "galos_map",
     # "galos_gui",
     "galos_server",
