@@ -3,12 +3,14 @@ use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Exposure, Hdr};
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::{
     AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit,
 };
 use bevy::math::DVec3;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use big_space::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
@@ -76,7 +78,12 @@ const PAN_RATE: f32 = 2e-3;
 /// barely register out at the rim.
 const ZOOM_RATE: f32 = 0.15;
 
-/// Pixels of scroll that count as one line, for pointers that report them
+/// Logical pixels of scroll that count as one line, for pointers reporting
+/// them in pixels
+///
+/// Counted after the display's density is divided out, so a swipe of a given
+/// length on the glass is the same number of lines however dense the pixels
+/// under it.
 const PIXELS_PER_LINE: f32 = 16.;
 
 /// How near and how far the camera may be pulled from what it looks at, in
@@ -448,10 +455,57 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
         // rings over the stars they mark, the grounds over the rings, and the
         // names over their grounds.
         children![
+            shells_view(),
             over(Overlay::Rings),
             over(Overlay::Grounds),
             over(Overlay::Names),
         ],
+    )
+}
+
+/// The render layer the system shells are drawn on
+///
+/// One of its own, below the annotations. Layer zero is the scene the eye
+/// blooms, every body and plane; the shells are drawn over it by a camera of
+/// their own that does not, so a wide field of them is opaque and the nearest
+/// covers the rest rather than every one being blended and bloomed over its
+/// neighbours. The bodies are left to carry the glow.
+pub const SHELLS_LAYER: usize = 1;
+
+/// A camera drawing the system shells, over the galaxy and without bloom
+///
+/// The shells stand in for systems too far to resolve, and from a wide view
+/// they pile many deep in a pixel. On a depth buffer of their own the nearest
+/// is the only one shaded, which is what a field of them costs the least, and
+/// there is nothing to sort. Drawn after the eye has bloomed the scene, as
+/// the [`Overlay`] cameras are, so the shells themselves do not bloom.
+///
+/// A child of the camera it shadows, so the pose and the cell come down the
+/// hierarchy. [`Exposure::SUNLIGHT`] to match the eye, against the same stop.
+///
+/// [`Tonemapping::None`], where the eye takes the filmic curve `Camera3d`
+/// hands every camera. `None` does not tonemap the shells; it draws no pass
+/// at all, and since the [`Overlay`] cameras stacked over it draw none either,
+/// nothing runs the shells through a curve. So the emission reaches the
+/// screen as the colour it was set, where the eye's curve would have read it
+/// as a bright to fit into the display and washed it towards white. A shell
+/// stands in for a colour and has to keep it; the eye keeps the curve for the
+/// scene alone, where the desaturation of a real bright is the wanted look.
+/// See [`crate::systems::spawn`] for the strength it is emitted at.
+fn shells_view() -> impl Bundle {
+    (
+        Camera3d::default(),
+        Hdr,
+        // The colour it was set, past the filmic curve the eye takes; see
+        // above.
+        Tonemapping::None,
+        Exposure::SUNLIGHT,
+        Camera {
+            order: SHELLS_LAYER as isize,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        RenderLayers::layer(SHELLS_LAYER),
     )
 }
 
@@ -495,13 +549,14 @@ pub enum Overlay {
 impl Overlay {
     /// The render layer it is drawn on, and the order its camera stacks at
     ///
-    /// One number for both. Layer zero is the scene, every star, body and
-    /// plane, drawn by a camera left at order zero, so these begin at one and
-    /// each overlay's camera stacks at the layer it draws. Taken from the
+    /// One number for both. Layer zero is the scene, every body and plane,
+    /// drawn by the eye at order zero; layer one is the shells, drawn over it
+    /// without bloom; and the overlays follow. So these begin at two and each
+    /// overlay's camera stacks at the layer it draws. Taken from the
     /// declaration order, so no two share a place, higher draws later and so
     /// on top, and none of it is picked by hand.
     pub fn layer(self) -> usize {
-        self as usize + 1
+        self as usize + 2
     }
 }
 
@@ -517,12 +572,21 @@ impl Overlay {
 /// one spreads it over the dark edge that is supposed to hold it apart from
 /// whatever is behind it.
 ///
+/// [`Tonemapping::None`] on every one of them, so the eye is the only camera
+/// that tonemaps. All of these draw into the one buffer the eye has already
+/// tonemapped, and each is a pass over the whole of it, so a filmic curve
+/// here would run the scene through the curve again once per overlay and,
+/// worse, catch the opaque shells beneath and wash their colour towards
+/// white. Left at [`None`] each overlay lays its own display-referred colour
+/// down and touches nothing already drawn. See [`shells_view`].
+///
 /// A child of the camera it shadows, so the pose and the cell it is measured
 /// from come down the hierarchy and there is no second copy to keep in step.
 fn over(overlay: Overlay) -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
+        Tonemapping::None,
         Camera {
             order: overlay.layer() as isize,
             clear_color: ClearColorConfig::None,
@@ -587,6 +651,7 @@ pub fn orbit_camera(
         &mut Transform,
         Option<&ChildOf>,
     )>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     let Ok(grid) = grids.single() else { return };
     let Ok((mut orbit, mut cell, mut transform, child_of)) =
@@ -627,7 +692,16 @@ pub fn orbit_camera(
     // something the user has only just opened.
     let lines = match scroll.unit {
         MouseScrollUnit::Line => scroll.delta.y,
-        MouseScrollUnit::Pixel => scroll.delta.y / PIXELS_PER_LINE,
+        // A trackpad reports its scroll in physical pixels, which a denser
+        // display packs more of into the same swipe, so the one gesture zooms
+        // further on it. Divided back to logical pixels, as bevy already does
+        // for the cursor but not for the wheel, so the reach a swipe covers
+        // is the display's business no longer.
+        MouseScrollUnit::Pixel => {
+            let scale =
+                windows.single().map(Window::scale_factor).unwrap_or(1.);
+            scroll.delta.y / (scale * PIXELS_PER_LINE)
+        }
     };
     // Held to the spyglass, the camera has nowhere of its own to stand and a
     // scroll has nothing to say about where it goes. Taking one anyway moves
@@ -817,6 +891,11 @@ mod tests {
                 "not held to its own layer"
             );
             assert!(over.get::<Bloom>().is_none(), "annotation is not a light");
+            assert_eq!(
+                over.get::<bevy::core_pipeline::tonemapping::Tonemapping>(),
+                Some(&bevy::core_pipeline::tonemapping::Tonemapping::None),
+                "the eye is not the only camera that tonemaps",
+            );
             camera.order
         };
 
@@ -827,6 +906,80 @@ mod tests {
         assert!(rings > 0, "the rings were drawn under the galaxy");
         assert!(grounds > rings, "the grounds were drawn under the rings");
         assert!(names > grounds, "the names were drawn under their grounds");
+    }
+
+    /// An explicit tonemapping on a camera wins over the one `Camera3d`
+    /// registers as a required default
+    ///
+    /// `bevy_core_pipeline` registers `Tonemapping` as a required component of
+    /// `Camera3d`, defaulting to the filmic curve. The shells camera sets its
+    /// own, and this is the whole of why that takes: a required component is a
+    /// default for what a bundle leaves out, not an override of what it sets.
+    #[test]
+    fn a_camera_may_set_its_own_tonemapping() {
+        use bevy::core_pipeline::tonemapping::Tonemapping;
+
+        let mut app = App::new();
+        app.register_required_components::<Camera3d, Tonemapping>();
+
+        let bare = app.world_mut().spawn(Camera3d::default()).id();
+        assert_eq!(
+            app.world().get::<Tonemapping>(bare),
+            Some(&Tonemapping::default()),
+            "a camera that sets none gets the registered default",
+        );
+
+        let set = app
+            .world_mut()
+            .spawn((Camera3d::default(), Tonemapping::None))
+            .id();
+        assert_eq!(
+            app.world().get::<Tonemapping>(set),
+            Some(&Tonemapping::None),
+            "a camera's own tonemapping was overridden by the default",
+        );
+    }
+
+    /// The shells camera draws its own layer, over the scene, without the
+    /// bloom or the filmic curve the eye carries
+    ///
+    /// The shell is opaque and stands in for a colour, so it must reach the
+    /// screen as that colour: no bloom to spread it, and no curve to wash it
+    /// towards white. Its order stacks it over the scene and under the
+    /// annotations, and it keeps its own depth buffer by clearing none of the
+    /// colour drawn before it.
+    #[test]
+    fn the_shells_draw_over_the_scene_untouched() {
+        use bevy::core_pipeline::tonemapping::Tonemapping;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.register_required_components::<Camera3d, Tonemapping>();
+
+        let id = app.world_mut().spawn(shells_view()).id();
+        let view = app.world().entity(id);
+        let camera = view.get::<Camera>().expect("a camera");
+
+        assert_eq!(
+            view.get::<RenderLayers>(),
+            Some(&RenderLayers::layer(SHELLS_LAYER)),
+            "not held to the shells' own layer",
+        );
+        assert_eq!(
+            view.get::<Tonemapping>(),
+            Some(&Tonemapping::None),
+            "the shells were handed the eye's filmic curve",
+        );
+        assert!(view.get::<Bloom>().is_none(), "a shell is not a light");
+        assert!(
+            matches!(camera.clear_color, ClearColorConfig::None),
+            "wiped what was drawn before it",
+        );
+        assert!(camera.order > 0, "the shells were drawn under the scene",);
+        assert!(
+            (camera.order as usize) < Overlay::Rings.layer(),
+            "the shells were drawn over the annotations",
+        );
     }
     use crate::systems::pointing::PRIMARY;
     use crate::ui::PressOwner;

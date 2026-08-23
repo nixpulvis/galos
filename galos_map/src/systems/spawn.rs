@@ -16,6 +16,7 @@ use crate::systems::{
     system_to_vec,
 };
 use crate::ui::{Gesture, PressOwner};
+use bevy::camera::visibility::RenderLayers;
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -106,12 +107,27 @@ impl SystemMaterials {
 
 /// How many steps a shell is drawn going out in
 ///
-/// The strength runs the alpha and the emission together, and a mark does not
-/// always go out at the pace [`super::bodies::spawn::GOES_OUT_IN`] bounds: a
-/// camera coming in slowly leaves the distance in charge, and the fade can
-/// take seconds. So the steps are cut fine enough not to be seen at that pace
-/// either, under a percent of the strength apiece.
+/// The strength runs the emission, a shell being opaque now and its fill left
+/// where it is, and a mark does not always go out at the pace
+/// [`super::bodies::spawn::GOES_OUT_IN`] bounds: a camera coming in slowly
+/// leaves the distance in charge, and the fade can take seconds. So the steps
+/// are cut fine enough not to be seen at that pace either, under a percent of
+/// the strength apiece.
 const FADE_STEPS: usize = 128;
+
+/// How bright a shell's glow is emitted, at full strength
+///
+/// Full. A shell draws opaque and without bloom now, so its colour is the
+/// emission itself rather than a haze spread around a white-hot core, and the
+/// emission has to carry the hue on its own.
+///
+/// One, so a resting mark is emitted at the colour it was named in: the
+/// palette runs each channel from nothing to one (see [`Hue::color`]), and
+/// [`crate::camera::shells_view`] draws the shells past the filmic curve, so
+/// an emission of one reaches the screen as that colour at full and none of
+/// it clips or washes. Lower would only dim it towards black; the fade takes
+/// a mark out that way, but a mark standing does so at full.
+const SHELL_GLOW: f32 = 1.;
 
 /// The colors a star may be drawn in
 ///
@@ -164,21 +180,34 @@ impl Hue {
     }
 }
 
-/// How a star is painted in `color`, at `strength` of full
+/// How a star is painted in `color`, at `strength` of full, blended or not
 ///
-/// Both the fill and the glow are scaled, since a star drawn dim but glowing
-/// as brightly as the rest reads as no dimmer at all: the glow is most of
-/// what is seen of a star at any distance.
+/// A resting mark is drawn opaque, so a wide field of them costs only the
+/// nearest at each pixel and there is nothing to sort. A mark on its way out
+/// is drawn blended instead: fading an opaque disc leaves it standing dark
+/// over the contents drawn in its place, the same disc reading one way against
+/// empty space and another over a lit system, so a mark goes out and comes
+/// back looking unlike itself. Blended, it crosses with what is behind it the
+/// same both ways. Only the held system ever goes out, so at most one mark is
+/// ever the blended kind and the field pays nothing for it.
 ///
-/// Which is why the glow is what carries how bright the sky reads, and the
-/// fill is left where it is. The fill is blended over whatever stands behind
-/// it, so raising it thickens a crowded sky as much as it lights one.
-fn star_material(color: Color, strength: f32) -> StandardMaterial {
-    let faded = color.with_alpha(color.alpha() * strength);
+/// The glow and the coverage both follow `strength`, the glow being most of
+/// what a mark reads as and the coverage what lets the contents through.
+fn star_material(
+    color: Color,
+    strength: f32,
+    mode: AlphaMode,
+) -> StandardMaterial {
+    let coverage = match mode {
+        AlphaMode::Blend => strength,
+        _ => 1.,
+    };
     StandardMaterial {
-        base_color: faded,
-        alpha_mode: AlphaMode::Blend,
-        emissive: LinearRgba::from(color.with_alpha(1.)) * 16. * strength,
+        base_color: color.with_alpha(coverage),
+        alpha_mode: mode,
+        emissive: LinearRgba::from(color.with_alpha(1.))
+            * SHELL_GLOW
+            * strength,
         ..default()
     }
 }
@@ -775,7 +804,7 @@ fn redim(
 
     for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
         if let Some(mut material) = assets.get_mut(handle) {
-            *material = star_material(hue.color(), dim.0);
+            *material = star_material(hue.color(), dim.0, AlphaMode::Opaque);
         }
     }
 }
@@ -825,6 +854,10 @@ fn star(
         MeshMaterial3d(materials.get(hue(system, color_by), dimmed).clone()),
         Transform::default(),
         NotShadowCaster,
+        // Drawn on its own layer by a camera without bloom, so a wide field of
+        // shells is opaque and the nearest covers the rest while the bodies
+        // keep the glow. See [`crate::camera::SHELLS_LAYER`].
+        RenderLayers::layer(crate::camera::SHELLS_LAYER),
     )
 }
 
@@ -845,7 +878,13 @@ fn init_materials(
     let mut set = |strength: f32| {
         Hue::ALL
             .into_iter()
-            .map(|hue| assets.add(star_material(hue.color(), strength)))
+            .map(|hue| {
+                assets.add(star_material(
+                    hue.color(),
+                    strength,
+                    AlphaMode::Opaque,
+                ))
+            })
             .collect()
     };
     let bright = set(1.);
@@ -854,7 +893,11 @@ fn init_materials(
     for hue in Hue::ALL {
         for step in 0..=FADE_STEPS {
             let strength = step as f32 / FADE_STEPS as f32;
-            fading.push(assets.add(star_material(hue.color(), strength)));
+            fading.push(assets.add(star_material(
+                hue.color(),
+                strength,
+                AlphaMode::Blend,
+            )));
         }
     }
 
