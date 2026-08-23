@@ -225,21 +225,15 @@ const SET_WIDTH: f32 = 1233. / 2048.;
 /// swings as the camera turns. The order flips mid-rotation and a dark ground
 /// over white letters greys them out.
 ///
-/// Depth cannot settle it. Pushing the ground back far enough to beat the
-/// swing is far enough for perspective to shrink it and drag it toward the
-/// middle of the view, so it no longer sits under its words. Opaque takes the
-/// question away: opaque geometry is drawn before anything blended and writes
-/// depth as it goes, so the words resolve against a ground already down.
+/// Depth cannot settle it, and pushing the ground back to try is what went
+/// wrong before: far enough back to beat the swing is far enough for
+/// perspective to drag it toward the middle of the view, so a name near the
+/// edge of the screen wears its ground low and off to the side. Opaque takes
+/// the question away with no setback at all. Opaque geometry is drawn before
+/// anything blended and writes depth as it goes; the words are blended, test
+/// `GreaterEqual`, and clear a ground at their own depth, so the two are left
+/// in the one plane and the ground never drifts off the words it carries.
 const GROUND: Srgba = Srgba::new(0.03, 0.03, 0.05, 1.);
-
-/// How far behind its words a ground sits, in multiples of [`SIZE`]
-///
-/// Enough that the words clear it in the depth test and no more. The ground
-/// is drawn under a perspective camera, so distance is not free: pushed back
-/// it is drawn smaller and nearer the middle of the view, and a ground that
-/// has drifted off its own words is worse than one that never moved. A single
-/// [`SIZE`] costs under a percent of its size.
-const SET_BACK: f32 = 1.;
 
 /// How far the ground reaches past the words, as a fraction of [`NAME_HEIGHT`]
 ///
@@ -1394,8 +1388,10 @@ pub(crate) fn respawn(
 /// vertically centered, and [`face_camera`] scales the whole plate, so this
 /// works in the units [`SIZE`] is written in and never in pixels.
 ///
-/// [`SET_BACK`] behind the words, which is depth and not a gap: the plate
-/// faces the camera, so the two are only ever separated along the view.
+/// In the one plane as the words, `z` and all. An opaque ground drawn ahead
+/// of them and cleared at their own depth wants no setback, and a setback is
+/// a parallax: the plate faces the camera, so a ground pushed along the view
+/// swings off its words toward the middle of the screen as the view turns.
 fn back_names(
     plates: Query<&Text3d, With<Label>>,
     mut grounds: Query<(&mut Transform, &ChildOf), With<Ground>>,
@@ -1407,7 +1403,7 @@ fn back_names(
         let pad = SIZE * GROUND_PAD;
 
         ground.set_if_neq(Transform {
-            translation: Vec3::new(width / 2., 0., -SET_BACK * SIZE),
+            translation: Vec3::new(width / 2., 0., 0.),
             rotation: Quat::IDENTITY,
             scale: Vec3::new(width + pad * 2., SIZE + pad * 2., 1.),
         });
@@ -1505,7 +1501,7 @@ fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
         Label,
         // Over the galaxy rather than in it, which is the whole reason a name
         // is legible over a thick field at all.
-        RenderLayers::layer(crate::camera::NAMES),
+        RenderLayers::layer(crate::camera::Overlay::Names.layer()),
         Text3d::new(name),
         Text3dStyling {
             size: SIZE,
@@ -1746,7 +1742,7 @@ pub fn init_materials(
 fn ground(materials: &LabelMaterials, mesh: &GroundMesh) -> impl Bundle {
     (
         Ground,
-        RenderLayers::layer(crate::camera::NAMES),
+        RenderLayers::layer(crate::camera::Overlay::Grounds.layer()),
         Mesh3d(mesh.0.clone()),
         MeshMaterial3d(materials.ground.clone()),
         Transform::default(),
@@ -2866,6 +2862,41 @@ mod tests {
         app.update();
 
         assert_eq!(up(&mut app), 0, "the plate outlived its system");
+    }
+
+    /// A ground lies in the plane of the words it backs
+    ///
+    /// The plate faces the camera, so depth is the one axis a ground and its
+    /// words can be pulled apart on, and under perspective that pull is a
+    /// parallax: a ground set back is dragged toward the middle of the view,
+    /// the more so the further from center the name sits, until a name near
+    /// the edge wears its ground low and off to the side. Opaque and coplanar,
+    /// the ground clears in the depth test at the words' own depth and stays
+    /// under them wherever on screen the name is drawn. It is still padded out
+    /// past the words in its own plane.
+    #[test]
+    fn a_ground_lies_in_the_plane_of_its_words() {
+        let mut app = plated();
+        app.add_systems(Update, (respawn, back_names).chain());
+        winner(&mut app);
+
+        // Two frames: the first spawns the ground by command, the second
+        // sizes it once the spawn has landed.
+        app.update();
+        app.update();
+
+        let mut grounds =
+            app.world_mut().query_filtered::<&Transform, With<Ground>>();
+        let ground = grounds.iter(app.world()).next().expect("a ground");
+
+        assert_eq!(
+            ground.translation.z, 0.,
+            "the ground was set back off the plane of its words"
+        );
+        assert!(
+            ground.scale.y > SIZE,
+            "the ground was not padded past its words"
+        );
     }
 
     /// How many names were placed

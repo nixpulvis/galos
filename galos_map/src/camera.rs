@@ -25,7 +25,10 @@ pub fn plugin(app: &mut App) {
     // outright rather than by arithmetic.
     app.insert_gizmo_config(
         DefaultGizmoConfigGroup,
-        GizmoConfig { render_layers: RenderLayers::layer(RINGS), ..default() },
+        GizmoConfig {
+            render_layers: RenderLayers::layer(Overlay::Rings.layer()),
+            ..default()
+        },
     );
     app.add_message::<MoveCamera>();
     app.add_systems(Update, move_camera.in_set(MapSet::Camera));
@@ -442,41 +445,72 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
         },
         Bloom::NATURAL,
         // Drawn over the galaxy rather than in it, and in this order: the
-        // rings over the stars they mark, the names over the rings.
-        children![over(RINGS, 1), over(NAMES, 2)],
+        // rings over the stars they mark, the grounds over the rings, and the
+        // names over their grounds.
+        children![
+            over(Overlay::Rings),
+            over(Overlay::Grounds),
+            over(Overlay::Names),
+        ],
     )
 }
 
-/// The layer the rings and the leaders are drawn on
+/// The annotation drawn over the galaxy, in the order it stacks
 ///
-/// A camera with no [`RenderLayers`] draws layer zero and so does an entity,
-/// which is every star, body and plane. Nothing on this one, or on [`NAMES`],
-/// reaches the main camera at all.
-pub const RINGS: usize = 1;
-
-/// The layer the names are drawn on, over [`RINGS`]
-///
-/// Three layers because there are three things to keep in order and only two
-/// would put one of them wrong. A ring has to stand over the stars, which it
-/// is a note about, and under the names, which are read. Drawn alongside the
-/// names it is subject to their grounds and they to it, at depths near enough
-/// to trade places as the camera turns.
-///
-/// A layer apiece settles it by drawing order and not by arithmetic, which is
-/// the only thing that has held: depth is not free under perspective, and
-/// `depth_bias` is a hint the sort takes rather than a rule it obeys.
-pub const NAMES: usize = 2;
-
-/// A camera over the galaxy, drawing one layer of annotation and nothing else
-///
-/// Annotation is not scenery. Drawn in the scene it is subject to it: a star
+/// A name, the ring it belongs to and the ground behind it are notes on the
+/// map, not scenery, so each is drawn over the galaxy by a camera of its own
+/// rather than placed in it. Left in the scene they are subject to it: a star
 /// nearer than a name is blended over the top of it, and no depth a name is
 /// placed at wins, the stars being on both sides of it.
 ///
-/// A camera of its own settles that by not sharing a depth buffer. Each of
-/// these clears its own, so what it draws resolves against its own layer and
-/// against nothing else, and each keeps its color, so what was drawn before
-/// it stands. `order` is what stacks them, and it is the whole of what
+/// The declaration order is the drawing order, low to high, over the scene on
+/// layer zero. Each variant's [`layer`](Overlay::layer) and its camera order
+/// are read straight off that order, so the two cannot drift apart and adding
+/// one is a variant in the right place here rather than a column of numbers to
+/// renumber by hand.
+///
+/// A camera apiece, and not one overlay with the depth sorted out, because
+/// depth cannot sort it. A ring is drawn around a star and a ground beside it,
+/// and the words are blended over an opaque ground at the one depth a plate
+/// facing the camera puts them both at. On a shared depth buffer those ties
+/// fall whichever way the reversed-`z` projection rounded each to: the right
+/// way up close, the wrong way far off where the projection has spent its
+/// precision, so a ring trades places with a ground as the camera turns and a
+/// ground punches holes through its own letters at distance. A buffer apiece
+/// takes the question away. Nothing is tested against anything on another
+/// layer, so the stack is settled by camera order alone, which is the only
+/// thing that has held: `depth_bias` is a hint the sort takes rather than a
+/// rule it obeys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    /// The rings, the leaders joining a name to what it names, and the ruler's
+    /// marks, over the stars they annotate
+    Rings,
+    /// The dark grounds the names are read against, over the rings
+    Grounds,
+    /// The words, over their grounds
+    Names,
+}
+
+impl Overlay {
+    /// The render layer it is drawn on, and the order its camera stacks at
+    ///
+    /// One number for both. Layer zero is the scene, every star, body and
+    /// plane, drawn by a camera left at order zero, so these begin at one and
+    /// each overlay's camera stacks at the layer it draws. Taken from the
+    /// declaration order, so no two share a place, higher draws later and so
+    /// on top, and none of it is picked by hand.
+    pub fn layer(self) -> usize {
+        self as usize + 1
+    }
+}
+
+/// A camera over the galaxy, drawing one [`Overlay`] and nothing else
+///
+/// One camera per [`Overlay`] is what keeps them from sharing a depth buffer:
+/// each clears its own, so what it draws resolves against its own layer and
+/// nothing else, and each keeps its color, so what was drawn before it stands.
+/// The [`order`](Camera::order) taken from the overlay is the whole of what
 /// decides which covers which.
 ///
 /// None of them carries [`Bloom`]. A name is not a light source, and blooming
@@ -485,12 +519,16 @@ pub const NAMES: usize = 2;
 ///
 /// A child of the camera it shadows, so the pose and the cell it is measured
 /// from come down the hierarchy and there is no second copy to keep in step.
-fn over(layer: usize, order: isize) -> impl Bundle {
+fn over(overlay: Overlay) -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
-        Camera { order, clear_color: ClearColorConfig::None, ..default() },
-        RenderLayers::layer(layer),
+        Camera {
+            order: overlay.layer() as isize,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        RenderLayers::layer(overlay.layer()),
     )
 }
 
@@ -753,18 +791,19 @@ mod tests {
         }
     }
 
-    /// The rings draw over the galaxy and the names over the rings
+    /// The rings draw over the galaxy, the grounds over the rings, and the
+    /// names over the grounds
     ///
     /// Which covers which is decided by `order` alone, so it is the one thing
-    /// worth holding: get it backwards and a name is drawn under the ring of
-    /// whatever it names.
+    /// worth holding: get it backwards and a name is drawn under its own
+    /// ground, or a ground under the ring of whatever it names.
     #[test]
-    fn the_names_are_drawn_over_the_rings_and_both_over_the_galaxy() {
+    fn the_annotation_layers_stack_from_the_galaxy_up() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
 
-        let stacked = |app: &mut App, layer, order| {
-            let id = app.world_mut().spawn(over(layer, order)).id();
+        let stacked = |app: &mut App, overlay: Overlay| {
+            let id = app.world_mut().spawn(over(overlay)).id();
             let over = app.world().entity(id);
             let camera = over.get::<Camera>().expect("a camera");
 
@@ -774,18 +813,20 @@ mod tests {
             );
             assert_eq!(
                 over.get::<RenderLayers>(),
-                Some(&RenderLayers::layer(layer)),
+                Some(&RenderLayers::layer(overlay.layer())),
                 "not held to its own layer"
             );
             assert!(over.get::<Bloom>().is_none(), "annotation is not a light");
             camera.order
         };
 
-        let rings = stacked(&mut app, RINGS, 1);
-        let names = stacked(&mut app, NAMES, 2);
+        let rings = stacked(&mut app, Overlay::Rings);
+        let grounds = stacked(&mut app, Overlay::Grounds);
+        let names = stacked(&mut app, Overlay::Names);
 
         assert!(rings > 0, "the rings were drawn under the galaxy");
-        assert!(names > rings, "the names were drawn under the rings");
+        assert!(grounds > rings, "the grounds were drawn under the rings");
+        assert!(names > grounds, "the names were drawn under their grounds");
     }
     use crate::systems::pointing::PRIMARY;
     use crate::ui::PressOwner;
