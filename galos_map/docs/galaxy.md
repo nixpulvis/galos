@@ -342,6 +342,27 @@ both.
 Eviction uses the same predicate with a wider margin, and evicts from memory
 only. Cells on disk are kept, since a position never changes.
 
+Eviction is a frame-cost bound before it is a memory one, and today there is
+no evictor at all. The spyglass `clear` hides a system out of reach
+(`Visibility::Hidden`, the containment test at
+`galos_map/src/systems/mod.rs:239`) but never despawns it, so a session's
+resident set is the high-water mark of everywhere the camera has looked.
+`big_space` walks the whole grid every frame the camera moves
+(`galos_map/src/space.rs`), recomputing a `GlobalTransform` for each resident
+system whether or not it is drawn, so the cost of turning the camera is set by
+how much has ever been loaded rather than by what is on screen. Measured after
+folding the shell onto the system entity and frustum-gating the per-frame
+sizing (`galos_map/src/systems/scale.rs`): a still view over ~360k held
+systems holds about 18 ms a frame, and rotating that same view, which moves
+the floating origin and forces the whole walk, runs several times that and
+climbs with everything a zoom-out ever pulled in. Frustum culling cannot touch
+it, the walk being keyed on grid membership rather than on visibility. The
+`needed()` predicate with a margin is what bounds it, and it falls out of the
+structure above rather than being bolted on: beyond the spyglass a cell is one
+point-cloud mesh instead of thousands of entities, and the evictor drops what
+the camera has left behind, so the transform walk runs over a bounded resident
+set instead of the session's high-water mark.
+
 ## The metric is screen space, and the control is a point budget
 
 ```
