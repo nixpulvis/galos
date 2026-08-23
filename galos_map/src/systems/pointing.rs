@@ -449,20 +449,25 @@ pub(super) fn point_at(
 /// nobody can see would put the whole viewport up as one system's target.
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
-    mut systems: Query<(&System, &Children, &mut Indicator)>,
-    shells: Query<(&Transform, &Visibility), With<Shell>>,
+    mut systems: Query<
+        (&System, &Transform, &Visibility, &Strength, &mut Indicator),
+        With<Shell>,
+    >,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (system, children, mut indicator) in &mut systems {
-        let drawn = children
-            .iter()
-            .filter_map(|child| shells.get(child).ok())
-            .filter(|(_, shown)| **shown != Visibility::Hidden)
-            .map(|(shell, _)| shell.scale.x)
-            .fold(0., f32::max);
+    for (system, shell, shown, mark, mut indicator) in &mut systems {
+        // A shell too faint to see, or a system the spyglass has hidden, is
+        // not aimed at: a mark taken from one would put the whole viewport up
+        // as its target. The fade leaves the mark on the system entity now,
+        // so its strength is read here rather than a child shell's visibility.
+        let drawn = if *shown != Visibility::Hidden && mark.0 > 0. {
+            shell.scale.x
+        } else {
+            0.
+        };
 
         // A metre, which is as near as the camera may be pulled to anything.
         // What the floor is for is the sign rather than the distance.
@@ -1654,18 +1659,15 @@ mod tests {
         // far into the view its system lies rather than by how far off it is.
         let mut standing = crate::systems::tests::system(1);
         standing.position = [0., 0., -5.];
-        let system =
-            app.world_mut().spawn((standing, Indicator::default())).id();
         let wide = (0.1 * crate::space::LIGHT_YEAR) as f32;
-        let shell = app
-            .world_mut()
-            .spawn((
-                Shell,
-                Transform::from_scale(Vec3::splat(wide)),
-                Visibility::default(),
-            ))
-            .id();
-        app.world_mut().entity_mut(system).add_child(shell);
+        app.world_mut().spawn((
+            standing,
+            Shell,
+            Indicator::default(),
+            Transform::from_scale(Vec3::splat(wide)),
+            Visibility::default(),
+            Strength::default(),
+        ));
         app
     }
 

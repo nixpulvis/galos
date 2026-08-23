@@ -624,10 +624,10 @@ fn one_per_system(arrived: Vec<DbSystem>) -> Vec<DbSystem> {
 
 /// Create or refresh the entities for each row fetched
 ///
-/// A [`System`] carries the database row and the grid placement, and is what
-/// the rest of the map addresses. What is drawn hangs off it: a [`Shell`]
-/// today, and labels alongside. Nothing there inherits a size, so each is
-/// drawn at whatever size suits it.
+/// A [`System`] carries the database row and the grid placement, is what the
+/// rest of the map addresses, and is itself drawn as the [`Shell`] standing
+/// for it. Labels hang off it alongside and are drawn far smaller, dividing
+/// the shell's scale back out; see [`super::labels::face_camera`].
 ///
 /// A row already on the map has its [`System`] replaced rather than being
 /// respawned, which [`update`] then acts on.
@@ -701,7 +701,7 @@ pub fn spawn_systems(
             if excluded {
                 spawned.insert(Filtered);
             }
-            spawned.with_child(drawn);
+            spawned.insert(drawn);
         }
     }
 }
@@ -749,29 +749,26 @@ fn update(
 /// so lands a frame after the filter that asked for it, which leaves nothing
 /// that both runs after the mark and can still see what changed.
 pub(super) fn shells(
-    systems: Query<(&System, &Strength, Has<Filtered>)>,
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
     materials: Res<SystemMaterials>,
     mut shells: Query<
-        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility),
+        (
+            &System,
+            &Strength,
+            Has<Filtered>,
+            &mut MeshMaterial3d<StandardMaterial>,
+        ),
         With<Shell>,
     >,
 ) {
-    for (child_of, mut material, mut visibility) in &mut shells {
-        let Ok((system, mark, filtered)) = systems.get(child_of.parent())
-        else {
-            continue;
-        };
-        // Its own visibility rather than its system's. `super::visibility`
-        // owns that one, and a shell inherits it either way.
+    for (system, mark, filtered, mut material) in &mut shells {
+        // How much of the mark is left. At nothing the fading material is
+        // fully transparent, which is what takes a shell off screen now that
+        // it shares an entity with its system: hiding the entity would take
+        // the system's bodies and labels with it. Only the held system ever
+        // fades, so only ever one shell is the transparent kind.
         let standing = mark.0;
-        if standing <= 0. {
-            visibility.set_if_neq(Visibility::Hidden);
-            continue;
-        }
-        visibility.set_if_neq(Visibility::Inherited);
-
         let hue = hue(system, &color_by);
         let wanted = if standing < 1. {
             // Dimmed by the filters first and by the fade after, so a shell
@@ -833,9 +830,10 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
 
 /// The shell a system is drawn as
 ///
-/// Sits at the system's own position with an identity transform.
-/// [`super::scale`] writes a size onto it each frame, which is why it is a
-/// child: that size is an exaggeration, and scale is inherited.
+/// Inserted onto the [`System`] entity itself rather than hung off it, so the
+/// system is drawn as its own shell. [`super::scale`] writes a size onto that
+/// entity each frame; the size is an exaggeration far larger than a metre, and
+/// the labels alongside divide it back out (see [`super::labels::face_camera`]).
 ///
 /// Nothing aims at it. What answers the pointer is the system itself, over
 /// the mark [`super::pointing::Indicator`] holds, so a system is as easy to
@@ -852,7 +850,6 @@ fn star(
         // Fitted by `super::scale` before the first draw, as the size is.
         Mesh3d(roundness.coarsest()),
         MeshMaterial3d(materials.get(hue(system, color_by), dimmed).clone()),
-        Transform::default(),
         NotShadowCaster,
         // Drawn on its own layer by a camera without bloom, so a wide field of
         // shells is opaque and the nearest covers the rest while the bodies
@@ -1145,18 +1142,14 @@ mod tests {
 
     /// A system with a shell standing around it
     fn shelled(app: &mut App) -> Entity {
-        let system =
-            app.world_mut().spawn(crate::systems::tests::system(1)).id();
-        let shell = app
-            .world_mut()
+        app.world_mut()
             .spawn((
+                crate::systems::tests::system(1),
                 Shell,
+                Strength::default(),
                 MeshMaterial3d::<StandardMaterial>::default(),
-                Visibility::default(),
             ))
-            .id();
-        app.world_mut().entity_mut(system).add_child(shell);
-        system
+            .id()
     }
 
     /// How many shells have been repainted so far

@@ -270,8 +270,9 @@ fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
 
 /// Draw each system large enough to be seen from where the camera is
 ///
-/// The size goes on the [`Shell`], not on the [`System`] holding it, so that
-/// labels and anything else hanging off the system keep their own size.
+/// The size goes on the shell, which now shares an entity with the [`System`]
+/// it stands for. The labels hung off that entity are drawn far smaller and
+/// divide the shell's scale back out; see [`super::labels::face_camera`].
 ///
 /// How far a system reaches is read off the system itself, which every one of
 /// them carries. Asking the system the map is holding the insides of instead
@@ -289,9 +290,8 @@ pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
     camera: Query<(&OrbitCamera, &Camera)>,
-    systems: Query<&System>,
     roundness: Res<Roundness>,
-    mut shells: Query<(&mut Transform, &ChildOf, &mut Mesh3d), With<Shell>>,
+    mut shells: Query<(&mut Transform, &System, &mut Mesh3d), With<Shell>>,
 ) {
     if !shells.is_empty() {
         let Ok((orbit, camera)) = camera.single() else { return };
@@ -300,8 +300,7 @@ pub fn size_by_distance(
         let eye = orbit.eye;
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut drawn, child_of, mut mesh) in shells.iter_mut() {
-            let Ok(system) = systems.get(child_of.parent()) else { continue };
+        for (mut drawn, system, mut mesh) in shells.iter_mut() {
             let away = crate::space::metres(eye - DVec3::from(system.position))
                 .length() as f32;
             let extent = system.reach();
@@ -412,9 +411,8 @@ pub fn size_inside(
 /// world still covers everything from half a pixel to half the screen.
 pub fn size_uniformly(
     camera: Query<(&OrbitCamera, &Camera)>,
-    systems: Query<&System>,
     roundness: Res<Roundness>,
-    mut shells: Query<(&mut Transform, &ChildOf, &mut Mesh3d), With<Shell>>,
+    mut shells: Query<(&mut Transform, &System, &mut Mesh3d), With<Shell>>,
 ) {
     let size = (1e-2 * crate::space::LIGHT_YEAR) as f32;
     // Nothing to be round for where there is no viewport to be round in, and
@@ -428,7 +426,7 @@ pub fn size_uniformly(
 
     // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
     // transparent when they are too far away.
-    for (mut drawn, child_of, mut mesh) in shells.iter_mut() {
+    for (mut drawn, system, mut mesh) in shells.iter_mut() {
         // Only where it moved, as everything that sizes a shell is. The size
         // here is one number for the whole map, so past the frame a shell is
         // spawned this never writes at all.
@@ -437,7 +435,6 @@ pub fn size_uniformly(
         }
 
         let Some((eye, cot_half_fov, height)) = seen else { continue };
-        let Ok(system) = systems.get(child_of.parent()) else { continue };
         let away = crate::space::metres(eye - DVec3::from(system.position))
             .length() as f32;
 
@@ -884,29 +881,19 @@ mod tests {
 
     /// A system with a shell standing around it
     fn shelled(app: &mut App, system: System) {
-        let system = app.world_mut().spawn(system).id();
-        let shell = app
-            .world_mut()
-            .spawn((Shell, Transform::default(), Mesh3d::default()))
-            .id();
-        app.world_mut().entity_mut(system).add_child(shell);
+        app.world_mut()
+            .spawn((system, Shell, Transform::default(), Mesh3d::default()));
     }
 
     /// How large the shell around the system at `address` was drawn
     fn drawn(app: &mut App, address: i64) -> f32 {
         let mut shells = app
             .world_mut()
-            .query_filtered::<(&Transform, &ChildOf), With<Shell>>();
-        let mut systems = app.world_mut().query::<&System>();
-        let world = app.world();
+            .query_filtered::<(&Transform, &System), With<Shell>>();
         shells
-            .iter(world)
-            .find(|(_, child_of)| {
-                systems
-                    .get(world, child_of.parent())
-                    .is_ok_and(|system| system.address == address)
-            })
-            .expect("a shell around that system")
+            .iter(app.world())
+            .find(|(_, system)| system.address == address)
+            .expect("a shell for that system")
             .0
             .scale
             .x

@@ -4,7 +4,7 @@ use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
-use crate::systems::spawn::{Shell, ShowNames};
+use crate::systems::spawn::ShowNames;
 use crate::systems::{Spyglass, System};
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::visibility::VisibilitySystems;
@@ -404,11 +404,11 @@ type Plated = (
 
 /// Whatever a name is hung off, as [`leaders`] reads it
 ///
-/// Where it is, what is drawn under it to begin clear of, and the three ways
-/// of being marked out that leave a line with nothing to say.
+/// Where it is, and the three ways of being marked out that leave a line with
+/// nothing to say. What it is drawn at is read from where it is: a system is
+/// its own shell and carries the shell's size, and a body carries its own.
 type Anchor = (
     &'static GlobalTransform,
-    Option<&'static Children>,
     Has<PointedAt>,
     Has<Selected>,
     Has<crate::systems::route::Hop>,
@@ -1537,7 +1537,7 @@ fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
 /// rotation be written straight into a slot that is read as local.
 pub fn face_camera(
     camera: Query<(&OrbitCamera, &Camera)>,
-    systems: Query<(&System, &Indicator), Without<Label>>,
+    systems: Query<(&System, &Transform, &Indicator), Without<Label>>,
     // A body's own scale, which is what propagation multiplies its label's by
     // and so what the label has to be divided by. The local one rather than
     // the `GlobalTransform` beside it: propagation runs before
@@ -1565,7 +1565,8 @@ pub fn face_camera(
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     for (mut label, child_of) in &mut labels {
-        let Ok((system, indicator)) = systems.get(child_of.parent()) else {
+        let Ok((system, shell, indicator)) = systems.get(child_of.parent())
+        else {
             // A name hung off something inside a system.
             let body = child_of.parent();
             let Ok((own_size, indicator)) = bodies.get(body) else { continue };
@@ -1629,10 +1630,15 @@ pub fn face_camera(
         // Only where it moved, as everything the camera decides the size of
         // is. A plate carries a mesh, so a transform written regardless hands
         // every name on screen back to the renderer every frame.
+        // Divided by the shell's own scale, the label being a child of the
+        // system the shell now shares an entity with, and that scale being the
+        // mark drawn far larger than a metre. The body path above does the
+        // same with a body's own scale.
+        let own = shell.scale.x.max(1e-6);
         label.set_if_neq(Transform {
-            translation: offset,
+            translation: offset / own,
             rotation: orbit.rotation,
-            scale: Vec3::splat(scale),
+            scale: Vec3::splat(scale / own),
         });
     }
 }
@@ -1653,14 +1659,12 @@ pub fn leaders(
     mut gizmos: Gizmos,
     labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
     named: Query<Anchor, Or<(With<System>, With<Body>)>>,
-    shells: Query<&GlobalTransform, With<Shell>>,
 ) {
     for (label, drawn, child_of) in &labels {
         if !drawn.get() {
             continue;
         }
-        let Ok((at, children, pointed_at, selected, hop)) =
-            named.get(child_of.parent())
+        let Ok((at, pointed_at, selected, hop)) = named.get(child_of.parent())
         else {
             continue;
         };
@@ -1678,18 +1682,10 @@ pub fn leaders(
         }
 
         // What the line has to begin clear of is whatever is drawn where the
-        // name points. For a system that is the shell hung under it, which
-        // carries the size it is drawn at where the system deliberately does
-        // not, and the largest of them where it holds more than one. A body is
-        // drawn at its own size and needs nothing looked up, so folding its own
-        // scale in as the starting figure answers both: a system's own scale is
-        // a metre and loses to any shell, and a body has no shell to lose to.
-        let edge = children
-            .into_iter()
-            .flat_map(|children| children.iter())
-            .filter_map(|child| shells.get(child).ok())
-            .map(|shell| shell.scale().x)
-            .fold(at.scale().x, f32::max);
+        // name points, which is the anchor's own scale: a system is its own
+        // shell and carries the size it is drawn at, and a body carries its
+        // own. Either way the line begins at the edge of what it points to.
+        let edge = at.scale().x;
 
         // The label's origin is the left edge of the text, so the line runs
         // from the thing straight to where the name begins.
@@ -2932,8 +2928,10 @@ mod tests {
         standing.position = [0., 0., -5.];
         // No mark to stand off, the gap a name is given being enough on its
         // own to place one.
-        let system =
-            app.world_mut().spawn((standing, Indicator::default())).id();
+        let system = app
+            .world_mut()
+            .spawn((standing, Transform::default(), Indicator::default()))
+            .id();
         let label = app.world_mut().spawn((Label, Transform::default())).id();
         app.world_mut().entity_mut(system).add_child(label);
         app
