@@ -243,7 +243,7 @@ the payload is absent, and having an answer then is the whole point.
 walks.
 
 Luminosity is in linear units and never magnitudes, because magnitudes do
-not add: convert `10^(-0.4*M)` at bake time and sum. The temperature buckets
+not add: convert `10^(-0.4*M)` at build time and sum. The temperature buckets
 keep the glow's color structure, a warm bulge and blue arms, without
 per-star storage. The spread is what renders a cell as a Gaussian splat
 rather than a point, which is what makes a coarse cell look like a star
@@ -320,7 +320,7 @@ One traversal function, three tests, all reading the same tree.
 bounding box, which makes the photometric test conservative. It never drops
 a visible star.
 
-Culling is `m_min` and nothing else. The bake-time cut described under the
+Culling is `m_min` and nothing else. The build-time cut described under the
 glow is about not painting a star twice, and is not a culling mechanism.
 
 ## One predicate, three consumers
@@ -492,7 +492,7 @@ what `prominence` scaling the mark by population is already reaching for.
 Every system carries exactly one unit of weight, and at any cut that weight
 sits in exactly one place: a discrete shell, or a cell's splat. Never both,
 never neither. It is easiest to see in the narrow case, a giant drawn live
-that must not also be baked into the glow behind it, but it holds at every
+that must not also be folded into the glow behind it, but it holds at every
 cut in either mode.
 
 So a cell's aggregate covers the systems in its subtree that live in deeper
@@ -566,7 +566,7 @@ mark instead of shrinking the mark toward nothing.
 
 ### Filtering the aggregate
 
-Nothing is baked per filter combination. The cell stores marginals per axis
+Nothing is built per filter combination. The cell stores marginals per axis
 and a stratified sample, and every filter is composed from those at draw
 time, so a mask is a dot product in the resolve.
 
@@ -630,9 +630,9 @@ pruned before it is fetched, `needed()` shrinks, and `N` and `M` stay
 exactly computable. Under the sampled estimator exact pruning is lost, but
 conservatively: some empty cells get fetched and nothing is drawn wrong.
 
-The bake therefore knows almost nothing about filtering. A new `ColorBy`
+The build therefore knows almost nothing about filtering. A new `ColorBy`
 axis works immediately through the sampled estimator and exactly after the
-next nightly bake adds its marginal.
+next nightly build adds its marginal.
 
 ## Flicker
 
@@ -830,7 +830,7 @@ and the resident cache is the same one map mode reads.
 **Cells are meshes beyond the spyglass, entities inside it.** Entities exist
 only within the spyglass, where Shell mode needs picking and labels anyway,
 and Real mode rematerializes those same entities photometrically. Beyond it
-a cell bakes to one point-cloud mesh, since far stars need no per-star
+a cell becomes one point-cloud mesh, since far stars need no per-star
 identity, and per-frame cost becomes a handful of draw calls whatever the
 count. A whole sky is 10 to 50k stars, so the meshes are small. The payload
 is already quantized cell-relative, so a mesh anchored to its cell's origin
@@ -901,25 +901,26 @@ glow touches no payload and no server. That is what makes the glow the one
 thing never absent and never patchy: it depends on nothing being loaded, and
 what refines is only how much of it has condensed into discrete marks.
 
-A baked cubemap is an option and not part of the spine. A mesh remembers
+A precomputed cubemap is an option and not part of the spine. A mesh remembers
 positions and a cubemap remembers directions, so rotation is exact but the
 depth is gone and everything in it behaves as infinitely far. That flaw is
 harmless only in the outermost layer, where `e/d` stays under tolerance for
-any plausible travel, which is the layer the cubemap would cover: bakes for
-a grid of reference positions, swapping to the nearest when the camera
-crosses hundreds of ly. It buys nothing while the index is resident and the
-splats are cheap, so it stays on the shelf until the walk is measured. The
+any plausible travel, which is the layer the cubemap would cover: one
+precompute per reference position on a grid, swapping to the nearest as the
+camera crosses hundreds of ly. It buys nothing while the index is resident and
+the splats are cheap, so it stays on the shelf until the walk is measured. The
 one thing that would want it is a galaxy density model, which has no cells
 of its own and for which an image is the natural container.
 
-The cut between glow and discrete stars is baked rather than derived, and
-this is the one place the residual subtraction cannot help. Subtracting a
-drawn star from a live splat is arithmetic on moments, but subtracting one
-from a baked image is not possible at all, so anything the bake integrates
-must be below the level at which the client ever draws individuals. Where
-the glow is drawn live from the index, the cut is the residual and there is
-no constant. Where an image is baked, the constant is the level the bake
-bottoms out at, and it is a property of the bake rather than of the schema.
+The cut between glow and discrete stars is fixed at build time rather than
+derived, and this is the one place the residual subtraction cannot help.
+Subtracting a drawn star from a live splat is arithmetic on moments, but
+subtracting one from a precomputed image is not possible at all, so anything
+the image integrates must be below the level at which the client ever draws
+individuals. Where the glow is drawn live from the index, the cut is the
+residual and there is no constant. Where an image is precomputed, the constant
+is the level that image bottoms out at, a property of the precompute rather
+than of the schema.
 
 ## Coordination with the bodies work
 
@@ -943,7 +944,7 @@ Bevy's lighting speaks physical units, so those functions feed the lights
 real values, candela from a star's luminosity and color from its
 temperature, with no unit shim in between.
 
-## The bake
+## Building the index
 
 Ordering by absolute magnitude needs an absolute magnitude for every system,
 including the two-thirds with no `stars` rows. The fallback chain is `stars` rows, summing
@@ -953,7 +954,7 @@ classes (O B A F G K M, TTS, L/T/Y, D*, N, H, ...) to a typical absolute
 magnitude and temperature. This is what the commented-out
 `galos_db::stars` fetch code is for.
 
-Doing this at bake time is what leaves the client with no join to make. The
+Doing this at build time is what leaves the client with no join to make. The
 payload's four bytes of combined magnitude and temperature bucket per system
 are the finished answer, so Real mode at range issues no query at all.
 
@@ -964,14 +965,14 @@ New discoveries change any cell's flux by nothing the eye can see. The
 aggregate is worth designing so `galos_server` can share it, since "total
 recorded luminosity in a region" comes for free.
 
-The bake is a Morton sort of 129M records and about 75k file writes, well
+The build is a Morton sort of 129M records and about 75k file writes, well
 under an hour. Nightly incremental rewrites touch the 0.94% of leaves that
 changed, and coarse levels barely move, since a newly discovered faint
 system rarely displaces anything from a brightest-first prefix.
 
 ## Serving
 
-The bake runs where the database is. Ingest and the database belong on one
+The build runs where the database is. Ingest and the database belong on one
 machine because `galos-sync eddn` is a serial loop
 (`src/bin/galos-sync/eddn.rs:52`) at 31 messages a second in a busy hour,
 and each message fans out into many statements. Round-trip latency, not CPU,
@@ -1022,19 +1023,71 @@ At 1.35M rows a sequential scan may simply be winning. Run
 `EXPLAIN (ANALYZE, BUFFERS)` before the import, because at 129M rows it will
 not be.
 
+## The crates
+
+The work above is one dataset in Postgres, one derived index over it, and one
+client that draws the index without ever reaching for the database. That split
+is the crate boundary, and one requirement fixes it: the map draws the galaxy
+without a database, so `galos_map` must not link `galos_db`, sqlx or Postgres,
+even transitively. A crate that wrapped the database would carry all three into
+the client and lose the thing the format was for.
+
+- **`galos_photometry`** is the physics: apparent magnitude, flux, combined
+  magnitude, blackbody color, and the class fallback table. Pure functions over
+  plain numbers, no database and no renderer, so both the build and the client
+  read it and neither pulls in the other. It is step 1 and it gates the build.
+
+- **`galos_index`** is the derived structure: the cell record and its
+  aggregates, the Morton keys and cell-relative quantization, the on-disk
+  format, the three walks and `needed()`, the aggregate composition with its
+  residual, and the resident cache the client reads through. It depends on
+  `galos_photometry` and nothing heavier. This is what makes the client
+  database-free, and `galos_server` shares its read side, since "total recorded
+  luminosity in a region" falls out of the same aggregates.
+
+- **`galos_db`** stays what it is, the full authoritative dataset in Postgres,
+  and grows the one thing this needs: building `galos_index` files from its own
+  tables. The build reads systems and stars, fills absolute magnitude through
+  the photometry fallback chain, Morton-sorts and writes the cells. Where that
+  builder lives — inside `galos_db`, a sibling crate, a feature-gated binary —
+  is left open, since it changes nothing above it.
+
+- **`elite_journal`** is the shared domain model, rather than a new crate for
+  one. It already carries systems, bodies, stars, factions, stations and
+  markets with their enums and orbits, all with `serde`, and already speaks to
+  the database through its `with-postgis-sqlx` feature. `galos_db`'s structs are
+  thin persistence wrappers over it, and the server's JSON is these same types,
+  so the client and the database share one vocabulary rather than three.
+
+- **`galos_map`** ends with no `galos_db` dependency at all. It draws from
+  `galos_index` cell files and asks a small server, over HTTP, for the metadata
+  a click needs — a populated system's political columns, a body's scan, a
+  faction, a name, a route. Its end-state dependencies are `galos_index`,
+  `elite_journal` and an HTTP client. `Allegiance`, `Government` and `Security`
+  already come from `elite_journal`, so the political coloring survives the cut
+  untouched.
+
+How the client gets the cell files — object storage behind a CDN, a bundled
+download, something else — is the serving question below, and is likewise left
+open. Neither it nor where the builder lives blocks the index: the cell schema
+is what both the builder and the reader agree on, and it is the same whatever
+answers those two.
+
 ## Order of work
 
-1. **Photometry core.** Pure functions: apparent magnitude, flux, combined
-   magnitude, blackbody color, the class fallback table. Every function is a
-   one-line physics claim with a unit test. It gates the bake, because
-   sorting by absolute magnitude needs the fallback for systems with no
-   `stars` rows.
-2. **The cell schema and the bake**, against the current 1.35M-system
-   database. A full bake takes seconds at that size and the tree fits in
-   memory, so the format, the walks, additive refinement and the flicker
-   behavior are all validated before the import exists.
+1. **Photometry core** (`galos_photometry`). Pure functions: apparent
+   magnitude, flux, combined magnitude, blackbody color, the class fallback
+   table. Every function is a one-line physics claim with a unit test. It
+   gates the build, because sorting by absolute magnitude needs the fallback
+   for systems with no `stars` rows.
+2. **The cell schema and the build** (`galos_index`), against the current
+   1.35M-system database. A full build takes seconds at that size and the
+   tree fits in memory, so the format, the walks, additive refinement and the
+   flicker behavior are all validated before the import exists.
 3. **The client walk.** `needed()`, the resident cache, the presence ramp.
-   Map mode only. This is where the map stops querying Postgres to draw.
+   Map mode only. This is where the map stops querying Postgres to draw, and
+   where `galos_map` drops its `galos_db` dependency, reading the index files
+   and asking the server only for the metadata a click needs.
 4. **The field.** Accumulate then resolve, the residual subtraction, the
    filter marginals and the sampled estimator. Map mode is complete here,
    and TODO(#72) closes with it.
@@ -1071,7 +1124,7 @@ Steps 5 and 6 depend on nothing in 2 through 4 and can run alongside them.
 - Whether the head-of-file bias moves the density distribution enough to
   change the leaf cap.
 - Leaf cap and internal slice size, which trade cold-start size and request
-  count against budget granularity, and should be tuned once the bake runs
+  count against budget granularity, and should be tuned once the build runs
   rather than guessed now.
 - The smallest mark that draws stably, which is what TODO(#72) is really
   asking, and which sets the budget through the table above.
@@ -1080,5 +1133,5 @@ Steps 5 and 6 depend on nothing in 2 through 4 and can run alongside them.
   star field should look like, so it wants looking at rather than deriving.
 - How large the spatial quota must be before voids stop reading as voids.
 - Whether the opening-angle walk over the resident index draws the glow
-  cheaply enough per frame, which is what decides whether a baked cubemap is
-  wanted at all.
+  cheaply enough per frame, which is what decides whether a precomputed
+  cubemap is wanted at all.

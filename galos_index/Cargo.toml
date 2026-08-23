@@ -1,0 +1,13 @@
+[package]
+name = "galos_index"
+version = "0.0.1"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2024"
+rust-version.workspace = true
+
+# The galaxy's derived spatial index: the on-disk cell tree the builder writes
+# beside the database and the reader the client draws from without one. Pure and
+# DB-free, so `galos_map` and `galos_server` both link it and neither pulls in
+# Postgres. Physics comes from `galos_photometry`; nothing heavier belongs here.
+[dependencies]
+galos_photometry = { path = "../galos_photometry" }

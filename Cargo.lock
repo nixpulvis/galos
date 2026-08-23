@@ -4079,6 +4079,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "galos_index"
+version = "0.0.1"
+dependencies = [
+ "galos_photometry",
+]
+
+[[package]]
 name = "galos_map"
 version = "0.1.0"
 dependencies = [
@@ -4095,6 +4102,10 @@ dependencies = [
  "galos_db",
  "log",
 ]
+
+[[package]]
+name = "galos_photometry"
+version = "0.0.1"
 
 [[package]]
 name = "galos_server"
