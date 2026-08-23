@@ -221,6 +221,19 @@ impl Selection {
         self.0.clear();
     }
 
+    /// Let go of the system at `address`, holding everything else
+    ///
+    /// What descending into a system does to the selection that brought the
+    /// camera there. Once it is standing inside, the ring is a ring around the
+    /// view and the row names where the user already is, so the system lets go
+    /// of itself. Bodies picked out inside it are left alone: they are what
+    /// there is to look at now.
+    pub fn deselect_system(&mut self, address: i64) {
+        self.0.retain(|picked| {
+            !matches!(picked, Picked::System(system) if system.address == address)
+        });
+    }
+
     /// Let go of the thing in the `index`th place, and hold the rest
     pub fn remove(&mut self, index: usize) {
         if index < self.0.len() {
@@ -741,6 +754,40 @@ mod tests {
         app.update();
 
         assert_eq!(app.world().resource::<Selection>().len(), 1);
+    }
+
+    /// Descending into a system lets go of that system
+    ///
+    /// The selection that flew the camera in circled a star out in the sky.
+    /// Standing inside it, that ring would circle the whole view, so the
+    /// system lets go of itself as the camera arrives.
+    #[test]
+    fn descending_into_a_system_lets_go_of_it() {
+        let mut selection = Selection::default();
+        selection.set(picked(1));
+
+        selection.deselect_system(1);
+
+        assert!(selection.is_empty());
+    }
+
+    /// And leaves the rest of the selection picked out
+    ///
+    /// Only the system the camera descended into is let go of. Another
+    /// system gathered alongside it, and any body picked out inside the one
+    /// being entered, are what there is left to work with.
+    #[test]
+    fn descending_holds_the_rest_of_the_selection() {
+        let mut selection = Selection::default();
+        selection.set(picked(1));
+        selection.toggle(picked(2));
+        selection.toggle(picked_body(1, 3));
+
+        selection.deselect_system(1);
+
+        assert_eq!(selection.len(), 2);
+        assert!(selection.systems().any(|system| system.address == 2));
+        assert_eq!(selection.get(1).map(Picked::id), Some(Some(3)));
     }
 
     /// A world holding a selection and the click that may let go of it

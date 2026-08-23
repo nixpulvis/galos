@@ -47,6 +47,7 @@ use crate::systems::System;
 use crate::systems::pointing::Indicator;
 use crate::systems::roundness::Roundness;
 use crate::systems::route::{LineList, LineStrip};
+use crate::systems::selection::Selection;
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -669,6 +670,7 @@ fn draw(
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnContents>,
     mut holding: ResMut<HeldSystem>,
+    mut selection: ResMut<Selection>,
     mut commands: Commands,
 ) {
     let Ok((eye_entity, eye, across)) =
@@ -740,6 +742,10 @@ fn draw(
         _ => return,
     };
 
+    // Which system's contents were drawn before this frame, so a genuine
+    // descent into a new one can be told from redrawing the one already
+    // inside. Read before the take below empties it.
+    let descended_into = drawn.0.map(|(shown, _)| shown);
     // The camera first, then the contents, then the grid they were all
     // placed in: a `CellCoord` under an entity that is no longer a grid has
     // nothing to be measured against.
@@ -756,6 +762,14 @@ fn draw(
     }
 
     let Some((address, entity)) = wanted else { return };
+
+    // Standing inside it now, the selection that brought the camera here has
+    // done its job: its ring would circle the whole view and its row would
+    // name where the user already is. Let go of it, but only on the way in, so
+    // a redraw of the system already held leaves an unrelated selection alone.
+    if descended_into != Some(address) {
+        selection.deselect_system(address);
+    }
 
     let grid = space::system_grid();
     let orbits = contents.orbits();
