@@ -10,29 +10,30 @@
 //! mean either faction heard from within it. Counted alongside the factions it
 //! would put the whole of the last hour onto a map asked for two factions.
 //!
-//! This is a layer over the map rather than a mode. The spyglass goes on
-//! fetching by region, the camera stays where it is, and nothing is
-//! despawned.
+//! This is a layer over the map rather than a mode: the spyglass goes on
+//! fetching by region and the camera stays where it is. Whether it despawns
+//! depends on the dim below.
 //!
 //! [`DimTo`] says how faintly what none of them admits is drawn, and answers
 //! for the whole of it. Above zero the excluded systems are wanted on screen,
 //! so they are fetched to be dimmed: what was never asked for cannot be drawn
 //! faintly, and a faction read against the space around it is the thing being
-//! drawn. At zero they are not drawn at all, which is the other thing a filter
-//! is asked for: this kind of system and none of the rest.
+//! drawn. At zero they are not loaded at all — never spawned, and evicted if
+//! already on the map — which is the other thing a filter is asked for: this
+//! kind of system and none of the rest.
 
-use crate::Db;
+use crate::{Factions, Names, Populated};
 use crate::schedule::MapSet;
 use crate::search::Pending;
 use crate::systems::System;
 use crate::systems::fetch::Poll;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
-use bevy::tasks::AsyncComputeTaskPool;
 use chrono::{DateTime, Duration, Utc};
-use galos_db::Database;
-use galos_db::factions::Faction as DbFaction;
-use galos_db::systems::System as DbSystem;
+use crate::systems::spawn::system_at;
+use galos_index::meta::Faction as DbFaction;
+use crate::systems::fetch::FetchTasks;
+use bevy::ecs::system::SystemParam;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
@@ -52,6 +53,14 @@ pub fn plugin(app: &mut App) {
     app.add_systems(
         Update,
         mark.in_set(MapSet::Populate).after(super::spawn::spawn),
+    );
+    // The dim and the filters decide which systems belong on the map at all, so
+    // a change to either asks the loaded regions again to catch up.
+    app.add_systems(
+        Update,
+        refetch_on_filter_change
+            .in_set(MapSet::Fetch)
+            .before(super::fetch::fetch),
     );
 }
 
@@ -301,13 +310,21 @@ impl Filter {
     /// Here rather than beside the panel that draws it, so that a kind of
     /// filter is one arm of each of these rather than something to be traced
     /// through the modules that happen to use it.
-    pub async fn systems(&self, db: &Database) -> Vec<DbSystem> {
+    pub fn systems(&self, populated: &Populated, names: &Names) -> Vec<System> {
         match self {
-            Filter::Faction { name, .. } => {
-                DbSystem::fetch_faction(db, name).await.unwrap_or_default()
-            }
+            Filter::Faction { id, .. } => populated
+                .0
+                .values()
+                .filter(|system| system.factions.contains(id))
+                .filter_map(|system| {
+                    system_at(system.address, populated, names)
+                })
+                .collect(),
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
-                DbSystem::fetch_many(db, systems).await.unwrap_or_default()
+                systems
+                    .iter()
+                    .filter_map(|&address| system_at(address, populated, names))
+                    .collect()
             }
             // Nothing describes a span, so nothing asks this of one. See
             // [`Self::worth_describing`].
@@ -403,37 +420,21 @@ impl FactionResults {
 /// chooses, exactly as a search for a system is answered.
 fn resolve(
     mut lookups: MessageReader<Lookup>,
-    mut resolving: ResMut<Resolving>,
     mut results: ResMut<FactionResults>,
     mut note: ResMut<LookupNote>,
-    time: Res<Time<Real>>,
-    db: Res<Db>,
+    factions: Res<Factions>,
 ) {
-    let now = time.last_update().unwrap_or(time.startup());
-    let pool = AsyncComputeTaskPool::get();
-
     for lookup in lookups.read() {
         let Lookup::Faction { name } = lookup;
-        let db = db.0.clone();
-        let asked = name.clone();
-        resolving.ask(
-            name.clone(),
-            now,
-            pool.spawn(async move {
-                DbFaction::search_by_name(&db, &asked, FACTIONS)
-                    .await
-                    .unwrap_or_default()
-            }),
-        );
-    }
-
-    if let Some((name, found)) = resolving.answered(now) {
-        results.0 = found;
-        *note = if results.is_empty() {
+        // The whole galaxy's factions are resident, so a name is matched at
+        // once rather than asked of a database off the main thread.
+        let found = factions.search(name, FACTIONS as usize);
+        *note = if found.is_empty() {
             LookupNote::Failed(format!("No faction named {name}"))
         } else {
             LookupNote::Nothing
         };
+        results.0 = found;
     }
 }
 
@@ -835,12 +836,14 @@ pub struct Filtered;
 /// How opaque a system no filter admits is drawn
 ///
 /// A fraction of the alpha it would be drawn at unfiltered, so one is
-/// untouched and zero is not drawn at all. Reads as what it does: dim to a
+/// untouched and below one it is dimmed. Reads as what it does: dim to a
 /// fifth, dim to nothing.
 ///
-/// Zero is not merely invisible. A star faded to nothing is still a star
-/// being drawn, and still one the pointer can land on, so zero hides it
-/// outright, which takes its name, its ring and its hit box with it.
+/// Zero is not merely invisible. A star drawn at no opacity is still loaded —
+/// spawned, its transform walked every frame, its pointer target waiting — so
+/// zero goes further and takes it off the map: [`super::spawn`] never loads
+/// what no filter admits, and [`super::evict`] drops what already stands, name,
+/// ring and hit box with it.
 #[derive(Resource)]
 pub struct DimTo(pub f32);
 
@@ -862,18 +865,93 @@ impl DimTo {
     /// rings are gizmos, and a gizmo takes its color at the call.
     pub fn as_drawn(&self, color: Srgba, filtered: bool) -> Srgba {
         if filtered {
-            Srgba { alpha: color.alpha * self.0, ..color }
+            Srgba { alpha: color.alpha * self.opacity(), ..color }
         } else {
             color
         }
     }
+
+    /// The opacity an excluded system is actually drawn at, `0..=1`
+    ///
+    /// Faintness is not linear: the eye reads brightness by ratio, so equal
+    /// steps of a linear slider are not equal steps of what is seen, and either
+    /// end of the curve goes to waste — a low gamma bunches the useful range
+    /// into the first few percent, a high one leaves the bottom third too faint
+    /// to see at all.
+    ///
+    /// So the slider is mapped logarithmically between a floor and full: equal
+    /// steps are equal *ratios* of opacity, the way a sound fader is spaced in
+    /// decibels, which spreads the control evenly from end to end. The floor is
+    /// [`DIM_FLOOR`], the faintest that still reads as present, so no part of
+    /// the travel above zero lands on an opacity too low to see.
+    ///
+    /// Zero stays zero — the load-and-evict decisions keyed on the slider
+    /// ([`Filtering::excluded_are_drawn`], [`super::spawn`], [`super::evict`])
+    /// read a dropped system off either the position or the opacity — and just
+    /// above zero steps to the floor, which is "off" giving way to "barely
+    /// there", exactly what the bottom of the control should mean.
+    pub fn opacity(&self) -> f32 {
+        if self.0 <= 0. {
+            0.
+        } else {
+            DIM_FLOOR.powf(1. - self.0)
+        }
+    }
 }
 
-/// How faint an excluded system is to begin with
+/// The two things that decide how a system is drawn against the filters: which
+/// are asked, and how faintly what they exclude is shown.
 ///
-/// Faint enough to read as background rather than as something picked out,
-/// and bright enough to still be read: the point of dimming rather than
-/// hiding is that the space around a faction stays legible.
+/// Bundled so a draw reads both without spending two of Bevy's system-parameter
+/// slots, [`super::spawn::spawn`] being at the limit.
+#[derive(SystemParam)]
+pub struct Filtering<'w> {
+    pub filters: Res<'w, Filters>,
+    pub dim: Res<'w, DimTo>,
+}
+
+impl Filtering<'_> {
+    /// Whether what the filters exclude is still drawn, faintly, rather than
+    /// dropped from the map altogether.
+    pub fn excluded_are_drawn(&self) -> bool {
+        self.dim.0 > 0.
+    }
+}
+
+/// Ask the loaded regions again when the filters or the dim change
+///
+/// A filter narrows what is drawn, and at [`DimTo`] zero what it excludes is
+/// dropped rather than dimmed: [`super::spawn`] never spawns it and
+/// [`super::evict`] drops what already stands. So a filter added, removed, or
+/// dimmed to nothing changes which systems belong on the map, and the regions
+/// already surveyed have to be read again for it to show — otherwise a filter
+/// turned off leaves the systems it hid gone, the region still marked held and
+/// nothing asking after them.
+fn refetch_on_filter_change(
+    filters: Res<Filters>,
+    dim: Res<DimTo>,
+    mut tasks: ResMut<FetchTasks>,
+) {
+    if filters.is_changed() || dim.is_changed() {
+        tasks.surveyed.clear();
+    }
+}
+
+/// The faintest opacity an excluded system is drawn at short of not at all
+///
+/// Where the logarithmic slider bottoms out just above zero, so its whole
+/// travel lands on opacities that can be seen. Below this a star reads as
+/// absent, and absent is what zero itself means: the system dropped rather than
+/// dimmed. A thirtieth, a shade under the visibility measured against the map.
+const DIM_FLOOR: f32 = 0.03;
+
+/// How faint an excluded system is to begin with, as a slider position
+///
+/// Faint enough to read as background rather than as something picked out, and
+/// bright enough to still be read: the point of dimming rather than hiding is
+/// that the space around a faction stays legible. A quarter of the slider,
+/// which on the logarithmic scale is about a fourteenth opacity — the range
+/// that reads right.
 const DEFAULT_DIM: f32 = 0.25;
 
 /// Keep the mark on whichever systems the filters exclude

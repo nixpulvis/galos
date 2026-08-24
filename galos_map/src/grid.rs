@@ -394,12 +394,15 @@ fn mark_out(
     let wanted = showing.0 && picked_out.0;
     if wanted {
         for entity in &fresh {
-            commands.entity(entity).insert(Located);
+            // `try_` because the evictor may despawn a marked system between
+            // this query and the command landing: the mark is then moot, not
+            // an error worth a warning per frame.
+            commands.entity(entity).try_insert(Located);
         }
     }
     for entity in &marked {
         if !wanted || picked.get(entity).is_err() {
-            commands.entity(entity).remove::<Located>();
+            commands.entity(entity).try_remove::<Located>();
         }
     }
 }
@@ -521,17 +524,20 @@ fn rule(
         None => (0., None),
     };
 
-    // The one is spent before the other begins, so that two ladders which
-    // share no cell size are never on screen together. They change hands as
-    // the mark standing for the held system goes out, on the very figure that
-    // fade is drawn from.
+    // The fade of the mark over the system being descended into is what the two
+    // planes change hands on: as the camera closes and that mark goes out the
+    // galaxy plane gives way to the one ruled inside the system, and as it
+    // climbs back out the mark returns and the galaxy plane with it.
     //
-    // Whichever mark is furthest out, rather than the one over the system
-    // whose plane is up. Only the system being drawn ever goes out, so the two
-    // are the same but for the moment the map changes hands: there the one
-    // just let go of carries the ruler back as its mark comes in, rather than
-    // the sky changing hands twice.
-    let standing = marks.iter().map(|mark| mark.0).fold(1., f32::min);
+    // Read from that one system rather than the least of every mark on the map.
+    // A system a filter has dimmed to nothing is faint for a reason that has
+    // nothing to do with a descent, and — its fade frozen the frame it went
+    // undrawn — its mark standing in here would hold the galaxy plane hidden
+    // long after the camera had climbed back out of whatever it was in.
+    let standing = wanted
+        .and_then(|entity| marks.get(entity).ok())
+        .map(|mark| mark.0)
+        .unwrap_or(1.);
     let (out_there, down_here) = handover(standing);
 
     let galaxy = lit

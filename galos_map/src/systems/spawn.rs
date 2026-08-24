@@ -2,18 +2,19 @@ use crate::camera::MoveCamera;
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
+use crate::{Names, Populated, Tables};
 use crate::systems::bodies::spawn::{Body, Places, Strength};
 use crate::systems::{
     System,
     fetch::FetchIndex,
     fetch::FetchTasks,
-    filter::{DimTo, Filtered, Filters},
+    fetch::RawSystem,
+    filter::{DimTo, Filtered, Filters, Filtering},
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
     roundness::Roundness,
     route::spawn::{framing, spawn_route},
     route::{self, PlottedRoute, Route},
     selection::{Picked, PickedBody, Selection},
-    system_to_vec,
 };
 use crate::ui::{Gesture, PressOwner};
 use bevy::camera::visibility::{RenderLayers, ViewVisibility};
@@ -27,7 +28,7 @@ use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
 use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
-use galos_db::systems::System as DbSystem;
+use galos_index::meta::Economies;
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
@@ -456,9 +457,10 @@ pub fn spawn(
     galaxy: Res<Galaxy>,
     grids: Query<&Grid>,
     color_by: Res<ColorBy>,
-    filters: Res<Filters>,
+    filtering: Filtering,
     roundness: Res<Roundness>,
     materials: Res<SystemMaterials>,
+    tables: Tables,
     time: Res<Time<Real>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
@@ -477,7 +479,7 @@ pub fn spawn(
     // is the line the spawn is logged under. Nothing is stamped with it and
     // nothing measures how stale a row is by it, so the latest of them stands
     // for the batch rather than each row having to carry its own.
-    let mut arrived: Vec<DbSystem> = Vec::new();
+    let mut arrived: Vec<RawSystem> = Vec::new();
     let mut arrived_at = time.startup();
     // Taken down while the tasks are being walked and applied after, the walk
     // holding the tasks and the taking writing the surveys beside them.
@@ -525,10 +527,14 @@ pub fn spawn(
                 // The line is drawn from the same value, so that what it
                 // carries and what the row in the bar holds are one filter
                 // and closing the row finds the line.
-                if let Some(landed) = plotted_route(&new_systems, range) {
+                let route_systems: Vec<System> = new_systems
+                    .iter()
+                    .map(|raw| build_system(raw, &tables.populated, &tables.names))
+                    .collect();
+                if let Some(landed) = plotted_route(&route_systems, range) {
                     spawn_route(
                         &landed.filter(),
-                        &new_systems,
+                        &route_systems,
                         &route_query,
                         &galaxy,
                         grid,
@@ -556,13 +562,18 @@ pub fn spawn(
 
     let arrived = one_per_system(arrived);
     if !arrived.is_empty() {
+        let systems: Vec<System> = arrived
+            .iter()
+            .map(|raw| build_system(raw, &tables.populated, &tables.names))
+            .collect();
         spawn_systems(
-            &arrived,
+            &systems,
             &systems_query,
             &galaxy,
             grid,
             &color_by,
-            &filters,
+            &filtering.filters,
+            filtering.excluded_are_drawn(),
             &mut commands,
             &roundness,
             &materials,
@@ -583,17 +594,18 @@ pub fn spawn(
 /// `range` comes off the key the route was fetched under, that being where
 /// what the user asked for is still written down. The rows that came back say
 /// which systems the ship passes through and nothing about how far it reaches.
-fn plotted_route(systems: &[DbSystem], range: &str) -> Option<PlottedRoute> {
+fn plotted_route(systems: &[System], range: &str) -> Option<PlottedRoute> {
     let (first, last) = (systems.first()?, systems.last()?);
     if systems.len() < 2 {
         return None;
     }
 
-    let places: Vec<_> = systems.iter().filter_map(system_to_vec).collect();
+    let places: Vec<_> =
+        systems.iter().map(|system| system.position()).collect();
     let (middle, extent) = framing(&places)?;
 
     Some(PlottedRoute {
-        label: format!("{} -> {}", first.name, last.name),
+        label: format!("{} -> {}", first.name(), last.name()),
         // In the order they are travelled, which is the order the route came
         // back in and the order its panel lists.
         systems: systems.iter().map(|system| system.address).collect(),
@@ -617,9 +629,85 @@ fn plotted_route(systems: &[DbSystem], range: &str) -> Option<PlottedRoute> {
 /// Whichever answer came first is the one kept. Two of them in one frame are
 /// one system as two queries a few milliseconds apart saw it, which is the
 /// same system.
-fn one_per_system(arrived: Vec<DbSystem>) -> Vec<DbSystem> {
+fn one_per_system(arrived: Vec<RawSystem>) -> Vec<RawSystem> {
     let mut named = HashSet::with_capacity(arrived.len());
-    arrived.into_iter().filter(|system| named.insert(system.address)).collect()
+    arrived.into_iter().filter(|raw| named.insert(raw.address)).collect()
+}
+
+/// Name and colour a raw system from the resident tables
+///
+/// The cells give an address and a place and nothing political. Everything a
+/// [`System`] is coloured and filtered by comes from the [`Populated`] table
+/// where the system is one of the dynamic set, and its name from [`Names`]. A
+/// system absent from `populated` is ungoverned, which is most of the galaxy,
+/// and drawn as such.
+///
+/// The cells carry no per-system time, so `updated_at` is stamped now rather
+/// than read: Recency over individuals lands with the field step's age buckets,
+/// and until then a freshly drawn system is never taken to be stale.
+pub(crate) fn build_system(
+    raw: &RawSystem,
+    populated: &Populated,
+    names: &Names,
+) -> System {
+    let name = names
+        .get(raw.address)
+        .map(|entry| entry.name.clone())
+        .unwrap_or_else(|| raw.address.to_string());
+    match populated.get(raw.address) {
+        Some(p) => System {
+            address: raw.address,
+            name,
+            position: raw.position,
+            population: p.population,
+            allegiance: p.allegiance,
+            government: p.government,
+            security: p.security,
+            economies: Economies::new(p.primary_economy, p.secondary_economy),
+            factions: p.factions.clone(),
+            body_count: p.body_count,
+            non_body_count: p.non_body_count,
+            reach: p.reach,
+            updated_at: Utc::now(),
+        },
+        None => System {
+            address: raw.address,
+            name,
+            position: raw.position,
+            population: 0,
+            allegiance: None,
+            government: None,
+            security: None,
+            economies: None,
+            factions: Vec::new(),
+            body_count: None,
+            non_body_count: None,
+            reach: None,
+            updated_at: Utc::now(),
+        },
+    }
+}
+
+/// The drawable system at an address, if the resident tables can place it
+///
+/// A search or a filter names a system by address; its place comes from the
+/// [`Names`] table and everything political from [`Populated`]. [`None`] where
+/// the names table cannot place it, which is a system the map cannot draw.
+pub(crate) fn system_at(
+    address: i64,
+    populated: &Populated,
+    names: &Names,
+) -> Option<System> {
+    let entry = names.get(address)?;
+    let raw = RawSystem {
+        address,
+        position: [
+            entry.position[0] as f64,
+            entry.position[1] as f64,
+            entry.position[2] as f64,
+        ],
+    };
+    Some(build_system(&raw, populated, names))
 }
 
 /// Create or refresh the entities for each row fetched
@@ -637,12 +725,13 @@ fn one_per_system(arrived: Vec<DbSystem>) -> Vec<DbSystem> {
 /// be. A mark applied by a command lands at the next sync point, by which
 /// time the star has been drawn once at full strength.
 pub fn spawn_systems(
-    db_systems: &[DbSystem],
+    new_systems: &[System],
     systems: &Query<(Entity, &System)>,
     galaxy: &Res<Galaxy>,
     grid: &Grid,
     color_by: &Res<ColorBy>,
-    filters: &Res<Filters>,
+    filters: &Filters,
+    excluded_are_drawn: bool,
     commands: &mut Commands,
     roundness: &Res<Roundness>,
     materials: &Res<SystemMaterials>,
@@ -654,31 +743,34 @@ pub fn spawn_systems(
         .map(|(entity, system)| (system.address, entity))
         .collect();
 
-    for db_system in db_systems {
-        let Ok(system) = System::try_from(db_system) else {
-            debug!("skipping {}, no position on record", db_system.address);
+    for system in new_systems {
+        let system = system.clone();
+        // What no filter admits is dropped rather than dimmed once the dim is
+        // zero, so it is never spawned in the first place: the load avoided,
+        // not paid and then hidden. Left to [`super::evict`] to take off what
+        // already stands.
+        let excluded = !filters.admit(&system, Utc::now());
+        if excluded && !excluded_are_drawn {
             continue;
-        };
-
-        if let Some(enitity) = existing_systems.remove(&db_system.address) {
+        }
+        if let Some(entity) = existing_systems.remove(&system.address) {
             debug!(
                 "updating {} @ {:?}",
-                db_system.address,
+                system.address,
                 fetched_at.duration_since(time.startup())
             );
 
-            commands.entity(enitity).insert(system);
+            commands.entity(entity).insert(system);
         } else {
             debug!(
                 "spawning {} {:?}",
-                db_system.address,
+                system.address,
                 fetched_at.duration_since(time.startup())
             );
 
-            // Asked here as well as in `filter::mark`, since a mark applied
-            // by a command lands at the next sync point and the star would
-            // be drawn once at full strength before it arrived.
-            let excluded = !filters.admit(&system, Utc::now());
+            // The star is drawn dimmed here as well as in `filter::mark`, since
+            // a mark applied by a command lands at the next sync point and the
+            // star would be drawn once at full strength before it arrived.
             let drawn = star(&system, color_by, roundness, materials, excluded);
             let mut spawned = commands.spawn((
                 placement(&system, grid),
@@ -780,7 +872,7 @@ pub(super) fn shells(
             // Dimmed by the filters first and by the fade after, so a shell
             // the filters were drawing faintly does not come back to full
             // strength on its way out.
-            let strength = if filtered { dim.0 } else { 1. };
+            let strength = if filtered { dim.opacity() } else { 1. };
             materials.going(hue, strength * standing)
         } else {
             materials.get(hue, filtered)
@@ -807,7 +899,7 @@ fn redim(
 
     for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
         if let Some(mut material) = assets.get_mut(handle) {
-            *material = star_material(hue.color(), dim.0, AlphaMode::Opaque);
+            *material = star_material(hue.color(), dim.opacity(), AlphaMode::Opaque);
         }
     }
 }
@@ -891,7 +983,7 @@ fn init_materials(
             .collect()
     };
     let bright = set(1.);
-    let dim = set(dim.0);
+    let dim = set(dim.opacity());
     let mut fading = Vec::with_capacity(Hue::ALL.len() * (FADE_STEPS + 1));
     for hue in Hue::ALL {
         for step in 0..=FADE_STEPS {
@@ -956,63 +1048,19 @@ fn security_hue(system: &System) -> Hue {
     }
 }
 
-/// A system the database has no coordinates for
-///
-/// The map is a map. A system it cannot place is not something it can draw.
-pub struct Unplaceable;
-
-impl TryFrom<&DbSystem> for System {
-    type Error = Unplaceable;
-
-    fn try_from(system: &DbSystem) -> Result<System, Unplaceable> {
-        let position = system.position.ok_or(Unplaceable)?;
-        let pos = [position.x, position.y, position.z];
-
-        Ok(System {
-            address: system.address,
-            position: pos,
-            name: system.name.clone(),
-            population: system.population,
-            allegiance: system.allegiance,
-            government: system.government,
-            security: system.security,
-            economies: system.economies,
-            factions: system.factions.clone(),
-            body_count: system.body_count,
-            non_body_count: system.non_body_count,
-            reach: system.reach,
-            updated_at: system.updated_at,
-        })
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A row for the system at `address`, with nothing else on record
-    fn row(address: i64) -> DbSystem {
-        DbSystem {
-            address,
-            name: format!("System {address}"),
-            position: None,
-            population: 0,
-            security: None,
-            government: None,
-            allegiance: None,
-            economies: None,
-            factions: Vec::new(),
-            body_count: None,
-            non_body_count: None,
-            reach: None,
-            updated_at: chrono::DateTime::UNIX_EPOCH,
-            updated_by: String::new(),
-        }
+    fn row(address: i64) -> RawSystem {
+        RawSystem { address, position: [address as f64, 0., 0.] }
     }
 
     /// Which systems a set of rows is about, in order
-    fn about(rows: &[DbSystem]) -> Vec<i64> {
-        rows.iter().map(|system| system.address).collect()
+    fn about(rows: &[RawSystem]) -> Vec<i64> {
+        rows.iter().map(|raw| raw.address).collect()
     }
 
     /// Two answers about one system leave one row for it
@@ -1031,13 +1079,13 @@ mod tests {
     #[test]
     fn the_first_answer_about_a_system_is_the_one_kept() {
         let mut second = row(1);
-        second.name = "Renamed".to_owned();
+        second.position = [9., 9., 9.];
         let arrived = vec![row(1), second];
 
         let kept = one_per_system(arrived);
 
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].name, "System 1");
+        assert_eq!(kept[0].position, [1., 0., 0.]);
     }
 
     /// Rows about different systems are all kept, in the order they arrived

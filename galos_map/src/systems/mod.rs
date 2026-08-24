@@ -9,7 +9,8 @@ use elite_journal::{
     Government,
     system::Security,
 };
-use galos_db::systems::{Economies, System as DbSystem};
+use galos_index::meta::{Economies, NameEntry};
+use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Spyglass {
@@ -34,6 +35,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(info::plugin);
 
     app.init_resource::<InReach>();
+    app.init_resource::<Evictions>();
 
     // Both ask the camera for something, and `orbit_camera` then works out
     // where it lands, so both have to have spoken by the time it runs.
@@ -51,6 +53,9 @@ pub fn plugin(app: &mut App) {
             .before(crate::camera::orbit_camera),
     );
     app.add_systems(Update, visibility.in_set(MapSet::Present));
+    // After [`visibility`], which has already read the reach this frame, and in
+    // the same set so the drop and the hide are decided together.
+    app.add_systems(Update, evict.in_set(MapSet::Present).after(visibility));
 }
 
 /// Clones because a selection holds one, and a system may be selected before
@@ -345,6 +350,124 @@ pub fn visibility(
     }
 }
 
+/// How far past the reach a system is kept before it is dropped
+///
+/// Wider than the spyglass so a camera resting on the boundary does not spawn
+/// and drop the same systems every frame. What falls beyond this is far enough
+/// behind the camera that reading it again on return costs less than walking
+/// its transform every frame it is gone.
+const EVICT_MARGIN: f64 = 1.5;
+
+/// Drop the systems the camera has left behind
+///
+/// [`visibility`] hides what the spyglass does not reach; this takes the far
+/// ones off the map altogether, so the resident set is what the camera is
+/// looking at rather than everywhere it has ever looked. Without it a session's
+/// cost climbs with every region a zoom-out pulled in and never falls, since
+/// [`big_space`](crate::space) recomputes a transform for every resident system
+/// each frame the camera moves, drawn or not.
+///
+/// The far ones are detached from the galaxy in one pass and then despawned.
+/// This is what keeps eviction off the quadratic a naive despawn falls into: a
+/// child leaving its parent one at a time rescans and reshifts the parent's
+/// whole child list each time (see [`super::despawn`]), so dropping thousands
+/// would cost millions and stall the frame. Replacing the child list wholesale
+/// with the keepers empties it first, so each drop is O(1) and the pass is
+/// linear; a detached system then despawns with no parent left to unlink from,
+/// and its shell and labels go with it.
+///
+/// Two grounds drop a system: the spyglass no longer reaches it (only while it
+/// clears), or a filter excludes it and the dim is zero — which says draw
+/// nothing for what is excluded rather than draw it faintly, so it is taken off
+/// the map exactly as the out-of-reach ones are. A route's stops, a picked-out
+/// system, and the system the camera is standing in are kept on either ground:
+/// the first is how the way on is found, the second the user is holding onto by
+/// hand, and the last carries the floating origin while the camera is inside
+/// it. Everything else the galaxy holds — the route lines among them — is kept
+/// by being left in the keepers.
+///
+/// Dropping a system forgets the surveys that vouched for its region, so a
+/// camera coming back asks for it again rather than finding the region marked
+/// held and empty.
+pub fn evict(
+    camera: Query<&OrbitCamera>,
+    systems: Query<(Entity, &System, Has<route::Hop>)>,
+    children: Query<&Children>,
+    galaxy: Res<crate::space::Galaxy>,
+    spyglass: Res<Spyglass>,
+    selection: Res<selection::Selection>,
+    holding: Res<bodies::spawn::HeldSystem>,
+    filters: Res<filter::Filters>,
+    dim: Res<filter::DimTo>,
+    mut tasks: ResMut<fetch::FetchTasks>,
+    mut evictions: ResMut<Evictions>,
+    mut commands: Commands,
+) {
+    evictions.last = 0;
+    let Ok(camera) = camera.single() else { return };
+
+    let clears = spyglass.clear;
+    let drops_filtered = dim.0 == 0.;
+    if !clears && !drops_filtered {
+        return;
+    }
+
+    let keep = spyglass.radius as f64 * EVICT_MARGIN;
+    let now = Utc::now();
+    let held: HashSet<i64> = selection.addresses().into_iter().collect();
+    let inside = holding.of();
+
+    let evicted: HashSet<Entity> = systems
+        .iter()
+        .filter(|(entity, system, hop)| {
+            // A route's stops, a picked-out system, and the one the camera is
+            // standing in are kept whatever the reach or the filters — the last
+            // because the floating origin hangs off it while zoomed in, so
+            // dropping it would take the camera down with it and leave the map
+            // with no origin to draw from.
+            if *hop
+                || held.contains(&system.address)
+                || Some(*entity) == inside
+            {
+                return false;
+            }
+            let out_of_reach = clears
+                && camera.center.distance(DVec3::from(system.position)) > keep;
+            let excluded = drops_filtered && !filters.admit(system, now);
+            out_of_reach || excluded
+        })
+        .map(|(entity, _, _)| entity)
+        .collect();
+    if evicted.is_empty() {
+        return;
+    }
+
+    // Detach the far systems all at once and despawn them; everything else the
+    // galaxy holds stays by being carried into the keepers.
+    let Ok(children) = children.get(galaxy.0) else {
+        return;
+    };
+    let keepers: Vec<Entity> =
+        children.iter().filter(|entity| !evicted.contains(entity)).collect();
+    commands.entity(galaxy.0).replace_children(&keepers);
+    for entity in &evicted {
+        commands.entity(*entity).despawn();
+    }
+
+    tasks.surveyed.clear();
+    evictions.last = evicted.len();
+    evictions.total += evicted.len() as u64;
+}
+
+/// What the evictor has dropped, for the diagnostics panel to read.
+#[derive(Resource, Default)]
+pub struct Evictions {
+    /// How many systems the last pass dropped.
+    pub last: usize,
+    /// How many have been dropped since the map opened.
+    pub total: u64,
+}
+
 pub fn zoom_with_spyglass(
     spyglass: Res<Spyglass>,
     mut camera: Query<&mut OrbitCamera>,
@@ -417,12 +540,43 @@ pub fn reach_with_camera(
     }
 }
 
-/// Where a system sits, if the database knows
+/// Where a system named in the resident table sits, in light years
 ///
-/// Roughly three quarters of the systems on record have no coordinates, so
-/// this has to be an answer the caller handles rather than an assumption.
-pub fn system_to_vec(system: &DbSystem) -> Option<DVec3> {
-    system.position.map(|p| DVec3::new(p.x, p.y, p.z))
+/// The names table holds only placed systems, so this is always an answer;
+/// kept as an [`Option`] for the callers that still ask it as a question.
+pub fn system_to_vec(entry: &NameEntry) -> Option<DVec3> {
+    Some(DVec3::new(
+        entry.position[0] as f64,
+        entry.position[1] as f64,
+        entry.position[2] as f64,
+    ))
+}
+
+impl From<&NameEntry> for System {
+    /// A system as the names table alone gives it: named and placed, with no
+    /// political columns. Those come from the populated table once a fetch
+    /// draws it, so a system picked out of a search is this until then.
+    fn from(entry: &NameEntry) -> System {
+        System {
+            address: entry.address,
+            name: entry.name.clone(),
+            position: [
+                entry.position[0] as f64,
+                entry.position[1] as f64,
+                entry.position[2] as f64,
+            ],
+            population: 0,
+            allegiance: None,
+            government: None,
+            security: None,
+            economies: None,
+            factions: Vec::new(),
+            body_count: None,
+            non_body_count: None,
+            reach: None,
+            updated_at: Utc::now(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +616,192 @@ pub(crate) mod tests {
         let mut system = system(address);
         system.name = name.to_owned();
         system
+    }
+
+    /// A system placed at `at`, in light years, for the evictor's reach tests.
+    fn placed(address: i64, at: DVec3) -> System {
+        let mut system = system(address);
+        system.position = [at.x, at.y, at.z];
+        system
+    }
+
+    /// The evictor drops what the reach and its margin no longer hold, keeps a
+    /// route's stops and a picked-out system whatever the reach, and forgets the
+    /// surveys that vouched for what it dropped so a return asks again.
+    #[test]
+    fn the_evictor_drops_the_far_and_keeps_the_held() {
+        use crate::camera::OrbitCamera;
+        use crate::systems::fetch::{FetchTasks, tests::surveyed_at};
+        use crate::systems::route::Hop;
+        use crate::systems::selection::{Picked, Selection};
+
+        let mut app = App::new();
+        app.insert_resource(Spyglass {
+            radius: 10.,
+            fetch: true,
+            clear: true,
+            lock_camera: false,
+            follow_camera: true,
+        });
+        app.init_resource::<FetchTasks>();
+        app.init_resource::<Evictions>();
+        app.init_resource::<filter::Filters>();
+        app.init_resource::<filter::DimTo>();
+        app.init_resource::<bodies::spawn::HeldSystem>();
+        app.add_systems(Update, evict);
+
+        // A region the map thinks it holds: the evictor should forget it once
+        // it drops anything, or a camera coming back finds it held and empty.
+        let (asked, at) = surveyed_at(0, 10, 0);
+        app.world_mut().resource_mut::<FetchTasks>().surveyed(asked, at);
+
+        // Address 4 is picked out by hand; it must survive being far off.
+        let mut selection = Selection::default();
+        selection.pick(Picked::System(placed(4, DVec3::new(60., 0., 0.))), false);
+        app.insert_resource(selection);
+
+        let galaxy = app.world_mut().spawn_empty().id();
+        app.insert_resource(crate::space::Galaxy(galaxy));
+
+        app.world_mut()
+            .spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+
+        // A non-system child of the galaxy — stand-in for a route line — must
+        // survive: the evictor touches far systems, not all the galaxy holds.
+        let line = app.world_mut().spawn(ChildOf(galaxy)).id();
+
+        // radius 10 * margin 1.5 = kept within 15 ly.
+        let spawn = |app: &mut App, system: System| {
+            app.world_mut().spawn((system, ChildOf(galaxy))).id()
+        };
+        let near = spawn(&mut app, placed(1, DVec3::new(5., 0., 0.)));
+        let band = spawn(&mut app, placed(2, DVec3::new(12., 0., 0.)));
+        let far = spawn(&mut app, placed(3, DVec3::new(50., 0., 0.)));
+        let held = spawn(&mut app, placed(4, DVec3::new(60., 0., 0.)));
+        let hop = app
+            .world_mut()
+            .spawn((placed(5, DVec3::new(70., 0., 0.)), Hop::Next, ChildOf(galaxy)))
+            .id();
+
+        app.update();
+
+        let alive = |e| app.world().get_entity(e).is_ok();
+        assert!(alive(near), "dropped a system inside the reach");
+        assert!(alive(band), "dropped a system inside the margin");
+        assert!(alive(held), "dropped a picked-out system");
+        assert!(alive(hop), "dropped a route's stop");
+        assert!(alive(line), "dropped a non-system the galaxy held");
+        assert!(!alive(far), "kept a system past the margin");
+        assert!(
+            app.world().resource::<FetchTasks>().surveyed.is_empty(),
+            "held onto a survey for a region it just dropped"
+        );
+    }
+
+    /// At zero dim a filter drops what it excludes off the map, exactly as the
+    /// spyglass drops what it does not reach, rather than leaving it dimmed to
+    /// nothing. The reach plays no part here — the spyglass does not clear — so
+    /// the filter alone decides.
+    #[test]
+    fn a_filter_at_zero_dim_evicts_what_it_excludes() {
+        use crate::camera::OrbitCamera;
+        use crate::systems::fetch::FetchTasks;
+        use crate::systems::filter::{DimTo, Filter, Filters};
+        use crate::systems::selection::Selection;
+
+        let mut app = App::new();
+        app.insert_resource(Spyglass {
+            radius: 10.,
+            fetch: true,
+            clear: false,
+            lock_camera: false,
+            follow_camera: true,
+        });
+        app.init_resource::<FetchTasks>();
+        app.init_resource::<Evictions>();
+        app.init_resource::<Selection>();
+        app.init_resource::<bodies::spawn::HeldSystem>();
+
+        // Admit only system 1; the dim is zero, so 2 is dropped, not dimmed.
+        let mut filters = Filters::default();
+        filters.add(Filter::Systems { label: "picked".into(), systems: vec![1] });
+        app.insert_resource(filters);
+        app.insert_resource(DimTo(0.));
+        app.add_systems(Update, evict);
+
+        let galaxy = app.world_mut().spawn_empty().id();
+        app.insert_resource(crate::space::Galaxy(galaxy));
+        app.world_mut()
+            .spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+
+        let here = DVec3::new(1., 0., 0.);
+        let admitted =
+            app.world_mut().spawn((placed(1, here), ChildOf(galaxy))).id();
+        let excluded =
+            app.world_mut().spawn((placed(2, here), ChildOf(galaxy))).id();
+
+        app.update();
+
+        assert!(
+            app.world().get_entity(admitted).is_ok(),
+            "dropped a system the filter admits"
+        );
+        assert!(
+            app.world().get_entity(excluded).is_err(),
+            "kept a system no filter admits at zero dim"
+        );
+    }
+
+    /// The system the camera is standing in is never evicted, even far off and
+    /// excluded by a filter at zero dim, because the floating origin hangs off
+    /// it while zoomed in — dropping it would leave the map with no origin.
+    #[test]
+    fn the_system_the_camera_stands_in_survives_eviction() {
+        use crate::camera::OrbitCamera;
+        use crate::systems::bodies::spawn::HeldSystem;
+        use crate::systems::fetch::FetchTasks;
+        use crate::systems::filter::{DimTo, Filter, Filters};
+        use crate::systems::selection::Selection;
+
+        let mut app = App::new();
+        app.insert_resource(Spyglass {
+            radius: 10.,
+            fetch: true,
+            clear: true,
+            lock_camera: false,
+            follow_camera: true,
+        });
+        app.init_resource::<FetchTasks>();
+        app.init_resource::<Evictions>();
+        app.init_resource::<Selection>();
+
+        // A filter admitting only something not here, at zero dim: the system
+        // below is both far past the margin and excluded, so it would be
+        // dropped on either ground were it not the one held.
+        let mut filters = Filters::default();
+        filters
+            .add(Filter::Systems { label: "elsewhere".into(), systems: vec![9] });
+        app.insert_resource(filters);
+        app.insert_resource(DimTo(0.));
+
+        let galaxy = app.world_mut().spawn_empty().id();
+        app.insert_resource(crate::space::Galaxy(galaxy));
+        app.world_mut()
+            .spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+
+        let inside = app
+            .world_mut()
+            .spawn((placed(1, DVec3::new(500., 0., 0.)), ChildOf(galaxy)))
+            .id();
+        app.insert_resource(HeldSystem::holding(inside));
+        app.add_systems(Update, evict);
+
+        app.update();
+
+        assert!(
+            app.world().get_entity(inside).is_ok(),
+            "evicted the system the camera is standing in"
+        );
     }
 
     /// A system tallied as holding `bodies` bodies and `non_bodies` belts

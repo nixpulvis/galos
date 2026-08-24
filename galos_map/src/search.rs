@@ -1,12 +1,11 @@
-use crate::Db;
+use crate::Names;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future::poll_once;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use elite_journal::system::Coordinate;
-use galos_db::Database;
-use galos_db::systems::System as DbSystem;
+use galos_index::meta::NameEntry;
 use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
@@ -35,11 +34,11 @@ const RESULTS: i64 = 25;
 /// the unplaceable ones would have to be dropped to hold them here, and the
 /// answer would be missing the systems it most needs to account for.
 #[derive(Resource, Default)]
-pub struct SearchResults(Vec<DbSystem>);
+pub struct SearchResults(Vec<NameEntry>);
 
 impl SearchResults {
     /// What was found, best first
-    pub fn iter(&self) -> impl Iterator<Item = &DbSystem> {
+    pub fn iter(&self) -> impl Iterator<Item = &NameEntry> {
         self.0.iter()
     }
 
@@ -49,7 +48,7 @@ impl SearchResults {
     }
 
     /// Hold `found` in place of what the last search found
-    pub fn set(&mut self, found: Vec<DbSystem>) {
+    pub fn set(&mut self, found: Vec<NameEntry>) {
         self.0 = found;
     }
 
@@ -107,12 +106,13 @@ pub enum Search {
 /// Both ends go through this before a route is drawn between them, so that a
 /// plot which comes back with nothing says which end it could not have rather
 /// than leaving the user to guess.
-async fn locate(db: &Database, name: &str) -> Result<DbSystem, String> {
-    match DbSystem::fetch_by_name(db, name).await {
-        Ok(system) if system.position.is_some() => Ok(system),
-        Ok(system) => Err(format!("{} has no position on record", system.name)),
-        Err(_) => Err(format!("No system named {name}")),
-    }
+fn locate(names: &Names, name: &str) -> Result<(), String> {
+    names
+        .entries
+        .iter()
+        .any(|entry| entry.name.eq_ignore_ascii_case(name))
+        .then_some(())
+        .ok_or_else(|| format!("No system named {name}"))
 }
 
 /// How long an answer may be coming before the field says it is waiting
@@ -194,7 +194,7 @@ impl<A, T> Pending<A, T> {
 ///
 /// The name is what its note is written against, a search that found nothing
 /// having to say which name found it.
-pub type Searching = Pending<String, Vec<DbSystem>>;
+pub type Searching = Pending<String, Vec<NameEntry>>;
 
 /// The pair of names a route is being worked out between, while they are
 /// being looked up
@@ -256,52 +256,31 @@ fn searched(
     mut plot: ResMut<Plot>,
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
-    db: Res<Db>,
+    names: Res<Names>,
 ) {
     let now = time.last_update().unwrap_or(time.startup());
-    let near = camera
-        .single()
-        .map(|camera| Coordinate {
-            x: camera.center.x,
-            y: camera.center.y,
-            z: camera.center.z,
-        })
-        .ok();
+    let near = camera.single().map(|camera| camera.center).ok();
     let pool = AsyncComputeTaskPool::get();
 
     for event in search_events.read() {
         match event {
             Search::System { name, .. } => {
-                let db = db.0.clone();
-                let asked = name.clone();
-                searching.ask(
-                    name.clone(),
-                    now,
-                    pool.spawn(async move {
-                        DbSystem::search_by_name(&db, &asked, near, RESULTS)
-                            .await
-                            .unwrap_or_default()
-                    }),
-                );
+                // Matched against the resident names table on the spot; handed
+                // through a ready task so the bar's spinner machinery is fed the
+                // same way a database answer once was.
+                let found = search_names(&names, name, near, RESULTS as usize);
+                searching.ask(name.clone(), now, pool.spawn(async move { found }));
             }
             // A route needs both ends. Say which one is the problem rather
             // than drawing nothing and leaving the user to guess.
             Search::Route { start, end, .. } => {
-                let db = db.0.clone();
-                let (start, end) = (start.clone(), end.clone());
-                locating.ask(
-                    (),
-                    now,
-                    pool.spawn(async move {
-                        // The one nearer the start of the form, and only it:
-                        // an end looked up after the one before it turned out
-                        // to be wrong is a lookup whose answer nothing reads.
-                        match locate(&db, &start).await {
-                            Err(why) => Some(why),
-                            Ok(_) => locate(&db, &end).await.err(),
-                        }
-                    }),
-                );
+                // The one nearer the start of the form, and only it: an end
+                // looked up after the one before it turned out to be wrong is a
+                // lookup whose answer nothing reads.
+                let trouble = locate(&names, start)
+                    .err()
+                    .or_else(|| locate(&names, end).err());
+                locating.ask((), now, pool.spawn(async move { trouble }));
             }
         };
     }
@@ -315,19 +294,47 @@ fn searched(
     }
 }
 
+/// The systems whose name holds `query`, nearest `near` first, at most `limit`
+///
+/// A linear scan of the resident names table, which a search can afford: it is
+/// asked when the user types rather than every frame. Ranked by distance to
+/// where the camera looks, so a common fragment answers with the systems in
+/// front of the user rather than in whatever order the table holds them.
+fn search_names(
+    names: &Names,
+    query: &str,
+    near: Option<DVec3>,
+    limit: usize,
+) -> Vec<NameEntry> {
+    let mut found: Vec<NameEntry> =
+        names.find(query).into_iter().cloned().collect();
+    if let Some(near) = near {
+        found.sort_by(|a, b| {
+            near.distance_squared(entry_pos(a))
+                .total_cmp(&near.distance_squared(entry_pos(b)))
+        });
+    }
+    found.truncate(limit);
+    found
+}
+
+/// A name entry's position as a vector, in light years.
+fn entry_pos(entry: &NameEntry) -> DVec3 {
+    DVec3::new(
+        entry.position[0] as f64,
+        entry.position[1] as f64,
+        entry.position[2] as f64,
+    )
+}
+
 /// Put what came back for `name` on screen
 ///
-/// Whatever is listed answered the last name asked about, and this is a
-/// new one, so it goes whether or not anything came back to replace it. What
-/// is picked out is left alone: it was picked out by a click rather than by
-/// the search before it, and a search is not a reason to let go of it.
-///
 /// A name that found nothing is said in the note rather than left as an empty
-/// list. Nothing on screen is what the map looks like before anything has
-/// been asked, and the two have to be told apart.
+/// list. Nothing on screen is what the map looks like before anything has been
+/// asked, and the two have to be told apart. What is picked out is left alone.
 fn answered(
     name: &str,
-    found: Vec<DbSystem>,
+    found: Vec<NameEntry>,
     note: &mut SearchNote,
     results: &mut SearchResults,
 ) {
@@ -344,23 +351,12 @@ fn answered(
 pub(crate) mod tests {
     use super::*;
 
-    /// A system the database might answer a search with
-    pub(crate) fn row(name: &str) -> DbSystem {
-        DbSystem {
+    /// A system the names table might answer a search with
+    pub(crate) fn row(name: &str) -> NameEntry {
+        NameEntry {
             address: name.len() as i64,
             name: name.to_owned(),
-            position: Some(Coordinate { x: 0., y: 0., z: 0. }),
-            population: 0,
-            security: None,
-            government: None,
-            allegiance: None,
-            economies: None,
-            factions: vec![],
-            body_count: None,
-            non_body_count: None,
-            reach: None,
-            updated_at: chrono::DateTime::UNIX_EPOCH,
-            updated_by: String::new(),
+            position: [0., 0., 0.],
         }
     }
 

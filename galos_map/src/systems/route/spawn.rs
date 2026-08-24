@@ -1,10 +1,10 @@
-use super::{Route, system_to_vec};
+use super::Route;
 use crate::space::Galaxy;
 use crate::systems::filter::Filter;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
-use galos_db::systems::System as DbSystem;
+use crate::systems::System;
 
 /// What a route's line is painted, at `strength` of the full
 ///
@@ -56,7 +56,7 @@ pub fn framing(places: &[DVec3]) -> Option<(DVec3, f32)> {
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_route(
     route: &Filter,
-    systems: &[DbSystem],
+    systems: &[System],
     drawn: &Query<(Entity, &Route)>,
     galaxy: &Res<Galaxy>,
     grid: &Grid,
@@ -75,9 +75,7 @@ pub fn spawn_route(
     // which system it is.
     let stops: Vec<(i64, DVec3)> = systems
         .iter()
-        .filter_map(|system| {
-            system_to_vec(system).map(|at| (system.address, at))
-        })
+        .map(|system| (system.address, system.position()))
         .collect();
     if stops.len() < 2 {
         return;

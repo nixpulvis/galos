@@ -54,8 +54,7 @@ use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
-use galos_db::bodies::Body as DbBody;
-use galos_db::stars::Star as DbStar;
+use galos_index::meta::{Body as DbBody, Star as DbStar};
 use std::collections::HashSet;
 use std::f64::consts::PI;
 
@@ -231,6 +230,14 @@ impl HeldSystem {
     }
 }
 
+#[cfg(test)]
+impl HeldSystem {
+    /// The map standing in `entity`, for tests that put the camera in a system.
+    pub(crate) fn holding(entity: Entity) -> HeldSystem {
+        HeldSystem(Some(entity))
+    }
+}
+
 /// How strongly the mark standing for a system is drawn, from one to nothing
 ///
 /// What is drawn, which follows what the distance asks at a bounded rate
@@ -282,9 +289,11 @@ fn fade(
 
     for (entity, system, visible, mut standing) in &mut systems {
         // Off the frame a mark is not drawn, so how far out it has gone is not
-        // stepped. The one system being closed on is always on the frame, so
-        // the fade that matters is never the one skipped.
-        if !visible.get() {
+        // stepped — except the one system being closed on, whose fade the plane
+        // handover rides (see [`crate::grid`]). It is stepped even when a filter
+        // has hidden it, or the plane ruled inside it would never give way back
+        // to the galaxy on the way up.
+        if !visible.get() && Some(entity) != drawing {
             continue;
         }
         // Only the one system whose insides the map is holding may give way to

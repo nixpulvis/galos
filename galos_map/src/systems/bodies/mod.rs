@@ -12,9 +12,9 @@
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_db::barycenters::Barycenter as DbBarycenter;
-use galos_db::bodies::Body as DbBody;
-use galos_db::stars::Star as DbStar;
+use galos_index::meta::{
+    Barycenter as DbBarycenter, Body as DbBody, Star as DbStar,
+};
 use orbit::{Orbit, Orbits};
 use std::collections::HashSet;
 
@@ -571,7 +571,7 @@ mod tests {
         Discovery as JournalDiscovery, Orbit as JournalOrbit,
         Spin as JournalSpin,
     };
-    use galos_db::bodies::Parent;
+    use galos_index::meta::Parent;
 
     /// A body `a` metres out on a circle, with no size of its own
     ///
