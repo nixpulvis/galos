@@ -166,7 +166,7 @@ fn spawn(
         if let Ok(points) = result {
             for point in &points {
                 pending.push(
-                    build_from_point(point, id, &populated, &names),
+                    build_from_point(point, &populated, &names),
                     false,
                     now,
                 );
@@ -215,21 +215,17 @@ fn evict(
 /// One payload point as a drawable system: placed where the payload puts it,
 /// named and coloured off the resident tables
 ///
-/// The position comes from the payload, dequantized against the cell that owns
-/// it — finer than the names table's whole-light-year placement, and present
-/// for every system, named or not. The name and the political columns are the
-/// same join the spyglass path does, keyed by the point's id.
+/// The position comes straight from the payload, in light years — finer than
+/// the names table's whole-light-year placement, and present for every system,
+/// named or not. The name and the political columns are the same join the
+/// spyglass path does, keyed by the point's id.
 pub(crate) fn build_from_point(
     point: &Point,
-    cell: CellId,
     populated: &Populated,
     names: &Names,
 ) -> System {
     build_system(
-        &RawSystem {
-            address: point.id64 as i64,
-            position: cell.dequantize(point.pos),
-        },
+        &RawSystem { address: point.id64 as i64, position: point.pos },
         populated,
         names,
     )
@@ -240,38 +236,21 @@ mod tests {
     use super::*;
     use bevy::math::DVec3;
 
-    /// A cell small enough that quantizing a position places it finely.
-    fn deep_cell() -> CellId {
-        let mut cell = CellId::ROOT;
-        for _ in 0..13 {
-            cell = cell.children()[0];
-        }
-        cell
-    }
-
-    /// A payload point becomes a system placed inside its own cell, named by
-    /// its id where the resident tables hold nothing on it
+    /// A payload point becomes a system placed exactly at its own position,
+    /// named by its id where the resident tables hold nothing on it.
     #[test]
     fn a_point_becomes_a_placed_system() {
-        let cell = deep_cell();
-        let center = cell.bounds().center();
-        let point = Point {
-            id64: 7,
-            pos: cell.quantize(center),
-            magnitude: 0.,
-            temp_bucket: 0,
-        };
+        let at = [1234.5, -678.25, 90123.75];
+        let point = Point { id64: 7, pos: at, magnitude: 0., temp_bucket: 0 };
 
         let system = build_from_point(
             &point,
-            cell,
             &Populated::default(),
             &Names::new(Vec::new()),
         );
 
         assert_eq!(system.address, 7);
         assert_eq!(system.name(), "7", "an unlisted point takes its id");
-        let off = (system.position() - DVec3::from(center)).length();
-        assert!(off < cell.edge_ly(), "placed outside its own cell: {off}");
+        assert_eq!(system.position(), DVec3::from(at), "placed exactly");
     }
 }

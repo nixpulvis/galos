@@ -12,10 +12,10 @@
 //! A [`CellId`] is the address, `level` and integer `x, y, z` at that level.
 //! Its [`morton`](CellId::morton) key interleaves the three coordinates so that
 //! cells near in space are near in the key, which is the order the builder
-//! sorts and the files are laid out in. A system's position inside its cell is
-//! kept as three `u16`, cell-relative, since an absolute float this far from
-//! the origin has an ulp of hundreds of AU while a `u16` in a 16 ly leaf
-//! resolves about fifteen, smaller and in half the bytes.
+//! sorts and the files are laid out in. A system's position is carried in the
+//! payload as three `f64` light-year coordinates, its own galactic position
+//! unchanged: the cube and its cells order and bound the systems, but a system
+//! is drawn exactly where it sits, however coarse the cell that owns it.
 
 use crate::serialization::{Decode, Encode, FixedCodec};
 
@@ -39,9 +39,6 @@ pub const ROOT_MIN_LY: [f64; 3] = [
 /// below it a cell is a fraction of a light year, so this is a ceiling on the
 /// encoding rather than a limit anything reaches.
 pub const MAX_LEVEL: u8 = 21;
-
-/// How many positions a `u16` axis divides its cell into.
-const QUANTA: f64 = 65536.0;
 
 /// The edge of a cell at `level`, in light years.
 pub const fn edge_ly(level: u8) -> f64 {
@@ -195,28 +192,6 @@ impl CellId {
         CellId { level, x, y, z }
     }
 
-    /// A point's position within this cell as three cell-relative `u16`.
-    ///
-    /// Zero is the low corner and 65535 the far one, so the whole span of the
-    /// cell is spent on the axis and the resolution follows the cell's own
-    /// size. A point on or past the far edge clamps to the last quantum.
-    pub fn quantize(&self, p: [f64; 3]) -> [u16; 3] {
-        let min = self.min_ly();
-        let edge = self.edge_ly();
-        let q = |v: f64, lo: f64| {
-            ((v - lo) / edge * QUANTA).floor().clamp(0.0, QUANTA - 1.0) as u16
-        };
-        [q(p[0], min[0]), q(p[1], min[1]), q(p[2], min[2])]
-    }
-
-    /// The light-year position a quantized triple stands for, taken at the
-    /// centre of its quantum so the round-trip error is halved.
-    pub fn dequantize(&self, q: [u16; 3]) -> [f64; 3] {
-        let min = self.min_ly();
-        let edge = self.edge_ly();
-        let d = |qi: u16, lo: f64| lo + (qi as f64 + 0.5) / QUANTA * edge;
-        [d(q[0], min[0]), d(q[1], min[1]), d(q[2], min[2])]
-    }
 }
 
 impl Encode for CellId {
@@ -380,39 +355,6 @@ mod tests {
         assert_ne!(x, y);
         assert_ne!(y, z);
         assert_ne!(x, z);
-    }
-
-    /// Quantizing a position and reading it back lands within one quantum of the
-    /// cell's edge, which at a 16 ly leaf is about fifteen AU.
-    #[test]
-    fn quantization_round_trips_within_a_quantum() {
-        let cell = CellId::of_point([1234.0, 5678.0, -9012.0], 13);
-        let min = cell.min_ly();
-        let edge = cell.edge_ly();
-        let tolerance = edge / QUANTA;
-        for frac in [0.0, 0.1, 0.5, 0.75, 0.999] {
-            let p = [
-                min[0] + frac * edge,
-                min[1] + (1.0 - frac) * edge,
-                min[2] + 0.25 * edge,
-            ];
-            let back = cell.dequantize(cell.quantize(p));
-            for i in 0..3 {
-                assert!((p[i] - back[i]).abs() <= tolerance);
-            }
-        }
-    }
-
-    /// A quantized triple survives the round trip through a position unchanged,
-    /// including the extremes of the range.
-    #[test]
-    fn dequantize_then_quantize_is_stable() {
-        let cell = CellId { level: 10, x: 200, y: 300, z: 400 };
-        for q in
-            [[0, 0, 0], [1, 2, 3], [65535, 0, 32768], [65535, 65535, 65535]]
-        {
-            assert_eq!(cell.quantize(cell.dequantize(q)), q);
-        }
     }
 
     /// The box is zero distance from a point inside it and the straight-line

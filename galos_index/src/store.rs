@@ -80,7 +80,7 @@ impl Index {
     }
 
     /// Read one cell's payload from a build directory, empty when the cell owns
-    /// nothing and so has no file. Positions are cell-relative to `id`.
+    /// nothing and so has no file. Positions are in light years.
     pub fn read_payload(dir: &Path, id: CellId) -> io::Result<Vec<Point>> {
         match fs::read(payload_path(dir, id)) {
             Ok(bytes) => Ok(Vec::<Point>::from_bytes(&bytes).unwrap_or_default()),

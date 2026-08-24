@@ -77,7 +77,7 @@ pub trait Source: Send + Sync {
     /// The resident tree of cell aggregates the walks plan on.
     async fn index(&self) -> io::Result<Index>;
 
-    /// One cell's payload: its systems, positions cell-relative to `id`. Empty
+    /// One cell's payload: its systems, positions in light years. Empty
     /// where the cell owns nothing.
     async fn payload(&self, id: CellId) -> io::Result<Vec<Point>>;
 

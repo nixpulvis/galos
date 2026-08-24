@@ -24,36 +24,37 @@ use std::collections::{HashMap, HashSet};
 /// How long a payload takes to ramp fully in, in seconds.
 pub const PRESENCE_RAMP: f32 = 0.2;
 
-/// One system as the payload carries it: its id, its cell-relative position, and
-/// the two photometric bytes.
+/// One system as the payload carries it: its id, its exact position, and the
+/// two photometric bytes.
 ///
-/// Position is three `u16` relative to the owning cell, dequantized against that
-/// cell when drawn. The magnitude is the system's combined absolute magnitude,
-/// which its flux and the ordering are read from, and the temperature bucket is
-/// the blackbody tint, already binned so the client needs no per-star join.
+/// Position is three `f64` in light years, the system's own galactic
+/// coordinates carried through unchanged, so a system is drawn exactly where
+/// it sits however coarse the cell that owns it. The magnitude is the system's
+/// combined absolute magnitude, which its flux and the ordering are read from,
+/// and the temperature bucket is the blackbody tint, already binned so the
+/// client needs no per-star join.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Point {
     pub id64: u64,
-    pub pos: [u16; 3],
+    pub pos: [f64; 3],
     pub magnitude: f32,
     pub temp_bucket: u8,
 }
 
 impl Point {
-    /// A system packed into a payload point, its position quantized against the
-    /// cell that owns it. The one place a record becomes a point, so the
-    /// quantization and the temperature bucketing live here rather than at each
-    /// caller that emits a payload.
-    pub fn quantized(
+    /// A system packed into a payload point, its position carried through at
+    /// full precision. The one place a record becomes a point, so the
+    /// temperature bucketing lives here rather than at each caller that emits a
+    /// payload.
+    pub fn new(
         id64: u64,
-        cell: CellId,
         position: [f64; 3],
         magnitude: f64,
         temperature: f64,
     ) -> Point {
         Point {
             id64,
-            pos: cell.quantize(position),
+            pos: position,
             magnitude: magnitude as f32,
             temp_bucket: temp_bucket(temperature) as u8,
         }
@@ -147,7 +148,7 @@ mod tests {
     use crate::walk::Mode;
 
     fn point(id: u64) -> Point {
-        Point { id64: id, pos: [1, 2, 3], magnitude: 4.0, temp_bucket: 2 }
+        Point { id64: id, pos: [1.0, 2.0, 3.0], magnitude: 4.0, temp_bucket: 2 }
     }
 
     fn ids(mut v: Vec<CellId>) -> Vec<CellId> {
