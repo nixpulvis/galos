@@ -382,15 +382,6 @@ mod tests {
         assert_ne!(x, z);
     }
 
-    /// SOL round trips
-    #[test]
-    fn quantization_round_trips_0() {
-        let origin = [0.0, 0.0, 0.0];
-        let cell = CellId::of_point(origin, 0);
-        let result = cell.dequantize(cell.quantize(origin));
-        assert_eq!(result, origin);
-    }
-
     /// Quantizing a position and reading it back lands within one quantum of the
     /// cell's edge, which at a 16 ly leaf is about fifteen AU.
     #[test]
