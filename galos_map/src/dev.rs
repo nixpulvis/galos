@@ -78,9 +78,10 @@ fn diagnostics(
 
     // A button, always drawn, to open the panel; F3 and the window's own close
     // do the same. Top-right, clear of the search bar and the settings gear on
-    // the left.
+    // the left, and on the chrome's layer under the windows like the rest of
+    // it.
     let toggle = egui::Area::new(egui::Id::new("diagnostics-toggle"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Background)
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-MARGIN, MARGIN))
         .show(ctx, |ui| ui.button("diagnostics"));
     if toggle.inner.clicked() {
