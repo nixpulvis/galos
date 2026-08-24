@@ -20,7 +20,9 @@ pub mod aggregate;
 pub mod geometry;
 pub mod walk;
 pub mod cache;
+pub mod meta;
 pub mod serialization;
+pub mod source;
 pub mod store;
 pub mod tree;
 
@@ -34,3 +36,8 @@ pub use moments::Moments;
 pub use tree::{BuildParams, Snapshot, Dirtied, System, Tree};
 pub use walk::{Index, Mode, Needed, View};
 pub use serialization::{Codec, Decode, Encode, FixedCodec};
+pub use meta::{
+    Barycenter, Body, Economies, Faction, NameEntry, Parent, PopulatedSystem,
+    Star, Surface, SystemBodies,
+};
+pub use source::{FsSource, Source};

@@ -167,6 +167,23 @@ impl Index {
         })
     }
 
+    /// Every cell whose box comes within `radius` light years of `center`: the
+    /// cells a spyglass region must load to hold every system inside it.
+    ///
+    /// A cell straddling the sphere is kept, so the caller filters the points it
+    /// loads by their true distance; a cell wholly outside cannot own a system
+    /// inside and is left out. Additive slices put a system in exactly one cell,
+    /// so the union of these cells' payloads is every system in reach with no
+    /// duplicate. Linear over the resident index, which is small and asked only
+    /// when the region moves, not per frame.
+    pub fn region(&self, center: [f64; 3], radius: f64) -> Vec<CellId> {
+        self.cells
+            .values()
+            .filter(|cell| cell.id.bounds().distance_to(center) <= radius)
+            .map(|cell| cell.id)
+            .collect()
+    }
+
     /// The projected size of a cell's edge, in pixels, from this view.
     fn projected_edge(&self, view: &View, cell: &Cell) -> f64 {
         let center = cell.id.bounds().center();
@@ -472,5 +489,24 @@ mod tests {
             assert!(needed.marks.is_empty());
             assert!(needed.splats.is_empty());
         }
+    }
+
+    /// The region query keeps a cell whose box reaches the sphere and drops one
+    /// beyond it, so a spyglass loads every cell that could hold a system in
+    /// reach and no cell that cannot.
+    #[test]
+    fn region_keeps_cells_within_reach() {
+        let (index, parent, kids) = small_tree(10, 10, 4.0);
+        let center = parent.bounds().center();
+
+        // A radius spanning the parent's own box takes it and its children.
+        let near = index.region(center, parent.edge_ly());
+        assert!(near.contains(&parent));
+        assert!(near.contains(&kids[0]));
+
+        // A vanishing radius about the centre still takes the cells that contain
+        // the point, but a centre far outside the galaxy takes nothing.
+        let far = index.region([1.0e9, 1.0e9, 1.0e9], 1.0);
+        assert!(far.is_empty());
     }
 }
