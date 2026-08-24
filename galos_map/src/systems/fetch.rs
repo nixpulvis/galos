@@ -1,14 +1,12 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::filter::{Admitted, DimTo, Filters};
-use crate::systems::scale::SIZED_WITHIN;
+use crate::systems::filter::Admitted;
 use crate::systems::selection::Selection;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
-use crate::{Db, search::Search};
+use crate::{Names, ResidentIndex, Transport, search::Search};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use chrono::{DateTime, Duration as Span, Utc};
-use galos_db::systems::{Survey as DbSurvey, System as DbSystem};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -235,15 +233,24 @@ pub struct FetchTasks {
     pub surveyed: Vec<Survey>,
 }
 
-/// What a fetch came back with, and the moment it is current as of
+/// A system as the cells give it, before the resident tables name and colour
+/// it: an address and where it sits, in light years.
 ///
-/// The moment is read off the database before the question is put, so that
-/// anything written while it is being answered is asked for again next time.
+/// The cells carry position and photometry and nothing political, so this is
+/// what a fetch task returns and [`super::spawn`] joins against [`Populated`]
+/// and [`Names`] on the main thread to make a drawable [`System`].
+pub struct RawSystem {
+    pub address: i64,
+    pub position: [f64; 3],
+}
+
+/// What a fetch came back with, and the moment it landed.
 ///
-/// [`None`] where the question was never answered, which is a fetch that
-/// errored. Nothing is held on the strength of one, and the region is left to
-/// be asked about again.
-pub type Fetched = (Vec<DbSystem>, Option<DateTime<Utc>>);
+/// The cells are static files, so unlike a database read there is no clock to
+/// compare a row's age against; the moment only stamps a survey so the region
+/// is recognised as one already read. [`None`] where the fetch errored and the
+/// region is left to be asked about again.
+pub type Fetched = (Vec<RawSystem>, Option<DateTime<Utc>>);
 
 impl FetchTasks {
     /// Take `asked` to be answered for as of `at`
@@ -264,115 +271,34 @@ impl FetchTasks {
             self.surveyed.remove(0);
         }
     }
-
-    /// The regions worth telling the database about, asking about `range`
-    ///
-    /// Only the ones asked for whole. A region narrowed by a filter was
-    /// answered with the part of it the filter admitted, and telling the
-    /// database that region is held would drop every system it turned away.
-    ///
-    /// And only the ones large enough to pay for themselves. Leaving a survey
-    /// out of the answer costs a distance measured against every system in
-    /// range, and saves carrying back the ones it reaches. A survey reaching a
-    /// tenth as far as the question holds a thousandth of the sky it is asked
-    /// against, so it is a measurement per system to save one system in a
-    /// thousand. What leaves them behind is a zoom: the map is asked about the
-    /// galaxy, and everywhere it surveyed while zoomed in is a pinprick in it.
-    pub fn whole(&self, about: IVec3, range: i32) -> Vec<DbSurvey> {
-        self.surveyed
-            .iter()
-            .filter_map(|survey| match &survey.asked {
-                FetchIndex::Region(center, radius, None, None)
-                    if worth_leaving_out(about, range, *center, *radius) =>
-                {
-                    Some(DbSurvey {
-                        center: [
-                            center.x as f64,
-                            center.y as f64,
-                            center.z as f64,
-                        ],
-                        range: *radius as f64,
-                        at: survey.at,
-                    })
-                }
-                _ => None,
-            })
-            .collect()
-    }
 }
 
-/// Whether a survey of `radius` about `center` is worth naming to the database
-/// when asking about `range` around `about`
-///
-/// Two ways one is not. It may stand clear of the region altogether, which is
-/// what a camera that has jumped somewhere else leaves behind: a survey that
-/// reaches none of what is being asked about holds nothing back and costs a
-/// distance measured against every system in range.
-///
-/// Or it may be too small to pay for itself. A survey reaching a tenth as far
-/// as the question covers a thousandth of it, so naming it is a measurement
-/// per system to save carrying one system in a thousand. What leaves those
-/// behind is a zoom: the map is asked about the galaxy, and everywhere it
-/// surveyed while looking at a few light years is a pinprick in it.
-///
-/// Both are about what is worth doing rather than about what is true. A survey
-/// left unsaid costs those systems being read again and never costs a system
-/// being missed, so this is free to be wrong in either direction.
-fn worth_leaving_out(
-    about: IVec3,
-    range: i32,
-    center: IVec3,
-    radius: i32,
-) -> bool {
-    if (radius as f64) < range as f64 * WORTH_LEAVING_OUT {
-        return false;
-    }
-
-    // Squared, the distance itself being wanted for nothing but this.
-    let away = (about - center).as_dvec3().length_squared();
-    let reaching = (range + radius) as f64;
-
-    away < reaching * reaching
-}
-
-/// How far a survey must reach to be worth leaving out of an answer
-///
-/// As a fraction of what is being asked for. A survey holds at most the cube
-/// of this of the region it is named against, so half of it is an eighth of
-/// the sky and a tenth of it is a thousandth: below about a half the
-/// measurement costs more than the systems it saves carrying.
-///
-/// A figure about what is worth doing rather than about what is true.
-/// Forgetting a survey costs those systems being read again and never costs a
-/// system being missed, so this is free to be wrong in either direction.
-const WORTH_LEAVING_OUT: f64 = 0.5;
-
-/// Spawns tasks to load star systems from the DB
+/// Spawns tasks to load star systems from the index
 pub fn fetch(
     camera_query: Query<&OrbitCamera>,
     mut search_events: MessageReader<Search>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
-    filters: Res<Filters>,
-    dim: Res<DimTo>,
     time: Res<Time<Real>>,
     mut last_fetched_at: ResMut<LastFetchedAt>,
     throttle: Res<Throttle>,
     poll: Res<Poll>,
-    db: Res<Db>,
+    index: Res<ResidentIndex>,
+    transport: Res<Transport>,
+    jumps: Res<crate::systems::route::graph::Jumps>,
+    names: Res<Names>,
 ) {
     if spyglass.fetch {
         fetch_spyglass(
             &camera_query,
             &mut tasks,
             &mut spyglass,
-            &filters,
-            &dim,
             &time,
             &mut last_fetched_at,
             &throttle,
             &poll,
-            &db,
+            &index,
+            &transport,
         );
     }
 
@@ -390,122 +316,96 @@ pub fn fetch(
                     &mut tasks,
                     &time,
                     &mut last_fetched_at,
-                    &db,
+                    &jumps,
+                    &names,
                 );
             }
         };
     }
 }
 
-/// Ask for the region under the camera, or for what of it is admitted
+/// Ask for every system the spyglass reaches, read from the index cells
 ///
-/// Narrowed by the filters only where what they exclude is not drawn at all.
-/// Anywhere above that the excluded systems are wanted on screen to be dimmed,
-/// and what was never fetched cannot be drawn faintly.
+/// The whole region rather than what the filters admit: the cells are static
+/// and cheap to read, so the map draws everything in reach and [`filter`] dims
+/// what it excludes, rather than the fetch leaving it out and having nothing to
+/// draw faintly.
 fn fetch_spyglass(
     camera_query: &Query<&OrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
     spyglass: &ResMut<Spyglass>,
-    filters: &Res<Filters>,
-    dim: &Res<DimTo>,
     time: &Res<Time<Real>>,
     last_fetched_at: &mut ResMut<LastFetchedAt>,
     throttle: &Res<Throttle>,
     poll: &Res<Poll>,
-    db: &Res<Db>,
+    index: &Res<ResidentIndex>,
+    transport: &Res<Transport>,
 ) {
     let Ok(camera) = camera_query.single() else { return };
     let center = camera.center.as_ivec3();
-    let admitted = if dim.0 == 0. { filters.admitted() } else { None };
-    // The span rather than the moment it reaches back to. A moment is a
-    // different value every frame, so a region carrying one would never match
-    // the last and the map would ask again at the throttle for as long as the
-    // filter stood.
-    let span = if dim.0 == 0. { filters.span() } else { None };
-    let index = FetchIndex::Region(
-        center,
-        spyglass.radius as i32,
-        admitted.clone(),
-        span,
-    );
+    let key = FetchIndex::Region(center, spyglass.radius as i32, None, None);
     let now = time.last_update().unwrap_or(time.startup());
-    if spyglass_condition(&index, tasks, now, last_fetched_at, throttle, poll) {
+    if spyglass_condition(&key, tasks, now, last_fetched_at, throttle, poll) {
         debug!(
             "fetching {:?} @ {:?}",
-            index,
+            key,
             now.duration_since(time.startup())
         );
 
         let task_pool = AsyncComputeTaskPool::get();
-        let db = db.0.clone();
-        let radius = spyglass.radius;
-        // What the map can already answer for, which the region is asked
-        // around rather than through: everywhere it has been holds systems it
-        // would otherwise read again, and zoomed out that is most of them.
-        let surveyed = tasks.whole(center, spyglass.radius.floor() as i32);
+        let transport = transport.0.clone();
+        let cent = [center.x as f64, center.y as f64, center.z as f64];
+        let range = spyglass.radius.floor() as f64;
+        // Which cells the region touches is settled here off the resident
+        // index; the task only reads the payloads those cells point at.
+        let cells = index.0.region(cent, range);
         let task = task_pool.spawn(async move {
-            let cent = [center.x as f64, center.y as f64, center.z as f64];
-            let range = radius.floor() as f64;
-            let narrowed = admitted.as_ref().map(|admitted| {
-                (admitted.factions.as_slice(), admitted.systems.as_slice())
-            });
-            // Worked out here rather than carried in, so that the moment is
-            // taken from the clock the question is actually put at.
-            let since = span.map(|span| Utc::now() - span);
-            // Read before the question rather than after it, so that a system
-            // written while the region is being answered is asked for again
-            // rather than taken to be held. The database's own clock, which
-            // is the one `updated_at` is written by.
-            let Ok(at) = db.now().await else {
-                return (Vec::new(), None);
-            };
-            match DbSystem::fetch_in_range_of_point(
-                &db,
-                range,
-                cent,
-                narrowed,
-                since,
-                Some(SIZED_WITHIN),
-                &surveyed,
-            )
-            .await
-            {
-                Ok(found) => (found, Some(at)),
-                // No moment, so the region is not taken to be held. A question
-                // that came back an error is one the map still has to ask, and
-                // stamping it here would leave it never asking again.
-                Err(_) => (Vec::new(), None),
+            let mut raws = Vec::new();
+            for cell in cells {
+                let Ok(points) = transport.payload(cell).await else {
+                    continue;
+                };
+                for point in points {
+                    let pos = cell.dequantize(point.pos);
+                    // A cell straddling the sphere carries systems outside it,
+                    // so each point is weighed against the true radius.
+                    let dx = pos[0] - cent[0];
+                    let dy = pos[1] - cent[1];
+                    let dz = pos[2] - cent[2];
+                    if dx * dx + dy * dy + dz * dz <= range * range {
+                        raws.push(RawSystem {
+                            address: point.id64 as i64,
+                            position: pos,
+                        });
+                    }
+                }
             }
+            (raws, Some(Utc::now()))
         });
-        tasks.fetched.insert(index.clone(), (task, now));
+        tasks.fetched.insert(key.clone(), (task, now));
         **last_fetched_at = LastFetchedAt(now);
     }
 }
 
-/// Ask for the systems that are picked out and have no star on the map
+/// Build the systems that are picked out and have no star on the map
 ///
-/// A system is picked out of what the database answered, which the map may
-/// never have been near: a name searched for and flown to is exactly that.
-/// Without this the camera arrives at empty space, and the ring and the name
-/// that mark a selection have nothing to hang on.
+/// A system is picked out of a search and flown to, which the map may never
+/// have been near. Without this the camera arrives at empty space, and the ring
+/// and the name that mark a selection have nothing to hang on.
 ///
-/// Whatever the spyglass is set to. Fetching by region is what the user turns
-/// off to stop the map filling itself in as they fly, and a system they
-/// picked out by hand is not the map filling itself in.
+/// Built from the resident [`Names`] table on the spot rather than fetched: a
+/// named system's place is already in hand, so nothing is read for it. Handed
+/// through a ready task so it lands the same way a region does, which is what
+/// [`super::spawn`] already knows how to drain.
 ///
-/// Only when the selection changes, which is what keeps a system the database
-/// cannot place from being asked for again every frame. Such a system never
-/// spawns, so what is missing would go on being missing.
-///
-/// The spyglass's own memory of where it last fetched is left alone. This
-/// asks for named rows rather than for somewhere, so it says nothing about
-/// whether the region under the camera is worth asking for again.
+/// Only when the selection changes, which keeps a system with no place on
+/// record from being asked for again every frame.
 fn fetch_selected(
     selection: Res<Selection>,
     systems: Query<&System>,
     mut tasks: ResMut<FetchTasks>,
     time: Res<Time<Real>>,
-    db: Res<Db>,
+    names: Res<Names>,
 ) {
     if !selection.is_changed() {
         return;
@@ -519,13 +419,22 @@ fn fetch_selected(
 
     let now = time.last_update().unwrap_or(time.startup());
     let task_pool = AsyncComputeTaskPool::get();
-    let asking = wanted.clone();
-    let db = db.0.clone();
+    let raws: Vec<RawSystem> = wanted
+        .iter()
+        .filter_map(|&address| {
+            names.get(address).map(|entry| RawSystem {
+                address,
+                position: [
+                    entry.position[0] as f64,
+                    entry.position[1] as f64,
+                    entry.position[2] as f64,
+                ],
+            })
+        })
+        .collect();
     // No moment, as a route has none. These are systems named outright rather
     // than a region, so nothing about the sky is settled by their arriving.
-    let task = task_pool.spawn(async move {
-        (DbSystem::fetch_many(&db, &asking).await.unwrap_or_default(), None)
-    });
+    let task = task_pool.spawn(async move { (raws, None) });
     tasks.fetched.insert(FetchIndex::Systems(wanted), (task, now));
 }
 
@@ -721,60 +630,6 @@ pub(crate) mod tests {
             region(400, 10),
             "dropped something other than the oldest"
         );
-    }
-
-    /// Only the regions asked for whole are told to the database
-    ///
-    /// A region narrowed by a filter came back with the part of it the filter
-    /// admitted. Telling the database that whole region is held would have it
-    /// leave out every system the filter turned away, and those would never
-    /// arrive.
-    #[test]
-    fn a_narrowed_survey_is_not_one_the_database_is_told_about() {
-        let mut tasks = FetchTasks::default();
-        tasks.surveyed(region_admitting(0, 10, 7), at(0));
-        tasks.surveyed(region_within(100, 10, 60), at(10));
-        tasks.surveyed(region(200, 10), at(20));
-
-        let whole = tasks.whole(IVec3::new(200, 0, 0), 10);
-        assert_eq!(whole.len(), 1, "told the database about a narrowed region");
-        assert_eq!(whole[0].center, [200., 0., 0.]);
-        assert_eq!(whole[0].range, 10.);
-        assert_eq!(whole[0].at, at(20));
-    }
-
-    /// A survey too small to pay for itself is not told to the database
-    ///
-    /// What a zoom leaves behind. Everywhere the map surveyed while it was
-    /// looking at a few light years is a pinprick in a question about the
-    /// galaxy, and naming one costs a distance measured against every system
-    /// in range to save carrying back the handful it reaches.
-    #[test]
-    fn a_survey_too_small_to_pay_for_itself_is_left_unsaid() {
-        let mut tasks = FetchTasks::default();
-        tasks.surveyed(region(0, 10), at(0));
-
-        let here = IVec3::ZERO;
-        assert_eq!(tasks.whole(here, 10).len(), 1, "at the size it was taken");
-        assert_eq!(tasks.whole(here, 20).len(), 1, "at twice the size");
-        assert_eq!(tasks.whole(here, 100).len(), 0, "at ten times the size");
-        assert_eq!(tasks.whole(here, 20000).len(), 0, "zoomed out to a galaxy");
-    }
-
-    /// Nor is one standing clear of what is being asked about
-    ///
-    /// What a jump somewhere else leaves behind. A survey that reaches none of
-    /// the region holds nothing back from the answer, and naming it is a
-    /// distance measured against every system in range for nothing.
-    #[test]
-    fn a_survey_standing_clear_of_the_region_is_left_unsaid() {
-        let mut tasks = FetchTasks::default();
-        tasks.surveyed(region(0, 10), at(0));
-
-        // Twenty-five light years off, which two tens do not reach across.
-        assert_eq!(tasks.whole(IVec3::new(25, 0, 0), 10).len(), 0);
-        // Nineteen, which they do.
-        assert_eq!(tasks.whole(IVec3::new(19, 0, 0), 10).len(), 1);
     }
 
     /// A region of `radius` about `center`, and when it was answered

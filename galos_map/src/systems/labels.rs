@@ -1721,7 +1721,7 @@ pub fn init_materials(
 
     commands.insert_resource(LabelMaterials {
         bright: Tint::ALL.map(|tint| label(tint.color())),
-        dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
+        dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.opacity()))),
         // No atlas on this one. A ground is a flat rectangle and the glyph
         // texture is what makes the letters letters.
         ground: assets.add(StandardMaterial {
@@ -1783,7 +1783,7 @@ fn redim(
 
     for (handle, tint) in materials.dim.iter().zip(Tint::ALL) {
         if let Some(mut material) = assets.get_mut(handle) {
-            *material = name_material(faded(tint.color(), dim.0));
+            *material = name_material(faded(tint.color(), dim.opacity()));
         }
     }
 }

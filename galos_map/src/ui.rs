@@ -37,8 +37,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use galos_db::factions::Faction as DbFaction;
-use galos_db::systems::System as DbSystem;
+use galos_index::meta::{Faction as DbFaction, NameEntry};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
@@ -917,11 +916,11 @@ pub fn chrome(
             filter.dim.0 = showing / 100.;
         }
         // Which is a filter in the plainer sense: this kind of system and
-        // none of the rest. Said because the rows in the bar go on saying
-        // how many are getting through, and a sky with nothing faint left in
-        // it gives no other sign of why.
+        // none of the rest. At zero the excluded are not dimmed but dropped —
+        // never loaded, and evicted if already on the map — so the sign is that
+        // they are not there rather than that they are faint.
         if filter.dim.0 == 0. {
-            ui.label(egui::RichText::new("Not drawn at all").weak());
+            ui.label(egui::RichText::new("Not loaded").weak());
         }
     });
 
@@ -1505,25 +1504,22 @@ fn gathering(ui: &Ui) -> bool {
 /// makes it the piece worth asking about on its own.
 fn act_on(
     action: SystemAction,
-    system: &DbSystem,
+    system: &NameEntry,
     selection: &mut Selection,
     travelled: &mut Option<DVec3>,
     described: &mut Option<crate::systems::System>,
 ) {
-    // Only a line for a system with somewhere to be answers at all, so this
-    // is the same question asked twice and the second asking has nothing to
-    // report.
-    let placed = crate::systems::System::try_from(system).ok();
+    // The names table holds only placed systems, so a listed one always has
+    // somewhere to be. Its political columns fill in when a fetch draws it.
+    let placed = crate::systems::System::from(system);
     match action {
         SystemAction::Select { gathering } => {
-            if let Some(system) = placed {
-                selection.pick(Picked::System(system), gathering);
-            }
+            selection.pick(Picked::System(placed), gathering);
         }
         SystemAction::Travel => {
             *travelled = crate::systems::system_to_vec(system)
         }
-        SystemAction::Describe => *described = placed,
+        SystemAction::Describe => *described = Some(placed),
     }
 }
 
@@ -1617,10 +1613,10 @@ fn found(
 /// lines where they were and makes every one of them about something else.
 pub(crate) fn system_list<'a>(
     ui: &mut Ui,
-    systems: impl Iterator<Item = &'a DbSystem>,
+    systems: impl Iterator<Item = &'a NameEntry>,
     center: Option<DVec3>,
     salt: &str,
-) -> Option<(&'a DbSystem, SystemAction)> {
+) -> Option<(&'a NameEntry, SystemAction)> {
     // Nothing found is nothing drawn, rather than an empty list taking a
     // line's worth of room under the field that has yet to be asked.
     let mut systems = systems.peekable();
@@ -3526,12 +3522,9 @@ mod tests {
     use crate::systems::selection::PickedBody;
     use crate::tests::{painted, words};
 
-    /// A results list holding `names`, the last of them nowhere in particular
-    fn results(names: &[&str], placed: bool) -> SearchResults {
-        let mut found: Vec<_> = names.iter().map(|name| row(name)).collect();
-        if !placed && let Some(last) = found.last_mut() {
-            last.position = None;
-        }
+    /// A results list holding `names`
+    fn results(names: &[&str], _placed: bool) -> SearchResults {
+        let found: Vec<_> = names.iter().map(|name| row(name)).collect();
         let mut results = SearchResults::default();
         results.set(found);
         results
@@ -3582,18 +3575,6 @@ mod tests {
         let said = listed(&results(&["SOL"], true), None);
 
         assert!(!said.iter().any(|line| line.contains("Ly")), "{said:?}");
-    }
-
-    /// A system with nowhere to be says so, in the slot the distance uses
-    ///
-    /// It is listed rather than dropped, since knowing the name is on record
-    /// is most of what was asked, and the line says why it cannot be had.
-    #[test]
-    fn a_system_with_nowhere_to_be_says_so() {
-        let said = listed(&results(&["SOL", "NOWHERE"], false), None);
-
-        assert!(said.contains(&"NOWHERE".to_owned()), "{said:?}");
-        assert!(said.contains(&"no position".to_owned()), "{said:?}");
     }
 
     /// Every system that can be had carries the mark that describes it
@@ -3692,17 +3673,6 @@ mod tests {
         assert!(factions.is_empty(), "{factions:?}");
     }
 
-    /// A system with nowhere to be is offered no panel
-    ///
-    /// A panel is about a system the map can place, so there is nothing for
-    /// the mark to open and it is not stood there to be tried.
-    #[test]
-    fn a_system_with_nowhere_to_be_carries_no_mark() {
-        let said = listed(&results(&["SOL", "NOWHERE"], false), None);
-
-        assert_eq!(said.iter().filter(|line| *line == INFO).count(), 1);
-    }
-
     /// A click on the line for `name`, with or without the modifier held
     ///
     /// The camera and the panel are not what these are about, so what a line
@@ -3712,7 +3682,7 @@ mod tests {
     }
 
     /// A click on the line for `system`, whatever the row says about it
-    fn picked(gathering: bool, system: &DbSystem, selection: &mut Selection) {
+    fn picked(gathering: bool, system: &NameEntry, selection: &mut Selection) {
         let mut travelled = None;
         let mut described = None;
         act_on(
@@ -3769,23 +3739,6 @@ mod tests {
 
         assert_eq!(selection.len(), 1);
         assert_eq!(selection.name(0), Some("SOLATI"));
-    }
-
-    /// Gathering a system with nowhere to be holds what was already held
-    ///
-    /// There is nothing to select, what the map marks being a place, and the
-    /// set that was gathered is no reason to take apart over it.
-    #[test]
-    fn a_gathered_click_on_a_system_with_nowhere_to_be_holds_the_rest() {
-        let mut selection = Selection::default();
-        let mut nowhere = row("NOWHERE");
-        nowhere.position = None;
-
-        clicked(false, "SOL", &mut selection);
-        picked(true, &nowhere, &mut selection);
-
-        assert_eq!(selection.len(), 1);
-        assert_eq!(selection.name(0), Some("SOL"));
     }
 
     /// Which system a name stands for

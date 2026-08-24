@@ -5,7 +5,7 @@
 //! same map would make it a map of two unrelated things keyed alike.
 
 use super::{Contents, FetchState};
-use crate::Db;
+use crate::Transport;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
@@ -14,9 +14,7 @@ use crate::systems::fetch::Poll;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_db::barycenters::Barycenter as DbBarycenter;
-use galos_db::bodies::Body as DbBody;
-use galos_db::stars::Star as DbStar;
+use galos_index::meta::SystemBodies;
 use std::time::Instant;
 
 pub fn plugin(app: &mut App) {
@@ -86,7 +84,7 @@ pub(super) struct Polling {
     /// Separate from [`Contents`] so that dropping the task cancels it: a
     /// system left behind while its rows are still coming back should not land
     /// them on the map a moment later.
-    query: Option<(i64, Task<Rows>)>,
+    query: Option<(i64, Task<SystemBodies>)>,
     /// When the system being held was last asked about
     ///
     /// What [`Poll`] is measured from, and nothing until something has been
@@ -112,43 +110,19 @@ impl Polling {
     }
 
     /// Put the question about `address`, dropping whatever was outstanding
-    fn ask(&mut self, db: &Db, address: i64, now: Instant) {
-        let db = db.0.clone();
+    fn ask(&mut self, transport: &Transport, address: i64, now: Instant) {
+        let transport = transport.0.clone();
         let task = AsyncComputeTaskPool::get().spawn(async move {
             // Nothing is made of a failure but an empty answer. A system the
-            // database cannot speak about and one it has nothing to say about
+            // source cannot speak about and one it has nothing to say about
             // are the same thing to a map that has to draw something either
             // way.
-            Rows {
-                stars: DbStar::fetch_all(&db, address)
-                    .await
-                    .unwrap_or_default(),
-                bodies: DbBody::fetch_all(&db, address)
-                    .await
-                    .unwrap_or_default(),
-                centers: DbBarycenter::fetch_all(&db, address)
-                    .await
-                    .unwrap_or_default(),
-            }
+            transport.bodies(address).await.unwrap_or_default()
         });
 
         self.query = Some((address, task));
         self.asked_at = Some(now);
     }
-}
-
-/// What the database had about one system
-pub(super) struct Rows {
-    stars: Vec<DbStar>,
-    bodies: Vec<DbBody>,
-    /// The points a close pair goes round
-    ///
-    /// Asked for with the rest because a body naming one as its nearest
-    /// ancestor cannot be placed without it: the walk back to the star stops
-    /// at whatever is missing, and a pair whose center is missing is a pair
-    /// drawn at the middle of the system. The ellipse the pair rides is drawn
-    /// from the same row.
-    centers: Vec<DbBarycenter>,
 }
 
 /// Decide which system the map is standing in, and ask about it
@@ -159,7 +133,7 @@ pub(super) struct Rows {
 fn choose(
     camera: Query<&OrbitCamera>,
     systems: Query<(&System, &Strength)>,
-    db: Res<Db>,
+    transport: Res<Transport>,
     time: Res<Time<Real>>,
     poll: Res<Poll>,
     mut contents: ResMut<Contents>,
@@ -189,7 +163,7 @@ fn choose(
         // held is asked after again on the poll.
         if polling.due(&poll, now) {
             debug!("asking again what is in {held}");
-            polling.ask(&db, held, now);
+            polling.ask(&transport, held, now);
         }
         return;
     }
@@ -206,7 +180,7 @@ fn choose(
     if contents.of() == Some(address) {
         if polling.due(&poll, now) {
             debug!("asking again what is in {address}");
-            polling.ask(&db, address, now);
+            polling.ask(&transport, address, now);
         }
         return;
     }
@@ -214,7 +188,7 @@ fn choose(
     debug!("asking what is in {address}");
     *contents =
         Contents { of: Some(address), state: FetchState::Asking, revision: 0 };
-    polling.ask(&db, address, now);
+    polling.ask(&transport, address, now);
 }
 
 /// Take in whatever has come back
@@ -237,9 +211,9 @@ pub(super) fn collect(
         "{address} holds {} stars, {} bodies and {} barycenters",
         answer.stars.len(),
         answer.bodies.len(),
-        answer.centers.len()
+        answer.barycenters.len()
     );
-    contents.hold(answer.stars, answer.bodies, answer.centers);
+    contents.hold(answer.stars, answer.bodies, answer.barycenters);
 }
 
 #[cfg(test)]

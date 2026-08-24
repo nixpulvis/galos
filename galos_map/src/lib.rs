@@ -2,11 +2,16 @@
 //!
 //! ![](https://github.com/nixpulvis/galos/blob/master/galos_map/demo.gif?raw=true)
 //!
-//! Requires (read-only) access to [`galos_db`].
+//! Requires a built `galos_index` directory: the cell tree and the metadata
+//! sidecars beside it, read through one [`galos_index::Source`].
 use bevy::prelude::*;
-use galos_db::Database;
+use galos_index::meta::{Faction as MetaFaction, NameEntry, PopulatedSystem};
+use galos_index::{Index, Source as IndexSource};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub mod camera;
+pub mod dev;
 pub mod grid;
 pub mod keys;
 pub mod ruled;
@@ -16,8 +21,132 @@ pub mod space;
 pub mod systems;
 pub mod ui;
 
+/// The seam the map reads cells and metadata through.
+///
+/// One transport for both, filesystem today and HTTP one day, so the whole of
+/// it swaps at once rather than a cell path and a metadata path drifting onto
+/// different backends. Cloneable, being an [`Arc`], so a fetch task takes a
+/// handle onto its own thread.
+#[derive(Resource, Clone)]
+pub struct Transport(pub Arc<dyn IndexSource>);
+
+/// The build directory the index was read from, for the diagnostics panel.
 #[derive(Resource)]
-pub struct Db(pub Database);
+pub struct IndexDir(pub String);
+
+/// The cell aggregates, resident and read by every walk without a fetch.
+#[derive(Resource)]
+pub struct ResidentIndex(pub Index);
+
+/// The dynamic set: a populated system's political columns, keyed by address.
+///
+/// About 96,000 systems against 129 million, held resident because a colour
+/// and a filter are asked of every drawn system every frame and neither can
+/// wait on a fetch. A system absent here is ungoverned, which is most of them.
+#[derive(Resource, Default)]
+pub struct Populated(pub HashMap<i64, PopulatedSystem>);
+
+/// Every system's name and where it sits: the search index and the routing
+/// graph in one resident table.
+///
+/// Held whole rather than fetched, since a search reaches any name and a route
+/// steps between any two positions. The positions here are the graph the
+/// router walks, so routing needs nothing loaded past this.
+#[derive(Resource, Default)]
+pub struct Names {
+    /// Every entry, the order the table was written in.
+    pub entries: Vec<NameEntry>,
+    /// Address to its entry, for the O(1) lookup a selection wants.
+    pub by_address: HashMap<i64, usize>,
+}
+
+/// Faction id to the name it is shown under, read whole and held.
+#[derive(Resource, Default)]
+pub struct Factions(pub HashMap<i32, String>);
+
+impl Populated {
+    /// The populated record for a system, if it is one.
+    pub fn get(&self, address: i64) -> Option<&PopulatedSystem> {
+        self.0.get(&address)
+    }
+}
+
+impl Names {
+    /// Build the resident table and its address index from the raw entries.
+    pub fn new(entries: Vec<NameEntry>) -> Names {
+        let by_address = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.address, i))
+            .collect();
+        Names { entries, by_address }
+    }
+
+    /// The entry for an address, if the table holds it.
+    pub fn get(&self, address: i64) -> Option<&NameEntry> {
+        self.by_address.get(&address).map(|&i| &self.entries[i])
+    }
+
+    /// The systems whose name contains `query`, case-insensitively.
+    ///
+    /// A linear scan, which a search action can afford: it is asked when the
+    /// user types rather than every frame, and the table is a couple of million
+    /// short strings.
+    pub fn find(&self, query: &str) -> Vec<&NameEntry> {
+        let needle = query.to_lowercase();
+        self.entries
+            .iter()
+            .filter(|e| e.name.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    /// The address of the system named exactly `name`, case-insensitively.
+    ///
+    /// What a route's ends are resolved through: a route is plotted between two
+    /// named systems, and the graph it walks is keyed by address.
+    pub fn address(&self, name: &str) -> Option<i64> {
+        self.entries
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(name))
+            .map(|e| e.address)
+    }
+}
+
+impl Factions {
+    /// The name a faction id is shown under, if known.
+    pub fn name(&self, id: i32) -> Option<&str> {
+        self.0.get(&id).map(String::as_str)
+    }
+
+    /// The factions whose names contain `query`, best first, up to `limit`.
+    ///
+    /// A linear scan of the resident table, which a typeahead can afford: it is
+    /// asked when the user types, not every frame, and the table is a few tens
+    /// of thousands of short strings.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<MetaFaction> {
+        let needle = query.to_lowercase();
+        let mut found: Vec<MetaFaction> = self
+            .0
+            .iter()
+            .filter(|(_, name)| name.to_lowercase().contains(&needle))
+            .map(|(id, name)| MetaFaction { id: *id, name: name.clone() })
+            .collect();
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        found.truncate(limit);
+        found
+    }
+}
+
+/// The resident metadata tables a draw joins against, as one system parameter.
+///
+/// Bundled so a system reading both stays under Bevy's parameter limit, and
+/// because they always travel together: naming and colouring a system are the
+/// two halves of turning a bare cell point into something drawn.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Tables<'w> {
+    pub populated: Res<'w, Populated>,
+    pub names: Res<'w, Names>,
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
