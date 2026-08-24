@@ -280,10 +280,14 @@ async fn write_metadata(
 /// Write `populated.bin`: the dynamic set the map colours and navigates by.
 ///
 /// Every system with a population and a place, with the political columns a
-/// filter reads and the faction ids present in it, gathered in one query rather
-/// than one per system. A population without a position is left out: the map
-/// only ever colours a system it draws, and it draws only positioned ones, so a
-/// [`meta::PopulatedSystem`] carries a fixed `[f32; 3]` and never an absent one.
+/// filter reads and the ids of the named factions present in it, gathered in
+/// one query rather than one per system. Only factions with a row in
+/// `factions` are carried: `system_factions` holds ids EDDN has reported a
+/// system for but never named, and the client can neither name nor filter by
+/// one, so it would only stand as an unreadable line in a panel. A population
+/// without a position is left out: the map only ever colours a system it
+/// draws, and it draws only positioned ones, so a [`meta::PopulatedSystem`]
+/// carries a fixed `[f32; 3]` and never an absent one.
 /// The reach is the far edge of what is on record, read for the whole set at
 /// once by [`reaches`].
 async fn write_populated(db: &Database, dir: &Path) -> Result<usize> {
@@ -293,8 +297,11 @@ async fn write_populated(db: &Database, dir: &Path) -> Result<usize> {
                 population, security, government, allegiance, \
                 primary_economy, secondary_economy, body_count, non_body_count, \
                 COALESCE( \
-                    (SELECT array_agg(faction_id) FROM system_factions \
-                     WHERE system_address = systems.address), \
+                    (SELECT array_agg(sf.faction_id) FROM system_factions sf \
+                     WHERE sf.system_address = systems.address \
+                       AND EXISTS ( \
+                           SELECT 1 FROM factions f WHERE f.id = sf.faction_id \
+                       )), \
                     ARRAY[]::integer[] \
                 ) AS factions \
          FROM systems WHERE population > 0 AND position IS NOT NULL",
