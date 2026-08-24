@@ -5,14 +5,24 @@ use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<Despawn>();
+    app.add_message::<ReloadCells>();
     app.add_systems(
         Update,
         despawn.in_set(MapSet::Populate).after(super::spawn::spawn),
+    );
+    // Alongside `despawn`, and after the spawn it undoes, as that is.
+    app.add_systems(
+        Update,
+        reload_cells.in_set(MapSet::Populate).after(super::spawn::spawn),
     );
 }
 
 #[derive(Message)]
 pub struct Despawn;
+
+/// A debug message: re-read the cell index and draw the map from it afresh
+#[derive(Message)]
+pub struct ReloadCells;
 
 /// Take the whole map off at once
 ///
@@ -57,6 +67,69 @@ pub fn despawn(
         commands.entity(eye).insert(ChildOf(map.0));
     }
 
+    commands.entity(galaxy.0).despawn();
+    let fresh = commands.spawn((crate::space::galaxy(), ChildOf(map.0))).id();
+    commands.insert_resource(Galaxy(fresh));
+}
+
+/// Re-read the cell index and clear the map to draw from it afresh
+///
+/// A debug escape hatch from the rule that cells never change between builds:
+/// run the builder again over the same directory and this picks the new cells
+/// up live, rather than the map holding the index it read at startup until it
+/// is restarted.
+///
+/// Cells only. The metadata sidecars — populated, names, factions — are read
+/// once at startup and left as they were.
+//
+// TODO: A "Reload metadata" that re-reads populated, names and factions and
+// swaps them in, for when those change too. `names` alone is 84 MB, so it
+// wants an off-thread load rather than the inline read the index gets here.
+//
+// TODO(auth): Once cells are served rather than read off disk, forcing a
+// rebuild is a privileged call. This stays the client-side revalidation half
+// of it, and the button that sends it wants gating behind whatever says the
+// user may.
+fn reload_cells(
+    mut events: MessageReader<ReloadCells>,
+    transport: Res<crate::Transport>,
+    map: Res<Map>,
+    galaxy: Res<Galaxy>,
+    camera: Query<Entity, With<OrbitCamera>>,
+    mut tasks: ResMut<crate::systems::fetch::FetchTasks>,
+    mut spawns: ResMut<crate::systems::spawn::PendingSpawns>,
+    mut evictions: ResMut<crate::systems::PendingEvictions>,
+    mut commands: Commands,
+) {
+    if events.read().count() == 0 {
+        return;
+    }
+
+    // The aggregate index the walks plan on, read again off the transport.
+    // About 520 KB, so read inline rather than on a task: the button is a
+    // debug one and a hitch on a press costs nothing.
+    match bevy::tasks::block_on(transport.0.index()) {
+        Ok(index) => commands.insert_resource(crate::ResidentIndex(index)),
+        Err(error) => {
+            error!("could not reload the cell index: {error}");
+            return;
+        }
+    }
+
+    // Forget everything held from the old cells so the fetch asks for the new
+    // ones: the surveys that say a region is held, the reads in flight over
+    // the old files, and the two queues systems arrive and leave the map by.
+    tasks.surveyed.clear();
+    tasks.fetched.clear();
+    *spawns = default();
+    *evictions = default();
+
+    // And clear the map, as `despawn` does, so nothing built from the old
+    // cells is left standing: up out of whatever the camera descended into
+    // first, then the galaxy replaced whole.
+    if let Ok(eye) = camera.single() {
+        commands.entity(eye).insert(ChildOf(map.0));
+    }
     commands.entity(galaxy.0).despawn();
     let fresh = commands.spawn((crate::space::galaxy(), ChildOf(map.0))).id();
     commands.insert_resource(Galaxy(fresh));

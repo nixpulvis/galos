@@ -2,8 +2,10 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::filter::Admitted;
 use crate::systems::selection::Selection;
+use crate::systems::spawn::{build_system, system_at};
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
-use crate::{Names, ResidentIndex, Transport, search::Search};
+use crate::{Names, Populated, ResidentIndex, Transport, search::Search};
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use chrono::{DateTime, Duration as Span, Utc};
@@ -135,6 +137,41 @@ impl FetchIndex {
             _ => false,
         }
     }
+
+    /// This survey shrunk to what is still held within `keep` light years of
+    /// `center`, or [`None`] where the drop has left nothing of it
+    ///
+    /// A survey the evictor has reached into claims a region now missing its
+    /// outskirts. Forgetting it whole would have the map re-fetch and re-spawn
+    /// the resident middle it still holds — a zoom in drops the far systems and
+    /// then reloads the near ones. So it is clamped to the kept sphere instead:
+    /// its radius is brought in to what is provably still resident, so the
+    /// region in view stays surveyed while a return to what was dropped asks
+    /// again. Only a `Region` is ever surveyed, so nothing else is one to keep.
+    ///
+    /// The clamp is conservative for a survey off the camera's centre: the part
+    /// of it within `keep - distance` of its own centre is within `keep` of the
+    /// camera by the triangle inequality, so it may forget a sliver still held
+    /// and ask for it again, but it never claims one that is gone.
+    pub(crate) fn clamp_to(
+        &self,
+        center: DVec3,
+        keep: f64,
+    ) -> Option<FetchIndex> {
+        let FetchIndex::Region(at, radius, ..) = self else {
+            return None;
+        };
+        let at = DVec3::new(at.x as f64, at.y as f64, at.z as f64);
+        let resident = keep - center.distance(at);
+        if resident <= 0. {
+            return None;
+        }
+        let mut clamped = self.clone();
+        if let FetchIndex::Region(_, reach, ..) = &mut clamped {
+            *reach = (*radius).min(resident.floor() as i32);
+        }
+        Some(clamped)
+    }
 }
 
 /// Whether `span` asks about a stretch of time `spanned` already answered
@@ -236,9 +273,10 @@ pub struct FetchTasks {
 /// A system as the cells give it, before the resident tables name and colour
 /// it: an address and where it sits, in light years.
 ///
-/// The cells carry position and photometry and nothing political, so this is
-/// what a fetch task returns and [`super::spawn`] joins against [`Populated`]
-/// and [`Names`] on the main thread to make a drawable [`System`].
+/// The cells carry position and photometry and nothing political, so a fetch
+/// task turns each point into one of these and then joins it against
+/// [`Populated`] and [`Names`] to build a drawable [`System`] — all on its own
+/// thread, so the main thread only ever applies the finished rows.
 pub struct RawSystem {
     pub address: i64,
     pub position: [f64; 3],
@@ -246,11 +284,13 @@ pub struct RawSystem {
 
 /// What a fetch came back with, and the moment it landed.
 ///
-/// The cells are static files, so unlike a database read there is no clock to
-/// compare a row's age against; the moment only stamps a survey so the region
-/// is recognised as one already read. [`None`] where the fetch errored and the
-/// region is left to be asked about again.
-pub type Fetched = (Vec<RawSystem>, Option<DateTime<Utc>>);
+/// Already-built [`System`]s: naming and colouring happen in the task off the
+/// main thread (see [`RawSystem`]), so [`super::spawn`] has only to queue what
+/// arrives. The cells are static files, so unlike a database read there is no
+/// clock to compare a row's age against; the moment only stamps a survey so the
+/// region is recognised as one already read. [`None`] where the fetch errored
+/// and the region is left to be asked about again.
+pub type Fetched = (Vec<System>, Option<DateTime<Utc>>);
 
 impl FetchTasks {
     /// Take `asked` to be answered for as of `at`
@@ -287,6 +327,7 @@ pub fn fetch(
     transport: Res<Transport>,
     jumps: Res<crate::systems::route::graph::Jumps>,
     names: Res<Names>,
+    populated: Res<Populated>,
 ) {
     if spyglass.fetch {
         fetch_spyglass(
@@ -299,6 +340,8 @@ pub fn fetch(
             &poll,
             &index,
             &transport,
+            &names,
+            &populated,
         );
     }
 
@@ -318,6 +361,7 @@ pub fn fetch(
                     &mut last_fetched_at,
                     &jumps,
                     &names,
+                    &populated,
                 );
             }
         };
@@ -340,47 +384,81 @@ fn fetch_spyglass(
     poll: &Res<Poll>,
     index: &Res<ResidentIndex>,
     transport: &Res<Transport>,
+    names: &Res<Names>,
+    populated: &Res<Populated>,
 ) {
     let Ok(camera) = camera_query.single() else { return };
     let center = camera.center.as_ivec3();
     let key = FetchIndex::Region(center, spyglass.radius as i32, None, None);
     let now = time.last_update().unwrap_or(time.startup());
     if spyglass_condition(&key, tasks, now, last_fetched_at, throttle, poll) {
-        debug!(
-            "fetching {:?} @ {:?}",
-            key,
-            now.duration_since(time.startup())
-        );
+        debug!("fetching {:?} @ {:?}", key, now.duration_since(time.startup()));
 
         let task_pool = AsyncComputeTaskPool::get();
         let transport = transport.0.clone();
+        // Cheap Arc handles onto the resident tables, so the task names and
+        // colours its systems on its own thread rather than handing raw rows
+        // back for the main thread to build.
+        let names = Names::clone(names);
+        let populated = Populated::clone(populated);
         let cent = [center.x as f64, center.y as f64, center.z as f64];
         let range = spyglass.radius.floor() as f64;
         // Which cells the region touches is settled here off the resident
         // index; the task only reads the payloads those cells point at.
         let cells = index.0.region(cent, range);
         let task = task_pool.spawn(async move {
-            let mut raws = Vec::new();
-            for cell in cells {
-                let Ok(points) = transport.payload(cell).await else {
-                    continue;
-                };
-                for point in points {
-                    let pos = cell.dequantize(point.pos);
-                    // A cell straddling the sphere carries systems outside it,
-                    // so each point is weighed against the true radius.
-                    let dx = pos[0] - cent[0];
-                    let dy = pos[1] - cent[1];
-                    let dz = pos[2] - cent[2];
-                    if dx * dx + dy * dy + dz * dz <= range * range {
-                        raws.push(RawSystem {
-                            address: point.id64 as i64,
-                            position: pos,
-                        });
-                    }
-                }
+            // Each payload is a blocking read, so a wide region of thousands
+            // of cells read one after another on this one task thread is the
+            // whole of the fetch's latency. Split the cells across as many
+            // reads as the pool has threads and join them, so the reads and
+            // the builds run at once rather than in turn.
+            let pool = AsyncComputeTaskPool::get();
+            let workers =
+                std::thread::available_parallelism().map_or(4, |n| n.get());
+            let chunk = cells.len().div_ceil(workers).max(1);
+            let jobs: Vec<_> = cells
+                .chunks(chunk)
+                .map(|slice| {
+                    let transport = transport.clone();
+                    let names = names.clone();
+                    let populated = populated.clone();
+                    let cells = slice.to_vec();
+                    pool.spawn(async move {
+                        let mut systems = Vec::new();
+                        for cell in cells {
+                            let Ok(points) = transport.payload(cell).await
+                            else {
+                                continue;
+                            };
+                            for point in points {
+                                let pos = cell.dequantize(point.pos);
+                                // A cell straddling the sphere carries systems
+                                // outside it, so each point is weighed against
+                                // the true radius.
+                                let dx = pos[0] - cent[0];
+                                let dy = pos[1] - cent[1];
+                                let dz = pos[2] - cent[2];
+                                if dx * dx + dy * dy + dz * dz <= range * range
+                                {
+                                    let raw = RawSystem {
+                                        address: point.id64 as i64,
+                                        position: pos,
+                                    };
+                                    systems.push(build_system(
+                                        &raw, &populated, &names,
+                                    ));
+                                }
+                            }
+                        }
+                        systems
+                    })
+                })
+                .collect();
+            let mut systems = Vec::new();
+            for job in jobs {
+                systems.extend(job.await);
             }
-            (raws, Some(Utc::now()))
+            (systems, Some(Utc::now()))
         });
         tasks.fetched.insert(key.clone(), (task, now));
         **last_fetched_at = LastFetchedAt(now);
@@ -406,6 +484,7 @@ fn fetch_selected(
     mut tasks: ResMut<FetchTasks>,
     time: Res<Time<Real>>,
     names: Res<Names>,
+    populated: Res<Populated>,
 ) {
     if !selection.is_changed() {
         return;
@@ -419,22 +498,16 @@ fn fetch_selected(
 
     let now = time.last_update().unwrap_or(time.startup());
     let task_pool = AsyncComputeTaskPool::get();
-    let raws: Vec<RawSystem> = wanted
+    // Built here from the resident tables, a handful at a time, rather than
+    // read from the index; handed through a ready task so it lands the same
+    // way a region does. No moment, as a route has none: these are systems
+    // named outright rather than a region, so nothing about the sky is settled
+    // by their arriving.
+    let systems: Vec<System> = wanted
         .iter()
-        .filter_map(|&address| {
-            names.get(address).map(|entry| RawSystem {
-                address,
-                position: [
-                    entry.position[0] as f64,
-                    entry.position[1] as f64,
-                    entry.position[2] as f64,
-                ],
-            })
-        })
+        .filter_map(|&address| system_at(address, &populated, &names))
         .collect();
-    // No moment, as a route has none. These are systems named outright rather
-    // than a region, so nothing about the sky is settled by their arriving.
-    let task = task_pool.spawn(async move { (raws, None) });
+    let task = task_pool.spawn(async move { (systems, None) });
     tasks.fetched.insert(FetchIndex::Systems(wanted), (task, now));
 }
 

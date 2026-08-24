@@ -1,6 +1,6 @@
 //! A developer diagnostics window.
 //!
-//! What the index loaded, what is spawned on the map, and what the evictor is
+//! What the index loaded, what the spyglass reaches, and what the systems are
 //! doing, plus the frame rate — the numbers to look at when the map feels slow
 //! or draws the wrong thing. Opened from the top-right button or F3, off to
 //! begin with.
@@ -9,8 +9,10 @@
 //! one, so it can be left out of a release build by dropping the plugin and
 //! nothing else changes.
 
+use crate::camera::OrbitCamera;
 use crate::systems::fetch::FetchTasks;
-use crate::systems::{Evictions, InReach, Spyglass, System};
+use crate::systems::spawn::PendingSpawns;
+use crate::systems::{Evictions, InReach, PendingEvictions, Spyglass, System};
 use crate::{Factions, IndexDir, Names, Populated, ResidentIndex};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
@@ -71,8 +73,11 @@ fn diagnostics(
     spyglass: Res<Spyglass>,
     in_reach: Res<InReach>,
     evictions: Res<Evictions>,
+    queued_spawns: Res<PendingSpawns>,
+    queued_evictions: Res<PendingEvictions>,
     store: Res<DiagnosticsStore>,
     systems: Query<(), With<System>>,
+    camera: Query<&OrbitCamera>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -92,6 +97,7 @@ fn diagnostics(
     }
 
     let spawned = systems.iter().count();
+    let settled = camera.single().map(OrbitCamera::is_settled).unwrap_or(true);
     let fps = store
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|fps| fps.smoothed());
@@ -107,53 +113,198 @@ fn diagnostics(
         .resizable(false)
         .open(&mut show.0)
         .show(ctx, |ui| {
-            row(ui, "index", |ui| {
-                pair(ui, "dir", &dir.0);
-                pair(ui, "cells", &index.0.len().to_string());
-                pair(ui, "populated", &populated.0.len().to_string());
-                pair(ui, "names", &names.entries.len().to_string());
-                pair(ui, "factions", &factions.0.len().to_string());
-            });
+            row(
+                ui,
+                "index",
+                "What the client read from the build directory at startup and \
+                 holds for the whole session.",
+                |ui| {
+                    pair(
+                        ui,
+                        "dir",
+                        &dir.0,
+                        "Where the index and its metadata sidecars were read \
+                         from.",
+                    );
+                    pair(
+                        ui,
+                        "cells",
+                        &index.0.len().to_string(),
+                        "Cells in the resident aggregate tree — the spatial \
+                         index every walk reads without a fetch.",
+                    );
+                    pair(
+                        ui,
+                        "populated",
+                        &populated.0.len().to_string(),
+                        "Systems in the political table — population, \
+                         allegiance, government — held resident for colour and \
+                         filtering. Most of the galaxy is absent from it.",
+                    );
+                    pair(
+                        ui,
+                        "names",
+                        &names.entries.len().to_string(),
+                        "Systems in the names-and-positions table: the search \
+                         index and the router's graph.",
+                    );
+                    pair(
+                        ui,
+                        "factions",
+                        &factions.0.len().to_string(),
+                        "Faction id-to-name entries.",
+                    );
+                },
+            );
             ui.separator();
-            row(ui, "systems", |ui| {
-                pair(ui, "spawned", &spawned.to_string());
-                pair(ui, "in reach", &in_reach.total.to_string());
-                pair(ui, "admitted", &in_reach.admitted.to_string());
-                pair(ui, "fetch tasks", &tasks.fetched.len().to_string());
-                pair(ui, "surveys", &tasks.surveyed.len().to_string());
-            });
+            row(
+                ui,
+                "spyglass",
+                "The reach around what the camera looks at, and the fetching \
+                 that fills it.",
+                |ui| {
+                    pair(
+                        ui,
+                        "camera",
+                        if settled { "settled" } else { "easing" },
+                        "Whether the view has come to rest, or is still easing \
+                         toward its target. While easing the reach moves and \
+                         the evictor works.",
+                    );
+                    pair(
+                        ui,
+                        "radius",
+                        &format!("{:.0} ly", spyglass.radius),
+                        "How far the spyglass reaches from what the camera \
+                         looks at. Everything inside is fetched and drawn.",
+                    );
+                    let keep =
+                        spyglass.radius as f64 * crate::systems::EVICT_MARGIN;
+                    pair(
+                        ui,
+                        "keep",
+                        &format!("{keep:.0} ly"),
+                        "How far a system is kept before it is dropped: the \
+                         radius times the eviction margin. Wider than the \
+                         reach so the edge does not churn.",
+                    );
+                    pair(
+                        ui,
+                        "fetch",
+                        on_off(spyglass.fetch),
+                        "Whether the spyglass is asking the index for the \
+                         systems in its reach.",
+                    );
+                    pair(
+                        ui,
+                        "clear",
+                        on_off(spyglass.clear),
+                        "Whether systems out of reach are dropped. Off, \
+                         everything ever loaded stays on the map.",
+                    );
+                    pair(
+                        ui,
+                        "fetch tasks",
+                        &tasks.fetched.len().to_string(),
+                        "Region reads in flight, not yet landed.",
+                    );
+                    pair(
+                        ui,
+                        "surveys",
+                        &tasks.surveyed.len().to_string(),
+                        "Regions the map remembers holding, so it does not ask \
+                         again. Clamped to what the evictor still holds.",
+                    );
+                },
+            );
             ui.separator();
-            row(ui, "eviction", |ui| {
-                pair(ui, "spyglass", &format!("{:.0} ly", spyglass.radius));
-                pair(
-                    ui,
-                    "keep within",
-                    &format!("{:.0} ly", spyglass.radius * 1.5),
-                );
-                pair(ui, "dropped (last)", &evictions.last.to_string());
-                pair(ui, "dropped (total)", &evictions.total.to_string());
-            });
+            row(
+                ui,
+                "systems",
+                "The system entities on the map, and the queues they arrive \
+                 and leave through.",
+                |ui| {
+                    pair(
+                        ui,
+                        "spawned",
+                        &spawned.to_string(),
+                        "System entities on the map this frame, drawn or not.",
+                    );
+                    pair(
+                        ui,
+                        "in reach",
+                        &in_reach.total.to_string(),
+                        "How many of them the spyglass reaches.",
+                    );
+                    pair(
+                        ui,
+                        "admitted",
+                        &in_reach.admitted.to_string(),
+                        "How many of those in reach the filters admit, and so \
+                         draw at full.",
+                    );
+                    pair(
+                        ui,
+                        "spawn queue",
+                        &queued_spawns.queued().to_string(),
+                        "Fetched systems waiting to become entities, drained a \
+                         budget a frame. The green dot on the bar's count.",
+                    );
+                    pair(
+                        ui,
+                        "evict queue",
+                        &queued_evictions.queued().to_string(),
+                        "Systems marked to drop, despawned a budget a frame. \
+                         The red dot on the bar's count.",
+                    );
+                    pair(
+                        ui,
+                        "dropped (last)",
+                        &evictions.last.to_string(),
+                        "Systems the evictor despawned last frame.",
+                    );
+                    pair(
+                        ui,
+                        "dropped (total)",
+                        &evictions.total.to_string(),
+                        "Systems dropped since the map opened.",
+                    );
+                },
+            );
             ui.separator();
-            match fps {
+            let frame = match fps {
                 Some(fps) => {
                     ui.label(format!("{fps:.0} fps ({:.1} ms)", 1000.0 / fps))
                 }
                 None => ui.label("fps —"),
             };
+            frame.on_hover_text(
+                "Frames per second, smoothed, with the time a frame took.",
+            );
         });
 
     Ok(())
 }
 
-/// A titled block of pairs.
-fn row(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
-    ui.strong(title);
+/// A titled block of pairs, the title carrying its own tooltip.
+fn row(
+    ui: &mut egui::Ui,
+    title: &str,
+    help: &str,
+    rows: impl FnOnce(&mut egui::Ui),
+) {
+    ui.strong(title).on_hover_text(help);
     egui::Grid::new(title).num_columns(2).show(ui, rows);
 }
 
-/// One `name: value` line inside a [`row`].
-fn pair(ui: &mut egui::Ui, name: &str, value: &str) {
-    ui.label(name);
-    ui.label(value);
+/// One `name: value` line inside a [`row`], both cells hovering the same help.
+fn pair(ui: &mut egui::Ui, name: &str, value: &str, help: &str) {
+    ui.label(name).on_hover_text(help);
+    ui.label(value).on_hover_text(help);
     ui.end_row();
+}
+
+/// A flag as the word for the state it is in.
+fn on_off(flag: bool) -> &'static str {
+    if flag { "on" } else { "off" }
 }

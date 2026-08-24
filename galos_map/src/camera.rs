@@ -255,8 +255,20 @@ fn snap(value: f64, target: f64) -> f64 {
 }
 
 /// Move `fraction` of the way from `value` to `target`, landing on it
+///
+/// Snapped in f32 rather than through [`snap`]: [`SNAP_TOLERANCE`] is an f64
+/// figure far finer than an f32 can resolve, so a radius or an angle
+/// approaching its target would stall about an ulp short and never reach it.
+/// The camera would then read as forever easing and rewrite its transform
+/// every frame for [`big_space`] to chase, however still the view. Within an
+/// ulp or so of the target is the target.
 fn eased(value: f32, target: f32, fraction: f32) -> f32 {
-    snap(value.lerp(target, fraction) as f64, target as f64) as f32
+    let stepped = value.lerp(target, fraction);
+    if (target - stepped).abs() <= f32::EPSILON * target.abs().max(1.) {
+        target
+    } else {
+        stepped
+    }
 }
 
 /// As [`eased`], for a position that needs the precision of an `f64`
@@ -420,6 +432,22 @@ impl Default for OrbitCamera {
             pan_sensitivity: 1.,
             zoom_sensitivity: 1.,
         }
+    }
+}
+
+impl OrbitCamera {
+    /// Whether the camera has arrived: no move under way and every control at
+    /// its target, so the eye and the reach hold still frame to frame.
+    ///
+    /// What the diagnostics panel reads to tell a view standing still from one
+    /// still easing into place, since the evictor is meant to go quiet only
+    /// once the camera stops moving.
+    pub fn is_settled(&self) -> bool {
+        self.travel.is_none()
+            && self.center == self.target_center
+            && self.radius == self.target_radius
+            && self.yaw == self.target_yaw
+            && self.pitch == self.target_pitch
     }
 }
 
@@ -797,8 +825,15 @@ pub fn orbit_camera(
         None => grid.translation_to_grid(crate::space::metres(eye)),
     };
     cell.set_if_neq(eye_cell);
-    transform.translation = eye_translation;
-    transform.rotation = rotation;
+    // Only where it moved. The camera holds the [`FloatingOrigin`], so writing
+    // its transform is what tells [`big_space`] to recompute every resident
+    // entity's position against the new eye. A still camera lands the same
+    // transform it already had, and assigning it regardless forces that whole
+    // walk every idle frame; guarded, an unmoving view costs nothing.
+    let mut placed = *transform;
+    placed.translation = eye_translation;
+    placed.rotation = rotation;
+    transform.set_if_neq(placed);
 }
 
 /// Hold the near plane a fixed fraction of the way to what is being looked at

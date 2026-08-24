@@ -1,15 +1,14 @@
-use crate::camera::MoveCamera;
+use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
-use crate::{Names, Populated, Tables};
 use crate::systems::bodies::spawn::{Body, Places, Strength};
 use crate::systems::{
-    System,
+    Spyglass, System,
     fetch::FetchIndex,
     fetch::FetchTasks,
     fetch::RawSystem,
-    filter::{DimTo, Filtered, Filters, Filtering},
+    filter::{DimTo, Filtered, Filtering, Filters},
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
     roundness::Roundness,
     route::spawn::{framing, spawn_route},
@@ -17,6 +16,7 @@ use crate::systems::{
     selection::{Picked, PickedBody, Selection},
 };
 use crate::ui::{Gesture, PressOwner};
+use crate::{Names, Populated};
 use bevy::camera::visibility::{RenderLayers, ViewVisibility};
 use bevy::diagnostic::FrameCount;
 use bevy::light::NotShadowCaster;
@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_index::meta::Economies;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     ops::Deref,
     time::Instant,
 };
@@ -40,7 +40,12 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(ShowNames(true));
 
     app.add_systems(Startup, init_materials);
+    app.init_resource::<PendingSpawns>();
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
+    // Turns a bounded number of queued systems into entities each frame, so a
+    // wide region does not build its whole payload in one. After `spawn`,
+    // which fills the queue from what the fetch tasks return.
+    app.add_systems(Update, drain_spawns.in_set(MapSet::Populate).after(spawn));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
     app.add_systems(Update, redim.in_set(MapSet::Populate));
     // Reads where the camera is standing, which `Camera` settles, and the sets
@@ -449,18 +454,18 @@ impl LastClick {
     }
 }
 
-/// Polls the tasks in `FetchTasks` and spawns entities for each of the
-/// resulting star systems
+/// Polls the fetch tasks and queues the systems they built for spawning
+///
+/// The systems arrive already named and coloured, built on the task's own
+/// thread (see [`super::fetch`]), so nothing here joins a table or clones a
+/// row. What lands is queued into [`PendingSpawns`] rather than spawned on the
+/// spot, and [`drain_spawns`] turns a bounded number into entities each frame:
+/// a wide region delivers its whole payload in one task completion, and
+/// spawning all of it at once is what stalls the frame.
 pub fn spawn(
-    systems_query: Query<(Entity, &System)>,
     route_query: Query<(Entity, &Route)>,
     galaxy: Res<Galaxy>,
     grids: Query<&Grid>,
-    color_by: Res<ColorBy>,
-    filtering: Filtering,
-    roundness: Res<Roundness>,
-    materials: Res<SystemMaterials>,
-    tables: Tables,
     time: Res<Time<Real>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     mut material_assets: ResMut<Assets<StandardMaterial>>,
@@ -468,18 +473,19 @@ pub fn spawn(
     mut plotted: MessageWriter<route::PlottedRoute>,
     mut tasks: ResMut<FetchTasks>,
     mut plot: ResMut<Plot>,
+    mut pending: ResMut<PendingSpawns>,
+    systems: Query<&System>,
 ) {
     let Ok(grid) = grids.get(galaxy.0) else { return };
 
     // Every row that arrived this frame, and when the last of them was asked
-    // for. Put together first and handed over once, for the reason given at
-    // [`one_per_system`].
+    // for. Put together first and queued once.
     //
     // One time for however many queries landed together, since what it is for
     // is the line the spawn is logged under. Nothing is stamped with it and
     // nothing measures how stale a row is by it, so the latest of them stands
     // for the batch rather than each row having to carry its own.
-    let mut arrived: Vec<RawSystem> = Vec::new();
+    let mut arrived: Vec<(System, bool)> = Vec::new();
     let mut arrived_at = time.startup();
     // Taken down while the tasks are being walked and applied after, the walk
     // holding the tasks and the taking writing the surveys beside them.
@@ -522,19 +528,12 @@ pub fn spawn(
                 // Said rather than acted on. What a route does to the map is
                 // `route::plotted`'s business; this is the one place its
                 // systems are in hand, so it is the one place that can say
-                // what they are.
-                //
-                // The line is drawn from the same value, so that what it
-                // carries and what the row in the bar holds are one filter
-                // and closing the row finds the line.
-                let route_systems: Vec<System> = new_systems
-                    .iter()
-                    .map(|raw| build_system(raw, &tables.populated, &tables.names))
-                    .collect();
-                if let Some(landed) = plotted_route(&route_systems, range) {
+                // what they are. The systems arrive built, so the line is
+                // drawn straight from them before they join the spawn queue.
+                if let Some(landed) = plotted_route(&new_systems, range) {
                     spawn_route(
                         &landed.filter(),
-                        &route_systems,
+                        &new_systems,
                         &route_query,
                         &galaxy,
                         grid,
@@ -546,12 +545,13 @@ pub fn spawn(
                 }
             }
 
-            // TODO: Pass FetchIndex along. I'd like to have index.marker() or
-            // similar so I can mark entities with some info about where they
-            // were fetched from.
-            //
             arrived_at = arrived_at.max(*fetched_at);
-            arrived.extend(new_systems);
+            // Pinned only where the user picked the systems out and flew to
+            // them: those are wanted wherever they lie, as the evictor keeps
+            // them. A region and a route's stops are weighed against the reach.
+            let pinned = matches!(index, FetchIndex::Systems(..));
+            arrived
+                .extend(new_systems.into_iter().map(|system| (system, pinned)));
         }
         retain
     });
@@ -560,29 +560,21 @@ pub fn spawn(
         tasks.surveyed(index, at);
     }
 
-    let arrived = one_per_system(arrived);
-    if !arrived.is_empty() {
-        let systems: Vec<System> = arrived
-            .iter()
-            .map(|raw| build_system(raw, &tables.populated, &tables.names))
-            .collect();
-        spawn_systems(
-            &systems,
-            &systems_query,
-            &galaxy,
-            grid,
-            &color_by,
-            &filtering.filters,
-            filtering.excluded_are_drawn(),
-            &mut commands,
-            &roundness,
-            &materials,
-            &time,
-            &arrived_at,
-        );
+    // Queue rather than spawn, and only what is not already on the map. The
+    // fetch is by region, so zooming out re-delivers the whole wider sphere,
+    // most of it systems already drawn; queueing those would drain to nothing
+    // but a churn of no-op re-inserts. The queue also holds one entry per
+    // address, so a system fetched twice before it is drawn lands once — which
+    // is what stops two entities landing for one system. An evicted system is
+    // not resident, so it still re-queues and comes back.
+    let resident: HashSet<i64> =
+        systems.iter().map(|system| system.address).collect();
+    for (system, pinned) in arrived {
+        if resident.contains(&system.address) {
+            continue;
+        }
+        pending.push(system, pinned, arrived_at);
     }
-
-    // TODO(#43): despawn stuff...
 }
 
 /// What a route that has landed amounts to, if it amounts to a route
@@ -615,23 +607,150 @@ fn plotted_route(systems: &[System], range: &str) -> Option<PlottedRoute> {
     })
 }
 
-/// The rows that arrived, with each system named once
+/// How many systems are turned into entities in one frame
 ///
-/// [`spawn_systems`] finds what is already on the map by asking the world, and
-/// the world does not yet hold what a command spawned a moment ago: commands
-/// wait for the next sync point. So two answers arriving in one frame about
-/// one system would each find nothing there and each spawn it, leaving two
-/// stars on top of each other for as long as the map holds them, which is for
-/// good. The map fetches by region and by name at once, and a system searched
-/// for and flown to is exactly the system the region around it is bringing in,
-/// so the two answers are not rare.
+/// A cap on the structural churn the map does per frame, since spawning an
+/// entity mutates the world and cannot leave the main thread. A wide region
+/// arrives as one payload of tens of thousands of systems, and building all of
+/// them at once is a visible hitch; spread over frames it streams in instead,
+/// which the map already reads as a region drawing before it has fully loaded.
+const SPAWN_BUDGET: usize = 2048;
+
+/// Systems fetched and built, waiting to become entities
 ///
-/// Whichever answer came first is the one kept. Two of them in one frame are
-/// one system as two queries a few milliseconds apart saw it, which is the
-/// same system.
-fn one_per_system(arrived: Vec<RawSystem>) -> Vec<RawSystem> {
-    let mut named = HashSet::with_capacity(arrived.len());
-    arrived.into_iter().filter(|raw| named.insert(raw.address)).collect()
+/// The fetch tasks return whole regions at once, and [`spawn`] queues them
+/// here rather than spawning the lot in the frame they land. [`drain_spawns`]
+/// takes [`SPAWN_BUDGET`] of them a frame, in arrival order.
+///
+/// Keyed by address so a system fetched twice before it is drawn holds one
+/// entry, keeping the later row: a re-fetch is a refresh, and one entry is
+/// also what stops two entities landing for a system the world does not yet
+/// hold when the second copy is read.
+#[derive(Resource, Default)]
+pub struct PendingSpawns {
+    order: VecDeque<i64>,
+    rows: HashMap<i64, (System, bool)>,
+    arrived_at: Option<Instant>,
+}
+
+impl PendingSpawns {
+    /// Queue `system`, keeping its place if it is already waiting and taking
+    /// the later row.
+    ///
+    /// `pinned` marks a system wanted whatever the reach — one picked out and
+    /// flown to — which [`prune`](Self::prune) never drops. A system queued
+    /// again as pinned stays pinned.
+    fn push(&mut self, system: System, pinned: bool, at: Instant) {
+        let address = system.address;
+        match self.rows.get_mut(&address) {
+            Some((held, held_pinned)) => {
+                *held = system;
+                *held_pinned |= pinned;
+            }
+            None => {
+                self.rows.insert(address, (system, pinned));
+                self.order.push_back(address);
+            }
+        }
+        self.arrived_at = Some(self.arrived_at.map_or(at, |prev| prev.max(at)));
+    }
+
+    /// Drop the queued systems the reach has since left behind
+    ///
+    /// A wide region can be queued and then flown or zoomed away from before
+    /// it is drawn, at which point spawning it is spawning what the evictor
+    /// drops the same frame. So the queue is weighed against the reach as the
+    /// live set is, and what falls beyond the kept sphere is forgotten unread
+    /// — except a pinned system, which is wanted wherever it lies. Nothing to
+    /// weigh against while the spyglass is not clearing, which is the map
+    /// holding everything it has.
+    fn prune(&mut self, center: DVec3, keep: f64, clears: bool) {
+        if !clears {
+            return;
+        }
+        let rows = &mut self.rows;
+        self.order.retain(|address| {
+            let kept = rows.get(address).is_some_and(|(system, pinned)| {
+                *pinned || center.distance(DVec3::from(system.position)) <= keep
+            });
+            if !kept {
+                rows.remove(address);
+            }
+            kept
+        });
+    }
+
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    /// How many systems are waiting, for the diagnostics panel to read.
+    pub fn queued(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Take up to `budget` systems, oldest first.
+    fn take(&mut self, budget: usize) -> Vec<System> {
+        let n = budget.min(self.order.len());
+        let mut batch = Vec::with_capacity(n);
+        while batch.len() < n {
+            let Some(address) = self.order.pop_front() else { break };
+            if let Some((system, _)) = self.rows.remove(&address) {
+                batch.push(system);
+            }
+        }
+        batch
+    }
+}
+
+/// Turn a budgeted number of queued systems into entities
+///
+/// First weighs the queue against the reach, dropping what a move has left
+/// behind so nothing is spawned only to be evicted, then hands
+/// [`SPAWN_BUDGET`] of what remains to [`spawn_systems`], so the frame's
+/// structural work is bounded however wide the region that arrived.
+#[allow(clippy::too_many_arguments)]
+fn drain_spawns(
+    mut pending: ResMut<PendingSpawns>,
+    systems_query: Query<(Entity, &System)>,
+    galaxy: Res<Galaxy>,
+    grids: Query<&Grid>,
+    color_by: Res<ColorBy>,
+    filtering: Filtering,
+    roundness: Res<Roundness>,
+    materials: Res<SystemMaterials>,
+    time: Res<Time<Real>>,
+    camera: Query<&OrbitCamera>,
+    spyglass: Res<Spyglass>,
+    mut commands: Commands,
+) {
+    // Weigh the queue against the reach before drawing any of it, the same cut
+    // the evictor makes on the live set, so a region flown away from is
+    // dropped unread rather than spawned and evicted in the same breath.
+    if let Ok(camera) = camera.single() {
+        let keep = spyglass.radius as f64 * super::EVICT_MARGIN;
+        pending.prune(camera.center, keep, spyglass.clear);
+    }
+    if pending.is_empty() {
+        return;
+    }
+    let Ok(grid) = grids.get(galaxy.0) else { return };
+    let arrived_at = pending.arrived_at.unwrap_or_else(|| time.startup());
+    let batch = pending.take(SPAWN_BUDGET);
+    spawn_systems(
+        batch,
+        &systems_query,
+        &galaxy,
+        grid,
+        &color_by,
+        &filtering.filters,
+        filtering.excluded_are_drawn(),
+        &mut commands,
+        &roundness,
+        &materials,
+        &time,
+        &arrived_at,
+    );
 }
 
 /// Name and colour a raw system from the resident tables
@@ -725,7 +844,7 @@ pub(crate) fn system_at(
 /// be. A mark applied by a command lands at the next sync point, by which
 /// time the star has been drawn once at full strength.
 pub fn spawn_systems(
-    new_systems: &[System],
+    new_systems: Vec<System>,
     systems: &Query<(Entity, &System)>,
     galaxy: &Res<Galaxy>,
     grid: &Grid,
@@ -743,13 +862,17 @@ pub fn spawn_systems(
         .map(|(entity, system)| (system.address, entity))
         .collect();
 
+    // One clock for the batch. `admit` weighs every row against the same
+    // moment, and a row already built carries this same moment as its own
+    // `updated_at`, so reading it once here rather than per row costs nothing
+    // in accuracy.
+    let now = Utc::now();
     for system in new_systems {
-        let system = system.clone();
         // What no filter admits is dropped rather than dimmed once the dim is
         // zero, so it is never spawned in the first place: the load avoided,
         // not paid and then hidden. Left to [`super::evict`] to take off what
         // already stands.
-        let excluded = !filters.admit(&system, Utc::now());
+        let excluded = !filters.admit(&system, now);
         if excluded && !excluded_are_drawn {
             continue;
         }
@@ -899,7 +1022,8 @@ fn redim(
 
     for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
         if let Some(mut material) = assets.get_mut(handle) {
-            *material = star_material(hue.color(), dim.opacity(), AlphaMode::Opaque);
+            *material =
+                star_material(hue.color(), dim.opacity(), AlphaMode::Opaque);
         }
     }
 }
@@ -1048,58 +1172,127 @@ fn security_hue(system: &System) -> Hue {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A row for the system at `address`, with nothing else on record
-    fn row(address: i64) -> RawSystem {
-        RawSystem { address, position: [address as f64, 0., 0.] }
+    /// A system at `address`, with nothing else on record
+    fn system(address: i64) -> System {
+        build_system(
+            &RawSystem { address, position: [address as f64, 0., 0.] },
+            &Populated::default(),
+            &Names::default(),
+        )
     }
 
-    /// Which systems a set of rows is about, in order
-    fn about(rows: &[RawSystem]) -> Vec<i64> {
-        rows.iter().map(|raw| raw.address).collect()
+    /// Which systems a batch is about, in order
+    fn about(systems: &[System]) -> Vec<i64> {
+        systems.iter().map(|system| system.address).collect()
     }
 
-    /// Two answers about one system leave one row for it
+    /// A system at `address`, placed `x` light years out along the first axis
+    fn at(address: i64, x: f64) -> System {
+        let mut system = system(address);
+        system.position = [x, 0., 0.];
+        system
+    }
+
+    /// A system queued twice waits as one entry
     ///
     /// Which is what keeps two stars from being spawned on top of each other.
-    /// The map cannot see what it spawned a moment ago, so it has to be told
-    /// about a system once.
+    /// The map cannot see what it spawned a moment ago, so the queue holds an
+    /// address once however many times it is fetched before it is drawn.
     #[test]
-    fn a_system_answered_for_twice_is_named_once() {
-        let arrived = vec![row(1), row(2), row(1)];
+    fn a_system_queued_twice_waits_once() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        pending.push(system(1), false, now);
+        pending.push(system(2), false, now);
+        pending.push(system(1), false, now);
 
-        assert_eq!(about(&one_per_system(arrived)), vec![1, 2]);
+        assert_eq!(about(&pending.take(10)), vec![1, 2]);
     }
 
-    /// The answer that came first is the one kept
+    /// A re-queued system keeps its place and takes the later row
     #[test]
-    fn the_first_answer_about_a_system_is_the_one_kept() {
-        let mut second = row(1);
-        second.position = [9., 9., 9.];
-        let arrived = vec![row(1), second];
+    fn a_re_queued_system_keeps_its_place_and_the_later_row() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        pending.push(system(1), false, now);
+        pending.push(system(2), false, now);
+        let mut later = system(1);
+        later.position = [9., 9., 9.];
+        pending.push(later, false, now);
 
-        let kept = one_per_system(arrived);
-
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].position, [1., 0., 0.]);
+        let batch = pending.take(10);
+        assert_eq!(about(&batch), vec![1, 2]);
+        assert_eq!(batch[0].position, [9., 9., 9.]);
     }
 
-    /// Rows about different systems are all kept, in the order they arrived
+    /// The budget bounds what one frame takes, and the rest waits its turn
     #[test]
-    fn every_system_answered_for_once_is_kept() {
-        let arrived = vec![row(3), row(1), row(2)];
+    fn the_budget_bounds_what_a_frame_takes() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        for address in 1..=5 {
+            pending.push(system(address), false, now);
+        }
 
-        assert_eq!(about(&one_per_system(arrived)), vec![3, 1, 2]);
+        assert_eq!(about(&pending.take(2)), vec![1, 2]);
+        assert_eq!(about(&pending.take(2)), vec![3, 4]);
+        assert_eq!(about(&pending.take(2)), vec![5]);
+        assert!(pending.is_empty());
     }
 
-    /// Nothing arriving is nothing to spawn
+    /// An empty queue takes nothing
     #[test]
-    fn nothing_arriving_names_nothing() {
-        assert!(one_per_system(Vec::new()).is_empty());
+    fn an_empty_queue_takes_nothing() {
+        let mut pending = PendingSpawns::default();
+        assert!(pending.take(10).is_empty());
+        assert!(pending.is_empty());
+    }
+
+    /// The queue drops what the reach has left behind, so nothing is spawned
+    /// only for the evictor to take back off the same frame
+    #[test]
+    fn pruning_drops_the_unpinned_the_reach_has_left() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        pending.push(at(1, 5.), false, now);
+        pending.push(at(2, 50.), false, now);
+        pending.push(at(3, 50.), true, now);
+
+        // radius 10 * margin 1.5 = kept within 15 ly.
+        pending.prune(DVec3::ZERO, 15., true);
+
+        // 1 is within reach, 2 is beyond it, 3 is beyond it but pinned.
+        assert_eq!(about(&pending.take(10)), vec![1, 3]);
+    }
+
+    /// A system queued again as pinned is kept where it would have been dropped
+    #[test]
+    fn re_queuing_as_pinned_keeps_a_far_system() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        pending.push(at(1, 50.), false, now);
+        pending.push(at(1, 50.), true, now);
+
+        pending.prune(DVec3::ZERO, 15., true);
+
+        assert_eq!(about(&pending.take(10)), vec![1]);
+    }
+
+    /// Nothing is weighed against a spyglass that is not clearing, which is the
+    /// map holding everything it has
+    #[test]
+    fn pruning_is_off_while_not_clearing() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        pending.push(at(2, 50.), false, now);
+
+        pending.prune(DVec3::ZERO, 15., false);
+
+        assert_eq!(about(&pending.take(10)), vec![2]);
     }
 
     /// A thing on the map to be clicked, told apart from the next by `which`

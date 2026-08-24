@@ -17,7 +17,7 @@ use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::systems::bodies::spawn::ShowOrbits;
 use crate::systems::bodies::{Clock, Contents, mark_if_wound};
-use crate::systems::despawn::Despawn;
+use crate::systems::despawn::{Despawn, ReloadCells};
 use crate::systems::fetch::{Poll, Throttle};
 use crate::systems::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
@@ -30,8 +30,8 @@ use crate::systems::labels::ShowBodyNames;
 use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
-use crate::systems::spawn::{ColorBy, ShowNames};
-use crate::systems::{InReach, Spyglass};
+use crate::systems::spawn::{ColorBy, PendingSpawns, ShowNames};
+use crate::systems::{InReach, PendingEvictions, Spyglass};
 use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -609,6 +609,7 @@ pub struct Settings<'w> {
     show_picked: ResMut<'w, ShowPicked>,
     bright: ResMut<'w, Bright>,
     despawner: MessageWriter<'w, Despawn>,
+    reloader: MessageWriter<'w, ReloadCells>,
 }
 
 /// The whole of the bar's filter section
@@ -633,6 +634,11 @@ pub struct FilterBar<'w, 's> {
     active: ResMut<'w, Filters>,
     /// How much of the sky is getting through them
     in_reach: Res<'w, InReach>,
+    /// Whether systems are still being turned into stars, for the count's
+    /// spinner
+    spawning: Res<'w, PendingSpawns>,
+    /// Whether systems are being dropped off the map, for the count's arrow
+    evicting: Res<'w, PendingEvictions>,
     /// What is typed into the field that asks for one
     ///
     /// Here rather than among the bar's other fields, so that nothing about a
@@ -738,6 +744,11 @@ pub fn chrome(
             ui.add_space(FIELD_GAP);
             if ui.button("Despawn Systems").clicked() {
                 settings.despawner.write(Despawn);
+            }
+            // Cells only, for debugging a rebuilt index without a restart. See
+            // `reload_cells` for what it leaves alone and the auth note.
+            if ui.button("Reload Cells").clicked() {
+                settings.reloader.write(ReloadCells);
             }
         });
 
@@ -909,11 +920,19 @@ pub fn chrome(
                 rail | typed
             })
             .inner;
-        // Only on a change, since writing every frame would mark the resource
-        // changed every frame and have every dimmed star repainted for
-        // nothing.
+        // Only when it lands on a value the resource does not already hold. The
+        // step and the f32 round-trip can have the slider report a change frame
+        // after frame at a value it is already at — 0.30 is not exactly
+        // representable, so `dim.0 * 100` snapped back to `/ 100` never settles
+        // — and writing that every frame marks the resource changed every
+        // frame, which repaints every dimmed star and (through
+        // `refetch_on_filter_change`) clears the surveys and refetches without
+        // end.
         if slider.changed() {
-            filter.dim.0 = showing / 100.;
+            let set = showing / 100.;
+            if filter.dim.0 != set {
+                filter.dim.0 = set;
+            }
         }
         // Which is a filter in the plainer sense: this kind of system and
         // none of the rest. At zero the excluded are not dimmed but dropped —
@@ -1262,7 +1281,13 @@ fn main_bar(
                     // excluded, and what is excluded has to be drawn.
                     let dimming =
                         filter.active.any_enabled() && filter.dim.0 > 0.;
-                    reaching(ui, &filter.in_reach, dimming);
+                    reaching(
+                        ui,
+                        &filter.in_reach,
+                        dimming,
+                        filter.spawning.queued() > 0,
+                        filter.evicting.queued() > 0,
+                    );
 
                     // Asking for a route out of the summary line is what opens
                     // the form, in the same pass, so that the section it asked
@@ -2597,7 +2622,13 @@ fn section_rows(
 /// numbers are what grow: the sky runs to millions of systems, and a line
 /// that has to wrap to hold two of them is a line that moves the rows under
 /// it about as the user flies.
-fn reaching(ui: &mut Ui, in_reach: &InReach, dimming: bool) {
+fn reaching(
+    ui: &mut Ui,
+    in_reach: &InReach,
+    dimming: bool,
+    spawning: bool,
+    evicting: bool,
+) {
     let InReach { admitted, total } = *in_reach;
     if total == 0 {
         return;
@@ -2612,7 +2643,33 @@ fn reaching(ui: &mut Ui, in_reach: &InReach, dimming: bool) {
     } else {
         format!("{} in spyglass", thousands(admitted as u64))
     };
-    ui.label(egui::RichText::new(said).weak());
+    // To the right of the count: a green dot while systems are still being
+    // turned into stars, a red one while they are being taken back off. Drawn
+    // only for the frames the queue is not empty, so they blink on and off
+    // with the work rather than easing.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(said).weak());
+        let radius = ui.text_style_height(&egui::TextStyle::Body) * 0.3;
+        if spawning {
+            dot(ui, radius, egui::Color32::from_rgb(80, 200, 120));
+        }
+        if evicting {
+            dot(ui, radius, egui::Color32::from_rgb(220, 80, 80));
+        }
+    });
+}
+
+/// A filled circle of `radius` in `color`, laid inline in a row
+///
+/// Painted rather than lettered so it is a shape whatever the font holds, and
+/// held to no animation: it is there while the work is and gone the frame it
+/// stops.
+fn dot(ui: &mut Ui, radius: f32, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::Vec2::splat(radius * 2.),
+        egui::Sense::hover(),
+    );
+    ui.painter().circle_filled(rect.center(), radius, color);
 }
 
 /// What the bar can be asked to do with the filters as a set
@@ -5369,7 +5426,13 @@ mod tests {
     #[test]
     fn the_reach_alone_is_one_number() {
         let said = words(|ui| {
-            reaching(ui, &InReach { admitted: 324, total: 324 }, false)
+            reaching(
+                ui,
+                &InReach { admitted: 324, total: 324 },
+                false,
+                false,
+                false,
+            )
         });
 
         assert!(said.contains(&"324 in spyglass".to_owned()), "{said:?}");
@@ -5382,7 +5445,13 @@ mod tests {
     #[test]
     fn what_is_dimmed_is_counted_behind_what_is_not() {
         let said = words(|ui| {
-            reaching(ui, &InReach { admitted: 8, total: 324 }, true)
+            reaching(
+                ui,
+                &InReach { admitted: 8, total: 324 },
+                true,
+                false,
+                false,
+            )
         });
 
         assert!(said.contains(&"8 of 324 in spyglass".to_owned()), "{said:?}");
@@ -5396,7 +5465,13 @@ mod tests {
     #[test]
     fn what_is_not_drawn_is_not_counted() {
         let said = words(|ui| {
-            reaching(ui, &InReach { admitted: 8, total: 324 }, false)
+            reaching(
+                ui,
+                &InReach { admitted: 8, total: 324 },
+                false,
+                false,
+                false,
+            )
         });
 
         assert!(said.contains(&"8 in spyglass".to_owned()), "{said:?}");
@@ -5517,8 +5592,15 @@ mod tests {
     /// read as an answer rather than as nothing having been asked yet.
     #[test]
     fn an_empty_reach_says_nothing() {
-        let said =
-            words(|ui| reaching(ui, &InReach { admitted: 0, total: 0 }, false));
+        let said = words(|ui| {
+            reaching(
+                ui,
+                &InReach { admitted: 0, total: 0 },
+                false,
+                false,
+                false,
+            )
+        });
 
         assert!(!said.iter().any(|line| line.contains("spyglass")), "{said:?}");
     }

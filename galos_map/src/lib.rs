@@ -43,8 +43,8 @@ pub struct ResidentIndex(pub Index);
 /// About 96,000 systems against 129 million, held resident because a colour
 /// and a filter are asked of every drawn system every frame and neither can
 /// wait on a fetch. A system absent here is ungoverned, which is most of them.
-#[derive(Resource, Default)]
-pub struct Populated(pub HashMap<i64, PopulatedSystem>);
+#[derive(Resource, Default, Clone)]
+pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
 
 /// Every system's name and where it sits: the search index and the routing
 /// graph in one resident table.
@@ -52,12 +52,15 @@ pub struct Populated(pub HashMap<i64, PopulatedSystem>);
 /// Held whole rather than fetched, since a search reaches any name and a route
 /// steps between any two positions. The positions here are the graph the
 /// router walks, so routing needs nothing loaded past this.
-#[derive(Resource, Default)]
+/// Cheap to clone: the two tables sit behind [`Arc`]s so a fetch task can take
+/// a handle and name and colour its systems off the main thread. They are
+/// loaded once at startup and never mutated, so nothing is fighting over them.
+#[derive(Resource, Default, Clone)]
 pub struct Names {
     /// Every entry, the order the table was written in.
-    pub entries: Vec<NameEntry>,
+    pub entries: Arc<Vec<NameEntry>>,
     /// Address to its entry, for the O(1) lookup a selection wants.
-    pub by_address: HashMap<i64, usize>,
+    pub by_address: Arc<HashMap<i64, usize>>,
 }
 
 /// Faction id to the name it is shown under, read whole and held.
@@ -74,12 +77,9 @@ impl Populated {
 impl Names {
     /// Build the resident table and its address index from the raw entries.
     pub fn new(entries: Vec<NameEntry>) -> Names {
-        let by_address = entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (e.address, i))
-            .collect();
-        Names { entries, by_address }
+        let by_address =
+            entries.iter().enumerate().map(|(i, e)| (e.address, i)).collect();
+        Names { entries: Arc::new(entries), by_address: Arc::new(by_address) }
     }
 
     /// The entry for an address, if the table holds it.
