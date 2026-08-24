@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use bevy_egui::EguiPlugin;
+use bevy_egui::{EguiGlobalSettings, EguiPlugin};
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use galos_map::systems::route::graph::{JumpGraph, Jumps};
@@ -76,6 +76,14 @@ fn main() {
         bindless_mode_array_size: None,
         ..default()
     });
+
+    // The primary egui context is hosted on a camera of the map's own (see
+    // `camera::ui_camera`) rather than the first one bevy_egui finds, so its
+    // pass stacks at the top of the camera order and draws over the annotation
+    // overlays instead of under them. Off with the automatic one first.
+    app.world_mut()
+        .resource_mut::<EguiGlobalSettings>()
+        .auto_create_primary_context = false;
 
     app.insert_resource(ClearColor(Color::BLACK));
     app.insert_resource(IndexDir(dir.clone()));

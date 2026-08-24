@@ -11,6 +11,7 @@ use bevy::math::DVec3;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use bevy_egui::PrimaryEguiContext;
 use big_space::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
@@ -454,11 +455,19 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
         // Drawn over the galaxy rather than in it, and in this order: the
         // rings over the stars they mark, the grounds over the rings, and the
         // names over their grounds.
+        //
+        // The names' camera also carries egui's primary context. egui renders
+        // in the graph of the camera that holds its context, so on the topmost
+        // overlay — the last camera drawn, and already HDR and clearing
+        // nothing like the rest — its pass lands over the whole map, chrome
+        // over the annotations rather than the labels over the windows. Left
+        // on the scene camera bevy_egui picks by default it drew under every
+        // overlay. See `main`, which turns that default off.
         children![
             shells_view(),
             over(Overlay::Rings),
             over(Overlay::Grounds),
-            over(Overlay::Names),
+            (over(Overlay::Names), PrimaryEguiContext),
         ],
     )
 }
