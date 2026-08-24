@@ -1000,9 +1000,10 @@ fn settings_pane(
     let margins = frame.total_margin().sum();
 
     egui::Area::new(egui::Id::new("settings-pane"))
-        // Above the selection window, which is the user's to put where they
-        // like. The chrome is not, so it does not go under.
-        .order(egui::Order::Foreground)
+        // Below the windows and above the map, like the rest of the chrome. A
+        // window is the user's to put where they like, so where the two meet
+        // the window lays over the chrome rather than under it.
+        .order(egui::Order::Background)
         // The pane stands off the left of the viewport while it is shut, and
         // egui would otherwise pull it back into view.
         .constrain(false)
@@ -1042,7 +1043,7 @@ fn settings_pane(
 fn gear(ctx: &Context, left: f32, middle: f32, open: &mut bool) {
     let style = ctx.global_style();
     let clicked = egui::Area::new(egui::Id::new("settings-gear"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Background)
         .pivot(egui::Align2::LEFT_CENTER)
         .fixed_pos(egui::pos2(left + MARGIN, middle))
         .show(ctx, |ui| {
@@ -1124,7 +1125,7 @@ fn main_bar(
     let dragging = ctx.egui_is_using_pointer();
 
     let bar = egui::Area::new(egui::Id::new("main-bar"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Background)
         .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
         .show(ctx, |ui| {
             frame
