@@ -4069,8 +4069,11 @@ version = "0.0.3"
 dependencies = [
  "async-std",
  "chrono",
+ "clap 4.6.6",
  "dotenv",
  "elite_journal",
+ "galos_index",
+ "galos_photometry",
  "geozero",
  "ordered-float",
  "pathfinding",
@@ -4082,6 +4085,7 @@ dependencies = [
 name = "galos_index"
 version = "0.0.1"
 dependencies = [
+ "clap 4.6.6",
  "galos_photometry",
 ]
 

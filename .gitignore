@@ -4,3 +4,8 @@
 *.swp
 .env
 galos_db/backups/*
+
+# Built galaxy index: the default output directory of `galos-db index`, one
+# small index file and a payload file per cell. Generated, not source.
+/galos_index/index.bin
+/galos_index/cells/

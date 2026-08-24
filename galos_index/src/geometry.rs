@@ -1,8 +1,8 @@
 //! The cube, the cells that tile it, and the coordinates that address them.
 //!
 //! One cube stands over the whole galaxy, and every cell is a power-of-two
-//! subdivision of it. The cube is 131,072 ly on a side — `2^17`, the smallest
-//! power of two that holds the galaxy's extent — centred where the galaxy sits
+//! subdivision of it. The cube is 131,072 ly on a side, `2^17`, the smallest
+//! power of two that holds the galaxy's extent, centred where the galaxy sits
 //! rather than on the origin, since the disc is thin in `y` and offset in `z`
 //! and a cube on the origin would waste most of itself. Level zero is the cube;
 //! each level halves the edge, so a cell at level `L` is `131072 / 2^L` ly
@@ -15,7 +15,9 @@
 //! sorts and the files are laid out in. A system's position inside its cell is
 //! kept as three `u16`, cell-relative, since an absolute float this far from
 //! the origin has an ulp of hundreds of AU while a `u16` in a 16 ly leaf
-//! resolves about fifteen — smaller, and in half the bytes.
+//! resolves about fifteen, smaller and in half the bytes.
+
+use crate::serialization::{FixedCodec, Decode, Encode};
 
 /// The edge of the root cube, in light years: `2^17`, the smallest power of two
 /// that holds the galaxy's extent.
@@ -75,11 +77,11 @@ impl Aabb {
     /// corner, the visibility test can never drop a star the cell might hold.
     pub fn distance_to(&self, p: [f64; 3]) -> f64 {
         let mut sq = 0.0;
-        for i in 0..3 {
-            let d = if p[i] < self.min[i] {
-                self.min[i] - p[i]
-            } else if p[i] > self.max[i] {
-                p[i] - self.max[i]
+        for ((p, min), max) in p.iter().zip(&self.min).zip(&self.max) {
+            let d = if p < min {
+                min - p
+            } else if p > max {
+                p - max
             } else {
                 0.0
             };
@@ -166,6 +168,18 @@ impl CellId {
         kids
     }
 
+    /// Which of its parent's eight octants this cell fills, `0..8`, in the
+    /// order [`children`](Self::children) lays them out: `x` in the low bit,
+    /// then `y`, then `z`. Meaningless at the root.
+    pub fn octant(&self) -> u8 {
+        ((self.x & 1) | ((self.y & 1) << 1) | ((self.z & 1) << 2)) as u8
+    }
+
+    /// The child in a given octant, `0..8`.
+    pub fn child(&self, octant: u8) -> CellId {
+        self.children()[octant as usize]
+    }
+
     /// The Morton key of this cell's coordinates, near in the key where the cell
     /// is near in space. Unique among cells at one level; carry `level` beside
     /// it to tell levels apart.
@@ -201,6 +215,24 @@ impl CellId {
         let d = |qi: u16, lo: f64| lo + (qi as f64 + 0.5) / QUANTA * edge;
         [d(q[0], min[0]), d(q[1], min[1]), d(q[2], min[2])]
     }
+}
+
+impl Encode for CellId {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.level.encode(out);
+        self.morton().encode(out);
+    }
+}
+
+impl Decode for CellId {
+    fn decode(cur: &mut &[u8]) -> Option<CellId> {
+        let level = u8::decode(cur)?;
+        Some(CellId::from_morton(level, u64::decode(cur)?))
+    }
+}
+
+impl FixedCodec for CellId {
+    const LEN: usize = u8::LEN + u64::LEN;
 }
 
 /// Spread the low 21 bits of `v` out to every third bit, the one-axis half of a

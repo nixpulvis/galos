@@ -288,9 +288,9 @@ the work at range, and knowing how much is outstanding needs it too: `M` is
 the size of the `needed` set and `N` how much of it is resident, in cells
 and, through `rank_hi - rank_lo`, in systems.
 
-Payload per system in a cell is 18 bytes: id64 (8), position as three u16
-quantized within the cell (6), combined magnitude and temperature bucket
-(4). No name, no political columns, no index.
+Payload per system in a cell is 17 bytes: id64 (8), position as three u16
+quantized within the cell (6), magnitude as a fixed-point i16 (2) and a
+temperature bucket (1). No name, no political columns, no index.
 
 Positions are cell-relative rather than absolute. Absolute f32 at 40,000 ly
 from origin has an ulp of 0.005 ly, about 300 AU. A u16 per axis inside a
@@ -955,7 +955,7 @@ magnitude and temperature. This is what the commented-out
 `galos_db::stars` fetch code is for.
 
 Doing this at build time is what leaves the client with no join to make. The
-payload's four bytes of combined magnitude and temperature bucket per system
+payload's three bytes of magnitude and temperature bucket per system
 are the finished answer, so Real mode at range issues no query at all.
 
 Maintenance is incremental because sums are additive: a scan event upserts

@@ -11,3 +11,16 @@ rust-version.workspace = true
 # Postgres. Physics comes from `galos_photometry`; nothing heavier belongs here.
 [dependencies]
 galos_photometry = { path = "../galos_photometry" }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[features]
+default = ["cli"]
+# The `galos-index` command-line tool, on by default so `cargo run -p
+# galos_index` just works. A library consumer (the map, the server) drops it
+# with `default-features = false`, and then clap is never pulled.
+cli = ["dep:clap"]
+
+[[bin]]
+name = "galos-index"
+path = "src/main.rs"
+required-features = ["cli"]

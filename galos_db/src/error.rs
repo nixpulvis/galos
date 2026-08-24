@@ -10,6 +10,9 @@ pub enum Error {
     Dotenv(dotenv::Error),
 
     Sqlx(sqlx::Error),
+
+    /// A build wrote to disk and the write failed.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for Error {
@@ -27,6 +30,7 @@ impl fmt::Display for Error {
             ),
             Error::Dotenv(e) => write!(f, ".env could not be read: {}", e),
             Error::Sqlx(e) => write!(f, "{}", e),
+            Error::Io(e) => write!(f, "{}", e),
         }
     }
 }
@@ -46,6 +50,7 @@ impl error::Error for Error {
         match self {
             Error::DatabaseUrl(e) => Some(e),
             Error::Dotenv(e) => Some(e),
+            Error::Io(e) => Some(e),
             Error::Sqlx(e) => Some(e),
         }
     }
@@ -66,5 +71,11 @@ impl From<env::VarError> for Error {
 impl From<sqlx::Error> for Error {
     fn from(err: sqlx::Error) -> Error {
         Error::Sqlx(err)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Error {
+        Error::Io(err)
     }
 }

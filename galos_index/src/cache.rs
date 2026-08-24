@@ -1,15 +1,15 @@
 //! What the client holds loaded, and the set arithmetic the three consumers do.
 //!
-//! The walk says what the camera needs; the cache says what is here. Between
-//! them fall the three consumers: the renderer draws what is needed and
-//! resident, the loader fetches what is needed and absent, and the evictor
-//! drops what is resident and no longer needed. Each is one set operation
+//! The walk says what the view needs; the cache says what is here. Between
+//! them fall the three consumers: drawing takes what is needed and resident,
+//! loading fetches what is needed and absent, and eviction drops what is
+//! resident and no longer needed. Each is one set operation
 //! against a [`Needed`], and they are the whole of the client's fetch loop.
 //!
 //! A cell arrives faint and brightens in, rather than appearing, so an arriving
 //! payload does not pop against a still sky. Each resident cell carries a
 //! presence that ramps from zero to one over a couple of hundred milliseconds,
-//! which the renderer multiplies into flux; at the visibility floor a payload
+//! which is multiplied into flux; at the visibility floor a payload
 //! lands at, that fade is close to physically honest.
 //!
 //! The residual a cell splats over its drawn slice, and the field it resolves
@@ -17,6 +17,7 @@
 //! bookkeeping the loop turns on.
 
 use crate::geometry::CellId;
+use crate::aggregate::temp_bucket;
 use crate::walk::Needed;
 use std::collections::{HashMap, HashSet};
 
@@ -38,38 +39,23 @@ pub struct Point {
     pub temp_bucket: u8,
 }
 
-/// The payload's fixed width per system, in bytes: id, position, and the two
-/// photometric bytes.
-pub const POINT_BYTES: usize = 18;
-
 impl Point {
-    /// Pack a system into its payload bytes. Magnitude is kept to a hundredth
-    /// as a fixed-point `i16`, which is finer than the photometry it comes from,
-    /// leaving one byte spare for the record to grow into.
-    pub fn to_le_bytes(&self) -> [u8; POINT_BYTES] {
-        let mut b = [0u8; POINT_BYTES];
-        b[0..8].copy_from_slice(&self.id64.to_le_bytes());
-        b[8..10].copy_from_slice(&self.pos[0].to_le_bytes());
-        b[10..12].copy_from_slice(&self.pos[1].to_le_bytes());
-        b[12..14].copy_from_slice(&self.pos[2].to_le_bytes());
-        let mag = (self.magnitude * 100.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-        b[14..16].copy_from_slice(&mag.to_le_bytes());
-        b[16] = self.temp_bucket;
-        b
-    }
-
-    /// Unpack a system from its payload bytes, the inverse of
-    /// [`to_le_bytes`](Self::to_le_bytes) to a hundredth of a magnitude.
-    pub fn from_le_bytes(b: &[u8; POINT_BYTES]) -> Point {
+    /// A system packed into a payload point, its position quantized against the
+    /// cell that owns it. The one place a record becomes a point, so the
+    /// quantization and the temperature bucketing live here rather than at each
+    /// caller that emits a payload.
+    pub fn quantized(
+        id64: u64,
+        cell: CellId,
+        position: [f64; 3],
+        magnitude: f64,
+        temperature: f64,
+    ) -> Point {
         Point {
-            id64: u64::from_le_bytes(b[0..8].try_into().unwrap()),
-            pos: [
-                u16::from_le_bytes(b[8..10].try_into().unwrap()),
-                u16::from_le_bytes(b[10..12].try_into().unwrap()),
-                u16::from_le_bytes(b[12..14].try_into().unwrap()),
-            ],
-            magnitude: i16::from_le_bytes(b[14..16].try_into().unwrap()) as f32 / 100.0,
-            temp_bucket: b[16],
+            id64,
+            pos: cell.quantize(position),
+            magnitude: magnitude as f32,
+            temp_bucket: temp_bucket(temperature) as u8,
         }
     }
 }
@@ -85,7 +71,7 @@ pub struct ResidentCell {
 /// The payloads the client holds, keyed by cell.
 ///
 /// The index of aggregates is always resident and lives beside this; what this
-/// holds is the per-system payloads, which come and go as the camera moves.
+/// holds is the per-system payloads, which come and go as the view moves.
 #[derive(Clone, Debug, Default)]
 pub struct Resident {
     cells: HashMap<CellId, ResidentCell>,
@@ -133,7 +119,7 @@ impl Resident {
         }
     }
 
-    /// What the renderer draws: the needed marks whose payloads are resident.
+    /// The needed marks whose payloads are resident, ready to draw.
     pub fn drawable(&self, needed: &Needed) -> Vec<CellId> {
         needed.marks.iter().copied().filter(|&id| self.contains(id)).collect()
     }
@@ -145,7 +131,7 @@ impl Resident {
 
     /// What the evictor drops: resident payloads the walk no longer asks for.
     ///
-    /// Only the marks want a payload — a splat draws from the index alone — so a
+    /// Only the marks want a payload (a splat draws from the index alone), so a
     /// held payload outside the needed marks is what the evictor takes. The
     /// margin the doc calls for is applied by widening the walk before this, so
     /// the set arithmetic stays plain.
