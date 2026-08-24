@@ -5,7 +5,16 @@ authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 rust-version.workspace = true
 
+# The bin's rustdoc page would land at `doc/galos_db/`, the same path the
+# `galos_db` lib crate owns. Nothing consumes this executable's rustdoc, so
+# skip documenting it and let the crate keep the name.
+[[bin]]
+name = "galos-db"
+path = "src/bin/galos-db.rs"
+doc = false
+
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 # futures = "*"
 async-std = { version = "*", features = [ "attributes" ] }
 dotenv = "*"
@@ -23,6 +32,8 @@ elite_journal = { path = "../elite_journal", features = ["with-postgis-sqlx"] }
 # `elite_journal` happens to turn on, this being the crate that speaks to the
 # database.
 geozero = { version = "0.15", features = ["with-wkb", "with-postgis-sqlx"] }
+galos_index = { path = "../galos_index" }
+galos_photometry = { path = "../galos_photometry" }
 
 [dependencies.sqlx]
 version = "^0.8"

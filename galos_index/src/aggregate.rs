@@ -1,8 +1,8 @@
 //! What a cell carries for its whole subtree, held so it composes exactly.
 //!
 //! A cell stands for every system beneath it, and it has to say something true
-//! about them whether or not their records are loaded. So it carries totals —
-//! the count, the flux, the two weighted centroids, the brightest magnitude —
+//! about them whether or not their records are loaded. So it carries totals,
+//! the count, the flux, the two weighted centroids, the brightest magnitude,
 //! and those totals are the aggregate `T(c)`. With the payload absent the total
 //! is drawn as it stands; with the payload present the residual, the total less
 //! the moments of the slice that arrived, is drawn instead, so no system counts
@@ -13,19 +13,20 @@
 //! add. The centroids and spreads come out of [`Moments`], which keeps the
 //! moments they are read from rather than the answers. Two weightings run at
 //! once and diverge wherever the bright stars sit off centre: the glow follows
-//! the light and the map follows the count.
+//! the light and the density follows the count.
 //!
 //! One field does not compose by adding, and does not need to. `m_min`, the
 //! brightest absolute magnitude in the subtree, composes by taking the smaller
-//! of two — which is why it is stored and not derived from the flux, a sum that
+//! of two, which is why it is stored and not derived from the flux, a sum that
 //! has lost the single brightest star. It answers the photometric cull on the
 //! stored total, never on a residual, so [`Aggregate::remove`] leaves it be.
 
 use crate::geometry::CellId;
 use crate::moments::Moments;
 use galos_photometry::flux;
+use crate::serialization::{FixedCodec, Decode, Encode, record};
 
-/// Temperature buckets the glow keeps its colour structure in — a warm bulge
+/// Temperature buckets the glow keeps its colour structure in: a warm bulge
 /// and blue arms without storing a temperature per star.
 pub const TEMP_BUCKETS: usize = 6;
 
@@ -54,8 +55,8 @@ pub fn temp_bucket(temperature_k: f64) -> usize {
 /// way and rejoined is the same aggregate.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Aggregate {
-    /// Brightest absolute magnitude in the subtree — the smallest number —
-    /// or [`None`] for an empty aggregate.
+    /// Brightest absolute magnitude in the subtree, the smallest number, or
+    /// [`None`] for an empty aggregate.
     m_min: Option<f32>,
     /// How many systems the subtree holds.
     count: u64,
@@ -63,7 +64,7 @@ pub struct Aggregate {
     flux: [f64; TEMP_BUCKETS],
     /// Position moments weighted by flux, for the glow's centroid and spread.
     light: Moments,
-    /// Position moments weighted by count, for the map's centroid and extent.
+    /// Position moments weighted by count, for the count-weighted centroid and extent.
     mass: Moments,
     /// Counts per age bucket, for the Recency filter.
     aged: [u64; AGE_BUCKETS],
@@ -84,7 +85,7 @@ impl Aggregate {
     ///
     /// Its flux is `10^(-0.4*M)`, the linear form magnitudes sum in, dropped
     /// into the bucket its temperature falls in. Its position enters the glow
-    /// weighted by that flux and the map weighted by one, and its magnitude is
+    /// weighted by that flux and the density weighted by one, and its magnitude is
     /// the brightest the aggregate has seen until something brighter merges in.
     pub fn of_system(
         position: [f64; 3],
@@ -114,11 +115,11 @@ impl Aggregate {
     pub fn merge(self, other: Aggregate) -> Aggregate {
         let mut flux = self.flux;
         let mut aged = self.aged;
-        for i in 0..TEMP_BUCKETS {
-            flux[i] += other.flux[i];
+        for (f, o) in flux.iter_mut().zip(other.flux) {
+            *f += o;
         }
-        for i in 0..AGE_BUCKETS {
-            aged[i] += other.aged[i];
+        for (a, o) in aged.iter_mut().zip(other.aged) {
+            *a += o;
         }
         Aggregate {
             m_min: min_opt(self.m_min, other.m_min),
@@ -130,7 +131,7 @@ impl Aggregate {
         }
     }
 
-    /// The residual of this total less a slice that was part of it — what a
+    /// The residual of this total less a slice that was part of it: what a
     /// cell splats once some of its systems have loaded and are drawn as
     /// themselves.
     ///
@@ -141,11 +142,11 @@ impl Aggregate {
     pub fn remove(self, slice: Aggregate) -> Aggregate {
         let mut flux = self.flux;
         let mut aged = self.aged;
-        for i in 0..TEMP_BUCKETS {
-            flux[i] -= slice.flux[i];
+        for (f, s) in flux.iter_mut().zip(slice.flux) {
+            *f -= s;
         }
-        for i in 0..AGE_BUCKETS {
-            aged[i] -= slice.aged[i];
+        for (a, s) in aged.iter_mut().zip(slice.aged) {
+            *a -= s;
         }
         Aggregate {
             m_min: self.m_min,
@@ -189,13 +190,13 @@ impl Aggregate {
         self.light.rms_radius()
     }
 
-    /// The map's centre of a cell: the count-weighted centre of the subtree,
+    /// The count-weighted centre of a cell, the centre of the subtree by count,
     /// which diverges from the glow's wherever the bright stars sit off centre.
     pub fn count_centroid(&self) -> Option<[f64; 3]> {
         self.mass.centroid()
     }
 
-    /// The map's extent of a cell: the count-weighted RMS radius.
+    /// The count-weighted extent of a cell: the RMS radius by count.
     pub fn count_extent(&self) -> f64 {
         self.mass.rms_radius()
     }
@@ -203,6 +204,49 @@ impl Aggregate {
     /// Counts per age bucket, which a prefix sum turns into any Recency span.
     pub fn aged(&self) -> &[u64; AGE_BUCKETS] {
         &self.aged
+    }
+}
+
+/// A brightest magnitude on the wire, with `NaN` standing for none: a real
+/// magnitude is never NaN, so the sentinel cannot collide with a value.
+struct BrightestMag(f32);
+
+impl Encode for BrightestMag {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
+    }
+}
+
+impl Decode for BrightestMag {
+    fn decode(cur: &mut &[u8]) -> Option<BrightestMag> {
+        Some(BrightestMag(f32::decode(cur)?))
+    }
+}
+
+impl FixedCodec for BrightestMag {
+    const LEN: usize = f32::LEN;
+}
+
+impl From<Option<f32>> for BrightestMag {
+    fn from(m: Option<f32>) -> BrightestMag {
+        BrightestMag(m.unwrap_or(f32::NAN))
+    }
+}
+
+impl From<BrightestMag> for Option<f32> {
+    fn from(m: BrightestMag) -> Option<f32> {
+        (!m.0.is_nan()).then_some(m.0)
+    }
+}
+
+record! {
+    Aggregate {
+        m_min: Option<f32> as BrightestMag,
+        count: u64,
+        flux: [f64; TEMP_BUCKETS],
+        light: Moments,
+        mass: Moments,
+        aged: [u64; AGE_BUCKETS],
     }
 }
 
@@ -227,7 +271,7 @@ fn min_opt(a: Option<f32>, b: Option<f32>) -> Option<f32> {
 /// A node at level `L` owns ranks `[rank_lo, rank_hi)` of its subtree's
 /// magnitude order, holding only what its ancestors did not, so drawing a node
 /// with its loaded ancestors is exactly the union with no system twice. The
-/// `aggregate` is the total over the whole subtree, not the slice — with the
+/// `aggregate` is the total over the whole subtree, not the slice; with the
 /// slice absent it is drawn as it stands, and with the slice present the
 /// residual is drawn instead.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -379,7 +423,7 @@ mod tests {
         ));
     }
 
-    /// Removing a slice from a total leaves exactly the rest — the residual the
+    /// Removing a slice from a total leaves exactly the rest, the residual the
     /// field splats over what has loaded.
     #[test]
     fn remove_leaves_the_residual() {

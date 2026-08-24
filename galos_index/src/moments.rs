@@ -4,11 +4,11 @@
 //! survive being split and rejoined. Descending replaces a parent's one splat
 //! with its children's slices plus their residual splats, and the two have to
 //! integrate to the same totals or the galaxy would brighten and dim as the
-//! camera moved. So a cell does not store a centroid and a radius, which do not
+//! view moved. So a cell does not store a centroid and a radius, which do not
 //! add, but moments they are read from, which do.
 //!
-//! The obvious moments — the weighted sum of positions and of squared distances
-//! from the origin — add cleanly but cancel badly. A system sixty thousand
+//! The obvious moments, the weighted sum of positions and of squared distances
+//! from the origin, add cleanly but cancel badly. A system sixty thousand
 //! light years out has a squared distance near four billion, and the spread
 //! within its cell is a few hundred at most, so reading the spread as the mean
 //! squared distance less the squared centroid subtracts two near-equal billions
@@ -19,21 +19,23 @@
 //! So the moments are kept about the running centroid, as Welford and Chan
 //! compose a variance: the weight, the weighted mean, and `m2`, the weighted
 //! sum of squared deviations from that mean. Merging shifts the mean by the
-//! weighted gap between the two and corrects `m2` by the same gap — the
+//! weighted gap between the two and corrects `m2` by the same gap: the
 //! parallel axis theorem, but applied to the small distance between two
 //! centroids rather than to the large distance to the origin. Removing a slice
 //! is the exact inverse.
 //!
-//! The weight is whatever the walk weights by. Map mode weights by count, one
+//! The weight is whatever the walk weights by. The overview weights by count,
 //! per system, and reads a count-weighted centroid and extent. The glow weights
 //! by luminosity and reads a luminosity-weighted centroid and spread. It is the
 //! same arithmetic; only the weight differs.
+
+use crate::serialization::{FixedCodec, Decode, Encode, record};
 
 /// The weighted moments of a set of points in three dimensions.
 ///
 /// Held about the running centroid rather than the origin, so a set far from
 /// the origin keeps the precision of its own spread. [`merge`](Self::merge)
-/// combines two sets and [`remove`](Self::remove) takes one back out — the
+/// combines two sets and [`remove`](Self::remove) takes one back out: the
 /// residual of a total minus a slice that was part of it, which is what a cell
 /// drawn over its own loaded systems subtracts so no system is counted twice.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -56,7 +58,7 @@ impl Moments {
         Moments { weight: w, mean: p, m2: 0.0 }
     }
 
-    /// The total weight of the set — its count under count weighting, its flux
+    /// The total weight of the set: its count under count weighting, its flux
     /// under luminosity weighting.
     pub fn weight(&self) -> f64 {
         self.weight
@@ -84,7 +86,7 @@ impl Moments {
     /// sum into a field with no seam and no dependence on draw order.
     ///
     /// The mean moves toward the heavier set by the weighted gap between the
-    /// two, and `m2` gains that gap squared scaled by the reduced weight — the
+    /// two, and `m2` gains that gap squared scaled by the reduced weight: the
     /// parallel axis correction, worked on the distance between centroids.
     pub fn merge(self, other: Moments) -> Moments {
         let weight = self.weight + other.weight;
@@ -107,7 +109,7 @@ impl Moments {
         Moments { weight, mean, m2 }
     }
 
-    /// Take `other`'s contribution back out — the residual of a total less a
+    /// Take `other`'s contribution back out: the residual of a total less a
     /// slice.
     ///
     /// The exact inverse of [`merge`](Self::merge): `total.remove(slice)` is the
@@ -133,6 +135,14 @@ impl Moments {
         let delta_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
         let m2 = self.m2 - other.m2 - delta_sq * (weight * other.weight / self.weight);
         Moments { weight, mean, m2 }
+    }
+}
+
+record! {
+    Moments {
+        weight: f64,
+        mean: [f64; 3],
+        m2: f64,
     }
 }
 
@@ -164,7 +174,7 @@ mod tests {
         close(a.weight, b.weight) && close3(a.mean, b.mean) && close(a.m2, b.m2)
     }
 
-    /// A lone point sits at itself and has no spread — exactly zero, however far
+    /// A lone point sits at itself and has no spread, exactly zero however far
     /// from the origin it is, which is the whole reason for the deviation form.
     #[test]
     fn a_point_is_its_own_centroid() {

@@ -1,23 +1,23 @@
 //! The walks: one traversal of the tree, read for each presentation.
 //!
-//! Drawing and fetching are one question — what the camera needs — and
-//! [`Index::needed`] answers it, turning a camera pose and a presentation into
-//! the cells to draw as marks and the cells to splat as a field. The renderer
-//! draws what is needed and resident, the loader fetches what is needed and
-//! absent, and the evictor drops what is resident and no longer needed. One
+//! Drawing and fetching are one question, what the view needs, and
+//! [`Index::needed`] answers it, turning a viewpoint and a presentation into
+//! the cells to draw as marks and the cells to splat as a field. Drawing takes
+//! what is needed and resident, loading fetches what is needed and absent, and
+//! eviction drops what is resident and no longer needed. One
 //! predicate, three consumers.
 //!
 //! Both presentations are marks over a field; they differ in the cut and in
 //! what the field carries.
 //!
-//! - **Shell** is the map: a screen-space budget refines the cell that covers
+//! - **Shell** is the overview: a screen-space budget refines the cell that covers
 //!   the most screen first and stops when the budget is spent. Its own systems
 //!   draw as marks, and a cell it does not fully refine splats the rest, a field
 //!   coloured by the political mix.
 //! - **Real** is the sky, and it is one quantity split at the visibility floor
-//!   rather than two modes. Stars that clear the limit draw as discrete marks —
-//!   the photometric walk keeps a giant far out and prunes a cell of dim
-//!   dwarfs — and everything below the floor sums into the glow, the field the
+//!   rather than two modes. Stars that clear the limit draw as discrete marks
+//!   (the photometric walk keeps a giant far out and prunes a cell of dim
+//!   dwarfs), and everything below the floor sums into the glow, the field the
 //!   opening-angle walk splats beneath them. The residual rule keeps a star
 //!   drawn discretely out of the glow behind it, so the two never double count
 //!   and no star falls between them.
@@ -32,7 +32,7 @@ use galos_photometry::{EYE_LIMIT, apparent_magnitude_ly};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
-/// The point budget the map traversal spends, in systems drawn as marks.
+/// The point budget the Shell traversal spends, in systems drawn as marks.
 ///
 /// Sized so it cannot bind while marks are still separable: a 2 px mark needs
 /// about 6.7 px of separation, which bounds a 1080p screen to some 46,000
@@ -42,7 +42,7 @@ use std::collections::{BinaryHeap, HashMap};
 pub const DEFAULT_POINT_BUDGET: u64 = 46_000;
 
 /// Below this projected size a cell's contents land on about one pixel and can
-/// add nothing, so the map does not refine past it.
+/// add nothing, so the walk does not refine past it.
 pub const FLOOR_PX: f64 = 1.0;
 
 /// A cell wider than this on screen is refined for the glow; narrower, it
@@ -57,24 +57,24 @@ pub const GLOW_OPENING_ANGLE: f64 = 0.5 * std::f64::consts::PI / 180.0;
 /// floor rather than a choice between them.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// The map's translucent balls over a political field, on the point budget.
+    /// Translucent balls over a political field, on the point budget.
     Shell,
     /// The sky: discrete stars over the glow, on the photometric limit and the
     /// opening angle together.
     Real,
 }
 
-/// A camera pose and lens, in light years, with no renderer in it.
+/// A viewpoint in light years: where the eye is, which way it looks, and the
+/// lens it looks through.
 ///
-/// The map fills this from its orbit camera each frame — `forward` and `up`
-/// resolved from the rotation rather than left as a quaternion, so the walk
-/// stays renderer-agnostic — and everything downstream reads these plain
-/// numbers.
+/// Orientation is the two unit vectors `forward` and `up`, not a rotation in
+/// any particular form, so the walk is plain vector arithmetic and the caller
+/// converts from whatever it keeps its own orientation in.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct View {
     /// The eye position, light years.
     pub eye: [f64; 3],
-    /// The unit direction the camera looks along.
+    /// The unit direction looked along.
     pub forward: [f64; 3],
     /// The unit up direction.
     pub up: [f64; 3],
@@ -94,7 +94,7 @@ impl View {
     }
 
     /// The projected size, in pixels, of something `size_ly` across seen from
-    /// `distance_ly` away. Infinite at zero distance, where the camera is inside
+    /// `distance_ly` away. Infinite at zero distance, where the eye is inside
     /// it.
     pub fn projected_px(&self, size_ly: f64, distance_ly: f64) -> f64 {
         if distance_ly <= 0.0 {
@@ -119,10 +119,10 @@ pub struct Needed {
 
 /// The resident tree of cell aggregates, keyed by address.
 ///
-/// Small enough to hold whole — a few megabytes over the galaxy — so every walk
+/// Small enough to hold whole (a few megabytes over the galaxy), so every walk
 /// reads it without a fetch. The payloads it points at are loaded separately and
 /// cached elsewhere; this is the index the walks plan on.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Index {
     cells: HashMap<CellId, Cell>,
 }
@@ -148,6 +148,12 @@ impl Index {
         self.cells.is_empty()
     }
 
+    /// Every cell in the index, in no particular order: what the builder's
+    /// checks and the serialization walk read.
+    pub fn cells(&self) -> impl Iterator<Item = &Cell> {
+        self.cells.values()
+    }
+
     /// The root cell, if present.
     pub fn root(&self) -> Option<&Cell> {
         self.get(CellId::ROOT)
@@ -167,7 +173,7 @@ impl Index {
         view.projected_px(cell.id.edge_ly(), distance(view.eye, center))
     }
 
-    /// The cells the camera needs for a presentation: the marks to draw and the
+    /// The cells the view needs for a presentation: the marks to draw and the
     /// cells to splat as a field.
     pub fn needed(&self, view: &View, mode: Mode) -> Needed {
         match mode {
@@ -254,7 +260,7 @@ impl Index {
     }
 
     /// The glow under the Real sky: descend while a cell subtends more than the
-    /// opening angle, and splat it once it subtends less — the summed light of
+    /// opening angle, and splat it once it subtends less: the summed light of
     /// everything below the visibility floor.
     fn glow_field(&self, view: &View) -> Vec<CellId> {
         let mut splats = Vec::new();
