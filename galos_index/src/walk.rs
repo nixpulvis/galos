@@ -103,6 +103,49 @@ impl View {
             size_ly / distance_ly * self.pixels_per_radian()
         }
     }
+
+    /// Whether a box falls within the view, for culling the walk to the frame.
+    ///
+    /// A cone about `forward`, wide enough to circumscribe the rectangular
+    /// frustum (its diagonal half-angle), grown by the box's own angular radius
+    /// so a box straddling the edge is kept. A box the eye sits inside is
+    /// always kept. Conservative by design: it may keep a box just off a
+    /// corner, but never drops one the frame would show.
+    pub fn sees(&self, bounds: &crate::geometry::Aabb) -> bool {
+        if bounds.distance_to(self.eye) <= 0.0 {
+            return true;
+        }
+        let center = bounds.center();
+        let to = [
+            center[0] - self.eye[0],
+            center[1] - self.eye[1],
+            center[2] - self.eye[2],
+        ];
+        let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+        let along = (to[0] * self.forward[0]
+            + to[1] * self.forward[1]
+            + to[2] * self.forward[2])
+            / dist;
+        let angle = along.clamp(-1.0, 1.0).acos();
+        let ext = [
+            bounds.max[0] - bounds.min[0],
+            bounds.max[1] - bounds.min[1],
+            bounds.max[2] - bounds.min[2],
+        ];
+        let radius =
+            0.5 * (ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]).sqrt();
+        let box_angle = (radius / dist).min(1.0).asin();
+        angle - box_angle <= self.diagonal_half_fov()
+    }
+
+    /// Half the angle across the frustum's diagonal, radians: the cone that
+    /// circumscribes the rectangular field, so a cull about it never cuts a
+    /// visible corner.
+    fn diagonal_half_fov(&self) -> f64 {
+        let half_y = (self.fov_y as f64 / 2.0).tan();
+        let half_x = half_y * self.aspect as f64;
+        (half_x * half_x + half_y * half_y).sqrt().atan()
+    }
 }
 
 /// What a walk asks for: the cells whose systems draw as discrete marks and the
@@ -221,7 +264,10 @@ impl Index {
 
         while let Some(Priority { size, id }) = heap.pop() {
             let cell = self.get(id).expect("frontier cell is in the tree");
-            let children: Vec<&Cell> = self.children(cell).collect();
+            let children: Vec<&Cell> = self
+                .children(cell)
+                .filter(|c| view.sees(&c.id.bounds()))
+                .collect();
             let adds: u64 = children.iter().map(|c| c.slice_len()).sum();
             let can_refine = !children.is_empty()
                 && size >= FLOOR_PX
@@ -332,6 +378,47 @@ impl PartialOrd for Priority {
 mod tests {
     use super::*;
     use crate::aggregate::Aggregate;
+
+    /// The view keeps a box ahead of the eye and drops one behind it.
+    #[test]
+    fn sees_ahead_not_behind() {
+        let view = View {
+            eye: [0.0, 0.0, 0.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            fov_y: std::f32::consts::FRAC_PI_2,
+            viewport_height: 1000.0,
+            aspect: 1.0,
+        };
+        let ahead = crate::geometry::Aabb {
+            min: [-1.0, -1.0, -11.0],
+            max: [1.0, 1.0, -9.0],
+        };
+        let behind = crate::geometry::Aabb {
+            min: [-1.0, -1.0, 9.0],
+            max: [1.0, 1.0, 11.0],
+        };
+        assert!(view.sees(&ahead), "a box ahead is in view");
+        assert!(!view.sees(&behind), "a box behind is culled");
+    }
+
+    /// A box the eye sits inside is always in view.
+    #[test]
+    fn sees_the_box_it_is_inside() {
+        let view = View {
+            eye: [0.0, 0.0, 0.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            fov_y: std::f32::consts::FRAC_PI_2,
+            viewport_height: 1000.0,
+            aspect: 1.0,
+        };
+        let around = crate::geometry::Aabb {
+            min: [-5.0, -5.0, -5.0],
+            max: [5.0, 5.0, 5.0],
+        };
+        assert!(view.sees(&around));
+    }
 
     /// The galactic centre, where the test cells are hung so a nearby eye has
     /// small light-year distances to work with.

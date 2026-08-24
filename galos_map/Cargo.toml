@@ -33,6 +33,7 @@ big_space = { git = "https://github.com/aevyrie/big_space", branch = "bevy-0.19"
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_index = { path = "../galos_index", default-features = false }
+galos_photometry = { path = "../galos_photometry" }
 pathfinding = "4"
 
 [dev-dependencies]

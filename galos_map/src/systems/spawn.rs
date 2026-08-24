@@ -640,7 +640,7 @@ impl PendingSpawns {
     /// `pinned` marks a system wanted whatever the reach — one picked out and
     /// flown to — which [`prune`](Self::prune) never drops. A system queued
     /// again as pinned stays pinned.
-    fn push(&mut self, system: System, pinned: bool, at: Instant) {
+    pub(crate) fn push(&mut self, system: System, pinned: bool, at: Instant) {
         let address = system.address;
         match self.rows.get_mut(&address) {
             Some((held, held_pinned)) => {
@@ -722,12 +722,18 @@ fn drain_spawns(
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     spyglass: Res<Spyglass>,
+    bounded: Option<Res<crate::systems::bounded::BoundedFetch>>,
     mut commands: Commands,
 ) {
     // Weigh the queue against the reach before drawing any of it, the same cut
     // the evictor makes on the live set, so a region flown away from is
     // dropped unread rather than spawned and evicted in the same breath.
-    if let Ok(camera) = camera.single() {
+    // Only against the spyglass reach, and only when the spyglass is the
+    // source. The bounded walk chooses its own set with no radius to weigh
+    // against, and its marks sit wherever the walk reached — pruning them here
+    // against the spyglass radius would drop the whole set before it spawned.
+    let bounded = bounded.as_deref().is_some_and(|b| b.0);
+    if !bounded && let Ok(camera) = camera.single() {
         let keep = spyglass.radius as f64 * super::EVICT_MARGIN;
         pending.prune(camera.center, keep, spyglass.clear);
     }
