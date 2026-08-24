@@ -1003,6 +1003,40 @@ touches a thin tube of leaves, so a 500 ly route explores perhaps 2 to 24 MB
 of cells that the cache pulls as it goes. The full download is for offline
 use and arbitrary routes.
 
+### Follow-up: making a build directory servable
+
+The builder writes the format a client reads, but three gaps stand between a
+build directory and one a static server can put behind a CDN. None of them
+touches the byte layout; all are in how the files are written, named, and
+placed.
+
+1. **Writes have to be atomic.** `Snapshot::write`, `Snapshot::write_diff` and
+   `Tree::publish` (`galos_index/src/store.rs`) truncate in place with
+   `fs::write` and delete with `fs::remove_file`, so a server reading the
+   directory while a `--watch` publish is mid-flight can serve a torn
+   `index.bin` or a half-written cell. Each write should land in a temporary
+   file and rename over its target, which is atomic on one filesystem, and a
+   removal should rename out of the way rather than unlink in place.
+
+2. **Caching needs a generation.** A cell's filename is its Morton key and
+   stays put, but its contents change every time a system in it moves, so the
+   immutability the serving model above leans on does not hold for a live
+   directory: `Cache-Control: immutable` on a stable name would pin stale
+   bytes. Two ways out, and the index file is where either is cheapest to
+   coordinate, being small and refetched whole: revalidate cells by
+   `Last-Modified`/`ETag` on a conditional GET, or stamp a generation into the
+   names so a rebuild writes fresh ones and the old expire. A full build
+   uploaded to object storage can keep its names immutable per generation; the
+   `--watch` directory served in place cannot, and that is the difference
+   between the two paths.
+
+3. **Output belongs outside the source tree.** The `index` command defaults its
+   directory to `galos_index`, which is the crate's own source directory, so a
+   build drops `index.bin` and `cells/` into it (both are `.gitignore`d for
+   exactly this reason). The default should be a dedicated directory, or the
+   tool should refuse to write into a crate root, so a served directory is
+   never the source tree.
+
 ## Before the import
 
 `updated_by` is 65 bytes wide in `systems`, `bodies` and `stars`, and
