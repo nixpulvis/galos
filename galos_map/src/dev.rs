@@ -15,8 +15,20 @@ use crate::systems::spawn::PendingSpawns;
 use crate::systems::{Evictions, InReach, PendingEvictions, Spyglass, System};
 use crate::{Factions, IndexDir, Names, Populated, ResidentIndex};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+
+/// The tables the client loaded once and holds, bundled so the panel stays
+/// under a system's parameter limit.
+#[derive(SystemParam)]
+struct Loaded<'w> {
+    dir: Res<'w, IndexDir>,
+    index: Res<'w, ResidentIndex>,
+    populated: Res<'w, Populated>,
+    names: Res<'w, Names>,
+    factions: Res<'w, Factions>,
+}
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
@@ -64,17 +76,14 @@ const WIDTH: f32 = 200.;
 fn diagnostics(
     mut contexts: EguiContexts,
     mut show: ResMut<ShowDiagnostics>,
-    dir: Res<IndexDir>,
-    index: Res<ResidentIndex>,
-    populated: Res<Populated>,
-    names: Res<Names>,
-    factions: Res<Factions>,
+    loaded: Loaded,
     tasks: Res<FetchTasks>,
     spyglass: Res<Spyglass>,
     in_reach: Res<InReach>,
     evictions: Res<Evictions>,
     queued_spawns: Res<PendingSpawns>,
     queued_evictions: Res<PendingEvictions>,
+    planned: Res<crate::systems::aggregate::Planned>,
     store: Res<DiagnosticsStore>,
     systems: Query<(), With<System>>,
     camera: Query<&OrbitCamera>,
@@ -122,21 +131,21 @@ fn diagnostics(
                     pair(
                         ui,
                         "dir",
-                        &dir.0,
+                        &loaded.dir.0,
                         "Where the index and its metadata sidecars were read \
                          from.",
                     );
                     pair(
                         ui,
                         "cells",
-                        &index.0.len().to_string(),
+                        &loaded.index.0.len().to_string(),
                         "Cells in the resident aggregate tree — the spatial \
                          index every walk reads without a fetch.",
                     );
                     pair(
                         ui,
                         "populated",
-                        &populated.0.len().to_string(),
+                        &loaded.populated.0.len().to_string(),
                         "Systems in the political table — population, \
                          allegiance, government — held resident for colour and \
                          filtering. Most of the galaxy is absent from it.",
@@ -144,14 +153,14 @@ fn diagnostics(
                     pair(
                         ui,
                         "names",
-                        &names.entries.len().to_string(),
+                        &loaded.names.entries.len().to_string(),
                         "Systems in the names-and-positions table: the search \
                          index and the router's graph.",
                     );
                     pair(
                         ui,
                         "factions",
-                        &factions.0.len().to_string(),
+                        &loaded.factions.0.len().to_string(),
                         "Faction id-to-name entries.",
                     );
                 },
@@ -214,6 +223,40 @@ fn diagnostics(
                         &tasks.surveyed.len().to_string(),
                         "Regions the map remembers holding, so it does not ask \
                          again. Clamped to what the evictor still holds.",
+                    );
+                },
+            );
+            ui.separator();
+            row(
+                ui,
+                "walk",
+                "What the index walk asks the view for, off the aggregates \
+                 alone: the cells to draw as discrete systems, and the cells \
+                 drawn as one aggregate splat which the glow renders.",
+                |ui| {
+                    pair(
+                        ui,
+                        "mode",
+                        match planned.0.mode {
+                            galos_index::Mode::Shell => "shell",
+                            galos_index::Mode::Real => "real",
+                        },
+                        "Shell is the map's balls over a political field on a \
+                         point budget; Real is the photometric sky.",
+                    );
+                    pair(
+                        ui,
+                        "marks",
+                        &planned.0.marks.len().to_string(),
+                        "Cells drawn as discrete systems — the fetch set once \
+                         spawning is bounded to it.",
+                    );
+                    pair(
+                        ui,
+                        "splats",
+                        &planned.0.splats.len().to_string(),
+                        "Cells the walk would draw as a glow field, kept for \
+                         the field renderer — not drawn yet.",
                     );
                 },
             );

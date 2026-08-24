@@ -22,6 +22,8 @@ pub fn plugin(app: &mut App) {
     });
 
     app.add_plugins(fetch::plugin);
+    app.add_plugins(aggregate::plugin);
+    app.add_plugins(bounded::plugin);
     app.add_plugins(roundness::plugin);
     app.add_plugins(bodies::plugin);
     app.add_plugins(spawn::plugin);
@@ -56,7 +58,13 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, visibility.in_set(MapSet::Present));
     // After [`visibility`], which has already read the reach this frame, and in
     // the same set so the drop and the hide are decided together.
-    app.add_systems(Update, evict.in_set(MapSet::Present).after(visibility));
+    app.add_systems(
+        Update,
+        evict
+            .in_set(MapSet::Present)
+            .after(visibility)
+            .run_if(bounded::spyglass),
+    );
     // After [`evict`], which marks what to drop; this drops a budgeted number
     // so the despawn churn a frame does stays bounded.
     app.add_systems(
@@ -143,7 +151,9 @@ impl System {
     }
 }
 
+pub mod aggregate;
 pub mod bodies;
+pub mod bounded;
 pub mod despawn;
 pub mod fetch;
 pub mod filter;
@@ -326,14 +336,16 @@ pub fn visibility(
     spyglass: Res<Spyglass>,
     dim: Res<filter::DimTo>,
     mut in_reach: ResMut<InReach>,
+    bounded: Option<Res<bounded::BoundedFetch>>,
 ) {
     let Ok(camera) = camera.single() else { return };
+    let all_in_reach = bounded.as_deref().map_or(false, |b| b.0);
     let excluded_are_drawn = dim.0 > 0.;
 
     let mut tally = InReach::default();
     for (system, mut visibility, filtered, hop) in &mut systems {
-        let within =
-            spyglass.reaches(camera.center, DVec3::from(system.position));
+        let within = all_in_reach
+            || spyglass.reaches(camera.center, DVec3::from(system.position));
         if within {
             tally.total += 1;
             if !filtered {

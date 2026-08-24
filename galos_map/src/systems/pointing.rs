@@ -600,6 +600,18 @@ pub(super) fn overlay_plane(radius: f32) -> f32 {
 /// the near plane, which the camera holds at a ten-thousandth.
 const OVERLAY_FRACTION: f32 = 1e-2;
 
+/// The most systems the picker reports under one pointer at once
+///
+/// A pointer over a crowded sky can fall within the mark radius of thousands
+/// of overlapping systems, the same crowding the labels thin themselves
+/// against, here on the marks. Putting every one through the hover pipeline
+/// each frame is what a zoomed-out view over the galactic core otherwise
+/// stalls on, and only the nearest can be pointed at — a mark under a mark is
+/// settled by depth. So the picker keeps that many and no more, enough for
+/// [`point_at`] to settle its precedence and past what any hand could aim
+/// between. The rest are a system you would have to fly in to tell apart.
+const MAX_HITS: usize = 256;
+
 /// Say what the pointer is over, measured on screen
 ///
 /// A picking backend, which is to say it answers one question: which entities
@@ -753,6 +765,14 @@ fn hits(
             }
         }
 
+        // Report only the nearest few, so a pointer resting on the dense core
+        // does not put a crowd of overlapping sub-pixel marks through the
+        // hover pipeline every frame. The nearest is the one pointed at; the
+        // rest behind it change nothing but the cost.
+        if picks.len() > MAX_HITS {
+            picks.sort_by(|(_, a), (_, b)| a.depth.total_cmp(&b.depth));
+            picks.truncate(MAX_HITS);
+        }
         hits.write(PointerHits::new(*pointer, picks, camera.order as f32));
     }
 }

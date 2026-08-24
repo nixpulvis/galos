@@ -86,11 +86,11 @@ async fn stars_by_system(
     addresses: Option<&[i64]>,
 ) -> Result<HashMap<i64, Vec<(f64, f64)>>> {
     let rows = match addresses {
-        None => {
-            sqlx::query("SELECT system_address, absolute_magnitude, temperature FROM stars")
-                .fetch_all(&db.pool)
-                .await?
-        }
+        None => sqlx::query(
+            "SELECT system_address, absolute_magnitude, temperature FROM stars",
+        )
+        .fetch_all(&db.pool)
+        .await?,
         Some(addresses) => {
             sqlx::query(
                 "SELECT system_address, absolute_magnitude, temperature \
@@ -221,7 +221,11 @@ pub async fn read_changed(
 /// a known interim cost: it holds every positioned system, so a single changed
 /// system reserializes the lot, and the price is paid until the transport grows
 /// a way to publish a delta into it.
-pub async fn watch(db: &Database, dir: &Path, interval: Duration) -> Result<()> {
+pub async fn watch(
+    db: &Database,
+    dir: &Path,
+    interval: Duration,
+) -> Result<()> {
     let mut since = db.now().await?.naive_utc();
     let inputs = read_inputs(db).await?;
     let mut tree = Tree::build(&inputs, &BuildParams::default());
@@ -238,7 +242,11 @@ pub async fn watch(db: &Database, dir: &Path, interval: Duration) -> Result<()> 
             tree.publish(dir)?;
             let touched = changed_addresses(db, since).await?;
             write_metadata(db, dir, Some(&touched)).await?;
-            eprintln!("index updated: {} changed, {} systems", changed.len(), tree.len());
+            eprintln!(
+                "index updated: {} changed, {} systems",
+                changed.len(),
+                tree.len()
+            );
         }
         since = now;
     }
@@ -377,8 +385,9 @@ async fn write_names(db: &Database, dir: &Path) -> Result<usize> {
 /// Write `factions.bin`: the whole faction id-to-name table, small and read
 /// whole by the client that looks a system's faction ids up in it.
 async fn write_factions(db: &Database, dir: &Path) -> Result<usize> {
-    let rows =
-        sqlx::query("SELECT id, name FROM factions").fetch_all(&db.pool).await?;
+    let rows = sqlx::query("SELECT id, name FROM factions")
+        .fetch_all(&db.pool)
+        .await?;
 
     let factions = rows
         .iter()
@@ -410,10 +419,18 @@ async fn write_bodies(
 ) -> Result<usize> {
     let mut grouped: HashMap<i64, meta::SystemBodies> = HashMap::new();
     for star in all_stars(db, addresses).await? {
-        grouped.entry(star.system_address).or_default().stars.push(meta_star(star));
+        grouped
+            .entry(star.system_address)
+            .or_default()
+            .stars
+            .push(meta_star(star));
     }
     for body in all_bodies(db, addresses).await? {
-        grouped.entry(body.system_address).or_default().bodies.push(meta_body(body));
+        grouped
+            .entry(body.system_address)
+            .or_default()
+            .bodies
+            .push(meta_body(body));
     }
     for barycenter in all_barycenters(db, addresses).await? {
         grouped
@@ -446,7 +463,10 @@ async fn write_bodies(
 /// far edge of the furthest thing on record, over bodies, stars and the points
 /// a close pair goes round. One grouped query rather than one per system, the
 /// same shape [`crate::systems`] reads a drawn region's reaches with.
-async fn reaches(db: &Database, addresses: &[i64]) -> Result<HashMap<i64, f32>> {
+async fn reaches(
+    db: &Database,
+    addresses: &[i64],
+) -> Result<HashMap<i64, f32>> {
     let rows = sqlx::query(
         "SELECT system_address AS address, \
                 MAX(GREATEST(away, apoapsis) + radius) AS reach \
@@ -498,13 +518,15 @@ async fn all_stars(
                 .fetch_all(&db.pool)
                 .await?
         }
-        Some(addresses) => sqlx::query(
-            "SELECT * FROM stars WHERE system_address = ANY($1) \
+        Some(addresses) => {
+            sqlx::query(
+                "SELECT * FROM stars WHERE system_address = ANY($1) \
              ORDER BY system_address",
-        )
-        .bind(addresses)
-        .fetch_all(&db.pool)
-        .await?,
+            )
+            .bind(addresses)
+            .fetch_all(&db.pool)
+            .await?
+        }
     };
     rows.iter().map(star_from_row).collect()
 }
@@ -525,18 +547,22 @@ async fn all_bodies(
          LEFT JOIN body_materials m \
              ON m.system_address = b.system_address AND m.body_id = b.id";
     let rows = match addresses {
-        None => sqlx::query(&format!(
+        None => {
+            sqlx::query(&format!(
             "{select} GROUP BY b.system_address, b.id ORDER BY b.system_address"
         ))
-        .fetch_all(&db.pool)
-        .await?,
-        Some(addresses) => sqlx::query(&format!(
-            "{select} WHERE b.system_address = ANY($1) \
+            .fetch_all(&db.pool)
+            .await?
+        }
+        Some(addresses) => {
+            sqlx::query(&format!(
+                "{select} WHERE b.system_address = ANY($1) \
              GROUP BY b.system_address, b.id ORDER BY b.system_address"
-        ))
-        .bind(addresses)
-        .fetch_all(&db.pool)
-        .await?,
+            ))
+            .bind(addresses)
+            .fetch_all(&db.pool)
+            .await?
+        }
     };
     rows.iter().map(body_from_row).collect()
 }
@@ -553,13 +579,15 @@ async fn all_barycenters(
                 .fetch_all(&db.pool)
                 .await?
         }
-        Some(addresses) => sqlx::query(
-            "SELECT * FROM barycenters WHERE system_address = ANY($1) \
+        Some(addresses) => {
+            sqlx::query(
+                "SELECT * FROM barycenters WHERE system_address = ANY($1) \
              ORDER BY system_address",
-        )
-        .bind(addresses)
-        .fetch_all(&db.pool)
-        .await?,
+            )
+            .bind(addresses)
+            .fetch_all(&db.pool)
+            .await?
+        }
     };
     rows.iter().map(barycenter_from_row).collect()
 }
@@ -1049,10 +1077,14 @@ mod tests {
         );
         assert_eq!(surface.terraform_state.as_deref(), Some("Terraformable"));
         assert_eq!(meta_surfaced.parents[0].ty.as_deref(), Some("Null"));
-        let surfaced_bodies =
-            meta::SystemBodies { bodies: vec![meta_surfaced], ..Default::default() };
+        let surfaced_bodies = meta::SystemBodies {
+            bodies: vec![meta_surfaced],
+            ..Default::default()
+        };
         write_meta(&source::bodies_path(&dir, address + 2), &surfaced_bodies)
-            .expect("a surfaced body serializes even where its read half does not");
+            .expect(
+                "a surfaced body serializes even where its read half does not",
+            );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

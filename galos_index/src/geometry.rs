@@ -17,7 +17,7 @@
 //! the origin has an ulp of hundreds of AU while a `u16` in a 16 ly leaf
 //! resolves about fifteen, smaller and in half the bytes.
 
-use crate::serialization::{FixedCodec, Decode, Encode};
+use crate::serialization::{Decode, Encode, FixedCodec};
 
 /// The edge of the root cube, in light years: `2^17`, the smallest power of two
 /// that holds the galaxy's extent.
@@ -134,7 +134,9 @@ impl CellId {
     pub fn of_point(p: [f64; 3], level: u8) -> CellId {
         let edge = edge_ly(level);
         let last = ((1u64 << level) - 1) as f64;
-        let idx = |v: f64, min: f64| ((v - min) / edge).floor().clamp(0.0, last) as u32;
+        let idx = |v: f64, min: f64| {
+            ((v - min) / edge).floor().clamp(0.0, last) as u32
+        };
         CellId {
             level,
             x: idx(p[0], ROOT_MIN_LY[0]),
@@ -303,7 +305,11 @@ mod tests {
     /// A point lands in a cell that contains it, at every level.
     #[test]
     fn a_point_lands_in_a_cell_that_holds_it() {
-        for p in [[0.0, 0.0, 0.0], [1234.0, 5678.0, -9012.0], [-41974.0, 5319.0, 65630.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [1234.0, 5678.0, -9012.0],
+            [-41974.0, 5319.0, 65630.0],
+        ] {
             for level in [0, 5, 13, 17] {
                 let cell = CellId::of_point(p, level);
                 assert!(
@@ -376,6 +382,15 @@ mod tests {
         assert_ne!(x, z);
     }
 
+    /// SOL round trips
+    #[test]
+    fn quantization_round_trips_0() {
+        let origin = [0.0, 0.0, 0.0];
+        let cell = CellId::of_point(origin, 0);
+        let result = cell.dequantize(cell.quantize(origin));
+        assert_eq!(result, origin);
+    }
+
     /// Quantizing a position and reading it back lands within one quantum of the
     /// cell's edge, which at a 16 ly leaf is about fifteen AU.
     #[test]
@@ -402,7 +417,9 @@ mod tests {
     #[test]
     fn dequantize_then_quantize_is_stable() {
         let cell = CellId { level: 10, x: 200, y: 300, z: 400 };
-        for q in [[0, 0, 0], [1, 2, 3], [65535, 0, 32768], [65535, 65535, 65535]] {
+        for q in
+            [[0, 0, 0], [1, 2, 3], [65535, 0, 32768], [65535, 65535, 65535]]
+        {
             assert_eq!(cell.quantize(cell.dequantize(q)), q);
         }
     }
@@ -415,7 +432,10 @@ mod tests {
         assert!(close(cell.bounds().distance_to(cell.bounds().center()), 0.0));
         let min = cell.min_ly();
         // Three-four-five out from the low corner, one axis at a time then two.
-        assert!(close(cell.bounds().distance_to([min[0] - 3.0, min[1], min[2]]), 3.0));
+        assert!(close(
+            cell.bounds().distance_to([min[0] - 3.0, min[1], min[2]]),
+            3.0
+        ));
         assert!(close(
             cell.bounds().distance_to([min[0] - 3.0, min[1] - 4.0, min[2]]),
             5.0

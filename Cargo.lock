@@ -4110,6 +4110,7 @@ dependencies = [
  "elite_journal",
  "epaint_default_fonts",
  "galos_index",
+ "galos_photometry",
  "log",
  "pathfinding",
 ]

@@ -20,7 +20,13 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();
 
-    app.add_systems(Update, (fetch, fetch_selected).in_set(MapSet::Fetch));
+    app.add_systems(
+        Update,
+        fetch
+            .in_set(MapSet::Fetch)
+            .run_if(crate::systems::bounded::spyglass),
+    );
+    app.add_systems(Update, fetch_selected.in_set(MapSet::Fetch));
 }
 
 /// How long the map waits before asking again for what it already has

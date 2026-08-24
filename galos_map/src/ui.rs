@@ -610,6 +610,7 @@ pub struct Settings<'w> {
     bright: ResMut<'w, Bright>,
     despawner: MessageWriter<'w, Despawn>,
     reloader: MessageWriter<'w, ReloadCells>,
+    bounded: ResMut<'w, crate::systems::bounded::BoundedFetch>,
 }
 
 /// The whole of the bar's filter section
@@ -750,6 +751,12 @@ pub fn chrome(
             if ui.button("Reload Cells").clicked() {
                 settings.reloader.write(ReloadCells);
             }
+            ui.add_space(FIELD_GAP);
+            // Draw only what the walk marks, off the cell payloads, in place
+            // of the spyglass region. The bounded source that ends the
+            // far-view entity explosion; switching it clears the map and the
+            // other source rebuilds from nothing.
+            ui.checkbox(&mut settings.bounded.0, "Bounded fetch");
         });
 
         // Its own section rather than a row under either view, because it is

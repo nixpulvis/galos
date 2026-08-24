@@ -379,6 +379,77 @@ point-cloud mesh instead of thousands of entities, and the evictor drops what
 the camera has left behind, so the transform walk runs over a bounded resident
 set instead of the session's high-water mark.
 
+As of this pass the mark half is built but unverified. `bounded.rs` fetches
+`Resident::missing(&needed)` cell payloads through `Source::payload`, spawns
+one entity per `cache::Point` (dequantized against its cell, joined to
+`Names`/`Populated` for name and political colour) via the shared spawn queue,
+and evicts `Resident::stale(&needed)`; `BoundedFetch` gates it against the
+spyglass region fetch and is off by default, with `visibility` treating a
+bounded system as always in reach. It is opt-in until the map is seen to draw
+correctly on it; the spyglass region fetch remains the shipped path.
+
+The splat half is described but not drawn. `describe` still fills `Splats`
+from the resident aggregates so the data stays warm, but the first rendering
+pass — one additive Gaussian billboard per splat cell — was removed. Discrete
+per-cell billboards pop as the screen-space budget frontier sweeps (a cell
+flips between mark and splat frame to frame) and read as blobs laid over the
+marks rather than a field blended into them. The glow wants regime 3 proper:
+every splat accumulated into an offscreen field and resolved once, which is
+stable frame to frame and blends by construction. That is the deferred GPU
+work; the walk, `Splats`, and the aggregate descriptors are the scaffolding it
+will read.
+
+### The spyglass dissolves into the walk
+
+The target is no spyglass at all. Every system is *either* a mark the camera
+can individually resolve *or* inside a splat that stands for it — there is no
+third case, so there is nothing left for a spatial-radius spyglass to
+guarantee. The spyglass only ever caused the entity explosion because its
+radius grew with camera zoom (`reach_with_camera`): a zoomed-out spyglass is a
+galaxy-sized sphere, i.e. "load everything." Resolvability subsumes the radius:
+near and zoomed in, the local sphere projects large and loads discretely; far,
+it is a splat. Completeness restated honestly is "every system represented,
+mark or splat, no gaps" — not "every system spawned."
+
+The walk already encodes resolvability per mode: Shell is projected screen
+size over the mark threshold (the point budget is how many distinguishable
+points fit on screen); Real is apparent magnitude clearing the eye limit. So
+`wanted = marks` and the splats are the remainder; no `region ∪ marks` union
+is needed once the spyglass is gone.
+
+Two things must be true first, so the order is forced:
+
+1. **Frustum-cull the walk.** "Resolvable *to the camera*" means in-frame; the
+   walk (`walk_screen` and the Real walks) must cull cells whose bounds miss
+   the view frustum before spending budget, or the budget leaks onto cells
+   behind and beside the eye and the framed field starves. This also unifies
+   the two camera regimes into one mechanism rather than a bimodal switch: a
+   far orbiting eye that looks at its centre keeps the same framed region at
+   ≈constant distance whatever the orbit angle, so rotation is stable by
+   construction; a near eye among the stars sweeps the frustum as it turns and
+   loads new sky. Eye distance is the only thing that differs. (The current
+   `plan` key on `center`+`radius` is a stopgap that stops orbit churn but
+   wrongly freezes FPV turning; it is replaced by an eye-based frustum walk
+   with a move threshold to avoid re-walking every frame.)
+2. **The splat field must render.** "…or it's a splat" is only true if splats
+   draw. The per-cell billboard was removed (it popped and would not blend);
+   the field is regime 3 — accumulate every splat into an offscreen buffer,
+   resolve once — and it is now load-bearing, not polish: it holds up half the
+   model. Until it exists, deleting the spyglass leaves the non-resolvable
+   space empty (the sparse look), because the spyglass is currently the only
+   thing filling it.
+
+So: frustum-cull the walk (marks become the framed-resolvable set, still
+bounded), then build the splat field, then delete the spyglass. Doing the
+deletion before the field would leave holes. The one guarantee given up is a
+hard "these N ly are spawned even when unresolvable"; interacting with a dim
+nearby system while zoomed out goes through the resident `Names`/`Populated`
+tables and search, not a spawned entity.
+
+One fix already in place for this path: `drain_spawns` no longer prunes the
+spawn queue against the spyglass radius when the walk is the source, since the
+marks sit wherever the walk reached rather than inside a reach sphere.
+
 ## The metric is screen space, and the control is a point budget
 
 ```
