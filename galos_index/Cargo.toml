@@ -11,7 +11,26 @@ rust-version.workspace = true
 # Postgres. Physics comes from `galos_photometry`; nothing heavier belongs here.
 [dependencies]
 galos_photometry = { path = "../galos_photometry" }
+# The shared domain vocabulary: the enums a body, star and faction are
+# described by. Default features only, so no sqlx and no database follow it
+# into the client.
+elite_journal = { path = "../elite_journal" }
+# The metadata sidecars are serde records in a compact binary form. The cells
+# stay hand-rolled `FixedCodec`, being fixed-width and read in the millions;
+# the metadata is rich, click-depth and still settling, so it rides serde.
+# MessagePack rather than a non-self-describing format, since the shared
+# `elite_journal` enums carry `#[serde(untagged)]` variants that only a
+# self-describing codec can read back.
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+chrono = { version = "0.4", features = ["serde"] }
+# The transport seam is async so the one HTTP impl to come is a drop-in; boxed
+# so a client holds it behind `Arc<dyn Source>` and swaps FS for HTTP whole.
+async-trait = "0.1"
 clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+pollster = "0.3"
 
 [features]
 default = ["cli"]
