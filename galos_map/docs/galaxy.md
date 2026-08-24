@@ -339,6 +339,22 @@ containment test in `galos_map/src/systems/mod.rs:239`. That gap is where
 flicker would live, so the two collapse into one function whose result feeds
 both.
 
+Region keys also make the loader re-serve what it already holds.
+`Region(center, radius)` grows on a zoom out, and a wider radius is no refresh
+of a narrower survey (`refreshes` in `galos_map/src/systems/fetch.rs`), so the
+whole sphere is read and its systems rebuilt off-thread again — most of them
+already on the map from the inner region. The interim keeps this off the
+frame: the spawn queue (`PendingSpawns` in `galos_map/src/systems/spawn.rs`)
+dedups arrivals against the resident set, so a re-delivered system is dropped
+before it is queued rather than spawned as a no-op re-insert, and the queue
+reads as the new annulus rather than the whole sphere. What that does not
+spare is the read and the rebuild, which the task pays over the whole region
+regardless. The `needed()` collapse above is what ends it: keyed per cell
+against a resident cell cache (`galos_index::cache::Resident`, built but unused
+by the map today), `needed - resident` is the annulus of cells a zoom out
+newly reaches, so neither the transport nor the build touches a cell already
+held.
+
 Eviction uses the same predicate with a wider margin, and evicts from memory
 only. Cells on disk are kept, since a position never changes.
 

@@ -5,13 +5,12 @@ use bevy::tasks::futures_lite::future;
 use bevy_egui::{EguiGlobalSettings, EguiPlugin};
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use galos_map::systems::route::graph::{JumpGraph, Jumps};
 use galos_index::{FsSource, Source as _};
+use galos_map::systems::route::graph::{JumpGraph, Jumps};
 use galos_map::*;
 use std::sync::Arc;
 
 fn main() {
-
     // The built index directory the map draws from: the cell tree and the
     // metadata sidecars beside it. Read once at startup, since the aggregates
     // and the resident tables are a few megabytes and every walk reads them.
@@ -19,9 +18,10 @@ fn main() {
         .unwrap_or_else(|_| "galos_index".to_string());
     let source = FsSource::new(&dir);
     let (index, populated, names, factions) = future::block_on(async {
-        let index = source.index().await.unwrap_or_else(|e| {
-            panic!("reading the index at {dir}: {e}")
-        });
+        let index = source
+            .index()
+            .await
+            .unwrap_or_else(|e| panic!("reading the index at {dir}: {e}"));
         let populated = source.populated().await.unwrap_or_default();
         let names = source.names().await.unwrap_or_default();
         let factions = source.factions().await.unwrap_or_default();
@@ -89,9 +89,9 @@ fn main() {
     app.insert_resource(IndexDir(dir.clone()));
     app.insert_resource(Transport(Arc::new(source)));
     app.insert_resource(ResidentIndex(index));
-    app.insert_resource(Populated(
+    app.insert_resource(Populated(Arc::new(
         populated.into_iter().map(|s| (s.address, s)).collect(),
-    ));
+    )));
     app.insert_resource(Jumps(Arc::new(jumps)));
     app.insert_resource(Names::new(names));
     app.insert_resource(Factions(

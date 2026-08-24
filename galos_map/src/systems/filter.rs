@@ -918,21 +918,34 @@ impl Filtering<'_> {
     }
 }
 
-/// Ask the loaded regions again when the filters or the dim change
+/// Ask the loaded regions again when systems that are absent must return
 ///
-/// A filter narrows what is drawn, and at [`DimTo`] zero what it excludes is
-/// dropped rather than dimmed: [`super::spawn`] never spawns it and
-/// [`super::evict`] drops what already stands. So a filter added, removed, or
-/// dimmed to nothing changes which systems belong on the map, and the regions
-/// already surveyed have to be read again for it to show — otherwise a filter
-/// turned off leaves the systems it hid gone, the region still marked held and
-/// nothing asking after them.
+/// The fetch is unfiltered — the whole region in reach, dimmed or dropped by
+/// the filters afterwards — so the admitted set never drives it. A fetch is
+/// worth issuing only when a system that is off the map has to come back onto
+/// it, and nothing is off the map while the excluded are drawn: above zero
+/// dim every system in reach is spawned, filtered or not, so a filter change
+/// there only re-marks what already stands and asks for nothing.
+///
+/// Below zero the excluded are dropped ([`super::spawn`] never spawns them and
+/// [`super::evict`] drops what stands), so two moves bring absent systems
+/// back and must refetch: the dim coming up through zero, which wants them all
+/// again, and a filter relaxed while at zero, which readmits some. A move
+/// within the visible range changes only how faint the excluded are drawn, so
+/// it asks for nothing.
 fn refetch_on_filter_change(
     filters: Res<Filters>,
     dim: Res<DimTo>,
     mut tasks: ResMut<FetchTasks>,
+    mut were_drawn: Local<Option<bool>>,
 ) {
-    if filters.is_changed() || dim.is_changed() {
+    let drawn = dim.0 > 0.;
+    let came_back = *were_drawn == Some(false) && drawn;
+    *were_drawn = Some(drawn);
+    // A filter change matters only where the excluded are absent — at zero
+    // dim. Above it they are on the map already, so the change is `mark`'s to
+    // carry and no fetch follows.
+    if came_back || (filters.is_changed() && !drawn) {
         tasks.surveyed.clear();
     }
 }
@@ -1480,6 +1493,94 @@ mod tests {
         app.init_resource::<Time<Real>>();
         app.add_systems(Update, mark);
         app
+    }
+
+    /// A world with the filters, the dim, and the refetch that watches both.
+    /// Stepped once so the first run's clear, on the filters being newly
+    /// added, is behind it.
+    fn refetching() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Filters>();
+        app.init_resource::<DimTo>();
+        app.init_resource::<FetchTasks>();
+        app.add_systems(Update, refetch_on_filter_change);
+        app.update();
+        app
+    }
+
+    /// A region the map thinks it holds, so a clear is something to see.
+    fn hold_a_region(app: &mut App) {
+        let (asked, at) = crate::systems::fetch::tests::surveyed_at(0, 100, 0);
+        app.world_mut().resource_mut::<FetchTasks>().surveyed(asked, at);
+    }
+
+    fn holds_a_survey(app: &App) -> bool {
+        !app.world().resource::<FetchTasks>().surveyed.is_empty()
+    }
+
+    /// Nudging the opacity within its visible range asks for nothing
+    ///
+    /// The bug this guards: 0.30 does not round-trip through the slider, so it
+    /// used to clear the surveys every frame and refetch without end.
+    #[test]
+    fn a_dim_within_range_does_not_refetch() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.25;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<DimTo>().0 = 0.30;
+        app.update();
+
+        assert!(holds_a_survey(&app), "a dim nudge cleared the surveys");
+    }
+
+    /// Bringing the dim back up through zero asks the dropped systems back
+    #[test]
+    fn coming_back_up_through_zero_refetches() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<DimTo>().0 = 0.30;
+        app.update();
+
+        assert!(
+            !holds_a_survey(&app),
+            "coming back up from zero held the surveys"
+        );
+    }
+
+    /// A filter changing while the excluded are drawn asks for nothing: they
+    /// are already on the map, and the change is only a re-mark
+    #[test]
+    fn a_filter_change_while_drawn_does_not_refetch() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.25;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.update();
+
+        assert!(holds_a_survey(&app), "a filter change at opacity refetched");
+    }
+
+    /// A filter changing at zero dim asks the regions again, since what it
+    /// readmits there was dropped rather than dimmed
+    #[test]
+    fn a_filter_change_at_zero_refetches() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.update();
+
+        assert!(!holds_a_survey(&app), "a filter change at zero held surveys");
     }
 
     /// The mark lands on what the filters exclude

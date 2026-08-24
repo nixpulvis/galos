@@ -36,6 +36,7 @@ pub fn plugin(app: &mut App) {
 
     app.init_resource::<InReach>();
     app.init_resource::<Evictions>();
+    app.init_resource::<PendingEvictions>();
 
     // Both ask the camera for something, and `orbit_camera` then works out
     // where it lands, so both have to have spoken by the time it runs.
@@ -56,6 +57,12 @@ pub fn plugin(app: &mut App) {
     // After [`visibility`], which has already read the reach this frame, and in
     // the same set so the drop and the hide are decided together.
     app.add_systems(Update, evict.in_set(MapSet::Present).after(visibility));
+    // After [`evict`], which marks what to drop; this drops a budgeted number
+    // so the despawn churn a frame does stays bounded.
+    app.add_systems(
+        Update,
+        drain_evictions.in_set(MapSet::Present).after(evict),
+    );
 }
 
 /// Clones because a selection holds one, and a system may be selected before
@@ -356,27 +363,24 @@ pub fn visibility(
 /// and drop the same systems every frame. What falls beyond this is far enough
 /// behind the camera that reading it again on return costs less than walking
 /// its transform every frame it is gone.
-const EVICT_MARGIN: f64 = 1.5;
+pub(crate) const EVICT_MARGIN: f64 = 1.5;
 
-/// Drop the systems the camera has left behind
+/// Mark the systems the camera has left behind for dropping
 ///
-/// [`visibility`] hides what the spyglass does not reach; this takes the far
-/// ones off the map altogether, so the resident set is what the camera is
+/// [`visibility`] hides what the spyglass does not reach; this decides what to
+/// take off the map altogether, so the resident set is what the camera is
 /// looking at rather than everywhere it has ever looked. Without it a session's
 /// cost climbs with every region a zoom-out pulled in and never falls, since
 /// [`big_space`](crate::space) recomputes a transform for every resident system
 /// each frame the camera moves, drawn or not.
 ///
-/// The far ones are detached from the galaxy in one pass and then despawned.
-/// This is what keeps eviction off the quadratic a naive despawn falls into: a
-/// child leaving its parent one at a time rescans and reshifts the parent's
-/// whole child list each time (see [`super::despawn`]), so dropping thousands
-/// would cost millions and stall the frame. Replacing the child list wholesale
-/// with the keepers empties it first, so each drop is O(1) and the pass is
-/// linear; a detached system then despawns with no parent left to unlink from,
-/// and its shell and labels go with it.
+/// The dropping itself is [`drain_evictions`]'s, under a per-frame budget:
+/// despawning mutates the world and cannot leave the main thread, so a wide
+/// region left behind all at once is spread over frames rather than stalling
+/// one. This recomputes the marked set each frame it runs, so a system come
+/// back into reach falls out of it before it is ever dropped.
 ///
-/// Two grounds drop a system: the spyglass no longer reaches it (only while it
+/// Two grounds mark a system: the spyglass no longer reaches it (only while it
 /// clears), or a filter excludes it and the dim is zero — which says draw
 /// nothing for what is excluded rather than draw it faintly, so it is taken off
 /// the map exactly as the out-of-reach ones are. A route's stops, a picked-out
@@ -384,31 +388,28 @@ const EVICT_MARGIN: f64 = 1.5;
 /// the first is how the way on is found, the second the user is holding onto by
 /// hand, and the last carries the floating origin while the camera is inside
 /// it. Everything else the galaxy holds — the route lines among them — is kept
-/// by being left in the keepers.
+/// by never being marked.
 ///
-/// Dropping a system forgets the surveys that vouched for its region, so a
+/// Marking a system forgets the surveys that vouched for its region, so a
 /// camera coming back asks for it again rather than finding the region marked
 /// held and empty.
 pub fn evict(
     camera: Query<&OrbitCamera>,
     systems: Query<(Entity, &System, Has<route::Hop>)>,
-    children: Query<&Children>,
-    galaxy: Res<crate::space::Galaxy>,
     spyglass: Res<Spyglass>,
     selection: Res<selection::Selection>,
     holding: Res<bodies::spawn::HeldSystem>,
     filters: Res<filter::Filters>,
     dim: Res<filter::DimTo>,
     mut tasks: ResMut<fetch::FetchTasks>,
-    mut evictions: ResMut<Evictions>,
-    mut commands: Commands,
+    mut pending: ResMut<PendingEvictions>,
 ) {
-    evictions.last = 0;
     let Ok(camera) = camera.single() else { return };
 
     let clears = spyglass.clear;
     let drops_filtered = dim.0 == 0.;
     if !clears && !drops_filtered {
+        pending.0.clear();
         return;
     }
 
@@ -425,9 +426,7 @@ pub fn evict(
             // because the floating origin hangs off it while zoomed in, so
             // dropping it would take the camera down with it and leave the map
             // with no origin to draw from.
-            if *hop
-                || held.contains(&system.address)
-                || Some(*entity) == inside
+            if *hop || held.contains(&system.address) || Some(*entity) == inside
             {
                 return false;
             }
@@ -439,24 +438,88 @@ pub fn evict(
         .map(|(entity, _, _)| entity)
         .collect();
     if evicted.is_empty() {
+        pending.0.clear();
         return;
     }
 
-    // Detach the far systems all at once and despawn them; everything else the
-    // galaxy holds stays by being carried into the keepers.
+    // Shrink each survey to what the drop has left rather than forgetting it
+    // whole. A survey the reach has eaten into is clamped to the kept sphere,
+    // so the region still in view stays surveyed — forgetting it would have
+    // the map re-fetch and re-spawn what it already holds, every frame a zoom
+    // drops the systems it left behind — while a return to what was dropped
+    // still asks again. Only while clearing: a filter drop leaves every region
+    // as resident as it was, and the filters forget their own surveys.
+    if clears {
+        tasks.surveyed.retain_mut(|survey| {
+            match survey.asked.clamp_to(camera.center, keep) {
+                Some(asked) => {
+                    survey.asked = asked;
+                    true
+                }
+                None => false,
+            }
+        });
+    }
+    pending.0 = evicted;
+}
+
+/// How many systems the evictor may despawn in one frame
+///
+/// The companion to [`super::spawn::SPAWN_BUDGET`]. A big eviction — a zoom-out
+/// pulled a wide region in and the camera has since left it — is spread over
+/// frames so the structural churn a frame does stays bounded.
+const EVICT_BUDGET: usize = 4096;
+
+/// Despawn a budgeted number of the systems [`evict`] has marked
+///
+/// The batch is detached from the galaxy in one pass and then despawned, which
+/// is what keeps eviction off the quadratic a naive despawn falls into: a child
+/// leaving its parent one at a time rescans and reshifts the parent's whole
+/// child list each time (see [`super::despawn`]), so dropping thousands would
+/// cost millions. Replacing the child list with the keepers empties the batch's
+/// links first, so each drop is O(1); a detached system then despawns with no
+/// parent left to unlink from, and its shell and labels go with it.
+fn drain_evictions(
+    galaxy: Res<crate::space::Galaxy>,
+    children: Query<&Children>,
+    mut pending: ResMut<PendingEvictions>,
+    mut evictions: ResMut<Evictions>,
+    mut commands: Commands,
+) {
+    evictions.last = 0;
+    if pending.0.is_empty() {
+        return;
+    }
     let Ok(children) = children.get(galaxy.0) else {
         return;
     };
+
+    let batch: HashSet<Entity> =
+        pending.0.iter().copied().take(EVICT_BUDGET).collect();
+    for entity in &batch {
+        pending.0.remove(entity);
+    }
+
     let keepers: Vec<Entity> =
-        children.iter().filter(|entity| !evicted.contains(entity)).collect();
+        children.iter().filter(|entity| !batch.contains(entity)).collect();
     commands.entity(galaxy.0).replace_children(&keepers);
-    for entity in &evicted {
+    for entity in &batch {
         commands.entity(*entity).despawn();
     }
 
-    tasks.surveyed.clear();
-    evictions.last = evicted.len();
-    evictions.total += evicted.len() as u64;
+    evictions.last = batch.len();
+    evictions.total += batch.len() as u64;
+}
+
+/// The systems [`evict`] has marked to drop, waiting on the budget.
+#[derive(Resource, Default)]
+pub struct PendingEvictions(HashSet<Entity>);
+
+impl PendingEvictions {
+    /// How many systems are waiting to be dropped, for the diagnostics panel.
+    pub fn queued(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// What the evictor has dropped, for the diagnostics panel to read.
@@ -626,12 +689,16 @@ pub(crate) mod tests {
     }
 
     /// The evictor drops what the reach and its margin no longer hold, keeps a
-    /// route's stops and a picked-out system whatever the reach, and forgets the
-    /// surveys that vouched for what it dropped so a return asks again.
+    /// route's stops and a picked-out system whatever the reach, and clamps the
+    /// surveys it reached into to what it still holds — keeping the region in
+    /// view surveyed so it is not needlessly re-fetched, while a return to what
+    /// was dropped asks again.
     #[test]
     fn the_evictor_drops_the_far_and_keeps_the_held() {
         use crate::camera::OrbitCamera;
-        use crate::systems::fetch::{FetchTasks, tests::surveyed_at};
+        use crate::systems::fetch::{
+            FetchIndex, FetchTasks, tests::surveyed_at,
+        };
         use crate::systems::route::Hop;
         use crate::systems::selection::{Picked, Selection};
 
@@ -648,23 +715,33 @@ pub(crate) mod tests {
         app.init_resource::<filter::Filters>();
         app.init_resource::<filter::DimTo>();
         app.init_resource::<bodies::spawn::HeldSystem>();
-        app.add_systems(Update, evict);
+        app.init_resource::<PendingEvictions>();
+        app.add_systems(Update, (evict, drain_evictions).chain());
 
-        // A region the map thinks it holds: the evictor should forget it once
-        // it drops anything, or a camera coming back finds it held and empty.
-        let (asked, at) = surveyed_at(0, 10, 0);
-        app.world_mut().resource_mut::<FetchTasks>().surveyed(asked, at);
+        // Two regions the map thinks it holds. The wide one reaches past the 15
+        // ly kept, so the drop eats into it and it is clamped in to what is
+        // still held; the near one is wholly resident and kept unchanged, so a
+        // return to it is not asked again. Wide added first: a narrow survey
+        // added after a wider one at the same place is absorbed by it, so the
+        // order keeps both on record.
+        let (wide_survey, wide_at) = surveyed_at(0, 100, 0);
+        let (near_survey, near_at) = surveyed_at(0, 10, 0);
+        {
+            let mut tasks = app.world_mut().resource_mut::<FetchTasks>();
+            tasks.surveyed(wide_survey.clone(), wide_at);
+            tasks.surveyed(near_survey.clone(), near_at);
+        }
 
         // Address 4 is picked out by hand; it must survive being far off.
         let mut selection = Selection::default();
-        selection.pick(Picked::System(placed(4, DVec3::new(60., 0., 0.))), false);
+        selection
+            .pick(Picked::System(placed(4, DVec3::new(60., 0., 0.))), false);
         app.insert_resource(selection);
 
         let galaxy = app.world_mut().spawn_empty().id();
         app.insert_resource(crate::space::Galaxy(galaxy));
 
-        app.world_mut()
-            .spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+        app.world_mut().spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
 
         // A non-system child of the galaxy — stand-in for a route line — must
         // survive: the evictor touches far systems, not all the galaxy holds.
@@ -680,7 +757,11 @@ pub(crate) mod tests {
         let held = spawn(&mut app, placed(4, DVec3::new(60., 0., 0.)));
         let hop = app
             .world_mut()
-            .spawn((placed(5, DVec3::new(70., 0., 0.)), Hop::Next, ChildOf(galaxy)))
+            .spawn((
+                placed(5, DVec3::new(70., 0., 0.)),
+                Hop::Next,
+                ChildOf(galaxy),
+            ))
             .id();
 
         app.update();
@@ -692,9 +773,25 @@ pub(crate) mod tests {
         assert!(alive(hop), "dropped a route's stop");
         assert!(alive(line), "dropped a non-system the galaxy held");
         assert!(!alive(far), "kept a system past the margin");
+        let surveys = &app.world().resource::<FetchTasks>().surveyed;
+        let radii: Vec<i32> = surveys
+            .iter()
+            .filter_map(|survey| match survey.asked {
+                FetchIndex::Region(_, radius, ..) => Some(radius),
+                _ => None,
+            })
+            .collect();
+        // The near region is wholly held, so its survey stays as it was.
+        assert!(radii.contains(&10), "forgot the region still held: {radii:?}");
+        // The wide one is clamped to the kept sphere, not forgotten: 10 * 1.5.
         assert!(
-            app.world().resource::<FetchTasks>().surveyed.is_empty(),
-            "held onto a survey for a region it just dropped"
+            radii.contains(&15),
+            "did not clamp the eaten survey: {radii:?}"
+        );
+        // And nothing still claims a reach past what the drop left.
+        assert!(
+            radii.iter().all(|radius| *radius <= 15),
+            "kept a survey reaching past the drop: {radii:?}"
         );
     }
 
@@ -724,15 +821,16 @@ pub(crate) mod tests {
 
         // Admit only system 1; the dim is zero, so 2 is dropped, not dimmed.
         let mut filters = Filters::default();
-        filters.add(Filter::Systems { label: "picked".into(), systems: vec![1] });
+        filters
+            .add(Filter::Systems { label: "picked".into(), systems: vec![1] });
         app.insert_resource(filters);
         app.insert_resource(DimTo(0.));
-        app.add_systems(Update, evict);
+        app.init_resource::<PendingEvictions>();
+        app.add_systems(Update, (evict, drain_evictions).chain());
 
         let galaxy = app.world_mut().spawn_empty().id();
         app.insert_resource(crate::space::Galaxy(galaxy));
-        app.world_mut()
-            .spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+        app.world_mut().spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
 
         let here = DVec3::new(1., 0., 0.);
         let admitted =
@@ -779,22 +877,24 @@ pub(crate) mod tests {
         // below is both far past the margin and excluded, so it would be
         // dropped on either ground were it not the one held.
         let mut filters = Filters::default();
-        filters
-            .add(Filter::Systems { label: "elsewhere".into(), systems: vec![9] });
+        filters.add(Filter::Systems {
+            label: "elsewhere".into(),
+            systems: vec![9],
+        });
         app.insert_resource(filters);
         app.insert_resource(DimTo(0.));
 
         let galaxy = app.world_mut().spawn_empty().id();
         app.insert_resource(crate::space::Galaxy(galaxy));
-        app.world_mut()
-            .spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+        app.world_mut().spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
 
         let inside = app
             .world_mut()
             .spawn((placed(1, DVec3::new(500., 0., 0.)), ChildOf(galaxy)))
             .id();
         app.insert_resource(HeldSystem::holding(inside));
-        app.add_systems(Update, evict);
+        app.init_resource::<PendingEvictions>();
+        app.add_systems(Update, (evict, drain_evictions).chain());
 
         app.update();
 
