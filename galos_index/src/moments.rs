@@ -12,9 +12,8 @@
 //! light years out has a squared distance near four billion, and the spread
 //! within its cell is a few hundred at most, so reading the spread as the mean
 //! squared distance less the squared centroid subtracts two near-equal billions
-//! and keeps only noise. That is the same precision loss the cell-relative
-//! payload exists to avoid, and it is avoided here the same way: by never
-//! forming a quantity about the far origin.
+//! and keeps only noise. It is avoided here by never forming a quantity about
+//! the far origin.
 //!
 //! So the moments are kept about the running centroid, as Welford and Chan
 //! compose a variance: the weight, the weighted mean, and `m2`, the weighted

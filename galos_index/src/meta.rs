@@ -1,7 +1,7 @@
 //! The serving records: the metadata the client reads beside the cells.
 //!
-//! The cells carry what the map *draws* — a system's position and photometry,
-//! quantized and fixed-width. These carry what a *click* wants: a populated
+//! The cells carry what the map *draws* — a system's exact position and its
+//! fixed-width photometry. These carry what a *click* wants: a populated
 //! system's political columns, the bodies inside a system, a faction's name,
 //! and the name and place of every system for the search box and the router.
 //!

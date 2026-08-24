@@ -437,7 +437,7 @@ fn fetch_spyglass(
                                 continue;
                             };
                             for point in points {
-                                let pos = cell.dequantize(point.pos);
+                                let pos = point.pos;
                                 // A cell straddling the sphere carries systems
                                 // outside it, so each point is weighed against
                                 // the true radius.

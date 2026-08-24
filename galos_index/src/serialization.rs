@@ -16,10 +16,11 @@
 //! `m_min` as a NaN-sentinel `f32`, a point's magnitude as fixed-point `i16`),
 //! which is the part a derive could not express.
 //!
-//! The payload is seventeen bytes a system, cell-relative so a block means
-//! nothing without its cell. Nothing is frozen yet: the version is zero while
-//! the format settles, and the index record keeps growing, as the aggregate
-//! gains the field step's filter marginals and its quantization.
+//! The payload is thirty-five bytes a system, its position carried in full as
+//! three `f64`, so a block stands on its own without its cell. Nothing is
+//! frozen yet: the version is zero while the format settles, and the index
+//! record keeps growing, as the aggregate gains the field step's filter
+//! marginals and its quantization.
 
 use crate::aggregate::{Aggregate, Cell};
 use crate::cache::Point;
@@ -214,7 +215,7 @@ impl From<Centimag> for f32 {
 record! {
     Point {
         id64: u64,
-        pos: [u16; 3],
+        pos: [f64; 3],
         magnitude: f32 as Centimag,
         temp_bucket: u8,
     }
@@ -298,7 +299,12 @@ mod tests {
     use super::*;
 
     fn point(id: u64, mag: f32) -> Point {
-        Point { id64: id, pos: [10, 40000, 65535], magnitude: mag, temp_bucket: 3 }
+        Point {
+            id64: id,
+            pos: [10.5, -40000.25, 65535.0],
+            magnitude: mag,
+            temp_bucket: 3,
+        }
     }
 
     /// A system survives the round trip through its bytes, to a hundredth of a

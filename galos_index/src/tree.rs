@@ -582,7 +582,7 @@ impl Tree {
                     .iter()
                     .map(|&(_, pid)| {
                         let r = &self.records[&pid];
-                        Point::quantized(pid, id, r.position, r.magnitude, r.temperature)
+                        Point::new(pid, r.position, r.magnitude, r.temperature)
                     })
                     .collect();
                 payloads.insert(id, points);
@@ -878,7 +878,7 @@ fn roll_up(
 /// What [`assign_slices`] hands back: the per-cell payloads and the two counts
 /// the index needs beside them.
 struct Slices {
-    /// Each cell's owned systems, quantized into its payload.
+    /// Each cell's owned systems, packed into its payload.
     payloads: HashMap<CellId, Vec<Point>>,
     /// Each cell's `rank_lo`: how many of its subtree its ancestors claimed.
     rank_lo: HashMap<CellId, u64>,
@@ -887,7 +887,7 @@ struct Slices {
 }
 
 /// Place each system at the shallowest cell on its path with room, brightest
-/// first, and quantize it into that cell's payload.
+/// first, and pack it into that cell's payload.
 ///
 /// Returns the payloads, each cell's `rank_lo` (how many of its subtree the
 /// ancestors claimed), and how many systems each cell owns. `rank_lo` is
@@ -930,9 +930,8 @@ fn assign_slices(
             if *count < cap {
                 *count += 1;
                 placed_level = level;
-                payloads.entry(cid).or_default().push(Point::quantized(
+                payloads.entry(cid).or_default().push(Point::new(
                     s.id64,
-                    cid,
                     s.position,
                     s.absolute_magnitude,
                     s.temperature,
@@ -1138,8 +1137,8 @@ mod batch_tests {
         built.payload(id).len() <= LEAF_CAP
     }
 
-    /// Positions survive the cell-relative quantization and the payload bytes
-    /// to within a cell quantum, so a drawn star sits where it belongs.
+    /// Positions survive the payload bytes exactly, whatever cell owns them, so
+    /// a drawn star sits precisely where it belongs.
     #[test]
     fn positions_round_trip_through_the_payload() {
         let systems = grid(16, 80.0);
@@ -1151,16 +1150,8 @@ mod batch_tests {
             let bytes = built.payload(cell.id).to_bytes();
             let back = Vec::<Point>::from_bytes(&bytes).unwrap();
             assert_eq!(back.len(), built.payload(cell.id).len());
-            let quantum = cell.id.edge_ly() / 65536.0;
             for p in &back {
-                let want = by_id[&p.id64];
-                let got = cell.id.dequantize(p.pos);
-                for axis in 0..3 {
-                    assert!(
-                        (got[axis] - want[axis]).abs() <= quantum,
-                        "axis {axis} off by more than a quantum",
-                    );
-                }
+                assert_eq!(p.pos, by_id[&p.id64], "position not carried exactly");
             }
         }
     }
