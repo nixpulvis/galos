@@ -16,6 +16,7 @@
 
 use clap::{Parser, Subcommand};
 use galos_db::{index, Database};
+use std::io::{stderr, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -41,6 +42,16 @@ enum Command {
 }
 
 fn main() -> galos_db::Result<()> {
+    // Without a subscriber nothing the tool or the crate traces is heard;
+    // `--watch` in particular would run silently. Info and above by default,
+    // `RUST_LOG` to change it, colour only when stderr is a terminal.
+    tracing_subscriber::fmt()
+        .with_ansi(stderr().is_terminal())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
+        )
+        .init();
     async_std::task::block_on(run(Cli::parse().command))
 }
 
