@@ -37,6 +37,7 @@ use crate::aggregate::{Aggregate, Cell};
 use crate::cache::Point;
 use crate::geometry::{CellId, MAX_LEVEL};
 use crate::walk::Index;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One system as the live tree holds it: its place and its photometry, the
@@ -235,6 +236,24 @@ impl Tree {
     /// Whether the tree holds no systems.
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    /// The inputs this tree was built from, reconstructed from its records: the
+    /// full-precision [`System`] values a checkpoint persists so the tree can be
+    /// rebuilt without the database. Exact, since a record holds every field a
+    /// system carries; order is arbitrary, which the order-independent
+    /// [`build`](Self::build) does not care about.
+    pub fn to_inputs(&self) -> Vec<System> {
+        self.records
+            .iter()
+            .map(|(&id64, rec)| System {
+                id64,
+                position: rec.position,
+                absolute_magnitude: rec.magnitude,
+                temperature: rec.temperature,
+                age_bucket: rec.age_bucket,
+            })
+            .collect()
     }
 
     // --- insertion --------------------------------------------------------
@@ -670,7 +689,7 @@ impl Default for BuildParams {
 /// photometry fallback chain (scanned stars summed, else the primary's class,
 /// else a default), not anything the build works out. `age_bucket` is the
 /// Recency axis the caller has already binned.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct System {
     pub id64: u64,
     pub position: [f64; 3],
@@ -1244,6 +1263,21 @@ mod tests {
         let params = BuildParams::default();
         let tree = Tree::build(&systems, &params);
         assert_equivalent(&tree.to_snapshot(), &Snapshot::build(&systems, &params));
+    }
+
+    /// A tree rebuilt from its own `to_inputs` equals the original: the resume
+    /// path. `to_inputs` is exact and `build` is order-independent, so a
+    /// checkpoint round trip lands on the same tree the feed left, cell for
+    /// cell, which is what lets a restart follow from a cursor rather than
+    /// rebuild from the database.
+    #[test]
+    fn to_inputs_rebuilds_an_equal_tree() {
+        let mut rng = Rng(0xC0FFEE);
+        let systems: Vec<_> = (1..=9000).map(|id| input(id, &mut rng)).collect();
+        let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
+        let tree = Tree::build(&systems, &params);
+        let rebuilt = Tree::build(&tree.to_inputs(), &params);
+        assert_equivalent(&tree.to_snapshot(), &rebuilt.to_snapshot());
     }
 
     /// After every edit (insert, move, or remove) the live tree still equals a

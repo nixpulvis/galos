@@ -5,3 +5,4 @@
 .env
 galos_db/backups/*
 .galos_index
+.galos_checkpoint*
