@@ -15,7 +15,7 @@ fn main() {
     // metadata sidecars beside it. Read once at startup, since the aggregates
     // and the resident tables are a few megabytes and every walk reads them.
     let dir = std::env::var("GALOS_INDEX_DIR")
-        .unwrap_or_else(|_| "galos_index".to_string());
+        .unwrap_or_else(|_| ".galos_index".to_string());
     let source = FsSource::new(&dir);
     let (index, populated, names, factions) = future::block_on(async {
         let index = source

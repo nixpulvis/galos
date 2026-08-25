@@ -1,7 +1,7 @@
 //! Command-line tools for the galaxy index files.
 //!
 //! ```sh
-//! cargo run -p galos_index -- info ./galos_index
+//! cargo run -p galos_index -- info .galos_index
 //! ```
 //!
 //! Read-only and database-free: everything here reads the cell records the
@@ -25,7 +25,7 @@ enum Command {
     /// Summarise a built index directory: its shape and the galaxy's summed light.
     Info {
         /// The index directory to read.
-        #[arg(default_value = "galos_index")]
+        #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
 }

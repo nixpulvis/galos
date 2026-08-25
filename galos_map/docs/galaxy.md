@@ -1118,7 +1118,7 @@ placed.
    between the two paths.
 
 3. **Output belongs outside the source tree.** The `index` command defaults its
-   directory to `galos_index`, which is the crate's own source directory, so a
+   directory to `.galos_index`, which is the crate's own source directory, so a
    build drops `index.bin` and `cells/` into it (both are `.gitignore`d for
    exactly this reason). The default should be a dedicated directory, or the
    tool should refuse to write into a crate root, so a served directory is
