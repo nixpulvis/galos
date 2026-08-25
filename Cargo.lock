@@ -4079,6 +4079,7 @@ dependencies = [
  "pathfinding",
  "sqlx",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

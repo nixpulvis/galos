@@ -26,7 +26,8 @@ use sqlx::Row;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tracing::{debug, info};
 
 /// The edges between the eight Recency buckets, in days since a system was last
 /// written. Updated today lands in bucket 0, untouched for a decade in bucket 7.
@@ -227,25 +228,41 @@ pub async fn watch(
     interval: Duration,
 ) -> Result<()> {
     let mut since = db.now().await?.naive_utc();
+    info!(dir = %dir.display(), "building initial index (reading every system)");
+    let start = Instant::now();
     let inputs = read_inputs(db).await?;
     let mut tree = Tree::build(&inputs, &BuildParams::default());
     tree.write(dir)?;
     write_metadata(db, dir, None).await?;
-    eprintln!("index built: {} systems, watching for changes", inputs.len());
+    info!(
+        systems = inputs.len(),
+        cells = tree.len(),
+        elapsed = ?start.elapsed(),
+        "initial index built"
+    );
+    info!(
+        dir = %dir.display(),
+        interval_secs = interval.as_secs(),
+        "watching for changes"
+    );
 
     loop {
         async_std::task::sleep(interval).await;
         let now = db.now().await?.naive_utc();
         let changed = read_changed(db, since).await?;
-        if !changed.is_empty() {
+        if changed.is_empty() {
+            debug!(since = %since, "polled, no changes");
+        } else {
+            let start = Instant::now();
             tree.apply(&changed);
             tree.publish(dir)?;
             let touched = changed_addresses(db, since).await?;
             write_metadata(db, dir, Some(&touched)).await?;
-            eprintln!(
-                "index updated: {} changed, {} systems",
-                changed.len(),
-                tree.len()
+            info!(
+                changed = changed.len(),
+                systems = tree.len(),
+                elapsed = ?start.elapsed(),
+                "index updated"
             );
         }
         since = now;
