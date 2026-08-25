@@ -4,14 +4,4 @@
 *.swp
 .env
 galos_db/backups/*
-
-# Built galaxy index: the default output directory of `galos-db index`. A small
-# index file, a payload file per cell, and the metadata sidecars beside them —
-# the populated, names and faction tables and a body file per system. All
-# generated, not source.
-/galos_index/index.bin
-/galos_index/cells/
-/galos_index/populated.bin
-/galos_index/names.bin
-/galos_index/factions.bin
-/galos_index/bodies/
+.galos_index
