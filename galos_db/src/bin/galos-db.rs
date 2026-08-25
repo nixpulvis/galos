@@ -35,6 +35,9 @@ enum Command {
         /// Directory to write the index into.
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
+        /// Resume file for --watch, kept outside the served index directory.
+        #[arg(long, value_name = "FILE", default_value = ".galos_checkpoint")]
+        checkpoint: PathBuf,
         /// Follow the feed, republishing every SECS seconds rather than exiting.
         #[arg(long, value_name = "SECS", num_args = 0..=1, default_missing_value = "5")]
         watch: Option<u64>,
@@ -57,11 +60,17 @@ fn main() -> galos_db::Result<()> {
 
 async fn run(command: Command) -> galos_db::Result<()> {
     match command {
-        Command::Index { dir, watch } => {
+        Command::Index { dir, checkpoint, watch } => {
             let db = Database::new().await?;
             match watch {
                 Some(secs) => {
-                    index::watch(&db, &dir, Duration::from_secs(secs)).await
+                    index::watch(
+                        &db,
+                        &dir,
+                        &checkpoint,
+                        Duration::from_secs(secs),
+                    )
+                    .await
                 }
                 None => {
                     let report = index::build_to_dir(&db, &dir).await?;

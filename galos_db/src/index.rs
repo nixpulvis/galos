@@ -19,7 +19,9 @@ use crate::stars::Star;
 use crate::{orbit, Database, Result};
 use elite_journal::body::{Discovery, Material, Orbit, Spin};
 use galos_index::source::write_meta;
-use galos_index::{meta, source, BuildParams, Snapshot, System, Tree};
+use galos_index::{
+    meta, source, BuildParams, Checkpoint, Index, Snapshot, System, Tree,
+};
 use galos_photometry::{class_light, combined_magnitude};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
@@ -209,11 +211,12 @@ pub async fn read_changed(
 ///
 /// This rides on top of the sync rather than inside it: `galos-sync` writes
 /// systems to the database in real time, and this follows the rows those writes
-/// leave behind. Every `interval` it reads the systems changed since the last
-/// pass, moves each in the live [`Tree`] (a handful of cells apiece, not a
-/// rebuild), and writes only the cells that changed. The clock is read before
-/// each query, so a write racing the query is asked for again next pass rather
-/// than missed, and applying it twice is idempotent.
+/// leave behind. It applies whatever is waiting since the cursor at once, then
+/// every `interval` reads those changed since the previous pass, moves each in
+/// the live [`Tree`] (a handful of cells apiece, not a rebuild), and writes only
+/// the cells that changed. The clock is read before each query, so a write
+/// racing the query is asked for again next pass rather than missed, and
+/// applying it twice is idempotent.
 ///
 /// The metadata sidecars are refreshed the same pass the cells are. The three
 /// tables are derived wholesale from the current database, so each is rewritten
@@ -222,24 +225,48 @@ pub async fn read_changed(
 /// a known interim cost: it holds every positioned system, so a single changed
 /// system reserializes the lot, and the price is paid until the transport grows
 /// a way to publish a delta into it.
+///
+/// On start it resumes from `checkpoint` when one is present and still matches
+/// the served directory: the tree is rebuilt in memory from the checkpoint's
+/// inputs and the cursor followed from there, so a restart costs a rebuild in
+/// memory rather than a fresh read of the whole database and a rewrite of every
+/// file. A missing, unreadable, or stale checkpoint falls back to a full build.
+/// The checkpoint rides outside `dir`, is never served, and is rewritten after
+/// the initial build and after each publish that changes anything.
 pub async fn watch(
     db: &Database,
     dir: &Path,
+    checkpoint: &Path,
     interval: Duration,
 ) -> Result<()> {
-    let mut since = db.now().await?.naive_utc();
-    info!(dir = %dir.display(), "building initial index (reading every system)");
-    let start = Instant::now();
-    let inputs = read_inputs(db).await?;
-    let mut tree = Tree::build(&inputs, &BuildParams::default());
-    tree.write(dir)?;
-    write_metadata(db, dir, None).await?;
-    info!(
-        systems = inputs.len(),
-        cells = tree.len(),
-        elapsed = ?start.elapsed(),
-        "initial index built"
-    );
+    let params = BuildParams::default();
+    let (mut tree, mut since) = match resume(dir, checkpoint, &params) {
+        Some((tree, cursor)) => {
+            info!(
+                systems = tree.len(),
+                cursor = %cursor,
+                checkpoint = %checkpoint.display(),
+                "resumed from checkpoint"
+            );
+            (tree, cursor)
+        }
+        None => {
+            let since = db.now().await?.naive_utc();
+            info!(dir = %dir.display(), "building initial index (reading every system)");
+            let start = Instant::now();
+            let inputs = read_inputs(db).await?;
+            let mut tree = Tree::build(&inputs, &params);
+            tree.write(dir)?;
+            write_metadata(db, dir, None).await?;
+            Checkpoint { cursor: since, inputs }.write(checkpoint)?;
+            info!(
+                systems = tree.len(),
+                elapsed = ?start.elapsed(),
+                "initial index built"
+            );
+            (tree, since)
+        }
+    };
     info!(
         dir = %dir.display(),
         interval_secs = interval.as_secs(),
@@ -247,7 +274,6 @@ pub async fn watch(
     );
 
     loop {
-        async_std::task::sleep(interval).await;
         let now = db.now().await?.naive_utc();
         let changed = read_changed(db, since).await?;
         if changed.is_empty() {
@@ -258,6 +284,8 @@ pub async fn watch(
             tree.publish(dir)?;
             let touched = changed_addresses(db, since).await?;
             write_metadata(db, dir, Some(&touched)).await?;
+            Checkpoint { cursor: now, inputs: tree.to_inputs() }
+                .write(checkpoint)?;
             info!(
                 changed = changed.len(),
                 systems = tree.len(),
@@ -266,7 +294,32 @@ pub async fn watch(
             );
         }
         since = now;
+        async_std::task::sleep(interval).await;
     }
+}
+
+/// Rebuild the live tree from a checkpoint, if one reads and still matches the
+/// served directory. Returns the tree and the cursor to follow from, or [`None`]
+/// to build from scratch.
+///
+/// The served directory must already be this tree's projection — a full build
+/// wrote it and every publish since kept it so — so the tree it dates is trusted
+/// only when the directory reads back and holds the same system count. A
+/// directory that is missing, half-written, or otherwise out of step is rebuilt
+/// rather than resumed onto, since the delta publishes repair only the cells the
+/// next changes touch, not ones already wrong.
+fn resume(
+    dir: &Path,
+    path: &Path,
+    params: &BuildParams,
+) -> Option<(Tree, chrono::NaiveDateTime)> {
+    let checkpoint = Checkpoint::read(path).ok()?;
+    let tree = Tree::build(&checkpoint.inputs, params);
+    let served = Index::read(dir).ok()?;
+    if served.root()?.aggregate.count() != tree.len() as u64 {
+        return None;
+    }
+    Some((tree, checkpoint.cursor))
 }
 
 /// The metadata sidecars, and how much of each was written.

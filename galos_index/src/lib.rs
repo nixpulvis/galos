@@ -20,6 +20,7 @@ pub mod aggregate;
 pub mod geometry;
 pub mod walk;
 pub mod cache;
+pub mod checkpoint;
 pub mod meta;
 pub mod serialization;
 pub mod source;
@@ -31,6 +32,7 @@ pub mod tree;
 // stay public for everything past the core.
 pub use aggregate::{Aggregate, Cell};
 pub use cache::{Point, Resident, ResidentCell};
+pub use checkpoint::Checkpoint;
 pub use geometry::{Aabb, CellId};
 pub use moments::Moments;
 pub use tree::{BuildParams, Snapshot, Dirtied, System, Tree};
