@@ -639,7 +639,9 @@ pub(crate) fn choose_names(
 ) {
     let clear = |commands: &mut Commands| {
         for entity in &named {
-            commands.entity(entity).remove::<Named>();
+            // The system may have been evicted this frame, so drop the marker
+            // gracefully rather than panicking on a despawned entity.
+            commands.entity(entity).try_remove::<Named>();
         }
     };
     // What is named already, which is worth something to it: the packing runs
@@ -844,12 +846,15 @@ pub(crate) fn choose_names(
     // anything watching for one.
     for entity in &named {
         if !winners.contains(&entity) {
-            commands.entity(entity).remove::<Named>();
+            commands.entity(entity).try_remove::<Named>();
         }
     }
     for entity in winners {
         if !named.contains(entity) {
-            commands.entity(entity).insert(Named);
+            // A winner picked from this frame's query may already be gone by the
+            // time the command runs, if eviction despawned it; try_insert lets
+            // that pass rather than crashing choose_names.
+            commands.entity(entity).try_insert(Named);
         }
     }
 }
