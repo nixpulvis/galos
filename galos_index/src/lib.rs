@@ -36,7 +36,7 @@ pub use checkpoint::Checkpoint;
 pub use geometry::{Aabb, CellId};
 pub use moments::Moments;
 pub use tree::{BuildParams, Snapshot, Dirtied, System, Tree};
-pub use walk::{Index, Mode, Needed, SplatRef, View};
+pub use walk::{Index, Mode, Needed, SplatRef, View, resolvable_count};
 pub use serialization::{Codec, Decode, Encode, FixedCodec};
 pub use meta::{
     Barycenter, Body, Economies, Faction, NameEntry, Parent, PopulatedSystem,

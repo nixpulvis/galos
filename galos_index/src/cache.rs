@@ -107,6 +107,12 @@ impl Resident {
         self.cells.len()
     }
 
+    /// Every resident cell and its payload, for a draw that reads the whole set
+    /// to decide how much of each to show.
+    pub fn iter(&self) -> impl Iterator<Item = (CellId, &ResidentCell)> {
+        self.cells.iter().map(|(&id, cell)| (id, cell))
+    }
+
     /// Whether nothing is held.
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()

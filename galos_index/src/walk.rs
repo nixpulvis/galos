@@ -308,14 +308,11 @@ impl Index {
         while let Some((id, weight)) = stack.pop() {
             let cell = self.get(id).expect("frontier cell is in the tree");
 
-            // Marks: this cell's slice draws discretely once its own systems
-            // separate on screen. A pure test, so the mark set is a function of
-            // the eye's position alone.
-            if view.projected_px(
-                slice_spacing(cell),
-                distance(view.eye, contents_center(cell)),
-            ) > MARK_SEPARATION_PX
-            {
+            // Marks: the cell's payload is wanted once even one of its systems
+            // separates on screen. How many actually draw is the resolvable
+            // prefix (see resolvable_count), grown per system at draw time; the
+            // walk only says which cells the draw will want.
+            if resolvable_count(cell, view) >= 1 {
                 marks.push(id);
             }
 
@@ -441,6 +438,28 @@ fn contents_center(cell: &Cell) -> [f64; 3] {
 fn slice_spacing(cell: &Cell) -> f64 {
     let slice = cell.slice_len().max(1) as f64;
     contents_extent(cell) / slice.cbrt()
+}
+
+/// How many of a cell's own systems separate on screen: the prefix of its
+/// magnitude-ordered payload worth drawing as discrete marks.
+///
+/// The slice's systems sit [`slice_spacing`] apart across the subtree. Where
+/// that already subtends the mark separation every one draws; where it is
+/// finer the prefix is decimated to the separation — `slice · (projected /
+/// MARK_SEPARATION_PX)^3` — so the drawn systems land one mark apart whatever
+/// the distance. Continuous in distance, so a cell fills in and empties one
+/// system at a time rather than switching on whole and exposing its box.
+pub fn resolvable_count(cell: &Cell, view: &View) -> u64 {
+    let slice = cell.slice_len();
+    if slice == 0 {
+        return 0;
+    }
+    let projected = view.projected_px(
+        slice_spacing(cell),
+        distance(view.eye, contents_center(cell)),
+    );
+    let fraction = (projected / MARK_SEPARATION_PX).powi(3).min(1.0);
+    ((slice as f64) * fraction).round() as u64
 }
 
 #[cfg(test)]
@@ -626,6 +645,26 @@ mod tests {
 
         let near = eye_out(id, 3.0);
         assert!(index.walk_screen(&near).marks.contains(&id));
+    }
+
+    /// A cell's resolvable prefix is full up close, a decimated fraction at
+    /// range, and nothing once its systems fall below one mark apart — the
+    /// continuous fill that keeps a cell from switching on whole.
+    #[test]
+    fn resolvable_count_shrinks_with_distance() {
+        let id = CellId::of_point(HERE, 11);
+        let c = id.bounds().center();
+        let mut agg = Aggregate::ZERO;
+        for i in 0..512u64 {
+            let off = i as f64 * 0.2;
+            agg = agg.merge(Aggregate::of_system([c[0] + off, c[1], c[2]], 4.0, 5000.0, 0));
+        }
+        let cell = Cell { id, rank_lo: 0, rank_hi: 512, child_mask: 0, aggregate: agg };
+
+        assert_eq!(resolvable_count(&cell, &eye_out(id, 5.0)), 512, "not full up close");
+        let mid = resolvable_count(&cell, &eye_out(id, 900.0));
+        assert!(mid > 0 && mid < 512, "expected a decimated prefix, got {mid}");
+        assert_eq!(resolvable_count(&cell, &eye_out(id, 5_000_000.0)), 0, "still drawing when one dot");
     }
 
     /// Residency reads position, never direction: the walk returns the same
