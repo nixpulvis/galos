@@ -219,6 +219,7 @@ const RENAMED: i64 = 900_000_040;
 const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
+const WRONGLY_NAMED: i64 = 900_000_050;
 
 /// A market id each, for the reason the addresses above are one each
 ///
@@ -1927,6 +1928,46 @@ async fn a_late_create_wins_nothing_and_fills_what_is_blank() {
     );
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+}
+
+/// A newer message renames a system, and an older one cannot
+///
+/// A system is its address, so its name is a reading like any other and the
+/// newest wins. Fixing it at whatever wrote the row first is what left HIP
+/// 28869 on record as COLONIA, named by one bad upload that reached the address
+/// before anything true did. What a later message must not do is let an older
+/// one arriving after it take the name back.
+#[async_std::test]
+async fn a_newer_message_renames_a_system() {
+    let db = db!();
+    forget(WRONGLY_NAMED).await;
+
+    let named = |name: &str| {
+        let mut system = JournalSystem::new(WRONGLY_NAMED, name);
+        system.pos = Some(somewhere(26.0));
+        system
+    };
+
+    // The bad upload, reaching the address first under the wrong name.
+    System::from_journal(&db, at(0), "wrong", &named("Wrongly Named"))
+        .await
+        .expect("the first write should land");
+
+    // The truth, heard later.
+    System::from_journal(&db, at(600), "right", &named("Rightly Named"))
+        .await
+        .expect("the newer name should write");
+
+    let stored = System::fetch(&db, WRONGLY_NAMED).await.expect("should read");
+    assert_eq!(stored.name, "RIGHTLY NAMED", "the newer name did not win");
+
+    // Sent between the two and handed over last, as a batching uploader does.
+    System::from_journal(&db, at(300), "stale", &named("Stale Name"))
+        .await
+        .expect("the late message should be taken without erroring");
+
+    let stored = System::fetch(&db, WRONGLY_NAMED).await.expect("should read");
+    assert_eq!(stored.name, "RIGHTLY NAMED", "a late message renamed the row");
 }
 
 /// The later reading of a signal wins, whichever of the two arrives first

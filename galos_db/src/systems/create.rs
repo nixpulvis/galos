@@ -53,6 +53,8 @@ impl System {
                 $7, $8, $9, $10, $11, $12)
             ON CONFLICT (address)
             DO UPDATE SET
+                name = CASE WHEN $11 >= systems.updated_at
+                    THEN UPPER($2) ELSE systems.name END,
                 primary_star_class = CASE WHEN $11 >= systems.updated_at
                     THEN COALESCE($3, systems.primary_star_class)
                     ELSE COALESCE(systems.primary_star_class, $3) END,
@@ -197,6 +199,8 @@ impl System {
             VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (address)
             DO UPDATE SET
+                name = CASE WHEN $10 >= systems.updated_at
+                    THEN UPPER($2) ELSE systems.name END,
                 position = CASE WHEN $10 >= systems.updated_at
                     THEN COALESCE($3, systems.position)
                     ELSE COALESCE(systems.position, $3) END,
@@ -348,6 +352,8 @@ impl System {
             VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7)
             ON CONFLICT (address)
             DO UPDATE SET
+                name = CASE WHEN $6 >= systems.updated_at
+                    THEN UPPER($2) ELSE systems.name END,
                 position = COALESCE($3, systems.position),
                 body_count = $4,
                 non_body_count =
