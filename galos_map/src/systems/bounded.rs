@@ -35,11 +35,16 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Instant;
 
-/// How far past the mark distance a resident cell is held before eviction — a
-/// hysteresis so a cell hovering at the fetch boundary is not dropped and
-/// refetched each frame. At two, a cell survives until it shrinks to half the
-/// mark separation.
-const EVICT_MARGIN: f64 = 2.0;
+/// How far past the fetch distance a resident cell is held before eviction.
+///
+/// Fetch and evict must share one threshold, or residency is path-dependent: at
+/// two, a cell despawned when it shrank to half the mark separation but did not
+/// come back until it grew to the full one, so the same view held different
+/// systems depending on whether it was reached by zooming out or in. One means
+/// the resident set is a function of the eye's position alone — zoom out to a
+/// view and back in and it is the same view. A parked camera does not re-plan,
+/// so there is no boundary toggle left to damp.
+const EVICT_MARGIN: f64 = 1.0;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<BoundedFetch>();
