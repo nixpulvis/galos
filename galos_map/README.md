@@ -9,6 +9,20 @@ DATABASE_URL postgresql://postgres@10.0.1.32/galos_development \
 cargo run --release
 ```
 
+## Documentation
+
+[`docs/galaxy.md`](./docs/galaxy.md) is the far field — everything outside the
+system the camera stands in. One spatial hierarchy over every system and
+everything reading it: the map's level of detail, the night sky's discrete
+stars, and the glow behind both. It is also the client's on-disk format, which
+is what lets the map draw the galaxy without a database.
+
+The near field — a system's own stars and planets at real geometry, and
+reaching them — is the code under [`src/systems/bodies`](./src/systems/bodies).
+The two meet in two places only, which `docs/galaxy.md` names under
+Coordination with the bodies work: the sizing law's context scalar, and the
+photometric scale the local star is lit by.
+
 ## Mouse
 
 | Gesture | What it does |
