@@ -25,11 +25,12 @@ use crate::systems::fetch::{FetchTasks, RawSystem};
 use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::spawn::{PendingSpawns, build_system};
 use crate::systems::{PendingEvictions, System};
-use crate::{Names, Populated, Transport};
+use crate::{Names, Populated, ResidentIndex, Transport};
+use crate::camera::OrbitCamera;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::{CellId, Point, Resident};
+use galos_index::{CellId, Point, Resident, resolvable_count};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Instant;
@@ -43,10 +44,19 @@ pub fn plugin(app: &mut App) {
     // so the two never overlap on screen.
     app.add_systems(Update, switch.in_set(MapSet::Search));
     app.add_systems(Update, fetch.in_set(MapSet::Fetch).run_if(enabled));
-    app.add_systems(Update, spawn.in_set(MapSet::Populate).run_if(enabled));
-    // In `Present` with the spyglass eviction it stands in for, so a drop this
-    // frame is decided with the rest of what the frame draws.
-    app.add_systems(Update, evict.in_set(MapSet::Present).run_if(enabled));
+    // Arrived payloads land in the cache; the draw reads them from there.
+    app.add_systems(Update, collect.in_set(MapSet::Populate).run_if(enabled));
+    // Then draw each resident cell's resolvable prefix — grown and shed per
+    // system with distance — and drop whatever falls outside every prefix.
+    app.add_systems(
+        Update,
+        reconcile.in_set(MapSet::Populate).after(collect).run_if(enabled),
+    );
+    // Free the payloads of cells the walk no longer wants at all.
+    app.add_systems(
+        Update,
+        evict_payloads.in_set(MapSet::Present).run_if(enabled),
+    );
 }
 
 /// Whether the walk-bounded fetch drives the map in place of the spyglass
@@ -141,86 +151,104 @@ fn fetch(
     }
 }
 
-/// Turn the payloads that arrived into systems, queued for `drain_spawns`
+/// Take the payloads that have arrived into the resident cache
 ///
-/// One system per point, named and coloured off the resident tables, pushed
-/// onto the same queue the spyglass fills so the entity is built the one way.
-/// The cell's payload is kept resident, keyed by cell, for the evictor to
-/// weigh against the next plan.
-///
-/// TODO(bounded): builds on the main thread, one cell at a time. The region
-/// fetch builds off-thread and hands finished rows back; the marks are bounded
-/// so this stays small, but a wide zoom landing many cells at once would
-/// rather build them on the pool.
-fn spawn(
+/// The transport half only: a payload lands keyed by its cell and the draw
+/// reads it from there. Reading it is [`reconcile`]'s, run straight after, so a
+/// cell's systems are chosen from what is now held.
+fn collect(
     mut tasks: ResMut<BoundedTasks>,
     mut resident: ResMut<ResidentCells>,
-    populated: Res<Populated>,
-    names: Res<Names>,
-    mut pending: ResMut<PendingSpawns>,
 ) {
-    let now = Instant::now();
     tasks.0.retain(|&id, task| {
         let Some(result) = block_on(future::poll_once(task)) else {
             return true;
         };
         if let Ok(points) = result {
-            for point in &points {
-                pending.push(
-                    build_from_point(point, &populated, &names),
-                    false,
-                    now,
-                );
-            }
             resident.0.insert(id, points);
         }
         false
     });
 }
 
-/// Drop the payloads the walk has left behind, and queue their systems to go
+/// Draw each resident cell's resolvable prefix, grown and shed per system as
+/// the camera moves
 ///
-/// [`Resident::stale`] is the held cells outside the current marks. Each is
-/// dropped from the cache and its systems queued for `drain_evictions`, found
-/// by the addresses the payload carried.
+/// A cell's payload is magnitude-ordered, and [`resolvable_count`] says how many
+/// of its systems separate on screen from where the eye stands. Drawing that
+/// prefix — and only it — is what lets a cell fill in and empty one system at a
+/// time rather than switching on whole: a single system is drawn wherever it is
+/// resolvable, so the index's cell boundaries stop showing through.
 ///
-/// TODO(bounded): only the cells the walk drops are evicted, so a system the
-/// filters have dimmed to nothing stays resident where the spyglass evictor
-/// would have despawned it. Harmless to the view, but it holds memory nothing
-/// is drawing.
-fn evict(
-    planned: Res<Planned>,
+/// The prefix is pushed to the shared spawn queue, which builds only the
+/// systems not already on the map, and everything outside every cell's prefix
+/// is queued to drop. The held system is spared, since the camera's
+/// FloatingOrigin hangs under it.
+fn reconcile(
+    cameras: Query<(&OrbitCamera, &Camera)>,
+    index: Res<ResidentIndex>,
+    resident: Res<ResidentCells>,
+    populated: Res<Populated>,
+    names: Res<Names>,
     holding: Res<HeldSystem>,
-    mut resident: ResMut<ResidentCells>,
     systems: Query<(Entity, &System)>,
+    mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
 ) {
-    // Marks are a function of the eye's position alone — the walk is not
-    // frustum-culled — so fetch (marks minus resident) and eviction (resident
-    // minus marks) share one predicate: a turn changes nothing, and the same
-    // view holds the same systems whether it was reached by zooming out or in.
-    let stale = resident.0.stale(&planned.0);
-    if stale.is_empty() {
+    let Ok((orbit, camera)) = cameras.single() else { return };
+    let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
         return;
-    }
-    let mut dropped = HashSet::new();
-    for id in stale {
-        if let Some(cell) = resident.0.remove(id) {
-            for point in cell.points.iter() {
-                dropped.insert(point.id64 as i64);
+    };
+    let now = Instant::now();
+
+    let existing: HashSet<i64> =
+        systems.iter().map(|(_, system)| system.address).collect();
+
+    // The resolvable prefix of every resident cell: the systems close enough to
+    // separate. Build only the ones not already drawn; note every one wanted.
+    let mut wanted: HashSet<i64> = HashSet::new();
+    for (id, cell) in resident.0.iter() {
+        let Some(indexed) = index.0.get(id) else { continue };
+        let target =
+            (resolvable_count(indexed, &view) as usize).min(cell.points.len());
+        for point in &cell.points[..target] {
+            let address = point.id64 as i64;
+            wanted.insert(address);
+            if !existing.contains(&address) {
+                pending.push(
+                    build_from_point(point, &populated, &names),
+                    false,
+                    now,
+                );
             }
         }
     }
+
+    // Everything outside every prefix goes: the tail a cell sheds as it
+    // recedes, and the systems of a cell whose payload has been freed.
     for (entity, system) in &systems {
-        // Never despawn the system the camera stands in: the bodies work parents
-        // the FloatingOrigin under it, so taking it would leave big_space with
-        // no origin to propagate from. The spyglass evictor keeps the same rule.
         if Some(entity) == holding.of() {
             continue;
         }
-        if dropped.contains(&system.address) {
+        if !wanted.contains(&system.address) {
             evictions.0.insert(entity);
         }
+    }
+}
+
+/// Free the payloads of cells the walk no longer wants
+///
+/// [`Resident::stale`] is the held cells outside the marks — those with nothing
+/// left to resolve from here. Their entities are dropped by [`reconcile`], which
+/// finds them outside every prefix once the payload is gone; this only frees the
+/// memory the payload held.
+fn evict_payloads(
+    planned: Res<Planned>,
+    mut resident: ResMut<ResidentCells>,
+) {
+    let stale = resident.0.stale(&planned.0);
+    for id in stale {
+        resident.0.remove(id);
     }
 }
 
