@@ -285,23 +285,6 @@ impl Index {
         }
     }
 
-    /// Whether a cell is close enough to the eye to keep resident, whatever way
-    /// the camera looks.
-    ///
-    /// Residency reads the eye's position and never its direction: a turn must
-    /// evict nothing, or the most common gesture there is churns the resident
-    /// set (galaxy.md). So this is the mark test — does the cell's slice
-    /// separate on screen — without the frustum, relaxed by `margin` for
-    /// hysteresis so a cell held at the mark distance is not dropped the instant
-    /// it shrinks past it. A cell the index has forgotten is not held.
-    pub fn within_reach(&self, id: CellId, view: &View, margin: f64) -> bool {
-        let Some(cell) = self.get(id) else { return false };
-        view.projected_px(
-            slice_spacing(cell),
-            distance(view.eye, contents_center(cell)),
-        ) > MARK_SEPARATION_PX / margin
-    }
-
     /// The Shell walk: the "One circle, splitting" descent.
     ///
     /// Two cuts fall out of one traversal. The **glow** splits a cell into its
@@ -316,17 +299,17 @@ impl Index {
     /// points. Weight is conserved down the glow: the splat blends under any
     /// point of the sky sum to one.
     ///
-    /// The frontier is spent largest contents first, so the budget lands on the
-    /// cells the camera is closest to rather than the biggest boxes far off.
+    /// The walk is not frustum-culled: residency reads the eye's position, never
+    /// its direction, so a turn changes nothing to fetch or evict. The budget is
+    /// spent largest contents first — nearest cells win — and the renderer culls
+    /// the off-screen marks at draw. So the resident set is a function of where
+    /// the eye is, identical however a view was reached.
     pub fn walk_screen(&self, view: &View, budget: u64) -> Needed {
         let mut marks = Vec::new();
         let mut splats = Vec::new();
         let Some(root) = self.root() else {
             return Needed { mode: Mode::Shell, marks, splats };
         };
-        if !view.sees(&root.id.bounds()) {
-            return Needed { mode: Mode::Shell, marks, splats };
-        }
 
         let mut drawn = 0u64;
         let mut heap = BinaryHeap::new();
@@ -354,11 +337,12 @@ impl Index {
                 marks.push(id);
             }
 
-            // Glow: only children on-frame and carrying systems can take the
-            // handoff; an empty or off-frame child is not a place to descend.
+            // Glow: only children carrying systems can take the handoff. The
+            // walk is not frustum-culled — the renderer culls off-screen marks
+            // at draw — so residency never turns on where the camera points.
             let children: Vec<&Cell> = self
                 .children(cell)
-                .filter(|c| c.aggregate.count() > 0 && view.sees(&c.id.bounds()))
+                .filter(|c| c.aggregate.count() > 0)
                 .collect();
             let total: u64 = children.iter().map(|c| c.aggregate.count()).sum();
 
@@ -709,12 +693,12 @@ mod tests {
         assert!(index.walk_screen(&near, DEFAULT_POINT_BUDGET).marks.contains(&id));
     }
 
-    /// Residency reads position, never direction: [`Index::within_reach`] gives
-    /// the same answer however the camera turns about one eye. This is the
-    /// property that keeps a turn from churning the resident set — the sudden
-    /// appearing and disappearing a frustum-keyed evictor caused.
+    /// Residency reads position, never direction: the walk returns the same
+    /// marks however the camera turns about one eye, so a turn changes nothing
+    /// to fetch or evict and cannot churn the resident set — and a view reached
+    /// by turning is the view reached any other way.
     #[test]
-    fn reach_ignores_rotation() {
+    fn marks_ignore_rotation() {
         let (index, parent, _kids) = small_tree(100, 100, 4.0);
         let c = parent.bounds().center();
         let looking = |forward: [f64; 3]| View {
@@ -725,14 +709,11 @@ mod tests {
             viewport_height: 1080.0,
             aspect: 16.0 / 9.0,
         };
-        let toward = looking([0.0, 0.0, 1.0]);
-        let away = looking([0.0, 0.0, -1.0]);
-        let side = looking([1.0, 0.0, 0.0]);
-        for cell in index.cells() {
-            let held = index.within_reach(cell.id, &toward, 2.0);
-            assert_eq!(held, index.within_reach(cell.id, &away, 2.0), "facing away changed reach");
-            assert_eq!(held, index.within_reach(cell.id, &side, 2.0), "facing side changed reach");
-        }
+        let toward = index.walk_screen(&looking([0.0, 0.0, 1.0]), DEFAULT_POINT_BUDGET);
+        let away = index.walk_screen(&looking([0.0, 0.0, -1.0]), DEFAULT_POINT_BUDGET);
+        let side = index.walk_screen(&looking([1.0, 0.0, 0.0]), DEFAULT_POINT_BUDGET);
+        assert_eq!(toward.marks, away.marks, "facing away changed the marks");
+        assert_eq!(toward.marks, side.marks, "facing side changed the marks");
     }
 
     /// Closing in, the root's contents clear the limit and it splits: the root

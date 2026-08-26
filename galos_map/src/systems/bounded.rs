@@ -25,8 +25,7 @@ use crate::systems::fetch::{FetchTasks, RawSystem};
 use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::spawn::{PendingSpawns, build_system};
 use crate::systems::{PendingEvictions, System};
-use crate::{Names, Populated, ResidentIndex, Transport};
-use crate::camera::OrbitCamera;
+use crate::{Names, Populated, Transport};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
@@ -34,17 +33,6 @@ use galos_index::{CellId, Point, Resident};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Instant;
-
-/// How far past the fetch distance a resident cell is held before eviction.
-///
-/// Fetch and evict must share one threshold, or residency is path-dependent: at
-/// two, a cell despawned when it shrank to half the mark separation but did not
-/// come back until it grew to the full one, so the same view held different
-/// systems depending on whether it was reached by zooming out or in. One means
-/// the resident set is a function of the eye's position alone — zoom out to a
-/// view and back in and it is the same view. A parked camera does not re-plan,
-/// so there is no boundary toggle left to damp.
-const EVICT_MARGIN: f64 = 1.0;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<BoundedFetch>();
@@ -201,24 +189,17 @@ fn spawn(
 /// would have despawned it. Harmless to the view, but it holds memory nothing
 /// is drawing.
 fn evict(
-    cameras: Query<(&OrbitCamera, &Camera)>,
-    index: Res<ResidentIndex>,
+    planned: Res<Planned>,
     holding: Res<HeldSystem>,
     mut resident: ResMut<ResidentCells>,
     systems: Query<(Entity, &System)>,
     mut evictions: ResMut<PendingEvictions>,
 ) {
-    let Ok((orbit, camera)) = cameras.single() else { return };
-    let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
-        return;
-    };
-    // Residency reads where the eye is, never where it points: a cell out of
-    // the frustum but still near the eye stays, so a turn evicts nothing and
-    // only a move drops what it leaves behind. The frustum-culled marks still
-    // drive the fetch, so new sky loads as it comes into view.
-    let stale = resident
-        .0
-        .evictable(|id| index.0.within_reach(id, &view, EVICT_MARGIN));
+    // Marks are a function of the eye's position alone — the walk is not
+    // frustum-culled — so fetch (marks minus resident) and eviction (resident
+    // minus marks) share one predicate: a turn changes nothing, and the same
+    // view holds the same systems whether it was reached by zooming out or in.
+    let stale = resident.0.stale(&planned.0);
     if stale.is_empty() {
         return;
     }
