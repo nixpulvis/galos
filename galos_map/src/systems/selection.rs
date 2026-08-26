@@ -38,7 +38,7 @@ use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_POINTS,
 };
-use crate::systems::{Spyglass, System};
+use crate::systems::System;
 use crate::ui::Gesture;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -518,8 +518,8 @@ fn clear_when_nothing_is_clicked(
 /// Drawn from the same target [`super::pointing::ring`] measures, so the two
 /// rings are the same size and a selection sits exactly where a point did.
 ///
-/// A system the spyglass has hidden is skipped, since a ring around a star
-/// that is not drawn is a ring around nothing.
+/// A system the map is not drawing is skipped, since a ring around a star that
+/// is not drawn is a ring around nothing — the strength below is what says so.
 ///
 /// A ring dims with the star it is drawn around. A selection the filters
 /// exclude stays selected, and a full strength ring around a faint star would
@@ -536,7 +536,6 @@ fn clear_when_nothing_is_clicked(
 fn ring(
     mut gizmos: Gizmos,
     camera: Query<(&OrbitCamera, &Camera)>,
-    spyglass: Res<Spyglass>,
     holding: Res<HeldSystem>,
     selected: Query<
         (
@@ -590,16 +589,13 @@ fn ring(
             continue;
         }
 
-        // Reach rather than whether the star is drawn. The two part company
-        // where the filters draw what they exclude at nothing, and this ring
-        // answers the wrong one of them: the spyglass says where the user is
-        // looking, and a ring outside it is a ring off the edge of that. What
-        // the filters say is about the sky rather than about the handful of
-        // systems the user picked out by hand.
+        // Ring it wherever it is drawn, the same test the hover ring uses: the
+        // strength below is zero for a system the map is not drawing, so a
+        // filtered-out or out-of-view selection rings nothing. Gating on the
+        // spyglass reach instead skipped systems the walk draws beyond that
+        // sphere, so a close selection went unringed while its hover ring
+        // showed.
         let position = DVec3::from(system.position);
-        if !spyglass.reaches(orbit.center, position) {
-            continue;
-        }
         let standing = mark.0;
         if standing <= 0. {
             continue;
