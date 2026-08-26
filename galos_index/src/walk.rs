@@ -10,10 +10,9 @@
 //! Both presentations are marks over a field; they differ in the cut and in
 //! what the field carries.
 //!
-//! - **Shell** is the overview: a screen-space budget refines the cell that covers
-//!   the most screen first and stops when the budget is spent. Its own systems
-//!   draw as marks, and a cell it does not fully refine splats the rest, a field
-//!   coloured by the political mix.
+//! - **Shell** is the overview: a cell's slice draws as marks once its systems
+//!   separate on screen, and a cell whose contents do not yet separate splats
+//!   the rest, a field coloured by the political mix.
 //! - **Real** is the sky, and it is one quantity split at the visibility floor
 //!   rather than two modes. Stars that clear the limit draw as discrete marks
 //!   (the photometric walk keeps a giant far out and prunes a cell of dim
@@ -29,17 +28,7 @@
 use crate::aggregate::Cell;
 use crate::geometry::CellId;
 use galos_photometry::{EYE_LIMIT, apparent_magnitude_ly};
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
-
-/// The point budget the Shell traversal spends, in systems drawn as marks.
-///
-/// Sized so it cannot bind while marks are still separable: a 2 px mark needs
-/// about 6.7 px of separation, which bounds a 1080p screen to some 46,000
-/// distinguishable points. Set to that, the walk runs out only once marks
-/// already overlap, so completeness is a consequence rather than a rule. Tuned
-/// once the build runs.
-pub const DEFAULT_POINT_BUDGET: u64 = 46_000;
+use std::collections::HashMap;
 
 /// The mark limit, in pixels: the smallest a splat draws as more than a point.
 /// A cell whose contents' own spread projects to less than this is one circle;
@@ -71,7 +60,7 @@ pub const GLOW_OPENING_ANGLE: f64 = 0.5 * std::f64::consts::PI / 180.0;
 /// floor rather than a choice between them.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Translucent balls over a political field, on the point budget.
+    /// Translucent balls over a political field.
     Shell,
     /// The sky: discrete stars over the glow, on the photometric limit and the
     /// opening angle together.
@@ -276,7 +265,7 @@ impl Index {
     /// cells to splat as a field.
     pub fn needed(&self, view: &View, mode: Mode) -> Needed {
         match mode {
-            Mode::Shell => self.walk_screen(view, DEFAULT_POINT_BUDGET),
+            Mode::Shell => self.walk_screen(view),
             Mode::Real => Needed {
                 mode: Mode::Real,
                 marks: self.discrete_stars(view),
@@ -287,77 +276,69 @@ impl Index {
 
     /// The Shell walk: the "One circle, splitting" descent.
     ///
-    /// Two cuts fall out of one traversal. The **glow** splits a cell into its
-    /// children once its contents' spread subtends more than [`SPLIT_PX`],
-    /// cross-faded across the band up to [`SPLIT_FULL_PX`] so neither level
-    /// pops, and splats the frontier as one aggregate carrying its whole
-    /// density. The **marks** are additive: every cell from the root down lays
-    /// its own magnitude slice down as discrete symbols once that slice's
-    /// systems separate on screen, so the bright systems coarse slices carry —
-    /// Sol among them — are never dropped, while a far dense leaf's tight slice
-    /// fails the test and stays a splat rather than a square of overlapping
-    /// points. Weight is conserved down the glow: the splat blends under any
-    /// point of the sky sum to one.
+    /// One traversal, two cuts, and both are pure functions of where the eye is
+    /// — no budget, no frustum, nothing history-dependent — so the same eye
+    /// position always returns the same view, whatever path reached it.
     ///
-    /// The walk is not frustum-culled: residency reads the eye's position, never
-    /// its direction, so a turn changes nothing to fetch or evict. The budget is
-    /// spent largest contents first — nearest cells win — and the renderer culls
-    /// the off-screen marks at draw. So the resident set is a function of where
-    /// the eye is, identical however a view was reached.
-    pub fn walk_screen(&self, view: &View, budget: u64) -> Needed {
+    /// - **Marks.** A cell's own magnitude slice draws as discrete symbols
+    ///   exactly when its systems separate on screen: their mean spacing
+    ///   subtends more than [`MARK_SEPARATION_PX`]. Additive — every cell from
+    ///   the root down to where separation fails lays its slice down — so the
+    ///   bright systems that coarse slices carry are never lost.
+    /// - **Glow.** A cell splats as one aggregate until its contents' spread
+    ///   subtends more than [`SPLIT_PX`]; then it splits into its children,
+    ///   cross-faded across the band up to [`SPLIT_FULL_PX`] so neither level
+    ///   pops. Weight is conserved: the splat blends under any point sum to one.
+    ///
+    /// Nothing here bounds how many marks come back. The separation test is the
+    /// only limit, and for a framed view it holds the count near the screen's
+    /// own capacity; a frame-cost ceiling is a drawing concern that belongs at
+    /// draw time, not in a set that must stay a function of position.
+    pub fn walk_screen(&self, view: &View) -> Needed {
         let mut marks = Vec::new();
         let mut splats = Vec::new();
         let Some(root) = self.root() else {
             return Needed { mode: Mode::Shell, marks, splats };
         };
 
-        let mut drawn = 0u64;
-        let mut heap = BinaryHeap::new();
-        heap.push(Frontier {
-            size: self.projected_extent(view, root),
-            id: root.id,
-            weight: 1.0,
-        });
-
-        while let Some(Frontier { size, id, weight }) = heap.pop() {
+        // Each entry is a cell and the glow weight its ancestors' cross-fades
+        // have handed down, one at the root. Order does not matter — every cell
+        // is judged on its own — so a plain stack stands in for a heap.
+        let mut stack = vec![(root.id, 1.0f64)];
+        while let Some((id, weight)) = stack.pop() {
             let cell = self.get(id).expect("frontier cell is in the tree");
 
-            // Marks: this cell's own magnitude slice draws as discrete symbols
-            // when its systems separate on screen and the budget can hold them.
-            // Additive — every cell from the root to the frontier lays its slice
-            // down — so the bright systems coarse slices carry are never lost,
-            // while a far dense leaf's tight slice fails and stays a splat.
+            // Marks: this cell's slice draws discretely once its own systems
+            // separate on screen. A pure test, so the mark set is a function of
+            // the eye's position alone.
             if view.projected_px(
                 slice_spacing(cell),
                 distance(view.eye, contents_center(cell)),
             ) > MARK_SEPARATION_PX
-                && drawn + cell.slice_len() <= budget
             {
-                drawn += cell.slice_len();
                 marks.push(id);
             }
 
-            // Glow: only children carrying systems can take the handoff. The
-            // walk is not frustum-culled — the renderer culls off-screen marks
-            // at draw — so residency never turns on where the camera points.
+            // Glow: only children carrying systems can take the handoff.
             let children: Vec<&Cell> = self
                 .children(cell)
                 .filter(|c| c.aggregate.count() > 0)
                 .collect();
             let total: u64 = children.iter().map(|c| c.aggregate.count()).sum();
 
-            // A leaf, or a cell whose children are all off-frame or empty, is
-            // the glow frontier: one splat carrying its subtree's whole density.
+            // A leaf, or a cell whose children are all empty, is the glow
+            // frontier: one splat carrying its subtree's whole density.
             if children.is_empty() || total == 0 {
                 splats.push(SplatRef { id, blend: weight });
                 continue;
             }
 
-            // How far this cell has split into its children for the glow: none
+            // How far the cell has split into its children for the glow: none
             // below SPLIT_PX (one circle), all above SPLIT_FULL_PX (children
             // alone), a cross-fade between. The parent keeps `1 - alpha` of its
             // weight and hands `alpha` to the children by their count, so the
             // two sum to the cell's own weight throughout the transition.
+            let size = self.projected_extent(view, cell);
             let alpha =
                 ((size - SPLIT_PX) / (SPLIT_FULL_PX - SPLIT_PX)).clamp(0.0, 1.0);
             if alpha < 1.0 {
@@ -366,11 +347,7 @@ impl Index {
             if alpha > 0.0 {
                 for child in children {
                     let share = child.aggregate.count() as f64 / total as f64;
-                    heap.push(Frontier {
-                        size: self.projected_extent(view, child),
-                        id: child.id,
-                        weight: weight * alpha * share,
-                    });
+                    stack.push((child.id, weight * alpha * share));
                 }
             }
         }
@@ -464,32 +441,6 @@ fn contents_center(cell: &Cell) -> [f64; 3] {
 fn slice_spacing(cell: &Cell) -> f64 {
     let slice = cell.slice_len().max(1) as f64;
     contents_extent(cell) / slice.cbrt()
-}
-
-/// A frontier entry ordered by projected contents size, so the heap yields the
-/// cell that covers the most screen first, carrying the weight its ancestors'
-/// cross-fades have handed down.
-struct Frontier {
-    size: f64,
-    id: CellId,
-    weight: f64,
-}
-
-impl PartialEq for Frontier {
-    fn eq(&self, other: &Self) -> bool {
-        self.size == other.size
-    }
-}
-impl Eq for Frontier {}
-impl Ord for Frontier {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.size.total_cmp(&other.size)
-    }
-}
-impl PartialOrd for Frontier {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 #[cfg(test)]
@@ -626,32 +577,16 @@ mod tests {
         assert_eq!(view.projected_px(1.0, 0.0), f64::INFINITY);
     }
 
-    /// A generous budget reaches the leaves: their slices draw as marks. The
+    /// Close leaves draw as marks: their slices' systems separate on screen. The
     /// glow still carries them — a mark is a weightless symbol over the field,
     /// not a replacement for it — so the leaves splat as well.
     #[test]
-    fn a_generous_budget_reaches_the_leaves() {
+    fn close_leaves_draw_as_marks() {
         let (index, _parent, kids) = small_tree(100, 100, 4.0);
         let view = eye_out(CellId::of_point(HERE, 13), 4.0);
-        let needed = index.walk_screen(&view, DEFAULT_POINT_BUDGET);
+        let needed = index.walk_screen(&view);
         assert!(needed.marks.contains(&kids[0]));
         assert!(needed.marks.contains(&kids[1]));
-    }
-
-    /// A slice too big for the remaining budget stays a splat instead of drawing
-    /// its systems as marks: the budget gates the discrete draw, never the
-    /// field. The small ancestor slices still draw, so the bright coarse systems
-    /// are kept; only the heavy leaf slices are held back.
-    #[test]
-    fn a_tight_budget_leaves_the_big_slice_a_splat() {
-        let (index, parent, kids) = small_tree(100, 5000, 4.0);
-        let view = eye_out(CellId::of_point(HERE, 13), 4.0);
-        let needed = index.walk_screen(&view, 1000);
-        assert!(needed.marks.contains(&parent), "the coarse slices were dropped");
-        assert!(!needed.marks.contains(&kids[0]), "a 5000 slice fit a 1000 budget");
-        let splatted = splat_ids(&needed);
-        assert!(splatted.contains(&kids[0]));
-        assert!(splatted.contains(&kids[1]));
     }
 
     /// Far off, the whole tree is one circle at the root and nothing spawns; the
@@ -660,7 +595,7 @@ mod tests {
     fn far_is_one_circle_no_marks() {
         let (index, _parent, _kids) = small_tree(10, 10, 4.0);
         let far = eye_out(CellId::ROOT, 1.0e8);
-        let out = index.walk_screen(&far, DEFAULT_POINT_BUDGET);
+        let out = index.walk_screen(&far);
         assert!(out.marks.is_empty(), "a point-sized galaxy spawned entities");
         assert_eq!(out.splats.len(), 1, "more than one circle for the galaxy");
         assert_eq!(out.splats[0].id, CellId::ROOT);
@@ -685,12 +620,12 @@ mod tests {
         let index = Index::from_cells(cells);
 
         let far = eye_out(id, 60_000.0);
-        let out = index.walk_screen(&far, DEFAULT_POINT_BUDGET);
+        let out = index.walk_screen(&far);
         assert!(!out.marks.contains(&id), "a far dense leaf spawned its slice");
         assert!(splat_ids(&out).contains(&id), "a far dense leaf was not splatted");
 
         let near = eye_out(id, 3.0);
-        assert!(index.walk_screen(&near, DEFAULT_POINT_BUDGET).marks.contains(&id));
+        assert!(index.walk_screen(&near).marks.contains(&id));
     }
 
     /// Residency reads position, never direction: the walk returns the same
@@ -709,9 +644,9 @@ mod tests {
             viewport_height: 1080.0,
             aspect: 16.0 / 9.0,
         };
-        let toward = index.walk_screen(&looking([0.0, 0.0, 1.0]), DEFAULT_POINT_BUDGET);
-        let away = index.walk_screen(&looking([0.0, 0.0, -1.0]), DEFAULT_POINT_BUDGET);
-        let side = index.walk_screen(&looking([1.0, 0.0, 0.0]), DEFAULT_POINT_BUDGET);
+        let toward = index.walk_screen(&looking([0.0, 0.0, 1.0]));
+        let away = index.walk_screen(&looking([0.0, 0.0, -1.0]));
+        let side = index.walk_screen(&looking([1.0, 0.0, 0.0]));
         assert_eq!(toward.marks, away.marks, "facing away changed the marks");
         assert_eq!(toward.marks, side.marks, "facing side changed the marks");
     }
@@ -722,7 +657,7 @@ mod tests {
     fn closing_in_splits_the_root() {
         let (index, _parent, _kids) = small_tree(10, 10, 4.0);
         let near = eye_out(CellId::ROOT, 1.0e6);
-        let out = index.walk_screen(&near, DEFAULT_POINT_BUDGET);
+        let out = index.walk_screen(&near);
         assert!(!splat_ids(&out).contains(&CellId::ROOT), "the root refused to split");
     }
 
@@ -741,7 +676,7 @@ mod tests {
         // A distance that puts the root partway into its band, so root and
         // children both draw rather than one replacing the other outright.
         let view = eye_out(root, 6.0e7);
-        let needed = index.walk_screen(&view, DEFAULT_POINT_BUDGET);
+        let needed = index.walk_screen(&view);
         assert!(needed.splats.len() > 1, "the root did not begin to split");
         let total: f64 = needed.splats.iter().map(|s| s.blend).sum();
         assert!((total - 1.0).abs() < 1e-9, "weight not conserved: {total}");
