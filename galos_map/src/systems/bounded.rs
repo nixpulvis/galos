@@ -7,10 +7,11 @@
 //! of marks with everything coarser summed into splats, rather than the
 //! million entities the transform walk would then pay for every frame.
 //!
-//! Off by default, behind [`BoundedFetch`]. While it is off the spyglass
-//! drives the map as it always has; while it is on the spyglass region fetch
-//! and eviction stand down through their run conditions and these take their
-//! place. Only one source of systems runs at a time.
+//! On by default, behind [`LodFetch`]. While it is on the spyglass region
+//! fetch and its eviction stand down through their run conditions and this
+//! takes their place; turned off, the spyglass drives the map as it once did.
+//! Only one source of systems runs at a time. The spyglass radius lives on as
+//! an optional clamp on the walk — see [`reach`].
 //!
 //! It owns no drawing of its own: a built system is pushed onto the same
 //! [`PendingSpawns`] queue the spyglass fills and turned into an entity by
@@ -24,10 +25,11 @@ use crate::systems::aggregate::Planned;
 use crate::systems::fetch::{FetchTasks, RawSystem};
 use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::spawn::{PendingSpawns, build_system};
-use crate::systems::{PendingEvictions, System};
+use crate::systems::{PendingEvictions, Spyglass, System};
 use crate::{Names, Populated, ResidentIndex, Transport};
 use crate::camera::OrbitCamera;
 use bevy::prelude::*;
+use bevy::math::DVec3;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::{CellId, Point, Resident, resolvable_count};
@@ -36,7 +38,7 @@ use std::io;
 use std::time::Instant;
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<BoundedFetch>();
+    app.init_resource::<LodFetch>();
     app.init_resource::<ResidentCells>();
     app.init_resource::<BoundedTasks>();
 
@@ -59,23 +61,52 @@ pub fn plugin(app: &mut App) {
     );
 }
 
-/// Whether the walk-bounded fetch drives the map in place of the spyglass
+/// Whether the walk's level-of-detail fetch drives the map
 ///
-/// Off by default: the spyglass region fetch is the shipped path. Turning this
-/// on draws the map from the walk's marks instead — the bounded model — which
-/// is not yet verified and should not be the default until it is.
-#[derive(Resource, Default)]
-pub struct BoundedFetch(pub bool);
+/// On by default: the walk — clamped to the spyglass reach when the bound is
+/// on — is the map's source. Turned off, the old spyglass region fetch drives
+/// it instead, until that path is retired (see the TODO on
+/// `fetch::fetch_spyglass`).
+#[derive(Resource)]
+pub struct LodFetch(pub bool);
+
+impl Default for LodFetch {
+    fn default() -> Self {
+        LodFetch(true)
+    }
+}
 
 /// Whether the bounded source is on, for the systems it drives to run under.
-pub(crate) fn enabled(bounded: Res<BoundedFetch>) -> bool {
+pub(crate) fn enabled(bounded: Res<LodFetch>) -> bool {
     bounded.0
 }
 
 /// Whether the spyglass source should run, which is whenever the bounded one
 /// is not.
-pub(crate) fn spyglass(bounded: Res<BoundedFetch>) -> bool {
+pub(crate) fn spyglass(bounded: Res<LodFetch>) -> bool {
     !bounded.0
+}
+
+/// The spyglass reach as a clamp on the walk, in light years, or `None` when
+/// the bound is off and the walk runs to the whole sky.
+///
+/// Under the walk the spyglass is a clamp, not a source: it never changes the
+/// LOD, only where the LOD is cut off. A correct walk draws the same systems
+/// inside the bubble whether the clamp is on or off — the clamp only sheds the
+/// far, faint tail the walk would otherwise resolve across the whole
+/// separation sphere, which is what a dense near view pays for. Off is the
+/// whole sky, thinned by resolvability alone. The bound is the spyglass's
+/// `clear`: to bound the view is to clear away what the reach does not hold.
+fn reach(spyglass: &Spyglass) -> Option<f64> {
+    spyglass.clear.then_some(spyglass.radius as f64)
+}
+
+/// Whether a cell's box comes within `radius` of `center`, measured to its
+/// nearest point so a cell straddling the edge is kept and its own points
+/// filtered by their distance — the same nearest-point test the region fetch
+/// used to gather a sphere off the cell grid.
+fn cell_in_reach(id: CellId, center: DVec3, radius: f64) -> bool {
+    id.bounds().distance_to(center.to_array()) <= radius
 }
 
 /// The cell payloads the map holds, the resident half of the walk's predicate
@@ -101,7 +132,7 @@ struct BoundedTasks(HashMap<CellId, Task<io::Result<Vec<Point>>>>);
 /// toggle with it, there is one source and nothing to clear between — drop
 /// this system then.
 fn switch(
-    bounded: Res<BoundedFetch>,
+    bounded: Res<LodFetch>,
     systems: Query<Entity, With<System>>,
     mut evictions: ResMut<PendingEvictions>,
     mut resident: ResMut<ResidentCells>,
@@ -137,10 +168,21 @@ fn fetch(
     planned: Res<Planned>,
     resident: Res<ResidentCells>,
     transport: Res<Transport>,
+    spyglass: Res<Spyglass>,
+    cameras: Query<&OrbitCamera>,
     mut tasks: ResMut<BoundedTasks>,
 ) {
+    let bubble = reach(&spyglass).zip(cameras.single().ok());
     let pool = AsyncComputeTaskPool::get();
     for id in resident.0.missing(&planned.0) {
+        // Past the clamp, a marks cell beyond the reach is left unfetched, so a
+        // zoom out never loads the far sky the walk still marks — only its
+        // nearer, brighter tail is drawn.
+        if let Some((radius, camera)) = bubble
+            && !cell_in_reach(id, camera.center, radius)
+        {
+            continue;
+        }
         if tasks.0.contains_key(&id) {
             continue;
         }
@@ -191,6 +233,7 @@ fn reconcile(
     populated: Res<Populated>,
     names: Res<Names>,
     holding: Res<HeldSystem>,
+    spyglass: Res<Spyglass>,
     systems: Query<(Entity, &System)>,
     mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
@@ -200,6 +243,9 @@ fn reconcile(
         return;
     };
     let now = Instant::now();
+    // Clearing, the spyglass clamps the drawn set to a bubble about the camera:
+    // the LOD is untouched inside it, only the far tail is shed.
+    let bubble = reach(&spyglass);
 
     let existing: HashSet<i64> =
         systems.iter().map(|(_, system)| system.address).collect();
@@ -209,9 +255,21 @@ fn reconcile(
     let mut wanted: HashSet<i64> = HashSet::new();
     for (id, cell) in resident.0.iter() {
         let Some(indexed) = index.0.get(id) else { continue };
+        if let Some(radius) = bubble
+            && !cell_in_reach(id, orbit.center, radius)
+        {
+            continue;
+        }
         let target =
             (resolvable_count(indexed, &view) as usize).min(cell.points.len());
         for point in &cell.points[..target] {
+            // A cell straddling the bubble draws only the points inside it, so
+            // the edge is a sphere about the camera, not the cell grid.
+            if let Some(radius) = bubble
+                && orbit.center.distance(DVec3::from(point.pos)) > radius
+            {
+                continue;
+            }
             let address = point.id64 as i64;
             wanted.insert(address);
             if !existing.contains(&address) {
@@ -225,7 +283,8 @@ fn reconcile(
     }
 
     // Everything outside every prefix goes: the tail a cell sheds as it
-    // recedes, and the systems of a cell whose payload has been freed.
+    // recedes, the systems of a cell whose payload has been freed, and —
+    // clearing — whatever fell outside the bubble above.
     for (entity, system) in &systems {
         if Some(entity) == holding.of() {
             continue;
@@ -244,9 +303,22 @@ fn reconcile(
 /// memory the payload held.
 fn evict_payloads(
     planned: Res<Planned>,
+    spyglass: Res<Spyglass>,
+    cameras: Query<&OrbitCamera>,
     mut resident: ResMut<ResidentCells>,
 ) {
-    let stale = resident.0.stale(&planned.0);
+    let mut stale = resident.0.stale(&planned.0);
+    // The payloads the walk still marks but the clamp no longer reaches, so a
+    // bubble that has moved on does not go on holding the sky behind it.
+    if let (Some(radius), Ok(orbit)) = (reach(&spyglass), cameras.single()) {
+        stale.extend(
+            resident
+                .0
+                .iter()
+                .map(|(id, _)| id)
+                .filter(|&id| !cell_in_reach(id, orbit.center, radius)),
+        );
+    }
     for id in stale {
         resident.0.remove(id);
     }
@@ -292,5 +364,41 @@ mod tests {
         assert_eq!(system.address, 7);
         assert_eq!(system.name(), "7", "an unlisted point takes its id");
         assert_eq!(system.position(), DVec3::from(at), "placed exactly");
+    }
+
+    /// The clamp is the spyglass reach, and only while it is clearing
+    ///
+    /// Clearing, the walk is cut off at the reach; not clearing, it runs to the
+    /// whole sky and the clamp stands down — the toggle never switches the LOD
+    /// off, only where it ends.
+    #[test]
+    fn the_clamp_is_the_reach_only_while_clearing() {
+        let mut spyglass = Spyglass {
+            fetch: true,
+            radius: 50.,
+            clear: true,
+            lock_camera: false,
+            follow_camera: true,
+        };
+        assert_eq!(reach(&spyglass), Some(50.), "a clearing spyglass clamps");
+        spyglass.clear = false;
+        assert_eq!(reach(&spyglass), None, "not clearing runs the whole walk");
+    }
+
+    /// A cell is in the bubble by its nearest corner, so one well beyond the
+    /// reach is out and the one the eye sits in is in.
+    #[test]
+    fn a_cell_beyond_the_reach_is_out_of_the_bubble() {
+        let here = [100.0, 200.0, 24000.0];
+        let cell = CellId::of_point(here, 10);
+        let center = DVec3::from(here);
+
+        assert!(cell_in_reach(cell, center, 10.0), "the cell the eye sits in");
+
+        let far = center + DVec3::new(5000.0, 0.0, 0.0);
+        assert!(
+            !cell_in_reach(cell, far, 100.0),
+            "a cell thousands of light years off, a reach of a hundred"
+        );
     }
 }

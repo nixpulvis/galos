@@ -610,7 +610,7 @@ pub struct Settings<'w> {
     bright: ResMut<'w, Bright>,
     despawner: MessageWriter<'w, Despawn>,
     reloader: MessageWriter<'w, ReloadCells>,
-    bounded: ResMut<'w, crate::systems::bounded::BoundedFetch>,
+    bounded: ResMut<'w, crate::systems::bounded::LodFetch>,
 }
 
 /// The whole of the bar's filter section
@@ -693,56 +693,79 @@ pub fn chrome(
     // The pane first, since where it has reached is where the gear stands.
     let edge = settings_pane(ctx, open.0, |ui| {
         heading(ui, "Spyglass", false);
-        ui.checkbox(&mut settings.spyglass.follow_camera, "Follow Camera");
-        ui.add_space(FIELD_GAP);
-        ui.label("Radius (Ly)");
-        // Shown either way, since the reach is what the bar's count is
-        // counting within and a number left off the pane is one the user has
-        // nowhere to read. Greyed while the camera sets it: dragging it would
-        // be overwritten on the next frame, and a control that springs back is
-        // worse than one that says it is not yours to move.
-        ui.add_enabled_ui(!settings.spyglass.follow_camera, |ui| {
-            radius_slider(ui, &mut settings.spyglass.radius, Spyglass::CEILING);
-        });
-        // The camera cannot both be told where to stand and be asked where it
-        // is standing, so the one that reads the camera hides the one that
-        // writes it.
-        if !settings.spyglass.follow_camera {
-            ui.add_space(FIELD_GAP);
-            ui.checkbox(&mut settings.spyglass.lock_camera, "Lock Camera");
-        }
-
-        // Folded away under what it is about. Everything in here is the
-        // spyglass going about its work rather than a choice about the sky,
-        // and it is reached for once in a session if at all, so it is shut
-        // until it is asked for.
-        ui.add_space(FIELD_GAP);
-        ui.collapsing("Advanced", |ui| {
-            // Fetching first, the reach being of no use until the systems
-            // within it are on the map. Clearing is what to do with them once
-            // they are.
-            //
-            // Named for the halves alone. Standing inside the spyglass's own
-            // section, a name saying so again would be saying it twice.
-            ui.checkbox(&mut settings.spyglass.fetch, "Fetch");
-            if settings.spyglass.fetch {
-                // The throttle first, being the wait before asking about
-                // somewhere new, which is what moving the camera does and so
-                // what the map spends its time doing. The poll is the wait
-                // before asking a second time about somewhere it has already
-                // been, which only a map being sat still ever reaches.
-                ui.horizontal(|ui| {
-                    field_name(ui, "Throttle");
-                    ui.add(
-                        egui::DragValue::new(&mut settings.throttle.0)
-                            .suffix(" ms"),
+        // The spyglass is now a bound on the LoD walk rather than a source of
+        // its own: enabled, the walk is clamped to the reach and only the near
+        // sky draws; disabled, the whole sky draws, thinned by the level of
+        // detail alone. What is under it only settles where that bound falls,
+        // so it nests under the toggle the way the other sections nest theirs.
+        // "Enable" is the spyglass's `clear`: to bound the view is to clear
+        // away what the reach does not hold.
+        ui.checkbox(&mut settings.spyglass.clear, "Enable");
+        if settings.spyglass.clear {
+            ui.indent("spyglass", |ui| {
+                ui.checkbox(
+                    &mut settings.spyglass.follow_camera,
+                    "Follow Camera",
+                );
+                ui.add_space(FIELD_GAP);
+                ui.label("Radius (Ly)");
+                // Greyed while the camera sets it: dragging it would be
+                // overwritten on the next frame, and a control that springs
+                // back is worse than one that says it is not yours to move.
+                ui.add_enabled_ui(!settings.spyglass.follow_camera, |ui| {
+                    radius_slider(
+                        ui,
+                        &mut settings.spyglass.radius,
+                        Spyglass::CEILING,
                     );
                 });
-                ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
-            }
-            ui.add_space(FIELD_GAP);
-            ui.checkbox(&mut settings.spyglass.clear, "Clear");
-            ui.add_space(FIELD_GAP);
+                // The camera cannot both be told where to stand and be asked
+                // where it is standing, so the one that reads the camera hides
+                // the one that writes it.
+                if !settings.spyglass.follow_camera {
+                    ui.add_space(FIELD_GAP);
+                    ui.checkbox(
+                        &mut settings.spyglass.lock_camera,
+                        "Lock Camera",
+                    );
+                }
+
+                // Folded away: reached for once in a session if at all.
+                ui.add_space(FIELD_GAP);
+                ui.collapsing("Advanced", |ui| {
+                    // Whether to ask the database for what the reach takes in.
+                    // Named for the half alone: inside the spyglass's own
+                    // section, saying so again would be saying it twice.
+                    ui.checkbox(&mut settings.spyglass.fetch, "Fetch");
+                    if settings.spyglass.fetch {
+                        // The throttle is the wait before asking about
+                        // somewhere new; the poll the wait before asking again
+                        // about somewhere already been, which only a still map
+                        // reaches. See the throttle/poll TODO in `fetch`.
+                        ui.horizontal(|ui| {
+                            field_name(ui, "Throttle");
+                            ui.add(
+                                egui::DragValue::new(&mut settings.throttle.0)
+                                    .suffix(" ms"),
+                            );
+                        });
+                        ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
+                    }
+                });
+            });
+        }
+
+        // The source and the map-wide actions apply whether or not the
+        // spyglass bounds the view, so they stand outside it. LoD Fetch is the
+        // source the spyglass now bounds; the two buttons are debug escapes.
+        ui.add_space(FIELD_GAP);
+        // The map's source: draw only what the walk marks, off the cell
+        // payloads, in place of the spyglass region. On by default — it is what
+        // ends the far-view entity explosion — and off falls back to the old
+        // region fetch. Switching it clears the map and rebuilds from nothing.
+        ui.checkbox(&mut settings.bounded.0, "LoD Fetch");
+        ui.add_space(FIELD_GAP);
+        ui.collapsing("Debug", |ui| {
             if ui.button("Despawn Systems").clicked() {
                 settings.despawner.write(Despawn);
             }
@@ -751,12 +774,6 @@ pub fn chrome(
             if ui.button("Reload Cells").clicked() {
                 settings.reloader.write(ReloadCells);
             }
-            ui.add_space(FIELD_GAP);
-            // Draw only what the walk marks, off the cell payloads, in place
-            // of the spyglass region. The bounded source that ends the
-            // far-view entity explosion; switching it clears the map and the
-            // other source rebuilds from nothing.
-            ui.checkbox(&mut settings.bounded.0, "Bounded fetch");
         });
 
         // Its own section rather than a row under either view, because it is

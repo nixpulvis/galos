@@ -62,6 +62,15 @@ impl Poll {
     }
 }
 
+// TODO(bounded): work out what throttle and poll mean under the LoD fetch, now
+// the default. Throttle gates only the spyglass region fetch (`fetch_spyglass`),
+// which stands down while LoD is on, so it is inert; the LoD payload fetch
+// (`bounded::fetch`) reads its missing cells every frame with no throttle or
+// poll at all. Poll is still live through `bodies::fetch` for a system's
+// interior, but its region half is inert the same way. Decide whether the LoD
+// fetch should rate-limit its reads (throttle) and re-poll cells for updates
+// (poll), or whether the two retire with the region path.
+
 /// The amount to throttle requests for new indices (millis).
 #[derive(Resource)]
 pub struct Throttle(pub u64);
@@ -380,6 +389,16 @@ pub fn fetch(
 /// and cheap to read, so the map draws everything in reach and [`filter`] dims
 /// what it excludes, rather than the fetch leaving it out and having nothing to
 /// draw faintly.
+//
+// TODO(bounded): retire this whole spyglass region-fetch path once the walk is
+// verified as the only source. It loads a full-density sphere, which is what
+// explodes on zoom-out; the walk clamped to the reach (see
+// `systems::bounded::reach`) draws the same near view and stays bounded far.
+// When it goes, so do: `FetchIndex::Region` and its `spyglass_condition`,
+// `galos_index::Index::region` (this is its only caller), the `LodFetch`
+// toggle with the `enabled`/`spyglass` run-condition split and the `switch`
+// clear (bounded.rs), and the spyglass `evict` gated on `bounded::spyglass`
+// (mod.rs). See the sibling TODO(bounded) markers.
 fn fetch_spyglass(
     camera_query: &Query<&OrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
