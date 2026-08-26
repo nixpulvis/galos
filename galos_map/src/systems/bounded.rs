@@ -22,9 +22,11 @@
 use crate::schedule::MapSet;
 use crate::systems::aggregate::Planned;
 use crate::systems::fetch::{FetchTasks, RawSystem};
+use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::spawn::{PendingSpawns, build_system};
 use crate::systems::{PendingEvictions, System};
-use crate::{Names, Populated, Transport};
+use crate::{Names, Populated, ResidentIndex, Transport};
+use crate::camera::OrbitCamera;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
@@ -32,6 +34,12 @@ use galos_index::{CellId, Point, Resident};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Instant;
+
+/// How far past the mark distance a resident cell is held before eviction — a
+/// hysteresis so a cell hovering at the fetch boundary is not dropped and
+/// refetched each frame. At two, a cell survives until it shrinks to half the
+/// mark separation.
+const EVICT_MARGIN: f64 = 2.0;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<BoundedFetch>();
@@ -188,12 +196,24 @@ fn spawn(
 /// would have despawned it. Harmless to the view, but it holds memory nothing
 /// is drawing.
 fn evict(
-    planned: Res<Planned>,
+    cameras: Query<(&OrbitCamera, &Camera)>,
+    index: Res<ResidentIndex>,
+    holding: Res<HeldSystem>,
     mut resident: ResMut<ResidentCells>,
     systems: Query<(Entity, &System)>,
     mut evictions: ResMut<PendingEvictions>,
 ) {
-    let stale = resident.0.stale(&planned.0);
+    let Ok((orbit, camera)) = cameras.single() else { return };
+    let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
+        return;
+    };
+    // Residency reads where the eye is, never where it points: a cell out of
+    // the frustum but still near the eye stays, so a turn evicts nothing and
+    // only a move drops what it leaves behind. The frustum-culled marks still
+    // drive the fetch, so new sky loads as it comes into view.
+    let stale = resident
+        .0
+        .evictable(|id| index.0.within_reach(id, &view, EVICT_MARGIN));
     if stale.is_empty() {
         return;
     }
@@ -206,6 +226,12 @@ fn evict(
         }
     }
     for (entity, system) in &systems {
+        // Never despawn the system the camera stands in: the bodies work parents
+        // the FloatingOrigin under it, so taking it would leave big_space with
+        // no origin to propagate from. The spyglass evictor keeps the same rule.
+        if Some(entity) == holding.of() {
+            continue;
+        }
         if dropped.contains(&system.address) {
             evictions.0.insert(entity);
         }
