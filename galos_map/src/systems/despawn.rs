@@ -53,6 +53,8 @@ pub fn despawn(
     galaxy: Res<Galaxy>,
     camera: Query<Entity, With<OrbitCamera>>,
     mut tasks: ResMut<crate::systems::fetch::FetchTasks>,
+    mut spawns: ResMut<crate::systems::spawn::PendingSpawns>,
+    mut evictions: ResMut<crate::systems::PendingEvictions>,
     mut events: MessageReader<Despawn>,
 ) {
     if events.read().count() == 0 {
@@ -60,6 +62,14 @@ pub fn despawn(
     }
 
     tasks.surveyed.clear();
+
+    // The two queues systems arrive and leave the map by, emptied so nothing
+    // queued before the clear lands after it. An eviction left waiting on the
+    // budget names a system this despawn is about to take with the galaxy, and
+    // draining it once the slot has been reused would despawn whatever spawned
+    // into it. A spawn left waiting would draw a system the clear just removed.
+    *spawns = default();
+    *evictions = default();
 
     // Up out of whatever it was standing in first. A camera that has descended
     // into a system is a child of it, and the system is about to go.
@@ -147,6 +157,8 @@ mod tests {
         app.add_message::<Despawn>();
         app.add_systems(Update, despawn);
         app.init_resource::<crate::systems::fetch::FetchTasks>();
+        app.init_resource::<crate::systems::spawn::PendingSpawns>();
+        app.init_resource::<crate::systems::PendingEvictions>();
 
         let map = app.world_mut().spawn_empty().id();
         let galaxy = app.world_mut().spawn(ChildOf(map)).id();
@@ -288,6 +300,49 @@ mod tests {
             parent(&app, eye),
             Some(map(&app)),
             "the camera did not come up into the map"
+        );
+    }
+
+    /// A clear empties the queues systems arrive and leave the map by
+    ///
+    /// An eviction left waiting on the budget names a system the clear takes
+    /// with the galaxy. Draining it afterwards, once a fresh spawn had reused
+    /// the slot, despawned whatever now stood there — the "entity is invalid,
+    /// its index now has a later generation" warning. So the queues go with
+    /// the systems they name.
+    #[test]
+    fn a_clear_empties_the_pending_queues() {
+        use crate::systems::PendingEvictions;
+        use crate::systems::spawn::PendingSpawns;
+        use std::time::Instant;
+
+        let mut app = sky(3);
+        let doomed = app
+            .world_mut()
+            .query_filtered::<Entity, With<System>>()
+            .iter(app.world())
+            .next()
+            .expect("a system to mark for eviction");
+        app.world_mut()
+            .resource_mut::<PendingEvictions>()
+            .0
+            .insert(doomed);
+        app.world_mut().resource_mut::<PendingSpawns>().push(
+            system(9),
+            false,
+            Instant::now(),
+        );
+
+        clear(&mut app);
+
+        assert!(
+            app.world().resource::<PendingEvictions>().0.is_empty(),
+            "a clear left an eviction queued for a system it despawned"
+        );
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            0,
+            "a clear left a spawn queued from before it"
         );
     }
 }
