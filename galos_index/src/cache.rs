@@ -140,12 +140,20 @@ impl Resident {
         let wanted: HashSet<CellId> = needed.marks.iter().copied().collect();
         self.cells.keys().copied().filter(|id| !wanted.contains(id)).collect()
     }
+
+    /// The resident cells a predicate no longer wants held, for an evictor that
+    /// reads the eye's position alone so a rotation drops nothing. `keep`
+    /// answers whether a cell is still within reach; the rest are returned to
+    /// drop.
+    pub fn evictable(&self, mut keep: impl FnMut(CellId) -> bool) -> Vec<CellId> {
+        self.cells.keys().copied().filter(|&id| !keep(id)).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::walk::Mode;
+    use crate::walk::{Mode, SplatRef};
 
     fn point(id: u64) -> Point {
         Point { id64: id, pos: [1.0, 2.0, 3.0], magnitude: 4.0, temp_bucket: 2 }
@@ -212,7 +220,8 @@ mod tests {
         let s = at(2, 1);
         let mut cache = Resident::default();
         cache.insert(s, vec![point(1)]);
-        let needed = Needed { mode: Mode::Real, marks: vec![], splats: vec![s] };
+        let needed =
+            Needed { mode: Mode::Real, marks: vec![], splats: vec![SplatRef { id: s, blend: 1.0 }] };
         assert!(cache.missing(&needed).is_empty());
         assert_eq!(ids(cache.stale(&needed)), ids(vec![s]));
     }

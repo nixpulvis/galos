@@ -41,9 +41,23 @@ use std::collections::{BinaryHeap, HashMap};
 /// once the build runs.
 pub const DEFAULT_POINT_BUDGET: u64 = 46_000;
 
-/// Below this projected size a cell's contents land on about one pixel and can
-/// add nothing, so the walk does not refine past it.
-pub const FLOOR_PX: f64 = 1.0;
+/// The mark limit, in pixels: the smallest a splat draws as more than a point.
+/// A cell whose contents' own spread projects to less than this is one circle;
+/// past it the circle splits, the "One circle, splitting" law of galaxy.md.
+/// Two pixels on a 1080-line window, the figure that section's ladder turns on.
+pub const SPLIT_PX: f64 = 2.0;
+
+/// The top of the split's cross-fade band, an octave above [`SPLIT_PX`]. Across
+/// `SPLIT_PX..SPLIT_FULL_PX` a cell and its children both draw, their weights
+/// summing to one, so the level handoff crosses over rather than popping; above
+/// it the children carry the region alone.
+pub const SPLIT_FULL_PX: f64 = 4.0;
+
+/// Two marks read as two only when their centres are more than this many pixels
+/// apart — a 2 px mark at about 0.3 coverage. A leaf spawns its systems as
+/// individual marks once their mean spacing subtends this, and stays one splat
+/// until then, so a far cell never spawns a square of overlapping points.
+pub const MARK_SEPARATION_PX: f64 = 6.7;
 
 /// A cell wider than this on screen is refined for the glow; narrower, it
 /// splats. Half a degree, the "fraction of a degree" the opening-angle test
@@ -148,16 +162,33 @@ impl View {
     }
 }
 
+/// One cell to draw as a splat, and the weight it lays into the field.
+///
+/// `blend` is a cross-level fade in `0.0..=1.0`. A frontier cell that is safely
+/// one circle carries the full weight; a cell partway into its split shares its
+/// weight with its children, the parent taking `1 - alpha` and the children the
+/// rest by their count, so the handoff crosses over rather than popping. The
+/// blends under any point of the sky sum to one, so the field they accumulate
+/// into is conserved through every split.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SplatRef {
+    /// The cell whose aggregate is drawn.
+    pub id: CellId,
+    /// The share of its weight this draw carries, `0.0..=1.0`.
+    pub blend: f64,
+}
+
 /// What a walk asks for: the cells whose systems draw as discrete marks and the
 /// cells that draw as a splat.
 ///
 /// `marks` is also the fetch set, since a mark is a system from a cell's
-/// payload; `splats` draw from the aggregate alone and need nothing loaded.
+/// payload; `splats` draw from the aggregate alone and need nothing loaded,
+/// each with the weight it lays down so a split conserves the field.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Needed {
     pub mode: Mode,
     pub marks: Vec<CellId>,
-    pub splats: Vec<CellId>,
+    pub splats: Vec<SplatRef>,
 }
 
 /// The resident tree of cell aggregates, keyed by address.
@@ -227,10 +258,18 @@ impl Index {
             .collect()
     }
 
-    /// The projected size of a cell's edge, in pixels, from this view.
-    fn projected_edge(&self, view: &View, cell: &Cell) -> f64 {
-        let center = cell.id.bounds().center();
-        view.projected_px(cell.id.edge_ly(), distance(view.eye, center))
+    /// The projected size, in pixels, of a cell's *contents* — their own spread
+    /// from the count-weighted second moments, not the box that holds them.
+    ///
+    /// This is the quantity the split test turns on. A coarse cell near the
+    /// galactic plane holds a thin slab: its box is a cube spanning the whole
+    /// thickness, but its contents are shallow, and it is the contents that
+    /// decide when the cell's systems separate on screen.
+    fn projected_extent(&self, view: &View, cell: &Cell) -> f64 {
+        view.projected_px(
+            contents_extent(cell),
+            distance(view.eye, contents_center(cell)),
+        )
     }
 
     /// The cells the view needs for a presentation: the marks to draw and the
@@ -246,45 +285,109 @@ impl Index {
         }
     }
 
-    /// The Shell walk: refine the largest cell first until the point budget is
-    /// spent, then splat whatever was left unrefined as the political field.
+    /// Whether a cell is close enough to the eye to keep resident, whatever way
+    /// the camera looks.
+    ///
+    /// Residency reads the eye's position and never its direction: a turn must
+    /// evict nothing, or the most common gesture there is churns the resident
+    /// set (galaxy.md). So this is the mark test — does the cell's slice
+    /// separate on screen — without the frustum, relaxed by `margin` for
+    /// hysteresis so a cell held at the mark distance is not dropped the instant
+    /// it shrinks past it. A cell the index has forgotten is not held.
+    pub fn within_reach(&self, id: CellId, view: &View, margin: f64) -> bool {
+        let Some(cell) = self.get(id) else { return false };
+        view.projected_px(
+            slice_spacing(cell),
+            distance(view.eye, contents_center(cell)),
+        ) > MARK_SEPARATION_PX / margin
+    }
+
+    /// The Shell walk: the "One circle, splitting" descent.
+    ///
+    /// Two cuts fall out of one traversal. The **glow** splits a cell into its
+    /// children once its contents' spread subtends more than [`SPLIT_PX`],
+    /// cross-faded across the band up to [`SPLIT_FULL_PX`] so neither level
+    /// pops, and splats the frontier as one aggregate carrying its whole
+    /// density. The **marks** are additive: every cell from the root down lays
+    /// its own magnitude slice down as discrete symbols once that slice's
+    /// systems separate on screen, so the bright systems coarse slices carry —
+    /// Sol among them — are never dropped, while a far dense leaf's tight slice
+    /// fails the test and stays a splat rather than a square of overlapping
+    /// points. Weight is conserved down the glow: the splat blends under any
+    /// point of the sky sum to one.
+    ///
+    /// The frontier is spent largest contents first, so the budget lands on the
+    /// cells the camera is closest to rather than the biggest boxes far off.
     pub fn walk_screen(&self, view: &View, budget: u64) -> Needed {
         let mut marks = Vec::new();
         let mut splats = Vec::new();
         let Some(root) = self.root() else {
             return Needed { mode: Mode::Shell, marks, splats };
         };
+        if !view.sees(&root.id.bounds()) {
+            return Needed { mode: Mode::Shell, marks, splats };
+        }
 
-        // The root's own slice is always drawn; the heap holds the frontier,
-        // largest on screen first.
-        let mut drawn = root.slice_len();
-        marks.push(root.id);
+        let mut drawn = 0u64;
         let mut heap = BinaryHeap::new();
-        heap.push(Priority { size: self.projected_edge(view, root), id: root.id });
+        heap.push(Frontier {
+            size: self.projected_extent(view, root),
+            id: root.id,
+            weight: 1.0,
+        });
 
-        while let Some(Priority { size, id }) = heap.pop() {
+        while let Some(Frontier { size, id, weight }) = heap.pop() {
             let cell = self.get(id).expect("frontier cell is in the tree");
+
+            // Marks: this cell's own magnitude slice draws as discrete symbols
+            // when its systems separate on screen and the budget can hold them.
+            // Additive — every cell from the root to the frontier lays its slice
+            // down — so the bright systems coarse slices carry are never lost,
+            // while a far dense leaf's tight slice fails and stays a splat.
+            if view.projected_px(
+                slice_spacing(cell),
+                distance(view.eye, contents_center(cell)),
+            ) > MARK_SEPARATION_PX
+                && drawn + cell.slice_len() <= budget
+            {
+                drawn += cell.slice_len();
+                marks.push(id);
+            }
+
+            // Glow: only children on-frame and carrying systems can take the
+            // handoff; an empty or off-frame child is not a place to descend.
             let children: Vec<&Cell> = self
                 .children(cell)
-                .filter(|c| view.sees(&c.id.bounds()))
+                .filter(|c| c.aggregate.count() > 0 && view.sees(&c.id.bounds()))
                 .collect();
-            let adds: u64 = children.iter().map(|c| c.slice_len()).sum();
-            let can_refine = !children.is_empty()
-                && size >= FLOOR_PX
-                && drawn + adds <= budget;
+            let total: u64 = children.iter().map(|c| c.aggregate.count()).sum();
 
-            if can_refine {
-                drawn += adds;
+            // A leaf, or a cell whose children are all off-frame or empty, is
+            // the glow frontier: one splat carrying its subtree's whole density.
+            if children.is_empty() || total == 0 {
+                splats.push(SplatRef { id, blend: weight });
+                continue;
+            }
+
+            // How far this cell has split into its children for the glow: none
+            // below SPLIT_PX (one circle), all above SPLIT_FULL_PX (children
+            // alone), a cross-fade between. The parent keeps `1 - alpha` of its
+            // weight and hands `alpha` to the children by their count, so the
+            // two sum to the cell's own weight throughout the transition.
+            let alpha =
+                ((size - SPLIT_PX) / (SPLIT_FULL_PX - SPLIT_PX)).clamp(0.0, 1.0);
+            if alpha < 1.0 {
+                splats.push(SplatRef { id, blend: weight * (1.0 - alpha) });
+            }
+            if alpha > 0.0 {
                 for child in children {
-                    marks.push(child.id);
-                    heap.push(Priority {
-                        size: self.projected_edge(view, child),
+                    let share = child.aggregate.count() as f64 / total as f64;
+                    heap.push(Frontier {
+                        size: self.projected_extent(view, child),
                         id: child.id,
+                        weight: weight * alpha * share,
                     });
                 }
-            } else if !cell.is_leaf() {
-                // Left unrefined with a subtree still under it: splat the rest.
-                splats.push(id);
             }
         }
 
@@ -324,8 +427,9 @@ impl Index {
 
     /// The glow under the Real sky: descend while a cell subtends more than the
     /// opening angle, and splat it once it subtends less: the summed light of
-    /// everything below the visibility floor.
-    fn glow_field(&self, view: &View) -> Vec<CellId> {
+    /// everything below the visibility floor. Full weight each — the Real glow
+    /// does not cross-fade levels yet — so a splat carries its whole cell.
+    fn glow_field(&self, view: &View) -> Vec<SplatRef> {
         let mut splats = Vec::new();
         let mut stack = vec![CellId::ROOT];
         while let Some(id) = stack.pop() {
@@ -333,7 +437,7 @@ impl Index {
             let d = distance(view.eye, cell.id.bounds().center());
             let angle = if d <= 0.0 { f64::INFINITY } else { cell.id.edge_ly() / d };
             if cell.is_leaf() || angle <= GLOW_OPENING_ANGLE {
-                splats.push(id);
+                splats.push(SplatRef { id, blend: 1.0 });
             } else {
                 for child in self.children(cell) {
                     stack.push(child.id);
@@ -350,25 +454,55 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
-/// A frontier entry ordered by projected size, so the heap yields the cell that
-/// covers the most screen first.
-struct Priority {
-    size: f64,
-    id: CellId,
+/// A cell's contents' spread in light years: the count-weighted RMS radius,
+/// floored at the mean spacing so a cell of one or a few systems still resolves
+/// as the camera closes rather than staying a zero-extent point forever.
+fn contents_extent(cell: &Cell) -> f64 {
+    let count = cell.aggregate.count().max(1) as f64;
+    let spacing = cell.id.edge_ly() / count.cbrt();
+    cell.aggregate.count_extent().max(spacing)
 }
 
-impl PartialEq for Priority {
+/// Where a cell's contents sit: the count-weighted centroid, or the box centre
+/// where the aggregate carries no weight of its own.
+fn contents_center(cell: &Cell) -> [f64; 3] {
+    cell.aggregate.count_centroid().unwrap_or_else(|| cell.id.bounds().center())
+}
+
+/// The mean spacing of a cell's own magnitude slice, in light years.
+///
+/// A slice's systems are a spatially uniform sample of the cell's subtree, so
+/// they are spread across its whole [`contents_extent`] however few they are.
+/// Their spacing is that extent shared among the slice's count, and it decides
+/// whether the slice draws as separate marks: a coarse slice holds a handful of
+/// bright systems spread galaxy-wide and separates from far off, while a leaf's
+/// dense slice only separates up close.
+fn slice_spacing(cell: &Cell) -> f64 {
+    let slice = cell.slice_len().max(1) as f64;
+    contents_extent(cell) / slice.cbrt()
+}
+
+/// A frontier entry ordered by projected contents size, so the heap yields the
+/// cell that covers the most screen first, carrying the weight its ancestors'
+/// cross-fades have handed down.
+struct Frontier {
+    size: f64,
+    id: CellId,
+    weight: f64,
+}
+
+impl PartialEq for Frontier {
     fn eq(&self, other: &Self) -> bool {
         self.size == other.size
     }
 }
-impl Eq for Priority {}
-impl Ord for Priority {
+impl Eq for Frontier {}
+impl Ord for Frontier {
     fn cmp(&self, other: &Self) -> Ordering {
         self.size.total_cmp(&other.size)
     }
 }
-impl PartialOrd for Priority {
+impl PartialOrd for Frontier {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -378,6 +512,12 @@ impl PartialOrd for Priority {
 mod tests {
     use super::*;
     use crate::aggregate::Aggregate;
+
+    /// The cell ids of a plan's splats, for the tests that only care which
+    /// cells the field drew and not what weight each carried.
+    fn splat_ids(needed: &Needed) -> Vec<CellId> {
+        needed.splats.iter().map(|s| s.id).collect()
+    }
 
     /// The view keeps a box ahead of the eye and drops one behind it.
     #[test]
@@ -502,8 +642,9 @@ mod tests {
         assert_eq!(view.projected_px(1.0, 0.0), f64::INFINITY);
     }
 
-    /// A generous budget refines to the leaves: every cell's slice is a mark and
-    /// nothing is left to splat.
+    /// A generous budget reaches the leaves: their slices draw as marks. The
+    /// glow still carries them — a mark is a weightless symbol over the field,
+    /// not a replacement for it — so the leaves splat as well.
     #[test]
     fn a_generous_budget_reaches_the_leaves() {
         let (index, _parent, kids) = small_tree(100, 100, 4.0);
@@ -511,19 +652,118 @@ mod tests {
         let needed = index.walk_screen(&view, DEFAULT_POINT_BUDGET);
         assert!(needed.marks.contains(&kids[0]));
         assert!(needed.marks.contains(&kids[1]));
-        assert!(needed.splats.is_empty());
     }
 
-    /// A budget too small to admit the children leaves the parent unrefined, so
-    /// it draws its own slice as marks and splats the subtree under it.
+    /// A slice too big for the remaining budget stays a splat instead of drawing
+    /// its systems as marks: the budget gates the discrete draw, never the
+    /// field. The small ancestor slices still draw, so the bright coarse systems
+    /// are kept; only the heavy leaf slices are held back.
     #[test]
-    fn a_tight_budget_splats_rather_than_refines() {
+    fn a_tight_budget_leaves_the_big_slice_a_splat() {
         let (index, parent, kids) = small_tree(100, 5000, 4.0);
         let view = eye_out(CellId::of_point(HERE, 13), 4.0);
         let needed = index.walk_screen(&view, 1000);
-        assert!(needed.marks.contains(&parent));
-        assert!(!needed.marks.contains(&kids[0]));
-        assert!(needed.splats.contains(&parent));
+        assert!(needed.marks.contains(&parent), "the coarse slices were dropped");
+        assert!(!needed.marks.contains(&kids[0]), "a 5000 slice fit a 1000 budget");
+        let splatted = splat_ids(&needed);
+        assert!(splatted.contains(&kids[0]));
+        assert!(splatted.contains(&kids[1]));
+    }
+
+    /// Far off, the whole tree is one circle at the root and nothing spawns; the
+    /// root carries the full weight since nothing finer draws.
+    #[test]
+    fn far_is_one_circle_no_marks() {
+        let (index, _parent, _kids) = small_tree(10, 10, 4.0);
+        let far = eye_out(CellId::ROOT, 1.0e8);
+        let out = index.walk_screen(&far, DEFAULT_POINT_BUDGET);
+        assert!(out.marks.is_empty(), "a point-sized galaxy spawned entities");
+        assert_eq!(out.splats.len(), 1, "more than one circle for the galaxy");
+        assert_eq!(out.splats[0].id, CellId::ROOT);
+        assert!((out.splats[0].blend - 1.0).abs() < 1e-9);
+    }
+
+    /// A far dense leaf stays one splat and spawns nothing — the fix for far
+    /// cells loading as squares of overlapping points — and only resolves to
+    /// marks once its systems separate on screen up close.
+    #[test]
+    fn a_dense_leaf_splats_far_and_marks_near() {
+        let id = CellId::of_point(HERE, 11);
+        let c = id.bounds().center();
+        let mut agg = Aggregate::ZERO;
+        for i in 0..64u64 {
+            let off = i as f64 * 0.5;
+            agg = agg.merge(Aggregate::of_system([c[0] + off, c[1], c[2]], 4.0, 5000.0, 0));
+        }
+        let leaf = Cell { id, rank_lo: 0, rank_hi: 64, child_mask: 0, aggregate: agg };
+        let mut cells = chain_to(id, 4.0);
+        cells.push(leaf);
+        let index = Index::from_cells(cells);
+
+        let far = eye_out(id, 60_000.0);
+        let out = index.walk_screen(&far, DEFAULT_POINT_BUDGET);
+        assert!(!out.marks.contains(&id), "a far dense leaf spawned its slice");
+        assert!(splat_ids(&out).contains(&id), "a far dense leaf was not splatted");
+
+        let near = eye_out(id, 3.0);
+        assert!(index.walk_screen(&near, DEFAULT_POINT_BUDGET).marks.contains(&id));
+    }
+
+    /// Residency reads position, never direction: [`Index::within_reach`] gives
+    /// the same answer however the camera turns about one eye. This is the
+    /// property that keeps a turn from churning the resident set — the sudden
+    /// appearing and disappearing a frustum-keyed evictor caused.
+    #[test]
+    fn reach_ignores_rotation() {
+        let (index, parent, _kids) = small_tree(100, 100, 4.0);
+        let c = parent.bounds().center();
+        let looking = |forward: [f64; 3]| View {
+            eye: [c[0], c[1], c[2] - 200.0],
+            forward,
+            up: [0.0, 1.0, 0.0],
+            fov_y: std::f32::consts::FRAC_PI_4,
+            viewport_height: 1080.0,
+            aspect: 16.0 / 9.0,
+        };
+        let toward = looking([0.0, 0.0, 1.0]);
+        let away = looking([0.0, 0.0, -1.0]);
+        let side = looking([1.0, 0.0, 0.0]);
+        for cell in index.cells() {
+            let held = index.within_reach(cell.id, &toward, 2.0);
+            assert_eq!(held, index.within_reach(cell.id, &away, 2.0), "facing away changed reach");
+            assert_eq!(held, index.within_reach(cell.id, &side, 2.0), "facing side changed reach");
+        }
+    }
+
+    /// Closing in, the root's contents clear the limit and it splits: the root
+    /// is no longer the circle drawn, its children carry the region.
+    #[test]
+    fn closing_in_splits_the_root() {
+        let (index, _parent, _kids) = small_tree(10, 10, 4.0);
+        let near = eye_out(CellId::ROOT, 1.0e6);
+        let out = index.walk_screen(&near, DEFAULT_POINT_BUDGET);
+        assert!(!splat_ids(&out).contains(&CellId::ROOT), "the root refused to split");
+    }
+
+    /// A split conserves the weight: a cell partway into its cross-fade draws
+    /// alongside its children, and the blends laid down sum to one, so the field
+    /// neither brightens nor dims across the transition.
+    #[test]
+    fn a_split_conserves_the_weight() {
+        let root = CellId::ROOT;
+        let kids = root.children();
+        let index = Index::from_cells(vec![
+            cell(root, 1, 0b0000_0011, 4.0),
+            cell(kids[0], 1, 0, 4.0),
+            cell(kids[1], 1, 0, 4.0),
+        ]);
+        // A distance that puts the root partway into its band, so root and
+        // children both draw rather than one replacing the other outright.
+        let view = eye_out(root, 6.0e7);
+        let needed = index.walk_screen(&view, DEFAULT_POINT_BUDGET);
+        assert!(needed.splats.len() > 1, "the root did not begin to split");
+        let total: f64 = needed.splats.iter().map(|s| s.blend).sum();
+        assert!((total - 1.0).abs() < 1e-9, "weight not conserved: {total}");
     }
 
     /// The photometric walk keeps a cell whose brightest star clears the limit
@@ -555,15 +795,15 @@ mod tests {
         // Close in, the 16 ly parent subtends far more than half a degree and
         // refines to its leaves, which splat.
         let near = eye_out(CellId::of_point(HERE, 13), 2.0);
-        let close = index.needed(&near, Mode::Real);
-        assert!(close.splats.contains(&kids[0]));
-        assert!(close.splats.contains(&kids[1]));
-        assert!(!close.splats.contains(&CellId::ROOT));
+        let close = splat_ids(&index.needed(&near, Mode::Real));
+        assert!(close.contains(&kids[0]));
+        assert!(close.contains(&kids[1]));
+        assert!(!close.contains(&CellId::ROOT));
 
         // From far enough that even the whole cube subtends under the angle, the
         // root itself splats.
         let far = eye_out(CellId::ROOT, 20_000_000.0);
-        assert!(index.needed(&far, Mode::Real).splats.contains(&CellId::ROOT));
+        assert!(splat_ids(&index.needed(&far, Mode::Real)).contains(&CellId::ROOT));
     }
 
     /// An empty index asks for nothing, in every mode.

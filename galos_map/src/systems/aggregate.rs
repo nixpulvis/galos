@@ -138,6 +138,10 @@ pub struct Splat {
     pub color: LinearRgba,
     /// The total linear flux over the cell's subtree.
     pub flux: f64,
+    /// The share of the cell's weight this draw lays down, `0.0..=1.0`: the
+    /// walk's cross-level fade, so a splat mid-split contributes less and its
+    /// children make up the rest without the field brightening.
+    pub blend: f64,
 }
 
 /// The splats the walk asked for, described from the resident aggregates
@@ -198,6 +202,7 @@ fn splat_of(aggregate: &Aggregate, centre: [f64; 3]) -> Option<Splat> {
             (rgb[2] / flux) as f32,
         ),
         flux,
+        blend: 1.0,
     })
 }
 
@@ -214,9 +219,10 @@ fn describe(
         return;
     }
     splats.0.clear();
-    for &id in &planned.0.splats {
-        if let Some(cell) = index.0.get(id) {
-            if let Some(described) = splat(cell) {
+    for sr in &planned.0.splats {
+        if let Some(cell) = index.0.get(sr.id) {
+            if let Some(mut described) = splat(cell) {
+                described.blend = sr.blend;
                 splats.0.push(described);
             }
         }
