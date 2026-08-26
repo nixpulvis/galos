@@ -140,14 +140,6 @@ impl Resident {
         let wanted: HashSet<CellId> = needed.marks.iter().copied().collect();
         self.cells.keys().copied().filter(|id| !wanted.contains(id)).collect()
     }
-
-    /// The resident cells a predicate no longer wants held, for an evictor that
-    /// reads the eye's position alone so a rotation drops nothing. `keep`
-    /// answers whether a cell is still within reach; the rest are returned to
-    /// drop.
-    pub fn evictable(&self, mut keep: impl FnMut(CellId) -> bool) -> Vec<CellId> {
-        self.cells.keys().copied().filter(|&id| !keep(id)).collect()
-    }
 }
 
 #[cfg(test)]
