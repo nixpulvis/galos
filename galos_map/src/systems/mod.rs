@@ -342,6 +342,15 @@ pub fn visibility(
     let all_in_reach = bounded.as_deref().map_or(false, |b| b.0);
     let excluded_are_drawn = dim.0 > 0.;
 
+    // TODO(bounded): this counts drawn entities, which under the walk is the
+    // resolvable prefix rather than every system in reach — the number is
+    // right for the spyglass, which spawns one entity per system, and low for
+    // the LOD walk, which spawns only what separates on screen. The true
+    // `total` is in the resident index and costs no payload load: sum the
+    // marks cells' own slice counts (clamped to the radius once the spyglass
+    // is a clamp on the walk). `admitted` is the harder half — the filters ask
+    // a per-system faction/allegiance question the aggregates do not carry — so
+    // it stays a count of drawn-and-admitted, or wants its own answer.
     let mut tally = InReach::default();
     for (system, mut visibility, filtered, hop) in &mut systems {
         let within = all_in_reach
