@@ -722,7 +722,7 @@ fn drain_spawns(
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     spyglass: Res<Spyglass>,
-    bounded: Option<Res<crate::systems::bounded::BoundedFetch>>,
+    bounded: Option<Res<crate::systems::bounded::LodFetch>>,
     mut commands: Commands,
 ) {
     // Weigh the queue against the reach before drawing any of it, the same cut

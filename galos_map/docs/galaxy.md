@@ -711,10 +711,14 @@ As of this pass the mark half is built but unverified. `bounded.rs` fetches
 `Resident::missing(&needed)` cell payloads through `Source::payload`, spawns
 one entity per `cache::Point` (dequantized against its cell, joined to
 `Names`/`Populated` for name and political colour) via the shared spawn queue,
-and evicts `Resident::stale(&needed)`; `BoundedFetch` gates it against the
-spyglass region fetch and is off by default, with `visibility` treating a
-bounded system as always in reach. It is opt-in until the map is seen to draw
-correctly on it; the spyglass region fetch remains the shipped path.
+and evicts `Resident::stale(&needed)`; `LodFetch` gates it against the spyglass
+region fetch and is now on by default, with `visibility` treating a walk
+system as always in reach. The spyglass radius survives as an optional clamp
+on the walk (`bounded::reach`, gated on `Spyglass.clear` and surfaced as the
+"Bound" checkbox): on, the walk is cut off at the reach so a dense near view
+stays bounded; off, the whole sky draws, thinned by resolvability alone. The
+old spyglass region fetch remains behind the toggle until it is retired (see
+the TODO on `fetch::fetch_spyglass`).
 
 The splat half is described but not drawn. `describe` still fills `Splats`
 from the resident aggregates so the data stays warm, but the first rendering

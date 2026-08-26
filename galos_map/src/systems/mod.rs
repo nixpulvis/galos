@@ -336,7 +336,7 @@ pub fn visibility(
     spyglass: Res<Spyglass>,
     dim: Res<filter::DimTo>,
     mut in_reach: ResMut<InReach>,
-    bounded: Option<Res<bounded::BoundedFetch>>,
+    bounded: Option<Res<bounded::LodFetch>>,
 ) {
     let Ok(camera) = camera.single() else { return };
     let all_in_reach = bounded.as_deref().map_or(false, |b| b.0);
