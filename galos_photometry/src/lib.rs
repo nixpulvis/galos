@@ -295,6 +295,52 @@ pub fn class_light(class: &str) -> ClassLight {
     }
 }
 
+/// The effective temperature a `B-V` colour index implies, in kelvin.
+///
+/// Ballesteros' formula, which treats the two photometric bands as blackbody
+/// samples and solves for the temperature that would produce their ratio:
+/// `T = 4600 * (1/(0.92*BV + 1.7) + 1/(0.92*BV + 0.62))`. It reads the Sun's
+/// 0.656 back as about 5750 K against a true 5772, and Sirius' 0.009 as about
+/// 10100 against 9940.
+///
+/// This is the second way into [`blackbody_color`], and the important one for
+/// a real catalog: measured surveys record a colour index, not a temperature,
+/// so without this nothing outside the game can be drawn or checked at all.
+/// Where a scanned star already carries a temperature that figure is better
+/// and this is not consulted.
+///
+/// The fit runs cool at the hot end — it reads a B3 star at about 12,600 K
+/// against a true 15,000 — and its second term diverges as `BV` approaches
+/// -0.674, so the input is clamped to `-0.4..2.0`. Above roughly 20,000 K the
+/// class is the better source and [`class_light`] is what to ask.
+pub fn color_index_to_temperature(b_v: f64) -> f64 {
+    let bv = b_v.clamp(-0.4, 2.0);
+    4600.0 * (1.0 / (0.92 * bv + 1.7) + 1.0 / (0.92 * bv + 0.62))
+}
+
+/// The energy a magnitude lands on a detector, relative to one exposed for
+/// `zero_point`.
+///
+/// The exposure law, and the one figure two renderers of the same sky must
+/// agree on exactly or every comparison between them measures the gap between
+/// two laws rather than between two pictures. It is [`flux`] with the exposure
+/// folded in — `10^(-0.4*(m - zero_point))` — so a star exactly at the zero
+/// point returns one, a magnitude brighter returns about 2.5, and each five
+/// magnitudes fainter is another hundredth.
+///
+/// The dial is a magnitude rather than a multiplier because that is the unit
+/// the decision is made in: `zero_point` is the magnitude that saturates a
+/// pixel, so setting it to 1.0 means Sirius and Canopus blow out and Vega sits
+/// just under, which is a sentence about a picture rather than about a number.
+///
+/// What is deliberately *not* here is the point-spread function and the tone
+/// curve. Those are how a renderer spends the energy across pixels and then
+/// compresses it for a display, and they differ legitimately between a
+/// rasterizer and a shader. This is the part that may not differ.
+pub fn relative_exposure(magnitude: f64, zero_point: f64) -> f64 {
+    flux(magnitude - zero_point)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,4 +538,71 @@ mod tests {
         assert_eq!(class_light("ZZZ"), DEFAULT_CLASS_LIGHT);
         assert_eq!(class_light(""), DEFAULT_CLASS_LIGHT);
     }
+
+    /// The Sun's colour index reads its temperature back, which is the one
+    /// anchor for this fit a reader can check by eye.
+    #[test]
+    fn the_suns_colour_index_gives_the_suns_temperature() {
+        let t = color_index_to_temperature(0.656);
+        assert!((t - SOLAR_TEMPERATURE).abs() < 100.0, "{t}");
+    }
+
+    /// Bluer is hotter, the whole content of a colour index, and it holds
+    /// across the range the fit is defined on.
+    #[test]
+    fn a_bluer_colour_index_is_hotter() {
+        let seq = [-0.3, 0.0, 0.3, 0.656, 1.0, 1.5, 2.0];
+        for pair in seq.windows(2) {
+            assert!(
+                color_index_to_temperature(pair[0])
+                    > color_index_to_temperature(pair[1]),
+                "{} should be hotter than {}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// The formula's second term diverges near -0.674, so the clamp holds the
+    /// answer finite and positive however far out of range the input is.
+    #[test]
+    fn an_out_of_range_colour_index_stays_finite() {
+        for bv in [-100.0, -0.674, -0.5, 3.0, 100.0] {
+            let t = color_index_to_temperature(bv);
+            assert!(t.is_finite() && t > 0.0, "{bv} gave {t}");
+        }
+    }
+
+    /// A colour index and a class agree on a Sun-like star, which is the check
+    /// that the two independent routes into a temperature meet.
+    #[test]
+    fn the_two_routes_to_a_temperature_agree_on_a_g_star() {
+        let from_colour = color_index_to_temperature(0.656);
+        let from_class = class_light("G").temperature;
+        assert!((from_colour - from_class).abs() < 500.0);
+    }
+
+    /// A star at the zero point is one unit of exposure, and the scale stays
+    /// the magnitude scale either side of it.
+    #[test]
+    fn the_zero_point_is_one_unit_of_exposure() {
+        assert!(close(relative_exposure(1.0, 1.0), 1.0));
+        assert!(close(relative_exposure(6.0, 1.0), 0.01));
+        assert!(close(relative_exposure(-4.0, 1.0), 100.0));
+    }
+
+    /// Turning the exposure up by a magnitude brightens everything by the same
+    /// factor, which is what makes it one dial rather than a per-star one.
+    #[test]
+    fn exposure_scales_every_star_alike() {
+        let ms = [-1.4, 0.03, 4.83, 8.0];
+        let ratios: Vec<f64> = ms
+            .iter()
+            .map(|&m| relative_exposure(m, 2.0) / relative_exposure(m, 1.0))
+            .collect();
+        for r in &ratios {
+            assert!(close(*r, ratios[0]));
+        }
+    }
+
 }
