@@ -56,15 +56,17 @@ flat store, not calling `needed()` to decide what is visible. A data source,
 never a visibility oracle. For a hundred-thousand-star catalog it needs neither.
 
 **It is not a reason for an astrometry crate.** Three things looked like they
-wanted one and none of them survives:
+wanted one, and they turn out to have two natural homes, split by what each is
+for rather than by subject matter — which is why the subject never wanted a
+crate of its own.
 
-- RA/Dec to cartesian. The HYG catalog ships `x,y,z` in parsecs already; the
-  conversion is a column the format has. From raw Hipparcos it is
-  parallax-to-distance and two trig calls, private to the loader.
+- RA/Dec and parallax to cartesian, and the ED-to-galactic frame transform.
+  Both are `galos_catalog`'s: getting foreign data into the units, frame and
+  vocabulary the index speaks is the whole of that crate's job. HYG ships
+  `x,y,z` in parsecs and needs neither; raw Hipparcos and Gaia need both.
 - Projections. Mollweide for a whole sky, gnomonic for a patch. These are the
-  renderer's own business the same way perspective projection is the map's.
-- The ED-to-galactic frame transform. One 3×3 matrix and Sol's offset — a
-  constant with a test.
+  renderer's own business the same way perspective projection is the map's,
+  and they stay here.
 
 And the first cross-check between ED and a real catalog needs no frame at all,
 because **angular separation is frame-invariant**. Sirius to Procyon, seen from
@@ -165,26 +167,62 @@ CPU path will never agree bit for bit, and should not have to.
 Steps 2 and 3 need a gnomonic projection matching a pinhole camera, which is
 why projections are a module here rather than one hardcoded whole-sky view.
 
-## The crate
+## The crates
+
+Two, not one, and the second is the one that changes the shape of this.
+
+### `galos_catalog`
+
+**A catalog is a source of `System`s, exactly as the ED dataset is.** That is
+the role, and it is the same role `galos_db/src/index.rs` plays: read my own
+data, hand back `Vec<galos_index::System>`, know nothing about the tree. Seen
+that way the earlier confusion with `galos_db` dissolves — a catalog crate is
+not a peer of the *database*, it is a peer of the *bake*.
+
+Which means it earns its place on a second consumer beyond the sky renderer:
+building an index from catalog data and loading that into `galos_map`. A tree
+of real stars, walked and drawn by the same client that draws the ED galaxy,
+is both a genuine feature and the strongest test that `galos_index` is not
+secretly ED-shaped.
+
+It owns catalog parsing, units, and frames — everything between a foreign file
+and the vocabulary the index speaks. Its own `Star` is **richer** than
+`galos_index::System`, not a duplicate of it: a catalog row carries a name, a
+catalog id, a V magnitude, a B−V colour index, a spectral type and proper
+motion, and the validation work needs all of them. `System` is the lossy
+projection that survives the bake, and the conversion to it is the crate's
+output rather than its type.
 
 ```toml
 [dependencies]
 galos_photometry = { path = "../galos_photometry" }
+galos_index = { path = "../galos_index", default-features = false, optional = true }
+
+[features]
+# The `From<Star> for galos_index::System` bridge and the tree build. Off by
+# default so a consumer that only wants to read a catalog — the sky renderer —
+# does not pull the index and its serde stack.
+index = ["dep:galos_index"]
 ```
 
-And, for now, nothing else. `galos_sky` sits just above the physics crate and
-below everything derived — `galaxy.md` puts photometry at step 1 and the index
-at step 2, and a photometry testbed belongs at 1.5. It defines its own `Star`:
-position, absolute magnitude, temperature. The same three fields
-`galos_index::System` carries, without the `id64` and without the `age_bucket`.
+The feature is worth exactly one thing: it keeps `galos_sky` sitting just
+above `galos_photometry` rather than above the index, which `galaxy.md`'s
+ordering puts at step 2. If it turns out to be ceremony, collapse it — the
+dependency is a matter of build surface, never of correctness coupling, since
+nothing in the render path calls the index either way.
 
-There is no `galos_catalog` crate and no `galos_astrometry` crate. The loader
-is a module here, producing `Vec<Star>`; frames and projections are modules
-here. Either is promoted the day a second consumer wants it and not before.
+### `galos_sky`
 
-`galos_index` appears only as a `dev-dependency`, and only for the separate
-exercise below of building a tree from a real catalog. It is never in the
-render path.
+```toml
+[dependencies]
+galos_photometry = { path = "../galos_photometry" }
+galos_catalog = { path = "../galos_catalog" }
+```
+
+Projections and drawing. It defines no star type of its own — it reads
+`galos_catalog::Star` and uses the three fields it needs. `galos_index` appears
+nowhere in it, not even as a dev-dependency now that the tree-building exercise
+has a better home in `galos_catalog`.
 
 **On `age_bucket`.** `galos_index::System` carries one field that is neither
 geometry nor photometry: which recency bucket a system's last write falls in,
@@ -194,6 +232,13 @@ is what makes visible that the index's input vocabulary carries one field of
 pure presentation and one dataset's notion of provenance. Worth noticing while
 it is cheap.
 
+**On `id64`.** ED addresses are large and structured; HYG's ids are small
+integers. A tree built from a catalog and a tree built from ED cannot share an
+id space without a namespace tag or an offset, and the map holds one
+`ResidentIndex` and one `Transport`, so today it draws one dataset at a time.
+Whether a catalog tree is a second index the map swaps to or a second index it
+holds alongside is left open below; the crates above are the same either way.
+
 ## Order of work
 
 1. **`galos-db classes`.** Self-contained, needs no new crate, and it is the
@@ -202,7 +247,7 @@ it is cheap.
 2. **`color_index_to_temperature`** in `galos_photometry`, Ballesteros. Real
    catalogs give B−V, not effective temperature, so nothing can read a catalog
    without it — and it is a second independent route into `blackbody_color`.
-3. **The catalog loader**, HYG first: ~119k stars, `x,y,z` in parsecs plus
+3. **`galos_catalog`**, HYG first: ~119k stars, `x,y,z` in parsecs plus
    `absmag`, `ci` and `spect` in one CSV, which is three columns to check
    against. The test is that the ten brightest come out in the right order at
    the right magnitudes.
@@ -214,8 +259,12 @@ it is cheap.
 6. **The brute-force visibility oracle** in `galos_index`, which is unrelated
    to all of the above and can be done at any point, including first.
 7. **A tree built from HYG**, through `galos_index` end to end — build, walk,
-   payloads — on a dataset with no ED in it anywhere. Tests something none of
-   the others do: whether `galos_index` is secretly ED-shaped.
+   payloads — on a dataset with no ED in it anywhere, behind `galos_catalog`'s
+   `index` feature. Tests something none of the others do: whether
+   `galos_index` is secretly ED-shaped.
+8. **That tree loaded into `galos_map`**, which is what `galos_catalog` is
+   ultimately for: the real sky drawn by the client that draws the ED galaxy,
+   through the same walks and the same cells.
 
 ## To verify
 
@@ -243,3 +292,9 @@ it is cheap.
 - Whether interstellar extinction needs modelling for a real catalog to look
   right. ED does not model it; the real sky has it, and the Milky Way's band
   is where the difference would show.
+- Whether a catalog tree is a second index `galos_map` swaps to or one it
+  holds alongside the ED tree. Swapping is a control and costs nothing;
+  holding both means an id namespace and two resident indexes, and is only
+  worth it if seeing real stars among ED's is worth seeing.
+- Whether `galos_catalog`'s `index` feature earns itself, or whether the
+  dependency it defers is small enough that the flag is pure ceremony.
