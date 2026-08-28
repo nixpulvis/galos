@@ -249,6 +249,52 @@ asserts the defect and fails the day somebody corrects it.
 This is what the second renderer was for, and it came out of looking at one
 picture.
 
+### Is the catalog complete?
+
+Measured rather than assumed, because "all the visible stars" is the claim the
+whole exercise rests on. Counts are whole-sky, against the standard cumulative
+figures.
+
+| V ≤ | in HYG | usable after the read | expected | usable / expected |
+|---|---|---|---|---|
+| 4 | 523 | 516 | 513 | 101% |
+| 6 | 5,070 | 4,965 | 4,800 | 103% |
+| 6.5 | 8,920 | 8,714 | 9,110 | 96% |
+| 8 | 41,487 | 39,856 | 42,000 | 95% |
+| 9 | 83,479 | 78,163 | 117,000 | 67% |
+
+So the catalog itself is complete to about eighth magnitude and falls off
+sharply past it — which is exactly where `EYE_LIMIT` sits, and no accident: the
+Yale Bright Star Catalogue guarantees completeness to 6.5 and Hipparcos carries
+it to roughly 8.5. Anything drawn fainter than that is a real star but not a
+representative sample of stars that faint, and a star count from this catalog
+past magnitude 9 means nothing.
+
+The over-hundred-per-cent rows are not a surplus of stars. HYG resolves some
+close doubles the classical counts treat as one.
+
+**The read's own hole is the interesting part.** Discarding the no-parallax
+rows costs 1,631 stars brighter than `EYE_LIMIT`, 206 brighter than sixth
+magnitude, and the brightest of them is magnitude 3.32 — Beta Phoenicis, as
+bright as Megrez in the golden image. About one naked-eye star in twenty-five
+is missing from every render.
+
+They are not a random twenty-fifth. A star whose parallax Hipparcos could not
+measure is one that is *distant and luminous*: the list is supergiants — Mu
+Cephei, Alpha Camelopardalis, Kappa Cassiopeiae, 59 of them carrying a Bayer or
+Flamsteed designation. The hole sits at the bright end, which is the end a
+picture is judged by.
+
+Nothing invents a distance to close it. These stars have a measured direction
+and a measured brightness and no position, which makes them well-defined for a
+sky drawn from Sol and undefined for one drawn from anywhere else; placing them
+at a nominal distance would make the first correct by making the second quietly
+wrong. `Skipped` carries the naked-eye count and the brightest magnitude so the
+hole is a number rather than a surprise, and the CLI warns when it is not zero.
+
+Whether a from-Sol view should carry them anyway — as sources with a direction
+and a brightness but no place, which is what they are — is open below.
+
 ## The crates
 
 Two, not one, and the second is the one that changes the shape of this.
@@ -375,6 +421,12 @@ Elite's unscanned systems, and neither of the two threads here depends on it.
 - Whether `galos_map` can be rendered headless to an offscreen target
   cheaply enough for step 3 of the diffing ladder to run anywhere but a
   workstation.
+- Whether a from-Sol view should carry the no-parallax stars as sources with a
+  direction and a brightness but no position. It is one naked-eye star in
+  twenty-five, weighted to the bright end, and it is the difference between a
+  sky that is right from Sol and a `Star` that means one thing everywhere. A
+  second type is the honest way to have both, and two types for one idea is a
+  cost of its own.
 - Whether interstellar extinction needs modelling for a real catalog to look
   right. ED does not model it; the real sky has it, and the Milky Way's band
   is where the difference would show.

@@ -74,6 +74,17 @@ fn main() {
         skipped.at_the_origin,
         skipped.unreadable,
     );
+    // Said separately and only when it is true, because it is the part that
+    // changes a picture: the stars with no parallax are the distant luminous
+    // ones, so the hole they leave sits at the bright end rather than the
+    // faint one.
+    if skipped.naked_eye > 0 {
+        eprintln!(
+            "warning: {} of the skipped are naked-eye stars, brightest magnitude {:.2}",
+            skipped.naked_eye,
+            skipped.brightest.unwrap_or(f64::NAN),
+        );
+    }
 
     let (width, height) = parse_size(&cli.size);
     let from = place(&stars, &cli.from);
