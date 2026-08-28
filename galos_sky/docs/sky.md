@@ -400,9 +400,31 @@ from a different catalog, or the forge placed it procedurally and the position
 means nothing. Both answers are interesting and they are distinguishable by
 looking.
 
-None of this has been run: it needs the database, and there has not been one
-here. `galos_catalog` cross-matching Elite's `systems` by name is the tool, and
-the report is a distance from each source side by side.
+The tool for it is built and unrun: `galos-db catalog <hyg.csv>`. Everything
+but the query is tested — the frame fit against known rotations, the
+handedness detection, the frame-invariance of the distance error, the report —
+but nothing has touched a real database, so the SQL is the one part of this
+whose first run will be its first test.
+
+What it does is fit rather than assume. The rotation carrying one dataset's
+bearings onto the other's is recovered from the matched stars by the orthogonal
+factor of their correlation matrix, and what is reported is the residual after
+it. A comparison that assumed a transform would be testing the assumption, and
+a wrong one would show up as every star being wrong rather than as a wrong
+matrix. Two things fall out for free: the fitted matrix *is* the Elite-to-
+equatorial transform, derived rather than guessed, and its determinant says
+whether the two differ in handedness — which Elite, being left-handed, should.
+
+Distance is compared without any of that, since it survives any rotation or
+reflection. Both sides of it are the length of a position rather than the
+catalog's own distance column, because HYG rounds the two separately and they
+disagree by up to 1.5e-3; taking one side from each would put the catalog's
+rounding into every row as though it were a disagreement with Elite.
+
+The key is narrow: 460 of HYG's 109,400 stars carry a proper name, and a name is
+the only key the two datasets share. Bayer and Flamsteed designations would
+widen it, at the cost of a table of spelling rules, every one of which is a
+chance to pair two different stars and report it as a disagreement.
 
 ## The crates
 
