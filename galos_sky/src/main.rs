@@ -39,11 +39,11 @@ struct Cli {
     fov: f64,
 
     /// The apparent magnitude that fills a pixel. Higher shows fainter stars.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 6.0)]
     exposure: f64,
 
     /// The point-spread function's width, pixels.
-    #[arg(long, default_value_t = 1.4)]
+    #[arg(long, default_value_t = 1.8)]
     seeing: f64,
 
     /// Image size, `WIDTHxHEIGHT`.
