@@ -1,0 +1,26 @@
+[package]
+name = "galos_catalog"
+version = "0.0.1"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2024"
+rust-version.workspace = true
+
+# Star catalogs measured from Earth, read into the vocabulary the rest of the
+# workspace speaks. A peer of the bake rather than of the database: its job is
+# what `galos_db/src/index.rs` does for the Elite dataset — read its own data,
+# hand back stars with a position, a magnitude and a temperature, and know
+# nothing about the tree or the renderer.
+#
+# It owns everything between a foreign file and that vocabulary: parsing,
+# units, and frames.
+[dependencies]
+galos_photometry = { path = "../galos_photometry" }
+# Catalog rows are quoted CSV with commas inside fields, so this is not a
+# `split(',')` job.
+csv = "1"
+# The `System` bridge and the tree build, off by default so a consumer that
+# only wants to read a catalog does not pull the index and its serde stack.
+galos_index = { path = "../galos_index", default-features = false, optional = true }
+
+[features]
+index = ["dep:galos_index"]

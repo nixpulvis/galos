@@ -1,0 +1,32 @@
+[package]
+name = "galos_sky"
+version = "0.0.1"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2024"
+rust-version.workspace = true
+
+# A second renderer over the same photometry: no 3D, no GPU, no database. Put
+# a camera somewhere, point it, get an image. It exists so that
+# `galos_photometry` can be looked at rather than only asserted about, and so
+# the response law Real mode needs can be developed against a deterministic
+# buffer instead of a swapchain.
+#
+# It sits just above the physics crate. `galos_index` is deliberately absent:
+# the brute-force oracle for the index's walk is a loop over stars, not a
+# renderer, and belongs in `galos_index`'s own tests.
+[dependencies]
+galos_photometry = { path = "../galos_photometry" }
+galos_catalog = { path = "../galos_catalog" }
+png = "0.18"
+clap = { version = "4", features = ["derive"], optional = true }
+
+[features]
+default = ["cli"]
+# The `galos-sky` command, on by default so `cargo run -p galos_sky` just
+# works. A library consumer drops it with `default-features = false`.
+cli = ["dep:clap"]
+
+[[bin]]
+name = "galos-sky"
+path = "src/main.rs"
+required-features = ["cli"]
