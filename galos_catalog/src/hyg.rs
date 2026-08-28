@@ -30,9 +30,34 @@
 //! [`read`] reports how many it dropped for each reason rather than swallowing
 //! it, because "the sky came out too empty" and "ten thousand rows were
 //! discarded" are the same fact and a caller should be able to see it.
+//!
+//! # The hole this leaves, which is not small
+//!
+//! Dropping the sentinel rows is right — there is nowhere to put a star with no
+//! distance — but it is not free, and the cost falls exactly where it is most
+//! visible. The stars whose parallax Hipparcos could not measure are the
+//! *distant luminous* ones: supergiants bright enough to see and far enough
+//! that their parallax vanished into the noise or came back negative.
+//!
+//! Over the whole catalog that is 105 stars brighter than sixth magnitude, 59
+//! of them carrying a Bayer or Flamsteed designation, and the brightest of them
+//! at magnitude 3.32 — as bright as Megrez in the Dipper. Mu Cephei, Alpha
+//! Camelopardalis and Kappa Cassiopeiae are among them.
+//!
+//! So a sky drawn from this catalog is missing about one naked-eye star in
+//! fifty, and they are not a random fiftieth. [`Skipped`] carries
+//! [`naked_eye`](Skipped::naked_eye) and [`brightest`](Skipped::brightest) so
+//! that the hole is a number a caller can read rather than one it would have to
+//! go looking for.
+//!
+//! Nothing here invents a distance to close it. These stars have a measured
+//! direction and a measured brightness and no position, which makes them
+//! well-defined for a sky drawn from Sol and undefined for one drawn from
+//! anywhere else; placing them at a nominal distance would make the first
+//! correct by making the second quietly wrong.
 
 use crate::Star;
-use galos_photometry::LY_PER_PARSEC;
+use galos_photometry::{EYE_LIMIT, LY_PER_PARSEC};
 use std::io;
 
 /// The distance HYG writes where it has no parallax to work from.
@@ -42,7 +67,7 @@ const NO_PARALLAX: f64 = 100_000.0;
 ///
 /// Returned beside the stars rather than logged, so a caller that cares can
 /// assert on it and one that does not can ignore it.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Skipped {
     /// Rows at distance zero: Sol, and anything else sitting on the observer.
     pub at_the_origin: usize,
@@ -50,12 +75,32 @@ pub struct Skipped {
     pub no_parallax: usize,
     /// Rows whose required columns would not parse.
     pub unreadable: usize,
+    /// How many of the dropped rows are naked-eye stars.
+    ///
+    /// The figure that says whether a hole matters. Ten thousand discarded
+    /// twelfth-magnitude rows change no picture; a hundred discarded
+    /// fifth-magnitude ones change every one, and both look the same in
+    /// [`total`](Self::total).
+    pub naked_eye: usize,
+    /// The apparent magnitude of the brightest row dropped, if any were.
+    pub brightest: Option<f64>,
 }
 
 impl Skipped {
     /// How many rows were dropped in total.
     pub fn total(&self) -> usize {
         self.at_the_origin + self.no_parallax + self.unreadable
+    }
+
+    /// Note a dropped row's magnitude against the naked-eye tally.
+    fn note(&mut self, magnitude: f64) {
+        if magnitude <= EYE_LIMIT {
+            self.naked_eye += 1;
+        }
+        self.brightest = Some(match self.brightest {
+            Some(brightest) => brightest.min(magnitude),
+            None => magnitude,
+        });
     }
 }
 
@@ -134,6 +179,7 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<(Vec<Star>, Skipped)> {
 
         if distance_pc >= NO_PARALLAX {
             skipped.no_parallax += 1;
+            skipped.note(apparent_magnitude);
             continue;
         }
         if distance_pc <= 0.0 {
@@ -268,4 +314,32 @@ mod tests {
     fn a_foreign_file_is_an_error() {
         assert!(read("alpha,beta\n1,2\n".as_bytes()).is_err());
     }
+
+    /// **The hole is reported, not merely left.** A dropped row that nobody
+    /// could see is one thing; a dropped row at fourth magnitude is another,
+    /// and `total` alone cannot tell them apart.
+    #[test]
+    fn a_dropped_naked_eye_star_is_counted_as_one() {
+        let header = BRIGHT.lines().next().expect("a header");
+        // Two rows carrying the no-parallax sentinel: one a bright star, one
+        // far below anything an eye reaches.
+        let mut csv = String::from(header);
+        csv.push_str("\n900001,,,,,,Bright,0,0,100000,0,0,0,3.5,-8,B1Ia,-0.1,0,0,0,0,0,0,0,0,0,0,,,,1,0,,1,,,");
+        csv.push_str("\n900002,,,,,,Faint,0,0,100000,0,0,0,14.2,10,M5V,1.6,0,0,0,0,0,0,0,0,0,0,,,,1,0,,1,,,");
+
+        let (_, skipped) = read(csv.as_bytes()).expect("a HYG catalog");
+        assert_eq!(skipped.no_parallax, 2);
+        assert_eq!(skipped.naked_eye, 1, "only the bright one is visible");
+        assert_eq!(skipped.brightest, Some(3.5));
+    }
+
+    /// Nothing dropped is no complaint, rather than a magnitude of infinity.
+    #[test]
+    fn dropping_nothing_reports_nothing() {
+        let header = BRIGHT.lines().next().expect("a header");
+        let (_, skipped) = read(header.as_bytes()).expect("a HYG catalog");
+        assert_eq!(skipped.brightest, None);
+        assert_eq!(skipped.naked_eye, 0);
+    }
+
 }
