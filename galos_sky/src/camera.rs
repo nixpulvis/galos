@@ -32,9 +32,23 @@
 //! copy of it.
 
 use crate::image::Image;
-use crate::psf::Gaussian;
 use galos_catalog::Star;
+use galos_photometry::psf::Gaussian;
 use galos_photometry::{apparent_magnitude_ly, blackbody_color, relative_exposure};
+
+/// The energy per pixel below which this renderer shows nothing.
+///
+/// A pixel holding less than this tone-maps to under one part in 255 through
+/// [`Image::to_srgb8`]'s curve and cannot be seen, so a star's disc is cut
+/// where it falls below. It belongs to this renderer rather than to
+/// [`galos_photometry::psf`] precisely because it follows from that curve: a
+/// GPU pipeline with its own tonemapper has a different one, and passes its
+/// own.
+///
+/// Small enough that the truncated tail is a fraction of a percent of a star's
+/// light, which is what keeps the sum over an image close to the sum over the
+/// stars in it.
+pub const FLOOR: f64 = 1e-4;
 
 /// A place to stand, a way to look, and a response to light.
 #[derive(Clone, Debug, PartialEq)]
@@ -189,7 +203,7 @@ impl Camera {
                 continue;
             }
             let (energy, tint) = self.light(star, distance);
-            let Some(radius) = psf.radius(energy) else { continue };
+            let Some(radius) = psf.radius(energy, FLOOR) else { continue };
 
             // Only the pixels the disc actually reaches, which is why a
             // faint star costs a handful of them and Sirius costs a few
