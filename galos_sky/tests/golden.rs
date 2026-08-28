@@ -39,7 +39,7 @@ const DIPPER: [&str; 7] =
     ["Dubhe", "Merak", "Phecda", "Megrez", "Alioth", "Mizar", "Alkaid"];
 
 fn stars() -> Vec<Star> {
-    hyg::read(FIXTURE.as_bytes()).expect("the fixture is a HYG catalog").0
+    hyg::read(FIXTURE.as_bytes()).expect("the fixture is a HYG catalog").stars
 }
 
 fn named(stars: &[Star], name: &str) -> Star {

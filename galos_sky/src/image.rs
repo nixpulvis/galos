@@ -194,6 +194,26 @@ pub struct Mark {
 /// would collide with something real.
 pub const MARK_COLOR: [f32; 3] = [0.0, 1.0, 0.35];
 
+/// The colour for a ring around something that is *not* drawn: magenta.
+///
+/// Safe on a weaker property than [`MARK_COLOR`]'s, and it is worth being
+/// exact about which. Green being the *minimum* channel is not impossible for a
+/// blackbody — between about 6250 and 7250 K, where red and blue cross over and
+/// the star is very nearly white, green dips a few per cent under both. What is
+/// true is that a blackbody's green never falls below about 0.176 of its peak,
+/// the floor it reaches at the cold end of the locus and holds down to zero.
+///
+/// Magenta puts green at nothing. That is far outside anything on the locus, so
+/// no star approaches it, but the guarantee is a margin rather than the flat
+/// impossibility green enjoys.
+pub const HOLE_COLOR: [f32; 3] = [1.0, 0.0, 0.85];
+
+/// The lowest a blackbody's green channel goes, as a fraction of its peak.
+///
+/// Reached below about 1500 K, where the fit clamps, and rising from there. It
+/// is the margin [`HOLE_COLOR`] leans on.
+pub const MIN_BLACKBODY_GREEN: f32 = 0.17;
+
 impl Mark {
     /// A ring of the default colour.
     pub fn new(x: f64, y: f64, radius: f64) -> Mark {
@@ -322,15 +342,32 @@ mod tests {
     /// temperature at all, so a green ring is never mistaken for light.
     #[test]
     fn no_star_is_ever_the_colour_of_a_mark() {
-        for t in [1000.0, 2000.0, 3000.0, 4000.0, 5772.0, 8000.0, 12000.0, 25000.0, 40000.0]
-        {
-            let c = galos_photometry::blackbody_color(t);
+        for t in (500..60000).step_by(25) {
+            let c = galos_photometry::blackbody_color(t as f64);
             assert!(
                 c[1] < c[0].max(c[2]),
                 "a blackbody at {t} K leads with green: {c:?}"
             );
         }
         assert!(MARK_COLOR[1] > MARK_COLOR[0].max(MARK_COLOR[2]));
+    }
+
+    /// The hole colour rests on a different and weaker property: not that
+    /// green can never be a blackbody's smallest channel — between about 6250
+    /// and 7250 K it is, by a few per cent — but that it never goes anywhere
+    /// near zero. Magenta's green is nothing, which is far under the floor.
+    #[test]
+    fn no_blackbody_comes_near_the_hole_colour() {
+        for t in (500..60000).step_by(25) {
+            let c = galos_photometry::blackbody_color(t as f64);
+            assert!(
+                c[1] >= MIN_BLACKBODY_GREEN,
+                "at {t} K green fell to {}, under the floor the hole colour \
+                 leans on",
+                c[1]
+            );
+        }
+        assert!(HOLE_COLOR[1] < MIN_BLACKBODY_GREEN);
     }
 
 }

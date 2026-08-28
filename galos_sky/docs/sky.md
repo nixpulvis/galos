@@ -297,8 +297,21 @@ and a brightness but no place, which is what they are — is open below.
 
 ## The overlay
 
-Rings drawn over a finished picture, in green, at a set of stars named by the
-caller. Two uses, and the second is the one that pays for it.
+Rings drawn over a finished picture, at things named by the caller. Three uses.
+
+**Showing what is missing.** The one it was built for. `hyg::read` no longer
+discards the no-parallax rows: they come back as [`Unplaced`], a measured
+bearing and a measured brightness with no distance, and `--show-missing` rings
+them in magenta. The picture then says where it is lying by omission, without
+anything having been invented to fill the gaps.
+
+An `Unplaced` is a different type from a `Star` and does not convert to one. Its
+bearing is the bearing *from Sol*, because that is where the measurement was
+taken, so `Camera::mark_bearing` answers `None` unless the camera stands at the
+frame's origin. That is not Sol being privileged as a place to stand — the
+renderer does not care where it is — it is the measurement being what it is.
+From ten light years away the star is somewhere along that line and nothing in
+the data says where; a ring drawn anyway would point at a guess.
 
 **Finding things.** Seven rings turn a field of a hundred thousand stars into a
 recognisable Dipper at a glance, which is what makes a golden image judgeable
@@ -324,8 +337,39 @@ to help would be the thing corrupting the measurement.
 **Green is a colour no star can be.** Across the whole Planckian locus the
 dominant channel is red below about 6500 K and blue above it; green leads at no
 temperature at all. So a green ring can never be mistaken for a faint star,
-however saturated it is drawn, and there is a test asserting it over the whole
-range.
+however saturated it is drawn, and there is a test asserting it every 25 K from
+500 to 60,000.
+
+Magenta, for the holes, rests on a weaker property and it is worth being exact
+about which. Green being a blackbody's *smallest* channel is not impossible —
+between about 6250 and 7250 K, where red and blue cross over and the star is
+nearly white, green dips a few per cent under both. What is true is that a
+blackbody's green never falls below about 0.176 of its peak. Magenta puts green
+at nothing, far outside anything on the locus, so the guarantee is a wide margin
+rather than the flat impossibility green enjoys.
+
+**Framing is not the same question as being in front.** `project` deliberately
+answers for points outside the picture, because a star just past the border
+still spills light in through its disc. A mark has no such spill, so anything
+counting marks has to ask `Camera::frames` instead — the two differ enormously.
+The first version of the missing-star overlay reported "85 missing stars ringed"
+in a view that contained none of them at all.
+
+### Where the holes are
+
+Ringing them answered a question nobody had asked. **84% of the missing
+naked-eye stars lie within ten degrees of the galactic plane, against 25% of
+the placed stars of the same brightness** — concentrated by a factor of three
+and a half.
+
+It follows from what they are. A star whose parallax Hipparcos could not measure
+is distant and luminous, and distant luminous stars are where the galaxy's mass
+is: in the disc. So the catalog's blind spot is not scattered over the sky, it
+is a band lying along the Milky Way — which is the part of the sky most worth
+looking at, the part a person judges a render by, and the part the glow work in
+`galaxy.md` is ultimately about.
+
+
 
 ## Dating Elite's sky
 
