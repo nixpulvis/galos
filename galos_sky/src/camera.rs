@@ -38,7 +38,7 @@
 //! renderer adopting the law is running the same physics rather than a second
 //! copy of it.
 
-use crate::image::Image;
+use crate::image::{Image, Mark};
 use galos_catalog::Star;
 use galos_photometry::psf::Gaussian;
 use galos_photometry::{apparent_magnitude_ly, blackbody_color, relative_exposure};
@@ -179,6 +179,32 @@ impl Camera {
         let y = (1.0 - ndc_y) * 0.5 * self.height as f64;
         let distance = dot(relative, relative).sqrt();
         Some((x, y, distance))
+    }
+
+    /// Where to ring a point, if it is in front of the camera.
+    ///
+    /// The overlay's other half: [`project`](Self::project) says where
+    /// something lands and this turns that into a [`Mark`] the image can draw.
+    /// Split from the drawing so the same answer serves an annotation, a
+    /// caption, or a list of screen positions handed to another renderer to
+    /// compare against — which is what this is really for. A star ringed here
+    /// and the same star drawn by `galos_map` under the same camera should
+    /// coincide, and a ring is how a person checks that in one glance.
+    ///
+    /// The radius is in pixels and is the ring's, not the star's: a mark is
+    /// chrome, so it is a fixed size rather than one that grows with the light.
+    pub fn mark(&self, point: [f64; 3], radius: f64) -> Option<Mark> {
+        let (x, y, _) = self.project(point)?;
+        Some(Mark::new(x, y, radius))
+    }
+
+    /// Rings for every one of a set of points that is in frame.
+    pub fn marks(
+        &self,
+        points: impl IntoIterator<Item = [f64; 3]>,
+        radius: f64,
+    ) -> Vec<Mark> {
+        points.into_iter().filter_map(|p| self.mark(p, radius)).collect()
     }
 
     /// How bright a star looks from here, and what colour, and how much energy
@@ -510,6 +536,30 @@ mod tests {
         // either end for no physical reason.
         let penalty = -2.5 * (red / white).log10();
         assert!(penalty > 0.4, "red is penalized by {penalty:.2} magnitudes");
+    }
+
+
+    /// A ring lands on what it rings, which is the only thing an overlay has
+    /// to get right.
+    #[test]
+    fn a_mark_lands_on_its_star() {
+        let stars = bright();
+        let vega = named(&stars, "Vega");
+        let camera = Camera::new(300, 300).looking_from([0.0; 3], vega.position);
+        let mark = camera.mark(vega.position, 9.0).expect("in front");
+        assert!((mark.x - 150.0).abs() < 0.01 && (mark.y - 150.0).abs() < 0.01);
+        assert_eq!(mark.radius, 9.0);
+    }
+
+    /// Nothing behind the camera is ringed, and a set of points comes back as
+    /// only those in front of it.
+    #[test]
+    fn marks_skip_what_is_behind() {
+        let camera = Camera::new(64, 64).looking_along([1.0, 0.0, 0.0]);
+        assert_eq!(camera.mark([-5.0, 0.0, 0.0], 4.0), None);
+        let marks =
+            camera.marks([[10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]], 4.0);
+        assert_eq!(marks.len(), 1);
     }
 
 }

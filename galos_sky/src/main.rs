@@ -50,6 +50,15 @@ struct Cli {
     #[arg(long, default_value = "1600x900")]
     size: String,
 
+    /// Ring these stars, by name, comma separated. Green, a colour no star
+    /// can be.
+    #[arg(long, value_name = "NAMES")]
+    highlight: Option<String>,
+
+    /// The radius of a highlight ring, pixels.
+    #[arg(long, default_value_t = 12.0)]
+    highlight_radius: f64,
+
     /// Where to write the PNG.
     #[arg(short, long, default_value = "sky.png")]
     output: PathBuf,
@@ -114,7 +123,32 @@ fn main() {
         image.total_energy(),
     );
 
-    if let Err(e) = image.write_png(&cli.output) {
+    // Ringed after the render, so the figures printed above are the
+    // picture's own photometry and not the overlay's.
+    let marks: Vec<_> = cli
+        .highlight
+        .iter()
+        .flat_map(|names| names.split(','))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| {
+            let star = stars.iter().find(|s| {
+                s.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))
+            });
+            match star {
+                Some(star) => camera.mark(star.position, cli.highlight_radius),
+                None => {
+                    eprintln!("warning: no star named {name} to highlight");
+                    None
+                }
+            }
+        })
+        .collect();
+    if !marks.is_empty() {
+        eprintln!("{} highlighted", marks.len());
+    }
+
+    if let Err(e) = image.write_png_with(&cli.output, &marks) {
         eprintln!("cannot write {}: {e}", cli.output.display());
         exit(1);
     }
