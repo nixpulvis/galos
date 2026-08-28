@@ -204,17 +204,30 @@ channels and a saturated one concentrates in a single one, so the tint's own
 luminance runs from 0.57 at 3000 K through 0.90 at the Sun's temperature back
 down to 0.52 at 30,000 K.
 
-| temperature | linear RGB | luminance |
-|---|---|---|
-| 3000 K | 1.000, 0.479, 0.154 | 0.566 |
-| 5772 K | 1.000, 0.878, 0.821 | 0.900 |
-| 30000 K | 0.377, 0.512, 1.000 | 0.519 |
+| temperature | linear RGB | tint luminance | penalty vs a G star |
+|---|---|---|---|
+| 3000 K | 1.000, 0.479, 0.154 | 0.566 | 0.50 mag |
+| 3800 K | 1.000, 0.621, 0.328 | 0.681 | 0.30 mag |
+| 5772 K | 1.000, 0.878, 0.821 | 0.900 | — |
+| 20000 K | 0.405, 0.536, 1.000 | 0.542 | 0.55 mag |
+| 30000 K | 0.377, 0.512, 1.000 | 0.519 | 0.60 mag |
 
-Multiply flux by that and a Sun-like star draws over half a magnitude brighter
-than an equally luminous red giant or hot blue star, for no reason but its
-colour. It is visible in the first render of Orion: Betelgeuse at magnitude
-0.45 and Rigel at 0.18 should be near enough the same brightness, and
-Betelgeuse comes out markedly dimmer.
+Multiply flux by that and a Sun-like star draws up to six tenths of a magnitude
+brighter than an equally luminous red giant or hot blue star, for no reason but
+its colour. The curve is not monotonic — both ends lose and the middle wins —
+because a white tint spreads its energy across three channels and a saturated
+one crowds it into a single one.
+
+**This is a computed finding, not a visible one**, and the distinction cost a
+wrong claim: the first write-up said Betelgeuse coming out dimmer than Rigel in
+the Orion render showed the defect. It does not. At 3794 K and 10516 K their
+tint luminances are 0.680 and 0.680 — identical to three places — so the
+penalty falls on both equally and cannot separate them. What separates them is
+that Rigel is 0.27 magnitudes brighter to begin with, and that a saturated red
+dot reads dimmer than a blue-white one at equal luminance. The defect is real
+and the arithmetic above is the evidence for it; no single frame demonstrates
+it, because seeing it by eye needs two stars of equal magnitude at opposite
+ends of the temperature range, side by side.
 
 It reaches `galos_map` too. `systems/aggregate.rs` builds a cell's tint as a
 flux-weighted `blackbody_color`, so a cell of hot stars is drawn dimmer than a
