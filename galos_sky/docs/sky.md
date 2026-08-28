@@ -33,9 +33,34 @@ That second purpose carries a condition, and it is the load-bearing one: **the
 response law lives in `galos_photometry`, called by both renderers.** If it
 ends up baked into WGSL in the map and reimplemented here, every comparison
 between the two is measuring the gap between two laws rather than between two
-renderers, and it will never converge. The law is physics-shaped — flux in,
-pixels out — so it belongs in the physics crate on its own merits, and the
-diffing below depends on it being there.
+renderers, and it will never converge.
+
+The line runs through the middle of what looks like one renderer's business,
+and it is worth naming exactly, because the first cut at it was drawn in the
+wrong place. The law is **how much light lands and where**:
+
+| | whose | why |
+|---|---|---|
+| magnitude → energy | shared | `relative_exposure` |
+| energy → spatial profile | **shared** | the PSF's normalization decides how much flux is in a star |
+| profile → pixels | renderer's | a loop over pixels, or a quad and a fragment shader |
+| linear → display | renderer's | bevy has its own tonemapper and should keep it |
+
+The second row is the one that was got wrong. A point-spread function looks
+like rendering — it is about pixels, it has a radius, it is what the rasterizer
+spends its time in — but its *normalization* is what fixes how much of a star's
+flux ends up in the picture at all. Two renderers that normalize a Gaussian
+differently put different amounts of light in the same star, which is precisely
+the quantity step 3 of the diffing ladder measures. A PSF in each renderer
+makes that step unable to converge, for exactly the reason the exposure law in
+each renderer would.
+
+So `galos_photometry::psf` carries the profile, the normalization and the
+radius, and `galos_sky` keeps only the loop that deposits it and the curve that
+displays it. The cutoff below which a star stops being drawn is a *parameter*
+of the radius rather than a constant inside it, because that one genuinely does
+follow from the tone curve, and a CPU film response and a GPU tonemapper do not
+have the same one.
 
 ## What it is not
 
