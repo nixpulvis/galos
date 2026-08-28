@@ -55,6 +55,16 @@ struct Cli {
     #[arg(long, value_name = "NAMES")]
     highlight: Option<String>,
 
+    /// Ring, in magenta, the stars this picture is missing: the ones the
+    /// catalog locates on the sky but not in space. Only meaningful from the
+    /// origin, which is where their bearings were measured.
+    #[arg(long)]
+    show_missing: bool,
+
+    /// Only show missing stars at least this bright.
+    #[arg(long, default_value_t = 6.0)]
+    missing_limit: f64,
+
     /// The radius of a highlight ring, pixels.
     #[arg(long, default_value_t = 12.0)]
     highlight_radius: f64,
@@ -71,10 +81,11 @@ fn main() {
         eprintln!("cannot open {}: {e}", cli.catalog.display());
         exit(1);
     });
-    let (stars, skipped) = hyg::read(file).unwrap_or_else(|e| {
+    let catalog = hyg::read(file).unwrap_or_else(|e| {
         eprintln!("cannot read {}: {e}", cli.catalog.display());
         exit(1);
     });
+    let hyg::Catalog { stars, unplaced, skipped } = catalog;
     eprintln!(
         "{} stars, {} skipped ({} with no parallax, {} at the origin, {} unreadable)",
         stars.len(),
@@ -125,7 +136,7 @@ fn main() {
 
     // Ringed after the render, so the figures printed above are the
     // picture's own photometry and not the overlay's.
-    let marks: Vec<_> = cli
+    let mut marks: Vec<_> = cli
         .highlight
         .iter()
         .flat_map(|names| names.split(','))
@@ -146,6 +157,42 @@ fn main() {
         .collect();
     if !marks.is_empty() {
         eprintln!("{} highlighted", marks.len());
+    }
+
+    if cli.show_missing {
+        let candidates: Vec<_> = unplaced
+            .iter()
+            .filter(|u| u.apparent_magnitude <= cli.missing_limit)
+            .collect();
+        // Counted by what frames, not by what is in front: over a wide field
+        // most of the sky is ahead of the eye and off the picture, and a ring
+        // that lands off the picture is not a ring anybody sees.
+        let holes: Vec<_> = candidates
+            .iter()
+            .filter_map(|u| {
+                camera.mark_bearing(u.direction, cli.highlight_radius)
+            })
+            .filter(|m| camera.frames(m))
+            .map(|m| m.colored(galos_sky::image::HOLE_COLOR))
+            .collect();
+
+        if candidates.is_empty() {
+            eprintln!("no missing stars brighter than {}", cli.missing_limit);
+        } else if camera.position != [0.0; 3] {
+            eprintln!(
+                "note: missing stars cannot be drawn from here. A bearing \
+                 carries no distance, so it locates a star only from the \
+                 origin it was measured from."
+            );
+        } else {
+            eprintln!(
+                "{} of {} missing stars brighter than {} are in this frame",
+                holes.len(),
+                candidates.len(),
+                cli.missing_limit,
+            );
+        }
+        marks.extend(holes);
     }
 
     if let Err(e) = image.write_png_with(&cli.output, &marks) {

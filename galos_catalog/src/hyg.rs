@@ -50,11 +50,18 @@
 //! that the hole is a number a caller can read rather than one it would have to
 //! go looking for.
 //!
-//! Nothing here invents a distance to close it. These stars have a measured
-//! direction and a measured brightness and no position, which makes them
-//! well-defined for a sky drawn from Sol and undefined for one drawn from
-//! anywhere else; placing them at a nominal distance would make the first
-//! correct by making the second quietly wrong.
+//! Nothing here invents a distance to close it. But these rows are not empty:
+//! what they lack is a *distance*, and a direction and a brightness were both
+//! measured. So they come back as [`Unplaced`] rather than being discarded, and
+//! a caller can draw where the holes in its picture are without anything having
+//! been made up to fill them.
+//!
+//! An [`Unplaced`] is not a [`Star`] and is not convertible to one. Its
+//! direction is the direction *from Sol*, because that is where the measurement
+//! was taken, and there is no viewpoint-independent fact to be had from it —
+//! from anywhere else the star could be anywhere along that line. Two types
+//! rather than an optional field, so that nothing can accidentally treat a
+//! bearing as a place.
 
 use crate::Star;
 use galos_photometry::{EYE_LIMIT, LY_PER_PARSEC};
@@ -104,6 +111,39 @@ impl Skipped {
     }
 }
 
+/// A star the catalog locates on the sky but not in space.
+///
+/// A measured bearing and a measured brightness, and no distance. Everything
+/// here is real; what is absent is absent rather than guessed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unplaced {
+    /// The catalog's own identifier.
+    pub id: u64,
+    /// A proper name or designation, where the row carries one.
+    pub name: Option<String>,
+    /// The unit direction **from Sol**, in the catalog's equatorial frame.
+    ///
+    /// From Sol this is exactly where the star is on the sky. From anywhere
+    /// else it says only which line the star lies along, and how far up that
+    /// line is what the catalog does not know.
+    pub direction: [f64; 3],
+    /// Apparent visual magnitude, as measured from Earth.
+    pub apparent_magnitude: f64,
+    /// The spectral type as the catalog spells it.
+    pub spectral_type: Option<String>,
+}
+
+/// What one read of a catalog produced.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Catalog {
+    /// The stars with a place in space.
+    pub stars: Vec<Star>,
+    /// The stars with a bearing but no distance — the hole, enumerated.
+    pub unplaced: Vec<Unplaced>,
+    /// What was dropped outright, and how bright.
+    pub skipped: Skipped,
+}
+
 /// Read a HYG CSV into stars, in light years, in the catalog's equatorial
 /// frame.
 ///
@@ -113,7 +153,7 @@ impl Skipped {
 /// [`Skipped::unreadable`] and passed over; a row missing a name, a colour
 /// index or a spectral type is kept, since those are the holes a real catalog
 /// has and a star with none of them still has a place and a brightness.
-pub fn read<R: io::Read>(reader: R) -> csv::Result<(Vec<Star>, Skipped)> {
+pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
     let mut csv = csv::Reader::from_reader(reader);
     let headers = csv.headers()?.clone();
     let column = |name: &str| headers.iter().position(|h| h == name);
@@ -137,13 +177,15 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<(Vec<Star>, Skipped)> {
             "not a HYG catalog: missing x, y or z",
         )));
     };
+    let c_rarad = column("rarad");
+    let c_decrad = column("decrad");
+    let c_bf = column("bf");
     let c_hip = column("hip");
     let c_proper = column("proper");
     let c_ci = column("ci");
     let c_spect = column("spect");
 
-    let mut stars = Vec::new();
-    let mut skipped = Skipped::default();
+    let mut catalog = Catalog::default();
 
     for record in csv.records() {
         let record = record?;
@@ -173,21 +215,37 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<(Vec<Star>, Skipped)> {
             number(c_z),
         )
         else {
-            skipped.unreadable += 1;
+            catalog.skipped.unreadable += 1;
             continue;
         };
 
         if distance_pc >= NO_PARALLAX {
-            skipped.no_parallax += 1;
-            skipped.note(apparent_magnitude);
+            catalog.skipped.no_parallax += 1;
+            catalog.skipped.note(apparent_magnitude);
+            // Not discarded: the bearing is a measurement even where the
+            // distance is not. Only a row whose direction cannot be recovered
+            // either is truly lost.
+            if let Some(direction) =
+                direction(&record, c_rarad, c_decrad, [x, y, z])
+            {
+                catalog.unplaced.push(Unplaced {
+                    id: id as u64,
+                    // A proper name if it has one, else its Bayer or Flamsteed
+                    // designation, since most of these are catalogued but unnamed.
+                    name: text(c_proper).or_else(|| text(c_bf)),
+                    direction,
+                    apparent_magnitude,
+                    spectral_type: text(c_spect),
+                });
+            }
             continue;
         }
         if distance_pc <= 0.0 {
-            skipped.at_the_origin += 1;
+            catalog.skipped.at_the_origin += 1;
             continue;
         }
 
-        stars.push(Star {
+        catalog.stars.push(Star {
             id: id as u64,
             hip: text(c_hip).and_then(|h| h.parse().ok()),
             name: text(c_proper),
@@ -204,7 +262,34 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<(Vec<Star>, Skipped)> {
         });
     }
 
-    Ok((stars, skipped))
+    Ok(catalog)
+}
+
+/// The unit direction a row points in.
+///
+/// From `rarad` and `decrad` where the catalog gives them, since those are the
+/// measurement. Failing that, from normalizing the cartesian columns — which
+/// works even for a no-parallax row, because those coordinates are the true
+/// direction scaled by the sentinel, and a scale is exactly what normalizing
+/// removes.
+fn direction(
+    record: &csv::StringRecord,
+    c_rarad: Option<usize>,
+    c_decrad: Option<usize>,
+    xyz: [f64; 3],
+) -> Option<[f64; 3]> {
+    let angle = |i: Option<usize>| {
+        i.and_then(|i| record.get(i)).and_then(|f| f.parse::<f64>().ok())
+    };
+    if let (Some(ra), Some(dec)) = (angle(c_rarad), angle(c_decrad)) {
+        return Some([
+            dec.cos() * ra.cos(),
+            dec.cos() * ra.sin(),
+            dec.sin(),
+        ]);
+    }
+    let length = (xyz.iter().map(|c| c * c).sum::<f64>()).sqrt();
+    (length > 0.0).then(|| [xyz[0] / length, xyz[1] / length, xyz[2] / length])
 }
 
 #[cfg(test)]
@@ -217,7 +302,8 @@ mod tests {
     const BRIGHT: &str = include_str!("../data/bright.csv");
 
     fn bright() -> (Vec<Star>, Skipped) {
-        read(BRIGHT.as_bytes()).expect("the fixture is a HYG catalog")
+        let catalog = read(BRIGHT.as_bytes()).expect("a HYG catalog");
+        (catalog.stars, catalog.skipped)
     }
 
     fn named<'a>(stars: &'a [Star], name: &str) -> &'a Star {
@@ -327,7 +413,8 @@ mod tests {
         csv.push_str("\n900001,,,,,,Bright,0,0,100000,0,0,0,3.5,-8,B1Ia,-0.1,0,0,0,0,0,0,0,0,0,0,,,,1,0,,1,,,");
         csv.push_str("\n900002,,,,,,Faint,0,0,100000,0,0,0,14.2,10,M5V,1.6,0,0,0,0,0,0,0,0,0,0,,,,1,0,,1,,,");
 
-        let (_, skipped) = read(csv.as_bytes()).expect("a HYG catalog");
+        let catalog = read(csv.as_bytes()).expect("a HYG catalog");
+        let skipped = catalog.skipped;
         assert_eq!(skipped.no_parallax, 2);
         assert_eq!(skipped.naked_eye, 1, "only the bright one is visible");
         assert_eq!(skipped.brightest, Some(3.5));
@@ -337,9 +424,44 @@ mod tests {
     #[test]
     fn dropping_nothing_reports_nothing() {
         let header = BRIGHT.lines().next().expect("a header");
-        let (_, skipped) = read(header.as_bytes()).expect("a HYG catalog");
+        let skipped = read(header.as_bytes()).expect("a HYG catalog").skipped;
         assert_eq!(skipped.brightest, None);
         assert_eq!(skipped.naked_eye, 0);
+    }
+
+
+    /// **The hole is enumerable, not merely counted.** A row with no parallax
+    /// comes back as an `Unplaced` carrying the bearing that was measured, so
+    /// a caller can draw where its picture is missing something without
+    /// anything having been invented to fill it.
+    #[test]
+    fn a_star_with_no_distance_still_has_a_direction() {
+        let header = BRIGHT.lines().next().expect("a header");
+        let mut csv = String::from(header);
+        csv.push_str("\n900001,,,,,15Kap Cas,,0.94,62.93,100000,0,0,0,4.17,-8,B1Ia,0.14,0,0,0,0,0,0,0.246,1.098,0,0,,,Cas,1,0,,1,,,");
+
+        let catalog = read(csv.as_bytes()).expect("a HYG catalog");
+        assert!(catalog.stars.is_empty());
+        assert_eq!(catalog.unplaced.len(), 1);
+
+        let star = &catalog.unplaced[0];
+        assert_eq!(star.name.as_deref(), Some("15Kap Cas"));
+        assert_eq!(star.apparent_magnitude, 4.17);
+        let length =
+            (star.direction.iter().map(|c| c * c).sum::<f64>()).sqrt();
+        assert!((length - 1.0).abs() < 1e-9, "a bearing is a unit vector");
+    }
+
+    /// An `Unplaced` is a different kind of thing from a `Star` and the two do
+    /// not mix: nothing dropped for want of a distance appears among the
+    /// placed, whatever else is true of it.
+    #[test]
+    fn the_unplaced_are_never_counted_among_the_stars() {
+        let catalog = read(BRIGHT.as_bytes()).expect("a HYG catalog");
+        assert_eq!(catalog.unplaced.len(), catalog.skipped.no_parallax);
+        for star in &catalog.stars {
+            assert!(star.distance > 0.0 && star.distance.is_finite());
+        }
     }
 
 }

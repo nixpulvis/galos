@@ -57,7 +57,7 @@ mod tests {
     fn bright() -> Vec<Star> {
         hyg::read(include_str!("../data/bright.csv").as_bytes())
             .expect("the fixture is a HYG catalog")
-            .0
+            .stars
     }
 
     /// A catalog id is tagged, so it can never be read as an Elite system
