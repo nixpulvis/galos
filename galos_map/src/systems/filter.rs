@@ -22,18 +22,18 @@
 //! already on the map — which is the other thing a filter is asked for: this
 //! kind of system and none of the rest.
 
-use crate::{Factions, Names, Populated};
 use crate::schedule::MapSet;
 use crate::search::Pending;
 use crate::systems::System;
+use crate::systems::fetch::FetchTasks;
 use crate::systems::fetch::Poll;
+use crate::systems::spawn::system_at;
+use crate::{Factions, Names, Populated};
+use bevy::ecs::system::SystemParam;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use chrono::{DateTime, Duration, Utc};
-use crate::systems::spawn::system_at;
 use galos_index::meta::Faction as DbFaction;
-use crate::systems::fetch::FetchTasks;
-use bevy::ecs::system::SystemParam;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
@@ -891,11 +891,7 @@ impl DimTo {
     /// above zero steps to the floor, which is "off" giving way to "barely
     /// there", exactly what the bottom of the control should mean.
     pub fn opacity(&self) -> f32 {
-        if self.0 <= 0. {
-            0.
-        } else {
-            DIM_FLOOR.powf(1. - self.0)
-        }
+        if self.0 <= 0. { 0. } else { DIM_FLOOR.powf(1. - self.0) }
     }
 }
 

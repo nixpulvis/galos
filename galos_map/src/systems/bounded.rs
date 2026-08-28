@@ -20,19 +20,24 @@
 //! pointing, selection, labels — reads a [`System`] without caring which
 //! source spawned it.
 
+use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use crate::space::Map;
 use crate::systems::aggregate::Planned;
-use crate::systems::fetch::{FetchTasks, RawSystem};
 use crate::systems::bodies::spawn::HeldSystem;
+use crate::systems::fetch::{FetchTasks, RawSystem};
+use crate::systems::scale::View;
 use crate::systems::spawn::{PendingSpawns, build_system};
 use crate::systems::{PendingEvictions, Spyglass, System};
 use crate::{Names, Populated, ResidentIndex, Transport};
-use crate::camera::OrbitCamera;
-use bevy::prelude::*;
 use bevy::math::DVec3;
+use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::{CellId, Point, Resident, resolvable_count};
+use galos_index::{
+    CellId, MARK_SEPARATION_PX, Point, Resident, STAR_SEPARATION_PX,
+    resolvable_count,
+};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Instant;
@@ -133,12 +138,15 @@ struct BoundedTasks(HashMap<CellId, Task<io::Result<Vec<Point>>>>);
 /// this system then.
 fn switch(
     bounded: Res<LodFetch>,
+    map: Res<Map>,
     systems: Query<Entity, With<System>>,
+    camera: Query<Entity, With<OrbitCamera>>,
     mut evictions: ResMut<PendingEvictions>,
     mut resident: ResMut<ResidentCells>,
     mut tasks: ResMut<BoundedTasks>,
     mut fetched: ResMut<FetchTasks>,
     mut last: Local<Option<bool>>,
+    mut commands: Commands,
 ) {
     // Not `is_changed`: the settings checkbox takes `&mut` of this every frame
     // it is drawn, which marks the resource changed whether or not the value
@@ -148,6 +156,13 @@ fn switch(
         return;
     }
     *last = Some(bounded.0);
+    // Up out of whatever it was standing in first, as `super::despawn` does: a
+    // camera that has descended into a system is a child of it, and that system
+    // is about to be evicted and despawned with its children. Re-parenting it
+    // to the map keeps the one floating origin when the system goes.
+    if let Ok(eye) = camera.single() {
+        commands.entity(eye).insert(ChildOf(map.0));
+    }
     for entity in &systems {
         evictions.0.insert(entity);
     }
@@ -187,9 +202,7 @@ fn fetch(
             continue;
         }
         let source = transport.0.clone();
-        tasks
-            .0
-            .insert(id, pool.spawn(async move { source.payload(id).await }));
+        tasks.0.insert(id, pool.spawn(async move { source.payload(id).await }));
     }
 }
 
@@ -234,6 +247,7 @@ fn reconcile(
     names: Res<Names>,
     holding: Res<HeldSystem>,
     spyglass: Res<Spyglass>,
+    view_mode: Res<View>,
     systems: Query<(Entity, &System)>,
     mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
@@ -246,6 +260,13 @@ fn reconcile(
     // Clearing, the spyglass clamps the drawn set to a bubble about the camera:
     // the LOD is untouched inside it, only the far tail is shed.
     let bubble = reach(&spyglass);
+    // The realistic view resolves stars down to the point spread, far finer
+    // than the map's marks, so a cluster stays a field of stars rather than
+    // collapsing to its brightest few. See [`STAR_SEPARATION_PX`].
+    let separation = match *view_mode {
+        View::Map => MARK_SEPARATION_PX,
+        View::Realistic => STAR_SEPARATION_PX,
+    };
 
     let existing: HashSet<i64> =
         systems.iter().map(|(_, system)| system.address).collect();
@@ -260,8 +281,8 @@ fn reconcile(
         {
             continue;
         }
-        let target =
-            (resolvable_count(indexed, &view) as usize).min(cell.points.len());
+        let target = (resolvable_count(indexed, &view, separation) as usize)
+            .min(cell.points.len());
         for point in &cell.points[..target] {
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
@@ -337,7 +358,12 @@ pub(crate) fn build_from_point(
     names: &Names,
 ) -> System {
     build_system(
-        &RawSystem { address: point.id64 as i64, position: point.pos },
+        &RawSystem {
+            address: point.id64 as i64,
+            position: point.pos,
+            magnitude: Some(point.magnitude),
+            temp_bucket: Some(point.temp_bucket),
+        },
         populated,
         names,
     )
@@ -399,6 +425,39 @@ mod tests {
         assert!(
             !cell_in_reach(cell, far, 100.0),
             "a cell thousands of light years off, a reach of a hundred"
+        );
+    }
+
+    /// Switching the source brings the camera up out of its system first
+    ///
+    /// The switch clears the whole map, the held system among it, and a camera
+    /// that has descended into one is a child of it. Left there it would be
+    /// despawned with the system and the big space would lose its one floating
+    /// origin. So it comes up onto the map, as a clear does (`super::super::despawn`).
+    #[test]
+    fn switching_the_source_brings_the_camera_up_out_of_its_system() {
+        use crate::systems::tests::system;
+
+        let mut app = App::new();
+        app.add_systems(Update, switch);
+        app.init_resource::<PendingEvictions>();
+        app.init_resource::<ResidentCells>();
+        app.init_resource::<BoundedTasks>();
+        app.init_resource::<FetchTasks>();
+        app.insert_resource(LodFetch(true));
+
+        let map = app.world_mut().spawn_empty().id();
+        app.insert_resource(Map(map));
+        let star = app.world_mut().spawn((system(1), ChildOf(map))).id();
+        let eye =
+            app.world_mut().spawn((OrbitCamera::default(), ChildOf(star))).id();
+
+        app.update();
+
+        assert_eq!(
+            app.world().get::<ChildOf>(eye).map(|of| of.parent()),
+            Some(map),
+            "the camera stayed inside a system the switch will despawn",
         );
     }
 }

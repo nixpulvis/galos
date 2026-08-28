@@ -16,9 +16,9 @@ use chrono::{DateTime, Utc};
 use elite_journal::body::{
     AtmosphereType, BodyType, Composition, Discovery, Material, Orbit, Spin,
 };
-use std::fmt;
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// A system that changes: its political columns, its name and where it sits.
 ///

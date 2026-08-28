@@ -4,12 +4,14 @@
 //! its own scale is invisible from the next one over, so what is drawn is
 //! whatever keeps it on screen and tells the viewer something.
 //!
-//! [`View::Systems`] draws whichever of two is wider: a mark that says a
-//! system is there, held at a size in the world so the sky reads as depth, and
-//! the system's own extent, which is phased in over how much of the sky the
-//! system takes up and takes over once the camera is near enough for the mark
-//! to have been squeezed down under it. [`View::Stars`] draws one size for the
-//! whole map, and is the older of the two.
+//! [`View::Map`] draws whichever of two is wider: a mark that says a system is
+//! there, held at a size in the world so the sky reads as depth, and the
+//! system's own extent, which is phased in over how much of the sky the system
+//! takes up and takes over once the camera is near enough for the mark to have
+//! been squeezed down under it. [`View::Realistic`] draws a bare point for the
+//! eye's bloom to spread into a star, sized to a pixel whatever the distance so
+//! that a star's brightness is what reads and not its disc; see
+//! [`super::spawn::photometry`], which paints it.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
@@ -18,13 +20,14 @@ use super::System;
 use super::bodies::spawn::{Body, WORTH_KEEPING, WORTH_SIZING};
 use super::labels::{depth_of, world_per_pixel};
 use super::roundness::Roundness;
-use super::spawn::Shell;
+use super::spawn::{Shell, StarExposure, StarSprite};
 use bevy::camera::visibility::ViewVisibility;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use galos_photometry::{apparent_magnitude_ly, flux};
 
 pub fn plugin(app: &mut App) {
-    app.insert_resource(View::Systems);
+    app.insert_resource(View::Map);
     app.insert_resource(ScalePopulation(false));
     app.init_resource::<SystemsStats>();
     // Reads what the fetch spawned and the despawn took away, so it belongs
@@ -39,15 +42,15 @@ pub fn plugin(app: &mut App) {
         Update,
         size_by_distance
             .in_set(MapSet::Present)
-            .ambiguous_with(size_uniformly)
-            .run_if(resource_equals(View::Systems)),
+            .ambiguous_with(size_photometrically)
+            .run_if(resource_equals(View::Map)),
     );
     app.add_systems(
         Update,
-        size_uniformly
+        size_photometrically
             .in_set(MapSet::Present)
             .ambiguous_with(size_by_distance)
-            .run_if(resource_equals(View::Stars)),
+            .run_if(resource_equals(View::Realistic)),
     );
     // Reads where a body ended up rather than deciding it, and `big_space`
     // writes that during `PostUpdate`, so it waits as `pointing::size_bodies`
@@ -63,14 +66,12 @@ pub enum View {
     // has looked at what that does across the whole range, a crowded sky
     // especially.
     // #[default]
-    Systems,
-    // TODO(#46): Draw a star at the size and color it actually is, and give
-    // this a name that says so. `size_uniformly` draws every system at a
-    // hundredth of a light year, whatever the star is and wherever the camera
-    // stands, which was a stand-in from before the map was laid out in metres
-    // and a star had a radius worth drawing. Whether a shell belongs in this
-    // view at all, or only what is inside one, is the same question.
-    Stars,
+    Map,
+    // The photometric sky: every system drawn as the star it is, sized to a
+    // point and emitted at its flux so the eye's bloom spreads it into the disc
+    // a sky reads a star as. The far aggregate glow behind the resolved stars —
+    // the Milky Way — is not drawn yet; see galaxy.md.
+    Realistic,
 }
 
 #[derive(Resource, Debug)]
@@ -310,6 +311,13 @@ pub fn size_by_distance(
                 drawn.scale = Vec3::splat(size);
             }
 
+            // A shell coming back from the realistic view was turned to face
+            // the eye. A sphere reads the same at any turn, but leave it square
+            // so nothing downstream meets a tilted mark.
+            if drawn.rotation != Quat::IDENTITY {
+                drawn.rotation = Quat::IDENTITY;
+            }
+
             // Measured out along the line to the system rather than into the
             // view, which is what the size itself is measured by. A mark off
             // to one side is drawn a little coarser than it strictly asks for,
@@ -394,51 +402,125 @@ pub fn size_inside(
     }
 }
 
-/// Draw every system the same size, whatever the camera is doing
+/// How fast a star's drawn radius grows with brightness, in screen pixels per
+/// e-fold of flux
 ///
-/// This view is a picture of where things are rather than of how far away they
-/// are, so the size here reads nothing. How round that size is drawn is a
-/// different question and has to ask, since a shell held at one size in the
-/// world still covers everything from half a pixel to half the screen.
-pub fn size_uniformly(
+/// A star is a point; what reaches the screen is the instrument's point spread,
+/// the same shape ([`super::spawn::star_psf`]) for every star. A brighter star
+/// is not drawn wider — it clears more of that one fixed shape above the eye's
+/// floor. That cleared radius grows with the *logarithm* of brightness
+/// (galaxy.md), the law the eye reads by and the one that never runs away: each
+/// doubling of flux adds a fixed step, so even the sky's most luminous stars
+/// stay a bounded glint with no cap to impose. Tuned against a long exposure of
+/// a real sky.
+const PSF_GROWTH: f64 = 0.45;
+
+/// The smallest a drawn star may be, as a radius in screen pixels
+///
+/// A star that clears the floor is drawn at least this large so it lands as a
+/// stable dot rather than a sub-pixel speck that flickers as the camera moves
+/// (galaxy.md's "smallest mark that draws stably"). Most of the sky sits here —
+/// a field of tiny dots — with only the brighter stars grown past it by their
+/// point spread. Not a cap: the floor is the pixel grid, and brightness above
+/// it still grows the star.
+const DOT_RADIUS: f32 = 0.6;
+
+/// The gain a magnitude-zero star's flux is drawn at, at exposure zero
+///
+/// Flux is measured against magnitude zero, so such a star has flux one; this
+/// is what its peak comes to on screen before [`StarExposure`] lifts or lowers
+/// it. Chosen so exposure zero reaches about the dark-adapted eye's limit
+/// (magnitude ~8), a good deal fainter than a naked eye on a planet, so the sky
+/// comes in dense; the limiting magnitude is then whatever the exposure makes
+/// it rather than a number set by hand.
+const STAR_GAIN: f64 = 1600.;
+
+/// The visible radius of a star's point spread, in screen pixels
+///
+/// A star's image is its `flux` times a fixed point spread; the disc that shows
+/// is where that clears the eye's floor. Its peak is `flux · gain`, and the
+/// cleared radius is [`PSF_GROWTH`]` · ln(peak)` — zero where the peak is under
+/// the floor, so a star too faint to see has no size and is not drawn. The
+/// logarithm is the whole of the bound: brightness climbs it a fixed step per
+/// e-fold, so the sky's most luminous stars — Elite's procedural O and B
+/// supergiants run past a million suns — stay a glint a few pixels wide rather
+/// than a disc, with no cap to impose. It grows with the gain too, so opening
+/// the exposure enlarges every star by the same step and brings fainter ones in.
+//
+// TODO(psf): this sizes a bloomed sprite carrying a fixed Moffat texture
+// ([`super::spawn::star_psf`]); the plan is a proper instrument PSF drawn as a
+// custom billboard material whose above-threshold radius falls out of the
+// profile itself. See galaxy.md "The instrument" and roadmap item 7 "Real
+// mode": a Moffat profile `(1 + (theta/alpha)^2)^(-beta)` — a Gaussian-ish core
+// with power-law wings. Each star's quad carries centre, magnitude and
+// temperature as vertex attributes; a billboard vertex shader expands it in
+// view space and a fragment shader draws the core integrated over each pixel's
+// footprint (an erf difference per axis) so a star crossing a pixel boundary
+// does not shimmer. Energy-normalized, one PSF for every star, calibrated once
+// against the bloom kernel by encircled energy. DO NOT FORGET THIS.
+fn psf_radius(flux: f64, gain: f64) -> f32 {
+    let peak = flux * gain;
+    if peak <= 1. {
+        return 0.;
+    }
+    ((PSF_GROWTH * peak.ln()) as f32).max(DOT_RADIUS)
+}
+
+/// Draw each system as its point spread, for the realistic view
+///
+/// A star is a billboard carrying the fixed Moffat point spread (see
+/// [`super::spawn::star_psf`]), sized to the radius that spread clears above
+/// the eye's floor by [`psf_radius`] and turned to face the camera. A brighter
+/// star clears more of the same profile, so it draws larger and a fainter one
+/// smaller, both by the log of their brightness; opening the exposure grows
+/// them all and draws fainter ones in; and a star whose peak is under the floor
+/// has no size and drops out. The tint and the core's shape are the sprite's.
+pub(crate) fn size_photometrically(
     camera: Query<(&OrbitCamera, &Camera)>,
-    roundness: Res<Roundness>,
+    exposure: Res<StarExposure>,
+    sprite: Res<StarSprite>,
     mut shells: Query<
         (&mut Transform, &System, &mut Mesh3d, &ViewVisibility),
         With<Shell>,
     >,
 ) {
-    let size = (1e-2 * crate::space::LIGHT_YEAR) as f32;
-    // Nothing to be round for where there is no viewport to be round in, and
-    // the size is written either way.
-    let seen = match camera.single() {
-        Ok((orbit, camera)) => camera.logical_viewport_size().map(|viewport| {
-            (orbit.eye, camera.clip_from_view().y_axis.y, viewport.y)
-        }),
-        Err(_) => None,
+    let Ok((orbit, camera)) = camera.single() else {
+        return;
     };
-
-    // TODO(#46): Change rgba color/emmisivity. The goal is to fade out to
-    // transparent when they are too far away.
+    let Some(viewport) = camera.logical_viewport_size() else {
+        return;
+    };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+    let gain = STAR_GAIN * exposure.factor() as f64;
+    // Turned to line up with the camera, written straight in as a local
+    // rotation the way [`super::labels::face_camera`] does: a system is never
+    // itself rotated, so its local frame is the world's.
+    let facing = orbit.rotation;
     for (mut drawn, system, mut mesh, visible) in shells.iter_mut() {
         if !visible.get() {
             continue;
         }
-        // Only where it moved, as everything that sizes a shell is. The size
-        // here is one number for the whole map, so past the frame a shell is
-        // spawned this never writes at all.
+        let apparent = apparent_magnitude_ly(
+            system.absolute_magnitude(),
+            orbit.eye.distance(system.position()),
+        );
+        let radius = psf_radius(flux(apparent), gain);
+        let away =
+            crate::space::metres(orbit.eye - system.position()).length() as f32;
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
+        // The quad is a unit square, so twice the radius sets its half-width to
+        // the cleared radius. The Moffat profile fades to nothing well inside
+        // that edge, so a bright star is a cored glint, not the flat disc a
+        // bare sphere gave.
+        let size = 2. * radius * per_pixel;
         if drawn.scale.x != size {
             drawn.scale = Vec3::splat(size);
         }
-
-        let Some((eye, cot_half_fov, height)) = seen else { continue };
-        let away = crate::space::metres(eye - DVec3::from(system.position))
-            .length() as f32;
-
-        let per_pixel = world_per_pixel(cot_half_fov, height, away.max(1.));
-        let wanted = roundness.at(&mesh.0, size / per_pixel);
-        if mesh.0 != *wanted {
-            mesh.0 = wanted.clone();
+        if drawn.rotation != facing {
+            drawn.rotation = facing;
+        }
+        if mesh.0 != sprite.quad {
+            mesh.0 = sprite.quad.clone();
         }
     }
 }
@@ -951,25 +1033,37 @@ mod tests {
         assert!(writes(&app) > settled, "left a shell at the size it was");
     }
 
-    /// A shell drawn at one size for the whole map is written once
+    /// A star is sized by the radius its point spread clears, and vanishes when
+    /// its peak drops under the floor
     ///
-    /// This view draws every system the same size whatever the camera is
-    /// doing, so past the frame a shell is spawned there is never anything to
-    /// write at all.
+    /// The physics that replaces the magnitude cap: the radius is
+    /// `PSF_GROWTH·ln(peak)`, so it grows with the logarithm of brightness (a
+    /// hundredfold brighter is a few pixels larger, never a hundredfold, and
+    /// self-bounding with no cap), grows with the gain (opening the exposure
+    /// enlarges every star), and is zero once the peak is under one — the star
+    /// is not seen.
     #[test]
-    fn an_evenly_drawn_shell_is_sized_once() {
-        let mut app = sky();
-        app.add_systems(Update, (size_uniformly, count_writes).chain());
-        shelled(&mut app, at(1, 5.));
-
-        app.update();
-        let settled = writes(&app);
-
-        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
-        cameras.single_mut(app.world_mut()).unwrap().eye =
-            DVec3::new(2., 0., 0.);
-        app.update();
-
-        assert_eq!(writes(&app), settled, "sized a shell that draws one size");
+    fn a_star_is_sized_by_the_radius_its_point_spread_clears() {
+        assert_eq!(
+            psf_radius(1., 0.5),
+            0.,
+            "a peak under the floor has no size"
+        );
+        assert!(psf_radius(1., 2.) > 0., "a peak over the floor is drawn");
+        assert!(
+            psf_radius(4., 400.) > psf_radius(1., 400.),
+            "a brighter star is drawn larger"
+        );
+        assert!(
+            psf_radius(1., 800.) > psf_radius(1., 400.),
+            "opening the gain enlarges a star"
+        );
+        let dim = psf_radius(1., 400.) as f64;
+        let bright = psf_radius(100., 400.) as f64;
+        assert!(bright > dim, "a hundredfold brighter is larger");
+        assert!(
+            bright < 5. * dim,
+            "a hundredfold brighter is a few times larger, not a hundredfold"
+        );
     }
 }

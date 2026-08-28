@@ -202,7 +202,9 @@ impl FixedCodec for Centimag {
 
 impl From<f32> for Centimag {
     fn from(m: f32) -> Centimag {
-        Centimag((m * 100.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+        Centimag(
+            (m * 100.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+        )
     }
 }
 
@@ -262,7 +264,9 @@ const INDEX_VERSION: u16 = 0;
 
 impl Encode for Index {
     fn encode(&self, out: &mut Vec<u8>) {
-        out.reserve(INDEX_MAGIC.len() + u16::LEN + u32::LEN + self.len() * Cell::LEN);
+        out.reserve(
+            INDEX_MAGIC.len() + u16::LEN + u32::LEN + self.len() * Cell::LEN,
+        );
         INDEX_MAGIC.encode(out);
         INDEX_VERSION.encode(out);
         (self.len() as u32).encode(out);
@@ -396,6 +400,9 @@ mod tests {
         ]);
         let bytes = index.to_bytes();
         assert_eq!(Index::from_bytes(&bytes), Some(index));
-        assert_eq!(Index::from_bytes(b"nope and then some padding bytes"), None);
+        assert_eq!(
+            Index::from_bytes(b"nope and then some padding bytes"),
+            None
+        );
     }
 }

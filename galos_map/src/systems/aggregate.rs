@@ -71,8 +71,8 @@ fn plan(
     let Ok((orbit, camera)) = cameras.single() else { return };
     let Some(view) = view(orbit, camera) else { return };
     let mode = match *view_mode {
-        View::Systems => Mode::Shell,
-        View::Stars => Mode::Real,
+        View::Map => Mode::Shell,
+        View::Realistic => Mode::Real,
     };
     let size = camera.logical_viewport_size().unwrap_or_default().as_uvec2();
     let key = (orbit.eye, orbit.rotation, mode, size);
@@ -261,8 +261,7 @@ mod tests {
     #[test]
     fn a_turn_carries_forward_and_up() {
         let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
-        let view =
-            viewpoint(DVec3::ZERO, quarter, 1., Vec2::new(100., 100.));
+        let view = viewpoint(DVec3::ZERO, quarter, 1., Vec2::new(100., 100.));
 
         // A quarter turn about Y sends -Z to -X, and leaves Y up.
         assert!((view.forward[0] + 1.).abs() < 1e-6, "not facing -X");

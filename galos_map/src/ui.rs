@@ -30,7 +30,7 @@ use crate::systems::labels::ShowBodyNames;
 use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
-use crate::systems::spawn::{ColorBy, PendingSpawns, ShowNames};
+use crate::systems::spawn::{ColorBy, PendingSpawns, ShowNames, StarExposure};
 use crate::systems::{InReach, PendingEvictions, Spyglass};
 use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
@@ -596,6 +596,7 @@ pub struct Settings<'w> {
     view: ResMut<'w, View>,
     color_by: ResMut<'w, ColorBy>,
     population_scale: ResMut<'w, ScalePopulation>,
+    star_exposure: ResMut<'w, StarExposure>,
     show_names: ResMut<'w, ShowNames>,
     throttle: ResMut<'w, Throttle>,
     poll: ResMut<'w, Poll>,
@@ -749,7 +750,9 @@ pub fn chrome(
                                     .suffix(" ms"),
                             );
                         });
-                        ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
+                        ui.horizontal(|ui| {
+                            poll_value(ui, &mut settings.poll.0)
+                        });
                     }
                 });
             });
@@ -885,9 +888,9 @@ pub fn chrome(
         }
 
         ui.add_space(FIELD_GAP);
-        ui.radio_value(&mut *settings.view, View::Systems, "Systems");
-        ui.radio_value(&mut *settings.view, View::Stars, "Stars");
-        if *settings.view == View::Systems {
+        ui.radio_value(&mut *settings.view, View::Map, "Map");
+        ui.radio_value(&mut *settings.view, View::Realistic, "Realistic");
+        if *settings.view == View::Map {
             ui.add_space(FIELD_GAP);
             ui.label("Color By");
             ui.radio_value(
@@ -910,6 +913,38 @@ pub fn chrome(
                 &mut settings.population_scale.0,
                 "Scale w/ Population",
             );
+        }
+        if *settings.view == View::Realistic {
+            ui.add_space(FIELD_GAP);
+            // How many stops the star field is lifted to the display. From far
+            // under what a dark-adapted eye takes in up to a few stops past the
+            // bloom the palette is baked at.
+            ui.label("Exposure (EV)");
+            let mut ev = settings.star_exposure.0;
+            fill_width(ui, VALUE_WIDTH);
+            let slider = ui
+                .horizontal(|ui| {
+                    let rail = ui.add(
+                        egui::Slider::new(&mut ev, -20.0..=4.0)
+                            .step_by(0.5)
+                            .show_value(false),
+                    );
+                    let typed = value_box(
+                        ui,
+                        egui::DragValue::new(&mut ev)
+                            .range(-20.0..=4.0)
+                            .speed(0.1)
+                            .suffix(" EV"),
+                    );
+                    rail | typed
+                })
+                .inner;
+            // Only when it lands somewhere new, so a slider reporting the same
+            // value frame after frame does not repaint the whole palette each
+            // time; see [`crate::systems::spawn::reexpose`].
+            if slider.changed() && settings.star_exposure.0 != ev {
+                settings.star_exposure.0 = ev;
+            }
         }
 
         // What is drawn once the camera is inside a system, rather than what

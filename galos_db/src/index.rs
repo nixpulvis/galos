@@ -22,7 +22,7 @@ use galos_index::source::write_meta;
 use galos_index::{
     meta, source, BuildParams, Checkpoint, Index, Snapshot, System, Tree,
 };
-use galos_photometry::{class_light, combined_magnitude};
+use galos_photometry::{class_light, combined_magnitude, visual_magnitude};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::HashMap;
@@ -79,21 +79,28 @@ fn system_input(
     }
 }
 
-/// Every scanned star grouped under its system: its `(absolute magnitude,
-/// temperature)`, for the given addresses, or all systems when `None`.
+/// Every scanned star grouped under its system: its visual `(absolute
+/// magnitude, temperature)`, for the given addresses, or all systems when
+/// `None`.
 ///
-/// A star missing a magnitude or a temperature cannot be summed, so it is left
-/// out and its system falls to the class fallback like any other.
+/// Each star's scanned magnitude is bolometric — its whole output as one figure
+/// — so it is turned into the visual magnitude the sky sees by
+/// [`visual_magnitude`] before it is grouped. A star missing a magnitude or a
+/// temperature cannot be summed, so it is left out and its system falls to the
+/// class fallback like any other.
 async fn stars_by_system(
     db: &Database,
     addresses: Option<&[i64]>,
 ) -> Result<HashMap<i64, Vec<(f64, f64)>>> {
     let rows = match addresses {
-        None => sqlx::query(
-            "SELECT system_address, absolute_magnitude, temperature FROM stars",
-        )
-        .fetch_all(&db.pool)
-        .await?,
+        None => {
+            sqlx::query(
+                "SELECT system_address, absolute_magnitude, temperature \
+                 FROM stars",
+            )
+            .fetch_all(&db.pool)
+            .await?
+        }
         Some(addresses) => {
             sqlx::query(
                 "SELECT system_address, absolute_magnitude, temperature \
@@ -109,8 +116,17 @@ async fn stars_by_system(
         let address: i64 = row.try_get("system_address")?;
         let magnitude: Option<f32> = row.try_get("absolute_magnitude")?;
         let temperature: Option<f32> = row.try_get("temperature")?;
+        // Elite's scanned magnitude is bolometric — a star's whole output as if
+        // all of it were visible — so convert it to the visual magnitude the
+        // sky reads. This is where a white dwarf keeps its faint scanned
+        // brightness and a neutron star or black hole falls to nothing, with no
+        // per-class figure. See [`visual_magnitude`].
         if let (Some(m), Some(t)) = (magnitude, temperature) {
-            stars.entry(address).or_default().push((m as f64, t as f64));
+            let t = t as f64;
+            stars
+                .entry(address)
+                .or_default()
+                .push((visual_magnitude(m as f64, t), t));
         }
     }
     Ok(stars)

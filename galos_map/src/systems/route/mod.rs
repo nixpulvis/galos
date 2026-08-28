@@ -10,7 +10,6 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
-
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
     app.init_resource::<SelectedRoute>();
@@ -524,8 +523,8 @@ fn emphasise(
 }
 
 pub mod fetch;
-pub mod spawn;
 pub mod graph;
+pub mod spawn;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]

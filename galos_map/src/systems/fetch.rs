@@ -22,9 +22,7 @@ pub fn plugin(app: &mut App) {
 
     app.add_systems(
         Update,
-        fetch
-            .in_set(MapSet::Fetch)
-            .run_if(crate::systems::bounded::spyglass),
+        fetch.in_set(MapSet::Fetch).run_if(crate::systems::bounded::spyglass),
     );
     app.add_systems(Update, fetch_selected.in_set(MapSet::Fetch));
 }
@@ -295,6 +293,11 @@ pub struct FetchTasks {
 pub struct RawSystem {
     pub address: i64,
     pub position: [f64; 3],
+    /// The payload point's combined absolute magnitude and temperature bucket,
+    /// for the realistic view's photometry. [`None`] on the paths that carry no
+    /// point — a route's stops, a searched system flown to.
+    pub magnitude: Option<f32>,
+    pub temp_bucket: Option<u8>,
 }
 
 /// What a fetch came back with, and the moment it landed.
@@ -468,6 +471,8 @@ fn fetch_spyglass(
                                     let raw = RawSystem {
                                         address: point.id64 as i64,
                                         position: pos,
+                                        magnitude: Some(point.magnitude),
+                                        temp_bucket: Some(point.temp_bucket),
                                     };
                                     systems.push(build_system(
                                         &raw, &populated, &names,

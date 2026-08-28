@@ -16,8 +16,8 @@
 //! into, are the next step's work; this holds the payload, the ramp, and the
 //! bookkeeping the loop turns on.
 
-use crate::geometry::CellId;
 use crate::aggregate::temp_bucket;
+use crate::geometry::CellId;
 use crate::walk::Needed;
 use std::collections::{HashMap, HashSet};
 
@@ -204,7 +204,8 @@ mod tests {
         cache.insert(a, vec![point(1)]); // needed and resident
         cache.insert(c, vec![point(3)]); // resident but not needed
         // b is needed but absent.
-        let needed = Needed { mode: Mode::Shell, marks: vec![a, b], splats: vec![] };
+        let needed =
+            Needed { mode: Mode::Shell, marks: vec![a, b], splats: vec![] };
 
         assert_eq!(ids(cache.drawable(&needed)), ids(vec![a]));
         assert_eq!(ids(cache.missing(&needed)), ids(vec![b]));
@@ -218,8 +219,11 @@ mod tests {
         let s = at(2, 1);
         let mut cache = Resident::default();
         cache.insert(s, vec![point(1)]);
-        let needed =
-            Needed { mode: Mode::Real, marks: vec![], splats: vec![SplatRef { id: s, blend: 1.0 }] };
+        let needed = Needed {
+            mode: Mode::Real,
+            marks: vec![],
+            splats: vec![SplatRef { id: s, blend: 1.0 }],
+        };
         assert!(cache.missing(&needed).is_empty());
         assert_eq!(ids(cache.stale(&needed)), ids(vec![s]));
     }

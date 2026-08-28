@@ -148,7 +148,10 @@ impl Tree {
                 physical: Vec::new(),
             };
             for point in built.payload(cell.id) {
-                node.slice.insert((mag_key(tree.records[&point.id64].magnitude), point.id64));
+                node.slice.insert((
+                    mag_key(tree.records[&point.id64].magnitude),
+                    point.id64,
+                ));
                 tree.owner.insert(point.id64, cell.id);
             }
             tree.cells.insert(cell.id, node);
@@ -315,7 +318,10 @@ impl Tree {
                 } else {
                     self.params.internal_slice
                 };
-                (node.slice.len() >= cap, node.slice.iter().next_back().copied())
+                (
+                    node.slice.len() >= cap,
+                    node.slice.iter().next_back().copied(),
+                )
             };
 
             if !full {
@@ -347,12 +353,14 @@ impl Tree {
     /// children, keep the brightest [`BuildParams::internal_slice`] of what it
     /// owned, and push the rest down.
     fn split(&mut self, id: CellId) {
-        let physical = std::mem::take(&mut self.cells.get_mut(&id).unwrap().physical);
+        let physical =
+            std::mem::take(&mut self.cells.get_mut(&id).unwrap().physical);
 
         // Group physical members by child and create the child leaves.
         let mut by_child: HashMap<CellId, Vec<u64>> = HashMap::new();
         for pid in physical {
-            let child = CellId::of_point(self.records[&pid].position, id.level + 1);
+            let child =
+                CellId::of_point(self.records[&pid].position, id.level + 1);
             by_child.entry(child).or_default().push(pid);
         }
         let mut child_mask = 0u8;
@@ -389,7 +397,8 @@ impl Tree {
         }
         self.cells.get_mut(&id).unwrap().slice = kept;
         for key in pushed {
-            let child = CellId::of_point(self.records[&key.1].position, id.level + 1);
+            let child =
+                CellId::of_point(self.records[&key.1].position, id.level + 1);
             self.cells.get_mut(&child).unwrap().slice.insert(key);
             self.owner.insert(key.1, child);
             self.dirty.insert(child);
@@ -413,7 +422,11 @@ impl Tree {
         let owner = self.owner.remove(&id).unwrap();
         let leaf = self.leaf.remove(&id).unwrap();
 
-        self.cells.get_mut(&owner).unwrap().slice.remove(&(mag_key(rec.magnitude), id));
+        self.cells
+            .get_mut(&owner)
+            .unwrap()
+            .slice
+            .remove(&(mag_key(rec.magnitude), id));
         self.dirty.insert(owner);
         self.cells.get_mut(&leaf).unwrap().physical.retain(|&x| x != id);
         self.bump_count(rec.position, leaf.level, -1);
@@ -473,7 +486,8 @@ impl Tree {
                 self.dirty.remove(&cur);
                 self.gone.insert(cur);
             }
-            self.cells.get_mut(&parent).unwrap().child_mask &= !(1 << cur.octant());
+            self.cells.get_mut(&parent).unwrap().child_mask &=
+                !(1 << cur.octant());
             cur = parent;
         }
 
@@ -483,7 +497,10 @@ impl Tree {
         loop {
             let node = &self.cells[&cur];
             let count = node.count;
-            if !node.is_leaf() && count > 0 && count <= self.params.leaf_cap as u64 {
+            if !node.is_leaf()
+                && count > 0
+                && count <= self.params.leaf_cap as u64
+            {
                 self.collapse(cur);
                 return;
             }
@@ -519,7 +536,8 @@ impl Tree {
             }
         }
 
-        let mut physical = std::mem::take(&mut self.cells.get_mut(&root).unwrap().physical);
+        let mut physical =
+            std::mem::take(&mut self.cells.get_mut(&root).unwrap().physical);
         let mut gained: Vec<(u64, u64)> = Vec::new();
         for id in descendants {
             let node = self.cells.remove(&id).unwrap();
@@ -575,8 +593,11 @@ impl Tree {
             }
         }
         // Owned-below totals, both rolled up deepest first.
-        let mut owned_below: HashMap<CellId, u64> =
-            self.cells.iter().map(|(&id, node)| (id, node.slice.len() as u64)).collect();
+        let mut owned_below: HashMap<CellId, u64> = self
+            .cells
+            .iter()
+            .map(|(&id, node)| (id, node.slice.len() as u64))
+            .collect();
         let mut ordered: Vec<CellId> = self.cells.keys().copied().collect();
         ordered.sort_by_key(|a| std::cmp::Reverse(a.level));
         for id in ordered {
@@ -749,7 +770,8 @@ impl Snapshot {
         let leaves = split_into_leaves(systems, params.leaf_cap);
         let (cells, child_mask) = tree_of(&leaves);
         let aggregates = roll_up(systems, &leaves, &cells);
-        let Slices { payloads, rank_lo, owned } = assign_slices(systems, &leaves, params);
+        let Slices { payloads, rank_lo, owned } =
+            assign_slices(systems, &leaves, params);
 
         let built_cells = cells.iter().map(|&id| {
             let lo = rank_lo.get(&id).copied().unwrap_or(0);
@@ -759,7 +781,10 @@ impl Snapshot {
                 rank_lo: lo,
                 rank_hi: lo + slice,
                 child_mask: child_mask.get(&id).copied().unwrap_or(0),
-                aggregate: aggregates.get(&id).copied().unwrap_or(Aggregate::ZERO),
+                aggregate: aggregates
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(Aggregate::ZERO),
             }
         });
 
@@ -774,8 +799,12 @@ impl Snapshot {
     /// exactly as it lies.
     pub fn diff(&self, since: &Snapshot) -> Dirtied {
         let mut dirtied = Dirtied::default();
-        let ids: HashSet<CellId> =
-            since.payloads.keys().chain(self.payloads.keys()).copied().collect();
+        let ids: HashSet<CellId> = since
+            .payloads
+            .keys()
+            .chain(self.payloads.keys())
+            .copied()
+            .collect();
         for id in ids {
             let (before, after) = (since.payload(id), self.payload(id));
             if after.is_empty() && !before.is_empty() {
@@ -795,7 +824,11 @@ impl Snapshot {
     /// and churn is clustered. The live [`Tree`] cuts the rebuild itself to an
     /// O(depth) edit; the on-disk result is the same, which is what
     /// [`diff`](Self::diff) guarantees and the tests check.
-    pub fn rebuild(&self, systems: &[System], params: &BuildParams) -> (Snapshot, Dirtied) {
+    pub fn rebuild(
+        &self,
+        systems: &[System],
+        params: &BuildParams,
+    ) -> (Snapshot, Dirtied) {
         let next = Snapshot::build(systems, params);
         let dirtied = next.diff(self);
         (next, dirtied)
@@ -943,8 +976,11 @@ fn assign_slices(
         let mut placed_level = leaf.level;
         for level in 0..=leaf.level {
             let cid = CellId::of_point(s.position, level);
-            let cap =
-                if cid == leaf { params.leaf_cap } else { params.internal_slice };
+            let cap = if cid == leaf {
+                params.leaf_cap
+            } else {
+                params.internal_slice
+            };
             let count = slice_count.entry(cid).or_insert(0);
             if *count < cap {
                 *count += 1;
@@ -981,11 +1017,7 @@ mod batch_tests {
     fn grid(n: usize, step: f64) -> Vec<System> {
         let mut out = Vec::new();
         let span = (n as f64 - 1.0) * step;
-        let base = [
-            -span / 2.0,
-            900.0 - span / 2.0,
-            24400.0 - span / 2.0,
-        ];
+        let base = [-span / 2.0, 900.0 - span / 2.0, 24400.0 - span / 2.0];
         let mut id = 1u64;
         for x in 0..n {
             for y in 0..n {
@@ -1079,7 +1111,9 @@ mod batch_tests {
             .iter()
             .map(|s| galos_photometry::flux(s.absolute_magnitude))
             .sum();
-        assert!((root.aggregate.total_flux() - want_flux).abs() < want_flux * 1e-9);
+        assert!(
+            (root.aggregate.total_flux() - want_flux).abs() < want_flux * 1e-9
+        );
     }
 
     /// An internal node's aggregate is exactly its children's, merged. This is
@@ -1100,7 +1134,8 @@ mod batch_tests {
                 .fold(Aggregate::ZERO, |a, c| a.merge(c.aggregate));
             assert_eq!(cell.aggregate.count(), from_children.count());
             assert!(
-                (cell.aggregate.total_flux() - from_children.total_flux()).abs()
+                (cell.aggregate.total_flux() - from_children.total_flux())
+                    .abs()
                     < cell.aggregate.total_flux() * 1e-9
             );
         }
@@ -1170,7 +1205,10 @@ mod batch_tests {
             let back = Vec::<Point>::from_bytes(&bytes).unwrap();
             assert_eq!(back.len(), built.payload(cell.id).len());
             for p in &back {
-                assert_eq!(p.pos, by_id[&p.id64], "position not carried exactly");
+                assert_eq!(
+                    p.pos, by_id[&p.id64],
+                    "position not carried exactly"
+                );
             }
         }
     }
@@ -1214,7 +1252,8 @@ mod tests {
         fn position(&mut self) -> [f64; 3] {
             // Inside the root cube, clustered near the centre so cells fill and
             // split rather than scatter one-per-leaf.
-            let axis = |r: &mut Rng, c: f64| c + (r.below(4000) as f64) - 2000.0;
+            let axis =
+                |r: &mut Rng, c: f64| c + (r.below(4000) as f64) - 2000.0;
             [axis(self, 0.0), axis(self, 900.0), axis(self, 24400.0)]
         }
     }
@@ -1238,7 +1277,11 @@ mod tests {
             let got = live.index.get(cell.id).unwrap_or_else(|| {
                 panic!("live tree is missing cell {:?}", cell.id)
             });
-            assert_eq!(got.child_mask, cell.child_mask, "child mask at {:?}", cell.id);
+            assert_eq!(
+                got.child_mask, cell.child_mask,
+                "child mask at {:?}",
+                cell.id
+            );
             assert_eq!(got.rank_lo, cell.rank_lo, "rank_lo at {:?}", cell.id);
             assert_eq!(got.rank_hi, cell.rank_hi, "rank_hi at {:?}", cell.id);
             assert_eq!(
@@ -1247,11 +1290,26 @@ mod tests {
                 "count at {:?}",
                 cell.id
             );
-            assert_eq!(got.aggregate.m_min(), cell.aggregate.m_min(), "m_min at {:?}", cell.id);
-            let (a, b) = (got.aggregate.total_flux(), cell.aggregate.total_flux());
-            assert!((a - b).abs() <= b.abs() * 1e-6 + 1e-12, "flux at {:?}", cell.id);
+            assert_eq!(
+                got.aggregate.m_min(),
+                cell.aggregate.m_min(),
+                "m_min at {:?}",
+                cell.id
+            );
+            let (a, b) =
+                (got.aggregate.total_flux(), cell.aggregate.total_flux());
+            assert!(
+                (a - b).abs() <= b.abs() * 1e-6 + 1e-12,
+                "flux at {:?}",
+                cell.id
+            );
             // Ownership is exact: the same systems in the same cell.
-            assert_eq!(live.payload(cell.id), fresh.payload(cell.id), "payload at {:?}", cell.id);
+            assert_eq!(
+                live.payload(cell.id),
+                fresh.payload(cell.id),
+                "payload at {:?}",
+                cell.id
+            );
         }
     }
 
@@ -1259,10 +1317,14 @@ mod tests {
     #[test]
     fn a_fresh_tree_is_its_build() {
         let mut rng = Rng(0x1234_5678);
-        let systems: Vec<_> = (1..=9000).map(|id| input(id, &mut rng)).collect();
+        let systems: Vec<_> =
+            (1..=9000).map(|id| input(id, &mut rng)).collect();
         let params = BuildParams::default();
         let tree = Tree::build(&systems, &params);
-        assert_equivalent(&tree.to_snapshot(), &Snapshot::build(&systems, &params));
+        assert_equivalent(
+            &tree.to_snapshot(),
+            &Snapshot::build(&systems, &params),
+        );
     }
 
     /// A tree rebuilt from its own `to_inputs` equals the original: the resume
@@ -1273,7 +1335,8 @@ mod tests {
     #[test]
     fn to_inputs_rebuilds_an_equal_tree() {
         let mut rng = Rng(0xC0FFEE);
-        let systems: Vec<_> = (1..=9000).map(|id| input(id, &mut rng)).collect();
+        let systems: Vec<_> =
+            (1..=9000).map(|id| input(id, &mut rng)).collect();
         let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
         let tree = Tree::build(&systems, &params);
         let rebuilt = Tree::build(&tree.to_inputs(), &params);
@@ -1344,8 +1407,15 @@ mod tests {
             check(&tree, seed, step, what);
 
             let systems: Vec<_> = present.values().copied().collect();
-            assert_eq!(tree.len(), present.len(), "seed {seed:#x} step {step} {what}");
-            assert_equivalent(&tree.to_snapshot(), &Snapshot::build(&systems, &params));
+            assert_eq!(
+                tree.len(),
+                present.len(),
+                "seed {seed:#x} step {step} {what}"
+            );
+            assert_equivalent(
+                &tree.to_snapshot(),
+                &Snapshot::build(&systems, &params),
+            );
         }
     }
 
@@ -1380,13 +1450,20 @@ mod tests {
         let ctx = || format!("seed {seed:#x} step {step} {what}");
         for (&id, node) in &tree.cells {
             if !node.is_leaf() {
-                assert!(node.physical.is_empty(), "internal {id:?} holds physical; {}", ctx());
+                assert!(
+                    node.physical.is_empty(),
+                    "internal {id:?} holds physical; {}",
+                    ctx()
+                );
             }
             // Count is exact.
             let recomputed = subtree_count(tree, id);
             if node.count != recomputed {
-                let by_leaf =
-                    tree.records.keys().filter(|k| is_ancestor(id, tree.leaf[k])).count();
+                let by_leaf = tree
+                    .records
+                    .keys()
+                    .filter(|k| is_ancestor(id, tree.leaf[k]))
+                    .count();
                 let phys: u64 = tree
                     .cells
                     .iter()
@@ -1395,14 +1472,27 @@ mod tests {
                     .sum();
                 panic!(
                     "count at {id:?}: maintained {}, subtree {}, by-leaf-map {}, by-physical {}; {}",
-                    node.count, recomputed, by_leaf, phys, ctx()
+                    node.count,
+                    recomputed,
+                    by_leaf,
+                    phys,
+                    ctx()
                 );
             }
             // Ownership is consistent: each owned system exists, points back, and
             // physically lies in this cell's subtree.
             for &(_, sid) in &node.slice {
-                assert_eq!(tree.owner.get(&sid), Some(&id), "owner of {sid} not {id:?}; {}", ctx());
-                assert!(tree.records.contains_key(&sid), "cell {id:?} owns ghost {sid}; {}", ctx());
+                assert_eq!(
+                    tree.owner.get(&sid),
+                    Some(&id),
+                    "owner of {sid} not {id:?}; {}",
+                    ctx()
+                );
+                assert!(
+                    tree.records.contains_key(&sid),
+                    "cell {id:?} owns ghost {sid}; {}",
+                    ctx()
+                );
                 assert!(
                     is_ancestor(id, tree.leaf[&sid]),
                     "cell {id:?} owns {sid} outside its subtree; {}",
@@ -1412,12 +1502,32 @@ mod tests {
         }
         // Every record is owned once and physically placed at the deepest cell.
         for (&sid, rec) in &tree.records {
-            let owner = *tree.owner.get(&sid).unwrap_or_else(|| panic!("{sid} unowned; {}", ctx()));
-            assert!(tree.cells.contains_key(&owner), "owner cell of {sid} gone; {}", ctx());
+            let owner = *tree
+                .owner
+                .get(&sid)
+                .unwrap_or_else(|| panic!("{sid} unowned; {}", ctx()));
+            assert!(
+                tree.cells.contains_key(&owner),
+                "owner cell of {sid} gone; {}",
+                ctx()
+            );
             let leaf = tree.leaf[&sid];
-            assert!(tree.cells[&leaf].is_leaf(), "leaf of {sid} is internal; {}", ctx());
-            assert!(tree.cells[&leaf].physical.contains(&sid), "{sid} not in its leaf; {}", ctx());
-            assert_eq!(tree.physical_leaf(rec.position), leaf, "leaf of {sid} wrong; {}", ctx());
+            assert!(
+                tree.cells[&leaf].is_leaf(),
+                "leaf of {sid} is internal; {}",
+                ctx()
+            );
+            assert!(
+                tree.cells[&leaf].physical.contains(&sid),
+                "{sid} not in its leaf; {}",
+                ctx()
+            );
+            assert_eq!(
+                tree.physical_leaf(rec.position),
+                leaf,
+                "leaf of {sid} wrong; {}",
+                ctx()
+            );
         }
     }
 
@@ -1455,8 +1565,13 @@ mod tests {
         for cell in built.index.cells() {
             assert_eq!(index.get(cell.id), Some(cell));
             let disk = Index::read_payload(&dir, cell.id).unwrap();
-            let bytes = crate::serialization::Encode::to_bytes(built.payload(cell.id));
-            let want = <Vec<Point> as crate::serialization::Decode>::from_bytes(&bytes).unwrap();
+            let bytes =
+                crate::serialization::Encode::to_bytes(built.payload(cell.id));
+            let want =
+                <Vec<Point> as crate::serialization::Decode>::from_bytes(
+                    &bytes,
+                )
+                .unwrap();
             assert_eq!(disk, want, "payload at {:?}", cell.id);
         }
 

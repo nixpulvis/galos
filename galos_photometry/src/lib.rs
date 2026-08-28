@@ -38,6 +38,11 @@ pub const PARSECS_PER_LY: f64 = 1.0 / LY_PER_PARSEC;
 /// the glow but is not drawn as itself.
 pub const EYE_LIMIT: f64 = 8.0;
 
+/// A magnitude so faint no eye or sensor reads it as anything, its flux the
+/// sky rounds to nothing. What a body with no visible light comes to — a black
+/// hole, whose temperature is zero — and the floor any darkened scan lands on.
+pub const DARK_MAGNITUDE: f64 = 40.0;
+
 /// The Sun's absolute visual magnitude, the zero the sequence is hung from.
 pub const SOLAR_ABSOLUTE_MAGNITUDE: f64 = 4.83;
 
@@ -96,9 +101,89 @@ pub fn magnitude(flux: f64) -> f64 {
 /// orders by; fed apparent ones it returns a combined apparent magnitude,
 /// which is what an unresolved pair looks like from where it is seen. It is the
 /// same sum either way. Empty in, [`None`] out: no light is not a magnitude.
-pub fn combined_magnitude(magnitudes: impl IntoIterator<Item = f64>) -> Option<f64> {
+pub fn combined_magnitude(
+    magnitudes: impl IntoIterator<Item = f64>,
+) -> Option<f64> {
     let total: f64 = magnitudes.into_iter().map(flux).sum();
     (total > 0.0).then(|| magnitude(total))
+}
+
+/// The second radiation constant `hc/k`, in metre-kelvin, the one physical
+/// constant the Planck curve still needs once its leading factor has cancelled.
+const RADIATION_C2: f64 = 1.438_776_877e-2;
+
+/// The Johnson V passband as a Gaussian: its centre and standard deviation in
+/// metres, the width taken from the band's 88-nanometre full width at half
+/// maximum. This is the band the eye's daylight response sits closest to and
+/// the one a visual magnitude is spoken in.
+const V_BAND_CENTER_M: f64 = 550e-9;
+const V_BAND_SIGMA_M: f64 = 88e-9 / 2.354_820_045_030_949_3;
+
+/// The wavelengths the V-band integral runs between, in metres, and how many
+/// samples it takes across them. The span reaches far enough into either wing
+/// that the Gaussian has fallen to nothing, and the count is well past where
+/// the result stops moving — the ratio it is used in cancels what little error
+/// the trapezoid leaves in any case.
+const V_BAND_LO_M: f64 = 350e-9;
+const V_BAND_HI_M: f64 = 800e-9;
+const V_BAND_SAMPLES: usize = 129;
+
+/// The V band's slice of a blackbody's Planck curve at `temperature_k`, in
+/// units where the curve's leading `2hc^2` is dropped since only ratios of this
+/// are ever taken. The Planck radiance `1 / (λ^5 (e^(c2/λT) − 1))` is weighted
+/// by the Johnson V response and summed across the band by the trapezoid rule.
+fn v_band_shape(temperature_k: f64) -> f64 {
+    let step = (V_BAND_HI_M - V_BAND_LO_M) / (V_BAND_SAMPLES - 1) as f64;
+    let mut sum = 0.0;
+    for i in 0..V_BAND_SAMPLES {
+        let lambda = V_BAND_LO_M + step * i as f64;
+        let response =
+            (-0.5 * ((lambda - V_BAND_CENTER_M) / V_BAND_SIGMA_M).powi(2)).exp();
+        let planck = 1.0
+            / (lambda.powi(5)
+                * (RADIATION_C2 / (lambda * temperature_k)).exp_m1());
+        let end = i == 0 || i == V_BAND_SAMPLES - 1;
+        sum += if end { 0.5 } else { 1.0 } * response * planck;
+    }
+    sum * step
+}
+
+/// The Sun's [`v_band_shape`], computed once and kept. It is the zero the
+/// correction hangs from: the Sun loses nothing crossing into the visible, so
+/// every other star is weighed against it.
+static SOLAR_V_BAND_SHAPE: std::sync::LazyLock<f64> =
+    std::sync::LazyLock::new(|| v_band_shape(SOLAR_TEMPERATURE));
+
+/// The visual absolute magnitude of a blackbody whose *bolometric* absolute
+/// magnitude is `bolometric` and whose surface is `temperature_k` kelvin.
+///
+/// Elite's scanned magnitude is bolometric: the whole of a star's output,
+/// `4πR²σT⁴`, turned into a magnitude as though all of it were visible. The eye
+/// and the map see only the V band, and the fraction of a blackbody's light
+/// that lands there peaks near the Sun's heat and falls away to either side — a
+/// hot O star pours most of its into the ultraviolet, a cool T dwarf into the
+/// infrared — so both come out fainter in the visible than their total says.
+/// The correction is `−2.5 log₁₀` of that fraction against the Sun's, which
+/// leaves a Sun-like star untouched, dims the extremes, and sends a white dwarf
+/// down only as far as its own heat warrants — keeping the star-to-star
+/// variation a single class figure would flatten.
+///
+/// It carries the compact remnants with no special case of their own. A neutron
+/// star's millions of kelvin leave all but nothing in the visible, so the
+/// correction runs to tens of magnitudes and it drops below any eye. A black
+/// hole has no temperature and no light at all: zero or below returns
+/// [`DARK_MAGNITUDE`], the bolometric figure a scan carries for it being a
+/// placeholder with nothing behind it.
+pub fn visual_magnitude(bolometric: f64, temperature_k: f64) -> f64 {
+    if temperature_k <= 0.0 {
+        return DARK_MAGNITUDE;
+    }
+    // The visible fraction is f_V(T)/f_bol(T), and f_bol ∝ T⁴, so relative to
+    // the Sun it is (shape(T)/T⁴) over the Sun's same ratio. The magnitude is
+    // dimmed by how much smaller than one that comes to.
+    let fraction = (v_band_shape(temperature_k) / temperature_k.powi(4))
+        / (*SOLAR_V_BAND_SHAPE / SOLAR_TEMPERATURE.powi(4));
+    bolometric - 2.5 * fraction.log10()
 }
 
 /// The linear-RGB colour of a blackbody at `temperature_k` kelvin.
@@ -129,23 +214,18 @@ fn planckian_locus(temperature_k: f64) -> (f64, f64) {
     let (t2, t3) = (t * t, t * t * t);
 
     let x = if t < 4000.0 {
-        -0.266_123_9e9 / t3 - 0.234_358_9e6 / t2 + 0.877_695_6e3 / t
-            + 0.179_910
+        -0.266_123_9e9 / t3 - 0.234_358_9e6 / t2 + 0.877_695_6e3 / t + 0.179_910
     } else {
-        -3.025_846_9e9 / t3 + 2.107_037_9e6 / t2 + 0.222_634_7e3 / t
-            + 0.240_390
+        -3.025_846_9e9 / t3 + 2.107_037_9e6 / t2 + 0.222_634_7e3 / t + 0.240_390
     };
     let (x2, x3) = (x * x, x * x * x);
 
     let y = if t < 2222.0 {
-        -1.106_381_4 * x3 - 1.348_110_20 * x2 + 2.185_558_32 * x
-            - 0.202_196_83
+        -1.106_381_4 * x3 - 1.348_110_20 * x2 + 2.185_558_32 * x - 0.202_196_83
     } else if t < 4000.0 {
-        -0.954_947_6 * x3 - 1.374_185_93 * x2 + 2.091_370_15 * x
-            - 0.167_488_67
+        -0.954_947_6 * x3 - 1.374_185_93 * x2 + 2.091_370_15 * x - 0.167_488_67
     } else {
-        3.081_758_0 * x3 - 5.873_386_70 * x2 + 3.751_129_97 * x
-            - 0.370_014_83
+        3.081_758_0 * x3 - 5.873_386_70 * x2 + 3.751_129_97 * x - 0.370_014_83
     };
 
     (x, y)
@@ -238,7 +318,7 @@ pub fn class_light(class: &str) -> ClassLight {
     if c == "H" || c.starts_with("SUPERMASSIVE") {
         // Black holes give off no light. A magnitude this faint is flux the
         // eye and the sensor both read as nothing.
-        return ClassLight::new(40.0, 0.0);
+        return ClassLight::new(DARK_MAGNITUDE, 0.0);
     }
     if c == "N" {
         // A neutron star's thermal output is almost all in X-rays; what leaks
@@ -384,7 +464,10 @@ mod tests {
         for t in [1000.0, 3000.0, 5772.0, 10000.0, 30000.0] {
             let c = blackbody_color(t);
             assert!(c.iter().all(|&ch| (0.0..=1.0).contains(&ch)));
-            assert!(close(c.iter().cloned().fold(0.0f32, f32::max) as f64, 1.0));
+            assert!(close(
+                c.iter().cloned().fold(0.0f32, f32::max) as f64,
+                1.0
+            ));
         }
     }
 
@@ -491,5 +574,64 @@ mod tests {
     fn an_unknown_class_defaults() {
         assert_eq!(class_light("ZZZ"), DEFAULT_CLASS_LIGHT);
         assert_eq!(class_light(""), DEFAULT_CLASS_LIGHT);
+    }
+
+    /// The Sun loses nothing crossing into the visible: the V band is where its
+    /// light already is, so its visual magnitude is its bolometric one.
+    #[test]
+    fn the_sun_keeps_its_magnitude_in_the_visible() {
+        assert!(close(
+            visual_magnitude(SOLAR_ABSOLUTE_MAGNITUDE, SOLAR_TEMPERATURE),
+            SOLAR_ABSOLUTE_MAGNITUDE,
+        ));
+    }
+
+    /// A blackbody hotter or cooler than the Sun spills more of its light out
+    /// of the visible band, so it is fainter there than its total output says,
+    /// and the further from the Sun's heat the fainter it grows.
+    #[test]
+    fn the_visible_band_dims_both_extremes() {
+        let sun = visual_magnitude(0.0, SOLAR_TEMPERATURE);
+        let hot = visual_magnitude(0.0, 40_000.0);
+        let hotter = visual_magnitude(0.0, 100_000.0);
+        let cool = visual_magnitude(0.0, 3000.0);
+        let cooler = visual_magnitude(0.0, 1500.0);
+        assert!(hot > sun && hotter > hot, "a hotter star dims further");
+        assert!(cool > sun && cooler > cool, "a cooler star dims further");
+    }
+
+    /// A neutron star's heat is almost all in X-rays, so next to none of it
+    /// reaches the visible: a scan near naked-eye brightness corrects to tens
+    /// of magnitudes below any eye.
+    #[test]
+    fn a_neutron_star_all_but_vanishes_in_the_visible() {
+        let corrected = visual_magnitude(5.0, 5_950_000.0);
+        assert!(
+            corrected > EYE_LIMIT + 10.0,
+            "a neutron star is no naked-eye star: {corrected}"
+        );
+    }
+
+    /// A black hole has no temperature and no light: whatever placeholder
+    /// magnitude a scan carries, it comes to the dark figure and no flux.
+    #[test]
+    fn a_black_hole_has_no_visible_light() {
+        assert_eq!(visual_magnitude(20.0, 0.0), DARK_MAGNITUDE);
+        assert!(flux(visual_magnitude(20.0, 0.0)) < 1e-10);
+    }
+
+    /// A white dwarf keeps the brightness its scan gives, shifted only a little
+    /// by its heat, so one white dwarf still differs from another — the
+    /// variation a flat class figure would erase.
+    #[test]
+    fn a_white_dwarf_keeps_its_scanned_variation() {
+        // Two white dwarfs the game scans at one bolometric magnitude but
+        // different heat stay distinct, the hotter the fainter in the visible.
+        let cool = visual_magnitude(12.0, 7000.0);
+        let hot = visual_magnitude(12.0, 16_000.0);
+        assert!(hot > cool, "the hotter white dwarf is fainter in V");
+        // Neither is thrown far from its scanned figure.
+        assert!((cool - 12.0).abs() < 0.5);
+        assert!((hot - 12.0).abs() < 1.5);
     }
 }

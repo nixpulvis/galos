@@ -23,8 +23,8 @@
 
 use crate::geometry::CellId;
 use crate::moments::Moments;
+use crate::serialization::{Decode, Encode, FixedCodec, record};
 use galos_photometry::flux;
-use crate::serialization::{FixedCodec, Decode, Encode, record};
 
 /// Temperature buckets the glow keeps its colour structure in: a warm bulge
 /// and blue arms without storing a temperature per star.
@@ -33,6 +33,14 @@ pub const TEMP_BUCKETS: usize = 6;
 /// Age buckets for the Recency axis, which a prefix sum answers any span from.
 pub const AGE_BUCKETS: usize = 8;
 
+/// The temperature range the buckets span, log-spaced between them.
+///
+/// The coolest star worth colouring and the hottest whose blue has stopped
+/// moving; [`temp_bucket`] bins the range and [`bucket_temperature`] names a
+/// point back out of a bucket.
+const TEMP_LO: f64 = 2000.0;
+const TEMP_HI: f64 = 50000.0;
+
 /// Which temperature bucket a star falls in, log-spaced across the stellar
 /// range and clamped at both ends.
 ///
@@ -40,11 +48,21 @@ pub const AGE_BUCKETS: usize = 8;
 /// stopped moving; between them the buckets are even in log temperature, which
 /// is where colour is even.
 pub fn temp_bucket(temperature_k: f64) -> usize {
-    const LO: f64 = 2000.0;
-    const HI: f64 = 50000.0;
-    let t = temperature_k.clamp(LO, HI);
-    let f = (t.ln() - LO.ln()) / (HI.ln() - LO.ln());
+    let t = temperature_k.clamp(TEMP_LO, TEMP_HI);
+    let f = (t.ln() - TEMP_LO.ln()) / (TEMP_HI.ln() - TEMP_LO.ln());
     ((f * TEMP_BUCKETS as f64) as usize).min(TEMP_BUCKETS - 1)
+}
+
+/// A representative temperature for a bucket, kelvin: the inverse of
+/// [`temp_bucket`].
+///
+/// The geometric centre of the bucket's log-temperature span, so
+/// `temp_bucket(bucket_temperature(b)) == b` for every bucket, and the colour a
+/// bucket is drawn in is the blackbody tint at that centre.
+pub fn bucket_temperature(bucket: usize) -> f64 {
+    let bucket = bucket.min(TEMP_BUCKETS - 1);
+    let f = (bucket as f64 + 0.5) / TEMP_BUCKETS as f64;
+    (TEMP_LO.ln() + f * (TEMP_HI.ln() - TEMP_LO.ln())).exp()
 }
 
 /// The totals a cell carries over its whole subtree.
@@ -345,6 +363,20 @@ mod tests {
             let b = temp_bucket(k as f64);
             assert!(b >= last);
             last = b;
+        }
+    }
+
+    /// A bucket's representative temperature falls back in that same bucket, so
+    /// the colour drawn for a bucket is the tint of a star that would land in
+    /// it, and the centres climb with the bucket.
+    #[test]
+    fn bucket_temperature_round_trips() {
+        let mut last = f64::NEG_INFINITY;
+        for bucket in 0..TEMP_BUCKETS {
+            let t = bucket_temperature(bucket);
+            assert_eq!(temp_bucket(t), bucket, "bucket {bucket} centre");
+            assert!(t > last, "centres climb with the bucket");
+            last = t;
         }
     }
 

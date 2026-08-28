@@ -9,7 +9,9 @@ use elite_journal::{
     Government,
     system::Security,
 };
+use galos_index::aggregate::{bucket_temperature, temp_bucket};
 use galos_index::meta::{Economies, NameEntry};
+use galos_photometry::DEFAULT_CLASS_LIGHT;
 use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
@@ -119,6 +121,19 @@ pub struct System {
     /// asked. Both are the map unable to say how far the system reaches, and
     /// both are drawn at [`bodies::STAND_IN`].
     reach: Option<f32>,
+    /// The star's combined absolute magnitude, for the realistic view
+    ///
+    /// The index bakes a system's stars down to one absolute magnitude and
+    /// carries it on the payload point; kept here so the realistic view can
+    /// work out how bright the star looks from where the camera stands. [`None`]
+    /// where the system was built from a path with no payload — a route's
+    /// stops, a searched system flown to — and drawn at the default class then.
+    absolute_magnitude: Option<f32>,
+    /// Which blackbody temperature bucket the star's tint falls in
+    ///
+    /// Already binned by the index, so the client needs no per-star
+    /// temperature. [`None`] alongside [`Self::absolute_magnitude`].
+    temp_bucket: Option<u8>,
     updated_at: DateTime<Utc>,
 }
 
@@ -148,6 +163,38 @@ impl System {
     /// the star rather than a mark around the system.
     pub fn reach(&self) -> f32 {
         self.reach.unwrap_or_default().max(bodies::STAND_IN)
+    }
+
+    /// The absolute magnitude the realistic view reads the star's brightness
+    /// from, at the default class where the index carried none.
+    pub fn absolute_magnitude(&self) -> f64 {
+        self.absolute_magnitude
+            .map(f64::from)
+            .unwrap_or(DEFAULT_CLASS_LIGHT.absolute_magnitude)
+    }
+
+    /// Which temperature bucket the star's blackbody tint falls in, at the
+    /// default class's bucket where the index carried none.
+    pub fn temp_bucket(&self) -> usize {
+        self.temp_bucket
+            .map(usize::from)
+            .unwrap_or_else(|| temp_bucket(DEFAULT_CLASS_LIGHT.temperature))
+    }
+
+    /// The combined absolute magnitude the index baked for this system, if it
+    /// was built from a payload point rather than a name lookup
+    ///
+    /// The raw figure the realistic view reads, [`None`] rather than the
+    /// default class, so a panel can say what the bake actually assigned and a
+    /// too-bright star can be told from a merely unscanned one.
+    pub fn baked_magnitude(&self) -> Option<f32> {
+        self.absolute_magnitude
+    }
+
+    /// A representative temperature for the star's tint bucket, if one was
+    /// baked, kelvin.
+    pub fn baked_temperature(&self) -> Option<f64> {
+        self.temp_bucket.map(|bucket| bucket_temperature(bucket as usize))
     }
 }
 
@@ -658,6 +705,8 @@ impl From<&NameEntry> for System {
             body_count: None,
             non_body_count: None,
             reach: None,
+            absolute_magnitude: None,
+            temp_bucket: None,
             updated_at: Utc::now(),
         }
     }
@@ -687,6 +736,8 @@ pub(crate) mod tests {
             body_count: None,
             non_body_count: None,
             reach: None,
+            absolute_magnitude: None,
+            temp_bucket: None,
             updated_at: DateTime::UNIX_EPOCH,
         }
     }

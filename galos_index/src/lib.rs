@@ -15,17 +15,17 @@
 //! Pure and dependency-light on purpose. Physics is [`galos_photometry`];
 //! nothing here knows the database or how the galaxy is drawn.
 
-pub mod moments;
 pub mod aggregate;
-pub mod geometry;
-pub mod walk;
 pub mod cache;
 pub mod checkpoint;
+pub mod geometry;
 pub mod meta;
+pub mod moments;
 pub mod serialization;
 pub mod source;
 pub mod store;
 pub mod tree;
+pub mod walk;
 
 // The core API, re-exported at the crate root so a caller writes
 // `galos_index::Tree` rather than reaching through the modules. The modules
@@ -34,12 +34,15 @@ pub use aggregate::{Aggregate, Cell};
 pub use cache::{Point, Resident, ResidentCell};
 pub use checkpoint::Checkpoint;
 pub use geometry::{Aabb, CellId};
-pub use moments::Moments;
-pub use tree::{BuildParams, Snapshot, Dirtied, System, Tree};
-pub use walk::{Index, Mode, Needed, SplatRef, View, resolvable_count};
-pub use serialization::{Codec, Decode, Encode, FixedCodec};
 pub use meta::{
     Barycenter, Body, Economies, Faction, NameEntry, Parent, PopulatedSystem,
     Star, Surface, SystemBodies,
 };
+pub use moments::Moments;
+pub use serialization::{Codec, Decode, Encode, FixedCodec};
 pub use source::{FsSource, Source};
+pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
+pub use walk::{
+    Index, MARK_SEPARATION_PX, Mode, Needed, STAR_SEPARATION_PX, SplatRef,
+    View, resolvable_count,
+};

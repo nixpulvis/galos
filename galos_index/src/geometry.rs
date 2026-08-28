@@ -191,7 +191,6 @@ impl CellId {
         let (x, y, z) = morton_decode(key);
         CellId { level, x, y, z }
     }
-
 }
 
 impl Encode for CellId {

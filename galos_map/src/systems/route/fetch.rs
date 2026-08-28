@@ -47,7 +47,12 @@ pub fn fetch_route(
                 .map(|hops| {
                     hops.into_iter()
                         .map(|(address, position)| {
-                            let raw = RawSystem { address, position };
+                            let raw = RawSystem {
+                                address,
+                                position,
+                                magnitude: None,
+                                temp_bucket: None,
+                            };
                             build_system(&raw, &populated, &names)
                         })
                         .collect()
