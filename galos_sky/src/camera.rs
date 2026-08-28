@@ -40,7 +40,7 @@
 
 use crate::image::{Image, Mark};
 use galos_catalog::Star;
-use galos_photometry::psf::{Moffat, STELLAR_BETA};
+use galos_photometry::psf::{Profile, Psf};
 use galos_photometry::{
     apparent_magnitude_ly, blackbody_color, relative_exposure,
 };
@@ -78,6 +78,8 @@ pub struct Camera {
     pub exposure: f64,
     /// The point-spread function's width, pixels.
     pub seeing: f64,
+    /// Which point-spread profile the light lands as; see [`Profile`].
+    pub profile: Profile,
 }
 
 impl Camera {
@@ -98,6 +100,7 @@ impl Camera {
             height: height.max(1),
             exposure: 6.0,
             seeing: 1.8,
+            profile: Profile::default(),
         }
     }
 
@@ -144,6 +147,12 @@ impl Camera {
     /// Set the point-spread function's width, in pixels.
     pub fn with_seeing(mut self, pixels: f64) -> Camera {
         self.seeing = pixels.max(1e-3);
+        self
+    }
+
+    /// Set the point-spread profile: a Moffat with its wings, or a Gaussian.
+    pub fn with_profile(mut self, profile: Profile) -> Camera {
+        self.profile = profile;
         self
     }
 
@@ -267,7 +276,7 @@ impl Camera {
     /// be used to check the map's pruning.
     pub fn render(&self, stars: &[Star]) -> Image {
         let mut image = Image::new(self.width, self.height);
-        let psf = Moffat::new(self.seeing, STELLAR_BETA);
+        let psf = Psf::new(self.profile, self.seeing);
 
         for star in stars {
             let Some((cx, cy, distance)) = self.project(star.position) else {
@@ -654,5 +663,31 @@ mod tests {
         // Just past the border, close enough that its ring still shows.
         let edge = Mark::new(-2.0, 50.0, 5.0);
         assert!(camera.frames(&edge));
+    }
+
+    /// The profile reaches the picture: the same star drawn as a Moffat and as
+    /// a Gaussian is not the same picture. Both conserve the light, so the total
+    /// is near enough alike; what differs is where it sits — the Gaussian holds
+    /// more of it in a tighter core, the Moffat spreads it into wings — so the
+    /// peak pixel differs. It is the check that `with_profile` is honoured.
+    #[test]
+    fn the_profile_reaches_the_picture() {
+        let stars = bright();
+        let sirius = named(&stars, "Sirius");
+        let look = |profile| {
+            Camera::new(200, 200)
+                .looking_from([0.0; 3], sirius.position)
+                .with_fov_degrees(5.0)
+                .with_exposure(4.0)
+                .with_profile(profile)
+                .render(&[sirius.clone()])
+        };
+        let moffat = look(Profile::Moffat);
+        let gaussian = look(Profile::Gaussian);
+        assert!(moffat != gaussian, "the profile did not reach the render");
+        assert!(
+            (moffat.peak() - gaussian.peak()).abs() > 1e-6,
+            "the two profiles drew the same peak"
+        );
     }
 }

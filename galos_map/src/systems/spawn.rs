@@ -36,7 +36,7 @@ use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_index::aggregate::{TEMP_BUCKETS, bucket_temperature};
 use galos_index::meta::Economies;
-use galos_photometry::psf::{Moffat, STELLAR_BETA};
+use galos_photometry::psf::{Profile, Psf};
 use galos_photometry::{apparent_magnitude_ly, blackbody_color, flux};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -48,6 +48,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(ColorBy::Allegiance);
     app.insert_resource(ShowNames(true));
     app.insert_resource(StarExposure::default());
+    app.insert_resource(StarProfile::default());
 
     app.add_systems(Startup, init_materials);
     app.init_resource::<PendingSpawns>();
@@ -61,6 +62,9 @@ pub fn plugin(app: &mut App) {
     // Repaints the star palette when the exposure moves; guarded on the change
     // inside, so a resting frame does nothing.
     app.add_systems(Update, reexpose.in_set(MapSet::Populate));
+    // Rebakes the star texture when the profile changes; guarded inside, like
+    // `reexpose`, so a resting frame does nothing.
+    app.add_systems(Update, reprofile.in_set(MapSet::Populate));
     // One view draws at a time, so these never run in the same frame; the
     // scheduler cannot see that from the run conditions, so they are marked
     // ambiguous as `scale`'s sizing pair is. `shells` also puts a star back on
@@ -317,13 +321,13 @@ const PSF_TEXELS: u32 = 128;
 /// [`super::scale::size_photometrically`]), so brightness reads as size with no
 /// disc ever drawn. Linear rather than sRGB, so it multiplies the emissive
 /// straight; the channels carry the shape and the tint is the material's.
-fn star_psf() -> Image {
+fn star_psf(profile: Profile) -> Image {
     let n = PSF_TEXELS;
     let centre = (n as f32 - 1.) / 2.;
     // A compact core: a tenth of its peak a fifth of the way out, all but gone
     // by the edge.
     let alpha = n as f32 / 16.;
-    let psf = Moffat::new(alpha as f64, STELLAR_BETA);
+    let psf = Psf::new(profile, alpha as f64);
     let shape = |r: f32| psf.shape(r as f64) as f32;
     // Subtracted so the corner reaches exactly zero and no square edge shows.
     let floor = shape(centre);
@@ -356,7 +360,20 @@ fn star_psf() -> Image {
 #[derive(Resource)]
 pub(crate) struct StarSprite {
     pub quad: Handle<Mesh>,
+    /// The baked point-spread texture every star's sprite samples;
+    /// [`reprofile`] rewrites it when the profile changes.
+    pub psf: Handle<Image>,
 }
+
+/// Which point-spread profile the realistic view's stars wear
+///
+/// The shape [`star_psf`] bakes into the sprite texture — a Moffat with its
+/// wings or a tighter Gaussian; see [`galos_photometry::psf::Profile`]. The map
+/// sizes a star by [`super::scale::psf_radius`]'s own law either way, so this
+/// changes the halo a star wears, not how large it draws. [`reprofile`] rebakes
+/// the texture when it changes.
+#[derive(Resource, Default)]
+pub struct StarProfile(pub Profile);
 
 /// The colors a star may be drawn in
 ///
@@ -1390,6 +1407,7 @@ fn init_materials(
     mut images: ResMut<Assets<Image>>,
     dim: Res<DimTo>,
     exposure: Res<StarExposure>,
+    star_profile: Res<StarProfile>,
     mut commands: Commands,
 ) {
     let mut set = |strength: f32| {
@@ -1423,7 +1441,7 @@ fn init_materials(
     // handle for its colour and how bright it looks. Baked at the current
     // exposure; [`reexpose`] repaints on a move.
     let factor = exposure.factor();
-    let psf = images.add(star_psf());
+    let psf = images.add(star_psf(star_profile.0));
     let mut photometric = Vec::with_capacity(TEMP_BUCKETS * (MAG_STEPS + 1));
     for bucket in 0..TEMP_BUCKETS {
         for step in 0..=MAG_STEPS {
@@ -1437,6 +1455,7 @@ fn init_materials(
     }
     commands.insert_resource(StarSprite {
         quad: meshes.add(Rectangle::new(1., 1.)),
+        psf,
     });
     commands.insert_resource(SystemMaterials {
         bright,
@@ -1468,6 +1487,28 @@ fn reexpose(
         if let Some(mut material) = assets.get_mut(handle) {
             material.emissive = photometric_emissive(bucket, step, factor);
         }
+    }
+}
+
+/// Rebake the star point spread when the profile changes
+///
+/// The sprite's texture is the profile's shape ([`star_psf`]); a change to the
+/// profile is a change to that one image, and rewriting it in place repaints
+/// every star drawn through it at once, as [`reexpose`] does for the palette.
+/// Guarded on the change, since baking and re-uploading the texture is not free.
+fn reprofile(
+    profile: Res<StarProfile>,
+    sprite: Option<Res<StarSprite>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if !profile.is_changed() {
+        return;
+    }
+    let Some(sprite) = sprite else {
+        return;
+    };
+    if let Some(mut image) = images.get_mut(&sprite.psf) {
+        *image = star_psf(profile.0);
     }
 }
 
@@ -1738,6 +1779,7 @@ mod tests {
         app.init_resource::<Repaints>();
         app.insert_resource(ColorBy::Allegiance);
         app.insert_resource(StarExposure::default());
+        app.insert_resource(StarProfile::default());
         app.add_systems(Startup, init_materials);
         app.add_systems(Update, (shells, count_repaints).chain());
         app
@@ -1806,5 +1848,48 @@ mod tests {
             repaints(&app) > settled,
             "left a dimmed shell at full strength"
         );
+    }
+
+    /// Switching the profile rebakes the one star texture in place
+    ///
+    /// The sprite's point spread is a shared image; changing the profile has to
+    /// rewrite it so every star repaints at once, rather than leaving the sky on
+    /// the shape it was baked with. The two profiles draw different textures, so
+    /// the bytes must change.
+    #[test]
+    fn switching_the_profile_rebakes_the_star_texture() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<Image>>();
+        app.init_resource::<DimTo>();
+        app.insert_resource(ColorBy::Allegiance);
+        app.insert_resource(StarExposure::default());
+        app.insert_resource(StarProfile(Profile::Moffat));
+        app.add_systems(Startup, init_materials);
+        app.add_systems(Update, reprofile);
+        app.update();
+
+        let handle = app.world().resource::<StarSprite>().psf.clone();
+        let moffat = app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&handle)
+            .expect("a baked star texture")
+            .data
+            .clone();
+
+        app.world_mut().resource_mut::<StarProfile>().0 = Profile::Gaussian;
+        app.update();
+        let gaussian = app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&handle)
+            .expect("a rebaked star texture")
+            .data
+            .clone();
+
+        assert_ne!(moffat, gaussian, "the profile switch did not rebake");
     }
 }
