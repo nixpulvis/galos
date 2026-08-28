@@ -16,7 +16,7 @@ rust-version.workspace = true
 # renderer, and belongs in `galos_index`'s own tests.
 [dependencies]
 galos_photometry = { path = "../galos_photometry" }
-galos_catalog = { path = "../galos_catalog" }
+galos_catalog = { path = "../galos_catalog", default-features = false }
 png = "0.18"
 clap = { version = "4", features = ["derive"], optional = true }
 

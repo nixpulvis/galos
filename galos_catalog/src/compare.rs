@@ -37,14 +37,14 @@
 //!
 //! Both sides of it are the length of a **position**, including the catalog's,
 //! rather than the catalog's own distance column. The two are not quite the
-//! same number: HYG derives its coordinates from its distance and rounds both,
-//! so across 109,400 stars they disagree by a median of 2e-9 and by as much as
-//! 1.5e-3 in the worst row. That is far below anything a comparison between two
-//! datasets is looking for, but it is not zero, and taking one side's distance
-//! from one column and the other's from a position would put the catalog's own
-//! rounding into every row of the report as though it were a disagreement with
-//! the other dataset. Position against position; the noise floor is then the
-//! other dataset's alone.
+//! same number — across HYG's 109,400 stars they disagree by a median of 2e-9,
+//! a 99th percentile of 1.1e-5 and as much as 1.5e-3 in the worst row, which
+//! `galos-catalog consistency` will print. Far below anything a comparison
+//! between two datasets is looking for, but not zero, and taking one side's
+//! distance from a column and the other's from a position would put the
+//! catalog's own inconsistency into every row of the report as though it were a
+//! disagreement with the other dataset. Position against position; the noise
+//! floor is then the other dataset's alone.
 
 use crate::Star;
 

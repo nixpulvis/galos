@@ -4067,6 +4067,7 @@ dependencies = [
 name = "galos_catalog"
 version = "0.0.1"
 dependencies = [
+ "clap 4.6.6",
  "csv",
  "galos_index",
  "galos_photometry",
