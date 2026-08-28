@@ -85,7 +85,7 @@ fn main() {
         eprintln!("cannot read {}: {e}", cli.catalog.display());
         exit(1);
     });
-    let hyg::Catalog { stars, unplaced, skipped } = catalog;
+    let galos_catalog::Catalog { stars, unplaced, skipped, .. } = catalog;
     eprintln!(
         "{} stars, {} skipped ({} with no parallax, {} at the origin, {} unreadable)",
         stars.len(),

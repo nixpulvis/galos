@@ -432,6 +432,51 @@ Two, not one, and the second is the one that changes the shape of this.
 
 ### `galos_catalog`
 
+Shaped for more than one survey, since more than one is coming. [`Star`],
+`Unplaced`, `Catalog` and `Skipped` live at the crate root rather than inside
+`hyg`, because none of them is about HYG: they are what *any* survey produces —
+stars with a place, stars with only a bearing, and rows that could not be read.
+A second source is a new module with its own `read` returning the same
+`Catalog`, and nothing downstream changes.
+
+What a second source does need is a `Source`, because two catalogs both number
+their rows from one. It is the same collision Elite's addresses have with a
+catalog's ids and it is solved the same way: a six-bit namespace under the
+catalog tag, fifty-six bits left for the id, so HYG's star 5 and some later
+survey's star 5 are different systems in the tree. A star therefore knows where
+it came from, and `Star::system_id` folds that in. Fifty-six bits is past
+anything HYG carries and short of Gaia's `source_id`, which packs a sky position
+into sixty-three — that survey renumbers on the way in, and the debug assertion
+says so rather than silently overwriting the namespace.
+
+Its own command is `galos-catalog`: `info` for what a catalog holds and could
+not place, `consistency` for how far it is from agreeing with itself. Comparing
+against Elite stays `galos-db catalog`, because it needs a database and that is
+where the database lives — the same split `galos-db index` already sits on,
+where the tree belongs to `galos_index` and the build belongs to whoever can
+read the rows.
+
+#### The noise floor
+
+`consistency` measures the one thing that says which findings are real. A survey
+records a distance and also the coordinates it computed from that distance, so
+the length of the second should be the first, and what is left over is the floor
+under every comparison this crate can make. A cross-check reporting a
+disagreement smaller than this is reporting the catalog's own arithmetic back at
+itself.
+
+For HYG: median 1.9e-9, 99th percentile 1.1e-5, worst 1.5e-3. So a tenth of a
+per cent is signal, and the fifteen per cent between Hipparcos and the modern
+Pleiades is a mountain above it.
+
+The worst rows say what causes them, and it is not rounding — HYG writes six
+decimals of a parsec, a part in ten million for a nearby star, and the worst
+rows are out by a part in a thousand. They are conspicuously *nearby* stars and
+close pairs: Ross 248, EZ Aqr, two components sharing a distance at 8.57 light
+years. That is a distance and a set of coordinates computed from **different
+parallaxes** — one column revised, or one taken from the system and the other
+from the component.
+
 **A catalog is a source of `System`s, exactly as the ED dataset is.** That is
 the role, and it is the same role `galos_db/src/index.rs` plays: read my own
 data, hand back `Vec<galos_index::System>`, know nothing about the tree. Seen
