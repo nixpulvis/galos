@@ -6,82 +6,107 @@
 //! same reason [`relative_exposure`](crate::relative_exposure) does: it decides
 //! **how much light lands and where**, which is the quantity two renderers of
 //! the same sky have to agree on exactly. A rasterizer and a shader that
-//! normalize a Gaussian differently put different amounts of flux in the same
+//! normalize a profile differently put different amounts of flux in the same
 //! star, and a comparison between their pictures then measures the gap between
 //! two instruments rather than between two renderings.
 //!
 //! The seam is drawn there and not at the crate boundary. What a renderer
-//! keeps is how it *deposits* the profile — a loop over pixels, or a quad and
-//! a fragment shader — and how it compresses the result for a display. What it
-//! may not keep is its own idea of the profile's shape or its normalization.
+//! keeps is how it *deposits* the profile — a loop over pixels, or a quad and a
+//! fragment shader, or a texture baked once from [`Moffat::shape`] — and how it
+//! compresses the result for a display. What it may not keep is its own idea of
+//! the profile's shape or its normalization.
 //!
-//! A Gaussian here, the standard approximation to atmospheric seeing and close
-//! enough to a defocused optic.
+//! A Moffat profile here, `(1 + (r/α)²)^(−β)`: a bright core with power-law
+//! wings, the standard fit to a seeing-limited star. Closer to a real star
+//! than a Gaussian, which falls off too fast to have the halo a bright star has.
 //!
 //! # Why bright stars are bigger
 //!
 //! Nothing here scales a radius by brightness. The radius falls out of the
-//! energy: a Gaussian's wings fall off at a fixed rate, so a star carrying a
-//! thousand times the energy has wings that stay above a floor about
-//! `sqrt(2*ln(1000))` sigmas further out. Sirius draws as a disc and a
-//! magnitude-six star as a dot for the same reason they look that way through
-//! a telescope, rather than because a table said so.
+//! energy: the wings fall off at a fixed rate, so a star carrying more energy
+//! has wings that stay above a floor further out. Sirius draws as a disc and a
+//! magnitude-six star as a dot for the same reason they look that way through a
+//! telescope, rather than because a table said so. The Moffat's wings are
+//! heavier than a Gaussian's — the radius grows as a power of the energy rather
+//! than the square root of its log — which is the halo a bright star really has,
+//! and the reason [`MAX_RADIUS`] is a guard rather than a formality.
+
+/// The wing index `β` of the stellar point spread, shared so both renderers
+/// wear one profile.
+///
+/// The `β` of `(1 + (r/α)²)^(−β)`: how heavy the wings are, lower spreading
+/// more of a bright star's light into its halo. Two is the usual fit to a
+/// seeing-limited star, and keeps the disc's energy finite (`β > 1`), which is
+/// what lets [`Moffat::peak`] conserve it.
+pub const STELLAR_BETA: f64 = 2.0;
 
 /// The largest radius a single star may spread over, in the PSF's own units.
 ///
-/// A cap on cost rather than on physics, and one that rarely binds: a
-/// Gaussian's radius grows as the square root of the log of its energy, so the
-/// disc is nearly self-limiting. At a width of two pixels even `1e30` units of
-/// energy reaches only twenty-five, and no representable `f64` reaches this cap
-/// at all.
-///
-/// It binds where the PSF is wide. At a width of twenty pixels a bright star
-/// passes it easily, and without it one overexposed star would cost more than
-/// the rest of the catalog together — a loop over pixels and a shader's quad
-/// alike.
+/// A cap on cost rather than on physics. The Moffat's radius grows as a power
+/// of the energy — `(peak/floor)^(1/(2β))` in units of `α` — so unlike a
+/// Gaussian it is not self-limiting, and one pathologically bright star over a
+/// shallow floor would draw an unbounded disc without this. It does not bind
+/// for real stars at ordinary settings; it is the guard that keeps a single
+/// overexposed source from costing more than the rest of the catalog together,
+/// a loop over pixels and a shader's quad alike.
 pub const MAX_RADIUS: f64 = 96.0;
 
-/// A Gaussian point-spread function of a given width.
+/// A Moffat point-spread function: a core of width `alpha` and wings of index
+/// `beta`.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Gaussian {
-    /// The standard deviation, in whatever unit the caller measures its image
-    /// in — pixels, for both renderers here. A star's disc visibly ends at
-    /// about three of these.
-    pub sigma: f64,
+pub struct Moffat {
+    /// The core width `α`, in whatever unit the caller measures its image in —
+    /// pixels, for the renderers here. The profile is at a quarter of its peak
+    /// about `α` out, and its wings carry on well past that.
+    pub alpha: f64,
+    /// The wing index `β`; see [`STELLAR_BETA`]. Held above one so the disc
+    /// holds finite energy.
+    pub beta: f64,
 }
 
-impl Gaussian {
-    /// A PSF of the given width.
-    pub fn new(sigma: f64) -> Gaussian {
-        Gaussian { sigma: sigma.max(1e-3) }
+impl Moffat {
+    /// A PSF of the given core width and wing index.
+    pub fn new(alpha: f64, beta: f64) -> Moffat {
+        Moffat { alpha: alpha.max(1e-3), beta: beta.max(1.0 + 1e-6) }
+    }
+
+    /// The profile's shape, normalized to unit peak: one at the centre, falling
+    /// away to nothing in the wings.
+    ///
+    /// The shape alone, with no energy in it — what a renderer bakes into a
+    /// texture or evaluates in a shader. [`at`](Self::at) is this times the
+    /// [`peak`](Self::peak) the energy comes to, and is where the shared
+    /// normalization enters; this carries the profile's form and nothing else.
+    pub fn shape(&self, distance: f64) -> f64 {
+        let s = distance / self.alpha;
+        (1.0 + s * s).powf(-self.beta)
     }
 
     /// The peak value at the centre of a star carrying `energy`.
     ///
-    /// The normalization that conserves it: a two-dimensional Gaussian
-    /// integrates to `2*pi*sigma^2`, so dividing by that makes the whole disc
-    /// sum to the energy put in rather than to some multiple of it that
-    /// depends on how wide the PSF happens to be. **This is the figure two
-    /// renderers must share.** Get it wrong in one of them and every star
-    /// carries a different amount of light there, by a factor no comparison
-    /// can see past.
+    /// The normalization that conserves it: a Moffat integrates over the plane
+    /// to `π α² / (β − 1)`, so dividing by that makes the whole disc sum to the
+    /// energy put in rather than to some multiple of it that depends on how wide
+    /// the PSF happens to be. **This is the figure two renderers must share.**
+    /// Get it wrong in one of them and every star carries a different amount of
+    /// light there, by a factor no comparison can see past.
     pub fn peak(&self, energy: f64) -> f64 {
-        energy / (std::f64::consts::TAU * self.sigma * self.sigma)
+        energy * (self.beta - 1.0)
+            / (std::f64::consts::PI * self.alpha * self.alpha)
     }
 
-    /// The value `distance` from the centre.
+    /// The value `distance` from the centre for a star carrying `energy`.
     pub fn at(&self, energy: f64, distance: f64) -> f64 {
-        let s = distance / self.sigma;
-        self.peak(energy) * (-0.5 * s * s).exp()
+        self.peak(energy) * self.shape(distance)
     }
 
     /// How far out this star is still worth drawing.
     ///
-    /// Where the Gaussian falls to `floor` — the energy per pixel below which
-    /// the caller's display shows nothing. [`None`] when even the star's own
-    /// centre is below it, which is the visibility cut: at a given exposure
-    /// there is a magnitude past which a star contributes nothing any pixel can
-    /// show, and finding it is a comparison rather than a table.
+    /// Where the profile falls to `floor` — the energy per pixel below which the
+    /// caller's display shows nothing. [`None`] when even the star's own centre
+    /// is below it, which is the visibility cut: at a given exposure there is a
+    /// magnitude past which a star contributes nothing any pixel can show, and
+    /// finding it is a comparison rather than a table.
     ///
     /// The floor is a parameter rather than a constant because it is the one
     /// part of this that is legitimately the renderer's. It follows from the
@@ -93,7 +118,9 @@ impl Gaussian {
         if !(floor > 0.0) || peak <= floor {
             return None;
         }
-        let r = self.sigma * (2.0 * (peak / floor).ln()).sqrt();
+        // shape = floor/peak at the edge, so (1 + (r/α)²) = (peak/floor)^(1/β).
+        let ratio = (peak / floor).powf(1.0 / self.beta);
+        let r = self.alpha * (ratio - 1.0).sqrt();
         Some(r.min(MAX_RADIUS))
     }
 }
@@ -107,53 +134,74 @@ mod tests {
     /// The disc holds the light put into it. Summed over a grid fine enough to
     /// catch the wings, a star's whole energy is there and no more — which is
     /// what lets two pictures of one sky be compared by how much light each
-    /// holds, and so the single most load-bearing property here.
+    /// holds, and so the single most load-bearing property here. The floor is
+    /// set deep because the Moffat's power-law wings carry a little energy a
+    /// long way out, and the tail past the radius is what a shallow floor would
+    /// truncate.
     #[test]
     fn the_disc_conserves_energy() {
-        let psf = Gaussian::new(2.0);
+        let psf = Moffat::new(4.0, STELLAR_BETA);
         let energy = 10.0;
-        let r = psf.radius(energy, FLOOR).expect("a bright star has a radius");
+        let deep = 1e-6;
+        let r = psf.radius(energy, deep).expect("a bright star has a radius");
         let mut total = 0.0;
         let n = r.ceil() as i64;
         for y in -n..=n {
             for x in -n..=n {
                 let d = ((x * x + y * y) as f64).sqrt();
-                total += psf.at(energy, d);
+                if d <= r {
+                    total += psf.at(energy, d);
+                }
             }
         }
         assert!(
-            (total - energy).abs() / energy < 0.01,
+            (total - energy).abs() / energy < 0.02,
             "summed {total}, put in {energy}"
         );
     }
 
-    /// Conservation does not depend on how wide the PSF is, which is what
-    /// makes seeing a free dial rather than a brightness control.
+    /// Conservation does not depend on how wide the PSF is, which is what makes
+    /// seeing a free dial rather than a brightness control.
     #[test]
     fn energy_is_conserved_at_every_width() {
-        for sigma in [1.0, 2.0, 4.0, 8.0] {
-            let psf = Gaussian::new(sigma);
+        for alpha in [3.0, 5.0, 8.0] {
+            let psf = Moffat::new(alpha, STELLAR_BETA);
             let energy = 10.0;
-            let r = psf.radius(energy, FLOOR).expect("visible");
+            let deep = 1e-6;
+            let r = psf.radius(energy, deep).expect("visible");
             let n = r.ceil() as i64;
             let mut total = 0.0;
             for y in -n..=n {
                 for x in -n..=n {
-                    total += psf.at(energy, ((x * x + y * y) as f64).sqrt());
+                    let d = ((x * x + y * y) as f64).sqrt();
+                    if d <= r {
+                        total += psf.at(energy, d);
+                    }
                 }
             }
             assert!(
                 (total - energy).abs() / energy < 0.02,
-                "sigma {sigma} summed {total}"
+                "alpha {alpha} summed {total}"
             );
         }
+    }
+
+    /// The shape carries the profile's form and no energy: unit at the centre,
+    /// monotone outward, gone in the far wings. It is what a texture bakes.
+    #[test]
+    fn the_shape_is_unit_peak_and_falls_away() {
+        let psf = Moffat::new(2.0, STELLAR_BETA);
+        assert!((psf.shape(0.0) - 1.0).abs() < 1e-12);
+        assert!(psf.shape(1.0) > psf.shape(3.0));
+        assert!(psf.shape(3.0) > psf.shape(10.0));
+        assert!(psf.shape(1e6) < 1e-6);
     }
 
     /// A brighter star spreads further, without anything scaling a radius by
     /// brightness: it is the wings clearing the floor for longer.
     #[test]
     fn brighter_stars_draw_wider() {
-        let psf = Gaussian::new(1.5);
+        let psf = Moffat::new(1.5, STELLAR_BETA);
         let dim = psf.radius(0.1, FLOOR).expect("visible");
         let bright = psf.radius(100.0, FLOOR).expect("visible");
         assert!(bright > dim, "{bright} should exceed {dim}");
@@ -163,15 +211,15 @@ mod tests {
     /// comparison against the floor rather than a magnitude in a table.
     #[test]
     fn a_star_below_the_floor_has_no_disc() {
-        let psf = Gaussian::new(1.5);
+        let psf = Moffat::new(1.5, STELLAR_BETA);
         assert_eq!(psf.radius(1e-9, FLOOR), None);
     }
 
-    /// A renderer that shows fainter light draws every star wider, which is
-    /// the whole of what the floor being a parameter buys.
+    /// A renderer that shows fainter light draws every star wider, which is the
+    /// whole of what the floor being a parameter buys.
     #[test]
     fn a_lower_floor_draws_wider() {
-        let psf = Gaussian::new(2.0);
+        let psf = Moffat::new(2.0, STELLAR_BETA);
         let shallow = psf.radius(1.0, 1e-2).expect("visible");
         let deep = psf.radius(1.0, 1e-6).expect("visible");
         assert!(deep > shallow, "{deep} should exceed {shallow}");
@@ -180,31 +228,26 @@ mod tests {
     /// A nonsensical floor is no disc rather than a NaN radius.
     #[test]
     fn a_floor_at_or_below_zero_draws_nothing() {
-        let psf = Gaussian::new(2.0);
+        let psf = Moffat::new(2.0, STELLAR_BETA);
         assert_eq!(psf.radius(1.0, 0.0), None);
         assert_eq!(psf.radius(1.0, -1.0), None);
     }
 
-    /// However bright, one star's cost is bounded — where the cap binds at
-    /// all, which is at wide seeing.
+    /// However bright, one star's cost is bounded by the cap. Unlike a
+    /// Gaussian, the Moffat's power-law wings are not self-limiting, so an
+    /// extreme energy reaches the cap and the guard is what holds it.
     #[test]
-    fn the_radius_is_capped_at_wide_seeing() {
-        let psf = Gaussian::new(20.0);
-        assert_eq!(psf.radius(1e12, FLOOR), Some(MAX_RADIUS));
+    fn the_radius_is_capped_for_extreme_energy() {
+        let psf = Moffat::new(2.0, STELLAR_BETA);
+        assert_eq!(psf.radius(1e300, FLOOR), Some(MAX_RADIUS));
     }
 
-    /// At ordinary seeing the cap is unreachable, because the radius grows
-    /// only as the square root of the log of the energy. Worth pinning: it
-    /// says the disc size is self-limiting and the cap is a guard rather than
-    /// a shape anybody sees.
+    /// At ordinary brightness the disc is a handful of pixels, well under the
+    /// cap, so the cap is a guard rather than a shape anybody sees.
     #[test]
-    fn at_ordinary_seeing_the_disc_limits_itself() {
-        let psf = Gaussian::new(2.0);
-        let huge = psf.radius(1e300, FLOOR).expect("visible");
-        assert!(huge < MAX_RADIUS, "{huge}");
-        // Three hundred orders of magnitude of energy buys a factor of
-        // eleven in size, which is the whole point.
-        let ratio = huge / psf.radius(1.0, FLOOR).expect("visible");
-        assert!(ratio < 12.0, "{ratio}");
+    fn an_ordinary_star_is_a_small_disc() {
+        let psf = Moffat::new(2.0, STELLAR_BETA);
+        let r = psf.radius(10.0, FLOOR).expect("visible");
+        assert!(r < 30.0, "{r}");
     }
 }

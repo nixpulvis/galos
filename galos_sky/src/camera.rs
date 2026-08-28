@@ -40,8 +40,10 @@
 
 use crate::image::{Image, Mark};
 use galos_catalog::Star;
-use galos_photometry::psf::Gaussian;
-use galos_photometry::{apparent_magnitude_ly, blackbody_color, relative_exposure};
+use galos_photometry::psf::{Moffat, STELLAR_BETA};
+use galos_photometry::{
+    apparent_magnitude_ly, blackbody_color, relative_exposure,
+};
 
 /// The energy per pixel below which this renderer shows nothing.
 ///
@@ -253,8 +255,7 @@ impl Camera {
     /// Every one of the three is [`galos_photometry`]'s, which is what makes
     /// this renderer a check on that crate rather than a second opinion.
     fn light(&self, star: &Star, distance: f64) -> (f64, [f32; 3]) {
-        let apparent =
-            apparent_magnitude_ly(star.absolute_magnitude, distance);
+        let apparent = apparent_magnitude_ly(star.absolute_magnitude, distance);
         let energy = relative_exposure(apparent, self.exposure);
         (energy, blackbody_color(star.temperature()))
     }
@@ -266,7 +267,7 @@ impl Camera {
     /// be used to check the map's pruning.
     pub fn render(&self, stars: &[Star]) -> Image {
         let mut image = Image::new(self.width, self.height);
-        let psf = Gaussian::new(self.seeing);
+        let psf = Moffat::new(self.seeing, STELLAR_BETA);
 
         for star in stars {
             let Some((cx, cy, distance)) = self.project(star.position) else {
@@ -345,9 +346,11 @@ mod tests {
     use galos_catalog::hyg;
 
     fn bright() -> Vec<Star> {
-        hyg::read(include_str!("../../galos_catalog/data/bright.csv").as_bytes())
-            .expect("the fixture is a HYG catalog")
-            .stars
+        hyg::read(
+            include_str!("../../galos_catalog/data/bright.csv").as_bytes(),
+        )
+        .expect("the fixture is a HYG catalog")
+        .stars
     }
 
     fn named(stars: &[Star], name: &str) -> Star {
@@ -403,7 +406,8 @@ mod tests {
     /// somewhere, rather than filling the picture with NaN.
     #[test]
     fn a_degenerate_aim_is_survivable() {
-        let camera = Camera::new(32, 32).looking_from([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]);
+        let camera =
+            Camera::new(32, 32).looking_from([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]);
         assert!(camera.forward.iter().all(|c| c.is_finite()));
         let image = camera.render(&bright());
         assert!(image.pixels().iter().flatten().all(|c| c.is_finite()));
@@ -415,7 +419,9 @@ mod tests {
         let camera = Camera::new(32, 32).looking_along([0.0, 0.0, 1.0]);
         let star = [0.0, 0.1, 10.0];
         let projected = camera.project(star);
-        assert!(projected.is_some_and(|(x, y, _)| x.is_finite() && y.is_finite()));
+        assert!(
+            projected.is_some_and(|(x, y, _)| x.is_finite() && y.is_finite())
+        );
     }
 
     /// **Sirius is the brightest thing in the sky.** Point a camera at each of
@@ -426,16 +432,17 @@ mod tests {
     #[test]
     fn sirius_makes_the_brightest_picture() {
         let stars = bright();
-        let mut ranked: Vec<(String, f64)> = ["Sirius", "Canopus", "Vega", "Betelgeuse", "Procyon"]
-            .iter()
-            .map(|name| {
-                let star = named(&stars, name);
-                let camera = Camera::new(200, 200)
-                    .looking_from([0.0; 3], star.position)
-                    .with_fov_degrees(5.0);
-                (name.to_string(), camera.render(&[star]).total_energy())
-            })
-            .collect();
+        let mut ranked: Vec<(String, f64)> =
+            ["Sirius", "Canopus", "Vega", "Betelgeuse", "Procyon"]
+                .iter()
+                .map(|name| {
+                    let star = named(&stars, name);
+                    let camera = Camera::new(200, 200)
+                        .looking_from([0.0; 3], star.position)
+                        .with_fov_degrees(5.0);
+                    (name.to_string(), camera.render(&[star]).total_energy())
+                })
+                .collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
         assert_eq!(ranked[0].0, "Sirius", "{ranked:?}");
     }
@@ -518,7 +525,8 @@ mod tests {
         let image = camera.render(&bright());
         assert!(image.total_energy() > 0.0, "the sky came out black");
         assert!(image.peak().is_finite());
-        let lit = image.pixels().iter().filter(|p| p[0] + p[1] + p[2] > 1e-3).count();
+        let lit =
+            image.pixels().iter().filter(|p| p[0] + p[1] + p[2] > 1e-3).count();
         assert!(lit > 10, "only {lit} pixels lit");
     }
 
@@ -568,7 +576,10 @@ mod tests {
         // What it should be: colour carries hue, flux carries brightness, so
         // every tint has the same luminance and this passes.
         let flat = (white - red).abs() < 0.05 && (white - blue).abs() < 0.05;
-        assert!(!flat, "the tint is luminance-normalized now; delete this test");
+        assert!(
+            !flat,
+            "the tint is luminance-normalized now; delete this test"
+        );
 
         // What it is: white is drawn over half a magnitude brighter than
         // either end for no physical reason.
@@ -576,14 +587,14 @@ mod tests {
         assert!(penalty > 0.4, "red is penalized by {penalty:.2} magnitudes");
     }
 
-
     /// A ring lands on what it rings, which is the only thing an overlay has
     /// to get right.
     #[test]
     fn a_mark_lands_on_its_star() {
         let stars = bright();
         let vega = named(&stars, "Vega");
-        let camera = Camera::new(300, 300).looking_from([0.0; 3], vega.position);
+        let camera =
+            Camera::new(300, 300).looking_from([0.0; 3], vega.position);
         let mark = camera.mark(vega.position, 9.0).expect("in front");
         assert!((mark.x - 150.0).abs() < 0.01 && (mark.y - 150.0).abs() < 0.01);
         assert_eq!(mark.radius, 9.0);
@@ -595,11 +606,9 @@ mod tests {
     fn marks_skip_what_is_behind() {
         let camera = Camera::new(64, 64).looking_along([1.0, 0.0, 0.0]);
         assert_eq!(camera.mark([-5.0, 0.0, 0.0], 4.0), None);
-        let marks =
-            camera.marks([[10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]], 4.0);
+        let marks = camera.marks([[10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]], 4.0);
         assert_eq!(marks.len(), 1);
     }
-
 
     /// A bearing rings where the star is, seen from where the bearing was
     /// measured.
@@ -612,7 +621,8 @@ mod tests {
             vega.position[1] / vega.distance,
             vega.position[2] / vega.distance,
         ];
-        let camera = Camera::new(300, 300).looking_from([0.0; 3], vega.position);
+        let camera =
+            Camera::new(300, 300).looking_from([0.0; 3], vega.position);
         let mark = camera.mark_bearing(bearing, 9.0).expect("in front");
         assert!((mark.x - 150.0).abs() < 0.01 && (mark.y - 150.0).abs() < 0.01);
     }
@@ -626,7 +636,6 @@ mod tests {
             .looking_from([4.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
         assert_eq!(camera.mark_bearing([1.0, 0.0, 0.0], 9.0), None);
     }
-
 
     /// A mark is visible or it is not, and "in front of the camera" is not the
     /// same question. Most of the sky is in front of an eye and off its
@@ -646,5 +655,4 @@ mod tests {
         let edge = Mark::new(-2.0, 50.0, 5.0);
         assert!(camera.frames(&edge));
     }
-
 }
