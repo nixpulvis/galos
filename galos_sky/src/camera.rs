@@ -460,16 +460,23 @@ mod tests {
     ///
     /// The size of it, in relative luminance of the tint alone:
     ///
-    /// | temperature | luminance |
-    /// |---|---|
-    /// | 3000 K | 0.566 |
-    /// | 5772 K | 0.900 |
-    /// | 30000 K | 0.519 |
+    /// | temperature | luminance | penalty vs a G star |
+    /// |---|---|---|
+    /// | 3000 K | 0.566 | 0.50 mag |
+    /// | 5772 K | 0.900 | — |
+    /// | 30000 K | 0.519 | 0.60 mag |
     ///
     /// That is a factor of 1.7, or about 0.6 magnitudes, applied purely for
-    /// being red or blue rather than white. It reaches `galos_map` too, whose
-    /// cell tint is a flux-weighted `blackbody_color`, so a cell of hot stars
-    /// is drawn dimmer than a white cell of the same luminosity.
+    /// being red or blue rather than white, and it is not monotonic: both ends
+    /// lose and the middle wins. It reaches `galos_map` too, whose cell tint is
+    /// a flux-weighted `blackbody_color`, so a cell of hot stars is drawn
+    /// dimmer than a white cell of the same luminosity.
+    ///
+    /// It is a computed defect rather than one any single frame shows. Two
+    /// stars far apart in temperature are usually also far apart in magnitude,
+    /// and the penalty is flat across the middle of the range — Betelgeuse at
+    /// 3794 K and Rigel at 10516 K both sit at 0.680, so it cannot be what
+    /// separates them in a picture of Orion.
     ///
     /// The fix is to normalize the tint to unit *luminance* rather than unit
     /// peak, but that is a change to a contract two renderers share, so this
