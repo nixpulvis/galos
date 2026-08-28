@@ -90,6 +90,16 @@ impl Image {
     /// which is four decades of flux, and nothing linear shows both ends at
     /// once.
     pub fn to_srgb8(&self) -> Vec<u8> {
+        self.to_srgb8_with(&[])
+    }
+
+    /// The tone-mapped image with rings drawn over it.
+    ///
+    /// The marks are written into the eight-bit output after the tone curve,
+    /// so nothing about them reaches the linear buffer and
+    /// [`total_energy`](Self::total_energy) is unchanged. An overlay is for
+    /// finding things in a picture; it is not part of the picture's photometry.
+    pub fn to_srgb8_with(&self, marks: &[Mark]) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 3);
         for pixel in &self.pixels {
             for &channel in pixel {
@@ -97,18 +107,103 @@ impl Image {
                 out.push((srgb_encode(mapped) * 255.0).round() as u8);
             }
         }
+        for mark in marks {
+            self.stroke(&mut out, mark);
+        }
         out
+    }
+
+    /// Draw one ring into an eight-bit buffer.
+    ///
+    /// A one-pixel outline: every pixel whose distance from the centre is
+    /// within half a pixel of the radius. Written rather than blended, since
+    /// chrome that dimmed over a bright star would be least visible exactly
+    /// where it is most wanted.
+    fn stroke(&self, out: &mut [u8], mark: &Mark) {
+        let reach = mark.radius + 1.0;
+        let (x0, x1) = ((mark.x - reach) as i64, (mark.x + reach) as i64);
+        let (y0, y1) = ((mark.y - reach) as i64, (mark.y + reach) as i64);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64
+                {
+                    continue;
+                }
+                let dx = x as f64 + 0.5 - mark.x;
+                let dy = y as f64 + 0.5 - mark.y;
+                if ((dx * dx + dy * dy).sqrt() - mark.radius).abs() > 0.5 {
+                    continue;
+                }
+                let i = ((y as usize) * (self.width as usize) + x as usize) * 3;
+                for c in 0..3 {
+                    out[i + c] =
+                        (mark.color[c].clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+            }
+        }
     }
 
     /// Write the tone-mapped image to a PNG.
     pub fn write_png(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        self.write_png_with(path, &[])
+    }
+
+    /// Write the tone-mapped image to a PNG with rings drawn over it.
+    pub fn write_png_with(
+        &self,
+        path: impl AsRef<Path>,
+        marks: &[Mark],
+    ) -> io::Result<()> {
         let file = BufWriter::new(File::create(path)?);
         let mut encoder = png::Encoder::new(file, self.width, self.height);
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header()?;
-        writer.write_image_data(&self.to_srgb8())?;
+        writer.write_image_data(&self.to_srgb8_with(marks))?;
         Ok(())
+    }
+}
+
+/// A ring drawn around something, in display space.
+///
+/// Annotation rather than light, and the distinction is load-bearing: marks are
+/// rasterized into the eight-bit output and never into the linear buffer, so
+/// [`Image::total_energy`] is the same whether a picture is annotated or not.
+/// If they added energy, ringing a star would change the quantity two renderers
+/// are compared by, and the overlay meant to help the comparison would be the
+/// thing breaking it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Mark {
+    /// Centre, in pixels, from the top left.
+    pub x: f64,
+    /// Centre, in pixels, from the top left.
+    pub y: f64,
+    /// The ring's radius, pixels.
+    pub radius: f64,
+    /// The ring's colour, as displayed. Not tone-mapped — it is chrome, not
+    /// light, and is written straight into the output.
+    pub color: [f32; 3],
+}
+
+/// The default ring colour: green.
+///
+/// Chosen because **a blackbody is never green**. Across the whole Planckian
+/// locus the dominant channel is red below about 6500 K and blue above it, and
+/// the green channel leads at no temperature at all, so a green ring cannot be
+/// mistaken for a star however faint or saturated it is drawn. Any other hue
+/// would collide with something real.
+pub const MARK_COLOR: [f32; 3] = [0.0, 1.0, 0.35];
+
+impl Mark {
+    /// A ring of the default colour.
+    pub fn new(x: f64, y: f64, radius: f64) -> Mark {
+        Mark { x, y, radius, color: MARK_COLOR }
+    }
+
+    /// The same ring in another colour.
+    pub fn colored(mut self, color: [f32; 3]) -> Mark {
+        self.color = color;
+        self
     }
 }
 
@@ -179,4 +274,63 @@ mod tests {
     fn linear_half_encodes_to_display_mid_grey() {
         assert!((srgb_encode(0.5) - 0.7354).abs() < 0.001);
     }
+
+    /// **An overlay is not light.** Ringing every star in a picture leaves its
+    /// energy exactly as it was, which is what keeps `total_energy` the
+    /// quantity two renderers can be compared by whether or not either is
+    /// annotated.
+    #[test]
+    fn marks_do_not_change_the_photometry() {
+        let mut image = Image::new(32, 32);
+        image.add(16, 16, [1.0, 1.0, 1.0]);
+        let before = image.total_energy();
+        let marks = [Mark::new(16.5, 16.5, 6.0), Mark::new(4.0, 4.0, 3.0)];
+        let annotated = image.to_srgb8_with(&marks);
+        assert_eq!(image.total_energy(), before);
+        assert_ne!(annotated, image.to_srgb8(), "the ring should be visible");
+    }
+
+    /// A ring is a ring: it lands at its radius and leaves the centre alone,
+    /// so the thing being pointed at is not painted over.
+    #[test]
+    fn a_ring_surrounds_rather_than_covers() {
+        let image = Image::new(41, 41);
+        let out = image.to_srgb8_with(&[Mark::new(20.5, 20.5, 8.0)]);
+        let at = |x: usize, y: usize| {
+            let i = (y * 41 + x) * 3;
+            [out[i], out[i + 1], out[i + 2]]
+        };
+        assert_eq!(at(20, 20), [0, 0, 0], "the centre should be untouched");
+        assert_ne!(at(28, 20), [0, 0, 0], "the ring should be at the radius");
+        assert_eq!(at(35, 20), [0, 0, 0], "and nothing beyond it");
+    }
+
+    /// A ring near the edge is clipped, not wrapped, and does not panic.
+    #[test]
+    fn a_ring_off_the_edge_is_clipped() {
+        let image = Image::new(16, 16);
+        let out = image.to_srgb8_with(&[
+            Mark::new(0.0, 0.0, 5.0),
+            Mark::new(15.0, 15.0, 9.0),
+            Mark::new(-40.0, 8.0, 3.0),
+        ]);
+        assert_eq!(out.len(), 16 * 16 * 3);
+    }
+
+    /// The default mark colour is one no star can wear. A blackbody's dominant
+    /// channel is red below about 6500 K and blue above, and green leads at no
+    /// temperature at all, so a green ring is never mistaken for light.
+    #[test]
+    fn no_star_is_ever_the_colour_of_a_mark() {
+        for t in [1000.0, 2000.0, 3000.0, 4000.0, 5772.0, 8000.0, 12000.0, 25000.0, 40000.0]
+        {
+            let c = galos_photometry::blackbody_color(t);
+            assert!(
+                c[1] < c[0].max(c[2]),
+                "a blackbody at {t} K leads with green: {c:?}"
+            );
+        }
+        assert!(MARK_COLOR[1] > MARK_COLOR[0].max(MARK_COLOR[2]));
+    }
+
 }

@@ -295,6 +295,71 @@ hole is a number rather than a surprise, and the CLI warns when it is not zero.
 Whether a from-Sol view should carry them anyway — as sources with a direction
 and a brightness but no place, which is what they are — is open below.
 
+## The overlay
+
+Rings drawn over a finished picture, in green, at a set of stars named by the
+caller. Two uses, and the second is the one that pays for it.
+
+**Finding things.** Seven rings turn a field of a hundred thousand stars into a
+recognisable Dipper at a glance, which is what makes a golden image judgeable
+when it has to be regenerated.
+
+**Comparing renderers.** A star ringed here and the same star drawn by
+`galos_map` under the same camera should coincide. That is step 2 of the ladder
+above — the list diff — made visible: instead of comparing two columns of screen
+coordinates, put a ring where this renderer says a star is and look at whether
+the map's star sits inside it. `Camera::mark` is deliberately split from the
+drawing so the same answer serves a ring, a caption, or a list of positions
+handed to another renderer.
+
+Two properties make it safe to use during a comparison rather than a thing that
+breaks one.
+
+**A mark is not light.** Rings are rasterized into the eight-bit output after
+the tone curve and never into the linear buffer, so `total_energy` is identical
+whether a picture is annotated or not. If they added energy, ringing a star
+would move the quantity the two renderers are compared by, and the overlay meant
+to help would be the thing corrupting the measurement.
+
+**Green is a colour no star can be.** Across the whole Planckian locus the
+dominant channel is red below about 6500 K and blue above it; green leads at no
+temperature at all. So a green ring can never be mistaken for a faint star,
+however saturated it is drawn, and there is a test asserting it over the whole
+range.
+
+## Dating Elite's sky
+
+Elite cannot take in new parallax measurements, and the reason is structural
+rather than a matter of Frontier's appetite for it: **in Elite a system's
+position is its identity.** The id64 encodes the boxel the system sits in, so
+moving a star to a better-measured distance changes its address, and its address
+is what every bookmark, exploration record, market history, EDDN message and
+foreign key in `galos_db` refers to it by. A re-import would not be an update, it
+would be a new galaxy with the old one's names.
+
+Which means Elite's sky is a snapshot of whatever catalogs its forge was seeded
+from, and *which* snapshot is an empirical question rather than a guess. The
+test: find stars where Hipparcos and the modern values disagree loudly, and see
+which Elite matches.
+
+- **The Pleiades.** Hipparcos put the cluster at about 118 pc against a
+  ground-based consensus near 136, one of the loudest disagreements in the
+  literature, and Gaia settled it at 136. Whichever Elite sits nearer dates the
+  import on its own.
+- **Betelgeuse.** Original Hipparcos 131 pc; HYG v41 already carries 152.7.
+- **Polaris**, where the revision was smaller but the same direction.
+
+And the stars this catalog has to drop are the sharpest case of all. They have no
+Hipparcos parallax at all, so wherever Elite puts Mu Cephei it did not get it
+from the same place this renderer gets everything else — it either has a value
+from a different catalog, or the forge placed it procedurally and the position
+means nothing. Both answers are interesting and they are distinguishable by
+looking.
+
+None of this has been run: it needs the database, and there has not been one
+here. `galos_catalog` cross-matching Elite's `systems` by name is the tool, and
+the report is a distance from each source side by side.
+
 ## The crates
 
 Two, not one, and the second is the one that changes the shape of this.
@@ -421,12 +486,9 @@ Elite's unscanned systems, and neither of the two threads here depends on it.
 - Whether `galos_map` can be rendered headless to an offscreen target
   cheaply enough for step 3 of the diffing ladder to run anywhere but a
   workstation.
-- Whether a from-Sol view should carry the no-parallax stars as sources with a
-  direction and a brightness but no position. It is one naked-eye star in
-  twenty-five, weighted to the bright end, and it is the difference between a
-  sky that is right from Sol and a `Star` that means one thing everywhere. A
-  second type is the honest way to have both, and two types for one idea is a
-  cost of its own.
+- Where Elite places the stars Hipparcos could not, and what that says about
+  when its catalog was imported. See **Dating Elite's sky** below; it needs a
+  database this has not had.
 - Whether interstellar extinction needs modelling for a real catalog to look
   right. ED does not model it; the real sky has it, and the Milky Way's band
   is where the difference would show.

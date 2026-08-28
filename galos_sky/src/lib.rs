@@ -62,4 +62,4 @@ pub mod camera;
 pub mod image;
 
 pub use camera::Camera;
-pub use image::Image;
+pub use image::{Image, Mark};
