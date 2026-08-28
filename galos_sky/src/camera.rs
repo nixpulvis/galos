@@ -539,61 +539,49 @@ mod tests {
         assert!(lit > 10, "only {lit} pixels lit");
     }
 
-    /// **A star's colour should not change how bright it is drawn, and it
-    /// does.**
+    /// A star's colour does not change how bright it is drawn.
     ///
-    /// `blackbody_color` normalizes a tint so its brightest channel is one,
-    /// which carries hue correctly and luminance not at all: a white tint
-    /// spreads across three channels and a saturated one concentrates in a
-    /// single one, so multiplying flux by the tint makes a Sun-like star draw
-    /// brighter than an equally luminous red giant or hot blue star.
+    /// `blackbody_color` is normalized to unit luminance, so the tint carries
+    /// hue and nothing else and the exposure's energy reaches the picture whole
+    /// whatever the hue. Weighted the way the eye weights colour, what a star
+    /// deposits is its energy — so a red giant, a blue supergiant and a white
+    /// star of the same energy come out equally bright. This was once a
+    /// documented defect: peak normalization drew the saturated ends of the
+    /// sequence half a magnitude under the white middle for no physical reason.
     ///
-    /// The size of it, in relative luminance of the tint alone:
-    ///
-    /// | temperature | luminance | penalty vs a G star |
-    /// |---|---|---|
-    /// | 3000 K | 0.566 | 0.50 mag |
-    /// | 5772 K | 0.900 | — |
-    /// | 30000 K | 0.519 | 0.60 mag |
-    ///
-    /// That is a factor of 1.7, or about 0.6 magnitudes, applied purely for
-    /// being red or blue rather than white, and it is not monotonic: both ends
-    /// lose and the middle wins. It reaches `galos_map` too, whose cell tint is
-    /// a flux-weighted `blackbody_color`, so a cell of hot stars is drawn
-    /// dimmer than a white cell of the same luminosity.
-    ///
-    /// It is a computed defect rather than one any single frame shows. Two
-    /// stars far apart in temperature are usually also far apart in magnitude,
-    /// and the penalty is flat across the middle of the range — Betelgeuse at
-    /// 3794 K and Rigel at 10516 K both sit at 0.680, so it cannot be what
-    /// separates them in a picture of Orion.
-    ///
-    /// The fix is to normalize the tint to unit *luminance* rather than unit
-    /// peak, but that is a change to a contract two renderers share, so this
-    /// test records the defect rather than asserting the fix. It fails the day
-    /// somebody makes it right, which is when to delete it.
+    /// End to end in this renderer, and across hues far apart: the luminance in
+    /// the picture matches the energy the exposure gave, to within the Moffat's
+    /// truncated tail.
     #[test]
-    fn a_stars_colour_should_not_change_how_bright_it_is() {
-        let luminance = |t: f64| {
-            let c = blackbody_color(t);
-            0.2126 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.0722 * c[2] as f64
-        };
-        let white = luminance(5772.0);
-        let red = luminance(3000.0);
-        let blue = luminance(30000.0);
+    fn a_stars_colour_does_not_change_how_bright_it_is() {
+        let stars = bright();
+        for name in ["Betelgeuse", "Rigel", "Sirius"] {
+            let star = named(&stars, name);
+            let camera = Camera::new(400, 400)
+                .looking_from([0.0; 3], star.position)
+                .with_fov_degrees(5.0)
+                .with_exposure(4.0);
+            let image = camera.render(&[star.clone()]);
 
-        // What it should be: colour carries hue, flux carries brightness, so
-        // every tint has the same luminance and this passes.
-        let flat = (white - red).abs() < 0.05 && (white - blue).abs() < 0.05;
-        assert!(
-            !flat,
-            "the tint is luminance-normalized now; delete this test"
-        );
-
-        // What it is: white is drawn over half a magnitude brighter than
-        // either end for no physical reason.
-        let penalty = -2.5 * (red / white).log10();
-        assert!(penalty > 0.4, "red is penalized by {penalty:.2} magnitudes");
+            let apparent =
+                apparent_magnitude_ly(star.absolute_magnitude, star.distance);
+            let energy = relative_exposure(apparent, 4.0);
+            let luminance: f64 = image
+                .pixels()
+                .iter()
+                .map(|p| {
+                    0.2126 * p[0] as f64
+                        + 0.7152 * p[1] as f64
+                        + 0.0722 * p[2] as f64
+                })
+                .sum();
+            let ratio = luminance / energy;
+            assert!(
+                (ratio - 1.0).abs() < 0.03,
+                "{name} ({:.0} K) drew {ratio} of its energy as luminance",
+                star.temperature(),
+            );
+        }
     }
 
     /// A ring lands on what it rings, which is the only thing an overlay has
