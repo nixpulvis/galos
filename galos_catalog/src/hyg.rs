@@ -63,86 +63,12 @@
 //! rather than an optional field, so that nothing can accidentally treat a
 //! bearing as a place.
 
-use crate::Star;
-use galos_photometry::{EYE_LIMIT, LY_PER_PARSEC};
+use crate::{Catalog, Star, Unplaced};
+use galos_photometry::LY_PER_PARSEC;
 use std::io;
 
 /// The distance HYG writes where it has no parallax to work from.
 const NO_PARALLAX: f64 = 100_000.0;
-
-/// What a read passed over, and why.
-///
-/// Returned beside the stars rather than logged, so a caller that cares can
-/// assert on it and one that does not can ignore it.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub struct Skipped {
-    /// Rows at distance zero: Sol, and anything else sitting on the observer.
-    pub at_the_origin: usize,
-    /// Rows carrying the no-parallax sentinel.
-    pub no_parallax: usize,
-    /// Rows whose required columns would not parse.
-    pub unreadable: usize,
-    /// How many of the dropped rows are naked-eye stars.
-    ///
-    /// The figure that says whether a hole matters. Ten thousand discarded
-    /// twelfth-magnitude rows change no picture; a hundred discarded
-    /// fifth-magnitude ones change every one, and both look the same in
-    /// [`total`](Self::total).
-    pub naked_eye: usize,
-    /// The apparent magnitude of the brightest row dropped, if any were.
-    pub brightest: Option<f64>,
-}
-
-impl Skipped {
-    /// How many rows were dropped in total.
-    pub fn total(&self) -> usize {
-        self.at_the_origin + self.no_parallax + self.unreadable
-    }
-
-    /// Note a dropped row's magnitude against the naked-eye tally.
-    fn note(&mut self, magnitude: f64) {
-        if magnitude <= EYE_LIMIT {
-            self.naked_eye += 1;
-        }
-        self.brightest = Some(match self.brightest {
-            Some(brightest) => brightest.min(magnitude),
-            None => magnitude,
-        });
-    }
-}
-
-/// A star the catalog locates on the sky but not in space.
-///
-/// A measured bearing and a measured brightness, and no distance. Everything
-/// here is real; what is absent is absent rather than guessed.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Unplaced {
-    /// The catalog's own identifier.
-    pub id: u64,
-    /// A proper name or designation, where the row carries one.
-    pub name: Option<String>,
-    /// The unit direction **from Sol**, in the catalog's equatorial frame.
-    ///
-    /// From Sol this is exactly where the star is on the sky. From anywhere
-    /// else it says only which line the star lies along, and how far up that
-    /// line is what the catalog does not know.
-    pub direction: [f64; 3],
-    /// Apparent visual magnitude, as measured from Earth.
-    pub apparent_magnitude: f64,
-    /// The spectral type as the catalog spells it.
-    pub spectral_type: Option<String>,
-}
-
-/// What one read of a catalog produced.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Catalog {
-    /// The stars with a place in space.
-    pub stars: Vec<Star>,
-    /// The stars with a bearing but no distance — the hole, enumerated.
-    pub unplaced: Vec<Unplaced>,
-    /// What was dropped outright, and how bright.
-    pub skipped: Skipped,
-}
 
 /// Read a HYG CSV into stars, in light years, in the catalog's equatorial
 /// frame.
@@ -185,7 +111,7 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
     let c_ci = column("ci");
     let c_spect = column("spect");
 
-    let mut catalog = Catalog::default();
+    let mut catalog = Catalog::new(crate::HYG);
 
     for record in csv.records() {
         let record = record?;
@@ -246,6 +172,7 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
         }
 
         catalog.stars.push(Star {
+            source: crate::HYG,
             id: id as u64,
             hip: text(c_hip).and_then(|h| h.parse().ok()),
             name: text(c_proper),
@@ -301,7 +228,7 @@ mod tests {
     /// tests here are about measured sky rather than about invented rows.
     const BRIGHT: &str = include_str!("../data/bright.csv");
 
-    fn bright() -> (Vec<Star>, Skipped) {
+    fn bright() -> (Vec<Star>, crate::Skipped) {
         let catalog = read(BRIGHT.as_bytes()).expect("a HYG catalog");
         (catalog.stars, catalog.skipped)
     }

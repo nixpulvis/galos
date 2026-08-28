@@ -37,7 +37,7 @@ galos_index = { path = "../galos_index" }
 galos_photometry = { path = "../galos_photometry" }
 # The other dataset: read for the cross-comparison in `catalog`, which is the
 # only place this crate meets a survey that is not Elite.
-galos_catalog = { path = "../galos_catalog" }
+galos_catalog = { path = "../galos_catalog", default-features = false }
 
 [dependencies.sqlx]
 version = "^0.8"

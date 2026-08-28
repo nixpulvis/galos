@@ -15,13 +15,20 @@
 //!   "in practice" is not a guarantee, so they are tagged into a high range
 //!   rather than passed through. Two trees can then be held side by side
 //!   without either's ids being mistaken for the other's.
+//!
+//!   The same problem arises a second time between two catalogs, which both
+//!   number their rows from one, and is solved the same way: the star's
+//!   [`Source::namespace`] rides in the six bits under the tag, so HYG's star
+//!   5 and some future survey's star 5 are different systems. Fifty-six bits
+//!   are left for the id itself, which is [`MAX_ID`] and far past anything HYG
+//!   carries.
 //! - **`age_bucket`** is how long ago a row was last written, and it feeds
 //!   only the Recency colouring. A catalog has no such notion — Hipparcos was
 //!   published once — so every star sits in bucket zero. That the index's
 //!   input vocabulary carries a field of pure presentation is visible here
 //!   precisely because a second dataset has nothing to say about it.
 
-use crate::Star;
+use crate::{MAX_ID, Star};
 use galos_index::System;
 
 /// The high bit that marks an id as a catalog's rather than a system address.
@@ -30,6 +37,9 @@ use galos_index::System;
 /// and do not reach here, so a tagged catalog id cannot be mistaken for one.
 pub const CATALOG_ID_TAG: u64 = 1 << 62;
 
+/// Where a [`Source::namespace`] sits within a tagged id.
+const NAMESPACE_SHIFT: u32 = 64 - 8;
+
 impl Star {
     /// This star as the index's input record.
     ///
@@ -37,9 +47,28 @@ impl Star {
     /// and the temperature — the name, the measured apparent magnitude, the
     /// colour index and the spectral type do not, which is what makes `System`
     /// the lossy projection and [`Star`] the fuller record.
+    /// The index id this star takes: the catalog tag, its source's namespace,
+    /// and its own id.
+    ///
+    /// Panics in debug on an id past [`MAX_ID`], which would silently overwrite
+    /// the namespace and quietly merge two surveys' stars. A survey with
+    /// identifiers that large renumbers on the way in; there is no honest way
+    /// to fold them and no reason to fail quietly.
+    pub fn system_id(&self) -> u64 {
+        debug_assert!(
+            self.id <= MAX_ID,
+            "{} star {} exceeds the {MAX_ID} an index id can carry",
+            self.source.name,
+            self.id,
+        );
+        CATALOG_ID_TAG
+            | ((self.source.namespace as u64) << NAMESPACE_SHIFT)
+            | (self.id & MAX_ID)
+    }
+
     pub fn to_system(&self) -> System {
         System {
-            id64: CATALOG_ID_TAG | self.id,
+            id64: self.system_id(),
             position: self.position,
             absolute_magnitude: self.absolute_magnitude,
             temperature: self.temperature(),
@@ -52,6 +81,7 @@ impl Star {
 mod tests {
     use super::*;
     use crate::hyg;
+    use crate::Source;
     use galos_index::{BuildParams, Snapshot};
 
     fn bright() -> Vec<Star> {
@@ -67,6 +97,30 @@ mod tests {
         let star = &bright()[0];
         assert!(star.to_system().id64 >= CATALOG_ID_TAG);
         assert!(star.id < CATALOG_ID_TAG);
+    }
+
+    /// **Two surveys' star 5 are two different systems.** The whole reason a
+    /// star carries a source: without the namespace the second catalog read
+    /// would silently overwrite the first's rows in the tree.
+    #[test]
+    fn two_sources_cannot_collide_on_an_id() {
+        const OTHER: Source = Source { name: "Other", namespace: 2 };
+        let mut a = bright()[0].clone();
+        a.id = 5;
+        let mut b = a.clone();
+        b.source = OTHER;
+        assert_ne!(a.system_id(), b.system_id());
+        assert!(a.system_id() >= CATALOG_ID_TAG);
+        assert!(b.system_id() >= CATALOG_ID_TAG);
+    }
+
+    /// And the same star is the same system every time, so a rebuild does not
+    /// renumber the tree.
+    #[test]
+    fn a_stars_index_id_is_stable() {
+        let star = &bright()[0];
+        assert_eq!(star.system_id(), star.to_system().id64);
+        assert_eq!(star.system_id(), star.clone().system_id());
     }
 
     /// The photometry crosses the bridge unchanged: what the tree orders by is
