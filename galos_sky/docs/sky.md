@@ -167,6 +167,43 @@ CPU path will never agree bit for bit, and should not have to.
 Steps 2 and 3 need a gnomonic projection matching a pinhole camera, which is
 why projections are a module here rather than one hardcoded whole-sky view.
 
+## What it found
+
+Written after the first pictures, because the point of the exercise is to find
+things and one turned up immediately.
+
+**A star's colour changes how brightly it is drawn, by about 0.6 magnitudes.**
+`blackbody_color` normalizes a tint so its brightest channel is one. That
+carries hue exactly and luminance not at all: a white tint spreads across three
+channels and a saturated one concentrates in a single one, so the tint's own
+luminance runs from 0.57 at 3000 K through 0.90 at the Sun's temperature back
+down to 0.52 at 30,000 K.
+
+| temperature | linear RGB | luminance |
+|---|---|---|
+| 3000 K | 1.000, 0.479, 0.154 | 0.566 |
+| 5772 K | 1.000, 0.878, 0.821 | 0.900 |
+| 30000 K | 0.377, 0.512, 1.000 | 0.519 |
+
+Multiply flux by that and a Sun-like star draws over half a magnitude brighter
+than an equally luminous red giant or hot blue star, for no reason but its
+colour. It is visible in the first render of Orion: Betelgeuse at magnitude
+0.45 and Rigel at 0.18 should be near enough the same brightness, and
+Betelgeuse comes out markedly dimmer.
+
+It reaches `galos_map` too. `systems/aggregate.rs` builds a cell's tint as a
+flux-weighted `blackbody_color`, so a cell of hot stars is drawn dimmer than a
+white cell of the same luminosity — and the error is largest exactly where the
+sky is most interesting.
+
+The fix is to normalize to unit luminance rather than unit peak. That changes a
+contract two renderers share, so it is recorded rather than applied:
+`camera.rs` carries `a_stars_colour_should_not_change_how_bright_it_is`, which
+asserts the defect and fails the day somebody corrects it.
+
+This is what the second renderer was for, and it came out of looking at one
+picture.
+
 ## The crates
 
 Two, not one, and the second is the one that changes the shape of this.
@@ -241,19 +278,23 @@ holds alongside is left open below; the crates above are the same either way.
 
 ## Order of work
 
-1. **`galos-db classes`.** Self-contained, needs no new crate, and it is the
-   one thing here that can tell you a number currently carried on faith is
-   wrong. Do it before more is built on the bake.
-2. **`color_index_to_temperature`** in `galos_photometry`, Ballesteros. Real
+Items 2, 3 and 4 are built, along with the `index` bridge from item 7.
+`galos-db classes` was dropped as minor value — the class table matters for
+Elite's unscanned systems, and neither of the two threads here depends on it.
+
+1. ~~**`galos-db classes`.**~~ Dropped.
+2. **Done.** `color_index_to_temperature` in `galos_photometry`, Ballesteros. Real
    catalogs give B−V, not effective temperature, so nothing can read a catalog
    without it — and it is a second independent route into `blackbody_color`.
-3. **`galos_catalog`**, HYG first: ~119k stars, `x,y,z` in parsecs plus
+3. **Done.** `galos_catalog`, HYG first: ~119k stars, `x,y,z` in parsecs plus
    `absmag`, `ci` and `spect` in one CSV, which is three columns to check
    against. The test is that the ten brightest come out in the right order at
    the right magnitudes.
-4. **The renderer**: projection, splat, tone-map, PNG. A Mollweide whole sky
-   from Sol as the first golden image, and the first time anyone can look at
-   this and say whether it is right.
+4. **Done.** The renderer: a `Camera` placed and pointed, a pinhole
+   projection, an energy-conserving PSF, a tone curve and a PNG. Pinhole
+   rather than Mollweide first, because it is the projection a pinhole camera
+   has and so the one the diffing ladder's steps 2 and 3 need. A whole-sky
+   projection is still wanted for judging star counts.
 5. **The response law** in `galos_photometry`, developed here against golden
    images, adopted by Real mode when it lands.
 6. **The brute-force visibility oracle** in `galos_index`, which is unrelated

@@ -60,6 +60,8 @@ members = [
     "galos_db",
     "galos_photometry",
     "galos_index",
+    "galos_catalog",
+    "galos_sky",
     "galos_map",
     # "galos_gui",
     "galos_server",

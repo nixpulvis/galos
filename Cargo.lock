@@ -4064,6 +4064,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "galos_catalog"
+version = "0.0.1"
+dependencies = [
+ "csv",
+ "galos_index",
+ "galos_photometry",
+]
+
+[[package]]
 name = "galos_db"
 version = "0.0.3"
 dependencies = [
@@ -4133,6 +4142,16 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "galos_sky"
+version = "0.0.1"
+dependencies = [
+ "clap 4.6.6",
+ "galos_catalog",
+ "galos_photometry",
+ "png",
 ]
 
 [[package]]
