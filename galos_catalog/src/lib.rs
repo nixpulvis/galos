@@ -23,6 +23,7 @@
 //! the tree, and producing it is this crate's output rather than its type —
 //! see [`index`], behind the `index` feature.
 
+pub mod compare;
 pub mod frame;
 pub mod hyg;
 #[cfg(feature = "index")]

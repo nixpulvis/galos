@@ -15,7 +15,8 @@
 //! The connection is read from `DATABASE_URL` like every other tool.
 
 use clap::{Parser, Subcommand};
-use galos_db::{index, Database};
+use galos_db::{catalog, index, Database};
+use galos_catalog::hyg;
 use std::io::{stderr, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,6 +43,17 @@ enum Command {
         #[arg(long, value_name = "SECS", num_args = 0..=1, default_missing_value = "5")]
         watch: Option<u64>,
     },
+    /// Compare a star catalog's positions against this database's.
+    ///
+    /// Matches by name — the only key the two share — and reports where they
+    /// disagree about how far away a star is, which is the measurement that
+    /// gets revised. The frame between them is fitted from the matched stars
+    /// rather than assumed, so a wrong guess about axes cannot masquerade as
+    /// every star being in the wrong place.
+    Catalog {
+        /// The HYG catalog CSV to compare against.
+        file: PathBuf,
+    },
 }
 
 fn main() -> galos_db::Result<()> {
@@ -60,6 +72,23 @@ fn main() -> galos_db::Result<()> {
 
 async fn run(command: Command) -> galos_db::Result<()> {
     match command {
+        Command::Catalog { file } => {
+            let handle = std::fs::File::open(&file).map_err(galos_db::Error::from)?;
+            let read = hyg::read(handle).map_err(|e| {
+                galos_db::Error::from(std::io::Error::other(e.to_string()))
+            })?;
+            eprintln!(
+                "{} catalog stars, {} named, {} without a distance",
+                read.stars.len(),
+                read.stars.iter().filter(|s| s.name.is_some()).count(),
+                read.unplaced.len(),
+            );
+            let db = Database::new().await?;
+            let comparison =
+                catalog::compare_to_catalog(&db, &read.stars).await?;
+            print!("{}", catalog::report(&comparison));
+            Ok(())
+        }
         Command::Index { dir, checkpoint, watch } => {
             let db = Database::new().await?;
             match watch {
