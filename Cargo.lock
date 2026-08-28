@@ -4081,6 +4081,7 @@ dependencies = [
  "clap 4.6.6",
  "dotenv",
  "elite_journal",
+ "galos_catalog",
  "galos_index",
  "galos_photometry",
  "geozero",
