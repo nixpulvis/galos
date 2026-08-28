@@ -156,8 +156,9 @@ fn v_band_shape(temperature_k: f64) -> f64 {
     let mut sum = 0.0;
     for i in 0..V_BAND_SAMPLES {
         let lambda = V_BAND_LO_M + step * i as f64;
-        let response =
-            (-0.5 * ((lambda - V_BAND_CENTER_M) / V_BAND_SIGMA_M).powi(2)).exp();
+        let response = (-0.5
+            * ((lambda - V_BAND_CENTER_M) / V_BAND_SIGMA_M).powi(2))
+        .exp();
         let planck = 1.0
             / (lambda.powi(5)
                 * (RADIATION_C2 / (lambda * temperature_k)).exp_m1());
@@ -210,8 +211,9 @@ pub fn visual_magnitude(bolometric: f64, temperature_k: f64) -> f64 {
 /// A star radiates as a blackbody, so its tint is fixed by its surface heat and
 /// nothing else: cool stars are red, the Sun is a warm white, and the hottest
 /// are blue. The channels are linear rather than gamma-encoded, so the caller
-/// can multiply flux straight into them, and the brightest of the three is one
-/// — this carries chroma, not brightness, which flux carries.
+/// can multiply flux straight into them, and the three carry a fixed Rec. 709
+/// luminance — this carries chroma, not brightness, which flux carries. A
+/// saturated hue may take a channel past one to hold that luminance.
 ///
 /// The chromaticity is Kim et al.'s cubic fit to the Planckian locus, valid
 /// from 1667 to 25000 K and clamped either side, which covers everything with
@@ -250,15 +252,17 @@ fn planckian_locus(temperature_k: f64) -> (f64, f64) {
     (x, y)
 }
 
-/// A chromaticity `(x, y)` as linear sRGB, normalized so the brightest channel
-/// is one.
+/// A chromaticity `(x, y)` as linear sRGB at unit luminance.
 ///
 /// Through XYZ at unit luminance, then the sRGB primaries under D65. A colour
 /// off the sRGB gamut lands a channel below zero, which is clamped up, so the
 /// deepest reds and blues sit at the edge of what the display can show rather
-/// than turning inside out. The result is scaled to unit peak because it stands
-/// for hue alone; how bright a star is drawn is its flux, applied by the
-/// caller.
+/// than turning inside out. The result is then scaled to unit Rec. 709
+/// luminance, so the tint carries hue at a fixed brightness and flux alone says
+/// how bright a star is drawn: a saturated red or blue, whose light piles into
+/// one channel, is no dimmer than a white of the same flux. A channel may run
+/// past one to hold that luminance in a saturated hue, which the linear HDR path
+/// the callers feed takes without clipping.
 fn xy_to_linear_srgb(x: f64, y: f64) -> [f32; 3] {
     // xyY to XYZ at unit luminance, Y = 1.
     let big_x = x / y;
@@ -272,9 +276,11 @@ fn xy_to_linear_srgb(x: f64, y: f64) -> [f32; 3] {
     let r = r.max(0.0);
     let g = g.max(0.0);
     let b = b.max(0.0);
-    let peak = r.max(g).max(b);
-    if peak > 0.0 {
-        [(r / peak) as f32, (g / peak) as f32, (b / peak) as f32]
+    // Rec. 709 luminance, the weights a linear-sRGB triple carries; dividing by
+    // it fixes the tint's brightness so only flux moves a star's.
+    let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if luminance > 0.0 {
+        [(r / luminance) as f32, (g / luminance) as f32, (b / luminance) as f32]
     } else {
         [0.0, 0.0, 0.0]
     }
@@ -522,17 +528,21 @@ mod tests {
         assert_eq!(combined_magnitude(std::iter::empty()), None);
     }
 
-    /// Every blackbody colour is a real one: each channel in gamut and the
-    /// brightest of the three riding the ceiling, since it carries hue alone.
+    /// Every blackbody colour is a real one: each channel in gamut above zero,
+    /// and the triple carrying a fixed luminance, since it stands for hue alone
+    /// and flux carries the brightness.
     #[test]
     fn a_blackbody_colour_is_normalized_and_in_range() {
         for t in [1000.0, 3000.0, 5772.0, 10000.0, 30000.0] {
             let c = blackbody_color(t);
-            assert!(c.iter().all(|&ch| (0.0..=1.0).contains(&ch)));
-            assert!(close(
-                c.iter().cloned().fold(0.0f32, f32::max) as f64,
-                1.0
-            ));
+            assert!(c.iter().all(|&ch| ch >= 0.0));
+            let luminance = 0.2126 * c[0] as f64
+                + 0.7152 * c[1] as f64
+                + 0.0722 * c[2] as f64;
+            assert!(
+                (luminance - 1.0).abs() < 1e-4,
+                "at {t} K luminance is {luminance}"
+            );
         }
     }
 
