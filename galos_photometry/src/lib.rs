@@ -19,6 +19,25 @@
 //! Nothing here knows about the database or the renderer. Magnitudes are plain
 //! [`f64`], colours are linear RGB as `[f32; 3]`, and distances are named in
 //! their unit at each call. The caller converts to whatever it draws in.
+//!
+//! # The instrument
+//!
+//! Three of these are not about the light but about what receives it:
+//! [`EYE_LIMIT`], which is a detector's faintest; [`relative_exposure`], which
+//! is how much of a star's flux an exposure collects; and [`psf`], which is
+//! where on the detector it lands. They are here rather than in a renderer
+//! because they decide **how much light lands and where**, and that is the one
+//! quantity two renderers of the same sky must agree on exactly — a rasterizer
+//! and a shader with different normalizations put different amounts of flux in
+//! the same star, and no comparison between their pictures can see past it.
+//!
+//! What stays with a renderer is how it *deposits* the profile — a loop over
+//! pixels, or a quad and a fragment shader — and how it compresses the result
+//! for a display. Those legitimately differ, which is why the tone curve is not
+//! here and why the PSF takes its cutoff as a parameter rather than a
+//! constant.
+
+pub mod psf;
 
 /// Light years to a parsec.
 ///

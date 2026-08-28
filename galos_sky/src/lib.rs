@@ -18,10 +18,17 @@
 //! The second reason is duller and matters more. The map will need a law
 //! taking a magnitude to a drawn intensity, and developing one inside a
 //! renderer with a GPU, a window and a swapchain in the loop is slow. Here it
-//! is a pure function over a deterministic buffer. The law itself lives in
-//! [`galos_photometry::relative_exposure`] rather than in this crate, so that
-//! when the map adopts it the two renderers are running the same physics and a
-//! comparison between them measures the pictures rather than the laws.
+//! is a pure function over a deterministic buffer.
+//!
+//! None of that law lives in this crate. [`galos_photometry::relative_exposure`]
+//! turns a magnitude into energy and [`galos_photometry::psf`] decides where on
+//! the detector it lands, so when the map adopts them the two renderers are
+//! running one instrument rather than two, and a comparison between their
+//! pictures measures the pictures. What is here is only the depositing: a loop
+//! over the pixels a disc reaches, and a tone curve to compress the result. Those
+//! are the parts a shader may legitimately do differently, which is why the
+//! comparison in [`Image::total_energy`] is made on linear energy, before either
+//! renderer's curve has touched it.
 //!
 //! # What it does not do
 //!
@@ -53,7 +60,6 @@
 
 pub mod camera;
 pub mod image;
-pub mod psf;
 
 pub use camera::Camera;
 pub use image::Image;
