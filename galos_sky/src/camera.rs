@@ -19,10 +19,17 @@
 //!
 //! # The two dials
 //!
-//! **Exposure** is a magnitude: the one that fills a pixel. At 1.0 Sirius and
-//! Canopus blow out and Vega sits just under; at 6.0 the naked-eye sky is all
-//! visible and the bright stars are enormous. It reads as a magnitude because
-//! that is the unit the decision is made in.
+//! **Exposure** is a magnitude: the one that fills a pixel. It reads as a
+//! magnitude because that is the unit the decision is made in — a picture is
+//! set up by saying how faint a star should still register, not by picking a
+//! multiplier.
+//!
+//! The default is 6.0, near the naked-eye limit, which puts the brightest few
+//! dozen stars well into saturation and leaves a field of fainter ones behind
+//! them. Turning it down to 1.0 does not give a naked-eye sky but a nearly
+//! empty one: at that setting even Sirius peaks at about three quarters of
+//! full scale and a sixth-magnitude star lands three parts in 255, which is
+//! not black but is not a star anybody sees either.
 //!
 //! **Seeing** is the width of the point-spread function in pixels, which sets
 //! how large a star of a given brightness draws. Together they are the whole
@@ -74,9 +81,11 @@ pub struct Camera {
 impl Camera {
     /// A camera of the given size, at the origin, looking down `+x`.
     ///
-    /// The defaults are a sixty-degree field, an exposure at magnitude 1 and
-    /// seeing of 1.4 pixels — a normal lens on a sky where the brightest dozen
-    /// stars blow out, which is what the sky looks like to a person.
+    /// The defaults are a sixty-degree field — a normal lens — an exposure at
+    /// magnitude 6, near the naked-eye limit, and seeing of 1.8 pixels. That
+    /// combination is the one the golden image is drawn at, and it is what
+    /// gives a sky in which the bright stars dominate a field of fainter ones
+    /// rather than sitting among them.
     pub fn new(width: u32, height: u32) -> Camera {
         Camera {
             position: [0.0; 3],
@@ -85,8 +94,8 @@ impl Camera {
             fov_y: 60f64.to_radians(),
             width: width.max(1),
             height: height.max(1),
-            exposure: 1.0,
-            seeing: 1.4,
+            exposure: 6.0,
+            seeing: 1.8,
         }
     }
 
