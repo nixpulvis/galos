@@ -30,3 +30,6 @@ cli = ["dep:clap"]
 name = "galos-sky"
 path = "src/main.rs"
 required-features = ["cli"]
+
+[dev-dependencies]
+png = "0.18"

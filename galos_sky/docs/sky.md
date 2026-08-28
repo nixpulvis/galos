@@ -174,10 +174,17 @@ Worth aspiring to, and reachable in three steps of increasing cost. Pixel-exact
 comparison is not the goal at any of them; a 3D perspective GPU path and a 2D
 CPU path will never agree bit for bit, and should not have to.
 
-1. **Golden images inside `galos_sky` alone.** Deterministic CPU render, PNG
-   checked in, compared on change. No GPU, no bevy, no harness. This catches
-   every regression in the response law and is available the day the renderer
-   runs.
+1. **Golden images inside `galos_sky` alone.** *Built.* A deterministic CPU
+   render of the Big Dipper, checked in at 400×400, compared on change —
+   decoded and diffed per channel with a tolerance of one, rather than by PNG
+   bytes, which would also be asserting a compression setting and the last bit
+   of a transcendental on some other architecture. It guards the whole path
+   including `galos_photometry`: a two per cent change to the exposure law
+   moves 73 channels and fails it.
+
+   The subject is a constellation on purpose. A golden whose subject is
+   recognisable is one a person can judge when it has to be regenerated, which
+   is the difference between blessing a new picture and accepting one.
 2. **List diff, no pixels.** `galos_map` dumps its per-star screen positions
    and intensities for one frame under a fixed camera; `galos_sky` computes the
    same list through a perspective projection matching that camera. Compare.
