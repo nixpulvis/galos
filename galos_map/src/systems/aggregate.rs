@@ -21,7 +21,7 @@ use crate::schedule::MapSet;
 use crate::systems::scale::View;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::aggregate::TEMP_BUCKETS;
+use galos_index::aggregate::bucket_temperature;
 use galos_index::{Aggregate, Cell, Mode, Needed, View as Viewpoint};
 use galos_photometry::blackbody_color;
 
@@ -150,19 +150,6 @@ pub struct Splat {
 /// read, kept apart so the description can be tested without a renderer.
 #[derive(Resource, Default)]
 pub struct Splats(pub Vec<Splat>);
-
-/// The representative temperature of a flux bucket, kelvin
-///
-/// The buckets are even in log temperature between the coolest star worth
-/// colouring and the hottest whose blue has stopped moving (see
-/// [`galos_index::aggregate::temp_bucket`]); this is the geometric centre of
-/// one, which the whole of its flux is coloured as.
-fn bucket_temperature(bucket: usize) -> f64 {
-    const LO: f64 = 2000.0;
-    const HI: f64 = 50000.0;
-    let f = (bucket as f64 + 0.5) / TEMP_BUCKETS as f64;
-    (LO.ln() + f * (HI.ln() - LO.ln())).exp()
-}
 
 /// One cell as a splat, or [`None`] where it carries no light to draw.
 pub fn splat(cell: &Cell) -> Option<Splat> {
