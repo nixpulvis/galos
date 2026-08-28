@@ -16,9 +16,12 @@
 //! compresses the result for a display. What it may not keep is its own idea of
 //! the profile's shape or its normalization.
 //!
-//! A Moffat profile here, `(1 + (r/α)²)^(−β)`: a bright core with power-law
-//! wings, the standard fit to a seeing-limited star. Closer to a real star
-//! than a Gaussian, which falls off too fast to have the halo a bright star has.
+//! Two profiles, chosen by the caller through [`Psf`]: a [`Moffat`],
+//! `(1 + (r/α)²)^(−β)`, a bright core with power-law wings, and a [`Gaussian`],
+//! `exp(−r²/2σ²)`. The Moffat is the default and the truer of the two — a real
+//! star has the halo its wings give and the Gaussian has none — but the
+//! Gaussian is the standard seeing approximation and cheaper to reason about,
+//! so both are offered and a renderer picks.
 //!
 //! # Why bright stars are bigger
 //!
@@ -27,9 +30,10 @@
 //! has wings that stay above a floor further out. Sirius draws as a disc and a
 //! magnitude-six star as a dot for the same reason they look that way through a
 //! telescope, rather than because a table said so. The Moffat's wings are
-//! heavier than a Gaussian's — the radius grows as a power of the energy rather
-//! than the square root of its log — which is the halo a bright star really has,
-//! and the reason [`MAX_RADIUS`] is a guard rather than a formality.
+//! heavier than a Gaussian's — its radius grows as a power of the energy where
+//! the Gaussian's grows as the square root of its log — which is the halo a
+//! bright star really has, and the reason [`MAX_RADIUS`] is a guard for the
+//! Moffat rather than a formality.
 
 /// The wing index `β` of the stellar point spread, shared so both renderers
 /// wear one profile.
@@ -50,6 +54,35 @@ pub const STELLAR_BETA: f64 = 2.0;
 /// overexposed source from costing more than the rest of the catalog together,
 /// a loop over pixels and a shader's quad alike.
 pub const MAX_RADIUS: f64 = 96.0;
+
+/// Which point-spread profile an instrument wears.
+///
+/// The shape a renderer deposits, chosen through [`Psf::new`]. Both are
+/// energy-conserving and share [`MAX_RADIUS`]; they differ in the wings, which
+/// is what a bright star's halo is made of.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Profile {
+    /// `exp(−r²/2σ²)`: a core and effectively no wings, the standard seeing
+    /// approximation.
+    Gaussian,
+    /// `(1 + (r/α)²)^(−β)`: a core with heavy power-law wings, the fit a real
+    /// star wears. The default.
+    #[default]
+    Moffat,
+}
+
+impl Profile {
+    /// Both profiles, the default first, for a caller offering the choice.
+    pub const ALL: [Profile; 2] = [Profile::Moffat, Profile::Gaussian];
+
+    /// The profile's name, for a label or a command line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::Gaussian => "Gaussian",
+            Profile::Moffat => "Moffat",
+        }
+    }
+}
 
 /// A Moffat point-spread function: a core of width `alpha` and wings of index
 /// `beta`.
@@ -122,6 +155,123 @@ impl Moffat {
         let ratio = (peak / floor).powf(1.0 / self.beta);
         let r = self.alpha * (ratio - 1.0).sqrt();
         Some(r.min(MAX_RADIUS))
+    }
+}
+
+/// A Gaussian point-spread function of a given width.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Gaussian {
+    /// The standard deviation `σ`, in whatever unit the caller measures its
+    /// image in — pixels, for the renderers here. A star's disc visibly ends
+    /// at about three of these.
+    pub sigma: f64,
+}
+
+impl Gaussian {
+    /// A PSF of the given width.
+    pub fn new(sigma: f64) -> Gaussian {
+        Gaussian { sigma: sigma.max(1e-3) }
+    }
+
+    /// The profile's shape, normalized to unit peak; see [`Moffat::shape`].
+    pub fn shape(&self, distance: f64) -> f64 {
+        let s = distance / self.sigma;
+        (-0.5 * s * s).exp()
+    }
+
+    /// The peak value at the centre of a star carrying `energy`.
+    ///
+    /// A two-dimensional Gaussian integrates to `2π σ²`, so dividing by that
+    /// conserves the energy put in; see [`Moffat::peak`] for why this is the
+    /// figure two renderers must share.
+    pub fn peak(&self, energy: f64) -> f64 {
+        energy / (std::f64::consts::TAU * self.sigma * self.sigma)
+    }
+
+    /// The value `distance` from the centre for a star carrying `energy`.
+    pub fn at(&self, energy: f64, distance: f64) -> f64 {
+        self.peak(energy) * self.shape(distance)
+    }
+
+    /// How far out this star is still worth drawing; see [`Moffat::radius`].
+    ///
+    /// The Gaussian falls to `floor` at `σ·√(2·ln(peak/floor))`, which grows as
+    /// the square root of the log of the energy — self-limiting, so the cap
+    /// rarely binds.
+    pub fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
+        let peak = self.peak(energy);
+        if !(floor > 0.0) || peak <= floor {
+            return None;
+        }
+        let r = self.sigma * (2.0 * (peak / floor).ln()).sqrt();
+        Some(r.min(MAX_RADIUS))
+    }
+}
+
+/// A point-spread function of either [`Profile`], built from one width.
+///
+/// The type a renderer holds so the profile is a runtime choice rather than a
+/// compile-time one. It dispatches the shared quantities —
+/// [`shape`](Self::shape), [`peak`](Self::peak), [`at`](Self::at),
+/// [`radius`](Self::radius) — to the chosen profile, so one render loop draws
+/// either.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Psf {
+    Gaussian(Gaussian),
+    Moffat(Moffat),
+}
+
+impl Psf {
+    /// A PSF of the given profile and width, in pixels.
+    ///
+    /// The width is the Gaussian's `σ` or the Moffat's `α`; both are the core's
+    /// scale, so one "seeing" dial drives either. The Moffat takes the shared
+    /// [`STELLAR_BETA`] for its wings.
+    pub fn new(profile: Profile, width: f64) -> Psf {
+        match profile {
+            Profile::Gaussian => Psf::Gaussian(Gaussian::new(width)),
+            Profile::Moffat => Psf::Moffat(Moffat::new(width, STELLAR_BETA)),
+        }
+    }
+
+    /// Which profile this is.
+    pub fn profile(&self) -> Profile {
+        match self {
+            Psf::Gaussian(_) => Profile::Gaussian,
+            Psf::Moffat(_) => Profile::Moffat,
+        }
+    }
+
+    /// The unit-peak shape at `distance`.
+    pub fn shape(&self, distance: f64) -> f64 {
+        match self {
+            Psf::Gaussian(g) => g.shape(distance),
+            Psf::Moffat(m) => m.shape(distance),
+        }
+    }
+
+    /// The peak of a star carrying `energy`.
+    pub fn peak(&self, energy: f64) -> f64 {
+        match self {
+            Psf::Gaussian(g) => g.peak(energy),
+            Psf::Moffat(m) => m.peak(energy),
+        }
+    }
+
+    /// The value `distance` from the centre of a star carrying `energy`.
+    pub fn at(&self, energy: f64, distance: f64) -> f64 {
+        match self {
+            Psf::Gaussian(g) => g.at(energy, distance),
+            Psf::Moffat(m) => m.at(energy, distance),
+        }
+    }
+
+    /// The radius a star carrying `energy` clears above `floor`.
+    pub fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
+        match self {
+            Psf::Gaussian(g) => g.radius(energy, floor),
+            Psf::Moffat(m) => m.radius(energy, floor),
+        }
     }
 }
 
@@ -249,5 +399,41 @@ mod tests {
         let psf = Moffat::new(2.0, STELLAR_BETA);
         let r = psf.radius(10.0, FLOOR).expect("visible");
         assert!(r < 30.0, "{r}");
+    }
+
+    /// The Gaussian holds the light put into it too, and needs no deep floor to
+    /// do it: its wings fall off fast enough that the tail past the radius is
+    /// nothing.
+    #[test]
+    fn a_gaussian_disc_conserves_energy() {
+        let psf = Gaussian::new(2.0);
+        let energy = 10.0;
+        let r = psf.radius(energy, FLOOR).expect("visible");
+        let n = r.ceil() as i64;
+        let mut total = 0.0;
+        for y in -n..=n {
+            for x in -n..=n {
+                let d = ((x * x + y * y) as f64).sqrt();
+                if d <= r {
+                    total += psf.at(energy, d);
+                }
+            }
+        }
+        assert!((total - energy).abs() / energy < 0.01, "summed {total}");
+    }
+
+    /// A [`Psf`] wears the profile it is handed and dispatches to it. The two
+    /// concentrate a star's light differently at one width, so their peaks
+    /// differ — which is the whole of why the choice is worth offering.
+    #[test]
+    fn a_psf_wears_the_profile_it_is_given() {
+        let g = Psf::new(Profile::Gaussian, 2.0);
+        let m = Psf::new(Profile::Moffat, 2.0);
+        assert_eq!(g.profile(), Profile::Gaussian);
+        assert_eq!(m.profile(), Profile::Moffat);
+        assert!(g.peak(10.0) != m.peak(10.0), "the profiles concentrate alike");
+        assert!((g.shape(0.0) - 1.0).abs() < 1e-12);
+        assert!((m.shape(0.0) - 1.0).abs() < 1e-12);
+        assert!(g.shape(5.0) > 0.0 && m.shape(5.0) > 0.0);
     }
 }

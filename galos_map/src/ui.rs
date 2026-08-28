@@ -30,7 +30,9 @@ use crate::systems::labels::ShowBodyNames;
 use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
-use crate::systems::spawn::{ColorBy, PendingSpawns, ShowNames, StarExposure};
+use crate::systems::spawn::{
+    ColorBy, PendingSpawns, ShowNames, StarExposure, StarProfile,
+};
 use crate::systems::{InReach, PendingEvictions, Spyglass};
 use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
@@ -38,6 +40,7 @@ use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_index::meta::{Faction as DbFaction, NameEntry};
+use galos_photometry::psf::Profile;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
@@ -597,6 +600,7 @@ pub struct Settings<'w> {
     color_by: ResMut<'w, ColorBy>,
     population_scale: ResMut<'w, ScalePopulation>,
     star_exposure: ResMut<'w, StarExposure>,
+    star_profile: ResMut<'w, StarProfile>,
     show_names: ResMut<'w, ShowNames>,
     throttle: ResMut<'w, Throttle>,
     poll: ResMut<'w, Poll>,
@@ -915,6 +919,20 @@ pub fn chrome(
             );
         }
         if *settings.view == View::Realistic {
+            ui.add_space(FIELD_GAP);
+            // The point-spread profile the stars wear: a Moffat with its wings
+            // or a tighter Gaussian. Read into a local and written back only on
+            // a change, so drawing the radios does not mark the resource changed
+            // every frame and rebake the texture; see
+            // [`crate::systems::spawn::reprofile`].
+            ui.label("Point spread");
+            let mut profile = settings.star_profile.0;
+            for choice in Profile::ALL {
+                ui.radio_value(&mut profile, choice, choice.name());
+            }
+            if profile != settings.star_profile.0 {
+                settings.star_profile.0 = profile;
+            }
             ui.add_space(FIELD_GAP);
             // How many stops the star field is lifted to the display. From far
             // under what a dark-adapted eye takes in up to a few stops past the

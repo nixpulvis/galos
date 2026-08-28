@@ -14,6 +14,7 @@
 
 use clap::Parser;
 use galos_catalog::{Star, hyg};
+use galos_photometry::psf::Profile;
 use galos_sky::Camera;
 use std::fs::File;
 use std::path::PathBuf;
@@ -45,6 +46,10 @@ struct Cli {
     /// The point-spread function's width, pixels.
     #[arg(long, default_value_t = 1.8)]
     seeing: f64,
+
+    /// The point-spread profile: `moffat` (default) or `gaussian`.
+    #[arg(long, default_value = "moffat", value_parser = parse_profile)]
+    profile: Profile,
 
     /// Image size, `WIDTHxHEIGHT`.
     #[arg(long, default_value = "1600x900")]
@@ -118,14 +123,12 @@ fn main() {
         .looking_from(from, at)
         .with_fov_degrees(cli.fov)
         .with_exposure(cli.exposure)
-        .with_seeing(cli.seeing);
+        .with_seeing(cli.seeing)
+        .with_profile(cli.profile);
 
     let image = camera.render(&stars);
-    let lit = image
-        .pixels()
-        .iter()
-        .filter(|p| p[0] + p[1] + p[2] > 1e-3)
-        .count();
+    let lit =
+        image.pixels().iter().filter(|p| p[0] + p[1] + p[2] > 1e-3).count();
     eprintln!(
         "{}x{}, {lit} pixels lit, peak {:.3}, total {:.1}",
         image.width(),
@@ -217,10 +220,9 @@ fn place(stars: &[Star], name: &str) -> [f64; 3] {
     {
         return [x, y, z];
     }
-    match stars
-        .iter()
-        .find(|s| s.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name)))
-    {
+    match stars.iter().find(|s| {
+        s.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))
+    }) {
         Some(star) => star.position,
         None => {
             eprintln!("no star named {name}, and not an x,y,z triple");
@@ -233,4 +235,15 @@ fn place(stars: &[Star], name: &str) -> [f64; 3] {
 fn parse_size(size: &str) -> (u32, u32) {
     let (w, h) = size.split_once(['x', 'X']).unwrap_or(("1600", "900"));
     (w.trim().parse().unwrap_or(1600), h.trim().parse().unwrap_or(900))
+}
+
+/// `moffat` or `gaussian`, for the `--profile` flag.
+fn parse_profile(s: &str) -> Result<Profile, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "moffat" => Ok(Profile::Moffat),
+        "gaussian" => Ok(Profile::Gaussian),
+        other => Err(format!(
+            "unknown profile {other:?}, expected moffat or gaussian"
+        )),
+    }
 }
