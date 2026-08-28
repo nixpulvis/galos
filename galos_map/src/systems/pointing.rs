@@ -33,7 +33,7 @@ pub fn plugin(app: &mut App) {
         (point_at, size_indicators, point_the_cursor)
             .in_set(MapSet::Present)
             .after(super::scale::size_by_distance)
-            .after(super::scale::size_uniformly)
+            .after(super::scale::size_photometrically)
             // A mark is taken from the shell that is drawn this frame rather
             // than the one that was drawn last, as it is taken from the size
             // settled this frame.

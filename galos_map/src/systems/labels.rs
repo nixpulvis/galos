@@ -63,7 +63,7 @@ pub(crate) fn plugin(app: &mut App) {
             // but only while it is drawn, and that is decided here.
             .after(super::visibility)
             .after(super::scale::size_by_distance)
-            .after(super::scale::size_uniformly)
+            .after(super::scale::size_photometrically)
             // A name stands off the mark drawn around what it names, so it
             // wants the mark settled this frame rather than last.
             .after(super::pointing::size_indicators),

@@ -11,7 +11,6 @@
 //! selection does: a system flown away from is despawned, and a panel opened
 //! for it has no reason to go with it.
 
-use crate::{Factions, Names, Populated};
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
@@ -20,12 +19,14 @@ use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::{Picked, Selection};
 use crate::ui::MARGIN;
 use crate::ui::SystemAction;
+use crate::{Factions, Names, Populated};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use elite_journal::body::{Discovery, Orbit, Spin};
 use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
+use galos_photometry::apparent_magnitude_ly;
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -504,6 +505,9 @@ fn panels(
     // Where the camera is looking, which is the distance the spyglass and
     // the selection's own row are measured in.
     let center = orbit.single().map(|camera| camera.center).ok();
+    // Where the eye stands, for a system's apparent magnitude — how bright it
+    // looks from here, the figure the realistic view sizes a star by.
+    let eye = orbit.single().map(|camera| camera.eye).ok();
     // The top right corner, clear of the settings pane and the bar, which
     // stand against the left edge and the top of it. The corner itself, since
     // a panel is placed by its own right hand top rather than by its left: a
@@ -556,9 +560,14 @@ fn panels(
         let window = window.show(ctx, |ui| {
             spread(ui);
             match &panel.subject {
-                Subject::System(system) => {
-                    described(ui, system, &names, &mut centered, &mut wanted)
-                }
+                Subject::System(system) => described(
+                    ui,
+                    system,
+                    &names,
+                    eye,
+                    &mut centered,
+                    &mut wanted,
+                ),
                 Subject::Star(star) => mark_if_wound(&mut clock, |clock| {
                     star_described(ui, star, clock)
                 }),
@@ -653,6 +662,7 @@ fn described(
     ui: &mut Ui,
     system: &System,
     names: &FactionNames,
+    eye: Option<DVec3>,
     centered: &mut Option<DVec3>,
     wanted: &mut Option<Filter>,
 ) {
@@ -661,6 +671,29 @@ fn described(
         |ui| {
             let [x, y, z] = system.position;
             field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
+            // What the realistic view sizes a star by: the magnitude the bake
+            // assigned, how bright it looks from where the camera stands, and
+            // its tint bucket. Unknown for a system built from a name lookup
+            // rather than a payload point.
+            field(
+                ui,
+                "Abs. magnitude",
+                match system.baked_magnitude() {
+                    Some(m) => format!("{m:.1}"),
+                    None => UNKNOWN.into(),
+                },
+            );
+            if let (Some(m), Some(eye)) = (system.baked_magnitude(), eye) {
+                let away = eye.distance(DVec3::from(system.position));
+                field(
+                    ui,
+                    "App. magnitude",
+                    format!("{:.1}", apparent_magnitude_ly(m as f64, away)),
+                );
+            }
+            if let Some(t) = system.baked_temperature() {
+                field(ui, "Temperature", format!("{t:.0} K"));
+            }
             // Two rows rather than one, because the two counts are reported
             // separately: the all-found tally and a nav beacon give the bodies
             // alone, and only the honk ever counts the belts and rings. Either
@@ -1340,7 +1373,7 @@ mod tests {
     /// What a system's own panel reads as, line by line
     fn panel(system: &System) -> Vec<String> {
         words(|ui| {
-            described(ui, system, &known(&[]), &mut None, &mut None);
+            described(ui, system, &known(&[]), None, &mut None, &mut None);
         })
     }
 

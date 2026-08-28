@@ -269,7 +269,11 @@ fn searched(
                 // through a ready task so the bar's spinner machinery is fed the
                 // same way a database answer once was.
                 let found = search_names(&names, name, near, RESULTS as usize);
-                searching.ask(name.clone(), now, pool.spawn(async move { found }));
+                searching.ask(
+                    name.clone(),
+                    now,
+                    pool.spawn(async move { found }),
+                );
             }
             // A route needs both ends. Say which one is the problem rather
             // than drawing nothing and leaving the user to guess.

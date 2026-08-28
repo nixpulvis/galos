@@ -12,10 +12,10 @@
 //! through its own transport, so nothing here is on the client's path; it is
 //! the builder's writer and the tests' reader.
 
-use crate::tree::{Snapshot, Dirtied};
 use crate::cache::Point;
 use crate::geometry::CellId;
 use crate::serialization::{Decode, Encode};
+use crate::tree::{Dirtied, Snapshot};
 use crate::walk::Index;
 use std::fs;
 use std::io;
@@ -30,7 +30,11 @@ pub const PAYLOAD_DIR: &str = "cells";
 /// The file a cell's payload lives in, named by level and Morton key so the
 /// name is stable and a cell is found without consulting the index.
 fn payload_path(dir: &Path, id: CellId) -> PathBuf {
-    dir.join(PAYLOAD_DIR).join(format!("{:02}-{:016x}.bin", id.level, id.morton()))
+    dir.join(PAYLOAD_DIR).join(format!(
+        "{:02}-{:016x}.bin",
+        id.level,
+        id.morton()
+    ))
 }
 
 impl Snapshot {
@@ -75,15 +79,18 @@ impl Index {
     /// Read an index from a build directory.
     pub fn read(dir: &Path) -> io::Result<Index> {
         let bytes = fs::read(dir.join(INDEX_FILE))?;
-        Index::from_bytes(&bytes)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not an index file"))
+        Index::from_bytes(&bytes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "not an index file")
+        })
     }
 
     /// Read one cell's payload from a build directory, empty when the cell owns
     /// nothing and so has no file. Positions are in light years.
     pub fn read_payload(dir: &Path, id: CellId) -> io::Result<Vec<Point>> {
         match fs::read(payload_path(dir, id)) {
-            Ok(bytes) => Ok(Vec::<Point>::from_bytes(&bytes).unwrap_or_default()),
+            Ok(bytes) => {
+                Ok(Vec::<Point>::from_bytes(&bytes).unwrap_or_default())
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -103,8 +110,11 @@ mod tests {
         fn new() -> Scratch {
             static SEQ: AtomicU32 = AtomicU32::new(0);
             let n = SEQ.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir()
-                .join(format!("galos_index_store_{}_{}", std::process::id(), n));
+            let dir = std::env::temp_dir().join(format!(
+                "galos_index_store_{}_{}",
+                std::process::id(),
+                n
+            ));
             Scratch(dir)
         }
     }

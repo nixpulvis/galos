@@ -1,10 +1,10 @@
 use super::Route;
 use crate::space::Galaxy;
+use crate::systems::System;
 use crate::systems::filter::Filter;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
-use crate::systems::System;
 
 /// What a route's line is painted, at `strength` of the full
 ///

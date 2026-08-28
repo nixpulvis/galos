@@ -28,7 +28,7 @@
 //! by luminosity and reads a luminosity-weighted centroid and spread. It is the
 //! same arithmetic; only the weight differs.
 
-use crate::serialization::{FixedCodec, Decode, Encode, record};
+use crate::serialization::{Decode, Encode, FixedCodec, record};
 
 /// The weighted moments of a set of points in three dimensions.
 ///
@@ -103,8 +103,11 @@ impl Moments {
             self.mean[1] + delta[1] * share,
             self.mean[2] + delta[2] * share,
         ];
-        let delta_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-        let m2 = self.m2 + other.m2 + delta_sq * (self.weight * other.weight / weight);
+        let delta_sq =
+            delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+        let m2 = self.m2
+            + other.m2
+            + delta_sq * (self.weight * other.weight / weight);
         Moments { weight, mean, m2 }
     }
 
@@ -122,17 +125,23 @@ impl Moments {
             return Moments::ZERO;
         }
         let mean = [
-            (self.weight * self.mean[0] - other.weight * other.mean[0]) / weight,
-            (self.weight * self.mean[1] - other.weight * other.mean[1]) / weight,
-            (self.weight * self.mean[2] - other.weight * other.mean[2]) / weight,
+            (self.weight * self.mean[0] - other.weight * other.mean[0])
+                / weight,
+            (self.weight * self.mean[1] - other.weight * other.mean[1])
+                / weight,
+            (self.weight * self.mean[2] - other.weight * other.mean[2])
+                / weight,
         ];
         let delta = [
             other.mean[0] - mean[0],
             other.mean[1] - mean[1],
             other.mean[2] - mean[2],
         ];
-        let delta_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-        let m2 = self.m2 - other.m2 - delta_sq * (weight * other.weight / self.weight);
+        let delta_sq =
+            delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+        let m2 = self.m2
+            - other.m2
+            - delta_sq * (weight * other.weight / self.weight);
         Moments { weight, mean, m2 }
     }
 }
@@ -289,7 +298,10 @@ mod tests {
         let b = Moments::point(1.0, [base[0] + 300.0, base[1], base[2]]);
         let m = a.merge(b);
         assert!(close(m.rms_radius(), 150.0));
-        assert!(close3(m.centroid().unwrap(), [base[0] + 150.0, base[1], base[2]]));
+        assert!(close3(
+            m.centroid().unwrap(),
+            [base[0] + 150.0, base[1], base[2]]
+        ));
     }
 
     /// The iterator forms fold through merge, so summing a column of moments is

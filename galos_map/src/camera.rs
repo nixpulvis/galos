@@ -46,6 +46,50 @@ pub fn plugin(app: &mut App) {
         Update,
         focus_lens.in_set(MapSet::Camera).after(orbit_camera),
     );
+    // Reads the view and retunes the camera's bloom when it changes; off the
+    // camera's own ordering, since it writes the bloom rather than the pose.
+    app.add_systems(Update, tune_bloom);
+}
+
+/// The bloom the realistic sky draws its stars through
+///
+/// [`Bloom::NATURAL`] with the low-frequency boost off, so a bright star reads
+/// as a tight glint rather than a wide disc. The boost is what smears a bright
+/// source across the coarse mips; a point star wants only the base scatter, and
+/// bloom over a field of points is what turns a star's brightness into its
+/// apparent size (galaxy.md) without a bright one swallowing the sky. Tuned by
+/// eye from Sol.
+const STAR_BLOOM: Bloom = Bloom {
+    // A whisper, down from NATURAL's 0.15. The star's size is its point-spread
+    // core (`scale::psf_radius`, bounded as the log of brightness); bloom on top
+    // of that only added a halo that scaled with emissive, which is what let a
+    // bright star swell into a blob. Kept just enough to gloss the brightest.
+    intensity: 0.02,
+    low_frequency_boost: 0.0,
+    low_frequency_boost_curvature: 0.0,
+    ..Bloom::NATURAL
+};
+
+/// Match the camera's bloom to the view
+///
+/// The realistic sky is points the bloom spreads into stars, so it wants the
+/// tight [`STAR_BLOOM`]. The map's shells carry their own no-bloom camera, but a
+/// system drawn from within still wants the natural bloom on its bodies, so that
+/// is restored off the realistic view. Written only when the view moves.
+fn tune_bloom(
+    view: Res<crate::systems::scale::View>,
+    mut cameras: Query<&mut Bloom, With<OrbitCamera>>,
+) {
+    if !view.is_changed() {
+        return;
+    }
+    let Ok(mut bloom) = cameras.single_mut() else {
+        return;
+    };
+    *bloom = match *view {
+        crate::systems::scale::View::Map => Bloom::NATURAL,
+        crate::systems::scale::View::Realistic => STAR_BLOOM,
+    };
 }
 
 /// How far the camera may be pitched from the horizontal

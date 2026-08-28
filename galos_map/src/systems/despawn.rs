@@ -323,10 +323,7 @@ mod tests {
             .iter(app.world())
             .next()
             .expect("a system to mark for eviction");
-        app.world_mut()
-            .resource_mut::<PendingEvictions>()
-            .0
-            .insert(doomed);
+        app.world_mut().resource_mut::<PendingEvictions>().0.insert(doomed);
         app.world_mut().resource_mut::<PendingSpawns>().push(
             system(9),
             false,

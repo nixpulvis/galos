@@ -48,6 +48,16 @@ pub const SPLIT_FULL_PX: f64 = 4.0;
 /// until then, so a far cell never spawns a square of overlapping points.
 pub const MARK_SEPARATION_PX: f64 = 6.7;
 
+/// The separation the realistic view resolves stars at, in pixels
+///
+/// A star is a point the size of the instrument's spread (a pixel or two), so
+/// two of them read apart far closer than two map marks do — [`MARK_SEPARATION_PX`]
+/// is the mark's, this is the point spread's. The realistic view resolves a
+/// cell's systems down to this, which is why a cluster stays a field of stars
+/// where the map would collapse it to one mark. See galaxy.md: the limit is the
+/// PSF in Real mode, the smallest stable mark in map mode.
+pub const STAR_SEPARATION_PX: f64 = 2.0;
+
 /// A cell wider than this on screen is refined for the glow; narrower, it
 /// splats. Half a degree, the "fraction of a degree" the opening-angle test
 /// turns on.
@@ -223,10 +233,15 @@ impl Index {
     }
 
     /// The children of a cell that exist in the tree, in octant order.
-    pub fn children<'a>(&'a self, cell: &'a Cell) -> impl Iterator<Item = &'a Cell> {
+    pub fn children<'a>(
+        &'a self,
+        cell: &'a Cell,
+    ) -> impl Iterator<Item = &'a Cell> {
         let ids = cell.id.children();
         (0..8u8).filter_map(move |octant| {
-            cell.has_child(octant).then(|| self.get(ids[octant as usize])).flatten()
+            cell.has_child(octant)
+                .then(|| self.get(ids[octant as usize]))
+                .flatten()
         })
     }
 
@@ -312,7 +327,7 @@ impl Index {
             // separates on screen. How many actually draw is the resolvable
             // prefix (see resolvable_count), grown per system at draw time; the
             // walk only says which cells the draw will want.
-            if resolvable_count(cell, view) >= 1 {
+            if resolvable_count(cell, view, MARK_SEPARATION_PX) >= 1 {
                 marks.push(id);
             }
 
@@ -336,8 +351,8 @@ impl Index {
             // weight and hands `alpha` to the children by their count, so the
             // two sum to the cell's own weight throughout the transition.
             let size = self.projected_extent(view, cell);
-            let alpha =
-                ((size - SPLIT_PX) / (SPLIT_FULL_PX - SPLIT_PX)).clamp(0.0, 1.0);
+            let alpha = ((size - SPLIT_PX) / (SPLIT_FULL_PX - SPLIT_PX))
+                .clamp(0.0, 1.0);
             if alpha < 1.0 {
                 splats.push(SplatRef { id, blend: weight * (1.0 - alpha) });
             }
@@ -393,7 +408,8 @@ impl Index {
         while let Some(id) = stack.pop() {
             let Some(cell) = self.get(id) else { continue };
             let d = distance(view.eye, cell.id.bounds().center());
-            let angle = if d <= 0.0 { f64::INFINITY } else { cell.id.edge_ly() / d };
+            let angle =
+                if d <= 0.0 { f64::INFINITY } else { cell.id.edge_ly() / d };
             if cell.is_leaf() || angle <= GLOW_OPENING_ANGLE {
                 splats.push(SplatRef { id, blend: 1.0 });
             } else {
@@ -449,7 +465,7 @@ fn slice_spacing(cell: &Cell) -> f64 {
 /// MARK_SEPARATION_PX)^3` — so the drawn systems land one mark apart whatever
 /// the distance. Continuous in distance, so a cell fills in and empties one
 /// system at a time rather than switching on whole and exposing its box.
-pub fn resolvable_count(cell: &Cell, view: &View) -> u64 {
+pub fn resolvable_count(cell: &Cell, view: &View, separation_px: f64) -> u64 {
     let slice = cell.slice_len();
     if slice == 0 {
         return 0;
@@ -458,7 +474,7 @@ pub fn resolvable_count(cell: &Cell, view: &View) -> u64 {
         slice_spacing(cell),
         distance(view.eye, contents_center(cell)),
     );
-    let fraction = (projected / MARK_SEPARATION_PX).powi(3).min(1.0);
+    let fraction = (projected / separation_px).powi(3).min(1.0);
     ((slice as f64) * fraction).round() as u64
 }
 
@@ -631,9 +647,15 @@ mod tests {
         let mut agg = Aggregate::ZERO;
         for i in 0..64u64 {
             let off = i as f64 * 0.5;
-            agg = agg.merge(Aggregate::of_system([c[0] + off, c[1], c[2]], 4.0, 5000.0, 0));
+            agg = agg.merge(Aggregate::of_system(
+                [c[0] + off, c[1], c[2]],
+                4.0,
+                5000.0,
+                0,
+            ));
         }
-        let leaf = Cell { id, rank_lo: 0, rank_hi: 64, child_mask: 0, aggregate: agg };
+        let leaf =
+            Cell { id, rank_lo: 0, rank_hi: 64, child_mask: 0, aggregate: agg };
         let mut cells = chain_to(id, 4.0);
         cells.push(leaf);
         let index = Index::from_cells(cells);
@@ -641,7 +663,10 @@ mod tests {
         let far = eye_out(id, 60_000.0);
         let out = index.walk_screen(&far);
         assert!(!out.marks.contains(&id), "a far dense leaf spawned its slice");
-        assert!(splat_ids(&out).contains(&id), "a far dense leaf was not splatted");
+        assert!(
+            splat_ids(&out).contains(&id),
+            "a far dense leaf was not splatted"
+        );
 
         let near = eye_out(id, 3.0);
         assert!(index.walk_screen(&near).marks.contains(&id));
@@ -657,14 +682,38 @@ mod tests {
         let mut agg = Aggregate::ZERO;
         for i in 0..512u64 {
             let off = i as f64 * 0.2;
-            agg = agg.merge(Aggregate::of_system([c[0] + off, c[1], c[2]], 4.0, 5000.0, 0));
+            agg = agg.merge(Aggregate::of_system(
+                [c[0] + off, c[1], c[2]],
+                4.0,
+                5000.0,
+                0,
+            ));
         }
-        let cell = Cell { id, rank_lo: 0, rank_hi: 512, child_mask: 0, aggregate: agg };
+        let cell = Cell {
+            id,
+            rank_lo: 0,
+            rank_hi: 512,
+            child_mask: 0,
+            aggregate: agg,
+        };
 
-        assert_eq!(resolvable_count(&cell, &eye_out(id, 5.0)), 512, "not full up close");
-        let mid = resolvable_count(&cell, &eye_out(id, 900.0));
+        assert_eq!(
+            resolvable_count(&cell, &eye_out(id, 5.0), MARK_SEPARATION_PX),
+            512,
+            "not full up close"
+        );
+        let mid =
+            resolvable_count(&cell, &eye_out(id, 900.0), MARK_SEPARATION_PX);
         assert!(mid > 0 && mid < 512, "expected a decimated prefix, got {mid}");
-        assert_eq!(resolvable_count(&cell, &eye_out(id, 5_000_000.0)), 0, "still drawing when one dot");
+        assert_eq!(
+            resolvable_count(
+                &cell,
+                &eye_out(id, 5_000_000.0),
+                MARK_SEPARATION_PX
+            ),
+            0,
+            "still drawing when one dot"
+        );
     }
 
     /// Residency reads position, never direction: the walk returns the same
@@ -697,7 +746,10 @@ mod tests {
         let (index, _parent, _kids) = small_tree(10, 10, 4.0);
         let near = eye_out(CellId::ROOT, 1.0e6);
         let out = index.walk_screen(&near);
-        assert!(!splat_ids(&out).contains(&CellId::ROOT), "the root refused to split");
+        assert!(
+            !splat_ids(&out).contains(&CellId::ROOT),
+            "the root refused to split"
+        );
     }
 
     /// A split conserves the weight: a cell partway into its cross-fade draws
@@ -758,7 +810,9 @@ mod tests {
         // From far enough that even the whole cube subtends under the angle, the
         // root itself splats.
         let far = eye_out(CellId::ROOT, 20_000_000.0);
-        assert!(splat_ids(&index.needed(&far, Mode::Real)).contains(&CellId::ROOT));
+        assert!(
+            splat_ids(&index.needed(&far, Mode::Real)).contains(&CellId::ROOT)
+        );
     }
 
     /// An empty index asks for nothing, in every mode.
