@@ -46,7 +46,8 @@
 //! use galos_catalog::hyg;
 //! use std::fs::File;
 //!
-//! let (stars, _) = hyg::read(File::open("hygdata.csv")?)?;
+//! let catalog = hyg::read(File::open("hygdata.csv")?)?;
+//! let stars = catalog.stars;
 //! let sirius = stars.iter().find(|s| s.name.as_deref() == Some("Sirius"));
 //!
 //! // Stand on Sol, look at Sirius, take the picture.

@@ -198,6 +198,44 @@ impl Camera {
         Some(Mark::new(x, y, radius))
     }
 
+    /// Where to ring a *bearing* rather than a place.
+    ///
+    /// For the stars the catalog locates on the sky but not in space — see
+    /// [`galos_catalog::hyg::Unplaced`]. They have a measured direction and no
+    /// distance, so there is exactly one viewpoint from which the bearing says
+    /// where the star is: the one it was measured from, which for every survey
+    /// in this crate's reach is Sol.
+    ///
+    /// So this answers [`None`] unless the camera stands at the frame's origin.
+    /// That is not Sol being privileged as a place to stand — the renderer does
+    /// not care where it is — it is the measurement being what it is. From ten
+    /// light years away the star is somewhere along that line and the picture
+    /// cannot say where, and a ring drawn anyway would be pointing at a guess.
+    pub fn mark_bearing(&self, bearing: [f64; 3], radius: f64) -> Option<Mark> {
+        if dot(self.position, self.position) > 1e-12 {
+            return None;
+        }
+        // A bearing is a point on a unit sphere about the eye. Any positive
+        // multiple projects the same, since the projection divides by depth.
+        self.mark(bearing, radius)
+    }
+
+    /// Whether a ring would show: any of it inside the picture.
+    ///
+    /// [`project`](Self::project) deliberately answers for points outside the
+    /// frame, because a star just past the border still spills light in through
+    /// its disc. A *mark* has no such spill — it is either visible or it is
+    /// not — so anything counting or reporting marks should count these rather
+    /// than the ones merely in front of the camera. The two differ by a lot:
+    /// over a sixty-degree field most of the sky is in front of the eye and
+    /// off the picture.
+    pub fn frames(&self, mark: &Mark) -> bool {
+        mark.x + mark.radius >= 0.0
+            && mark.y + mark.radius >= 0.0
+            && mark.x - mark.radius < self.width as f64
+            && mark.y - mark.radius < self.height as f64
+    }
+
     /// Rings for every one of a set of points that is in frame.
     pub fn marks(
         &self,
@@ -309,7 +347,7 @@ mod tests {
     fn bright() -> Vec<Star> {
         hyg::read(include_str!("../../galos_catalog/data/bright.csv").as_bytes())
             .expect("the fixture is a HYG catalog")
-            .0
+            .stars
     }
 
     fn named(stars: &[Star], name: &str) -> Star {
@@ -560,6 +598,53 @@ mod tests {
         let marks =
             camera.marks([[10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]], 4.0);
         assert_eq!(marks.len(), 1);
+    }
+
+
+    /// A bearing rings where the star is, seen from where the bearing was
+    /// measured.
+    #[test]
+    fn a_bearing_rings_from_the_origin() {
+        let stars = bright();
+        let vega = named(&stars, "Vega");
+        let bearing = [
+            vega.position[0] / vega.distance,
+            vega.position[1] / vega.distance,
+            vega.position[2] / vega.distance,
+        ];
+        let camera = Camera::new(300, 300).looking_from([0.0; 3], vega.position);
+        let mark = camera.mark_bearing(bearing, 9.0).expect("in front");
+        assert!((mark.x - 150.0).abs() < 0.01 && (mark.y - 150.0).abs() < 0.01);
+    }
+
+    /// **And nowhere else.** A bearing carries no distance, so from any other
+    /// viewpoint there is no answer, and the honest reply is silence rather
+    /// than a ring around a guess.
+    #[test]
+    fn a_bearing_means_nothing_from_anywhere_else() {
+        let camera = Camera::new(300, 300)
+            .looking_from([4.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
+        assert_eq!(camera.mark_bearing([1.0, 0.0, 0.0], 9.0), None);
+    }
+
+
+    /// A mark is visible or it is not, and "in front of the camera" is not the
+    /// same question. Most of the sky is in front of an eye and off its
+    /// picture, so anything reporting marks has to ask this one.
+    #[test]
+    fn framing_is_a_narrower_question_than_being_in_front() {
+        let camera = Camera::new(100, 100)
+            .looking_along([1.0, 0.0, 0.0])
+            .with_fov_degrees(60.0);
+        // Far off to the side but still ahead: projects, does not frame.
+        let aside = camera.mark([1.0, 8.0, 0.0], 5.0).expect("in front");
+        assert!(!camera.frames(&aside), "at {:.0},{:.0}", aside.x, aside.y);
+        // Dead ahead: both.
+        let ahead = camera.mark([10.0, 0.0, 0.0], 5.0).expect("in front");
+        assert!(camera.frames(&ahead));
+        // Just past the border, close enough that its ring still shows.
+        let edge = Mark::new(-2.0, 50.0, 5.0);
+        assert!(camera.frames(&edge));
     }
 
 }
