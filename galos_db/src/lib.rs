@@ -9,6 +9,7 @@
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::env;
 
+pub mod catalog;
 pub mod error;
 pub use self::error::{Error, Result};
 
