@@ -18,15 +18,17 @@ use crate::systems::{
 };
 use crate::ui::{Gesture, PressOwner};
 use crate::{Names, Populated};
-use bevy::camera::visibility::{RenderLayers, ViewVisibility};
 use bevy::asset::RenderAssetUsages;
-use bevy::image::{Image, ImageSampler};
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::camera::visibility::{RenderLayers, ViewVisibility};
 use bevy::diagnostic::FrameCount;
+use bevy::image::{Image, ImageSampler};
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
 use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
+use bevy::render::render_resource::{
+    Extent3d, TextureDimension, TextureFormat,
+};
 use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
@@ -34,6 +36,7 @@ use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_index::aggregate::{TEMP_BUCKETS, bucket_temperature};
 use galos_index::meta::Economies;
+use galos_photometry::psf::{Moffat, STELLAR_BETA};
 use galos_photometry::{apparent_magnitude_ly, blackbody_color, flux};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -216,6 +219,15 @@ fn mag_step(apparent: f64) -> usize {
     (f.clamp(0., 1.) * MAG_STEPS as f64).round() as usize
 }
 
+/// The apparent magnitude that fills a pixel at exposure zero: the realistic
+/// view's zero point, the dial `galos_sky` calls `exposure`.
+///
+/// [`StarExposure`] rides this in stops, and [`StarExposure::zero_point`] turns
+/// the two into the one figure [`galos_photometry::relative_exposure`] reads a
+/// star's drawn energy from, so the map and the sky size a star off one law.
+/// Near the dark-adapted eye's limit, so the sky comes in dense.
+const STAR_ZERO_POINT: f64 = 8.0;
+
 /// The exposure the realistic sky is drawn at, in stops
 ///
 /// One control for the whole sky: the gain a star's flux is drawn against.
@@ -239,6 +251,16 @@ impl StarExposure {
     /// The linear gain the stops come to: a doubling per stop.
     pub(crate) fn factor(&self) -> f32 {
         2f32.powf(self.0)
+    }
+
+    /// The zero point the stops come to, an apparent magnitude.
+    ///
+    /// A stop is a factor of two in energy, which is `2.5·log₁₀2 ≈ 0.75`
+    /// magnitudes, so opening the exposure lifts the zero point that far and
+    /// draws fainter stars in. Fed to [`galos_photometry::relative_exposure`]
+    /// as the magnitude that fills a pixel.
+    pub(crate) fn zero_point(&self) -> f64 {
+        STAR_ZERO_POINT + self.0 as f64 * 2.5 * 2f64.log10()
     }
 }
 
@@ -282,24 +304,16 @@ fn photometric_material(
     }
 }
 
-/// The Moffat index of the star point spread baked into [`star_psf`]
-///
-/// The `β` of `(1 + (r/α)²)^(−β)`: how heavy the wings are. Lower spreads more
-/// of a bright star's light into its halo, higher keeps it in the core. This
-/// shapes the baked texture only; how large the sprite is drawn is the size
-/// law's, [`super::scale::PSF_GROWTH`]. Tuned against a long exposure of a real
-/// sky.
-const PSF_PROFILE_BETA: f32 = 2.0;
-
 /// How wide the baked point spread is, in texels a side
 const PSF_TEXELS: u32 = 128;
 
-/// The star point spread, one Moffat profile shared by every star
+/// The star point spread: [`galos_photometry::psf::Moffat`], baked to a texture
 ///
-/// A bright core with power-law wings falling to nothing by the edge, baked
-/// once into the texture the realistic view's sprite is drawn through. It is
-/// the fixed-shape PSF galaxy.md calls for: every star wears the same profile,
-/// and a brighter one clears more of it above the eye's floor (see
+/// The one shared profile, sampled from the crate so the map and `galos_sky`
+/// wear the same instrument — the map bakes its shape into a texture once, the
+/// sky evaluates it per pixel, but the `β` and the falloff are one definition.
+/// A bright core with power-law wings falling to nothing by the edge; a
+/// brighter star clears more of it above the eye's floor (see
 /// [`super::scale::size_photometrically`]), so brightness reads as size with no
 /// disc ever drawn. Linear rather than sRGB, so it multiplies the emissive
 /// straight; the channels carry the shape and the tint is the material's.
@@ -309,16 +323,16 @@ fn star_psf() -> Image {
     // A compact core: a tenth of its peak a fifth of the way out, all but gone
     // by the edge.
     let alpha = n as f32 / 16.;
-    let moffat = |r: f32| (1. + (r / alpha).powi(2)).powf(-PSF_PROFILE_BETA);
+    let psf = Moffat::new(alpha as f64, STELLAR_BETA);
+    let shape = |r: f32| psf.shape(r as f64) as f32;
     // Subtracted so the corner reaches exactly zero and no square edge shows.
-    let floor = moffat(centre);
+    let floor = shape(centre);
     let mut data = Vec::with_capacity((n * n * 4) as usize);
     for y in 0..n {
         for x in 0..n {
-            let r = ((x as f32 - centre).powi(2)
-                + (y as f32 - centre).powi(2))
-            .sqrt();
-            let v = ((moffat(r) - floor) / (1. - floor)).clamp(0., 1.);
+            let r = ((x as f32 - centre).powi(2) + (y as f32 - centre).powi(2))
+                .sqrt();
+            let v = ((shape(r) - floor) / (1. - floor)).clamp(0., 1.);
             let b = (v * 255.) as u8;
             data.extend_from_slice(&[b, b, b, b]);
         }
@@ -1421,8 +1435,9 @@ fn init_materials(
             )));
         }
     }
-    commands
-        .insert_resource(StarSprite { quad: meshes.add(Rectangle::new(1., 1.)) });
+    commands.insert_resource(StarSprite {
+        quad: meshes.add(Rectangle::new(1., 1.)),
+    });
     commands.insert_resource(SystemMaterials {
         bright,
         dim,
@@ -1717,6 +1732,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<Image>>();
         app.init_resource::<DimTo>();
         app.init_resource::<Repaints>();
         app.insert_resource(ColorBy::Allegiance);

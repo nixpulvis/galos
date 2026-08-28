@@ -24,7 +24,7 @@ use super::spawn::{Shell, StarExposure, StarSprite};
 use bevy::camera::visibility::ViewVisibility;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_photometry::{apparent_magnitude_ly, flux};
+use galos_photometry::{apparent_magnitude_ly, relative_exposure};
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(View::Map);
@@ -425,45 +425,32 @@ const PSF_GROWTH: f64 = 0.45;
 /// it still grows the star.
 const DOT_RADIUS: f32 = 0.6;
 
-/// The gain a magnitude-zero star's flux is drawn at, at exposure zero
-///
-/// Flux is measured against magnitude zero, so such a star has flux one; this
-/// is what its peak comes to on screen before [`StarExposure`] lifts or lowers
-/// it. Chosen so exposure zero reaches about the dark-adapted eye's limit
-/// (magnitude ~8), a good deal fainter than a naked eye on a planet, so the sky
-/// comes in dense; the limiting magnitude is then whatever the exposure makes
-/// it rather than a number set by hand.
-const STAR_GAIN: f64 = 1600.;
-
 /// The visible radius of a star's point spread, in screen pixels
 ///
-/// A star's image is its `flux` times a fixed point spread; the disc that shows
-/// is where that clears the eye's floor. Its peak is `flux · gain`, and the
-/// cleared radius is [`PSF_GROWTH`]` · ln(peak)` — zero where the peak is under
-/// the floor, so a star too faint to see has no size and is not drawn. The
-/// logarithm is the whole of the bound: brightness climbs it a fixed step per
-/// e-fold, so the sky's most luminous stars — Elite's procedural O and B
-/// supergiants run past a million suns — stay a glint a few pixels wide rather
-/// than a disc, with no cap to impose. It grows with the gain too, so opening
-/// the exposure enlarges every star by the same step and brings fainter ones in.
+/// A star's image is its exposed `energy` —
+/// [`galos_photometry::relative_exposure`] of its apparent magnitude, the same
+/// law `galos_sky` sizes by — spread over a fixed point spread, and the disc
+/// that shows is where that clears the eye's floor. The cleared radius is
+/// [`PSF_GROWTH`]` · ln(energy)`, zero where the energy is under one (a star
+/// fainter than the zero point), so a star too faint to see has no size and is
+/// not drawn. The logarithm is the whole of the bound: brightness climbs it a
+/// fixed step per e-fold, so the sky's most luminous stars — Elite's procedural
+/// O and B supergiants run past a million suns — stay a glint a few pixels wide
+/// rather than a disc, with no cap to impose.
 //
-// TODO(psf): this sizes a bloomed sprite carrying a fixed Moffat texture
-// ([`super::spawn::star_psf`]); the plan is a proper instrument PSF drawn as a
-// custom billboard material whose above-threshold radius falls out of the
-// profile itself. See galaxy.md "The instrument" and roadmap item 7 "Real
-// mode": a Moffat profile `(1 + (theta/alpha)^2)^(-beta)` — a Gaussian-ish core
-// with power-law wings. Each star's quad carries centre, magnitude and
-// temperature as vertex attributes; a billboard vertex shader expands it in
-// view space and a fragment shader draws the core integrated over each pixel's
-// footprint (an erf difference per axis) so a star crossing a pixel boundary
-// does not shimmer. Energy-normalized, one PSF for every star, calibrated once
-// against the bloom kernel by encircled energy. DO NOT FORGET THIS.
-fn psf_radius(flux: f64, gain: f64) -> f32 {
-    let peak = flux * gain;
-    if peak <= 1. {
+// TODO(psf): the profile and its `β` are now [`galos_photometry::psf::Moffat`],
+// baked to a texture by [`super::spawn::star_psf`] and stretched to this radius
+// on a billboard. The stretch is the approximation left to remove: the plan is
+// a custom billboard material that evaluates the Moffat per fragment at a fixed
+// core width, integrated over each pixel's footprint so a star crossing a pixel
+// boundary does not shimmer, its above-floor radius falling out of the profile
+// itself. See galaxy.md "The instrument" and roadmap item 7 "Real mode". DO NOT
+// FORGET THIS.
+fn psf_radius(energy: f64) -> f32 {
+    if energy <= 1. {
         return 0.;
     }
-    ((PSF_GROWTH * peak.ln()) as f32).max(DOT_RADIUS)
+    ((PSF_GROWTH * energy.ln()) as f32).max(DOT_RADIUS)
 }
 
 /// Draw each system as its point spread, for the realistic view
@@ -491,7 +478,7 @@ pub(crate) fn size_photometrically(
         return;
     };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
-    let gain = STAR_GAIN * exposure.factor() as f64;
+    let zero_point = exposure.zero_point();
     // Turned to line up with the camera, written straight in as a local
     // rotation the way [`super::labels::face_camera`] does: a system is never
     // itself rotated, so its local frame is the world's.
@@ -504,7 +491,8 @@ pub(crate) fn size_photometrically(
             system.absolute_magnitude(),
             orbit.eye.distance(system.position()),
         );
-        let radius = psf_radius(flux(apparent), gain);
+        let energy = relative_exposure(apparent, zero_point);
+        let radius = psf_radius(energy);
         let away =
             crate::space::metres(orbit.eye - system.position()).length() as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
@@ -1033,33 +1021,26 @@ mod tests {
         assert!(writes(&app) > settled, "left a shell at the size it was");
     }
 
-    /// A star is sized by the radius its point spread clears, and vanishes when
-    /// its peak drops under the floor
+    /// A star is sized by the radius its point spread clears, and vanishes at
+    /// the zero point
     ///
-    /// The physics that replaces the magnitude cap: the radius is
-    /// `PSF_GROWTH·ln(peak)`, so it grows with the logarithm of brightness (a
-    /// hundredfold brighter is a few pixels larger, never a hundredfold, and
-    /// self-bounding with no cap), grows with the gain (opening the exposure
-    /// enlarges every star), and is zero once the peak is under one — the star
-    /// is not seen.
+    /// The size law the map keeps for its billboard: the radius is
+    /// `PSF_GROWTH·ln(energy)` over the exposed energy
+    /// ([`galos_photometry::relative_exposure`]), so it grows with the logarithm
+    /// of brightness (a hundredfold brighter is a few pixels larger, never a
+    /// hundredfold, and self-bounding with no cap) and is zero once the energy
+    /// is under one — a star fainter than the zero point is not seen.
     #[test]
     fn a_star_is_sized_by_the_radius_its_point_spread_clears() {
-        assert_eq!(
-            psf_radius(1., 0.5),
-            0.,
-            "a peak under the floor has no size"
-        );
-        assert!(psf_radius(1., 2.) > 0., "a peak over the floor is drawn");
+        assert_eq!(psf_radius(0.5), 0., "under the zero point has no size");
+        assert_eq!(psf_radius(1.), 0., "at the zero point has no size");
+        assert!(psf_radius(10.) > 0., "over the zero point is drawn");
         assert!(
-            psf_radius(4., 400.) > psf_radius(1., 400.),
+            psf_radius(100.) > psf_radius(10.),
             "a brighter star is drawn larger"
         );
-        assert!(
-            psf_radius(1., 800.) > psf_radius(1., 400.),
-            "opening the gain enlarges a star"
-        );
-        let dim = psf_radius(1., 400.) as f64;
-        let bright = psf_radius(100., 400.) as f64;
+        let dim = psf_radius(100.) as f64;
+        let bright = psf_radius(10_000.) as f64;
         assert!(bright > dim, "a hundredfold brighter is larger");
         assert!(
             bright < 5. * dim,
