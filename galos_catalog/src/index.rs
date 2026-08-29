@@ -80,8 +80,8 @@ impl Star {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hyg;
     use crate::Source;
+    use crate::hyg;
     use galos_index::{BuildParams, Snapshot};
 
     fn bright() -> Vec<Star> {
