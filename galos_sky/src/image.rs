@@ -136,6 +136,30 @@ impl Image {
         }
     }
 
+    /// Blend a colour into one display pixel by coverage, ignoring anything off
+    /// the edge. Unlike [`plot`](Self::plot), which writes, this mixes with what
+    /// is already there, so an antialiased edge reads as a fraction of a pixel
+    /// lit rather than all or nothing.
+    fn blend(
+        &self,
+        out: &mut [u8],
+        x: i64,
+        y: i64,
+        color: [f32; 3],
+        coverage: f32,
+    ) {
+        if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 {
+            return;
+        }
+        let cov = coverage.clamp(0.0, 1.0);
+        let i = ((y as usize) * (self.width as usize) + x as usize) * 3;
+        for c in 0..3 {
+            let bg = out[i + c] as f32 / 255.0;
+            let fg = color[c].clamp(0.0, 1.0);
+            out[i + c] = ((bg * (1.0 - cov) + fg * cov) * 255.0).round() as u8;
+        }
+    }
+
     /// Draw one ring into an eight-bit buffer.
     ///
     /// A one-pixel outline: every pixel whose distance from the centre is
@@ -160,24 +184,54 @@ impl Image {
 
     /// Draw one line segment into an eight-bit buffer.
     ///
-    /// A one-pixel line by the digital differential analyser: step along the
-    /// longer axis so every row or column it crosses gets a pixel and the line
-    /// has no gaps. Written rather than blended, as a ring is, and clipped at
-    /// the edges by [`plot`](Self::plot), so an endpoint off the frame still
-    /// draws the part that is on it.
+    /// Antialiased and stopped short of its ends. Each end is trimmed by its
+    /// gap (see [`Segment`]) so the line clears the star it joins, and every
+    /// pixel near what is left is blended by how much of the line covers it —
+    /// its distance from the centreline, feathered over a pixel — so the edge is
+    /// smooth rather than the staircase a written line leaves. Blended rather
+    /// than written for that reason, unlike a ring, whose job is to stay hard
+    /// over a bright star.
     fn stroke_segment(&self, out: &mut [u8], segment: &Segment) {
-        let dx = segment.x1 - segment.x0;
-        let dy = segment.y1 - segment.y0;
-        let steps = dx.abs().max(dy.abs()).ceil() as i64;
-        if steps == 0 {
-            self.plot(out, segment.x0 as i64, segment.y0 as i64, segment.color);
+        let (dx, dy) = (segment.x1 - segment.x0, segment.y1 - segment.y0);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length <= 0.0 {
             return;
         }
-        for i in 0..=steps {
-            let t = i as f64 / steps as f64;
-            let x = (segment.x0 + t * dx).round() as i64;
-            let y = (segment.y0 + t * dy).round() as i64;
-            self.plot(out, x, y, segment.color);
+        // What is left once both ends are trimmed to clear their stars; if the
+        // two gaps meet, the stars are too close for a line and none is drawn.
+        let (ux, uy) = (dx / length, dy / length);
+        let start = segment.gap0.max(0.0);
+        let end = (length - segment.gap1).max(start);
+        if end - start <= 0.0 {
+            return;
+        }
+        let (ax, ay) = (segment.x0 + ux * start, segment.y0 + uy * start);
+        let (bx, by) = (segment.x0 + ux * end, segment.y0 + uy * end);
+
+        // A one-pixel line: solid within half a pixel of the centreline, fading
+        // to nothing a pixel beyond, so the coverage is the pixel's own share.
+        let half = 0.5;
+        let feather = 1.0;
+        let reach = half + feather;
+        let lo_x = (ax.min(bx) - reach).floor() as i64;
+        let hi_x = (ax.max(bx) + reach).ceil() as i64;
+        let lo_y = (ay.min(by) - reach).floor() as i64;
+        let hi_y = (ay.max(by) + reach).ceil() as i64;
+        for y in lo_y..=hi_y {
+            for x in lo_x..=hi_x {
+                let d = point_segment_distance(
+                    x as f64 + 0.5,
+                    y as f64 + 0.5,
+                    ax,
+                    ay,
+                    bx,
+                    by,
+                );
+                let coverage = ((reach - d) / feather).clamp(0.0, 1.0) as f32;
+                if coverage > 0.0 {
+                    self.blend(out, x, y, segment.color, coverage);
+                }
+            }
         }
     }
 
@@ -297,14 +351,26 @@ pub struct Segment {
     /// The other endpoint.
     pub x1: f64,
     pub y1: f64,
+    /// How far short of the first endpoint the line stops, pixels, so it clears
+    /// the star it joins rather than stabbing into it.
+    pub gap0: f64,
+    /// How far short of the second endpoint the line stops, pixels.
+    pub gap1: f64,
     /// The colour to draw it, linear RGB.
     pub color: [f32; 3],
 }
 
 impl Segment {
-    /// A line of the default colour between two points.
+    /// A line of the default colour between two points, drawn end to end.
     pub fn new(x0: f64, y0: f64, x1: f64, y1: f64) -> Segment {
-        Segment { x0, y0, x1, y1, color: LINE_COLOR }
+        Segment { x0, y0, x1, y1, gap0: 0.0, gap1: 0.0, color: LINE_COLOR }
+    }
+
+    /// The same line stopped short of each end by the given gaps, pixels.
+    pub fn with_gaps(mut self, gap0: f64, gap1: f64) -> Segment {
+        self.gap0 = gap0;
+        self.gap1 = gap1;
+        self
     }
 
     /// The same line in another colour.
@@ -322,6 +388,28 @@ impl Segment {
 fn srgb_encode(linear: f32) -> f32 {
     let l = linear.clamp(0.0, 1.0);
     if l <= 0.003_130_8 { 12.92 * l } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// The distance from a point to a line segment, in the units of the input.
+///
+/// The point projected onto the segment and clamped to its ends, so a pixel
+/// beyond an endpoint measures to the endpoint rather than to the infinite line
+/// — which is what rounds a line's ends rather than letting them bleed past.
+fn point_segment_distance(
+    px: f64,
+    py: f64,
+    ax: f64,
+    ay: f64,
+    bx: f64,
+    by: f64,
+) -> f64 {
+    let (dx, dy) = (bx - ax, by - ay);
+    let length_sq = dx * dx + dy * dy;
+    if length_sq <= 0.0 {
+        return (px - ax).hypot(py - ay);
+    }
+    let t = (((px - ax) * dx + (py - ay) * dy) / length_sq).clamp(0.0, 1.0);
+    (px - (ax + t * dx)).hypot(py - (ay + t * dy))
 }
 
 #[cfg(test)]
@@ -478,5 +566,33 @@ mod tests {
         let before = image.total_energy();
         let _ = image.to_srgb8_over(&[], &[Segment::new(0.0, 0.0, 15.0, 15.0)]);
         assert_eq!(image.total_energy(), before);
+    }
+
+    /// A gapped line stops short of both ends and draws the middle, so it
+    /// clears the stars it joins rather than covering them.
+    #[test]
+    fn a_gapped_segment_clears_its_ends() {
+        let image = Image::new(40, 40);
+        let seg = Segment::new(2.0, 20.0, 38.0, 20.0).with_gaps(6.0, 6.0);
+        let out = image.to_srgb8_over(&[], &[seg]);
+        let lit = |x: usize, y: usize| {
+            let i = (y * 40 + x) * 3;
+            out[i] as u32 + out[i + 1] as u32 + out[i + 2] as u32 > 0
+        };
+        assert!(!lit(2, 20), "the start was not cleared");
+        assert!(!lit(38, 20), "the end was not cleared");
+        assert!(lit(20, 20), "the middle of the line is missing");
+    }
+
+    /// A line is antialiased: some pixel along it is partly lit — neither black
+    /// nor the solid line colour — which a hard one-pixel line cannot produce.
+    #[test]
+    fn a_line_is_antialiased() {
+        let image = Image::new(32, 32);
+        let out =
+            image.to_srgb8_over(&[], &[Segment::new(4.0, 4.0, 28.0, 12.0)]);
+        let solid = (LINE_COLOR[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+        let partly = out.chunks(3).any(|p| p[2] > 0 && p[2] < solid);
+        assert!(partly, "no partly-lit pixel: the line is not antialiased");
     }
 }
