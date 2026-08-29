@@ -82,7 +82,6 @@ fn dipper_camera(stars: &[Star]) -> Camera {
         .looking_from([0.0; 3], dipper_aim(stars))
         .with_fov_degrees(36.0)
         .with_exposure(6.0)
-        .with_seeing(1.8)
 }
 
 fn golden_path(name: &str) -> PathBuf {

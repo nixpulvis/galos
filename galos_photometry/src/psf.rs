@@ -16,12 +16,22 @@
 //! compresses the result for a display. What it may not keep is its own idea of
 //! the profile's shape or its normalization.
 //!
-//! Two profiles, chosen by the caller through [`Psf`]: a [`Moffat`],
+//! Two profile shapes, chosen through [`Kernel`]: a [`Moffat`],
 //! `(1 + (r/α)²)^(−β)`, a bright core with power-law wings, and a [`Gaussian`],
 //! `exp(−r²/2σ²)`. The Moffat is the default and the truer of the two — a real
 //! star has the halo its wings give and the Gaussian has none — but the
 //! Gaussian is the standard seeing approximation and cheaper to reason about,
 //! so both are offered and a renderer picks.
+//!
+//! A single profile is not the whole of a real star, though. Its core is the
+//! seeing disc, but a bright star also wears a broad, faint *aureole* — the
+//! halo scattering in the air and the optics throws around it, falling off far
+//! more slowly than any core. One profile cannot be both a tight core and a
+//! broad halo at once, so a [`Psf`] is a *stack* of [`Layer`]s: a base kernel
+//! and however many broader ones laid behind it, each carrying a share of the
+//! light. [`AUREOLE_WEIGHT`] and its neighbours are the first such layer,
+//! measured from a real photograph; a renderer adds more until the star reads
+//! right.
 //!
 //! # Why bright stars are bigger
 //!
@@ -55,9 +65,33 @@ pub const STELLAR_BETA: f64 = 2.0;
 /// a loop over pixels and a shader's quad alike.
 pub const MAX_RADIUS: f64 = 96.0;
 
+/// The wing index `β` of a star's aureole: the broad halo, far shallower than
+/// the seeing core's [`STELLAR_BETA`].
+///
+/// Fitting the halo of a bright star in a real wide-field photograph gives a
+/// falloff near `r^-2` — a Moffat `β` near one. This sits above that at one and
+/// a half: heavy enough to read as a broad halo, steep enough that
+/// [`MAX_RADIUS`] does not truncate too much of its light, and well over one so
+/// the aureole's share stays finite, the same condition [`STELLAR_BETA`] meets
+/// for the core.
+pub const AUREOLE_BETA: f64 = 1.5;
+
+/// How much broader the aureole's core is than the seeing disc, as a multiple
+/// of the seeing width. The halo is a wide, soft thing, so it starts several
+/// times the core out and its wings carry from there.
+pub const AUREOLE_WIDTH: f64 = 4.5;
+
+/// The share of a star's light in its aureole rather than its core.
+///
+/// About a quarter: enough that a bright star's halo climbs well clear of the
+/// display floor and reads as a real glow, and little enough that the core
+/// still dominates the centre and a faint star — a quarter of almost nothing —
+/// stays a bare point. Fitted to the reference photograph's brightest stars.
+pub const AUREOLE_WEIGHT: f64 = 0.25;
+
 /// Which point-spread profile an instrument wears.
 ///
-/// The shape a renderer deposits, chosen through [`Psf::new`]. Both are
+/// The shape a renderer deposits, chosen through [`Kernel::new`]. Both are
 /// energy-conserving and share [`MAX_RADIUS`]; they differ in the wings, which
 /// is what a bright star's halo is made of.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -208,70 +242,214 @@ impl Gaussian {
     }
 }
 
-/// A point-spread function of either [`Profile`], built from one width.
+/// One layer's shape: a single normalized profile of either [`Profile`].
 ///
-/// The type a renderer holds so the profile is a runtime choice rather than a
-/// compile-time one. It dispatches the shared quantities —
-/// [`shape`](Self::shape), [`peak`](Self::peak), [`at`](Self::at),
-/// [`radius`](Self::radius) — to the chosen profile, so one render loop draws
-/// either.
+/// The old whole of a point spread, now one voice in it. It dispatches the
+/// shared quantities — [`shape`](Self::shape), [`peak`](Self::peak),
+/// [`at`](Self::at), [`radius`](Self::radius) — to the profile it wears, and a
+/// [`Psf`] is one or more of these stacked. A renderer that wants a plain
+/// seeing disc holds a [`Psf`] of a single kernel; one that wants a star's real
+/// halo layers a broad one behind a tight one.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Psf {
+pub enum Kernel {
     Gaussian(Gaussian),
     Moffat(Moffat),
 }
 
-impl Psf {
-    /// A PSF of the given profile and width, in pixels.
+impl Kernel {
+    /// A kernel of the given profile and width, in pixels.
     ///
     /// The width is the Gaussian's `σ` or the Moffat's `α`; both are the core's
     /// scale, so one "seeing" dial drives either. The Moffat takes the shared
     /// [`STELLAR_BETA`] for its wings.
-    pub fn new(profile: Profile, width: f64) -> Psf {
+    pub fn new(profile: Profile, width: f64) -> Kernel {
         match profile {
-            Profile::Gaussian => Psf::Gaussian(Gaussian::new(width)),
-            Profile::Moffat => Psf::Moffat(Moffat::new(width, STELLAR_BETA)),
+            Profile::Gaussian => Kernel::Gaussian(Gaussian::new(width)),
+            Profile::Moffat => Kernel::Moffat(Moffat::new(width, STELLAR_BETA)),
         }
+    }
+
+    /// A Moffat kernel of an explicit width and wing index — the form a broad,
+    /// heavy-winged aureole is built with, where [`STELLAR_BETA`] is too steep.
+    pub fn moffat(alpha: f64, beta: f64) -> Kernel {
+        Kernel::Moffat(Moffat::new(alpha, beta))
     }
 
     /// Which profile this is.
     pub fn profile(&self) -> Profile {
         match self {
-            Psf::Gaussian(_) => Profile::Gaussian,
-            Psf::Moffat(_) => Profile::Moffat,
+            Kernel::Gaussian(_) => Profile::Gaussian,
+            Kernel::Moffat(_) => Profile::Moffat,
         }
     }
 
     /// The unit-peak shape at `distance`.
     pub fn shape(&self, distance: f64) -> f64 {
         match self {
-            Psf::Gaussian(g) => g.shape(distance),
-            Psf::Moffat(m) => m.shape(distance),
+            Kernel::Gaussian(g) => g.shape(distance),
+            Kernel::Moffat(m) => m.shape(distance),
         }
     }
 
     /// The peak of a star carrying `energy`.
     pub fn peak(&self, energy: f64) -> f64 {
         match self {
-            Psf::Gaussian(g) => g.peak(energy),
-            Psf::Moffat(m) => m.peak(energy),
+            Kernel::Gaussian(g) => g.peak(energy),
+            Kernel::Moffat(m) => m.peak(energy),
         }
     }
 
     /// The value `distance` from the centre of a star carrying `energy`.
     pub fn at(&self, energy: f64, distance: f64) -> f64 {
         match self {
-            Psf::Gaussian(g) => g.at(energy, distance),
-            Psf::Moffat(m) => m.at(energy, distance),
+            Kernel::Gaussian(g) => g.at(energy, distance),
+            Kernel::Moffat(m) => m.at(energy, distance),
         }
     }
 
     /// The radius a star carrying `energy` clears above `floor`.
     pub fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
         match self {
-            Psf::Gaussian(g) => g.radius(energy, floor),
-            Psf::Moffat(m) => m.radius(energy, floor),
+            Kernel::Gaussian(g) => g.radius(energy, floor),
+            Kernel::Moffat(m) => m.radius(energy, floor),
         }
+    }
+}
+
+/// One layer of a point spread: a [`Kernel`] carrying a share of the light.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Layer {
+    /// The shape this layer deposits.
+    pub kernel: Kernel,
+    /// Its weight, relative to the other layers. A [`Psf`] reads these as
+    /// proportions — a base of one and an aureole of `0.06` puts a sixteenth of
+    /// the light in the halo — and normalizes by their sum when it draws, so
+    /// the value is a ratio and the order layers were added in does not matter.
+    pub weight: f64,
+}
+
+/// A point spread built from one or more [`Layer`]s.
+///
+/// A real star is not one profile. Its core is the seeing disc — a tight
+/// [`Moffat`] — but a bright one also wears a broad, faint *aureole*, the
+/// light scattering in the air and the optics throws into a halo that falls off
+/// far more slowly than any single core. One Moffat cannot be both: a wing
+/// index steep enough for the core is far too steep for the halo, and one
+/// shallow enough for the halo carries infinite energy. So a [`Psf`] is a
+/// *stack* — a base profile and however many broader layers are laid behind it
+/// until the star reads right — each carrying a share of the flux and each
+/// conserving its own share, so the whole still conserves energy.
+///
+/// Weights are relative and normalized by their sum at every query, so
+/// [`with_layer`](Self::with_layer) composes in any order and adding one layer
+/// never rescales another's stored weight. Everything stays linear in energy,
+/// so the stack is still separable: [`at`] is [`peak`] times a fixed [`shape`]
+/// exactly as a single kernel is, which is what lets a GPU still bake one
+/// texture from [`shape`] and scale it by [`peak`].
+///
+/// [`at`]: Self::at
+/// [`peak`]: Self::peak
+/// [`shape`]: Self::shape
+#[derive(Clone, Debug, PartialEq)]
+pub struct Psf {
+    layers: Vec<Layer>,
+}
+
+impl Psf {
+    /// A single-layer PSF: a plain seeing disc of the given profile and width.
+    ///
+    /// The whole of the old behaviour, and what a renderer that wants no halo
+    /// still holds.
+    pub fn new(profile: Profile, width: f64) -> Psf {
+        Psf::of(Kernel::new(profile, width))
+    }
+
+    /// A single-layer PSF around an explicit kernel.
+    pub fn of(kernel: Kernel) -> Psf {
+        Psf { layers: vec![Layer { kernel, weight: 1.0 }] }
+    }
+
+    /// Lay another kernel behind this one, carrying `weight` of the light
+    /// relative to the layers already present.
+    ///
+    /// The base is weight one, so `with_layer(halo, 0.06)` puts `0.06 / 1.06` of
+    /// the light — about a sixteenth — in the halo and leaves the rest in the
+    /// core, and a second `with_layer` behind that shares out against the same
+    /// running total rather than rescaling what came before. This is the "layer
+    /// until happy" seam.
+    pub fn with_layer(mut self, kernel: Kernel, weight: f64) -> Psf {
+        self.layers.push(Layer { kernel, weight: weight.max(0.0) });
+        self
+    }
+
+    /// The layers this PSF is built from, base first. Their weights are
+    /// relative; divide by their sum for each one's share.
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
+    /// The sum the relative weights are read against.
+    fn total_weight(&self) -> f64 {
+        self.layers.iter().map(|l| l.weight).sum()
+    }
+
+    /// The base layer's profile — which profile the core wears.
+    pub fn profile(&self) -> Profile {
+        self.layers[0].kernel.profile()
+    }
+
+    /// The unit-peak shape at `distance`: the whole stack, normalized so the
+    /// centre is one. Separable from energy, so a texture can bake it once.
+    pub fn shape(&self, distance: f64) -> f64 {
+        let numerator: f64 = self
+            .layers
+            .iter()
+            .map(|l| l.weight * l.kernel.peak(1.0) * l.kernel.shape(distance))
+            .sum();
+        let denominator: f64 =
+            self.layers.iter().map(|l| l.weight * l.kernel.peak(1.0)).sum();
+        if denominator > 0.0 { numerator / denominator } else { 0.0 }
+    }
+
+    /// The peak at the centre of a star carrying `energy`: the layers' peaks,
+    /// each for its share, summed.
+    pub fn peak(&self, energy: f64) -> f64 {
+        let total = self.total_weight();
+        if total <= 0.0 {
+            return 0.0;
+        }
+        self.layers.iter().map(|l| l.kernel.peak(l.weight / total * energy)).sum()
+    }
+
+    /// The value `distance` from the centre of a star carrying `energy`: the
+    /// layers added, since incoherent light sums.
+    pub fn at(&self, energy: f64, distance: f64) -> f64 {
+        let total = self.total_weight();
+        if total <= 0.0 {
+            return 0.0;
+        }
+        self.layers
+            .iter()
+            .map(|l| l.kernel.at(l.weight / total * energy, distance))
+            .sum()
+    }
+
+    /// How far out the star is still worth drawing: the furthest any layer
+    /// reaches above `floor`, since past that even the broadest is invisible.
+    ///
+    /// The broadest layer sets the edge and the tighter ones have long since
+    /// fallen to nothing there, so their contribution at that radius is below a
+    /// pixel's worth and the furthest single layer is the edge to a fraction of
+    /// one. [`None`] when no layer clears the floor — the visibility cut.
+    pub fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
+        let total = self.total_weight();
+        if total <= 0.0 {
+            return None;
+        }
+        self.layers
+            .iter()
+            .filter_map(|l| l.kernel.radius(l.weight / total * energy, floor))
+            .fold(None, |acc, r| Some(acc.map_or(r, |a: f64| a.max(r))))
     }
 }
 
@@ -435,5 +613,99 @@ mod tests {
         assert!((g.shape(0.0) - 1.0).abs() < 1e-12);
         assert!((m.shape(0.0) - 1.0).abs() < 1e-12);
         assert!(g.shape(5.0) > 0.0 && m.shape(5.0) > 0.0);
+    }
+
+    /// A stacked PSF still holds the light put into it: the layers split the
+    /// energy and each conserves its share, so the whole conserves it. Uses an
+    /// explicit light aureole rather than the shipping default so it measures
+    /// the mechanism; a heavy halo's wing loses a few percent more past
+    /// [`MAX_RADIUS`], which the tolerance leaves room for.
+    #[test]
+    fn a_layered_psf_conserves_energy() {
+        let psf = Psf::new(Profile::Moffat, 4.0)
+            .with_layer(Kernel::moffat(20.0, 1.4), 0.1);
+        let energy = 100.0;
+        let r = psf.radius(energy, 1e-6).expect("a bright star has a radius");
+        let n = r.ceil() as i64;
+        let mut total = 0.0;
+        for y in -n..=n {
+            for x in -n..=n {
+                let d = ((x * x + y * y) as f64).sqrt();
+                if d <= r {
+                    total += psf.at(energy, d);
+                }
+            }
+        }
+        assert!((total - energy).abs() / energy < 0.04, "summed {total}");
+    }
+
+    /// The point of layering: an aureole is a halo the core does not have. Far
+    /// out, where a bare Moffat core has fallen to almost nothing, the stack is
+    /// several times brighter — that extra light is the halo — while at the
+    /// centre the two are all but identical, since the aureole carries little
+    /// and spreads it wide.
+    #[test]
+    fn the_aureole_is_a_halo_the_core_lacks() {
+        let core = Psf::new(Profile::Moffat, 4.0);
+        let stack = core.clone().with_layer(Kernel::moffat(20.0, 1.4), 0.1);
+        let energy = 100.0;
+        assert!(
+            (stack.peak(energy) - core.peak(energy)).abs() / core.peak(energy)
+                < 0.1,
+            "the centre barely moves"
+        );
+        assert!(
+            stack.at(energy, 60.0) > 2.0 * core.at(energy, 60.0),
+            "far out the stack is a halo the core lacks"
+        );
+    }
+
+    /// The aureole decouples core from halo: it broadens a bright star's reach
+    /// but leaves a faint one's alone, because a few percent of almost nothing
+    /// stays under the floor and never draws.
+    #[test]
+    fn the_aureole_reaches_only_for_the_bright() {
+        let core = Psf::new(Profile::Moffat, 4.0);
+        let stack = core.clone().with_layer(Kernel::moffat(20.0, 1.4), 0.1);
+        let bright = 100.0;
+        assert!(
+            stack.radius(bright, FLOOR).unwrap()
+                > core.radius(bright, FLOOR).unwrap(),
+            "a bright star grows a halo"
+        );
+        let faint = 1.0;
+        let (sf, cf) = (
+            stack.radius(faint, FLOOR).unwrap(),
+            core.radius(faint, FLOOR).unwrap(),
+        );
+        assert!((sf - cf).abs() < 1.0, "a faint star is unchanged: {sf} vs {cf}");
+    }
+
+    /// A stack is still linear in energy, so it stays separable: the value at a
+    /// distance is the peak times a fixed shape, which is what lets a GPU bake
+    /// one texture from [`Psf::shape`] and scale it by [`Psf::peak`].
+    #[test]
+    fn a_stack_stays_separable() {
+        let psf = Psf::new(Profile::Moffat, 3.0)
+            .with_layer(Kernel::moffat(12.0, AUREOLE_BETA), 0.1);
+        for &d in &[0.0, 2.5, 9.0, 25.0] {
+            let expected = psf.peak(10.0) * psf.shape(d);
+            assert!((psf.at(10.0, d) - expected).abs() < 1e-9, "at {d}");
+        }
+    }
+
+    /// Weights are relative shares: the base stays one whatever is layered on,
+    /// and a layer's fraction of the light is its weight over their sum — so a
+    /// `0.05` aureole behind a base of one carries `0.05 / 1.05` of the flux.
+    #[test]
+    fn weights_are_relative_shares() {
+        let psf = Psf::new(Profile::Moffat, 4.0)
+            .with_layer(Kernel::moffat(16.0, AUREOLE_BETA), 0.05);
+        assert_eq!(psf.layers()[0].weight, 1.0, "the base is untouched");
+        assert_eq!(psf.layers()[1].weight, 0.05);
+        // The halo's share of the energy is its weight over the total.
+        let share = psf.layers()[1].weight
+            / psf.layers().iter().map(|l| l.weight).sum::<f64>();
+        assert!((share - 0.05 / 1.05).abs() < 1e-12);
     }
 }

@@ -40,16 +40,28 @@ struct Cli {
     fov: f64,
 
     /// The apparent magnitude that fills a pixel. Higher shows fainter stars.
-    #[arg(long, default_value_t = 6.0)]
+    #[arg(long, default_value_t = 7.5)]
     exposure: f64,
 
-    /// The point-spread function's width, pixels.
-    #[arg(long, default_value_t = 1.8)]
+    /// The stellar core width, in arcminutes.
+    #[arg(long, default_value_t = galos_sky::camera::DEFAULT_SEEING_ARCMIN)]
     seeing: f64,
 
     /// The point-spread profile: `moffat` (default) or `gaussian`.
     #[arg(long, default_value = "moffat", value_parser = parse_profile)]
     profile: Profile,
+
+    /// Share of a star's light in its halo, 0..1. Zero draws a bare core.
+    #[arg(long, default_value_t = galos_photometry::psf::AUREOLE_WEIGHT)]
+    aureole_weight: f64,
+
+    /// How much broader the halo is than the seeing core.
+    #[arg(long, default_value_t = galos_photometry::psf::AUREOLE_WIDTH)]
+    aureole_width: f64,
+
+    /// The halo's Moffat wing index; smaller reaches further.
+    #[arg(long, default_value_t = galos_photometry::psf::AUREOLE_BETA)]
+    aureole_beta: f64,
 
     /// Image size, `WIDTHxHEIGHT`.
     #[arg(long, default_value = "1600x900")]
@@ -124,7 +136,13 @@ fn main() {
         .with_fov_degrees(cli.fov)
         .with_exposure(cli.exposure)
         .with_seeing(cli.seeing)
-        .with_profile(cli.profile);
+        .with_profile(cli.profile)
+        .without_aureoles()
+        .with_aureole(galos_sky::camera::Aureole {
+            weight: cli.aureole_weight,
+            width: cli.aureole_width,
+            beta: cli.aureole_beta,
+        });
 
     let image = camera.render(&stars);
     let lit =
