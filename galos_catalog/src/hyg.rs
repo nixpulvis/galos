@@ -84,12 +84,9 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
     let headers = csv.headers()?.clone();
     let column = |name: &str| headers.iter().position(|h| h == name);
 
-    let (Some(c_id), Some(c_dist), Some(c_mag), Some(c_absmag)) = (
-        column("id"),
-        column("dist"),
-        column("mag"),
-        column("absmag"),
-    ) else {
+    let (Some(c_id), Some(c_dist), Some(c_mag), Some(c_absmag)) =
+        (column("id"), column("dist"), column("mag"), column("absmag"))
+    else {
         return Err(csv::Error::from(io::Error::new(
             io::ErrorKind::InvalidData,
             "not a HYG catalog: missing id, dist, mag or absmag",
@@ -110,12 +107,14 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
     let c_proper = column("proper");
     let c_ci = column("ci");
     let c_spect = column("spect");
+    let c_con = column("con");
 
     let mut catalog = Catalog::new(crate::HYG);
 
     for record in csv.records() {
         let record = record?;
-        let number = |i: usize| record.get(i).and_then(|f| f.parse::<f64>().ok());
+        let number =
+            |i: usize| record.get(i).and_then(|f| f.parse::<f64>().ok());
         let text = |i: Option<usize>| {
             i.and_then(|i| record.get(i))
                 .map(str::trim)
@@ -176,16 +175,15 @@ pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
             id: id as u64,
             hip: text(c_hip).and_then(|h| h.parse().ok()),
             name: text(c_proper),
-            position: [
-                x * LY_PER_PARSEC,
-                y * LY_PER_PARSEC,
-                z * LY_PER_PARSEC,
-            ],
+            position: [x * LY_PER_PARSEC, y * LY_PER_PARSEC, z * LY_PER_PARSEC],
             distance: distance_pc * LY_PER_PARSEC,
             apparent_magnitude,
             absolute_magnitude,
             color_index: text(c_ci).and_then(|c| c.parse().ok()),
             spectral_type: text(c_spect),
+            constellation: text(c_con)
+                .as_deref()
+                .and_then(crate::constellation::from_abbreviation),
         });
     }
 
@@ -209,11 +207,7 @@ fn direction(
         i.and_then(|i| record.get(i)).and_then(|f| f.parse::<f64>().ok())
     };
     if let (Some(ra), Some(dec)) = (angle(c_rarad), angle(c_decrad)) {
-        return Some([
-            dec.cos() * ra.cos(),
-            dec.cos() * ra.sin(),
-            dec.sin(),
-        ]);
+        return Some([dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin()]);
     }
     let length = (xyz.iter().map(|c| c * c).sum::<f64>()).sqrt();
     (length > 0.0).then(|| [xyz[0] / length, xyz[1] / length, xyz[2] / length])
@@ -272,8 +266,8 @@ mod tests {
         let (stars, _) = bright();
         let sirius = named(&stars, "Sirius");
         assert!((sirius.distance - 8.6).abs() < 0.1, "{}", sirius.distance);
-        let from_position = (sirius.position.iter().map(|c| c * c).sum::<f64>())
-            .sqrt();
+        let from_position =
+            (sirius.position.iter().map(|c| c * c).sum::<f64>()).sqrt();
         assert!((from_position - sirius.distance).abs() < 0.01);
     }
 
@@ -287,10 +281,8 @@ mod tests {
         let (stars, _) = bright();
         assert!(stars.len() > 50);
         for star in &stars {
-            let predicted = apparent_magnitude_ly(
-                star.absolute_magnitude,
-                star.distance,
-            );
+            let predicted =
+                apparent_magnitude_ly(star.absolute_magnitude, star.distance);
             assert!(
                 (predicted - star.apparent_magnitude).abs() < 0.01,
                 "{}: predicted {predicted:.3}, measured {:.3}",
@@ -356,7 +348,6 @@ mod tests {
         assert_eq!(skipped.naked_eye, 0);
     }
 
-
     /// **The hole is enumerable, not merely counted.** A row with no parallax
     /// comes back as an `Unplaced` carrying the bearing that was measured, so
     /// a caller can draw where its picture is missing something without
@@ -374,8 +365,7 @@ mod tests {
         let star = &catalog.unplaced[0];
         assert_eq!(star.name.as_deref(), Some("15Kap Cas"));
         assert_eq!(star.apparent_magnitude, 4.17);
-        let length =
-            (star.direction.iter().map(|c| c * c).sum::<f64>()).sqrt();
+        let length = (star.direction.iter().map(|c| c * c).sum::<f64>()).sqrt();
         assert!((length - 1.0).abs() < 1e-9, "a bearing is a unit vector");
     }
 
@@ -391,4 +381,18 @@ mod tests {
         }
     }
 
+    /// A star names the constellation it falls in, read from the `con` column
+    /// and resolved to the IAU table: Betelgeuse and Rigel are both in Orion,
+    /// Sirius in Canis Major. The join is what lets a consumer light up a whole
+    /// constellation from membership that rides on the star.
+    #[test]
+    fn a_star_names_its_constellation() {
+        let (stars, _) = bright();
+        let of = |name| {
+            named(&stars, name).constellation.map(|c| c.name).unwrap_or("?")
+        };
+        assert_eq!(of("Betelgeuse"), "Orion");
+        assert_eq!(of("Rigel"), "Orion");
+        assert_eq!(of("Sirius"), "Canis Major");
+    }
 }

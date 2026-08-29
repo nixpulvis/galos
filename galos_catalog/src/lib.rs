@@ -37,8 +37,10 @@
 //! its own range rather than hoping. A [`Star`] therefore knows where it came
 //! from, and [`Star::to_system`] folds that into the id it hands the index.
 
+pub mod asterism;
 pub mod check;
 pub mod compare;
+pub mod constellation;
 pub mod frame;
 pub mod hyg;
 #[cfg(feature = "index")]
@@ -204,6 +206,14 @@ pub struct Star {
     pub color_index: Option<f64>,
     /// The spectral type as the catalog spells it — `A0m...`, `K2IIIp`, `F5`.
     pub spectral_type: Option<String>,
+    /// The constellation it falls in, where the catalog names one.
+    ///
+    /// The sky's own partition rather than the survey's measurement: HYG writes
+    /// a three-letter region code in its `con` column, resolved here through
+    /// [`constellation::from_abbreviation`] so the star names its constellation
+    /// rather than merely quoting a code. [`None`] where the column is blank or
+    /// holds a token the IAU table does not know.
+    pub constellation: Option<&'static constellation::Constellation>,
 }
 
 impl Star {
@@ -225,8 +235,10 @@ impl Star {
     pub fn temperature(&self) -> f64 {
         match self.color_index {
             Some(bv) => color_index_to_temperature(bv),
-            None => class_light(self.spectral_type.as_deref().unwrap_or(""))
-                .temperature,
+            None => {
+                class_light(self.spectral_type.as_deref().unwrap_or(""))
+                    .temperature
+            }
         }
     }
 }

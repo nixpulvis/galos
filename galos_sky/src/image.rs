@@ -70,11 +70,7 @@ impl Image {
     /// The figure two renderings of one sky are compared by, and the reason
     /// the PSF conserves energy. It is meaningful only before tone mapping.
     pub fn total_energy(&self) -> f64 {
-        self.pixels
-            .iter()
-            .flat_map(|p| p.iter())
-            .map(|&c| c as f64)
-            .sum()
+        self.pixels.iter().flat_map(|p| p.iter()).map(|&c| c as f64).sum()
     }
 
     /// The brightest single channel in the image.
@@ -90,16 +86,29 @@ impl Image {
     /// which is four decades of flux, and nothing linear shows both ends at
     /// once.
     pub fn to_srgb8(&self) -> Vec<u8> {
-        self.to_srgb8_with(&[])
+        self.to_srgb8_over(&[], &[])
     }
 
     /// The tone-mapped image with rings drawn over it.
     ///
-    /// The marks are written into the eight-bit output after the tone curve,
-    /// so nothing about them reaches the linear buffer and
-    /// [`total_energy`](Self::total_energy) is unchanged. An overlay is for
-    /// finding things in a picture; it is not part of the picture's photometry.
+    /// The marks are written into the eight-bit output after the tone curve, so
+    /// nothing about them reaches the linear buffer and
+    /// [`total_energy`](Self::total_energy) is unchanged.
     pub fn to_srgb8_with(&self, marks: &[Mark]) -> Vec<u8> {
+        self.to_srgb8_over(marks, &[])
+    }
+
+    /// The tone-mapped image with figure lines and rings drawn over it.
+    ///
+    /// Both are chrome — written into the eight-bit output after the tone curve,
+    /// never into the linear buffer — so the photometry is untouched whether or
+    /// not a sky is annotated. Segments are drawn first and rings second, so a
+    /// ring on a star sits over any line that reaches it.
+    pub fn to_srgb8_over(
+        &self,
+        marks: &[Mark],
+        segments: &[Segment],
+    ) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 3);
         for pixel in &self.pixels {
             for &channel in pixel {
@@ -107,10 +116,24 @@ impl Image {
                 out.push((srgb_encode(mapped) * 255.0).round() as u8);
             }
         }
+        for segment in segments {
+            self.stroke_segment(&mut out, segment);
+        }
         for mark in marks {
             self.stroke(&mut out, mark);
         }
         out
+    }
+
+    /// Write one display pixel, clamped, ignoring anything off the edge.
+    fn plot(&self, out: &mut [u8], x: i64, y: i64, color: [f32; 3]) {
+        if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 {
+            return;
+        }
+        let i = ((y as usize) * (self.width as usize) + x as usize) * 3;
+        for c in 0..3 {
+            out[i + c] = (color[c].clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
     }
 
     /// Draw one ring into an eight-bit buffer.
@@ -125,27 +148,42 @@ impl Image {
         let (y0, y1) = ((mark.y - reach) as i64, (mark.y + reach) as i64);
         for y in y0..=y1 {
             for x in x0..=x1 {
-                if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64
-                {
-                    continue;
-                }
                 let dx = x as f64 + 0.5 - mark.x;
                 let dy = y as f64 + 0.5 - mark.y;
                 if ((dx * dx + dy * dy).sqrt() - mark.radius).abs() > 0.5 {
                     continue;
                 }
-                let i = ((y as usize) * (self.width as usize) + x as usize) * 3;
-                for c in 0..3 {
-                    out[i + c] =
-                        (mark.color[c].clamp(0.0, 1.0) * 255.0).round() as u8;
-                }
+                self.plot(out, x, y, mark.color);
             }
+        }
+    }
+
+    /// Draw one line segment into an eight-bit buffer.
+    ///
+    /// A one-pixel line by the digital differential analyser: step along the
+    /// longer axis so every row or column it crosses gets a pixel and the line
+    /// has no gaps. Written rather than blended, as a ring is, and clipped at
+    /// the edges by [`plot`](Self::plot), so an endpoint off the frame still
+    /// draws the part that is on it.
+    fn stroke_segment(&self, out: &mut [u8], segment: &Segment) {
+        let dx = segment.x1 - segment.x0;
+        let dy = segment.y1 - segment.y0;
+        let steps = dx.abs().max(dy.abs()).ceil() as i64;
+        if steps == 0 {
+            self.plot(out, segment.x0 as i64, segment.y0 as i64, segment.color);
+            return;
+        }
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let x = (segment.x0 + t * dx).round() as i64;
+            let y = (segment.y0 + t * dy).round() as i64;
+            self.plot(out, x, y, segment.color);
         }
     }
 
     /// Write the tone-mapped image to a PNG.
     pub fn write_png(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        self.write_png_with(path, &[])
+        self.write_png_over(path, &[], &[])
     }
 
     /// Write the tone-mapped image to a PNG with rings drawn over it.
@@ -154,12 +192,22 @@ impl Image {
         path: impl AsRef<Path>,
         marks: &[Mark],
     ) -> io::Result<()> {
+        self.write_png_over(path, marks, &[])
+    }
+
+    /// Write the tone-mapped image to a PNG with figure lines and rings over it.
+    pub fn write_png_over(
+        &self,
+        path: impl AsRef<Path>,
+        marks: &[Mark],
+        segments: &[Segment],
+    ) -> io::Result<()> {
         let file = BufWriter::new(File::create(path)?);
         let mut encoder = png::Encoder::new(file, self.width, self.height);
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header()?;
-        writer.write_image_data(&self.to_srgb8_with(marks))?;
+        writer.write_image_data(&self.to_srgb8_over(marks, segments))?;
         Ok(())
     }
 }
@@ -227,6 +275,45 @@ impl Mark {
     }
 }
 
+/// The default colour for a figure line: a dim steel blue.
+///
+/// A muted blue-grey, the convention for constellation lines, and safe for the
+/// same reason [`MARK_COLOR`] and [`HOLE_COLOR`] are chosen the way they are: a
+/// figure line is thin chrome a viewer reads as a line, not light, and its
+/// colour only has to stay legible over a black sky and under the stars it
+/// joins. Dim, so it sits behind the stars rather than competing with them.
+pub const LINE_COLOR: [f32; 3] = [0.28, 0.36, 0.55];
+
+/// A line drawn between two points, in display space.
+///
+/// Chrome like [`Mark`]: rasterized into the eight-bit output only, never the
+/// linear buffer, so it changes no photometry. A constellation figure is drawn
+/// as a set of these, one per line the figure joins.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Segment {
+    /// One endpoint, in pixels from the top left.
+    pub x0: f64,
+    pub y0: f64,
+    /// The other endpoint.
+    pub x1: f64,
+    pub y1: f64,
+    /// The colour to draw it, linear RGB.
+    pub color: [f32; 3],
+}
+
+impl Segment {
+    /// A line of the default colour between two points.
+    pub fn new(x0: f64, y0: f64, x1: f64, y1: f64) -> Segment {
+        Segment { x0, y0, x1, y1, color: LINE_COLOR }
+    }
+
+    /// The same line in another colour.
+    pub fn colored(mut self, color: [f32; 3]) -> Segment {
+        self.color = color;
+        self
+    }
+}
+
 /// One linear channel in `0..=1`, gamma-encoded for a display.
 ///
 /// The sRGB transfer function: a short linear toe near black, then a power
@@ -234,11 +321,7 @@ impl Mark {
 /// since a display undoes a gamma nobody applied.
 fn srgb_encode(linear: f32) -> f32 {
     let l = linear.clamp(0.0, 1.0);
-    if l <= 0.003_130_8 {
-        12.92 * l
-    } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
-    }
+    if l <= 0.003_130_8 { 12.92 * l } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }
 }
 
 #[cfg(test)]
@@ -370,4 +453,30 @@ mod tests {
         assert!(HOLE_COLOR[1] < MIN_BLACKBODY_GREEN);
     }
 
+    /// A figure line draws between its endpoints and touches the pixels along
+    /// its length, with no gaps the digital differential analyser could leave.
+    #[test]
+    fn a_segment_draws_a_line() {
+        let image = Image::new(16, 16);
+        let drawn =
+            image.to_srgb8_over(&[], &[Segment::new(2.0, 2.0, 13.0, 13.0)]);
+        assert_ne!(drawn, image.to_srgb8(), "the line should be visible");
+        // The diagonal lights a pixel on its own midline.
+        let lit = |x: usize, y: usize| {
+            let i = (y * 16 + x) * 3;
+            drawn[i] as u32 + drawn[i + 1] as u32 + drawn[i + 2] as u32 > 0
+        };
+        assert!(lit(8, 8), "the middle of the line is dark");
+    }
+
+    /// A line is chrome: drawn into the eight-bit output, never the linear
+    /// buffer, so it changes no photometry.
+    #[test]
+    fn a_segment_does_not_change_the_photometry() {
+        let mut image = Image::new(16, 16);
+        image.add(8, 8, [1.0, 1.0, 1.0]);
+        let before = image.total_energy();
+        let _ = image.to_srgb8_over(&[], &[Segment::new(0.0, 0.0, 15.0, 15.0)]);
+        assert_eq!(image.total_energy(), before);
+    }
 }

@@ -147,9 +147,7 @@ impl Comparison {
     /// needs no frame: distance is invariant under any rotation or reflection
     /// between them.
     pub fn median_distance_error(&self) -> Option<f64> {
-        median(
-            self.matches.iter().map(|m| m.distance_error_fraction().abs()),
-        )
+        median(self.matches.iter().map(|m| m.distance_error_fraction().abs()))
     }
 }
 
@@ -197,7 +195,8 @@ pub fn compare(catalog: &[Star], reference: &[Reference]) -> Comparison {
     let frame = fit_frame(&pairs);
     if let Some(frame) = &frame {
         for (m, (from, to)) in matches.iter_mut().zip(&pairs) {
-            m.bearing_error = Some(angle_between(rotate(&frame.rotation, *from), *to));
+            m.bearing_error =
+                Some(angle_between(rotate(&frame.rotation, *from), *to));
         }
     }
 
@@ -312,7 +311,8 @@ fn invert(m: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
 }
 
 fn median(values: impl IntoIterator<Item = f64>) -> Option<f64> {
-    let mut v: Vec<f64> = values.into_iter().filter(|x| x.is_finite()).collect();
+    let mut v: Vec<f64> =
+        values.into_iter().filter(|x| x.is_finite()).collect();
     if v.is_empty() {
         return None;
     }
@@ -500,10 +500,8 @@ mod tests {
     #[test]
     fn too_few_stars_fit_no_frame() {
         let stars = stars();
-        let two: Vec<Star> = ["Sirius", "Vega"]
-            .iter()
-            .map(|n| named(&stars, n))
-            .collect();
+        let two: Vec<Star> =
+            ["Sirius", "Vega"].iter().map(|n| named(&stars, n)).collect();
         let comparison = compare(&two, &distorted(&two, IDENTITY, |_| 1.0));
         assert!(comparison.frame.is_none());
         assert_eq!(comparison.matches.len(), 2);

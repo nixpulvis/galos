@@ -46,8 +46,9 @@
 //! that a GPU renderer adopting the law is running the same physics rather than
 //! a second copy of it.
 
-use crate::image::{Image, Mark};
+use crate::image::{Image, Mark, Segment};
 use galos_catalog::Star;
+use galos_catalog::asterism::Figures;
 use galos_photometry::psf::{
     AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Profile, Psf,
 };
@@ -263,8 +264,10 @@ impl Camera {
         let mut psf = Psf::new(self.profile, core);
         for aureole in &self.aureoles {
             let relative = aureole.weight / (1.0 - halo_share);
-            psf = psf
-                .with_layer(Kernel::moffat(core * aureole.width, aureole.beta), relative);
+            psf = psf.with_layer(
+                Kernel::moffat(core * aureole.width, aureole.beta),
+                relative,
+            );
         }
         psf
     }
@@ -369,6 +372,39 @@ impl Camera {
         points.into_iter().filter_map(|p| self.mark(p, radius)).collect()
     }
 
+    /// The line between two points, if both are in front of the camera.
+    ///
+    /// [`None`] when either endpoint is behind the eye, since a line to a star
+    /// the camera cannot see is not a line it can draw — one whose endpoint sat
+    /// behind would wrap across the frame. Either endpoint may be off the edge,
+    /// as [`mark`](Self::mark) allows, because a figure line into a star just
+    /// past the border still crosses the picture.
+    pub fn segment(&self, from: [f64; 3], to: [f64; 3]) -> Option<Segment> {
+        let (x0, y0, _) = self.project(from)?;
+        let (x1, y1, _) = self.project(to)?;
+        Some(Segment::new(x0, y0, x1, y1))
+    }
+
+    /// The figure lines a set of [`Figures`] draws over these stars.
+    ///
+    /// The seam that keeps this renderer clear of where a figure came from: it
+    /// takes any [`Figures`] provider — a parsed Stellarium file, another
+    /// format, figures keyed by name rather than number — asks it for the
+    /// segments those stars resolve to, and projects each into the frame. A
+    /// segment with an endpoint behind the camera is dropped by
+    /// [`segment`](Self::segment).
+    pub fn figure_lines(
+        &self,
+        stars: &[Star],
+        figures: &impl Figures,
+    ) -> Vec<Segment> {
+        figures
+            .segments(stars)
+            .into_iter()
+            .filter_map(|[from, to]| self.segment(from, to))
+            .collect()
+    }
+
     /// How bright a star looks from here, and what colour, and how much energy
     /// that comes to at this exposure.
     ///
@@ -399,8 +435,11 @@ impl Camera {
         // its centre and takes a single sample; only a sharp one pays for the
         // grid, and only near the middle where the profile actually bends.
         let core = self.seeing_pixels();
-        let grid =
-            if core >= 1.5 { 1 } else { (2.0 / core).ceil().clamp(1.0, 4.0) as i64 };
+        let grid = if core >= 1.5 {
+            1
+        } else {
+            (2.0 / core).ceil().clamp(1.0, 4.0) as i64
+        };
         let supersampled = (3.0 * core).max(2.0);
 
         for star in stars {
@@ -439,10 +478,13 @@ impl Camera {
                         let mut acc = 0.0;
                         for sy in 0..grid {
                             for sx in 0..grid {
-                                let ox = x as f64 + (sx as f64 + 0.5) / grid as f64;
-                                let oy = y as f64 + (sy as f64 + 0.5) / grid as f64;
+                                let ox =
+                                    x as f64 + (sx as f64 + 0.5) / grid as f64;
+                                let oy =
+                                    y as f64 + (sy as f64 + 0.5) / grid as f64;
                                 let (ex, ey) = (ox - cx, oy - cy);
-                                acc += psf.at(energy, (ex * ex + ey * ey).sqrt());
+                                acc +=
+                                    psf.at(energy, (ex * ex + ey * ey).sqrt());
                             }
                         }
                         (acc / (grid * grid) as f64) as f32
@@ -514,12 +556,16 @@ mod tests {
     /// is on the scaling, not on whatever the default happens to be.
     #[test]
     fn seeing_is_an_angle_scaled_to_the_plate() {
-        let wide = Camera::new(1330, 560).with_fov_degrees(10.0).with_seeing(2.0);
+        let wide =
+            Camera::new(1330, 560).with_fov_degrees(10.0).with_seeing(2.0);
         let expected = 2.0 * 560.0 / (10.0 * 60.0); // arcmin → px at this plate
         assert!((wide.seeing_pixels() - expected).abs() < 1e-9);
         // Same sky, half the field: twice the pixels for the same angle.
-        let tight = Camera::new(1330, 560).with_fov_degrees(5.0).with_seeing(2.0);
-        assert!((tight.seeing_pixels() - 2.0 * wide.seeing_pixels()).abs() < 1e-9);
+        let tight =
+            Camera::new(1330, 560).with_fov_degrees(5.0).with_seeing(2.0);
+        assert!(
+            (tight.seeing_pixels() - 2.0 * wide.seeing_pixels()).abs() < 1e-9
+        );
     }
 
     /// A core finer than the sampling limit is held at the floor rather than
@@ -889,5 +935,40 @@ mod tests {
             (moffat.peak() - gaussian.peak()).abs() > 1e-6,
             "the two profiles drew the same peak"
         );
+    }
+
+    /// A figure line needs both ends in front of the eye: a line to a star
+    /// behind the camera is not one it can draw.
+    #[test]
+    fn a_figure_line_needs_both_ends_in_front() {
+        let camera = Camera::new(100, 100)
+            .looking_along([1.0, 0.0, 0.0])
+            .with_fov_degrees(60.0);
+        assert!(
+            camera.segment([10.0, 0.0, 0.0], [10.0, 1.0, 0.0]).is_some(),
+            "both ahead"
+        );
+        assert!(
+            camera.segment([10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]).is_none(),
+            "one behind"
+        );
+    }
+
+    /// The whole seam: a Stellarium-format figure, parsed, joined to the stars
+    /// by Hipparcos number and projected into lines. Two Orion stars, one line
+    /// between them, drawn from Sol where both are in front.
+    #[test]
+    fn a_figure_is_joined_to_the_stars_and_projected() {
+        let stars = bright();
+        let betelgeuse = named(&stars, "Betelgeuse");
+        // Betelgeuse is HIP 27989, Bellatrix HIP 25336.
+        let figures =
+            galos_catalog::asterism::parse("Ori 1 27989 25336".as_bytes())
+                .expect("a figure file");
+        let camera = Camera::new(400, 400)
+            .looking_from([0.0; 3], betelgeuse.position)
+            .with_fov_degrees(40.0);
+        let lines = camera.figure_lines(&stars, &figures);
+        assert_eq!(lines.len(), 1, "the one line resolves and projects");
     }
 }

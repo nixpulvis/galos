@@ -64,8 +64,7 @@ fn dipper_aim(stars: &[Star]) -> [f64; 3] {
             sum[i] += star.position[i] / d;
         }
     }
-    let length =
-        (sum.iter().map(|c| c * c).sum::<f64>()).sqrt();
+    let length = (sum.iter().map(|c| c * c).sum::<f64>()).sqrt();
     [
         sum[0] / length * 1000.0,
         sum[1] / length * 1000.0,
@@ -92,7 +91,8 @@ fn golden_path(name: &str) -> PathBuf {
 fn decode(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().expect("a readable PNG");
-    let mut buffer = vec![0; reader.output_buffer_size().expect("a bounded PNG")];
+    let mut buffer =
+        vec![0; reader.output_buffer_size().expect("a bounded PNG")];
     let info = reader.next_frame(&mut buffer).expect("one frame");
     buffer.truncate(info.buffer_size());
     (info.width, info.height, buffer)
@@ -113,7 +113,10 @@ fn the_dipper_matches_its_golden() {
     }
 
     let expected = std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("cannot read {}: {e}. Run with GALOS_SKY_BLESS=1 to create it.", path.display())
+        panic!(
+            "cannot read {}: {e}. Run with GALOS_SKY_BLESS=1 to create it.",
+            path.display()
+        )
     });
     let (width, height, expected) = decode(&expected);
     assert_eq!((width, height), (image.width(), image.height()));

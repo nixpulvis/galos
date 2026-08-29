@@ -13,6 +13,7 @@
 //! much sky, `--exposure` for the magnitude that fills a pixel.
 
 use clap::Parser;
+use galos_catalog::asterism;
 use galos_catalog::{Star, hyg};
 use galos_photometry::psf::Profile;
 use galos_sky::Camera;
@@ -85,6 +86,12 @@ struct Cli {
     /// The radius of a highlight ring, pixels.
     #[arg(long, default_value_t = 12.0)]
     highlight_radius: f64,
+
+    /// Draw constellation figures from a Stellarium-format lines file: one
+    /// constellation per line, an IAU abbreviation, a segment count, then that
+    /// many Hipparcos-number pairs. Lines join stars the catalog carries.
+    #[arg(long, value_name = "FILE")]
+    constellations: Option<PathBuf>,
 
     /// Where to write the PNG.
     #[arg(short, long, default_value = "sky.png")]
@@ -216,7 +223,29 @@ fn main() {
         marks.extend(holes);
     }
 
-    if let Err(e) = image.write_png_with(&cli.output, &marks) {
+    let segments = cli
+        .constellations
+        .as_ref()
+        .map(|path| {
+            let file = File::open(path).unwrap_or_else(|e| {
+                eprintln!("cannot open {}: {e}", path.display());
+                exit(1);
+            });
+            let figures = asterism::parse(file).unwrap_or_else(|e| {
+                eprintln!("cannot read {}: {e}", path.display());
+                exit(1);
+            });
+            let lines = camera.figure_lines(&stars, &figures);
+            eprintln!(
+                "{} figure lines from {} constellations",
+                lines.len(),
+                figures.len(),
+            );
+            lines
+        })
+        .unwrap_or_default();
+
+    if let Err(e) = image.write_png_over(&cli.output, &marks, &segments) {
         eprintln!("cannot write {}: {e}", cli.output.display());
         exit(1);
     }
