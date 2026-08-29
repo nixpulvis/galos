@@ -55,6 +55,7 @@ use galos_photometry::psf::{
 use galos_photometry::{
     apparent_magnitude_ly, blackbody_color, relative_exposure,
 };
+use std::collections::HashMap;
 
 /// The energy per pixel below which this renderer shows nothing.
 ///
@@ -69,6 +70,26 @@ use galos_photometry::{
 /// light, which is what keeps the sum over an image close to the sum over the
 /// stars in it.
 pub const FLOOR: f64 = 1e-4;
+
+/// How far a figure line stops short of the star it joins, sized to the bright
+/// disc it must clear.
+///
+/// The line ends where the star stops being solid: [`GAP_FLOOR`] is the profile
+/// value that counts as the bright disc's edge — well above [`FLOOR`], the faint
+/// edge — and the line stops a small [`GAP_MARGIN`] beyond the radius the star
+/// clears it at. Bounded so a faint star still parts from its lines and a
+/// brilliant one does not push them out of the figure.
+const GAP_FLOOR: f64 = 0.5;
+const GAP_MARGIN: f64 = 2.0;
+const GAP_MIN: f64 = 3.0;
+const GAP_MAX: f64 = 32.0;
+
+/// A star position as an exact hash key: a figure resolves to the very
+/// positions its stars carry, so the bit patterns match and no tolerance is
+/// wanted.
+fn position_key(position: [f64; 3]) -> [u64; 3] {
+    [position[0].to_bits(), position[1].to_bits(), position[2].to_bits()]
+}
 
 /// The default stellar core width, in arcminutes.
 ///
@@ -398,10 +419,28 @@ impl Camera {
         stars: &[Star],
         figures: &impl Figures,
     ) -> Vec<Segment> {
+        let psf = self.psf();
+        // Each star's position back to itself, so a resolved endpoint can be
+        // sized: the gap a line stops short by is that star's own bright disc.
+        let by_position: HashMap<[u64; 3], &Star> =
+            stars.iter().map(|s| (position_key(s.position), s)).collect();
+        let gap = |at: [f64; 3]| -> f64 {
+            let Some(star) = by_position.get(&position_key(at)) else {
+                return GAP_MIN;
+            };
+            let energy = relative_exposure(
+                apparent_magnitude_ly(star.absolute_magnitude, star.distance),
+                self.exposure,
+            );
+            psf.radius(energy, GAP_FLOOR)
+                .map_or(GAP_MIN, |r| (r + GAP_MARGIN).clamp(GAP_MIN, GAP_MAX))
+        };
         figures
             .segments(stars)
             .into_iter()
-            .filter_map(|[from, to]| self.segment(from, to))
+            .filter_map(|[from, to]| {
+                Some(self.segment(from, to)?.with_gaps(gap(from), gap(to)))
+            })
             .collect()
     }
 
