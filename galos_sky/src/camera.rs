@@ -147,6 +147,21 @@ impl Aureole {
     };
 }
 
+/// One layer of a star's point spread beyond the seeing core: an optical or
+/// atmospheric effect the instrument adds around a star.
+///
+/// A [`Camera`] carries a list of these and lays each into the point spread.
+/// The [`Aureole`] halo is the first kind; a real sky wants others in time —
+/// diffraction spikes, a chromatic halo, a bloom floor — and each is a new
+/// variant here rather than a new field on the camera. A drawing stage takes
+/// the variants it can render and ignores the rest, so a radial layer and a
+/// screen-space effect can share one list.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Effect {
+    /// A broad, faint halo behind the core; see [`Aureole`].
+    Aureole(Aureole),
+}
+
 /// A place to stand, a way to look, and a response to light.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Camera {
@@ -170,9 +185,9 @@ pub struct Camera {
     pub seeing_arcmin: f64,
     /// Which point-spread profile the core lands as; see [`Profile`].
     pub profile: Profile,
-    /// The halos laid behind the core, base first; see [`Aureole`]. Empty is a
-    /// plain seeing disc with no glow.
-    pub aureoles: Vec<Aureole>,
+    /// The effects laid into the point spread beyond the seeing core; see
+    /// [`Effect`]. Empty is a plain seeing disc with no halo.
+    pub effects: Vec<Effect>,
 }
 
 impl Camera {
@@ -194,7 +209,7 @@ impl Camera {
             exposure: 6.0,
             seeing_arcmin: DEFAULT_SEEING_ARCMIN,
             profile: Profile::default(),
-            aureoles: vec![Aureole::DEFAULT],
+            effects: vec![Effect::Aureole(Aureole::DEFAULT)],
         }
     }
     /// Stand at `from` and look at `at`.
@@ -264,20 +279,25 @@ impl Camera {
         self
     }
 
-    /// Lay a halo behind the seeing core — one more layer of the point spread.
-    pub fn with_aureole(mut self, aureole: Aureole) -> Camera {
-        self.aureoles.push(aureole);
+    /// Lay a halo behind the seeing core, as one aureole [`Effect`].
+    pub fn with_aureole(self, aureole: Aureole) -> Camera {
+        self.with_effect(Effect::Aureole(aureole))
+    }
+
+    /// Add one point-spread [`Effect`] behind the core.
+    pub fn with_effect(mut self, effect: Effect) -> Camera {
+        self.effects.push(effect);
         self
     }
 
-    /// Drop every halo, leaving a plain seeing disc.
-    pub fn without_aureoles(mut self) -> Camera {
-        self.aureoles.clear();
+    /// Drop every effect, leaving a plain seeing disc.
+    pub fn clear_effects(mut self) -> Camera {
+        self.effects.clear();
         self
     }
 
     /// The point spread this camera draws with: the seeing core, with every
-    /// [`Aureole`] laid behind it.
+    /// aureole [`Effect`] laid behind it.
     ///
     /// Each halo's [`weight`](Aureole::weight) is its share of the whole star's
     /// light; the core takes the rest. The share is turned into the relative
@@ -286,15 +306,31 @@ impl Camera {
     /// fraction it asked for and the core with what is left.
     pub fn psf(&self) -> Psf {
         let core = self.seeing_pixels();
-        let halo_share: f64 =
-            self.aureoles.iter().map(|a| a.weight).sum::<f64>().min(0.95);
+        // The aureole effects lay a radial halo behind the core; other effect
+        // kinds draw elsewhere and add no layer here. Their shares sum to the
+        // halo's, and the core takes the rest.
+        let aureoles: Vec<&Aureole> = self
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Aureole(aureole) => Some(aureole),
+            })
+            .collect();
+        let halo_share =
+            aureoles.iter().map(|a| a.weight).sum::<f64>().min(0.95);
         let mut psf = Psf::new(self.profile, core);
-        for aureole in &self.aureoles {
+        for aureole in aureoles {
             let relative = aureole.weight / (1.0 - halo_share);
-            psf = psf.with_layer(
-                Kernel::moffat(core * aureole.width, aureole.beta),
-                relative,
-            );
+            // The halo wears the same profile the core does, so a Gaussian
+            // point spread stays a Gaussian to its edge rather than growing
+            // Moffat wings; the aureole's [`beta`](Aureole::beta) shapes only a
+            // Moffat halo, where a Gaussian one has no wing index to set.
+            let width = core * aureole.width;
+            let halo = match self.profile {
+                Profile::Moffat => Kernel::moffat(width, aureole.beta),
+                Profile::Gaussian => Kernel::gaussian(width),
+            };
+            psf = psf.with_layer(halo, relative);
         }
         psf
     }
@@ -820,7 +856,7 @@ mod tests {
             // holds a little less than went in. That the *core* conserves what
             // it is handed is the invariant here; the stack's own conservation
             // is `psf::tests::a_layered_psf_conserves_energy`.
-            .without_aureoles();
+            .clear_effects();
         let image = camera.render(&[vega.clone()]);
 
         let apparent =
@@ -881,7 +917,7 @@ mod tests {
                 .with_exposure(4.0)
                 // Colour is a core property; the aureole's sub-floor tail would
                 // only add noise to a luminance-conservation check.
-                .without_aureoles();
+                .clear_effects();
             let image = camera.render(&[star.clone()]);
 
             let apparent =
@@ -916,7 +952,7 @@ mod tests {
             .looking_from([0.0; 3], rigel.position)
             .with_fov_degrees(3.0)
             .with_exposure(4.0);
-        let bare = base.clone().without_aureoles().render(&[rigel.clone()]);
+        let bare = base.clone().clear_effects().render(&[rigel.clone()]);
         let haloed = base.render(&[rigel.clone()]);
 
         let lit = |img: &Image| {

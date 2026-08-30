@@ -154,7 +154,7 @@ fn main() {
         .with_exposure(cli.exposure)
         .with_seeing(cli.seeing)
         .with_profile(cli.profile)
-        .without_aureoles()
+        .clear_effects()
         .with_aureole(galos_sky::camera::Aureole {
             weight: cli.aureole_weight,
             width: cli.aureole_width,

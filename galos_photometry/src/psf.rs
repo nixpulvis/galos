@@ -287,6 +287,12 @@ impl Kernel {
         Kernel::Moffat(Moffat::new(alpha, beta))
     }
 
+    /// A Gaussian kernel of an explicit width — the form an aureole takes when
+    /// the point spread is a Gaussian, where there is no wing index to set.
+    pub fn gaussian(sigma: f64) -> Kernel {
+        Kernel::Gaussian(Gaussian::new(sigma))
+    }
+
     /// Which profile this is.
     pub fn profile(&self) -> Profile {
         match self {
