@@ -974,23 +974,24 @@ pub fn chrome(
                 settings.star_profile.0 = profile;
             }
             ui.add_space(FIELD_GAP);
-            // How many stops the star field is lifted to the display. From far
-            // under what a dark-adapted eye takes in up to a few stops past the
-            // bloom the palette is baked at.
+            // How many stops the star field is lifted to the display. From a
+            // sky bright enough for only the most luminous stars, up through
+            // the dark-adapted field at zero to several stops past it, where
+            // the faint sky fills in.
             ui.label("Exposure (EV)");
             let mut ev = settings.star_exposure.0;
             fill_width(ui, VALUE_WIDTH);
             let slider = ui
                 .horizontal(|ui| {
                     let rail = ui.add(
-                        egui::Slider::new(&mut ev, -20.0..=4.0)
+                        egui::Slider::new(&mut ev, -12.0..=8.0)
                             .step_by(0.5)
                             .show_value(false),
                     );
                     let typed = value_box(
                         ui,
                         egui::DragValue::new(&mut ev)
-                            .range(-20.0..=4.0)
+                            .range(-12.0..=8.0)
                             .speed(0.1)
                             .suffix(" EV"),
                     );
