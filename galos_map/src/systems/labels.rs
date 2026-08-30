@@ -4,8 +4,10 @@ use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::selection::{SELECTION, Selected};
-use crate::systems::spawn::ShowNames;
+use crate::systems::scale::View;
+use crate::systems::spawn::{ShowNames, StarExposure};
 use crate::systems::{Spyglass, System};
+use galos_photometry::{Distance, Magnitude};
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::ecs::entity::EntityHashSet;
@@ -33,6 +35,7 @@ pub(crate) fn plugin(app: &mut App) {
         follow_spyglass: false,
         radius: DEFAULT_NAME_RADIUS,
     });
+    app.insert_resource(NameLimit(8.0));
     app.insert_resource(ShowBodyNames(true));
     app.add_systems(Startup, init_materials);
     app.add_systems(Update, redim.in_set(MapSet::Present));
@@ -149,6 +152,18 @@ impl NameRadius {
         }
     }
 }
+
+/// The faintest a star may look and still be named, in the realistic view
+///
+/// Apparent magnitude, the astronomer's backwards scale: a smaller number is a
+/// brighter star, so turning this down names fewer of them, the brightest
+/// first. The realistic view's answer to [`NameRadius`] — where the map view
+/// holds names to a reach about the center, the sky holds them to a brightness,
+/// since that is what a name is worth there. A star still has to be drawn to be
+/// named, so past the exposure's floor this only takes names away from what is
+/// drawn; it never adds any.
+#[derive(Resource)]
+pub struct NameLimit(pub f32);
 
 /// Whether the things inside a system are named
 ///
@@ -357,6 +372,40 @@ fn worth_naming(
     stands && (pointed_at || selected || (shown && !filtered))
 }
 
+/// Where a system stands relative to what its view names by
+///
+/// The map view and the realistic view cut the sky on different questions, so
+/// each hands [`worth_placing`] its own.
+enum Placement {
+    /// Map view: within a reach about the center, in light years
+    Reach { from_center: f32, reach: f32 },
+    /// Realistic view: bright enough to be drawn — apparent magnitude below
+    /// the exposure's `floor` — and no fainter than the naming `limit`
+    Bright { apparent: f32, floor: f32, limit: f32 },
+}
+
+/// Whether a system is near or bright enough to lay a name out for, absent a
+/// mark asking for it outright
+///
+/// Where the two views part. The map view holds names to a neighborhood about
+/// the center, since there every star is the same size and nearness is the
+/// whole of the ordering. The realistic view holds them to a brightness: a
+/// star has to be drawn — apparent magnitude below the exposure floor — to
+/// have a mark to name at all, and no fainter than [`NameLimit`], the dial
+/// that turns the sky's names down the way [`NameRadius`] turns the map's
+/// down. A bright star deep along the line of sight is named where a fixed
+/// reach would have dropped it; a faint one is left out however near it sits.
+/// What is resident is already bounded by the spyglass, so this is not the
+/// whole sky.
+fn worth_placing(placement: Placement) -> bool {
+    match placement {
+        Placement::Reach { from_center, reach } => from_center <= reach,
+        Placement::Bright { apparent, floor, limit } => {
+            apparent < floor && apparent <= limit
+        }
+    }
+}
+
 /// How strongly standing in front of the middle argues for a name
 ///
 /// A name is drawn over whatever is behind it, so of two systems along nearly
@@ -375,6 +424,29 @@ const NEARER_WEIGHT: f32 = 1.;
 /// It falls to half at this distance. The point the camera orbits is usually
 /// a system exactly, so this only has to forgive one that is merely near it.
 const CENTER_REACH: f32 = 2.;
+
+/// How much a magnitude of brightness above the drawn floor is worth to a
+/// system's name in the realistic view
+///
+/// There a star is drawn at a size of `PSF_GROWTH·ln(energy)` (see
+/// [`super::scale`]), and `ln(energy)` is, up to a constant, the margin by
+/// which the star's apparent magnitude clears the exposure's floor. Weighing a
+/// name by that margin climbs the same ladder its star's size does, which is
+/// the prominence the note on the system weight foresaw a name should follow.
+/// Scaled so the drawn range leads the field and capped at [`CENTER_WEIGHT`],
+/// so a system's name keeps to the band it occupies when position alone
+/// decides it: below a body's ([`INSIDE_WEIGHT`]) and below what is pointed at
+/// or picked out ([`POINTED_WEIGHT`]).
+const BRIGHT_NAME_WEIGHT: f32 = 20.;
+
+/// How much of the map view's nearness ordering the realistic view keeps
+///
+/// Brightness leads there; nearness to the middle stays on at this fraction of
+/// its strength, ordering stars of a like brightness without overriding a
+/// brighter one. Small enough that the whole of it cannot make up a magnitude
+/// of [`BRIGHT_NAME_WEIGHT`], so the order is brightness first and position
+/// second.
+const SECONDARY_NEARNESS: f32 = 0.05;
 
 /// One thing in the running for a name, as [`choose_names`] weighs it
 ///
@@ -594,10 +666,26 @@ impl LabelMaterials {
     }
 }
 
+/// What the realistic view weighs a name by, beyond where it stands
+///
+/// Whether that view is drawn at all, and the floor its stars are measured
+/// from, which together say how bright each system looks and so — through
+/// [`BRIGHT_NAME_WEIGHT`] — how much its brightness is worth to its name.
+/// Bundled so [`choose_names`] stays within Bevy's system parameter limit.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct Sky<'w> {
+    view: Res<'w, View>,
+    exposure: Res<'w, StarExposure>,
+    limit: Res<'w, NameLimit>,
+}
+
 /// Decide which systems get to show their name
 ///
-/// Held to whichever is nearer of [`NameRadius`] and the spyglass, since a
-/// system the spyglass has hidden has nothing to put a name against.
+/// In the map view, held to whichever is nearer of [`NameRadius`] and the
+/// spyglass, since a system the spyglass has hidden has nothing to put a name
+/// against. In the realistic view the cut is brightness instead: any star
+/// drawn — one that clears the exposure's floor — may be named wherever it
+/// stands, since there brightness is what a name is worth (see [`name_score`]).
 ///
 /// Every name inside that reach drawn at once is unreadable: the dev
 /// database holds a couple of thousand systems within a hundred light years
@@ -608,7 +696,7 @@ impl LabelMaterials {
 /// systems light years apart share a pixel when the camera is far enough
 /// away, and two a stone's throw apart fill the screen when it is close.
 ///
-/// Nearest and most populous win, and the rest are dropped where they would
+/// The best win — nearest in the map view, brightest in the realistic one —
 /// overlap something already kept. Greedy rather than optimal: the best
 /// arrangement of a few hundred overlapping rectangles is not worth solving
 /// each frame, and taking them in order of what the viewer most wants to see
@@ -635,6 +723,7 @@ pub(crate) fn choose_names(
     selection: Query<(), With<Selected>>,
     holding: Res<HeldSystem>,
     time: Res<Time<Real>>,
+    sky: Sky,
     mut layout: Local<Layout>,
 ) {
     let clear = |commands: &mut Commands| {
@@ -743,9 +832,32 @@ pub(crate) fn choose_names(
 
         let position = DVec3::from(system.position);
         let from_center = (position - orbit.center).length() as f32;
-        // Further out than names were asked to reach, and not one of the
-        // two the map is marking out.
-        if !pointed_at && !selected && !hop && from_center > reach {
+
+        // In the realistic view a star's brightness is what sizes it, so it
+        // both admits the name and, through `name_score`, leads it. Read the
+        // apparent magnitude and the exposure's floor the same way
+        // `size_photometrically` reads them; nothing in the map view, where
+        // every star is drawn the same size.
+        let floor = sky.exposure.zero_point() as f32;
+        let apparent = matches!(*sky.view, View::Realistic).then(|| {
+            Magnitude(system.absolute_magnitude())
+                .apparent(Distance::light_years(orbit.eye.distance(position)))
+                .0 as f32
+        });
+        // The margin above the floor is what the weight reads; `None` leaves
+        // the map view scored on position alone. See `name_score`.
+        let brightness = apparent.map(|a| (floor - a).max(0.));
+
+        // Worth laying out at all, absent a mark asking for it outright: within
+        // the reach in the map view, bright enough to draw and inside the
+        // naming limit in the realistic one. See `worth_placing`.
+        let placement = match apparent {
+            Some(apparent) => {
+                Placement::Bright { apparent, floor, limit: sky.limit.0 }
+            }
+            None => Placement::Reach { from_center, reach },
+        };
+        if !pointed_at && !selected && !hop && !worth_placing(placement) {
             return None;
         }
         let at = screen_position(orbit, cot_half_fov, viewport, position)?;
@@ -769,7 +881,7 @@ pub(crate) fn choose_names(
         }
 
         let score = name_score(
-            LabelWeight::System { from_center, ahead },
+            LabelWeight::System { from_center, ahead, brightness },
             pointed_at,
             selected,
             already.contains(&entity),
@@ -1112,13 +1224,14 @@ fn looks(radius: f32, per_pixel: f32) -> f32 {
 /// is on, so a distance measured from there is near enough the same for all
 /// of them and separates nothing.
 ///
-/// Nothing about how notable a system is enters here. What makes one worth
-/// picking out of a crowd is what makes its star draw larger, and that is
-/// [`super::scale`]'s to decide: it is population today and a setting the
-/// viewer turns off by default. A name that argued from population while
-/// every star was drawn the same size was answering a question nobody had
-/// asked. Should prominence earn a name, it should be the same prominence
-/// that earns a star its size, so that both follow whatever that becomes.
+/// In the map view nothing about how notable a system is enters here: every
+/// star is drawn the same size unless population scaling is turned on, so a
+/// name argued from prominence would answer a question the picture never
+/// asked. The realistic view is where that prominence is real — a star's size
+/// there *is* its brightness (see [`super::scale::size_photometrically`]) — so
+/// brightness earns the name too, carried in on [`LabelWeight::System`] and
+/// weighed by [`BRIGHT_NAME_WEIGHT`]. Both follow the one prominence, as the
+/// note here long promised they should.
 /// What a name's weight is worked out from
 ///
 /// The two are weighed on different things because they are seen in different
@@ -1131,9 +1244,12 @@ fn looks(radius: f32, per_pixel: f32) -> f32 {
 /// marks and how the terms are added up, cannot be changed for one and left
 /// behind for the other.
 enum LabelWeight {
-    /// A system in the sky, by where it stands relative to the middle of the
-    /// view: light years off it, and light years in front of it
-    System { from_center: f32, ahead: f32 },
+    /// A system in the sky. Where it stands relative to the middle of the
+    /// view — light years off it, and light years in front of it — and, in the
+    /// realistic view, how far its apparent magnitude clears the drawn floor,
+    /// which is what sizes its star and so leads its name. Nothing in the map
+    /// view, where every star is the same size and position alone orders them.
+    System { from_center: f32, ahead: f32, brightness: Option<f32> },
     /// A body inside the system the camera is in, by what it is: how far
     /// under the arrival star it orbits, whether it is a star, whether it is
     /// the one the system arrives at, and how large it looks
@@ -1155,10 +1271,30 @@ fn name_score(
     held: bool,
 ) -> f32 {
     let standing = match weight {
-        LabelWeight::System { from_center, ahead } => {
+        LabelWeight::System { from_center, ahead, brightness } => {
             let centered =
                 CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
-            centered - from_center + NEARER_WEIGHT * ahead
+            let nearness = centered - from_center + NEARER_WEIGHT * ahead;
+            match brightness {
+                // The realistic view sizes a star by how far it clears the
+                // limiting magnitude, so that margin leads its name; nearness
+                // to the middle is a secondary that orders stars of a like
+                // brightness. Both are bounded — the brightness to
+                // [`CENTER_WEIGHT`], the nearness to a magnitude's worth
+                // ([`BRIGHT_NAME_WEIGHT`]) — so brightness always leads and the
+                // whole stays inside the band a body ([`INSIDE_WEIGHT`]) and a
+                // mark ([`POINTED_WEIGHT`]) sit above, even in a wide view where
+                // `from_center` runs to thousands of light years and unbounded
+                // would sink a bright far star below a dim near one.
+                Some(margin) => {
+                    let bright =
+                        (BRIGHT_NAME_WEIGHT * margin).min(CENTER_WEIGHT);
+                    let near = (SECONDARY_NEARNESS * nearness)
+                        .clamp(-BRIGHT_NAME_WEIGHT, BRIGHT_NAME_WEIGHT);
+                    bright + near
+                }
+                None => nearness,
+            }
         }
         LabelWeight::Body { under, star, primary, apparent } => {
             // A rank apiece for the depths, and one over them all for the
@@ -1536,10 +1672,15 @@ fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
 
 /// Turn each label to the camera and place it beside its system
 ///
-/// A label is a child of the system it names, which carries neither a size
-/// nor a rotation of its own, so everything written here is what the label
-/// is drawn with. That a system is never rotated is what lets the camera's
-/// rotation be written straight into a slot that is read as local.
+/// A label is a child of the system it names, and in the realistic view that
+/// system is a star turned to face the eye (see
+/// [`super::scale::size_photometrically`]), so its transform carries both a
+/// scale and a rotation the label would otherwise inherit twice over. Both are
+/// undone here, into the parent's frame: a label under a star already facing
+/// the eye is left square and standing a fixed step off on screen, inheriting
+/// the turn rather than repeating it, so nothing rewrites its facing as the
+/// view orbits. The map view, where the system is unturned, gets the plain
+/// camera rotation and a world-axis offset, as before.
 pub fn face_camera(
     camera: Query<(&OrbitCamera, &Camera)>,
     systems: Query<(&System, &Transform, &Indicator), Without<Label>>,
@@ -1632,17 +1773,24 @@ pub fn face_camera(
         let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
             + orbit.rotation * Vec3::Y * (height * RISE);
 
-        // Only where it moved, as everything the camera decides the size of
-        // is. A plate carries a mesh, so a transform written regardless hands
-        // every name on screen back to the renderer every frame.
         // Divided by the shell's own scale, the label being a child of the
-        // system the shell now shares an entity with, and that scale being the
+        // system the shell shares an entity with, and that scale being the
         // mark drawn far larger than a metre. The body path above does the
         // same with a body's own scale.
         let own = shell.scale.x.max(1e-6);
+        // And taken back through the shell's own rotation, into the parent's
+        // frame. In the realistic view the shell has turned the system to face
+        // the eye, so undoing it leaves a label under a star already facing the
+        // eye square and unmoved, inheriting the turn rather than repeating it.
+        // Unturned, in the map view, this is the plain camera rotation over a
+        // world-axis offset, as before.
+        let into_local = shell.rotation.inverse();
+        // Only where it moved, as everything the camera decides the size of is.
+        // A plate carries a mesh, so a transform written regardless hands every
+        // name on screen back to the renderer every frame.
         label.set_if_neq(Transform {
-            translation: offset / own,
-            rotation: orbit.rotation,
+            translation: into_local * (offset / own),
+            rotation: into_local * orbit.rotation,
             scale: Vec3::splat(scale / own),
         });
     }
@@ -2442,6 +2590,16 @@ mod tests {
         );
     }
 
+    /// A system weight from where it stands, in the map view — no brightness
+    fn placed(from_center: f32, ahead: f32) -> LabelWeight {
+        LabelWeight::System { from_center, ahead, brightness: None }
+    }
+
+    /// And in the realistic view, `margin` magnitudes above the drawn floor
+    fn lit(from_center: f32, ahead: f32, margin: f32) -> LabelWeight {
+        LabelWeight::System { from_center, ahead, brightness: Some(margin) }
+    }
+
     /// Of two systems along one line of sight, the near one is named first
     ///
     /// A name is drawn over whatever stands behind it, so naming the far one
@@ -2452,13 +2610,13 @@ mod tests {
     fn a_system_in_front_is_named_before_one_behind() {
         let away = 20.;
         let front = name_score(
-            LabelWeight::System { from_center: away, ahead: away },
+            placed(away, away),
             false,
             false,
             false,
         );
         let back = name_score(
-            LabelWeight::System { from_center: away, ahead: -away },
+            placed(away, -away),
             false,
             false,
             false,
@@ -2478,13 +2636,13 @@ mod tests {
         let bonus = CENTER_WEIGHT / (1. + (away / CENTER_REACH).powi(2));
 
         let at = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
+            placed(0., 0.),
             false,
             false,
             false,
         );
         let front = name_score(
-            LabelWeight::System { from_center: away, ahead: away },
+            placed(away, away),
             false,
             false,
             false,
@@ -2505,17 +2663,14 @@ mod tests {
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
         let mut nearer = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
+            placed(0., 0.),
             false,
             false,
             false,
         );
         for step in 1..=1000 {
             let further = name_score(
-                LabelWeight::System {
-                    from_center: step as f32 * DEFAULT_NAME_RADIUS / 1000.,
-                    ahead: 0.,
-                },
+                placed(step as f32 * DEFAULT_NAME_RADIUS / 1000., 0.),
                 false,
                 false,
                 false,
@@ -2528,6 +2683,92 @@ mod tests {
             );
             nearer = further;
         }
+    }
+
+    /// The realistic view names the brighter of two systems first
+    ///
+    /// There a star's size is its brightness, so the name follows it: two
+    /// systems the same distance off the middle are told apart by how far each
+    /// clears the drawn floor, brighter first.
+    #[test]
+    fn a_brighter_system_is_named_first_in_the_realistic_view() {
+        let score = |w| name_score(w, false, false, false);
+
+        let bright = score(lit(5., 0., 8.));
+        let faint = score(lit(5., 0., 2.));
+
+        assert!(bright > faint, "{bright} was no better than {faint}");
+    }
+
+    /// Stars of a like brightness are still ordered by nearness to the middle
+    ///
+    /// Brightness leads, but does not settle it alone: where two clear the
+    /// floor by the same margin, the nearer the center is named first.
+    #[test]
+    fn a_like_brightness_falls_back_on_nearness() {
+        let score = |w| name_score(w, false, false, false);
+
+        let near = score(lit(0., 0., 5.));
+        let far = score(lit(DEFAULT_NAME_RADIUS, 0., 5.));
+
+        assert!(near > far, "{near} was no better than {far}");
+    }
+
+    /// Brightness leads position: a bright star off the middle outranks a
+    /// faint one at it
+    ///
+    /// What naming primarily by magnitude means. In the map view the central
+    /// system always wins; in the realistic view a far brighter star takes the
+    /// name first, and only a like brightness falls back on nearness.
+    #[test]
+    fn brightness_leads_position_in_the_realistic_view() {
+        let score = |w| name_score(w, false, false, false);
+
+        let bright_edge = score(lit(DEFAULT_NAME_RADIUS, 0., 10.));
+        let faint_center = score(lit(0., 0., 0.));
+
+        assert!(
+            bright_edge > faint_center,
+            "{bright_edge} against {faint_center}"
+        );
+    }
+
+    /// Brightness leads even in a wide view, where nearness would run away
+    ///
+    /// With the spyglass wide, `from_center` reaches thousands of light years,
+    /// and unbounded the nearness term would sink a bright far star below a dim
+    /// near one. Bounded to a magnitude's worth, brightness keeps the lead.
+    #[test]
+    fn brightness_leads_even_in_a_wide_view() {
+        let score = |w| name_score(w, false, false, false);
+
+        let bright_far = score(lit(5000., -5000., 8.));
+        let dim_near = score(lit(0., 0., 1.));
+
+        assert!(bright_far > dim_near, "{bright_far} against {dim_near}");
+    }
+
+    /// However bright, a system's name keeps below a body's and below a mark
+    ///
+    /// The realistic weight is capped to the band the map view's uses, so the
+    /// orderings the rest of the module rests on hold: a body drawn inside the
+    /// held system, and anything pointed at or picked out, still come first.
+    #[test]
+    fn a_bright_system_keeps_to_its_band() {
+        let bright = name_score(lit(0., 0., 1e3), false, false, false);
+
+        assert!(bright < INSIDE_WEIGHT, "{bright} reached a body's band");
+        assert!(bright < POINTED_WEIGHT, "{bright} reached a point's");
+    }
+
+    /// Pointing still settles a name against the brightest star in the sky
+    #[test]
+    fn pointing_outranks_the_brightest_system() {
+        let pointed =
+            name_score(lit(DEFAULT_NAME_RADIUS, 0., 0.), true, false, false);
+        let bright = name_score(lit(0., 0., 1e3), false, false, false);
+
+        assert!(pointed > bright, "{pointed} against {bright}");
     }
 
     /// A spyglass of a given reach, clearing unless said otherwise
@@ -2574,6 +2815,49 @@ mod tests {
         assert_eq!(asked.reach(&spyglass(30., false)), 200.);
     }
 
+    /// The map view lays a name out within the reach and no further
+    ///
+    /// Where every star is the same size, nearness is the whole of it, so a
+    /// system past the reach about the center is dropped before it is scored.
+    #[test]
+    fn the_map_view_places_names_within_the_reach() {
+        let reach = |from_center| {
+            worth_placing(Placement::Reach { from_center, reach: 20. })
+        };
+        assert!(reach(10.));
+        assert!(!reach(30.));
+    }
+
+    /// The realistic view lays out any star bright enough to be drawn, however
+    /// far off the center it stands
+    ///
+    /// Brightness earns the place there, not a reach: a bright star deep along
+    /// the line of sight — Dubhe past Merak — is laid out where the map view
+    /// would have dropped it, and a star too faint to clear the floor is left
+    /// out.
+    #[test]
+    fn the_realistic_view_places_by_brightness_not_reach() {
+        let drawn = |apparent| {
+            worth_placing(Placement::Bright { apparent, floor: 8., limit: 12. })
+        };
+        assert!(drawn(2.));
+        assert!(!drawn(8.));
+    }
+
+    /// The naming limit turns the sky's names down from the faint end
+    ///
+    /// What the dial is for: a star still drawn but fainter than the limit is
+    /// left unnamed, the brighter ones kept, the way turning Name Radius down
+    /// keeps the near systems and drops the far.
+    #[test]
+    fn the_name_limit_drops_the_faint() {
+        let named = |apparent| {
+            worth_placing(Placement::Bright { apparent, floor: 10., limit: 5. })
+        };
+        assert!(named(3.));
+        assert!(!named(7.));
+    }
+
     /// What the pointer is on takes the top of the order
     ///
     /// The best score is kept before anything has been placed, so the name
@@ -2584,7 +2868,7 @@ mod tests {
     fn what_is_pointed_at_outranks_what_is_centered() {
         // Pointed at, and as far out as a name is ever drawn.
         let pointed = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            placed(DEFAULT_NAME_RADIUS, 0.),
             true,
             false,
             false,
@@ -2592,7 +2876,7 @@ mod tests {
 
         // The system at the center, which is otherwise the best there is.
         let centered = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
+            placed(0., 0.),
             false,
             false,
             false,
@@ -2613,13 +2897,13 @@ mod tests {
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
         let selected = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            placed(DEFAULT_NAME_RADIUS, 0.),
             false,
             true,
             false,
         );
         let pointed = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
+            placed(0., 0.),
             true,
             false,
             false,
@@ -2639,13 +2923,13 @@ mod tests {
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
         let both = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            placed(DEFAULT_NAME_RADIUS, 0.),
             true,
             true,
             false,
         );
         let selected = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
+            placed(DEFAULT_NAME_RADIUS, 0.),
             false,
             true,
             false,

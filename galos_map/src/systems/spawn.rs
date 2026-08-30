@@ -472,9 +472,10 @@ pub enum ColorBy {
 /// Whether systems are named
 ///
 /// On to begin with. Names are what makes the map readable as a place rather
-/// than as a field of dots, and how many of them are drawn is answered by
-/// [`crate::systems::labels::NameRadius`] and by the room each is given
-/// rather than by having them off.
+/// than as a field of dots, and how many of them are drawn is answered by the
+/// map view's [`crate::systems::labels::NameRadius`] or the realistic view's
+/// [`crate::systems::labels::NameLimit`], and by the room each is given, rather
+/// than by having them off.
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 

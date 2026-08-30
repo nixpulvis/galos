@@ -48,6 +48,7 @@ use crate::systems::pointing::Indicator;
 use crate::systems::roundness::Roundness;
 use crate::systems::route::{LineList, LineStrip};
 use crate::systems::selection::Selection;
+use crate::systems::spawn::Shell;
 use bevy::camera::visibility::ViewVisibility;
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
@@ -676,6 +677,7 @@ fn draw(
     camera: Query<(Entity, &OrbitCamera, Option<&Projection>)>,
     map: Res<crate::space::Map>,
     systems: Query<(Entity, &System)>,
+    mut transforms: Query<&mut Transform, With<Shell>>,
     inside: Query<Entity, With<Inside>>,
     contents: Res<Contents>,
     clock: Res<Clock>,
@@ -796,6 +798,20 @@ fn draw(
     let standing = systems.get(entity).map_or(DVec3::ZERO, |(_, system)| {
         space::metres(eye - system.position())
     });
+    // The shell has become the grid the camera descends into. As a star it
+    // wore a camera-facing rotation and a pixel scale, written every frame by
+    // `scale::size_photometrically`; as a grid its transform is instead the
+    // sub-grid's own placement, which `big_space` reads to hang the camera and
+    // to work out where the galaxy's sky stands behind it. Left tilted, the
+    // sky would swing off with the camera and stop tracking the orbit. So the
+    // facing is squared away here, once, keeping only the translation that says
+    // where the system sits in the galaxy; `size_photometrically` leaves the
+    // shell alone from now on (it is `Without<Grid>`), so nothing writes it
+    // back until the grid comes off on the way up.
+    if let Ok(mut transform) = transforms.get_mut(entity) {
+        transform.rotation = Quat::IDENTITY;
+        transform.scale = Vec3::ONE;
+    }
     let mut commands = commands.entity(entity);
     commands.insert(grid.clone());
     // Down into the system with them.
