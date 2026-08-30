@@ -88,6 +88,16 @@ pub fn apparent_magnitude_ly(absolute: f64, distance_ly: f64) -> f64 {
     apparent_magnitude(absolute, distance_ly * PARSECS_PER_LY)
 }
 
+/// The Pogson ratio: 2.5 magnitudes to a factor of ten in flux, from the
+/// definition that five magnitudes is exactly a hundredfold. It carries a flux
+/// ratio back into the magnitude scale the rest of the sky is spoken in.
+const POGSON_RATIO: f64 = 2.5;
+
+/// The reciprocal Pogson exponent, `1 / 2.5 = 0.4`: the power of ten a
+/// magnitude carries in flux. Named apart from [`POGSON_RATIO`] so each
+/// direction of the conversion reads as one factor rather than a bare decimal.
+const POGSON_EXPONENT: f64 = 0.4;
+
 /// The relative flux of a magnitude, with magnitude zero as one unit.
 ///
 /// `10^(-0.4*m)`, the inverse of the magnitude scale being logarithmic: five
@@ -96,7 +106,7 @@ pub fn apparent_magnitude_ly(absolute: f64, distance_ly: f64) -> f64 {
 /// magnitudes are what do not, so anything that combines light converts to
 /// this first.
 pub fn flux(magnitude: f64) -> f64 {
-    10f64.powf(-0.4 * magnitude)
+    10f64.powf(-POGSON_EXPONENT * magnitude)
 }
 
 /// The magnitude a relative flux comes to, the inverse of [`flux`].
@@ -104,7 +114,7 @@ pub fn flux(magnitude: f64) -> f64 {
 /// `-2.5*log10(flux)`. Once fluxes have been summed this turns the total back
 /// into the scale the rest of the sky is spoken in.
 pub fn magnitude(flux: f64) -> f64 {
-    -2.5 * flux.log10()
+    -POGSON_RATIO * flux.log10()
 }
 
 /// The one magnitude a set of unresolved sources comes to together.
@@ -203,7 +213,22 @@ pub fn visual_magnitude(bolometric: f64, temperature_k: f64) -> f64 {
     // dimmed by how much smaller than one that comes to.
     let fraction = (v_band_shape(temperature_k) / temperature_k.powi(4))
         / (*SOLAR_V_BAND_SHAPE / SOLAR_TEMPERATURE.powi(4));
-    bolometric - 2.5 * fraction.log10()
+    bolometric - POGSON_RATIO * fraction.log10()
+}
+
+/// The Rec. 709 luminance weights for a linear-sRGB triple: how much red,
+/// green and blue each count toward perceived brightness, the same primaries
+/// and D65 white the [`xy_to_linear_srgb`] transform targets. They sum to one,
+/// so a neutral triple of value `v` has luminance `v`.
+pub const REC709_LUMINANCE: [f64; 3] = [0.2126, 0.7152, 0.0722];
+
+/// The Rec. 709 luminance of a linear-sRGB triple, the one brightness the
+/// crate's colours are held to. A blackbody tint carries hue at unit luminance
+/// so flux alone sets how bright a star is drawn; this measures that unit.
+pub fn luminance(rgb: [f64; 3]) -> f64 {
+    REC709_LUMINANCE[0] * rgb[0]
+        + REC709_LUMINANCE[1] * rgb[1]
+        + REC709_LUMINANCE[2] * rgb[2]
 }
 
 /// The linear-RGB colour of a blackbody at `temperature_k` kelvin.
@@ -224,6 +249,18 @@ pub fn blackbody_color(temperature_k: f64) -> [f32; 3] {
     xy_to_linear_srgb(x, y)
 }
 
+/// The temperature range Kim et al.'s Planckian-locus fit is defined over, in
+/// kelvin. Outside it the fit is undefined and the chromaticity has stopped
+/// moving, so the temperature is clamped to these bounds before it is read.
+const PLANCKIAN_LOCUS_MIN_K: f64 = 1667.0;
+const PLANCKIAN_LOCUS_MAX_K: f64 = 25000.0;
+
+/// The piecewise breakpoints of Kim et al.'s cubic fit: the temperature where
+/// it switches the coefficients it reads `x` with, and the lower one where it
+/// switches those it reads `y` with.
+const PLANCKIAN_X_BREAK_K: f64 = 4000.0;
+const PLANCKIAN_Y_BREAK_K: f64 = 2222.0;
+
 /// The chromaticity `(x, y)` of the Planckian locus at a temperature.
 ///
 /// Kim, Weyrich and Kautz (2002), the cubic-spline approximation astronomy and
@@ -231,25 +268,45 @@ pub fn blackbody_color(temperature_k: f64) -> [f32; 3] {
 /// cubic in `x`; outside 1667..25000 K the temperature is clamped, since the
 /// fit is undefined there and the colour has stopped moving in any case.
 fn planckian_locus(temperature_k: f64) -> (f64, f64) {
-    let t = temperature_k.clamp(1667.0, 25000.0);
+    let t = temperature_k.clamp(PLANCKIAN_LOCUS_MIN_K, PLANCKIAN_LOCUS_MAX_K);
     let (t2, t3) = (t * t, t * t * t);
 
-    let x = if t < 4000.0 {
+    let x = if t < PLANCKIAN_X_BREAK_K {
         -0.266_123_9e9 / t3 - 0.234_358_9e6 / t2 + 0.877_695_6e3 / t + 0.179_910
     } else {
         -3.025_846_9e9 / t3 + 2.107_037_9e6 / t2 + 0.222_634_7e3 / t + 0.240_390
     };
     let (x2, x3) = (x * x, x * x * x);
 
-    let y = if t < 2222.0 {
+    let y = if t < PLANCKIAN_Y_BREAK_K {
         -1.106_381_4 * x3 - 1.348_110_20 * x2 + 2.185_558_32 * x - 0.202_196_83
-    } else if t < 4000.0 {
+    } else if t < PLANCKIAN_X_BREAK_K {
         -0.954_947_6 * x3 - 1.374_185_93 * x2 + 2.091_370_15 * x - 0.167_488_67
     } else {
         3.081_758_0 * x3 - 5.873_386_70 * x2 + 3.751_129_97 * x - 0.370_014_83
     };
 
     (x, y)
+}
+
+/// The XYZ→linear-sRGB matrix under a D65 white point, one row per output
+/// channel — the standard sRGB primaries. Each row dotted with an `[X, Y, Z]`
+/// triple gives that channel before any gamut clamp.
+const XYZ_TO_LINEAR_SRGB_D65: [[f64; 3]; 3] = [
+    [3.240_625_5, -1.537_208_0, -0.498_628_6],
+    [-0.968_930_7, 1.875_756_1, 0.041_517_5],
+    [0.055_710_1, -0.204_021_1, 1.056_995_9],
+];
+
+/// A CIE XYZ triple as linear sRGB (D65), before any gamut clamp: the
+/// [`XYZ_TO_LINEAR_SRGB_D65`] matrix applied as one named step.
+fn xyz_to_linear_srgb(xyz: [f64; 3]) -> [f64; 3] {
+    let m = XYZ_TO_LINEAR_SRGB_D65;
+    [
+        m[0][0] * xyz[0] + m[0][1] * xyz[1] + m[0][2] * xyz[2],
+        m[1][0] * xyz[0] + m[1][1] * xyz[1] + m[1][2] * xyz[2],
+        m[2][0] * xyz[0] + m[2][1] * xyz[1] + m[2][2] * xyz[2],
+    ]
 }
 
 /// A chromaticity `(x, y)` as linear sRGB at unit luminance.
@@ -268,17 +325,14 @@ fn xy_to_linear_srgb(x: f64, y: f64) -> [f32; 3] {
     let big_x = x / y;
     let big_z = (1.0 - x - y) / y;
 
-    // XYZ to linear sRGB, D65.
-    let r = 3.240_625_5 * big_x - 1.537_208_0 - 0.498_628_6 * big_z;
-    let g = -0.968_930_7 * big_x + 1.875_756_1 + 0.041_517_5 * big_z;
-    let b = 0.055_710_1 * big_x - 0.204_021_1 + 1.056_995_9 * big_z;
-
+    // XYZ to linear sRGB, D65, then clamp any out-of-gamut channel up to zero.
+    let [r, g, b] = xyz_to_linear_srgb([big_x, 1.0, big_z]);
     let r = r.max(0.0);
     let g = g.max(0.0);
     let b = b.max(0.0);
-    // Rec. 709 luminance, the weights a linear-sRGB triple carries; dividing by
-    // it fixes the tint's brightness so only flux moves a star's.
-    let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    // Divide out the Rec. 709 luminance so the tint carries hue at unit
+    // brightness and only flux moves how bright a star is drawn.
+    let luminance = luminance([r, g, b]);
     if luminance > 0.0 {
         [(r / luminance) as f32, (g / luminance) as f32, (b / luminance) as f32]
     } else {
@@ -400,6 +454,12 @@ pub fn class_light(class: &str) -> ClassLight {
     }
 }
 
+/// The `B-V` range Ballesteros' fit is trusted over. Its second term diverges
+/// as `B-V` nears −0.674, and past the red end the class is the better source,
+/// so the index is clamped to these bounds before the formula reads it.
+const COLOR_INDEX_MIN: f64 = -0.4;
+const COLOR_INDEX_MAX: f64 = 2.0;
+
 /// The effective temperature a `B-V` colour index implies, in kelvin.
 ///
 /// Ballesteros' formula, which treats the two photometric bands as blackbody
@@ -419,7 +479,7 @@ pub fn class_light(class: &str) -> ClassLight {
 /// -0.674, so the input is clamped to `-0.4..2.0`. Above roughly 20,000 K the
 /// class is the better source and [`class_light`] is what to ask.
 pub fn color_index_to_temperature(b_v: f64) -> f64 {
-    let bv = b_v.clamp(-0.4, 2.0);
+    let bv = b_v.clamp(COLOR_INDEX_MIN, COLOR_INDEX_MAX);
     4600.0 * (1.0 / (0.92 * bv + 1.7) + 1.0 / (0.92 * bv + 0.62))
 }
 
@@ -509,7 +569,7 @@ mod tests {
     #[test]
     fn two_equal_stars_add_by_log_two() {
         let combined = combined_magnitude([0.0, 0.0]).unwrap();
-        assert!(close(combined, -2.5 * 2f64.log10()));
+        assert!(close(combined, -POGSON_RATIO * 2f64.log10()));
     }
 
     /// A combined source is brighter — a smaller magnitude — than its
@@ -536,9 +596,7 @@ mod tests {
         for t in [1000.0, 3000.0, 5772.0, 10000.0, 30000.0] {
             let c = blackbody_color(t);
             assert!(c.iter().all(|&ch| ch >= 0.0));
-            let luminance = 0.2126 * c[0] as f64
-                + 0.7152 * c[1] as f64
-                + 0.0722 * c[2] as f64;
+            let luminance = luminance([c[0] as f64, c[1] as f64, c[2] as f64]);
             assert!(
                 (luminance - 1.0).abs() < 1e-4,
                 "at {t} K luminance is {luminance}"
