@@ -25,7 +25,7 @@ use crate::systems::filter::{
 };
 use crate::systems::info::Panels;
 use crate::systems::info::lasting;
-use crate::systems::labels::NameRadius;
+use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::labels::ShowBodyNames;
 use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
@@ -605,6 +605,7 @@ pub struct Settings<'w> {
     throttle: ResMut<'w, Throttle>,
     poll: ResMut<'w, Poll>,
     name_radius: ResMut<'w, NameRadius>,
+    name_limit: ResMut<'w, NameLimit>,
     show_orbits: ResMut<'w, ShowOrbits>,
     clock: ResMut<'w, Clock>,
     show_body_names: ResMut<'w, ShowBodyNames>,
@@ -867,26 +868,65 @@ pub fn chrome(
             // as much, and says it without a heading standing over nothing
             // whenever the box is unchecked.
             ui.indent("names", |ui| {
-                ui.checkbox(
-                    &mut settings.name_radius.follow_spyglass,
-                    "Names Follow Spyglass",
-                );
-                if !settings.name_radius.follow_spyglass {
-                    // A name can only be drawn for a system that is drawn,
-                    // and the spyglass decides that. One that is not clearing
-                    // draws everything loaded, and then names may be asked
-                    // for beyond its reach.
-                    let ceiling = if settings.spyglass.clear {
-                        settings.spyglass.radius
-                    } else {
-                        Spyglass::CEILING
-                    };
-                    ui.label("Name Radius (Ly)");
-                    radius_slider(
-                        ui,
-                        &mut settings.name_radius.radius,
-                        ceiling,
+                // The reach controls answer a map-view question — how far about
+                // the center to name — and say nothing in the realistic view,
+                // where a star earns its name by being bright enough to draw
+                // rather than by standing near the center. See
+                // [`crate::systems::labels::worth_placing`].
+                if *settings.view == View::Map {
+                    ui.checkbox(
+                        &mut settings.name_radius.follow_spyglass,
+                        "Names Follow Spyglass",
                     );
+                    if !settings.name_radius.follow_spyglass {
+                        // A name can only be drawn for a system that is drawn,
+                        // and the spyglass decides that. One that is not
+                        // clearing draws everything loaded, and then names may
+                        // be asked for beyond its reach.
+                        let ceiling = if settings.spyglass.clear {
+                            settings.spyglass.radius
+                        } else {
+                            Spyglass::CEILING
+                        };
+                        ui.label("Name Radius (Ly)");
+                        radius_slider(
+                            ui,
+                            &mut settings.name_radius.radius,
+                            ceiling,
+                        );
+                    }
+                } else {
+                    // The realistic view has no reach to hold names to, so it
+                    // holds them to a brightness instead: named brightest
+                    // first, down to this limiting magnitude. Turning it down
+                    // names fewer of them, the way Name Radius names fewer in
+                    // the map view. A star past the exposure's floor is not
+                    // drawn and so cannot be named whatever this says.
+                    ui.label("Name Limit (mag)");
+                    let mut mag = settings.name_limit.0;
+                    fill_width(ui, VALUE_WIDTH);
+                    let slider = ui
+                        .horizontal(|ui| {
+                            let rail = ui.add(
+                                egui::Slider::new(&mut mag, -2.0..=12.0)
+                                    .step_by(0.5)
+                                    .show_value(false),
+                            );
+                            let typed = value_box(
+                                ui,
+                                egui::DragValue::new(&mut mag)
+                                    .range(-2.0..=12.0)
+                                    .speed(0.1)
+                                    .suffix(" mag"),
+                            );
+                            rail | typed
+                        })
+                        .inner;
+                    // Only when it lands somewhere new, as the exposure slider
+                    // is, so a still slider does not mark the resource changed.
+                    if slider.changed() && settings.name_limit.0 != mag {
+                        settings.name_limit.0 = mag;
+                    }
                 }
             });
         }

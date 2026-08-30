@@ -24,6 +24,7 @@ use super::spawn::{Shell, StarExposure, StarSprite};
 use bevy::camera::visibility::ViewVisibility;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use big_space::prelude::Grid;
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
@@ -425,6 +426,18 @@ const PSF_GROWTH: f64 = 0.45;
 /// it still grows the star.
 const DOT_RADIUS: f32 = 0.6;
 
+/// The size a star below the flux floor shrinks to, as a fraction of a pixel
+///
+/// Not zero. A star fainter than the exposure floor is not drawn, but a name
+/// may still be hung on it — selected, pointed at, or a route stop — and a
+/// name is a child of the star's entity and inherits its scale, so a zero
+/// would collapse the name to nothing (see [`super::labels::face_camera`]). A
+/// thousandth of a pixel is far below what any screen shows, so the star stays
+/// invisible while the name it carries keeps a scale to be read against. This
+/// is how the realistic view keeps a marked-but-undrawn star named, the way the
+/// map view keeps a selection named from behind the spyglass.
+const UNSEEN: f32 = 1e-3;
+
 /// The visible radius of a star's point spread, in screen pixels
 ///
 /// A star's image is its exposed `energy` —
@@ -462,13 +475,20 @@ fn psf_radius(energy: f64) -> f32 {
 /// smaller, both by the log of their brightness; opening the exposure grows
 /// them all and draws fainter ones in; and a star whose peak is under the floor
 /// has no size and drops out. The tint and the core's shape are the sprite's.
+///
+/// A shell the camera has descended into is skipped: it wears a [`Grid`] now
+/// and its transform is that sub-grid's placement, read by `big_space`, not a
+/// billboard's facing. Turning it to face the eye would tilt the sub-grid the
+/// camera hangs in and swing the galaxy's whole sky off with it; the entity is
+/// left to `super::bodies::spawn::draw`, which squares its transform when it
+/// hands the shell over to the grid.
 pub(crate) fn size_photometrically(
     camera: Query<(&OrbitCamera, &Camera)>,
     exposure: Res<StarExposure>,
     sprite: Res<StarSprite>,
     mut shells: Query<
         (&mut Transform, &System, &mut Mesh3d, &ViewVisibility),
-        With<Shell>,
+        (With<Shell>, Without<Grid>),
     >,
 ) {
     let Ok((orbit, camera)) = camera.single() else {
@@ -499,7 +519,8 @@ pub(crate) fn size_photometrically(
         // the cleared radius. The Moffat profile fades to nothing well inside
         // that edge, so a bright star is a cored glint, not the flat disc a
         // bare sphere gave.
-        let size = 2. * radius * per_pixel;
+        // Floored to a sliver of a pixel rather than nothing; see [`UNSEEN`].
+        let size = (2. * radius * per_pixel).max(per_pixel * UNSEEN);
         if drawn.scale.x != size {
             drawn.scale = Vec3::splat(size);
         }
