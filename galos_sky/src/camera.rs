@@ -113,6 +113,10 @@ pub const DEFAULT_SEEING_ARCMIN: f64 = 0.5;
 /// [`seeing`](Camera::seeing_arcmin) that asks for less is held here.
 pub const MIN_SEEING_PX: f64 = 0.3;
 
+/// The number of arcminutes in a degree, the conversion that turns a field of
+/// view into a plate scale in [`Camera::seeing_pixels`].
+const ARCMINUTES_PER_DEGREE: f64 = 60.0;
+
 /// A halo laid behind the seeing core: one broad, faint layer of the point
 /// spread.
 ///
@@ -175,7 +179,7 @@ impl Camera {
     /// A camera of the given size, at the origin, looking down `+x`.
     ///
     /// The defaults are a sixty-degree field — a normal lens — an exposure at
-    /// magnitude 7.5, deep enough to saturate the bright stars so their halos
+    /// magnitude 6.0, deep enough to saturate the bright stars so their halos
     /// bloom, the tight [`DEFAULT_SEEING_ARCMIN`] core, and the reference
     /// [`Aureole::DEFAULT`] glow behind it. That combination gives a sky of
     /// crisp faint stars under a handful of haloed bright ones.
@@ -206,7 +210,9 @@ impl Camera {
         // Any up not parallel to the aim will do; the frame's `+z` unless the
         // camera is looking along it, in which case `+y`.
         let up = [0.0, 0.0, 1.0];
-        self.up = if cross(self.forward, up).iter().all(|c| c.abs() < 1e-9) {
+        let parallel =
+            cross(self.forward, up).iter().all(|c| c.abs() < PARALLEL_EPSILON);
+        self.up = if parallel {
             [0.0, 1.0, 0.0]
         } else {
             up
@@ -247,8 +253,8 @@ impl Camera {
     /// pixel cannot be sampled. This is the width the render loop hands the
     /// [`Psf`], and where seeing stops being an angle and becomes pixels.
     pub fn seeing_pixels(&self) -> f64 {
-        let pixels_per_arcminute =
-            self.height as f64 / (self.fov_y.to_degrees() * 60.0);
+        let pixels_per_arcminute = self.height as f64
+            / (self.fov_y.to_degrees() * ARCMINUTES_PER_DEGREE);
         (self.seeing_arcmin * pixels_per_arcminute).max(MIN_SEEING_PX)
     }
 
@@ -360,7 +366,7 @@ impl Camera {
     /// light years away the star is somewhere along that line and the picture
     /// cannot say where, and a ring drawn anyway would be pointing at a guess.
     pub fn mark_bearing(&self, bearing: [f64; 3], radius: f64) -> Option<Mark> {
-        if dot(self.position, self.position) > 1e-12 {
+        if dot(self.position, self.position) > ORIGIN_EPSILON_SQ {
             return None;
         }
         // A bearing is a point on a unit sphere about the eye. Any positive
@@ -474,12 +480,7 @@ impl Camera {
         // its centre and takes a single sample; only a sharp one pays for the
         // grid, and only near the middle where the profile actually bends.
         let core = self.seeing_pixels();
-        let grid = if core >= 1.5 {
-            1
-        } else {
-            (2.0 / core).ceil().clamp(1.0, 4.0) as i64
-        };
-        let supersampled = (3.0 * core).max(2.0);
+        let (grid, supersampled) = supersample_grid(core);
 
         for star in stars {
             let Some((cx, cy, distance)) = self.project(star.position) else {
@@ -543,6 +544,62 @@ impl Camera {
     }
 }
 
+/// Vector components below this magnitude count as zero when deciding whether
+/// the aim runs along the up vector — the one case a roll cannot be chosen from
+/// it. A hair above the noise a normalized cross product carries.
+const PARALLEL_EPSILON: f64 = 1e-9;
+
+/// The squared distance from the origin, in light years, within which the
+/// camera counts as standing at Sol. A bearing locates a star only from the
+/// origin it was measured from; see [`Camera::mark_bearing`].
+const ORIGIN_EPSILON_SQ: f64 = 1e-12;
+
+/// A vector shorter than this, in the input's units, has no reliable direction,
+/// so [`normalize`] declines to return one rather than dividing by a length
+/// indistinguishable from zero.
+const MIN_DIRECTION_LENGTH: f64 = 1e-12;
+
+/// A core at least this wide, in pixels, varies slowly enough across a pixel to
+/// read at its centre, so it takes a single sample rather than a grid.
+const SUPERSAMPLE_THRESHOLD_PX: f64 = 1.5;
+
+/// The subsample grid aims for about this many cells across the core, so a
+/// sharp core is integrated rather than point-sampled at its spiking centre.
+const SUPERSAMPLE_TARGET: f64 = 2.0;
+
+/// The subsample grid is capped at this many cells per side: past it the cost
+/// grows as its square for a share of the light too small to see.
+const MAX_SUPERSAMPLE_GRID: f64 = 4.0;
+
+/// Supersampling is used out to this many core widths from a star's centre,
+/// where the profile still bends; beyond it a single sample reads fine.
+const SUPERSAMPLE_REACH_CORES: f64 = 3.0;
+
+/// ...but never nearer than this many pixels, so even a sub-pixel core keeps a
+/// small neighbourhood integrated rather than none.
+const SUPERSAMPLE_MIN_REACH_PX: f64 = 2.0;
+
+/// The subsample grid, and the radius in pixels out to which it is used, for a
+/// seeing core of the given width.
+///
+/// A core at least [`SUPERSAMPLE_THRESHOLD_PX`] wide reads correctly at a
+/// pixel's centre and takes one sample. A sharper one is averaged over a grid
+/// of about [`SUPERSAMPLE_TARGET`] cells across the core — capped at
+/// [`MAX_SUPERSAMPLE_GRID`] per side and never fewer than one — out to the
+/// larger of [`SUPERSAMPLE_REACH_CORES`] core widths or
+/// [`SUPERSAMPLE_MIN_REACH_PX`] pixels, past which the profile is flat enough
+/// that the grid changes nothing.
+fn supersample_grid(core: f64) -> (i64, f64) {
+    let grid = if core >= SUPERSAMPLE_THRESHOLD_PX {
+        1
+    } else {
+        (SUPERSAMPLE_TARGET / core).ceil().clamp(1.0, MAX_SUPERSAMPLE_GRID)
+            as i64
+    };
+    let reach = (SUPERSAMPLE_REACH_CORES * core).max(SUPERSAMPLE_MIN_REACH_PX);
+    (grid, reach)
+}
+
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -565,7 +622,8 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 fn normalize(v: [f64; 3]) -> Option<[f64; 3]> {
     let length = dot(v, v).sqrt();
-    (length > 1e-12).then(|| [v[0] / length, v[1] / length, v[2] / length])
+    (length > MIN_DIRECTION_LENGTH)
+        .then(|| [v[0] / length, v[1] / length, v[2] / length])
 }
 
 #[cfg(test)]

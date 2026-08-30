@@ -46,7 +46,41 @@
 //! disagreement with the other dataset. Position against position; the noise
 //! floor is then the other dataset's alone.
 
+use crate::frame::rotate;
 use crate::Star;
+
+/// The fewest matched stars a rotation can be fitted from.
+///
+/// Three non-collinear bearings pin an orientation: two leave a spin about
+/// their common axis undetermined and one determines nothing at all. With
+/// fewer than this [`fit_frame`] returns [`None`] rather than a rotation it
+/// cannot stand behind, and the distance comparison — which needs no frame —
+/// carries on without one.
+const MIN_PAIRS_TO_FIT: usize = 3;
+
+/// How many Newton steps the polar decomposition is allowed before it gives up.
+///
+/// The iteration `X <- (X + X^-T) / 2` converges on the orthogonal factor in a
+/// handful of steps for any well-conditioned matrix, so this is a generous
+/// ceiling that only bites on a degenerate fit: a safety stop against a matrix
+/// that will not converge, not a knob that shapes a good one.
+const MAX_POLAR_ITERATIONS: usize = 64;
+
+/// When the polar iteration has converged: the largest a single matrix entry
+/// may still move between steps before the result is taken as orthogonal.
+///
+/// Set near the floor of `f64` precision, since the iteration converges
+/// quadratically and there is no cost to letting a good fit reach its last few
+/// bits.
+const POLAR_CONVERGENCE: f64 = 1e-14;
+
+/// Below this, a 3x3 matrix's determinant is treated as zero and the matrix as
+/// singular rather than inverted.
+///
+/// The correlation matrix of degenerate bearings — all collinear, say — lands
+/// here, and inverting it would feed the iteration nonsense. Loose enough to
+/// catch a near-singular matrix, far below any determinant a real fit produces.
+const SINGULAR_DETERMINANT: f64 = 1e-12;
 
 /// What another dataset says about a star, in its own frame and units.
 #[derive(Clone, Debug, PartialEq)]
@@ -220,7 +254,7 @@ pub fn compare(catalog: &[Star], reference: &[Reference]) -> Comparison {
 /// or where the iteration will not converge because the bearings are degenerate
 /// — all collinear, say.
 fn fit_frame(pairs: &[([f64; 3], [f64; 3])]) -> Option<Frame> {
-    if pairs.len() < 3 {
+    if pairs.len() < MIN_PAIRS_TO_FIT {
         return None;
     }
     let mut h = [[0.0; 3]; 3];
@@ -233,7 +267,7 @@ fn fit_frame(pairs: &[([f64; 3], [f64; 3])]) -> Option<Frame> {
     }
 
     let mut x = h;
-    for _ in 0..64 {
+    for _ in 0..MAX_POLAR_ITERATIONS {
         let inverse = invert(&x)?;
         let mut next = [[0.0; 3]; 3];
         let mut delta = 0.0f64;
@@ -245,7 +279,7 @@ fn fit_frame(pairs: &[([f64; 3], [f64; 3])]) -> Option<Frame> {
             }
         }
         x = next;
-        if delta < 1e-14 {
+        if delta < POLAR_CONVERGENCE {
             break;
         }
     }
@@ -264,11 +298,6 @@ fn fit_frame(pairs: &[([f64; 3], [f64; 3])]) -> Option<Frame> {
 
 fn unit(v: [f64; 3], length: f64) -> [f64; 3] {
     [v[0] / length, v[1] / length, v[2] / length]
-}
-
-fn rotate(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
-    let row = |r: &[f64; 3]| r[0] * v[0] + r[1] * v[1] + r[2] * v[2];
-    [row(&m[0]), row(&m[1]), row(&m[2])]
 }
 
 /// The angle between two vectors, degrees.
@@ -290,7 +319,7 @@ fn determinant(m: &[[f64; 3]; 3]) -> f64 {
 
 fn invert(m: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let det = determinant(m);
-    if det.abs() < 1e-12 {
+    if det.abs() < SINGULAR_DETERMINANT {
         return None;
     }
     let c = |r: usize, k: usize| {

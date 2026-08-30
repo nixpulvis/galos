@@ -17,6 +17,29 @@ use std::fs::File;
 use std::io::{self, BufWriter};
 use std::path::Path;
 
+/// Full-scale value of an eight-bit display channel. Linear coverage in
+/// `0..=1` is rounded onto `0..=255` by scaling with this, and a display value
+/// read back divides by it.
+const EIGHT_BIT_MAX: f32 = 255.0;
+
+/// How far past a ring's radius, in pixels, its search box is grown. The band a
+/// ring paints is [`RING_HALF_WIDTH`] to either side of the radius, so a whole
+/// pixel of margin more than holds it and keeps the box a round count of pixels.
+const RING_REACH_MARGIN: f64 = 1.0;
+
+/// Half the width of a drawn ring, in pixels: a pixel whose centre lies within
+/// this of the radius is on the ring. One pixel wide overall, the thin outline
+/// [`Image::stroke`] writes.
+const RING_HALF_WIDTH: f64 = 0.5;
+
+/// Half the solid width of a figure line, in pixels. Within this of the
+/// centreline a pixel is fully covered; past it the edge feathers.
+const LINE_HALF_WIDTH: f64 = 0.5;
+
+/// The distance, in pixels, over which a figure line's edge fades from solid to
+/// nothing, so the line antialiases rather than leaving a staircase.
+const LINE_FEATHER: f64 = 1.0;
+
 /// A rendered sky: linear RGB energy per pixel, row-major from the top left.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Image {
@@ -112,8 +135,8 @@ impl Image {
         let mut out = Vec::with_capacity(self.pixels.len() * 3);
         for pixel in &self.pixels {
             for &channel in pixel {
-                let mapped = 1.0 - (-channel.max(0.0)).exp();
-                out.push((srgb_encode(mapped) * 255.0).round() as u8);
+                let mapped = tone_map(channel);
+                out.push((srgb_encode(mapped) * EIGHT_BIT_MAX).round() as u8);
             }
         }
         for segment in segments {
@@ -132,7 +155,7 @@ impl Image {
         }
         let i = ((y as usize) * (self.width as usize) + x as usize) * 3;
         for c in 0..3 {
-            out[i + c] = (color[c].clamp(0.0, 1.0) * 255.0).round() as u8;
+            out[i + c] = (color[c].clamp(0.0, 1.0) * EIGHT_BIT_MAX).round() as u8;
         }
     }
 
@@ -154,9 +177,10 @@ impl Image {
         let cov = coverage.clamp(0.0, 1.0);
         let i = ((y as usize) * (self.width as usize) + x as usize) * 3;
         for c in 0..3 {
-            let bg = out[i + c] as f32 / 255.0;
+            let bg = out[i + c] as f32 / EIGHT_BIT_MAX;
             let fg = color[c].clamp(0.0, 1.0);
-            out[i + c] = ((bg * (1.0 - cov) + fg * cov) * 255.0).round() as u8;
+            out[i + c] =
+                ((bg * (1.0 - cov) + fg * cov) * EIGHT_BIT_MAX).round() as u8;
         }
     }
 
@@ -167,14 +191,16 @@ impl Image {
     /// chrome that dimmed over a bright star would be least visible exactly
     /// where it is most wanted.
     fn stroke(&self, out: &mut [u8], mark: &Mark) {
-        let reach = mark.radius + 1.0;
+        let reach = mark.radius + RING_REACH_MARGIN;
         let (x0, x1) = ((mark.x - reach) as i64, (mark.x + reach) as i64);
         let (y0, y1) = ((mark.y - reach) as i64, (mark.y + reach) as i64);
         for y in y0..=y1 {
             for x in x0..=x1 {
                 let dx = x as f64 + 0.5 - mark.x;
                 let dy = y as f64 + 0.5 - mark.y;
-                if ((dx * dx + dy * dy).sqrt() - mark.radius).abs() > 0.5 {
+                if ((dx * dx + dy * dy).sqrt() - mark.radius).abs()
+                    > RING_HALF_WIDTH
+                {
                     continue;
                 }
                 self.plot(out, x, y, mark.color);
@@ -210,9 +236,7 @@ impl Image {
 
         // A one-pixel line: solid within half a pixel of the centreline, fading
         // to nothing a pixel beyond, so the coverage is the pixel's own share.
-        let half = 0.5;
-        let feather = 1.0;
-        let reach = half + feather;
+        let reach = LINE_HALF_WIDTH + LINE_FEATHER;
         let lo_x = (ax.min(bx) - reach).floor() as i64;
         let hi_x = (ax.max(bx) + reach).ceil() as i64;
         let lo_y = (ay.min(by) - reach).floor() as i64;
@@ -227,7 +251,8 @@ impl Image {
                     bx,
                     by,
                 );
-                let coverage = ((reach - d) / feather).clamp(0.0, 1.0) as f32;
+                let coverage =
+                    ((reach - d) / LINE_FEATHER).clamp(0.0, 1.0) as f32;
                 if coverage > 0.0 {
                     self.blend(out, x, y, segment.color, coverage);
                 }
@@ -380,6 +405,34 @@ impl Segment {
     }
 }
 
+/// Below this linear value the sRGB transfer function is a straight line rather
+/// than a power curve — the toe that keeps the encoding finite-sloped at black.
+const SRGB_LINEAR_CUTOFF: f32 = 0.003_130_8;
+
+/// The slope of that linear toe.
+const SRGB_LINEAR_SLOPE: f32 = 12.92;
+
+/// The scale on the power segment above the toe (`1 + SRGB_OFFSET`), chosen so
+/// the two segments meet with a continuous value and slope at the cutoff.
+const SRGB_SCALE: f32 = 1.055;
+
+/// The offset subtracted from the scaled power segment, the other half of the
+/// match at the cutoff.
+const SRGB_OFFSET: f32 = 0.055;
+
+/// The encoding exponent: the inverse of the 2.4 display gamma sRGB undoes.
+const SRGB_ENCODING_GAMMA: f32 = 1.0 / 2.4;
+
+/// The tone curve applied before gamma: `1 - exp(-x)`, a film response.
+///
+/// Linear in the dark where faint stars live and asymptotic to white so no
+/// amount of light overflows, it is what lets a sky spanning four decades of
+/// flux — Sirius to the eye's limit — show both ends at once. Negative energy,
+/// which the buffer never holds but a caller might pass, is clamped to black.
+fn tone_map(energy: f32) -> f32 {
+    1.0 - (-energy.max(0.0)).exp()
+}
+
 /// One linear channel in `0..=1`, gamma-encoded for a display.
 ///
 /// The sRGB transfer function: a short linear toe near black, then a power
@@ -387,7 +440,11 @@ impl Segment {
 /// since a display undoes a gamma nobody applied.
 fn srgb_encode(linear: f32) -> f32 {
     let l = linear.clamp(0.0, 1.0);
-    if l <= 0.003_130_8 { 12.92 * l } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }
+    if l <= SRGB_LINEAR_CUTOFF {
+        SRGB_LINEAR_SLOPE * l
+    } else {
+        SRGB_SCALE * l.powf(SRGB_ENCODING_GAMMA) - SRGB_OFFSET
+    }
 }
 
 /// The distance from a point to a line segment, in the units of the input.

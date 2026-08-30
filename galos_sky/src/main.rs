@@ -21,6 +21,16 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::process::exit;
 
+/// The image size used when `--size` cannot be read: a missing separator or an
+/// unparseable dimension falls back to it, and it matches the `--size` default.
+const DEFAULT_WIDTH: u32 = 1600;
+const DEFAULT_HEIGHT: u32 = 900;
+
+/// A pixel counts as *lit* in the console summary once its three channels sum
+/// past this. A reporting threshold only — it never touches the image — set
+/// just above zero so the count reflects stars rather than floating-point dust.
+const LIT_ENERGY_THRESHOLD: f32 = 1e-3;
+
 /// Draw a star catalog from somewhere in it.
 #[derive(Parser)]
 #[command(name = "galos-sky", version, about)]
@@ -152,8 +162,11 @@ fn main() {
         });
 
     let image = camera.render(&stars);
-    let lit =
-        image.pixels().iter().filter(|p| p[0] + p[1] + p[2] > 1e-3).count();
+    let lit = image
+        .pixels()
+        .iter()
+        .filter(|p| p[0] + p[1] + p[2] > LIT_ENERGY_THRESHOLD)
+        .count();
     eprintln!(
         "{}x{}, {lit} pixels lit, peak {:.3}, total {:.1}",
         image.width(),
@@ -280,8 +293,13 @@ fn place(stars: &[Star], name: &str) -> [f64; 3] {
 
 /// `WIDTHxHEIGHT`.
 fn parse_size(size: &str) -> (u32, u32) {
-    let (w, h) = size.split_once(['x', 'X']).unwrap_or(("1600", "900"));
-    (w.trim().parse().unwrap_or(1600), h.trim().parse().unwrap_or(900))
+    let Some((w, h)) = size.split_once(['x', 'X']) else {
+        return (DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    };
+    (
+        w.trim().parse().unwrap_or(DEFAULT_WIDTH),
+        h.trim().parse().unwrap_or(DEFAULT_HEIGHT),
+    )
 }
 
 /// `moffat` or `gaussian`, for the `--profile` flag.

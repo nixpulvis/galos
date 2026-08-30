@@ -89,6 +89,18 @@ pub const AUREOLE_WIDTH: f64 = 4.5;
 /// stays a bare point. Fitted to the reference photograph's brightest stars.
 pub const AUREOLE_WEIGHT: f64 = 0.25;
 
+/// The smallest a core width may be, in the PSF's own units. A floor that keeps
+/// a zero or negative width — a degenerate seeing dial — from driving the peak
+/// to infinity or dividing by zero; a thousandth of a pixel is a spike no
+/// detector resolves in any case. Shared by [`Moffat`] and [`Gaussian`].
+const MIN_WIDTH: f64 = 1e-3;
+
+/// The smallest wing index a [`Moffat`] may take: a hair above one. At `β = 1`
+/// the disc's energy integral (`∝ 1 / (β − 1)`) diverges, so [`Moffat::peak`]
+/// could not conserve it; the epsilon holds `β > 1` without moving it off any
+/// real fit.
+const MIN_BETA: f64 = 1.0 + 1e-6;
+
 /// Which point-spread profile an instrument wears.
 ///
 /// The shape a renderer deposits, chosen through [`Kernel::new`]. Both are
@@ -134,7 +146,7 @@ pub struct Moffat {
 impl Moffat {
     /// A PSF of the given core width and wing index.
     pub fn new(alpha: f64, beta: f64) -> Moffat {
-        Moffat { alpha: alpha.max(1e-3), beta: beta.max(1.0 + 1e-6) }
+        Moffat { alpha: alpha.max(MIN_WIDTH), beta: beta.max(MIN_BETA) }
     }
 
     /// The profile's shape, normalized to unit peak: one at the centre, falling
@@ -204,7 +216,7 @@ pub struct Gaussian {
 impl Gaussian {
     /// A PSF of the given width.
     pub fn new(sigma: f64) -> Gaussian {
-        Gaussian { sigma: sigma.max(1e-3) }
+        Gaussian { sigma: sigma.max(MIN_WIDTH) }
     }
 
     /// The profile's shape, normalized to unit peak; see [`Moffat::shape`].
