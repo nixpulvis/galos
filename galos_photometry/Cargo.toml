@@ -9,4 +9,11 @@ rust-version.workspace = true
 # and the class fallback table. No database, no renderer, so the bake that runs
 # beside Postgres and the map that draws without one can both read it, and
 # neither pulls in the other to do so.
+#
+# The only dependencies are two small compile-time macros for the point-spread
+# profiles: `enum_dispatch` implements the `Profile` trait across the `Kernel`
+# enum without a hand-written match, and `enum_kinds` derives the data-less
+# `ProfileKind` selector from it. Both vanish after macro expansion.
 [dependencies]
+enum_dispatch = "0.3"
+enum-kinds = "0.5"

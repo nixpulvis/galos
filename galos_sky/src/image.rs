@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn no_star_is_ever_the_colour_of_a_mark() {
         for t in (500..60000).step_by(25) {
-            let c = galos_photometry::blackbody_color(t as f64);
+            let c = galos_photometry::Temperature(t as f64).color();
             assert!(
                 c[1] < c[0].max(c[2]),
                 "a blackbody at {t} K leads with green: {c:?}"
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn no_blackbody_comes_near_the_hole_colour() {
         for t in (500..60000).step_by(25) {
-            let c = galos_photometry::blackbody_color(t as f64);
+            let c = galos_photometry::Temperature(t as f64).color();
             assert!(
                 c[1] >= MIN_BLACKBODY_GREEN,
                 "at {t} K green fell to {}, under the floor the hole colour \

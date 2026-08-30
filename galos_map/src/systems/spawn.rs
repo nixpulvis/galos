@@ -36,8 +36,8 @@ use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_index::aggregate::{TEMP_BUCKETS, bucket_temperature};
 use galos_index::meta::Economies;
-use galos_photometry::psf::{Profile, Psf};
-use galos_photometry::{apparent_magnitude_ly, blackbody_color, flux};
+use galos_photometry::psf::{ProfileKind, Psf};
+use galos_photometry::{Distance, Magnitude, Temperature};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Deref,
@@ -227,8 +227,8 @@ fn mag_step(apparent: f64) -> usize {
 /// view's zero point, the dial `galos_sky` calls `exposure`.
 ///
 /// [`StarExposure`] rides this in stops, and [`StarExposure::zero_point`] turns
-/// the two into the one figure [`galos_photometry::relative_exposure`] reads a
-/// star's drawn energy from, so the map and the sky size a star off one law.
+/// the two into the one figure [`galos_photometry::Magnitude::exposure`] reads
+/// a star's drawn energy from, so the map and the sky size a star off one law.
 /// Near the dark-adapted eye's limit, so the sky comes in dense.
 const STAR_ZERO_POINT: f64 = 8.0;
 
@@ -261,8 +261,9 @@ impl StarExposure {
     ///
     /// A stop is a factor of two in energy, which is `2.5·log₁₀2 ≈ 0.75`
     /// magnitudes, so opening the exposure lifts the zero point that far and
-    /// draws fainter stars in. Fed to [`galos_photometry::relative_exposure`]
-    /// as the magnitude that fills a pixel.
+    /// draws fainter stars in. Fed to
+    /// [`galos_photometry::Magnitude::exposure`] as the magnitude that fills a
+    /// pixel.
     pub(crate) fn zero_point(&self) -> f64 {
         STAR_ZERO_POINT + self.0 as f64 * 2.5 * 2f64.log10()
     }
@@ -276,9 +277,9 @@ impl StarExposure {
 /// colour; the strength is the step's flux compressed by [`GAMMA`], lifted by
 /// [`BRIGHT`] and the exposure, so a bright star's core outshines a faint one's.
 fn photometric_emissive(bucket: usize, step: usize, factor: f32) -> LinearRgba {
-    let tint = blackbody_color(bucket_temperature(bucket));
+    let tint = Temperature(bucket_temperature(bucket)).color();
     let mag = MAG_HI + (step as f64 / MAG_STEPS as f64) * (MAG_LO - MAG_HI);
-    let level = BRIGHT * flux(mag).powf(GAMMA) as f32 * factor;
+    let level = BRIGHT * Magnitude(mag).flux().0.powf(GAMMA) as f32 * factor;
     LinearRgba::rgb(tint[0] * level, tint[1] * level, tint[2] * level)
 }
 
@@ -321,7 +322,7 @@ const PSF_TEXELS: u32 = 128;
 /// [`super::scale::size_photometrically`]), so brightness reads as size with no
 /// disc ever drawn. Linear rather than sRGB, so it multiplies the emissive
 /// straight; the channels carry the shape and the tint is the material's.
-fn star_psf(profile: Profile) -> Image {
+fn star_psf(profile: ProfileKind) -> Image {
     let n = PSF_TEXELS;
     let centre = (n as f32 - 1.) / 2.;
     // A compact core: a tenth of its peak a fifth of the way out, all but gone
@@ -368,12 +369,12 @@ pub(crate) struct StarSprite {
 /// Which point-spread profile the realistic view's stars wear
 ///
 /// The shape [`star_psf`] bakes into the sprite texture — a Moffat with its
-/// wings or a tighter Gaussian; see [`galos_photometry::psf::Profile`]. The map
-/// sizes a star by [`super::scale::psf_radius`]'s own law either way, so this
-/// changes the halo a star wears, not how large it draws. [`reprofile`] rebakes
-/// the texture when it changes.
+/// wings or a tighter Gaussian; see [`galos_photometry::psf::ProfileKind`].
+/// The map sizes a star by [`super::scale::psf_radius`]'s own law either way,
+/// so this changes the halo a star wears, not how large it draws.
+/// [`reprofile`] rebakes the texture when it changes.
 #[derive(Resource, Default)]
-pub struct StarProfile(pub Profile);
+pub struct StarProfile(pub ProfileKind);
 
 /// The colors a star may be drawn in
 ///
@@ -1303,10 +1304,11 @@ pub(super) fn photometry(
         if !visible.get() {
             continue;
         }
-        let apparent = apparent_magnitude_ly(
-            system.absolute_magnitude(),
-            orbit.eye.distance(system.position()),
-        );
+        let apparent = Magnitude(system.absolute_magnitude())
+            .apparent(Distance::light_years(
+                orbit.eye.distance(system.position()),
+            ))
+            .0;
         let wanted =
             materials.photometric(system.temp_bucket(), mag_step(apparent));
         if material.0 != *wanted {
@@ -1866,7 +1868,7 @@ mod tests {
         app.init_resource::<DimTo>();
         app.insert_resource(ColorBy::Allegiance);
         app.insert_resource(StarExposure::default());
-        app.insert_resource(StarProfile(Profile::Moffat));
+        app.insert_resource(StarProfile(ProfileKind::Moffat));
         app.add_systems(Startup, init_materials);
         app.add_systems(Update, reprofile);
         app.update();
@@ -1880,7 +1882,7 @@ mod tests {
             .data
             .clone();
 
-        app.world_mut().resource_mut::<StarProfile>().0 = Profile::Gaussian;
+        app.world_mut().resource_mut::<StarProfile>().0 = ProfileKind::Gaussian;
         app.update();
         let gaussian = app
             .world()

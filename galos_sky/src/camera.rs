@@ -42,19 +42,17 @@
 //! Its default is measured; see [`DEFAULT_SEEING_ARCMIN`].
 //!
 //! Together the two dials are the whole of the response, and the magnitude half
-//! of it lives in [`galos_photometry::relative_exposure`] rather than here, so
-//! that a GPU renderer adopting the law is running the same physics rather than
-//! a second copy of it.
+//! of it lives in [`galos_photometry::Magnitude::exposure`] rather than here,
+//! so that a GPU renderer adopting the law is running the same physics rather
+//! than a second copy of it.
 
 use crate::image::{Image, Mark, Segment};
 use galos_catalog::Star;
 use galos_catalog::asterism::Figures;
 use galos_photometry::psf::{
-    AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Profile, Psf,
+    AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Layer, ProfileKind, Psf,
 };
-use galos_photometry::{
-    apparent_magnitude_ly, blackbody_color, relative_exposure,
-};
+use galos_photometry::{Distance, Magnitude, Temperature};
 use std::collections::HashMap;
 
 /// The energy per pixel below which this renderer shows nothing.
@@ -183,8 +181,8 @@ pub struct Camera {
     /// An angle rather than a pixel count — [`seeing_pixels`](Self::seeing_pixels)
     /// turns it into the width the point-spread function draws with.
     pub seeing_arcmin: f64,
-    /// Which point-spread profile the core lands as; see [`Profile`].
-    pub profile: Profile,
+    /// Which point-spread profile the core lands as; see [`ProfileKind`].
+    pub profile: ProfileKind,
     /// The effects laid into the point spread beyond the seeing core; see
     /// [`Effect`]. Empty is a plain seeing disc with no halo.
     pub effects: Vec<Effect>,
@@ -208,7 +206,7 @@ impl Camera {
             height: height.max(1),
             exposure: 6.0,
             seeing_arcmin: DEFAULT_SEEING_ARCMIN,
-            profile: Profile::default(),
+            profile: ProfileKind::default(),
             effects: vec![Effect::Aureole(Aureole::DEFAULT)],
         }
     }
@@ -274,7 +272,7 @@ impl Camera {
     }
 
     /// Set the point-spread profile: a Moffat with its wings, or a Gaussian.
-    pub fn with_profile(mut self, profile: Profile) -> Camera {
+    pub fn with_profile(mut self, profile: ProfileKind) -> Camera {
         self.profile = profile;
         self
     }
@@ -327,10 +325,10 @@ impl Camera {
             // Moffat halo, where a Gaussian one has no wing index to set.
             let width = core * aureole.width;
             let halo = match self.profile {
-                Profile::Moffat => Kernel::moffat(width, aureole.beta),
-                Profile::Gaussian => Kernel::gaussian(width),
+                ProfileKind::Moffat => Kernel::moffat(width, aureole.beta),
+                ProfileKind::Gaussian => Kernel::gaussian(width),
             };
-            psf = psf.with_layer(halo, relative);
+            psf = psf.with_layer(Layer::new(halo, relative));
         }
         psf
     }
@@ -391,7 +389,7 @@ impl Camera {
     /// Where to ring a *bearing* rather than a place.
     ///
     /// For the stars the catalog locates on the sky but not in space — see
-    /// [`galos_catalog::hyg::Unplaced`]. They have a measured direction and no
+    /// [`galos_catalog::Unplaced`]. They have a measured direction and no
     /// distance, so there is exactly one viewpoint from which the bearing says
     /// where the star is: the one it was measured from, which for every survey
     /// in this crate's reach is Sol.
@@ -470,10 +468,10 @@ impl Camera {
             let Some(star) = by_position.get(&position_key(at)) else {
                 return GAP_MIN;
             };
-            let energy = relative_exposure(
-                apparent_magnitude_ly(star.absolute_magnitude, star.distance),
-                self.exposure,
-            );
+            let energy = Magnitude(star.absolute_magnitude)
+                .apparent(Distance::light_years(star.distance))
+                .exposure(Magnitude(self.exposure))
+                .0;
             psf.radius(energy, GAP_FLOOR)
                 .map_or(GAP_MIN, |r| (r + GAP_MARGIN).clamp(GAP_MIN, GAP_MAX))
         };
@@ -494,9 +492,10 @@ impl Camera {
     /// Every one of the three is [`galos_photometry`]'s, which is what makes
     /// this renderer a check on that crate rather than a second opinion.
     fn light(&self, star: &Star, distance: f64) -> (f64, [f32; 3]) {
-        let apparent = apparent_magnitude_ly(star.absolute_magnitude, distance);
-        let energy = relative_exposure(apparent, self.exposure);
-        (energy, blackbody_color(star.temperature()))
+        let apparent = Magnitude(star.absolute_magnitude)
+            .apparent(Distance::light_years(distance));
+        let energy = apparent.exposure(Magnitude(self.exposure)).0;
+        (energy, Temperature(star.temperature()).color().0)
     }
 
     /// Draw every star that lands in frame.
@@ -859,19 +858,19 @@ mod tests {
             .clear_effects();
         let image = camera.render(&[vega.clone()]);
 
-        let apparent =
-            apparent_magnitude_ly(vega.absolute_magnitude, vega.distance);
-        let expected = relative_exposure(apparent, 4.0);
+        let apparent = Magnitude(vega.absolute_magnitude)
+            .apparent(Distance::light_years(vega.distance));
+        let expected = apparent.exposure(Magnitude(4.0)).0;
 
         // The tint has to be divided back out, and *that it does* is a
-        // finding rather than an incidental. `blackbody_color` normalizes so
+        // finding rather than an incidental. `Temperature::color` normalizes so
         // its brightest channel is one, which makes the three channels sum to
         // between 1.6 and 2.8 depending on temperature — see
         // `a_stars_colour_should_not_change_how_bright_it_is` below. Until
         // that is settled this test can only check that the PSF conserves
         // whatever energy it was handed, which is what it is for.
-        let tint = blackbody_color(vega.temperature());
-        let scale: f64 = tint.iter().map(|&c| c as f64).sum();
+        let tint = Temperature(vega.temperature()).color();
+        let scale: f64 = tint.0.iter().map(|&c| c as f64).sum();
         let ratio = image.total_energy() / (expected * scale);
         assert!((ratio - 1.0).abs() < 0.02, "{ratio}");
     }
@@ -895,8 +894,9 @@ mod tests {
 
     /// A star's colour does not change how bright it is drawn.
     ///
-    /// `blackbody_color` is normalized to unit luminance, so the tint carries
-    /// hue and nothing else and the exposure's energy reaches the picture whole
+    /// `Temperature::color` is normalized to unit luminance, so the tint
+    /// carries hue and nothing else and the exposure's energy reaches the
+    /// picture whole
     /// whatever the hue. Weighted the way the eye weights colour, what a star
     /// deposits is its energy — so a red giant, a blue supergiant and a white
     /// star of the same energy come out equally bright. This was once a
@@ -920,9 +920,9 @@ mod tests {
                 .clear_effects();
             let image = camera.render(&[star.clone()]);
 
-            let apparent =
-                apparent_magnitude_ly(star.absolute_magnitude, star.distance);
-            let energy = relative_exposure(apparent, 4.0);
+            let apparent = Magnitude(star.absolute_magnitude)
+                .apparent(Distance::light_years(star.distance));
+            let energy = apparent.exposure(Magnitude(4.0)).0;
             let luminance: f64 = image
                 .pixels()
                 .iter()
@@ -1061,8 +1061,8 @@ mod tests {
                 .with_profile(profile)
                 .render(&[sirius.clone()])
         };
-        let moffat = look(Profile::Moffat);
-        let gaussian = look(Profile::Gaussian);
+        let moffat = look(ProfileKind::Moffat);
+        let gaussian = look(ProfileKind::Gaussian);
         assert!(moffat != gaussian, "the profile did not reach the render");
         assert!(
             (moffat.peak() - gaussian.peak()).abs() > 1e-6,

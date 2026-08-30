@@ -45,8 +45,9 @@
 //! Camelopardalis and Kappa Cassiopeiae are among them.
 //!
 //! So a sky drawn from this catalog is missing about one naked-eye star in
-//! fifty, and they are not a random fiftieth. [`Skipped`] carries
-//! [`naked_eye`](Skipped::naked_eye) and [`brightest`](Skipped::brightest) so
+//! fifty, and they are not a random fiftieth. [`Skipped`](crate::Skipped)
+//! carries [`naked_eye`](crate::Skipped::naked_eye) and
+//! [`brightest`](crate::Skipped::brightest) so
 //! that the hole is a number a caller can read rather than one it would have to
 //! go looking for.
 //!
@@ -76,9 +77,10 @@ const NO_PARALLAX: f64 = 100_000.0;
 /// Columns are read by header name, so a catalog revision that adds or
 /// reorders columns still reads. A row missing one of the five that matter —
 /// `id`, `dist`, `mag`, `absmag` and the three coordinates — is counted in
-/// [`Skipped::unreadable`] and passed over; a row missing a name, a colour
-/// index or a spectral type is kept, since those are the holes a real catalog
-/// has and a star with none of them still has a place and a brightness.
+/// [`Skipped::unreadable`](crate::Skipped::unreadable) and passed over; a row
+/// missing a name, a colour index or a spectral type is kept, since those are
+/// the holes a real catalog has and a star with none of them still has a place
+/// and a brightness.
 pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
     let mut csv = csv::Reader::from_reader(reader);
     let headers = csv.headers()?.clone();
@@ -216,7 +218,7 @@ fn direction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use galos_photometry::apparent_magnitude_ly;
+    use galos_photometry::{Distance, Magnitude};
 
     /// The eighty brightest named stars, cut from the real catalog so the
     /// tests here are about measured sky rather than about invented rows.
@@ -281,8 +283,9 @@ mod tests {
         let (stars, _) = bright();
         assert!(stars.len() > 50);
         for star in &stars {
-            let predicted =
-                apparent_magnitude_ly(star.absolute_magnitude, star.distance);
+            let predicted = Magnitude(star.absolute_magnitude)
+                .apparent(Distance::light_years(star.distance))
+                .0;
             assert!(
                 (predicted - star.apparent_magnitude).abs() < 0.01,
                 "{}: predicted {predicted:.3}, measured {:.3}",

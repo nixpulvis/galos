@@ -18,7 +18,8 @@
 //!
 //!   The same problem arises a second time between two catalogs, which both
 //!   number their rows from one, and is solved the same way: the star's
-//!   [`Source::namespace`] rides in the six bits under the tag, so HYG's star
+//!   [`Source::namespace`](crate::Source::namespace) rides in the six bits
+//!   under the tag, so HYG's star
 //!   5 and some future survey's star 5 are different systems. Fifty-six bits
 //!   are left for the id itself, which is [`MAX_ID`] and far past anything HYG
 //!   carries.
@@ -37,7 +38,8 @@ use galos_index::System;
 /// and do not reach here, so a tagged catalog id cannot be mistaken for one.
 pub const CATALOG_ID_TAG: u64 = 1 << 62;
 
-/// Where a [`Source::namespace`] sits within a tagged id.
+/// Where a [`Source::namespace`](crate::Source::namespace) sits within a tagged
+/// id.
 const NAMESPACE_SHIFT: u32 = 64 - 8;
 
 impl Star {

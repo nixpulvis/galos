@@ -24,7 +24,7 @@ use super::spawn::{Shell, StarExposure, StarSprite};
 use bevy::camera::visibility::ViewVisibility;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_photometry::{apparent_magnitude_ly, relative_exposure};
+use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(View::Map);
@@ -428,9 +428,9 @@ const DOT_RADIUS: f32 = 0.6;
 /// The visible radius of a star's point spread, in screen pixels
 ///
 /// A star's image is its exposed `energy` —
-/// [`galos_photometry::relative_exposure`] of its apparent magnitude, the same
-/// law `galos_sky` sizes by — spread over a fixed point spread, and the disc
-/// that shows is where that clears the eye's floor. The cleared radius is
+/// [`galos_photometry::Magnitude::exposure`] of its apparent magnitude, the
+/// same law `galos_sky` sizes by — spread over a fixed point spread, and the
+/// disc that shows is where that clears the eye's floor. The cleared radius is
 /// [`PSF_GROWTH`]` · ln(energy)`, zero where the energy is under one (a star
 /// fainter than the zero point), so a star too faint to see has no size and is
 /// not drawn. The logarithm is the whole of the bound: brightness climbs it a
@@ -487,11 +487,10 @@ pub(crate) fn size_photometrically(
         if !visible.get() {
             continue;
         }
-        let apparent = apparent_magnitude_ly(
-            system.absolute_magnitude(),
-            orbit.eye.distance(system.position()),
+        let apparent = Magnitude(system.absolute_magnitude()).apparent(
+            Distance::light_years(orbit.eye.distance(system.position())),
         );
-        let energy = relative_exposure(apparent, zero_point);
+        let energy = apparent.exposure(Magnitude(zero_point)).0;
         let radius = psf_radius(energy);
         let away =
             crate::space::metres(orbit.eye - system.position()).length() as f32;
@@ -1026,10 +1025,10 @@ mod tests {
     ///
     /// The size law the map keeps for its billboard: the radius is
     /// `PSF_GROWTH·ln(energy)` over the exposed energy
-    /// ([`galos_photometry::relative_exposure`]), so it grows with the logarithm
-    /// of brightness (a hundredfold brighter is a few pixels larger, never a
-    /// hundredfold, and self-bounding with no cap) and is zero once the energy
-    /// is under one — a star fainter than the zero point is not seen.
+    /// ([`galos_photometry::Magnitude::exposure`]), so it grows with the
+    /// logarithm of brightness (a hundredfold brighter is a few pixels larger,
+    /// never a hundredfold, and self-bounding with no cap) and is zero once the
+    /// energy is under one — a star fainter than the zero point is not seen.
     #[test]
     fn a_star_is_sized_by_the_radius_its_point_spread_clears() {
         assert_eq!(psf_radius(0.5), 0., "under the zero point has no size");

@@ -24,7 +24,7 @@
 use crate::geometry::CellId;
 use crate::moments::Moments;
 use crate::serialization::{Decode, Encode, FixedCodec, record};
-use galos_photometry::flux;
+use galos_photometry::Magnitude;
 
 /// Temperature buckets the glow keeps its colour structure in: a warm bulge
 /// and blue arms without storing a temperature per star.
@@ -111,7 +111,7 @@ impl Aggregate {
         temperature: f64,
         age_bucket: usize,
     ) -> Aggregate {
-        let f = flux(absolute_magnitude);
+        let f = Magnitude(absolute_magnitude).flux().0;
         let mut flux_by_bucket = [0.0; TEMP_BUCKETS];
         flux_by_bucket[temp_bucket(temperature)] = f;
         let mut aged = [0; AGE_BUCKETS];
@@ -343,7 +343,7 @@ mod tests {
         let a = Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 0);
         assert_eq!(a.count(), 1);
         assert_eq!(a.m_min(), Some(4.83));
-        assert!(close(a.total_flux(), flux(4.83)));
+        assert!(close(a.total_flux(), Magnitude(4.83).flux().0));
         assert!(close3(a.luminosity_centroid().unwrap(), [1.0, 2.0, 3.0]));
         assert!(close3(a.count_centroid().unwrap(), [1.0, 2.0, 3.0]));
         assert!(close(a.luminosity_spread(), 0.0));
@@ -399,8 +399,8 @@ mod tests {
         let hot_b = temp_bucket(25000.0);
         assert_ne!(cool_b, hot_b);
         let both = cool.merge(hot);
-        assert!(close(both.flux()[cool_b], flux(5.0)));
-        assert!(close(both.flux()[hot_b], flux(5.0)));
+        assert!(close(both.flux()[cool_b], Magnitude(5.0).flux().0));
+        assert!(close(both.flux()[hot_b], Magnitude(5.0).flux().0));
     }
 
     /// The two centroids diverge: a bright star and a dim one meet in the

@@ -23,7 +23,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use galos_index::aggregate::bucket_temperature;
 use galos_index::{Aggregate, Cell, Mode, Needed, View as Viewpoint};
-use galos_photometry::blackbody_color;
+use galos_photometry::Temperature;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
@@ -175,8 +175,8 @@ fn splat_of(aggregate: &Aggregate, centre: [f64; 3]) -> Option<Splat> {
         if f <= 0.0 {
             continue;
         }
-        let tint = blackbody_color(bucket_temperature(bucket));
-        for (channel, &weight) in rgb.iter_mut().zip(tint.iter()) {
+        let tint = Temperature(bucket_temperature(bucket)).color();
+        for (channel, &weight) in rgb.iter_mut().zip(tint.0.iter()) {
             *channel += f * weight as f64;
         }
     }

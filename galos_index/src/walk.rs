@@ -27,7 +27,7 @@
 
 use crate::aggregate::Cell;
 use crate::geometry::CellId;
-use galos_photometry::{EYE_LIMIT, apparent_magnitude_ly};
+use galos_photometry::{Distance, Magnitude};
 use std::collections::HashMap;
 
 /// The mark limit, in pixels: the smallest a splat draws as more than a point.
@@ -395,7 +395,8 @@ impl Index {
         if d_min <= 0.0 {
             return true;
         }
-        apparent_magnitude_ly(m_min as f64, d_min) <= EYE_LIMIT
+        Magnitude(m_min as f64).apparent(Distance::light_years(d_min))
+            <= Magnitude::EYE_LIMIT
     }
 
     /// The glow under the Real sky: descend while a cell subtends more than the

@@ -3,12 +3,12 @@
 //! A star is a point and a picture of one is not. Every optic and every eye
 //! smears a point into a small disc, and the shape of that smear is the
 //! point-spread function. It belongs here rather than in a renderer for the
-//! same reason [`relative_exposure`](crate::relative_exposure) does: it decides
-//! **how much light lands and where**, which is the quantity two renderers of
-//! the same sky have to agree on exactly. A rasterizer and a shader that
-//! normalize a profile differently put different amounts of flux in the same
-//! star, and a comparison between their pictures then measures the gap between
-//! two instruments rather than between two renderings.
+//! same reason [`Magnitude::exposure`](crate::Magnitude::exposure) does: it
+//! decides **how much light lands and where**, which is the quantity two
+//! renderers of the same sky have to agree on exactly. A rasterizer and a
+//! shader that normalize a profile differently put different amounts of flux in
+//! the same star, and a comparison between their pictures then measures the gap
+//! between two instruments rather than between two renderings.
 //!
 //! The seam is drawn there and not at the crate boundary. What a renderer
 //! keeps is how it *deposits* the profile — a loop over pixels, or a quad and a
@@ -16,18 +16,29 @@
 //! compresses the result for a display. What it may not keep is its own idea of
 //! the profile's shape or its normalization.
 //!
-//! Two profile shapes, chosen through [`Kernel`]: a [`Moffat`],
+//! # The abstraction
+//!
+//! A [`Profile`] is the shape itself: the four things a renderer asks of one —
+//! its unit-peak [`shape`](Profile::shape), its energy-conserving
+//! [`peak`](Profile::peak), their product [`at`](Profile::at), and how far it
+//! clears a [`radius`](Profile::radius). Two are shipped, a [`Moffat`],
 //! `(1 + (r/α)²)^(−β)`, a bright core with power-law wings, and a [`Gaussian`],
-//! `exp(−r²/2σ²)`. The Moffat is the default and the truer of the two — a real
-//! star has the halo its wings give and the Gaussian has none — but the
-//! Gaussian is the standard seeing approximation and cheaper to reason about,
-//! so both are offered and a renderer picks.
+//! `exp(−r²/2σ²)`, and a third with neither's form is a new [`Profile`] rather
+//! than a new case in an old one. The Moffat is the default and the truer of
+//! the two — a real star has the halo its wings give and the Gaussian has none
+//! — but the Gaussian is the standard seeing approximation and cheaper to
+//! reason about, so both are offered and a renderer picks.
+//!
+//! A [`Kernel`] is the fixed set of them as one sized value a stack can hold,
+//! and a [`ProfileKind`] is the data-less tag a caller selects from before a
+//! width is known — a command-line flag, a radio button — derived from the
+//! [`Kernel`] rather than kept beside it.
 //!
 //! A single profile is not the whole of a real star, though. Its core is the
 //! seeing disc, but a bright star also wears a broad, faint *aureole* — the
 //! halo scattering in the air and the optics throws around it, falling off far
 //! more slowly than any core. One profile cannot be both a tight core and a
-//! broad halo at once, so a [`Psf`] is a *stack* of [`Layer`]s: a base kernel
+//! broad halo at once, so a [`Psf`] is a *stack* of [`Layer`]s: a base profile
 //! and however many broader ones laid behind it, each carrying a share of the
 //! light. [`AUREOLE_WEIGHT`] and its neighbours are the first such layer,
 //! measured from a real photograph; a renderer adds more until the star reads
@@ -44,6 +55,9 @@
 //! the Gaussian's grows as the square root of its log — which is the halo a
 //! bright star really has, and the reason [`MAX_RADIUS`] is a guard for the
 //! Moffat rather than a formality.
+
+use enum_dispatch::enum_dispatch;
+use enum_kinds::EnumKind;
 
 /// The wing index `β` of the stellar point spread, shared so both renderers
 /// wear one profile.
@@ -101,54 +115,22 @@ const MIN_WIDTH: f64 = 1e-3;
 /// real fit.
 const MIN_BETA: f64 = 1.0 + 1e-6;
 
-/// Which point-spread profile an instrument wears.
+/// A point-spread profile: a shape that lands a star's light on a detector.
 ///
-/// The shape a renderer deposits, chosen through [`Kernel::new`]. Both are
-/// energy-conserving and share [`MAX_RADIUS`]; they differ in the wings, which
-/// is what a bright star's halo is made of.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum Profile {
-    /// `exp(−r²/2σ²)`: a core and effectively no wings, the standard seeing
-    /// approximation.
-    Gaussian,
-    /// `(1 + (r/α)²)^(−β)`: a core with heavy power-law wings, the fit a real
-    /// star wears. The default.
-    #[default]
-    Moffat,
-}
-
-impl Profile {
-    /// Both profiles, the default first, for a caller offering the choice.
-    pub const ALL: [Profile; 2] = [Profile::Moffat, Profile::Gaussian];
-
-    /// The profile's name, for a label or a command line.
-    pub fn name(self) -> &'static str {
-        match self {
-            Profile::Gaussian => "Gaussian",
-            Profile::Moffat => "Moffat",
-        }
-    }
-}
-
-/// A Moffat point-spread function: a core of width `alpha` and wings of index
-/// `beta`.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Moffat {
-    /// The core width `α`, in whatever unit the caller measures its image in —
-    /// pixels, for the renderers here. The profile is at a quarter of its peak
-    /// about `α` out, and its wings carry on well past that.
-    pub alpha: f64,
-    /// The wing index `β`; see [`STELLAR_BETA`]. Held above one so the disc
-    /// holds finite energy.
-    pub beta: f64,
-}
-
-impl Moffat {
-    /// A PSF of the given core width and wing index.
-    pub fn new(alpha: f64, beta: f64) -> Moffat {
-        Moffat { alpha: alpha.max(MIN_WIDTH), beta: beta.max(MIN_BETA) }
-    }
-
+/// The abstraction the crate's shapes share and any future one implements — a
+/// [`Moffat`] core with power-law wings, a [`Gaussian`] seeing disc, or
+/// something with neither's form. Each answers the same four questions its own
+/// way: the unit-peak [`shape`](Self::shape), the energy-conserving
+/// [`peak`](Self::peak), their product [`at`](Self::at), and how far it clears a
+/// [`radius`](Self::radius). A [`Kernel`] is the fixed set the crate ships and
+/// dispatches to, and a [`Psf`] is a stack of those.
+///
+/// Adding a filter is implementing this trait and adding it to [`Kernel`],
+/// which is why the two shapes here are not assumed to share a form: a profile
+/// that is not a core-and-wings at all still answers the four questions, and
+/// nothing above it needs to know how.
+#[enum_dispatch]
+pub trait Profile: std::fmt::Debug {
     /// The profile's shape, normalized to unit peak: one at the centre, falling
     /// away to nothing in the wings.
     ///
@@ -156,26 +138,24 @@ impl Moffat {
     /// texture or evaluates in a shader. [`at`](Self::at) is this times the
     /// [`peak`](Self::peak) the energy comes to, and is where the shared
     /// normalization enters; this carries the profile's form and nothing else.
-    pub fn shape(&self, distance: f64) -> f64 {
-        let s = distance / self.alpha;
-        (1.0 + s * s).powf(-self.beta)
-    }
+    fn shape(&self, distance: f64) -> f64;
 
     /// The peak value at the centre of a star carrying `energy`.
     ///
-    /// The normalization that conserves it: a Moffat integrates over the plane
-    /// to `π α² / (β − 1)`, so dividing by that makes the whole disc sum to the
-    /// energy put in rather than to some multiple of it that depends on how wide
-    /// the PSF happens to be. **This is the figure two renderers must share.**
-    /// Get it wrong in one of them and every star carries a different amount of
+    /// The normalization that conserves it: dividing the energy by the
+    /// profile's integral over the plane makes the whole disc sum to the energy
+    /// put in rather than to some multiple of it that depends on how wide the
+    /// PSF happens to be. **This is the figure two renderers must share.** Get
+    /// it wrong in one of them and every star carries a different amount of
     /// light there, by a factor no comparison can see past.
-    pub fn peak(&self, energy: f64) -> f64 {
-        energy * (self.beta - 1.0)
-            / (std::f64::consts::PI * self.alpha * self.alpha)
-    }
+    fn peak(&self, energy: f64) -> f64;
 
-    /// The value `distance` from the centre for a star carrying `energy`.
-    pub fn at(&self, energy: f64, distance: f64) -> f64 {
+    /// The value `distance` from the centre for a star carrying `energy`:
+    /// [`peak`](Self::peak) times [`shape`](Self::shape).
+    ///
+    /// Separable in energy by construction, which is what lets a texture bake
+    /// the shape once and scale it by the peak.
+    fn at(&self, energy: f64, distance: f64) -> f64 {
         self.peak(energy) * self.shape(distance)
     }
 
@@ -192,7 +172,49 @@ impl Moffat {
     /// tone curve, and a CPU rasterizer with a film response and a GPU pipeline
     /// with its own tonemapper do not have the same one. The profile above is
     /// shared; where each stops drawing it is not.
-    pub fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
+    fn radius(&self, energy: f64, floor: f64) -> Option<f64>;
+}
+
+/// A Moffat point-spread function: a core of width `alpha` and wings of index
+/// `beta`.
+///
+/// The default profile and the truer of the two: a real star has the halo its
+/// power-law wings give. See [`Profile`] for what it answers.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Moffat {
+    /// The core width `α`, in whatever unit the caller measures its image in —
+    /// pixels, for the renderers here. The profile is at a quarter of its peak
+    /// about `α` out, and its wings carry on well past that.
+    pub alpha: f64,
+    /// The wing index `β`; see [`STELLAR_BETA`]. Held above one so the disc
+    /// holds finite energy.
+    pub beta: f64,
+}
+
+impl Moffat {
+    /// A profile of the given core width and wing index.
+    pub fn new(alpha: f64, beta: f64) -> Moffat {
+        Moffat { alpha: alpha.max(MIN_WIDTH), beta: beta.max(MIN_BETA) }
+    }
+}
+
+impl Profile for Moffat {
+    fn shape(&self, distance: f64) -> f64 {
+        let s = distance / self.alpha;
+        (1.0 + s * s).powf(-self.beta)
+    }
+
+    /// A Moffat integrates over the plane to `π α² / (β − 1)`; dividing by that
+    /// conserves the energy put in. See [`Profile::peak`].
+    fn peak(&self, energy: f64) -> f64 {
+        energy * (self.beta - 1.0)
+            / (std::f64::consts::PI * self.alpha * self.alpha)
+    }
+
+    /// The power-law wings clear `floor` at `α·√((peak/floor)^(1/β) − 1)`, which
+    /// grows as a power of the energy and is not self-limiting, so
+    /// [`MAX_RADIUS`] caps it. See [`Profile::radius`].
+    fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
         let peak = self.peak(energy);
         if !(floor > 0.0) || peak <= floor {
             return None;
@@ -205,6 +227,9 @@ impl Moffat {
 }
 
 /// A Gaussian point-spread function of a given width.
+///
+/// The standard seeing approximation: a core and effectively no wings, cheaper
+/// to reason about than a [`Moffat`] but with no halo of its own.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Gaussian {
     /// The standard deviation `σ`, in whatever unit the caller measures its
@@ -214,37 +239,28 @@ pub struct Gaussian {
 }
 
 impl Gaussian {
-    /// A PSF of the given width.
+    /// A profile of the given width.
     pub fn new(sigma: f64) -> Gaussian {
         Gaussian { sigma: sigma.max(MIN_WIDTH) }
     }
+}
 
-    /// The profile's shape, normalized to unit peak; see [`Moffat::shape`].
-    pub fn shape(&self, distance: f64) -> f64 {
+impl Profile for Gaussian {
+    fn shape(&self, distance: f64) -> f64 {
         let s = distance / self.sigma;
         (-0.5 * s * s).exp()
     }
 
-    /// The peak value at the centre of a star carrying `energy`.
-    ///
-    /// A two-dimensional Gaussian integrates to `2π σ²`, so dividing by that
-    /// conserves the energy put in; see [`Moffat::peak`] for why this is the
-    /// figure two renderers must share.
-    pub fn peak(&self, energy: f64) -> f64 {
+    /// A two-dimensional Gaussian integrates to `2π σ²`; dividing by that
+    /// conserves the energy put in. See [`Profile::peak`].
+    fn peak(&self, energy: f64) -> f64 {
         energy / (std::f64::consts::TAU * self.sigma * self.sigma)
     }
 
-    /// The value `distance` from the centre for a star carrying `energy`.
-    pub fn at(&self, energy: f64, distance: f64) -> f64 {
-        self.peak(energy) * self.shape(distance)
-    }
-
-    /// How far out this star is still worth drawing; see [`Moffat::radius`].
-    ///
     /// The Gaussian falls to `floor` at `σ·√(2·ln(peak/floor))`, which grows as
-    /// the square root of the log of the energy — self-limiting, so the cap
-    /// rarely binds.
-    pub fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
+    /// the square root of the log of the energy and is self-limiting, so the
+    /// cap rarely binds. See [`Profile::radius`].
+    fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
         let peak = self.peak(energy);
         if !(floor > 0.0) || peak <= floor {
             return None;
@@ -254,96 +270,103 @@ impl Gaussian {
     }
 }
 
-/// One layer's shape: a single normalized profile of either [`Profile`].
+/// The point-spread profiles the crate ships, each carrying its parameters.
 ///
-/// The old whole of a point spread, now one voice in it. It dispatches the
-/// shared quantities — [`shape`](Self::shape), [`peak`](Self::peak),
-/// [`at`](Self::at), [`radius`](Self::radius) — to the profile it wears, and a
-/// [`Psf`] is one or more of these stacked. A renderer that wants a plain
-/// seeing disc holds a [`Psf`] of a single kernel; one that wants a star's real
-/// halo layers a broad one behind a tight one.
-#[derive(Copy, Clone, Debug, PartialEq)]
+/// A [`Profile`] is the behaviour; a `Kernel` is a concrete one of the fixed
+/// set — a [`Moffat`] or a [`Gaussian`] — as a single sized value to pass
+/// around without a trait object. It implements [`Profile`] by dispatching to
+/// whichever it wears (through `enum_dispatch`, so there is no hand-written
+/// match to keep in step), and its data-less [`ProfileKind`] is derived from it
+/// (through `enum_kinds`, so the selector is never a second variant list).
+///
+/// A [`Psf`] layers any [`Profile`], not only these — a custom halo or a
+/// diffraction spike that is neither Gaussian nor Moffat drops in beside them,
+/// so `Kernel` is the built-in set a renderer reaches for first, not the only
+/// shape a stack can hold.
+#[enum_dispatch(Profile)]
+#[derive(Copy, Clone, Debug, PartialEq, EnumKind)]
+#[enum_kind(ProfileKind)]
 pub enum Kernel {
+    /// A [`Gaussian`] seeing disc.
     Gaussian(Gaussian),
+    /// A [`Moffat`] core with power-law wings.
     Moffat(Moffat),
 }
 
 impl Kernel {
-    /// A kernel of the given profile and width, in pixels.
+    /// A kernel of the given kind and width, in pixels.
     ///
     /// The width is the Gaussian's `σ` or the Moffat's `α`; both are the core's
     /// scale, so one "seeing" dial drives either. The Moffat takes the shared
     /// [`STELLAR_BETA`] for its wings.
-    pub fn new(profile: Profile, width: f64) -> Kernel {
-        match profile {
-            Profile::Gaussian => Kernel::Gaussian(Gaussian::new(width)),
-            Profile::Moffat => Kernel::Moffat(Moffat::new(width, STELLAR_BETA)),
+    pub fn new(kind: ProfileKind, width: f64) -> Kernel {
+        match kind {
+            ProfileKind::Gaussian => Gaussian::new(width).into(),
+            ProfileKind::Moffat => Moffat::new(width, STELLAR_BETA).into(),
         }
     }
 
     /// A Moffat kernel of an explicit width and wing index — the form a broad,
     /// heavy-winged aureole is built with, where [`STELLAR_BETA`] is too steep.
     pub fn moffat(alpha: f64, beta: f64) -> Kernel {
-        Kernel::Moffat(Moffat::new(alpha, beta))
+        Moffat::new(alpha, beta).into()
     }
 
     /// A Gaussian kernel of an explicit width — the form an aureole takes when
     /// the point spread is a Gaussian, where there is no wing index to set.
     pub fn gaussian(sigma: f64) -> Kernel {
-        Kernel::Gaussian(Gaussian::new(sigma))
+        Gaussian::new(sigma).into()
     }
 
-    /// Which profile this is.
-    pub fn profile(&self) -> Profile {
-        match self {
-            Kernel::Gaussian(_) => Profile::Gaussian,
-            Kernel::Moffat(_) => Profile::Moffat,
-        }
+    /// Which kind this is, the data-less tag for a menu or a label.
+    pub fn kind(&self) -> ProfileKind {
+        self.into()
     }
+}
 
-    /// The unit-peak shape at `distance`.
-    pub fn shape(&self, distance: f64) -> f64 {
-        match self {
-            Kernel::Gaussian(g) => g.shape(distance),
-            Kernel::Moffat(m) => m.shape(distance),
-        }
-    }
+impl ProfileKind {
+    /// Every profile the crate offers, the default first, for a caller
+    /// presenting the choice.
+    pub const ALL: [ProfileKind; 2] =
+        [ProfileKind::Moffat, ProfileKind::Gaussian];
 
-    /// The peak of a star carrying `energy`.
-    pub fn peak(&self, energy: f64) -> f64 {
+    /// The kind's name, for a label or a command line.
+    pub fn name(self) -> &'static str {
         match self {
-            Kernel::Gaussian(g) => g.peak(energy),
-            Kernel::Moffat(m) => m.peak(energy),
-        }
-    }
-
-    /// The value `distance` from the centre of a star carrying `energy`.
-    pub fn at(&self, energy: f64, distance: f64) -> f64 {
-        match self {
-            Kernel::Gaussian(g) => g.at(energy, distance),
-            Kernel::Moffat(m) => m.at(energy, distance),
-        }
-    }
-
-    /// The radius a star carrying `energy` clears above `floor`.
-    pub fn radius(&self, energy: f64, floor: f64) -> Option<f64> {
-        match self {
-            Kernel::Gaussian(g) => g.radius(energy, floor),
-            Kernel::Moffat(m) => m.radius(energy, floor),
+            ProfileKind::Gaussian => "Gaussian",
+            ProfileKind::Moffat => "Moffat",
         }
     }
 }
 
-/// One layer of a point spread: a [`Kernel`] carrying a share of the light.
-#[derive(Copy, Clone, Debug, PartialEq)]
+impl Default for ProfileKind {
+    /// The Moffat, the default profile; see [`Kernel`].
+    fn default() -> ProfileKind {
+        ProfileKind::Moffat
+    }
+}
+
+/// One layer of a point spread: a [`Profile`] carrying a share of the light.
+#[derive(Debug)]
 pub struct Layer {
-    /// The shape this layer deposits.
-    pub kernel: Kernel,
+    /// The shape this layer deposits — any [`Profile`], not only a [`Kernel`].
+    pub profile: Box<dyn Profile>,
     /// Its weight, relative to the other layers. A [`Psf`] reads these as
     /// proportions — a base of one and an aureole of `0.06` puts a sixteenth of
     /// the light in the halo — and normalizes by their sum when it draws, so
     /// the value is a ratio and the order layers were added in does not matter.
     pub weight: f64,
+}
+
+impl Layer {
+    /// A layer of the given profile and relative weight.
+    ///
+    /// The weight is a proportion read against the other layers' — see
+    /// [`weight`](Self::weight) — and is clamped up to zero, since a negative
+    /// share is no share.
+    pub fn new(profile: impl Profile + 'static, weight: f64) -> Layer {
+        Layer { profile: Box::new(profile), weight: weight.max(0.0) }
+    }
 }
 
 /// A point spread built from one or more [`Layer`]s.
@@ -368,35 +391,36 @@ pub struct Layer {
 /// [`at`]: Self::at
 /// [`peak`]: Self::peak
 /// [`shape`]: Self::shape
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Psf {
     layers: Vec<Layer>,
 }
 
 impl Psf {
-    /// A single-layer PSF: a plain seeing disc of the given profile and width.
+    /// A single-layer PSF: a plain seeing disc of the given kind and width.
     ///
     /// The whole of the old behaviour, and what a renderer that wants no halo
     /// still holds.
-    pub fn new(profile: Profile, width: f64) -> Psf {
-        Psf::of(Kernel::new(profile, width))
+    pub fn new(kind: ProfileKind, width: f64) -> Psf {
+        Psf::of(Kernel::new(kind, width))
     }
 
-    /// A single-layer PSF around an explicit kernel.
-    pub fn of(kernel: Kernel) -> Psf {
-        Psf { layers: vec![Layer { kernel, weight: 1.0 }] }
+    /// A single-layer PSF around an explicit profile.
+    pub fn of(profile: impl Profile + 'static) -> Psf {
+        Psf { layers: vec![Layer::new(profile, 1.0)] }
     }
 
-    /// Lay another kernel behind this one, carrying `weight` of the light
-    /// relative to the layers already present.
+    /// Lay another [`Layer`] behind this one.
     ///
-    /// The base is weight one, so `with_layer(halo, 0.06)` puts `0.06 / 1.06` of
-    /// the light — about a sixteenth — in the halo and leaves the rest in the
-    /// core, and a second `with_layer` behind that shares out against the same
-    /// running total rather than rescaling what came before. This is the "layer
-    /// until happy" seam.
-    pub fn with_layer(mut self, kernel: Kernel, weight: f64) -> Psf {
-        self.layers.push(Layer { kernel, weight: weight.max(0.0) });
+    /// A layer's [`weight`](Layer::weight) is its share relative to the ones
+    /// already present: a base of one and `Layer::new(halo, 0.06)` puts
+    /// `0.06 / 1.06` of the light — about a sixteenth — in the halo and leaves
+    /// the rest in the core, and a second layer behind that shares out against
+    /// the same running total rather than rescaling what came before. This is
+    /// the "layer until happy" seam, and the layer is any [`Profile`] — a custom
+    /// halo as readily as a [`Kernel`].
+    pub fn with_layer(mut self, layer: Layer) -> Psf {
+        self.layers.push(layer);
         self
     }
 
@@ -411,21 +435,16 @@ impl Psf {
         self.layers.iter().map(|l| l.weight).sum()
     }
 
-    /// The base layer's profile — which profile the core wears.
-    pub fn profile(&self) -> Profile {
-        self.layers[0].kernel.profile()
-    }
-
     /// The unit-peak shape at `distance`: the whole stack, normalized so the
     /// centre is one. Separable from energy, so a texture can bake it once.
     pub fn shape(&self, distance: f64) -> f64 {
         let numerator: f64 = self
             .layers
             .iter()
-            .map(|l| l.weight * l.kernel.peak(1.0) * l.kernel.shape(distance))
+            .map(|l| l.weight * l.profile.peak(1.0) * l.profile.shape(distance))
             .sum();
         let denominator: f64 =
-            self.layers.iter().map(|l| l.weight * l.kernel.peak(1.0)).sum();
+            self.layers.iter().map(|l| l.weight * l.profile.peak(1.0)).sum();
         if denominator > 0.0 { numerator / denominator } else { 0.0 }
     }
 
@@ -436,7 +455,7 @@ impl Psf {
         if total <= 0.0 {
             return 0.0;
         }
-        self.layers.iter().map(|l| l.kernel.peak(l.weight / total * energy)).sum()
+        self.layers.iter().map(|l| l.profile.peak(l.weight / total * energy)).sum()
     }
 
     /// The value `distance` from the centre of a star carrying `energy`: the
@@ -448,7 +467,7 @@ impl Psf {
         }
         self.layers
             .iter()
-            .map(|l| l.kernel.at(l.weight / total * energy, distance))
+            .map(|l| l.profile.at(l.weight / total * energy, distance))
             .sum()
     }
 
@@ -466,7 +485,7 @@ impl Psf {
         }
         self.layers
             .iter()
-            .filter_map(|l| l.kernel.radius(l.weight / total * energy, floor))
+            .filter_map(|l| l.profile.radius(l.weight / total * energy, floor))
             .fold(None, |acc, r| Some(acc.map_or(r, |a: f64| a.max(r))))
     }
 }
@@ -623,14 +642,22 @@ mod tests {
     /// differ — which is the whole of why the choice is worth offering.
     #[test]
     fn a_psf_wears_the_profile_it_is_given() {
-        let g = Psf::new(Profile::Gaussian, 2.0);
-        let m = Psf::new(Profile::Moffat, 2.0);
-        assert_eq!(g.profile(), Profile::Gaussian);
-        assert_eq!(m.profile(), Profile::Moffat);
+        let g = Psf::new(ProfileKind::Gaussian, 2.0);
+        let m = Psf::new(ProfileKind::Moffat, 2.0);
         assert!(g.peak(10.0) != m.peak(10.0), "the profiles concentrate alike");
         assert!((g.shape(0.0) - 1.0).abs() < 1e-12);
         assert!((m.shape(0.0) - 1.0).abs() < 1e-12);
         assert!(g.shape(5.0) > 0.0 && m.shape(5.0) > 0.0);
+    }
+
+    /// A kind round-trips through its kernel, and names itself for a menu.
+    #[test]
+    fn a_kernel_reports_its_kind() {
+        assert_eq!(Kernel::moffat(2.0, STELLAR_BETA).kind(), ProfileKind::Moffat);
+        assert_eq!(Kernel::gaussian(2.0).kind(), ProfileKind::Gaussian);
+        assert_eq!(ProfileKind::default(), ProfileKind::Moffat);
+        assert_eq!(ProfileKind::ALL, [ProfileKind::Moffat, ProfileKind::Gaussian]);
+        assert_eq!(ProfileKind::Gaussian.name(), "Gaussian");
     }
 
     /// A stacked PSF still holds the light put into it: the layers split the
@@ -640,8 +667,8 @@ mod tests {
     /// [`MAX_RADIUS`], which the tolerance leaves room for.
     #[test]
     fn a_layered_psf_conserves_energy() {
-        let psf = Psf::new(Profile::Moffat, 4.0)
-            .with_layer(Kernel::moffat(20.0, 1.4), 0.1);
+        let psf = Psf::new(ProfileKind::Moffat, 4.0)
+            .with_layer(Layer::new(Kernel::moffat(20.0, 1.4), 0.1));
         let energy = 100.0;
         let r = psf.radius(energy, 1e-6).expect("a bright star has a radius");
         let n = r.ceil() as i64;
@@ -664,8 +691,9 @@ mod tests {
     /// and spreads it wide.
     #[test]
     fn the_aureole_is_a_halo_the_core_lacks() {
-        let core = Psf::new(Profile::Moffat, 4.0);
-        let stack = core.clone().with_layer(Kernel::moffat(20.0, 1.4), 0.1);
+        let core = Psf::new(ProfileKind::Moffat, 4.0);
+        let stack = Psf::new(ProfileKind::Moffat, 4.0)
+            .with_layer(Layer::new(Kernel::moffat(20.0, 1.4), 0.1));
         let energy = 100.0;
         assert!(
             (stack.peak(energy) - core.peak(energy)).abs() / core.peak(energy)
@@ -683,8 +711,9 @@ mod tests {
     /// stays under the floor and never draws.
     #[test]
     fn the_aureole_reaches_only_for_the_bright() {
-        let core = Psf::new(Profile::Moffat, 4.0);
-        let stack = core.clone().with_layer(Kernel::moffat(20.0, 1.4), 0.1);
+        let core = Psf::new(ProfileKind::Moffat, 4.0);
+        let stack = Psf::new(ProfileKind::Moffat, 4.0)
+            .with_layer(Layer::new(Kernel::moffat(20.0, 1.4), 0.1));
         let bright = 100.0;
         assert!(
             stack.radius(bright, FLOOR).unwrap()
@@ -704,8 +733,8 @@ mod tests {
     /// one texture from [`Psf::shape`] and scale it by [`Psf::peak`].
     #[test]
     fn a_stack_stays_separable() {
-        let psf = Psf::new(Profile::Moffat, 3.0)
-            .with_layer(Kernel::moffat(12.0, AUREOLE_BETA), 0.1);
+        let psf = Psf::new(ProfileKind::Moffat, 3.0)
+            .with_layer(Layer::new(Kernel::moffat(12.0, AUREOLE_BETA), 0.1));
         for &d in &[0.0, 2.5, 9.0, 25.0] {
             let expected = psf.peak(10.0) * psf.shape(d);
             assert!((psf.at(10.0, d) - expected).abs() < 1e-9, "at {d}");
@@ -717,8 +746,8 @@ mod tests {
     /// `0.05` aureole behind a base of one carries `0.05 / 1.05` of the flux.
     #[test]
     fn weights_are_relative_shares() {
-        let psf = Psf::new(Profile::Moffat, 4.0)
-            .with_layer(Kernel::moffat(16.0, AUREOLE_BETA), 0.05);
+        let psf = Psf::new(ProfileKind::Moffat, 4.0)
+            .with_layer(Layer::new(Kernel::moffat(16.0, AUREOLE_BETA), 0.05));
         assert_eq!(psf.layers()[0].weight, 1.0, "the base is untouched");
         assert_eq!(psf.layers()[1].weight, 0.05);
         // The halo's share of the energy is its weight over the total.
