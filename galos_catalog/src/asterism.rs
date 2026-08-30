@@ -1,6 +1,6 @@
 //! Constellation figures: the lines a constellation is drawn with.
 //!
-//! A [`Constellation`](crate::constellation::Constellation) is the sky's agreed
+//! A [`Constellation`] is the sky's agreed
 //! *region*; an asterism is the *figure* traced across it — the stick figure a
 //! person recognises, the Plough in Ursa Major or the belt-and-shoulders of
 //! Orion. Unlike the region, the figure is a drawing convention rather than a
@@ -23,7 +23,7 @@
 //! one constellation to a line, the IAU abbreviation, a segment count `N`, then
 //! `2N` Hipparcos numbers read in pairs, each pair a line. HIP because that is
 //! the identity a figure file and a star catalog can both speak — a
-//! [`Star`](crate::Star) carries its [`hip`](crate::Star::hip).
+//! [`Star`] carries its [`hip`](crate::Star::hip).
 //!
 //! ```text
 //! # Ursa Major, the seven of the Plough

@@ -11,7 +11,7 @@ use elite_journal::{
 };
 use galos_index::aggregate::{bucket_temperature, temp_bucket};
 use galos_index::meta::{Economies, NameEntry};
-use galos_photometry::DEFAULT_CLASS_LIGHT;
+use galos_photometry::ClassLight;
 use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
@@ -170,7 +170,7 @@ impl System {
     pub fn absolute_magnitude(&self) -> f64 {
         self.absolute_magnitude
             .map(f64::from)
-            .unwrap_or(DEFAULT_CLASS_LIGHT.absolute_magnitude)
+            .unwrap_or(ClassLight::DEFAULT.absolute_magnitude.0)
     }
 
     /// Which temperature bucket the star's blackbody tint falls in, at the
@@ -178,7 +178,7 @@ impl System {
     pub fn temp_bucket(&self) -> usize {
         self.temp_bucket
             .map(usize::from)
-            .unwrap_or_else(|| temp_bucket(DEFAULT_CLASS_LIGHT.temperature))
+            .unwrap_or_else(|| temp_bucket(ClassLight::DEFAULT.temperature.0))
     }
 
     /// The combined absolute magnitude the index baked for this system, if it

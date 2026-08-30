@@ -46,7 +46,7 @@ pub mod hyg;
 #[cfg(feature = "index")]
 pub mod index;
 
-use galos_photometry::{EYE_LIMIT, class_light, color_index_to_temperature};
+use galos_photometry::{ClassLight, Magnitude, Temperature};
 
 /// Which survey a star came from.
 ///
@@ -112,7 +112,7 @@ impl Skipped {
 
     /// Note a dropped row's magnitude against the naked-eye tally.
     pub(crate) fn note(&mut self, magnitude: f64) {
-        if magnitude <= EYE_LIMIT {
+        if magnitude <= Magnitude::EYE_LIMIT.0 {
             self.naked_eye += 1;
         }
         self.brightest = Some(match self.brightest {
@@ -221,23 +221,24 @@ impl Star {
     /// allows.
     ///
     /// A measured colour index first, since it is a measurement of this star;
-    /// then the spectral type through [`class_light`], which is a typical
+    /// then the spectral type through [`ClassLight::of`], which is a typical
     /// figure for its family; then the default that stands in for a row with
     /// neither. The same shape of fallback the bake uses, for the same reason:
     /// a catalog is holey and a star with no colour still has to be given a
     /// tint.
     ///
-    /// `class_light` reads Elite's class tokens, which are the leading letters
-    /// of a spectral type, and a catalog's `K2IIIp` leads with the same letter
-    /// a `K` does. The luminosity class is dropped in the process, so a giant
-    /// is read as a dwarf of its letter — which is why a colour index, when
-    /// there is one, is always the better answer.
+    /// [`ClassLight::of`] reads Elite's class tokens, which are the leading
+    /// letters of a spectral type, and a catalog's `K2IIIp` leads with the same
+    /// letter a `K` does. The luminosity class is dropped in the process, so a
+    /// giant is read as a dwarf of its letter — which is why a colour index,
+    /// when there is one, is always the better answer.
     pub fn temperature(&self) -> f64 {
         match self.color_index {
-            Some(bv) => color_index_to_temperature(bv),
+            Some(bv) => Temperature::from_color_index(bv).0,
             None => {
-                class_light(self.spectral_type.as_deref().unwrap_or(""))
+                ClassLight::of(self.spectral_type.as_deref().unwrap_or(""))
                     .temperature
+                    .0
             }
         }
     }

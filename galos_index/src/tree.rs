@@ -1109,7 +1109,7 @@ mod batch_tests {
 
         let want_flux: f64 = systems
             .iter()
-            .map(|s| galos_photometry::flux(s.absolute_magnitude))
+            .map(|s| galos_photometry::Magnitude(s.absolute_magnitude).flux().0)
             .sum();
         assert!(
             (root.aggregate.total_flux() - want_flux).abs() < want_flux * 1e-9

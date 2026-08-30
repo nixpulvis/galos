@@ -26,7 +26,7 @@ use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use elite_journal::body::{Discovery, Orbit, Spin};
 use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
-use galos_photometry::apparent_magnitude_ly;
+use galos_photometry::{Distance, Magnitude};
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -688,7 +688,7 @@ fn described(
                 field(
                     ui,
                     "App. magnitude",
-                    format!("{:.1}", apparent_magnitude_ly(m as f64, away)),
+                    format!("{:.1}", Magnitude(m as f64).apparent(Distance::light_years(away)).0),
                 );
             }
             if let Some(t) = system.baked_temperature() {

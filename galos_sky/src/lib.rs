@@ -20,9 +20,10 @@
 //! renderer with a GPU, a window and a swapchain in the loop is slow. Here it
 //! is a pure function over a deterministic buffer.
 //!
-//! None of that law lives in this crate. [`galos_photometry::relative_exposure`]
-//! turns a magnitude into energy and [`galos_photometry::psf`] decides where on
-//! the detector it lands, so when the map adopts them the two renderers are
+//! None of that law lives in this crate.
+//! [`galos_photometry::Magnitude::exposure`] turns a magnitude into energy and
+//! [`galos_photometry::psf`] decides where on the detector it lands, so when
+//! the map adopts them the two renderers are
 //! running one instrument rather than two, and a comparison between their
 //! pictures measures the pictures. What is here is only the depositing: a loop
 //! over the pixels a disc reaches, and a tone curve to compress the result. Those

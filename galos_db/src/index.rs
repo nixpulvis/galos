@@ -22,7 +22,7 @@ use galos_index::source::write_meta;
 use galos_index::{
     meta, source, BuildParams, Checkpoint, Index, Snapshot, System, Tree,
 };
-use galos_photometry::{class_light, combined_magnitude, visual_magnitude};
+use galos_photometry::{ClassLight, Magnitude, Temperature};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::HashMap;
@@ -55,7 +55,7 @@ fn system_input(
     age_bucket: usize,
 ) -> System {
     let (absolute_magnitude, temperature) =
-        match combined_magnitude(stars.iter().map(|&(m, _)| m)) {
+        match Magnitude::combine(stars.iter().map(|&(m, _)| Magnitude(m))) {
             Some(combined) => {
                 let tint = stars
                     .iter()
@@ -63,11 +63,11 @@ fn system_input(
                     .min_by(|a, b| a.0.total_cmp(&b.0))
                     .map(|(_, temperature)| temperature)
                     .expect("a combined magnitude means at least one star");
-                (combined, tint)
+                (combined.0, tint)
             }
             None => {
-                let light = class_light(primary_star_class.unwrap_or(""));
-                (light.absolute_magnitude, light.temperature)
+                let light = ClassLight::of(primary_star_class.unwrap_or(""));
+                (light.absolute_magnitude.0, light.temperature.0)
             }
         };
     System {
@@ -85,7 +85,7 @@ fn system_input(
 ///
 /// Each star's scanned magnitude is bolometric — its whole output as one figure
 /// — so it is turned into the visual magnitude the sky sees by
-/// [`visual_magnitude`] before it is grouped. A star missing a magnitude or a
+/// [`Magnitude::visual`] before it is grouped. A star missing a magnitude or a
 /// temperature cannot be summed, so it is left out and its system falls to the
 /// class fallback like any other.
 async fn stars_by_system(
@@ -120,13 +120,13 @@ async fn stars_by_system(
         // all of it were visible — so convert it to the visual magnitude the
         // sky reads. This is where a white dwarf keeps its faint scanned
         // brightness and a neutron star or black hole falls to nothing, with no
-        // per-class figure. See [`visual_magnitude`].
+        // per-class figure. See [`Magnitude::visual`].
         if let (Some(m), Some(t)) = (magnitude, temperature) {
             let t = t as f64;
             stars
                 .entry(address)
                 .or_default()
-                .push((visual_magnitude(m as f64, t), t));
+                .push((Magnitude(m as f64).visual(Temperature(t)).0, t));
         }
     }
     Ok(stars)
@@ -976,9 +976,9 @@ mod tests {
     #[test]
     fn a_starless_system_falls_back_to_its_class() {
         let s = system_input(1, [0.0; 3], Some("M"), &[], 0);
-        let m = class_light("M");
-        assert_eq!(s.absolute_magnitude, m.absolute_magnitude);
-        assert_eq!(s.temperature, m.temperature);
+        let m = ClassLight::of("M");
+        assert_eq!(s.absolute_magnitude, m.absolute_magnitude.0);
+        assert_eq!(s.temperature, m.temperature.0);
     }
 
     /// No stars and no class is the default dwarf.
@@ -987,7 +987,7 @@ mod tests {
         let s = system_input(1, [0.0; 3], None, &[], 0);
         assert_eq!(
             s.absolute_magnitude,
-            galos_photometry::DEFAULT_CLASS_LIGHT.absolute_magnitude
+            galos_photometry::ClassLight::DEFAULT.absolute_magnitude.0
         );
     }
 

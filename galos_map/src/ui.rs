@@ -40,7 +40,7 @@ use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_index::meta::{Faction as DbFaction, NameEntry};
-use galos_photometry::psf::Profile;
+use galos_photometry::psf::ProfileKind;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
@@ -927,7 +927,7 @@ pub fn chrome(
             // [`crate::systems::spawn::reprofile`].
             ui.label("Point spread");
             let mut profile = settings.star_profile.0;
-            for choice in Profile::ALL {
+            for choice in ProfileKind::ALL {
                 ui.radio_value(&mut profile, choice, choice.name());
             }
             if profile != settings.star_profile.0 {

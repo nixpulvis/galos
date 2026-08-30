@@ -15,7 +15,7 @@
 use clap::Parser;
 use galos_catalog::asterism;
 use galos_catalog::{Star, hyg};
-use galos_photometry::psf::Profile;
+use galos_photometry::psf::ProfileKind;
 use galos_sky::Camera;
 use std::fs::File;
 use std::path::PathBuf;
@@ -60,7 +60,7 @@ struct Cli {
 
     /// The point-spread profile: `moffat` (default) or `gaussian`.
     #[arg(long, default_value = "moffat", value_parser = parse_profile)]
-    profile: Profile,
+    profile: ProfileKind,
 
     /// Share of a star's light in its halo, 0..1. Zero draws a bare core.
     #[arg(long, default_value_t = galos_photometry::psf::AUREOLE_WEIGHT)]
@@ -303,10 +303,10 @@ fn parse_size(size: &str) -> (u32, u32) {
 }
 
 /// `moffat` or `gaussian`, for the `--profile` flag.
-fn parse_profile(s: &str) -> Result<Profile, String> {
+fn parse_profile(s: &str) -> Result<ProfileKind, String> {
     match s.to_ascii_lowercase().as_str() {
-        "moffat" => Ok(Profile::Moffat),
-        "gaussian" => Ok(Profile::Gaussian),
+        "moffat" => Ok(ProfileKind::Moffat),
+        "gaussian" => Ok(ProfileKind::Gaussian),
         other => Err(format!(
             "unknown profile {other:?}, expected moffat or gaussian"
         )),
