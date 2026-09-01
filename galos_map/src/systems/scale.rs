@@ -583,8 +583,22 @@ pub fn pull_stars(
         .min(crate::camera::NEAR_CEILING)
         * 3.;
 
+    // How far a shell has to be for pulling it in to be worth it. Nearer than
+    // this its true coordinate is already in the eye's own precise
+    // neighbourhood, where it draws cleanly at full size; pulling it onto the
+    // near plane would shrink its mesh below what a float resolves at the eye's
+    // own magnitude and collapse it — which is what tore a shell apart as the
+    // camera came in on it. Well under where the clip transform starts to tear
+    // one left where it is.
+    const PULL_BEYOND: f32 = 1e16;
+
     for (system, local, mut global, visible) in &mut shells {
         if !visible.get() {
+            continue;
+        }
+        // Close enough to draw where it is: see [`PULL_BEYOND`]. Leaving it
+        // keeps its true depth, so it still sorts against whatever it is near.
+        if global.translation().length() < PULL_BEYOND {
             continue;
         }
         let offset =
