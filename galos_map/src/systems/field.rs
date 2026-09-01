@@ -55,10 +55,6 @@ pub fn plugin(app: &mut App) {
 #[derive(Component)]
 struct FieldCamera;
 
-/// The one mesh the whole field is rebuilt into each frame
-#[derive(Resource)]
-struct FieldMesh(Handle<Mesh>);
-
 /// The mesh entity, so a view change can swap which material paints it
 #[derive(Component)]
 struct FieldMark;
@@ -86,10 +82,9 @@ fn spawn_field(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = meshes.add(Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    ));
+    // A degenerate mesh to begin with; `build_field` swaps in a fresh one
+    // holding the frame's stars each frame.
+    let mesh = meshes.add(field_mesh(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
     // White base, so the per-vertex colour is the whole of what a mark comes
     // out. Both are points a pixel or two across — too small to carry the
     // point-spread texture, which at that size samples its own faint edge and
@@ -114,7 +109,7 @@ fn spawn_field(
         ..default()
     });
     commands.spawn((
-        Mesh3d(mesh.clone()),
+        Mesh3d(mesh),
         MeshMaterial3d(solid.clone()),
         RenderLayers::layer(FIELD_LAYER),
         // Every vertex is placed by hand each frame; there is no bound to cull
@@ -124,7 +119,6 @@ fn spawn_field(
         Visibility::Visible,
         FieldMark,
     ));
-    commands.insert_resource(FieldMesh(mesh));
     commands.insert_resource(FieldMaterials { solid, glint });
 
     // The camera that draws it, at the world origin so nothing it rasterises
@@ -200,13 +194,13 @@ fn build_field(
     exposure: Res<StarExposure>,
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
-    field: Res<FieldMesh>,
+    mut field: Query<&mut Mesh3d, With<FieldMark>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
-    let Some(mut mesh) = meshes.get_mut(&field.0) else { return };
+    let Ok(mut mesh3d) = field.single_mut() else { return };
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut uvs: Vec<[f32; 2]> = Vec::new();
@@ -286,8 +280,36 @@ fn build_field(
         ]);
     }
 
+    mesh3d.0 = meshes.add(field_mesh(positions, uvs, colors, indices));
+}
+
+/// Build the field's mesh from the frame's quads, as a fresh asset each frame
+///
+/// Swapped in for the last rather than rewritten in place. Bevy's mesh
+/// allocator frees and reallocates a mesh whose size changes and then copies
+/// into the slab it just freed, which spends the frame logging a use-after-free
+/// as the star count moves. A new handle sidesteps it — allocated, filled once,
+/// and the old one dropped — at no more cost than the in-place path, which
+/// reallocates anyway. Never empty: an empty mesh takes the same zero-size path
+/// and draws the same error, so a field standing in for nothing carries one
+/// degenerate triangle that rasterises to nothing.
+fn field_mesh(
+    mut positions: Vec<[f32; 3]>,
+    mut uvs: Vec<[f32; 2]>,
+    mut colors: Vec<[f32; 4]>,
+    mut indices: Vec<u32>,
+) -> Mesh {
+    if positions.is_empty() {
+        positions = vec![[0., 0., -1.]; 3];
+        uvs = vec![[0., 0.]; 3];
+        colors = vec![[0., 0., 0., 0.]; 3];
+        indices = vec![0, 1, 2];
+    }
+    let mut mesh =
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
+    mesh
 }
