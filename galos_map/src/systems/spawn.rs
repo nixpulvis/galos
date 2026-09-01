@@ -1388,6 +1388,11 @@ fn star(
         Mesh3d(roundness.coarsest()),
         MeshMaterial3d(materials.get(hue(system, color_by), dimmed).clone()),
         NotShadowCaster,
+        // Never frustum-culled. A shell's true coordinate is out where the f32
+        // frustum test misjudges it, and [`super::scale::pull_stars`] draws it
+        // on a near plane only for shells left visible — so the cull must be
+        // kept from hiding one before it is pulled in.
+        bevy::camera::visibility::NoFrustumCulling,
         // Drawn on its own layer by a camera without bloom, so a wide field of
         // shells is opaque and the nearest covers the rest while the bodies
         // keep the glow. See [`crate::camera::SHELLS_LAYER`].

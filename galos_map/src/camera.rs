@@ -177,7 +177,7 @@ pub(crate) const NEAR_FRACTION: f32 = 1e-4;
 /// drawn. What it costs is depth precision at the far end of the zoom, and
 /// the projection is an infinite reversed one, which spends its precision
 /// near the camera and is the arrangement least troubled by a close plane.
-const NEAR_CEILING: f32 = 4e11;
+pub(crate) const NEAR_CEILING: f32 = 4e11;
 
 /// How far the frustum reaches, in metres
 ///
