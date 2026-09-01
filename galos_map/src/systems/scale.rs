@@ -58,6 +58,12 @@ pub fn plugin(app: &mut App) {
     // does. What it writes is read by the next frame's propagation, which is
     // a frame behind and nowhere near enough movement to see.
     app.add_systems(PostUpdate, size_inside.after(TransformSystems::Propagate));
+    // Draws every shell the map stands in for on a plane the camera carries,
+    // rather than at the galaxy coordinate where the f32 clip transform tears
+    // its mesh apart. In `Last`, after `big_space` has settled every transform
+    // and the visibility it reads has been worked out, so what it writes is
+    // what the renderer takes.
+    app.add_systems(Last, pull_stars);
 }
 
 #[derive(Resource, Debug, PartialEq)]
@@ -530,6 +536,79 @@ pub(crate) fn size_photometrically(
         if mesh.0 != sprite.quad {
             mesh.0 = sprite.quad.clone();
         }
+    }
+}
+
+/// Draw each system's shell on a plane the camera carries, not where it is
+///
+/// A shell sits at its system's true coordinate, up to ~1e17 m from the
+/// floating origin, and there the f32 clip transform `view_proj · model` runs
+/// out of bits: the mesh comes out torn or gone, and which triangles survive
+/// turns with the camera, so half the sky blinks in and out as it pitches and
+/// zooms (see `docs/night-sky.md`). So the shell is not drawn where it is. Its
+/// centre is projected on the CPU in f64 and the mesh placed on the eye→system
+/// ray at [`super::pointing::overlay_plane`]'s depth — the same near plane the
+/// rings are drawn on, close enough to the origin to stay precise — kept at the
+/// pixel size and facing [`size_by_distance`] and [`size_photometrically`]
+/// worked out, so it reads the same while it draws at all.
+///
+/// Only the shells the map is still standing in for. One flown into wears a
+/// [`Grid`] and is drawn as the system itself, near the origin, where the
+/// precision holds.
+///
+/// The `GlobalTransform` is overwritten, not the `Transform`: a system's true
+/// coordinate is what everything else asks of it — where its name is laid out,
+/// where the pointer is tested — so the shell keeps it and only what reaches
+/// the renderer is moved. Written after `big_space` has propagated, so it is
+/// this that the renderer reads.
+pub fn pull_stars(
+    camera: Query<(&OrbitCamera, &GlobalTransform)>,
+    mut shells: Query<
+        (&System, &Transform, &mut GlobalTransform, &ViewVisibility),
+        (With<Shell>, Without<Grid>, Without<OrbitCamera>),
+    >,
+) {
+    let Ok((orbit, eye)) = camera.single() else { return };
+    let eye_render = eye.translation();
+    let forward = (orbit.rotation * Vec3::NEG_Z).as_dvec3();
+    // Just past the near clip plane: the smallest coordinate a star can be
+    // drawn at without being clipped, and so the most precise. The plane is a
+    // ten-thousandth of the zoom, held under [`crate::camera::NEAR_CEILING`],
+    // which keeps this close to the eye's own neighbourhood at every zoom —
+    // where the f32 transform holds — rather than out where a field spread to
+    // the edges tears. Three times it, to clear the plane at the corners of
+    // the view where the ray runs longer than down the middle.
+    let near = ((orbit.radius as f64 * crate::space::LIGHT_YEAR) as f32
+        * crate::camera::NEAR_FRACTION)
+        .min(crate::camera::NEAR_CEILING)
+        * 3.;
+
+    for (system, local, mut global, visible) in &mut shells {
+        if !visible.get() {
+            continue;
+        }
+        let offset =
+            crate::space::metres(DVec3::from(system.position) - orbit.eye);
+        let away = offset.length() as f32;
+        // Behind the eye, or sitting on it: nothing to draw where it is seen.
+        // Its mesh is left with no size rather than at a coordinate that tears.
+        if offset.dot(forward) <= 0. || away < 1. {
+            *global = GlobalTransform::from(Transform::from_scale(Vec3::ZERO));
+            continue;
+        }
+        // Along the ray to the system, out at the near plane: the same screen
+        // point, at a depth the f32 transform holds.
+        let direction = (offset / away as f64).as_vec3();
+        let translation = eye_render + direction * near;
+        // The size was worked out for the true distance; a pixel covers that
+        // much less world out here, so the world size shrinks by the same ratio
+        // and the mark holds the pixels it was given.
+        let scale = local.scale * (near / away);
+        *global = GlobalTransform::from(Transform {
+            translation,
+            rotation: local.rotation,
+            scale,
+        });
     }
 }
 
