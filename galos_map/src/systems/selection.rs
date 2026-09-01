@@ -36,8 +36,10 @@ use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
 use crate::systems::filter::{DimTo, Filtered};
+use crate::systems::labels::{screen_position, world_per_pixel};
 use crate::systems::pointing::{
     DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_POINTS,
+    overlay_plane,
 };
 use crate::ui::Gesture;
 use bevy::math::DVec3;
@@ -541,7 +543,6 @@ fn ring(
         (
             &System,
             &Strength,
-            &GlobalTransform,
             &Indicator,
             Has<Filtered>,
             Has<crate::systems::route::Hop>,
@@ -557,58 +558,29 @@ fn ring(
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
+    let Ok(eye) = eye_at.single() else { return };
 
-    if let Ok(eye) = eye_at.single() {
-        for (at, indicator) in &inside {
-            let offset = (at.translation() - eye.translation()).as_dvec3();
-            let radius = super::pointing::drawn_radius_of(
-                orbit,
-                cot_half_fov,
-                viewport,
-                offset,
-                indicator.0,
-            );
+    // A selected system is ringed where the camera can see it rather than out
+    // at its own ~1e17 m coordinate, where the ring's geometry tears in f32.
+    // Projected to the screen and drawn back onto the plane the camera carries,
+    // as [`super::pointing::ring`] draws the stops. See `docs/night-sky.md`.
+    let right = orbit.rotation * Vec3::X;
+    let up = orbit.rotation * Vec3::Y;
+    let ahead = orbit.rotation * Vec3::NEG_Z;
+    let depth = overlay_plane(orbit.radius);
+    let pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
+    let middle = eye.translation() + ahead * depth;
+    let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
 
-            gizmos
-                .circle(
-                    Isometry3d::new(at.translation(), orbit.rotation),
-                    radius,
-                    SELECTION,
-                )
-                .resolution(RING_POINTS);
-        }
-    }
-
-    for (system, mark, at, indicator, filtered, hop) in &selected {
-        // A stop a route reaches is ringed by [`super::pointing::ring`],
-        // in this same color, while the map is holding a system. Everything
-        // drawn for a stop then is drawn where the camera can see it rather
-        // than where the stop is, and a ring drawn here would be out at the
-        // stop's true distance with the rest of the mark a jump nearer.
-        if hop && holding.of().is_some() {
-            continue;
-        }
-
-        // Ring it wherever it is drawn, the same test the hover ring uses: the
-        // strength below is zero for a system the map is not drawing, so a
-        // filtered-out or out-of-view selection rings nothing. Gating on the
-        // spyglass reach instead skipped systems the walk draws beyond that
-        // sphere, so a close selection went unringed while its hover ring
-        // showed.
-        let position = DVec3::from(system.position);
-        let standing = mark.0;
-        if standing <= 0. {
-            continue;
-        }
-
-        // The mark is held in pixels, and a gizmo is drawn in the world, so
-        // this is where the two meet. Through the same conversion the
-        // pointing ring uses, so the two circles are the same circle.
-        let radius = super::pointing::drawn_radius(
+    // Whatever inside a system is picked out, drawn where it stands: it is in
+    // here with the camera, at coordinates the floating origin keeps precise.
+    for (at, indicator) in &inside {
+        let offset = (at.translation() - eye.translation()).as_dvec3();
+        let radius = super::pointing::drawn_radius_of(
             orbit,
             cot_half_fov,
             viewport,
-            position,
+            offset,
             indicator.0,
         );
 
@@ -616,6 +588,40 @@ fn ring(
             .circle(
                 Isometry3d::new(at.translation(), orbit.rotation),
                 radius,
+                SELECTION,
+            )
+            .resolution(RING_POINTS);
+    }
+
+    for (system, mark, indicator, filtered, hop) in &selected {
+        // A stop a route reaches is ringed by [`super::pointing::ring`], in
+        // this same color, while the map is holding a system. Everything drawn
+        // for a stop then is drawn where the camera can see it, and a ring here
+        // would be out at the stop's true distance with the rest a jump nearer.
+        if hop && holding.of().is_some() {
+            continue;
+        }
+
+        // The strength is zero for a system the map is not drawing, so a
+        // filtered-out or out-of-view selection rings nothing.
+        let standing = mark.0;
+        if standing <= 0. {
+            continue;
+        }
+
+        let Some(on) = screen_position(
+            orbit,
+            cot_half_fov,
+            viewport,
+            DVec3::from(system.position),
+        ) else {
+            continue;
+        };
+
+        gizmos
+            .circle(
+                Isometry3d::new(placed(on - viewport * 0.5), orbit.rotation),
+                indicator.0 * pixel,
                 going(ringed(&dim, filtered), standing),
             )
             .resolution(RING_POINTS);
