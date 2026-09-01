@@ -59,7 +59,7 @@ pub fn plugin(app: &mut App) {
 /// bloom over a field of points is what turns a star's brightness into its
 /// apparent size (galaxy.md) without a bright one swallowing the sky. Tuned by
 /// eye from Sol.
-const STAR_BLOOM: Bloom = Bloom {
+pub(crate) const STAR_BLOOM: Bloom = Bloom {
     // A whisper, down from NATURAL's 0.15. The star's size is its point-spread
     // core (`scale::psf_radius`, bounded as the log of brightness); bloom on top
     // of that only added a halo that scaled with emissive, which is what let a
@@ -556,12 +556,13 @@ pub const SHELLS_LAYER: usize = 1;
 /// The render layer the flat star field is drawn on
 ///
 /// Its own, drawn by [`crate::systems::field`]'s camera at the world origin.
-/// It draws at the same order the shells' camera does; the two never draw at
-/// once, the view choosing between them.
+/// The field draws every view now; the shells' own camera is left off and its
+/// meshes unshown. It draws at the order the shells' camera used, over the
+/// galaxy and under the annotation overlays.
 pub(crate) const FIELD_LAYER: usize = 5;
 
-/// A marker for the shells' camera, so the field can turn it off in the view
-/// the field itself draws
+/// A marker for the shells' camera, so the field can turn it off — the field
+/// draws the stars in every view and the shells' camera never runs
 #[derive(Component)]
 pub(crate) struct ShellsView;
 
