@@ -3,64 +3,33 @@ use crate::schedule::MapSet;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
-use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::scale::View;
+use crate::systems::selection::{SELECTION, Selected};
 use crate::systems::spawn::{ShowNames, StarExposure};
 use crate::systems::{Spyglass, System};
-use galos_photometry::{Distance, Magnitude};
-use bevy::camera::visibility::RenderLayers;
-use bevy::camera::visibility::VisibilitySystems;
 use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_rich_text3d::{
-    LoadFonts, Text3d, Text3dPlugin, Text3dSegment, Text3dStyling, TextAnchor,
-    TextAtlas,
-};
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use galos_photometry::{Distance, Magnitude};
 use std::ops::RangeInclusive;
 
 pub(crate) fn plugin(app: &mut App) {
-    // Only if it is not already there, and appended rather than set. The
-    // ruled plane sets its own numbers in the same face and asks for it the
-    // same way, and whichever of the two is added first should not decide
-    // whether the other's face is loaded.
-    if !app.is_plugin_added::<Text3dPlugin>() {
-        app.add_plugins(Text3dPlugin { load_system_fonts: false, ..default() });
-    }
-    app.world_mut()
-        .get_resource_or_insert_with(LoadFonts::default)
-        .font_embedded
-        .push(epaint_default_fonts::HACK_REGULAR);
     app.insert_resource(NameRadius {
         follow_spyglass: false,
         radius: DEFAULT_NAME_RADIUS,
     });
     app.insert_resource(NameLimit(8.0));
     app.insert_resource(ShowBodyNames(true));
-    app.add_systems(Startup, init_materials);
-    app.add_systems(Update, redim.in_set(MapSet::Present));
+    // Chosen and realised: [`choose_names`] decides which names are drawn and
+    // [`respawn`] hangs a token off each, carrying the words. Both in
+    // `Update`, before the screen-space paint.
     app.add_systems(
         Update,
-        tint_marked_names
-            .in_set(MapSet::Present)
-            .after(super::pointing::point_at)
-            // A name is spawned in the color of a system at rest, so one
-            // that appears because its system has just been marked out
-            // draws untinted for a frame unless the tint follows the spawn.
-            // This wants the name that exists rather than the one asked for
-            // last frame.
-            .after(respawn),
-    );
-    // `face_camera` and the sizing systems both write a `Transform`, on
-    // different entities, so the scheduler cannot run them together whatever
-    // is said here. Ordering them costs nothing and fixes which goes first.
-    app.add_systems(
-        Update,
-        (choose_names, respawn, back_names, face_camera)
+        (choose_names, respawn)
             .chain()
             .in_set(MapSet::Present)
-            // Both read which system is pointed at, which is decided this
-            // frame rather than last.
+            // Both read which system is pointed at, decided this frame.
             .after(super::pointing::point_at)
             // A selected system is named whether or not it is within reach,
             // but only while it is drawn, and that is decided here.
@@ -71,34 +40,14 @@ pub(crate) fn plugin(app: &mut App) {
             // wants the mark settled this frame rather than last.
             .after(super::pointing::size_indicators),
     );
-    // `leaders` reads where a label ended up rather than deciding it, and
-    // neither of the two answers it needs exists during `Update`. A label's
-    // `GlobalTransform` is computed from the local one in `PostUpdate`, and
-    // its `ViewVisibility` is not settled until everything has had a chance
-    // to hide it. Reading either any earlier draws last frame's line.
+    // The names are painted flat, in egui's own pass, from the tokens
+    // [`respawn`] put up. Before the chrome so the label layer is registered
+    // first and sits beneath the panes rather than over them.
     app.add_systems(
-        PostUpdate,
-        leaders
-            .after(TransformSystems::Propagate)
-            .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
+        EguiPrimaryContextPass,
+        draw_names.before(crate::ui::chrome),
     );
 }
-
-/// World size of a run of text at unit scale
-///
-/// The line box a text mesh is built at, which whoever places it scales down
-/// to the height they want it drawn at.
-pub(crate) const SIZE: f32 = 64.;
-
-/// Depth floor for the label size, in metres
-///
-/// Size is proportional to depth, so a system level with the camera would
-/// draw at nothing and one just behind it at a negative size, which is
-/// mirrored. Anything this close is inside the near plane regardless.
-///
-/// A metre. What it guards against is the sign, not any particular distance,
-/// and the camera cannot be pulled nearer than this to what it looks at.
-pub(crate) const MIN_DEPTH: f32 = 1.;
 
 /// How far a name is drawn from what the camera looks at, to begin with
 ///
@@ -180,14 +129,6 @@ pub(super) const GAP: f32 = 0.75;
 /// How far a label sits above its star, in text heights
 const RISE: f32 = 1.0;
 
-/// The family name inside [`epaint_default_fonts::HACK_REGULAR`], used to
-/// select it in [`Text3dStyling`]
-///
-/// The same face egui draws the chrome in, so a name on the map and the same
-/// name in the bar are the one typeface. Monospaced, which is what [`ADVANCE`]
-/// rests on.
-pub(crate) const FONT: &str = "Hack";
-
 /// Color of the line joining a star to its name
 ///
 /// Dimmer than the text so it reads as a connector rather than as content.
@@ -208,7 +149,7 @@ const LEADER_GAP: f32 = 0.15;
 /// instead.
 ///
 /// Named for the typographic advance, how far the pen moves along after
-/// drawing a glyph. [`FONT`] is monospaced, so every glyph advances the same
+/// drawing a glyph. The font is monospaced, so every glyph advances the same
 /// and a name of `n` letters is exactly `n` of these across, whichever letters
 /// they are. That is also why the names may be drawn in capitals for nothing:
 /// a `W` takes the room an `i` does.
@@ -218,14 +159,6 @@ const LEADER_GAP: f32 = 0.15;
 /// have fitted between them; erring narrow overlaps them, which is the thing
 /// being prevented.
 const ADVANCE: f32 = 0.7;
-
-/// What [`FONT`] actually sets a character at, as a fraction of the size
-///
-/// The set width, where [`ADVANCE`] is the room a name is granted. The two
-/// differ on purpose and the difference is which way each errs: room granted
-/// short overlaps two names, so [`ADVANCE`] rounds up; a ground drawn long
-/// runs on past the word it carries, so this rounds to the truth.
-const SET_WIDTH: f32 = 1233. / 2048.;
 
 /// The dark ground a name is set on
 ///
@@ -463,53 +396,30 @@ type Candidate<'a, T> = (
     Has<crate::systems::route::Hop>,
 );
 
-/// What [`respawn`] needs of a system that has won a name
-///
-/// Whether it already carries the plate, and whether the name has a jump to
-/// say as well as a system.
-type Plated = (
-    Entity,
-    &'static System,
-    Option<&'static Children>,
-    Has<crate::systems::route::Hop>,
-);
-
-/// Whatever a name is hung off, as [`leaders`] reads it
-///
-/// Where it is, and the three ways of being marked out that leave a line with
-/// nothing to say. What it is drawn at is read from where it is: a system is
-/// its own shell and carries the shell's size, and a body carries its own.
-type Anchor = (
-    &'static GlobalTransform,
-    Has<PointedAt>,
-    Has<Selected>,
-    Has<crate::systems::route::Hop>,
-);
-
 /// A system whose name has won a place on screen
 ///
-/// Awarded by [`choose_names`] and read by [`respawn`], which spawns a label
-/// for a system that has one and takes the label away from a system that
-/// does not. A name that would not be readable never gets a mesh built for
-/// it at all.
+/// Awarded by [`choose_names`] and read by [`respawn`], which hangs a name
+/// token on whatever has one and takes the token from whatever does not. A
+/// name that would not be readable never gets a token at all.
 #[derive(Component)]
 pub struct Named;
 
-/// A marker for system name labels
+/// A name token: the pointer handle and word-carrier for one drawn name
+///
+/// Hung off whatever it names. It renders nothing itself — [`draw_names`]
+/// paints the words in screen space — and exists so the pointer can be caught
+/// over a name and the words kept between the frame a name is chosen and the
+/// frame it is drawn.
 #[derive(Component)]
 pub struct Label;
 
-/// The quad a name is set on, hung under the [`Label`] it carries
+/// The words a name token is set to
 ///
-/// A child rather than part of the plate, since the words are a text mesh the
-/// crate rebuilds whenever they change and this is one rectangle that only
-/// ever moves and resizes.
+/// What [`choose_names`] won a place for, kept on the token so [`draw_names`]
+/// can paint it and [`super::pointing`] can size the area that catches the
+/// pointer, both from the one string.
 #[derive(Component)]
-struct Ground;
-
-/// The one quad every [`Ground`] is drawn from, a unit square in its own XY
-#[derive(Resource)]
-pub(crate) struct GroundMesh(Handle<Mesh>);
+pub struct PlateText(pub String);
 
 /// How far in front of the camera a point is, in metres
 ///
@@ -608,62 +518,6 @@ pub(crate) fn screen_offset(
     let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
 
     Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
-}
-
-/// What a name may be drawn in
-///
-/// A material per color rather than one recolored per name, because the
-/// color lives on a shared asset: changing it would repaint every name at
-/// once. Swapping which handle a label points at repaints only that one.
-///
-/// Two sets of the same three: full strength, and whatever [`DimTo`] asks for
-/// a name whose system the filters exclude. The dim set is recolored in
-/// place when that moves, which is the case where repainting every name at
-/// once is exactly what is wanted.
-#[derive(Resource)]
-pub struct LabelMaterials {
-    bright: [Handle<StandardMaterial>; 3],
-    dim: [Handle<StandardMaterial>; 3],
-    /// One for every name. A ground takes no tint, being what the tint is
-    /// read against.
-    ground: Handle<StandardMaterial>,
-}
-
-/// Which color a name is drawn in, given what its system is
-///
-/// Named rather than numbered, for the reason [`super::spawn::Hue`] is: the
-/// two sets are laid out in [`Tint::ALL`] order and indexed by the tint.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Tint {
-    Resting,
-    PointedAt,
-    Selected,
-}
-
-impl Tint {
-    /// Every tint, in the order the sets hold them
-    const ALL: [Tint; 3] = [Tint::Resting, Tint::PointedAt, Tint::Selected];
-
-    /// What a name of this tint comes out
-    ///
-    /// A name comes out the color of the ring drawn around its star, so that
-    /// a system marked out is one thing in two places rather than two answers
-    /// that have to be matched up.
-    const fn color(self) -> Srgba {
-        match self {
-            Tint::Resting => Srgba::WHITE,
-            Tint::PointedAt => INDICATOR,
-            Tint::Selected => SELECTION,
-        }
-    }
-}
-
-impl LabelMaterials {
-    /// The handle for `tint`, at the strength `dimmed` asks for
-    fn get(&self, tint: Tint, dimmed: bool) -> &Handle<StandardMaterial> {
-        let set = if dimmed { &self.dim } else { &self.bright };
-        &set[tint as usize]
-    }
 }
 
 /// What the realistic view weighs a name by, beyond where it stands
@@ -1403,7 +1257,7 @@ fn smoothed(t: f32) -> f32 {
 
 /// The same rectangle, for whoever knows how wide a name is without holding it
 ///
-/// A name's width is its letter count, [`FONT`] being monospaced, so what the
+/// A name's width is its letter count, the font being monospaced, so what the
 /// layout is measuring is a number and not any particular words. The sky is
 /// laid out every frame and setting the words to count them is a heap
 /// allocation per system per frame, thrown away as soon as it is measured.
@@ -1425,67 +1279,63 @@ pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
     )
 }
 
-/// Give a label to every system that has won a name, and take it from the
+/// Give a name token to everything that has won a name, and take it from the
 /// rest
 ///
-/// [`choose_names`] decides; this only carries the decision out. A system
-/// without a [`Named`] has no label, which is what keeps the mesh cost to
-/// the names actually drawn, and means nothing has to be hidden after the
-/// fact.
+/// [`choose_names`] decides; this only carries the decision out. A `Named`
+/// system or body gets a [`Label`] token hung off it carrying the words to
+/// set, which [`draw_names`] paints and [`super::pointing`] catches the
+/// pointer over. A thing without a `Named` has none, which keeps the work to
+/// the names actually drawn.
 ///
-/// A name already up is set again where the words have moved on. What a
-/// system's plate says is not its name alone: a stop carries the jump to it,
-/// and a system becomes a stop and stops being one without ever losing the
-/// name it holds. Left alone, a plate would go on saying whatever was true the
-/// frame it was spawned.
+/// The words are set again where they have moved on. What a system's plate
+/// says is not its name alone: a stop carries the jump to it, and a system
+/// becomes a stop and stops being one without ever losing the name it holds.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn respawn(
     mut commands: Commands,
-    named: Query<Plated, With<Named>>,
-    // Where the jump to a stop is measured from, which is the system the
-    // camera is standing in. Asked of every system rather than only the ones
-    // without names, so that the answer is the same one [`choose_names`]
-    // granted room for on the frame the camera arrives and the system it is
-    // arriving in has not yet let go of its own name.
+    named: Query<
+        (Entity, &System, Option<&Children>, Has<crate::systems::route::Hop>),
+        With<Named>,
+    >,
+    // Where the jump to a stop is measured from, the system the camera stands
+    // in. Asked of every system so the answer matches the one [`choose_names`]
+    // granted room for on the frame the camera arrives, before the system it
+    // arrives in has let go of its own name.
     standing_in: Query<&System>,
     holding: Res<HeldSystem>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     // Whatever lost its name since this last ran, rather than everything that
-    // does not have one. Nearly every name is the same name it was last frame,
-    // and asking the other way round is a walk of the whole sky, and of every
-    // child hung under it, to find the handful with a plate to take down.
+    // does not have one. Nearly every name is the name it was last frame, and
+    // asking the other way round walks the whole sky to find the handful to
+    // take a token from.
     mut unnamed: RemovedComponents<Named>,
     children_of: Query<&Children>,
-    labels: Query<Entity, With<Label>>,
-    // The words on a plate already up, which only a system's ever change.
-    mut plates: Query<&mut Text3d, With<Label>>,
-    materials: Res<LabelMaterials>,
-    mesh: Res<GroundMesh>,
+    tokens: Query<Entity, With<Label>>,
+    // The words on a token already up, which only a system's ever change.
+    mut words: Query<&mut PlateText, With<Label>>,
 ) {
     for entity in unnamed.read() {
         // Nothing where the thing itself has gone, which is the other way a
-        // name is lost. Its children went with it, plate and all.
+        // name is lost. Its token went with it.
         let Ok(children) = children_of.get(entity) else { continue };
         for child in children.iter() {
-            if let Ok(label) = labels.get(child) {
-                commands.entity(label).despawn();
+            if tokens.contains(child) {
+                commands.entity(child).despawn();
             }
         }
     }
 
-    // The same nameplate, hung off whatever it names.
+    // The same token, hung off whatever it names.
     for (entity, body, children) in &named_bodies {
-        let labelled = children
-            .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
-        if labelled {
-            continue;
-        }
-
-        let label = commands
-            .spawn(nameplate(body.name.to_uppercase(), &materials))
-            .id();
-        commands.entity(label).with_child(ground(&materials, &mesh));
-        commands.entity(entity).add_child(label);
+        set_name(
+            &mut commands,
+            &mut words,
+            &tokens,
+            entity,
+            children,
+            body.name.to_uppercase(),
+        );
     }
 
     // Where a jump is measured from. Nothing where the map is holding no
@@ -1496,59 +1346,45 @@ pub(crate) fn respawn(
         .map(|held| held.position());
 
     for (entity, system, children, hop) in &named {
-        let wanted = plate_for(system, hop, from);
-
-        let plate = children
-            .into_iter()
-            .flat_map(|children| children.iter())
-            .find(|child| labels.contains(*child));
-
-        // Written only where the words moved. Setting a plate again rebuilds
-        // its mesh, and this runs over every name every frame.
-        if let Some(plate) = plate {
-            if let Ok(mut words) = plates.get_mut(plate)
-                && said(&words) != Some(wanted.as_str())
-            {
-                *words = Text3d::new(wanted);
-            }
-            continue;
-        }
-
-        let label = commands.spawn(nameplate(wanted, &materials)).id();
-        commands.entity(label).with_child(ground(&materials, &mesh));
-
-        commands.entity(entity).add_child(label);
+        set_name(
+            &mut commands,
+            &mut words,
+            &tokens,
+            entity,
+            children,
+            plate_for(system, hop, from),
+        );
     }
 }
 
-/// Size each ground to the words its plate is set to
+/// Hang a name token off `entity`, or set the words on the one already there
 ///
-/// Read off the words rather than worked out again from the system, since a
-/// stop's plate carries the jump to it and a ground has to cover whatever is
-/// actually drawn. The plate's own origin is the left edge of the words,
-/// vertically centered, and [`face_camera`] scales the whole plate, so this
-/// works in the units [`SIZE`] is written in and never in pixels.
-///
-/// In the one plane as the words, `z` and all. An opaque ground drawn ahead
-/// of them and cleared at their own depth wants no setback, and a setback is
-/// a parallax: the plate faces the camera, so a ground pushed along the view
-/// swings off its words toward the middle of the screen as the view turns.
-fn back_names(
-    plates: Query<&Text3d, With<Label>>,
-    mut grounds: Query<(&mut Transform, &ChildOf), With<Ground>>,
+/// Written only where the words moved, so a token is not touched on the frames
+/// its name says the same thing.
+fn set_name(
+    commands: &mut Commands,
+    words: &mut Query<&mut PlateText, With<Label>>,
+    tokens: &Query<Entity, With<Label>>,
+    entity: Entity,
+    children: Option<&Children>,
+    wanted: String,
 ) {
-    for (mut ground, child_of) in &mut grounds {
-        let Ok(words) = plates.get(child_of.parent()) else { continue };
-        let letters = said(words).map_or(0, |it| it.chars().count());
-        let width = letters as f32 * SET_WIDTH * SIZE;
-        let pad = SIZE * GROUND_PAD;
+    let token = children
+        .into_iter()
+        .flat_map(|children| children.iter())
+        .find(|child| tokens.contains(*child));
 
-        ground.set_if_neq(Transform {
-            translation: Vec3::new(width / 2., 0., 0.),
-            rotation: Quat::IDENTITY,
-            scale: Vec3::new(width + pad * 2., SIZE + pad * 2., 1.),
-        });
+    if let Some(token) = token {
+        if let Ok(mut plate) = words.get_mut(token)
+            && plate.0 != wanted
+        {
+            plate.0 = wanted;
+        }
+        return;
     }
+
+    let token = commands.spawn(nameplate(wanted)).id();
+    commands.entity(entity).add_child(token);
 }
 
 /// What the plate for `system` says, `stop` being whether a route reaches it
@@ -1617,378 +1453,214 @@ fn plate_words(name: &str, jump: Option<f64>) -> String {
     }
 }
 
-/// What a plate says, if it says anything this wrote
+/// A name token hung off whatever it names
 ///
-/// A plate is one run of text, [`nameplate`] having set it that way, and
-/// anything else is not a plate this put up.
-pub(super) fn said(words: &Text3d) -> Option<&str> {
-    match words.segments.as_slice() {
-        [(Text3dSegment::String(said), _)] => Some(said),
-        _ => None,
-    }
-}
-
-/// The name of a thing, drawn beside it
-///
-/// One plate for a system and for a body alike: what differs is only what it
-/// is hung off and what decided it was worth drawing.
-///
-/// Given the words to set rather than making them. Names are put in capitals,
-/// as everything else the map says out loud is, and the font being monospaced
-/// that costs no width. A unit standing beside one is not a name and is spelt
-/// the way a unit is spelt, so whoever knows which is which says so.
-fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
+/// A bare handle rather than a plate of meshes: the words are painted in
+/// screen space by [`draw_names`], and this only holds them, catches the
+/// pointer over the name, and keeps the thing in the hierarchy for the paint
+/// to find. One token for a system and for a body alike, differing only in
+/// what hangs it and what decided it was worth drawing.
+fn nameplate(words: String) -> impl Bundle {
     (
         Label,
-        // Over the galaxy rather than in it, which is the whole reason a name
-        // is legible over a thick field at all.
-        RenderLayers::layer(crate::camera::Overlay::Names.layer()),
-        Text3d::new(name),
-        Text3dStyling {
-            size: SIZE,
-            font: FONT.into(),
-            color: Srgba::WHITE,
-            // The anchor says where the text sits relative to the entity,
-            // not which edge of the text lands on it. CENTER_RIGHT puts the
-            // name to the right of what it names rather than straddling it,
-            // leaving room for the gap below.
-            anchor: TextAnchor::CENTER_RIGHT,
-            ..default()
-        },
-        Mesh3d::default(),
-        // Whatever the thing is; `tint_marked_names` runs after this and
-        // settles it before the name is drawn.
-        MeshMaterial3d(materials.get(Tint::Resting, false).clone()),
-        // Placed by `face_camera` before the first draw.
-        Transform::default(),
+        PlateText(words),
         // What catches the pointer over a name. The area is worked out on
-        // screen by `super::pointing`, from the same rectangle
-        // `choose_names` laid this name out in, so a name catches over
-        // exactly the room it was granted rather than over the quads its
-        // glyphs happen to occupy.
+        // screen by [`super::pointing`], from the same rectangle
+        // [`choose_names`] laid this name out in, so a name catches over
+        // exactly the room it was granted.
         Pickable::default(),
+        // No mesh hangs off a token; it draws nothing itself. Hidden keeps it
+        // out of every render pass while leaving it in the hierarchy for the
+        // pointer to be caught over and for [`draw_names`] to reach its parent.
+        Transform::default(),
+        Visibility::Hidden,
     )
 }
 
-/// Turn each label to the camera and place it beside its system
+/// Paint every drawn name flat on the screen
 ///
-/// A label is a child of the system it names, and in the realistic view that
-/// system is a star turned to face the eye (see
-/// [`super::scale::size_photometrically`]), so its transform carries both a
-/// scale and a rotation the label would otherwise inherit twice over. Both are
-/// undone here, into the parent's frame: a label under a star already facing
-/// the eye is left square and standing a fixed step off on screen, inheriting
-/// the turn rather than repeating it, so nothing rewrites its facing as the
-/// view orbits. The map view, where the system is unturned, gets the plain
-/// camera rotation and a world-axis offset, as before.
-pub fn face_camera(
+/// The names, their grounds and the lines joining them to what they name are
+/// annotation, not light, and are drawn in screen space with egui rather than
+/// as meshes out at the galaxy coordinates their systems sit at. A glyph mesh
+/// transformed by `view_proj · model` in f32 at a system's ~1e17 m sits torn
+/// apart on hardware that keeps fewer bits through the multiply (see
+/// `docs/night-sky.md`); a name projected to a pixel on the CPU and painted
+/// there does not, and comes out crisp at the window's own scale besides.
+///
+/// The layout is [`choose_names`]' and reaches here through the [`Label`]
+/// tokens [`respawn`] hangs off whatever wins a name: each carries the words to
+/// set, and its parent says where on screen the name goes and what colour it
+/// comes out. Painted in the background layer, under the chrome and over the
+/// map.
+pub fn draw_names(
+    mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
-    systems: Query<(&System, &Transform, &Indicator), Without<Label>>,
-    // A body's own scale, which is what propagation multiplies its label's by
-    // and so what the label has to be divided by. The local one rather than
-    // the `GlobalTransform` beside it: propagation runs before
-    // `super::scale::size_inside`, which is where a body's scale is decided,
-    // so the global standing here is a scale behind the local.
-    //
-    // The filters are spelled out, here and on the labels below, so the
-    // scheduler can prove the three queries disjoint. A label is neither a
-    // system nor a body, and nothing is both of those.
-    bodies: Query<(&Transform, &Indicator), (With<Body>, Without<Label>)>,
-    // Where a body stands, out of the grid holding it rather than out of the
-    // transform `big_space` writes. That transform is written during
-    // `PostUpdate`, so read here it is a frame old, and a zoom covers near a
-    // quarter of the distance it has left every frame: every name inside a
-    // system would be sized against a distance the camera had already left,
-    // and would only be right once the camera stopped.
-    places: Places,
-    mut labels: Query<
-        (&mut Transform, &ChildOf),
-        (With<Label>, Without<System>, Without<Body>),
+    tokens: Query<(&PlateText, &ChildOf), With<Label>>,
+    // The marks that colour a name and where its system stands. Spelled
+    // `Without<Label>` so the scheduler can prove the token query disjoint
+    // from these; a token is neither a system nor a body.
+    systems: Query<
+        (
+            &System,
+            &Indicator,
+            Has<PointedAt>,
+            Has<Selected>,
+            Has<Filtered>,
+            Has<crate::systems::route::Hop>,
+        ),
+        Without<Label>,
     >,
-) {
-    let Ok((orbit, camera)) = camera.single() else { return };
-    let Some(viewport) = camera.logical_viewport_size() else { return };
+    bodies: Query<
+        (&Indicator, Has<PointedAt>, Has<Selected>),
+        (With<Body>, Without<Label>),
+    >,
+    places: Places,
+    dim: Res<DimTo>,
+) -> Result {
+    let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
+    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (mut label, child_of) in &mut labels {
-        let Ok((system, shell, indicator)) = systems.get(child_of.parent())
-        else {
-            // A name hung off something inside a system.
-            let body = child_of.parent();
-            let Ok((own_size, indicator)) = bodies.get(body) else { continue };
-            let Some(place) = places.of(body) else { continue };
+    let ctx = contexts.ctx_mut()?;
+    // Under the chrome, which draws in the same order, and over the map, which
+    // every egui layer is drawn over. Ordered before the chrome in the
+    // schedule so its layer is registered first and sits beneath the panes.
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("map-names"),
+    ));
+    // The one face the chrome is set in as well, so a name on the map and the
+    // same name in the bar are the one typeface. Egui's default monospace is
+    // Hack, which is the face the chrome is set in.
+    let font = egui::FontId::new(NAME_HEIGHT, egui::FontFamily::Monospace);
 
-            // Measured to where the body stands in the galaxy, as a system's
-            // name is measured to where its system stands. Both are read off
-            // what `Update` has already settled, so a name is sized by the
-            // view it is about to be drawn into rather than by the last one.
-            let into_view = depth(orbit, place).max(MIN_DEPTH);
-            let world_per_pixel =
-                world_per_pixel(cot_half_fov, viewport.y, into_view);
+    for (words, child_of) in &tokens {
+        let thing = child_of.parent();
+        // Where the thing stands on screen, how large its mark is, what colour
+        // its name comes out, and whether a line is drawn to it. A system is
+        // out in the sky; a body is read off the grid holding it, the way
+        // [`choose_names`] reads it, so the name is placed against the view it
+        // is about to be drawn into.
+        let (at, clear, tint, leader) =
+            if let Ok((system, indicator, pointed, selected, filtered, hop)) =
+                systems.get(thing)
+            {
+                let Some(at) = screen_position(
+                    orbit,
+                    cot_half_fov,
+                    viewport,
+                    DVec3::from(system.position),
+                ) else {
+                    continue;
+                };
+                let tint = faded(
+                    marked_tint(pointed, selected),
+                    if filtered { dim.opacity() } else { 1. },
+                );
+                (at, indicator.0, tint, !(pointed || selected || hop))
+            } else if let Ok((indicator, pointed, selected)) = bodies.get(thing)
+            {
+                let Some(place) = places.of(thing) else { continue };
+                let Some(at) =
+                    screen_position(orbit, cot_half_fov, viewport, place)
+                else {
+                    continue;
+                };
+                (
+                    at,
+                    indicator.0,
+                    marked_tint(pointed, selected),
+                    !(pointed || selected),
+                )
+            } else {
+                continue;
+            };
 
-            let height = NAME_HEIGHT * world_per_pixel;
-            // Clear of the body itself rather than a fixed step from its
-            // middle. A body is drawn at the size it is, so a name set the
-            // gap a system's name is set at would sit inside anything larger
-            // than a speck. Measured from the mark, which is the outline the
-            // pointer is tested against, so the name stands off exactly what
-            // is drawn.
-            let clear = indicator.0 * world_per_pixel;
-            let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
-                + orbit.rotation * Vec3::Y * (height * RISE);
+        // The name sits up and to the right of what it names, clear of the
+        // mark drawn around it, by the same figures [`name_rect_of`] lays it
+        // out with. Its origin is the left edge of the words, vertically
+        // centred.
+        let left = at.x + clear + NAME_HEIGHT * GAP;
+        let middle = at.y - NAME_HEIGHT * RISE;
 
-            // Divided out, the plate being drawn at the body's own scale
-            // otherwise, and a body's scale being its radius in metres.
-            let own = own_size.scale.x.max(1e-6);
-            label.set_if_neq(Transform {
-                translation: offset / own,
-                rotation: orbit.rotation,
-                scale: Vec3::splat(height / SIZE / own),
-            });
-            continue;
-        };
+        let color = color32(tint);
+        let galley =
+            painter.layout_no_wrap(words.0.clone(), font.clone(), color);
+        let origin = egui::pos2(left, middle - galley.size().y / 2.);
 
-        // Measured to the system, not to the label's offset within it, so
-        // that every name on screen is sized against the same view.
-        let into_view =
-            depth(orbit, DVec3::from(system.position)).max(MIN_DEPTH);
-        let world_per_pixel =
-            world_per_pixel(cot_half_fov, viewport.y, into_view);
-
-        // The line box is exactly `SIZE` tall, so this is the height the
-        // name draws at, in pixels, whatever the camera is doing.
-        let height = NAME_HEIGHT * world_per_pixel;
-        let scale = height / SIZE;
-
-        // Clear of the mark drawn around the system, as a body's name is
-        // clear of the body. Up close that mark is a ring tens of pixels wide
-        // with the shell inside it, and a name set a fixed step from the
-        // middle would be drawn over both.
-        let clear = indicator.0 * world_per_pixel;
-
-        // Offset along the camera's own axes, so the label keeps sitting up
-        // and to the right on screen however the view is orbited. All three
-        // are pixel measurements taken into the world, so they are fixed
-        // pixel gaps.
-        let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
-            + orbit.rotation * Vec3::Y * (height * RISE);
-
-        // Divided by the shell's own scale, the label being a child of the
-        // system the shell shares an entity with, and that scale being the
-        // mark drawn far larger than a metre. The body path above does the
-        // same with a body's own scale.
-        let own = shell.scale.x.max(1e-6);
-        // And taken back through the shell's own rotation, into the parent's
-        // frame. In the realistic view the shell has turned the system to face
-        // the eye, so undoing it leaves a label under a star already facing the
-        // eye square and unmoved, inheriting the turn rather than repeating it.
-        // Unturned, in the map view, this is the plain camera rotation over a
-        // world-axis offset, as before.
-        let into_local = shell.rotation.inverse();
-        // Only where it moved, as everything the camera decides the size of is.
-        // A plate carries a mesh, so a transform written regardless hands every
-        // name on screen back to the renderer every frame.
-        label.set_if_neq(Transform {
-            translation: into_local * (offset / own),
-            rotation: into_local * orbit.rotation,
-            scale: Vec3::splat(scale / own),
-        });
-    }
-}
-
-/// Join each thing to its name with a line
-///
-/// The name sits off to one side, which is ambiguous once things are close
-/// together. Drawn as a gizmo rather than a mesh because both ends move
-/// every frame the camera does, and there is nothing to keep between frames.
-///
-/// A line only exists where its name is drawn. Names are hidden by the
-/// spyglass, by the names toggle, and by facing away from the camera, and a
-/// line answering to anything less than the drawn text outlives one of them.
-///
-/// A system's name and a body's are the same name drawn the same way, so both
-/// get one. What differs is only what the line has to begin clear of.
-pub fn leaders(
-    mut gizmos: Gizmos,
-    labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
-    named: Query<Anchor, Or<(With<System>, With<Body>)>>,
-) {
-    for (label, drawn, child_of) in &labels {
-        if !drawn.get() {
-            continue;
-        }
-        let Ok((at, pointed_at, selected, hop)) = named.get(child_of.parent())
-        else {
-            continue;
-        };
-
-        // A ring around a system says which one a name belongs to better
-        // than a line to it does, and leaves nothing for the line to say.
-        // Either ring answers, and a name the color of the ring it belongs
-        // to has already said which star it came from.
-        //
-        // A stop a route reaches is ringed as well, and carries the mark
-        // saying which way it lies between the ring and the name, which joins
-        // the two of them more plainly than a line drawn under it could.
-        if pointed_at || selected || hop {
-            continue;
-        }
-
-        // What the line has to begin clear of is whatever is drawn where the
-        // name points, which is the anchor's own scale: a system is its own
-        // shell and carries the size it is drawn at, and a body carries its
-        // own. Either way the line begins at the edge of what it points to.
-        let edge = at.scale().x;
-
-        // The label's origin is the left edge of the text, so the line runs
-        // from the thing straight to where the name begins.
-        let from = at.translation();
-        let to = label.translation();
-        let length = from.distance(to);
-        let Some(direction) = (to - from).try_normalize() else { continue };
-
-        // Measured out from the ring rather than from the center, so that
-        // the air before the line matches the air after it.
-        let gap = length * LEADER_GAP;
-        let start = edge + gap;
-        let end = length - gap;
-        if start >= end {
-            continue;
-        }
-
-        gizmos.line(
-            from + direction * start,
-            from + direction * end,
-            LEADER_COLOR,
+        // The dark ground the name is read against, sized to the words it
+        // carries and drawn first so the letters land on it. Opaque, so the
+        // field of stars a name is read over does not fill its counters.
+        let pad = NAME_HEIGHT * GROUND_PAD;
+        painter.rect_filled(
+            egui::Rect::from_min_size(origin, galley.size()).expand(pad),
+            0.,
+            color32(GROUND),
         );
+        painter.galley(origin, galley, color);
+
+        // The line joining the thing to its name, begun clear of the mark and
+        // stopped short of the words, with the same air at each end. A name
+        // marked out is ringed instead and needs no line.
+        if leader {
+            let to = Vec2::new(left, middle);
+            let length = at.distance(to);
+            if let Some(direction) = (to - at).try_normalize() {
+                let gap = length * LEADER_GAP;
+                let start = clear + gap;
+                let end = length - gap;
+                if start < end {
+                    let a = at + direction * start;
+                    let b = at + direction * end;
+                    painter.line_segment(
+                        [egui::pos2(a.x, a.y), egui::pos2(b.x, b.y)],
+                        egui::Stroke::new(1.0_f32, color32(LEADER_COLOR)),
+                    );
+                }
+            }
+        }
     }
+
+    Ok(())
 }
 
-pub fn init_materials(
-    mut assets: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    dim: Res<DimTo>,
-    mut commands: Commands,
-) {
-    let mut label = |tint: Srgba| assets.add(name_material(tint));
-
-    commands.insert_resource(LabelMaterials {
-        bright: Tint::ALL.map(|tint| label(tint.color())),
-        dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.opacity()))),
-        // No atlas on this one. A ground is a flat rectangle and the glyph
-        // texture is what makes the letters letters.
-        ground: assets.add(StandardMaterial {
-            base_color: GROUND.into(),
-            alpha_mode: AlphaMode::Opaque,
-            unlit: true,
-            ..default()
-        }),
-    });
-    commands.insert_resource(GroundMesh(meshes.add(Rectangle::new(1., 1.))));
-}
-
-/// The ground for one name, sized by [`back_names`] once it knows the words
-fn ground(materials: &LabelMaterials, mesh: &GroundMesh) -> impl Bundle {
-    (
-        Ground,
-        RenderLayers::layer(crate::camera::Overlay::Grounds.layer()),
-        Mesh3d(mesh.0.clone()),
-        MeshMaterial3d(materials.ground.clone()),
-        Transform::default(),
-    )
-}
-
-/// How a name is painted in `tint`
+/// What colour a name comes out for the marks on it
 ///
-/// The glyphs are drawn white and unlit, so a material's base color
-/// multiplies straight through them and is what a name comes out.
-fn name_material(tint: Srgba) -> StandardMaterial {
-    StandardMaterial {
-        base_color: tint.into(),
-        base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
+/// A name is drawn the colour of the ring around its star, so a system marked
+/// out is one thing in two places. Selection wins over pointing where both
+/// apply, as it does for the ring: the pointer will move on, and the selection
+/// is what was asked for.
+fn marked_tint(pointed_at: bool, selected: bool) -> Srgba {
+    if selected {
+        SELECTION
+    } else if pointed_at {
+        INDICATOR
+    } else {
+        Srgba::WHITE
     }
 }
 
 /// `tint` at `strength` of full
 ///
-/// The color is left alone and the alpha carries it, since a name dimmed by
-/// darkening would go black against the sky and read as a hole rather than as
-/// something standing further back.
+/// The alpha carries it, not the colour: a name dimmed by darkening would go
+/// black against the sky and read as a hole rather than as something standing
+/// further back.
 fn faded(tint: Srgba, strength: f32) -> Srgba {
     Srgba { alpha: tint.alpha * strength, ..tint }
 }
 
-/// Repaint the dimmed tints when the slider moves
+/// An sRGB colour as egui knows it
 ///
-/// The handles stay as they are, so no name has to be told which material it
-/// is pointing at.
-fn redim(
-    dim: Res<DimTo>,
-    materials: Res<LabelMaterials>,
-    mut assets: ResMut<Assets<StandardMaterial>>,
-) {
-    if !dim.is_changed() {
-        return;
-    }
-
-    for (handle, tint) in materials.dim.iter().zip(Tint::ALL) {
-        if let Some(mut material) = assets.get_mut(handle) {
-            *material = name_material(faded(tint.color(), dim.opacity()));
-        }
-    }
-}
-
-/// Tint a name for what its system is
-///
-/// Keyed on the system rather than on the name, so that pointing at a star
-/// lights its name as well, and both go out together.
-///
-/// Selection wins over pointing where both apply, as it does for the ring:
-/// the pointer will move on, and the selection is what was asked for.
-///
-/// A name dims with the system it belongs to, marked out or not. One rule
-/// with no exceptions, and a name that stayed bright over a dimmed star would
-/// read as the filter having let go of it.
-pub fn tint_marked_names(
-    systems: Query<
-        (Has<PointedAt>, Has<Selected>, Has<Filtered>),
-        With<System>,
-    >,
-    // What is inside a system answers the same two marks. No filter: a
-    // filter is a question asked of systems, and nothing asks it of a body.
-    bodies: Query<(Has<PointedAt>, Has<Selected>), With<Body>>,
-    materials: Res<LabelMaterials>,
-    mut names: Query<
-        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
-        With<Label>,
-    >,
-) {
-    for (child_of, mut material) in &mut names {
-        let marked = systems.get(child_of.parent()).ok().or_else(|| {
-            bodies
-                .get(child_of.parent())
-                .ok()
-                .map(|(pointed_at, selected)| (pointed_at, selected, false))
-        });
-        let Some((pointed_at, selected, filtered)) = marked else {
-            continue;
-        };
-        let tint = if selected {
-            Tint::Selected
-        } else if pointed_at {
-            Tint::PointedAt
-        } else {
-            Tint::Resting
-        };
-
-        let wanted = materials.get(tint, filtered);
-        if material.0 != *wanted {
-            material.0 = wanted.clone();
-        }
-    }
+/// [`Srgba`] channels are already gamma-encoded, the space [`egui::Color32`]
+/// holds, so they cross straight over; the alpha is not premultiplied on
+/// either side.
+fn color32(color: Srgba) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(
+        (color.red * 255.) as u8,
+        (color.green * 255.) as u8,
+        (color.blue * 255.) as u8,
+        (color.alpha * 255.) as u8,
+    )
 }
 
 #[cfg(test)]
@@ -2000,21 +1672,6 @@ mod tests {
     fn only_a_stop_says_how_far_off_it_is() {
         assert_eq!(plate_words("lung", Some(6.74)), "LUNG 6.7 Ly");
         assert_eq!(plate_words("lung", None), "LUNG");
-    }
-
-    /// A plate says back what it was set to
-    ///
-    /// Which is what tells a plate whose words have moved on from one that is
-    /// still saying the right thing, and what the room a name is granted and
-    /// the area it is caught over are measured from.
-    #[test]
-    fn a_plate_says_back_what_it_was_set_to() {
-        let resting = plate_words("lung", None);
-        let stop = plate_words("lung", Some(6.74));
-
-        assert_eq!(said(&Text3d::new(&resting)), Some(resting.as_str()));
-        assert_eq!(said(&Text3d::new(&stop)), Some(stop.as_str()));
-        assert_ne!(said(&Text3d::new(&resting)), Some(stop.as_str()));
     }
 
     /// A plate is measured at the width it will be set at
@@ -2609,18 +2266,8 @@ mod tests {
     #[test]
     fn a_system_in_front_is_named_before_one_behind() {
         let away = 20.;
-        let front = name_score(
-            placed(away, away),
-            false,
-            false,
-            false,
-        );
-        let back = name_score(
-            placed(away, -away),
-            false,
-            false,
-            false,
-        );
+        let front = name_score(placed(away, away), false, false, false);
+        let back = name_score(placed(away, -away), false, false, false);
 
         assert!(front > back, "{front} was no better than {back}");
     }
@@ -2635,18 +2282,8 @@ mod tests {
         let away = 20.;
         let bonus = CENTER_WEIGHT / (1. + (away / CENTER_REACH).powi(2));
 
-        let at = name_score(
-            placed(0., 0.),
-            false,
-            false,
-            false,
-        );
-        let front = name_score(
-            placed(away, away),
-            false,
-            false,
-            false,
-        );
+        let at = name_score(placed(0., 0.), false, false, false);
+        let front = name_score(placed(away, away), false, false, false);
 
         assert!(
             (front - (at - CENTER_WEIGHT + bonus)).abs() < 1e-3,
@@ -2662,12 +2299,7 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(
-            placed(0., 0.),
-            false,
-            false,
-            false,
-        );
+        let mut nearer = name_score(placed(0., 0.), false, false, false);
         for step in 1..=1000 {
             let further = name_score(
                 placed(step as f32 * DEFAULT_NAME_RADIUS / 1000., 0.),
@@ -2867,20 +2499,11 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_centered() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(
-            placed(DEFAULT_NAME_RADIUS, 0.),
-            true,
-            false,
-            false,
-        );
+        let pointed =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), true, false, false);
 
         // The system at the center, which is otherwise the best there is.
-        let centered = name_score(
-            placed(0., 0.),
-            false,
-            false,
-            false,
-        );
+        let centered = name_score(placed(0., 0.), false, false, false);
 
         assert!(
             pointed > centered,
@@ -2896,18 +2519,9 @@ mod tests {
     /// the point on the center, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
-        let selected = name_score(
-            placed(DEFAULT_NAME_RADIUS, 0.),
-            false,
-            true,
-            false,
-        );
-        let pointed = name_score(
-            placed(0., 0.),
-            true,
-            false,
-            false,
-        );
+        let selected =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), false, true, false);
+        let pointed = name_score(placed(0., 0.), true, false, false);
 
         assert!(
             selected > pointed,
@@ -2922,18 +2536,10 @@ mod tests {
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
-        let both = name_score(
-            placed(DEFAULT_NAME_RADIUS, 0.),
-            true,
-            true,
-            false,
-        );
-        let selected = name_score(
-            placed(DEFAULT_NAME_RADIUS, 0.),
-            false,
-            true,
-            false,
-        );
+        let both =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), true, true, false);
+        let selected =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), false, true, false);
 
         assert_eq!(both, selected);
     }
@@ -3024,18 +2630,14 @@ mod tests {
         );
     }
 
-    /// A world holding the colors a plate is set in, and nothing else
+    /// A minimal world for the name tokens, holding no system
     ///
     /// Nothing is being flown into, so no system is the one the map is holding
-    /// and no plate says a jump.
+    /// and no token says a jump.
     fn plated() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Assets<StandardMaterial>>();
-        app.init_resource::<Assets<Mesh>>();
-        app.init_resource::<DimTo>();
         app.init_resource::<HeldSystem>();
-        app.add_systems(Startup, init_materials);
         app
     }
 
@@ -3147,291 +2749,6 @@ mod tests {
         app.update();
 
         assert_eq!(up(&mut app), 0, "the plate outlived its system");
-    }
-
-    /// A ground lies in the plane of the words it backs
-    ///
-    /// The plate faces the camera, so depth is the one axis a ground and its
-    /// words can be pulled apart on, and under perspective that pull is a
-    /// parallax: a ground set back is dragged toward the middle of the view,
-    /// the more so the further from center the name sits, until a name near
-    /// the edge wears its ground low and off to the side. Opaque and coplanar,
-    /// the ground clears in the depth test at the words' own depth and stays
-    /// under them wherever on screen the name is drawn. It is still padded out
-    /// past the words in its own plane.
-    #[test]
-    fn a_ground_lies_in_the_plane_of_its_words() {
-        let mut app = plated();
-        app.add_systems(Update, (respawn, back_names).chain());
-        winner(&mut app);
-
-        // Two frames: the first spawns the ground by command, the second
-        // sizes it once the spawn has landed.
-        app.update();
-        app.update();
-
-        let mut grounds =
-            app.world_mut().query_filtered::<&Transform, With<Ground>>();
-        let ground = grounds.iter(app.world()).next().expect("a ground");
-
-        assert_eq!(
-            ground.translation.z, 0.,
-            "the ground was set back off the plane of its words"
-        );
-        assert!(
-            ground.scale.y > SIZE,
-            "the ground was not padded past its words"
-        );
-    }
-
-    /// How many names were placed
-    #[derive(Resource, Default)]
-    struct Placings(usize);
-
-    fn count_placings(
-        mut placings: ResMut<Placings>,
-        labels: Query<(), (Changed<Transform>, With<Label>)>,
-    ) {
-        placings.0 += labels.iter().count();
-    }
-
-    /// A world holding a camera and a system wearing a name
-    fn facing() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Placings>();
-        app.add_systems(Update, (face_camera, count_placings).chain());
-        app.world_mut().spawn((
-            OrbitCamera {
-                eye: DVec3::ZERO,
-                rotation: Quat::IDENTITY,
-                ..default()
-            },
-            crate::systems::tests::seeing(),
-            GlobalTransform::default(),
-        ));
-
-        // Down the axis the camera looks along, a name being sized by how far
-        // into the view its system lies rather than by how far off it is.
-        let mut standing = crate::systems::tests::system(1);
-        standing.position = [0., 0., -5.];
-        // No mark to stand off, the gap a name is given being enough on its
-        // own to place one.
-        let system = app
-            .world_mut()
-            .spawn((standing, Transform::default(), Indicator::default()))
-            .id();
-        let label = app.world_mut().spawn((Label, Transform::default())).id();
-        app.world_mut().entity_mut(system).add_child(label);
-        app
-    }
-
-    /// How many names have been placed so far
-    fn placings(app: &App) -> usize {
-        app.world().resource::<Placings>().0
-    }
-
-    /// A world holding a camera and a body wearing a name
-    ///
-    /// The body carries a `Transform` and a `GlobalTransform` that disagree
-    /// about its scale, which is what a frame of the real map looks like:
-    /// [`crate::systems::scale::size_inside`] writes the local one after
-    /// propagation has already read it, so the global standing in a frame is
-    /// the local of the frame before.
-    fn bodied(local: f32, propagated: f32) -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Placings>();
-        app.add_systems(Update, (face_camera, count_placings).chain());
-        app.world_mut().spawn((
-            OrbitCamera {
-                eye: DVec3::ZERO,
-                rotation: Quat::IDENTITY,
-                ..default()
-            },
-            crate::systems::tests::seeing(),
-            GlobalTransform::default(),
-        ));
-
-        // No [`System`], which is what sends a name down the branch that reads
-        // a body rather than the one that reads the system it hangs off.
-        let body = app
-            .world_mut()
-            .spawn((
-                Transform::from_scale(Vec3::splat(local)),
-                GlobalTransform::from(
-                    Transform::from_translation(Vec3::new(0., 0., -1e9))
-                        .with_scale(Vec3::splat(propagated)),
-                ),
-                Indicator::default(),
-            ))
-            .id();
-        let label = app.world_mut().spawn((Label, Transform::default())).id();
-        app.world_mut().entity_mut(body).add_child(label);
-        app
-    }
-
-    /// The scale of the name hung off the one body in the world
-    fn plate_scale(app: &mut App) -> f32 {
-        let mut labels =
-            app.world_mut().query_filtered::<&Transform, With<Label>>();
-        labels.iter(app.world()).next().expect("a name").scale.x
-    }
-
-    /// A world holding a camera and a system with one body inside it
-    ///
-    /// The body sits `out` metres from its system along the axis the camera
-    /// looks down, and carries a `GlobalTransform` saying it is somewhere
-    /// else. That disagreement is what a frame of the real map looks like:
-    /// `big_space` writes the global during `PostUpdate`, so the one standing
-    /// in `Update` says where the body was rather than where it is.
-    fn inside_a_system(out: f64, global: f32) -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Placings>();
-        app.add_systems(Update, (face_camera, count_placings).chain());
-        app.world_mut().spawn((
-            OrbitCamera {
-                eye: DVec3::ZERO,
-                rotation: Quat::IDENTITY,
-                ..default()
-            },
-            crate::systems::tests::seeing(),
-            GlobalTransform::default(),
-        ));
-
-        // Down the axis the camera looks along, five light years off.
-        let mut standing = crate::systems::tests::system(1);
-        standing.position = [0., 0., -5.];
-        let grid = crate::space::system_grid();
-        let (cell, offset) = grid.translation_to_grid(DVec3::new(0., 0., -out));
-        let system = app
-            .world_mut()
-            .spawn((
-                standing,
-                crate::space::system_grid(),
-                Indicator::default(),
-            ))
-            .id();
-
-        let body = app
-            .world_mut()
-            .spawn((
-                crate::systems::bodies::spawn::Body {
-                    address: 1,
-                    name: "Test 1".into(),
-                    id: 1,
-                    class: String::new(),
-                    radius: 1e6,
-                    ancestors: 0,
-                    primary: true,
-                    star: true,
-                },
-                cell,
-                Transform::from_translation(offset),
-                GlobalTransform::from(Transform::from_translation(Vec3::new(
-                    0., 0., global,
-                ))),
-                Indicator::default(),
-            ))
-            .id();
-        app.world_mut().entity_mut(system).add_child(body);
-
-        let label = app.world_mut().spawn((Label, Transform::default())).id();
-        app.world_mut().entity_mut(body).add_child(label);
-        app
-    }
-
-    /// A body's name is sized by where the body stands, not by where it stood
-    ///
-    /// The name is measured to the body out in the galaxy, read from the grid
-    /// holding it, as a system's name is measured to its system. Read off the
-    /// `GlobalTransform` instead it is a frame behind, and a zoom covers near
-    /// a quarter of the distance it has left every frame, so through one every
-    /// name inside a system is sized against a view the camera has left.
-    #[test]
-    fn a_bodys_name_is_sized_by_where_the_body_stands() {
-        // Two worlds alike but for the stale transform, which is the only
-        // thing a name may not be sized by.
-        let mut here = inside_a_system(1e12, -1e6);
-        let mut elsewhere = inside_a_system(1e12, -1e9);
-        here.update();
-        elsewhere.update();
-
-        assert_eq!(
-            plate_scale(&mut here),
-            plate_scale(&mut elsewhere),
-            "a name was sized by the transform `big_space` left behind"
-        );
-    }
-
-    /// A body's name is divided by the scale that will be applied to it
-    ///
-    /// A name is a child of what it names, so what propagation multiplies its
-    /// scale by is the body's own `Transform`. Divided by the
-    /// `GlobalTransform` instead the two are a propagation apart, and the name
-    /// is drawn at the ratio between them.
-    ///
-    /// Read as the size the name comes to once the body's scale is put back:
-    /// whatever the body is drawn at, a name is the same height on screen, and
-    /// that is the whole of what the division is for.
-    #[test]
-    fn a_bodys_name_is_divided_by_the_scale_it_will_be_multiplied_by() {
-        // A body whose drawn size moved between the two, which is every body
-        // under a pixel across through a zoom.
-        let mut app = bodied(2., 3.);
-        app.update();
-
-        let drawn = plate_scale(&mut app) * 2.;
-
-        // And the same body with the two agreeing, which is what a camera
-        // holding still leaves behind.
-        let mut still = bodied(2., 2.);
-        still.update();
-        let held = plate_scale(&mut still) * 2.;
-
-        assert_eq!(
-            drawn, held,
-            "a name was sized against a scale the body had already left"
-        );
-    }
-
-    /// A frame that moves nothing leaves a name where it stands
-    ///
-    /// A plate carries a mesh, so a transform written regardless hands every
-    /// name on screen back to the renderer every frame.
-    #[test]
-    fn a_resting_frame_leaves_a_name_where_it_stands() {
-        let mut app = facing();
-
-        // The name arriving is a change of its own, and the frame after it is
-        // the first that could be said to be resting.
-        app.update();
-        app.update();
-        let settled = placings(&app);
-
-        app.update();
-        assert_eq!(placings(&app), settled, "placed a name that had not moved");
-    }
-
-    /// And a camera that has moved still turns it
-    ///
-    /// Which is the whole of what this does: a name is offset along the
-    /// camera's own axes and sized by how far into the view it lies, so both
-    /// answers move the moment the camera does.
-    #[test]
-    fn a_name_is_placed_again_when_the_camera_moves() {
-        let mut app = facing();
-        app.update();
-        app.update();
-        let settled = placings(&app);
-
-        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
-        cameras.single_mut(app.world_mut()).unwrap().eye =
-            DVec3::new(0., 0., -2.);
-        app.update();
-
-        assert!(placings(&app) > settled, "left a name where it was standing");
     }
 
     /// A 1080p screen, which is what the figures in the plan are quoted at
