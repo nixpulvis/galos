@@ -29,6 +29,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(roundness::plugin);
     app.add_plugins(bodies::plugin);
     app.add_plugins(spawn::plugin);
+    app.add_plugins(field::plugin);
     app.add_plugins(despawn::plugin);
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
@@ -203,6 +204,7 @@ pub mod bodies;
 pub mod bounded;
 pub mod despawn;
 pub mod fetch;
+pub mod field;
 pub mod filter;
 pub mod info;
 pub mod labels;

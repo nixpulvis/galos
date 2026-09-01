@@ -413,7 +413,7 @@ impl Hue {
     /// over it, and the grey a system with nothing on record comes out is
     /// fainter than the rest so that an unknown system does not read as a
     /// finding.
-    const fn color(self) -> Color {
+    pub(crate) const fn color(self) -> Color {
         match self {
             Hue::Green => Color::srgba(0., 1., 0., 0.4),
             Hue::Cyan => Color::srgba(0., 1., 1., 0.4),
@@ -1401,7 +1401,7 @@ fn star(
 }
 
 /// Which color a star is drawn in
-fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
+pub(crate) fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     match color_by.deref() {
         ColorBy::Allegiance => allegiance_hue(system),
         ColorBy::Government => government_hue(system),
@@ -1409,7 +1409,7 @@ fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     }
 }
 
-fn init_materials(
+pub(crate) fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
