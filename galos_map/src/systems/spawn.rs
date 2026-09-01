@@ -76,13 +76,11 @@ pub fn plugin(app: &mut App) {
             .ambiguous_with(photometry)
             .run_if(resource_equals(View::Map)),
     );
-    app.add_systems(
-        Update,
-        photometry
-            .in_set(MapSet::Present)
-            .ambiguous_with(shells)
-            .run_if(resource_equals(View::Realistic)),
-    );
+    // `photometry` once moved a shell onto the eye's bloomed layer so it drew
+    // as a glint; the realistic view now draws through the flat field like the
+    // map does, on its own bloomed camera, so nothing routes shells to layer
+    // zero any more. The shell mesh is left where it spawned, unshown; see
+    // [`crate::systems::field`].
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -218,7 +216,7 @@ const GAMMA: f64 = 0.4;
 const BRIGHT: f32 = 8.;
 
 /// Which brightness step an apparent magnitude falls on, clamped to the range
-fn mag_step(apparent: f64) -> usize {
+pub(crate) fn mag_step(apparent: f64) -> usize {
     let f = (apparent - MAG_HI) / (MAG_LO - MAG_HI);
     (f.clamp(0., 1.) * MAG_STEPS as f64).round() as usize
 }
@@ -276,7 +274,11 @@ impl StarExposure {
 /// [`reexpose`] cannot bake it two ways. The tint is the bucket's blackbody
 /// colour; the strength is the step's flux compressed by [`GAMMA`], lifted by
 /// [`BRIGHT`] and the exposure, so a bright star's core outshines a faint one's.
-fn photometric_emissive(bucket: usize, step: usize, factor: f32) -> LinearRgba {
+pub(crate) fn photometric_emissive(
+    bucket: usize,
+    step: usize,
+    factor: f32,
+) -> LinearRgba {
     let tint = Temperature(bucket_temperature(bucket)).color();
     let mag = MAG_HI + (step as f64 / MAG_STEPS as f64) * (MAG_LO - MAG_HI);
     let level = BRIGHT * Magnitude(mag).flux().0.powf(GAMMA) as f32 * factor;
