@@ -281,7 +281,7 @@ pub fn size_by_distance(
     camera: Query<(&OrbitCamera, &Camera)>,
     roundness: Res<Roundness>,
     mut shells: Query<
-        (&mut Transform, &System, &mut Mesh3d, &ViewVisibility),
+        (&mut Transform, &System, &mut Mesh3d, &Visibility),
         With<Shell>,
     >,
 ) {
@@ -293,10 +293,10 @@ pub fn size_by_distance(
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
         for (mut drawn, system, mut mesh, visible) in shells.iter_mut() {
-            // Off the frame a shell is not drawn, so the size it would draw at
+            // Out of the spyglass is not drawn, so the size it would draw at
             // is not worked out. Its scale is left where it last stood, which
             // is close enough for the frame it comes back on.
-            if !visible.get() {
+            if *visible == Visibility::Hidden {
                 continue;
             }
             let away = crate::space::metres(eye - DVec3::from(system.position))
@@ -492,7 +492,7 @@ pub(crate) fn size_photometrically(
     exposure: Res<StarExposure>,
     sprite: Res<StarSprite>,
     mut shells: Query<
-        (&mut Transform, &System, &mut Mesh3d, &ViewVisibility),
+        (&mut Transform, &System, &mut Mesh3d, &Visibility),
         (With<Shell>, Without<Grid>),
     >,
 ) {
@@ -509,7 +509,7 @@ pub(crate) fn size_photometrically(
     // itself rotated, so its local frame is the world's.
     let facing = orbit.rotation;
     for (mut drawn, system, mut mesh, visible) in shells.iter_mut() {
-        if !visible.get() {
+        if *visible == Visibility::Hidden {
             continue;
         }
         let apparent = Magnitude(system.absolute_magnitude()).apparent(
@@ -1065,7 +1065,7 @@ mod tests {
             Shell,
             Transform::default(),
             Mesh3d::default(),
-            ViewVisibility::VISIBLE,
+            Visibility::Visible,
         ));
     }
 
