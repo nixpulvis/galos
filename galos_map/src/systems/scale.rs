@@ -58,12 +58,16 @@ pub fn plugin(app: &mut App) {
     // does. What it writes is read by the next frame's propagation, which is
     // a frame behind and nowhere near enough movement to see.
     app.add_systems(PostUpdate, size_inside.after(TransformSystems::Propagate));
-    // Draws every shell the map stands in for on a plane the camera carries,
-    // rather than at the galaxy coordinate where the f32 clip transform tears
-    // its mesh apart. In `Last`, after `big_space` has settled every transform
-    // and the visibility it reads has been worked out, so what it writes is
-    // what the renderer takes.
-    app.add_systems(Last, pull_stars);
+    // Pulls each shell the realistic view still draws in to a plane near the
+    // camera, off the galaxy coordinate where the f32 clip transform tears its
+    // mesh apart. In `Last`, after `big_space` has settled every transform and
+    // the visibility it reads is worked out, so what it writes is what the
+    // renderer takes. The map view draws its marks flat instead; see
+    // [`crate::systems::field`].
+    app.add_systems(
+        Last,
+        pull_stars.run_if(resource_equals(View::Realistic)),
+    );
 }
 
 #[derive(Resource, Debug, PartialEq)]

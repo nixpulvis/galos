@@ -553,6 +553,18 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
 /// neighbours. The bodies are left to carry the glow.
 pub const SHELLS_LAYER: usize = 1;
 
+/// The render layer the flat star field is drawn on
+///
+/// Its own, drawn by [`crate::systems::field`]'s camera at the world origin.
+/// It draws at the same order the shells' camera does; the two never draw at
+/// once, the view choosing between them.
+pub(crate) const FIELD_LAYER: usize = 5;
+
+/// A marker for the shells' camera, so the field can turn it off in the view
+/// the field itself draws
+#[derive(Component)]
+pub(crate) struct ShellsView;
+
 /// A camera drawing the system shells, over the galaxy and without bloom
 ///
 /// The shells stand in for systems too far to resolve, and from a wide view
@@ -587,6 +599,7 @@ fn shells_view() -> impl Bundle {
             ..default()
         },
         RenderLayers::layer(SHELLS_LAYER),
+        ShellsView,
     )
 }
 
