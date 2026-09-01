@@ -84,7 +84,8 @@ fn spawn_field(
 ) {
     // A degenerate mesh to begin with; `build_field` swaps in a fresh one
     // holding the frame's stars each frame.
-    let mesh = meshes.add(field_mesh(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+    let mesh =
+        meshes.add(field_mesh(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
     // White base, so the per-vertex colour is the whole of what a mark comes
     // out. Both are points a pixel or two across — too small to carry the
     // point-spread texture, which at that size samples its own faint edge and
@@ -305,8 +306,10 @@ fn field_mesh(
         colors = vec![[0., 0., 0., 0.]; 3];
         indices = vec![0, 1, 2];
     }
-    let mut mesh =
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);

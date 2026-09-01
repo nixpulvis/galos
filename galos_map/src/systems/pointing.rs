@@ -452,7 +452,7 @@ pub(super) fn point_at(
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
     mut systems: Query<
-        (&System, &Transform, &ViewVisibility, &Strength, &mut Indicator),
+        (&System, &Transform, &Visibility, &Strength, &mut Indicator),
         With<Shell>,
     >,
 ) {
@@ -466,7 +466,7 @@ pub fn size_indicators(
         // system is no easier to hit than an absent one. A hidden system reads
         // as off the frame here, its inherited visibility being what culling
         // asks first.
-        if !view.get() {
+        if *view == Visibility::Hidden {
             if indicator.0 != INDICATOR_MIN_RADIUS {
                 indicator.0 = INDICATOR_MIN_RADIUS;
             }
@@ -631,7 +631,7 @@ fn hits(
         &OrbitCamera,
         &GlobalTransform,
     )>,
-    systems: Query<(Entity, &System, &Indicator, &ViewVisibility)>,
+    systems: Query<(Entity, &System, &Indicator, &Visibility)>,
     bodies: Query<(Entity, &GlobalTransform, &Indicator, &ViewVisibility)>,
     labels: Query<(Entity, &ChildOf, &PlateText), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
@@ -679,7 +679,7 @@ fn hits(
             // What is not drawn is not there to be pointed at. The spyglass
             // hides a system by writing its visibility, and one hidden is one
             // the user has said they are not looking at.
-            if !drawn.get() {
+            if *drawn == Visibility::Hidden {
                 continue;
             }
             let position = DVec3::from(system.position);
@@ -1602,7 +1602,7 @@ mod tests {
             Indicator::default(),
             Transform::from_scale(Vec3::splat(wide)),
             Strength::default(),
-            ViewVisibility::VISIBLE,
+            Visibility::Visible,
         ));
         app
     }
