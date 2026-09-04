@@ -83,6 +83,18 @@ const INDICATOR_MARGIN: f32 = 1.5;
 /// same size to the hand at every zoom.
 const INDICATOR_MIN_RADIUS: f32 = 9.5;
 
+/// The largest an indicator may be, as a radius in logical pixels
+///
+/// A ring is a mark around a system, not a halo over it. Left uncapped it is
+/// [`INDICATOR_MARGIN`] times the shell behind it, and that shell has no fixed
+/// size on screen: a bare system held at [`crate::camera`]'s zoom floor is
+/// drawn at its whole stand-in extent, and a bright star's point spread swells
+/// the same way, either of which would circle half the view. So the ring is
+/// held to a small fixed margin however large the shell grows — a touch above
+/// the floor, enough that a mark just short of being flown into still reads as
+/// ringed, and no more.
+const INDICATOR_MAX_RADIUS: f32 = 14.;
+
 /// The smallest a body's mark may be, as a radius in logical pixels
 ///
 /// Smaller than [`INDICATOR_MIN_RADIUS`], and for the opposite reason. A
@@ -441,9 +453,11 @@ pub(super) fn point_at(
 /// come apart.
 ///
 /// A shell is drawn in metres and holds a size that changes with the camera,
-/// so it is measured into pixels here and the larger of that and the floor
-/// wins. Where the shell is too small to aim at, which is nearly everywhere,
-/// the floor is the whole of the answer.
+/// so it is measured into pixels here and held between a floor and a ceiling
+/// (see [`system_mark`]). Where the shell is too small to aim at, which is
+/// nearly everywhere, the floor is the whole of the answer; where it has
+/// swelled toward being flown into, or a bright star's point spread has run
+/// away with it, the ceiling holds the ring to a mark rather than a halo.
 ///
 /// A shell that is not drawn is not measured: a mark taken from a sphere
 /// nobody can see would put the whole viewport up as one system's target.
@@ -477,16 +491,27 @@ pub fn size_indicators(
         // What the floor is for is the sign rather than the distance.
         let into_view = depth(orbit, DVec3::from(system.position)).max(1.);
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
-        let shell = drawn * INDICATOR_MARGIN / per_pixel;
-
         // Only where it moved, as everything asked of every system every frame
         // is. Nothing watches a mark for changes today, and writing one
         // regardless is how that stops being safe without anyone meaning it to.
-        let wanted = shell.max(INDICATOR_MIN_RADIUS);
+        let wanted = system_mark(drawn, per_pixel);
         if indicator.0 != wanted {
             indicator.0 = wanted;
         }
     }
+}
+
+/// How large a system's mark is, where its shell is `drawn` metres across and a
+/// pixel covers `per_pixel`
+///
+/// The shell measured into pixels and stood off by [`INDICATOR_MARGIN`], then
+/// held between [`INDICATOR_MIN_RADIUS`] and [`INDICATOR_MAX_RADIUS`]. The floor
+/// keeps a system too small to aim at aimable; the ceiling keeps one drawn large
+/// — a bare system at the zoom floor, or a bright star's point spread — from
+/// wearing a ring that circles the view rather than the star.
+fn system_mark(drawn: f32, per_pixel: f32) -> f32 {
+    let shell = drawn * INDICATOR_MARGIN / per_pixel.max(f32::MIN_POSITIVE);
+    shell.clamp(INDICATOR_MIN_RADIUS, INDICATOR_MAX_RADIUS)
 }
 
 /// Work out how large each body's mark is, in pixels
@@ -1193,6 +1218,20 @@ mod tests {
         assert!(BODY_MIN_RADIUS < INDICATOR_MIN_RADIUS);
     }
 
+    /// A system's ring holds a small margin however large its shell grows
+    ///
+    /// The reported trouble: a bare system at the zoom floor, and a bright
+    /// star's point spread, drew a shell large enough that a ring
+    /// [`INDICATOR_MARGIN`] times it circled the view. The floor keeps a mark
+    /// aimable and the ceiling keeps it a mark, whatever the shell does between.
+    #[test]
+    fn a_system_ring_never_becomes_a_halo() {
+        assert_eq!(system_mark(0., 1.), INDICATOR_MIN_RADIUS);
+        assert_eq!(system_mark(1e12, 1.), INDICATOR_MAX_RADIUS);
+        // In between, the shell is stood off by the margin and passed through.
+        assert_eq!(system_mark(8., 1.), 8. * INDICATOR_MARGIN);
+    }
+
     /// A world holding one system and one body, both under the pointer
     ///
     /// The body deeper than the system, so that anything preferring the
@@ -1465,11 +1504,12 @@ mod tests {
 
     /// A world holding a camera and a system with a shell drawn around it
     ///
-    /// The shell is a tenth of a light year across, which is far wider than
-    /// one is really drawn. Anything smaller marks at [`INDICATOR_MIN_RADIUS`]
-    /// from five light years off, and a floor is the same number wherever the
-    /// camera stands, so a shell that reaches over it is what leaves the mark
-    /// with anything to say.
+    /// The shell is sized so its ring lands in the responsive band — over
+    /// [`INDICATOR_MIN_RADIUS`] and under [`INDICATOR_MAX_RADIUS`] — once the
+    /// camera has come in, and at the floor when it stands off. A ring pinned at
+    /// either bound says nothing about where the camera is, so a shell that
+    /// lifts off the floor as the camera nears is what leaves the mark with
+    /// anything to say.
     fn sized() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
@@ -1481,7 +1521,7 @@ mod tests {
         // far into the view its system lies rather than by how far off it is.
         let mut standing = crate::systems::tests::system(1);
         standing.position = [0., 0., -5.];
-        let wide = (0.1 * crate::space::LIGHT_YEAR) as f32;
+        let wide = (0.034 * crate::space::LIGHT_YEAR) as f32;
         app.world_mut().spawn((
             standing,
             Shell,

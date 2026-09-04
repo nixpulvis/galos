@@ -145,21 +145,32 @@ const BODY_CLEARANCE: f32 = 1.1;
 /// light years
 ///
 /// Everything inside a system is drawn on that system's own metre-fine grid,
-/// which the camera descends onto once the system is near and its contents
-/// are in hand (see [`crate::systems::bodies::spawn::draw`]). A system with
-/// nothing recorded in it never gains that grid, so its mark stays out on the
-/// galaxy grid, whose cells are a shade under a light year
-/// ([`crate::space`]'s `GALAXY_CELL_EDGE`) and inside which an `f32` has some
-/// five hundred thousand kilometres between the numbers it can hold. Pulled
-/// nearer than this the mark and its name quantise to that step and jitter as
-/// the camera moves; held here, the step is a fraction of a pixel across an
-/// ordinary view and the mark stands still.
+/// which the camera descends onto once the system is near and its contents are
+/// in hand (see [`crate::systems::bodies::spawn::draw`]). A system with nothing
+/// recorded in it never gains that grid, so it stays a mark out on the galaxy
+/// grid — and up close that mark is not a crisp dot. It is drawn at the
+/// system's [`crate::systems::bodies::STAND_IN`] extent, which
+/// [`crate::systems::scale`]'s `shell` swells from a mark into a whole ball
+/// once it subtends more than [`crate::systems::bodies::spawn::WORTH_SIZING`].
+/// For a real system that is the moment the map descends into it and draws its
+/// bodies instead; a bare one has nothing to descend into, so left to zoom it
+/// would fill the view with a blurry sphere the camera cannot get past, its
+/// bloomed edge spreading across the screen.
+///
+/// So the camera is held where the mark is still a mark: `STAND_IN` over
+/// `WORTH_SIZING`, the distance at which the stand-in extent just begins to
+/// count. About a twenty-fifth of a light year, far short of where a real
+/// system would already have been descended into, and far past the coarse
+/// galaxy-grid step that once set the mark jittering here — so it clears that
+/// older trouble along the way.
 ///
 /// This holds only a system with nothing to descend into. One the map could
 /// descend into is loaded well before it is reached and let through by
 /// [`zoom_floor`] on that account, so the floor never keeps a system the map
 /// could draw from being drawn.
-const SUBGRIDLESS_FLOOR: f32 = 5e-4;
+const SUBGRIDLESS_FLOOR: f32 = crate::systems::bodies::STAND_IN
+    / (crate::systems::bodies::spawn::WORTH_SIZING
+        * crate::space::LIGHT_YEAR as f32);
 
 /// How near the near plane sits, as a fraction of the orbit radius
 ///
@@ -1298,12 +1309,30 @@ mod tests {
 
     /// A system with nothing to descend into holds the camera off
     ///
-    /// Its mark never leaves the galaxy grid, whose coarse step sets the mark
-    /// jittering up close, so the zoom is stopped short of that.
+    /// Its mark would swell from a dot into a blurry ball as the camera came
+    /// in, with no descent to take over, so the zoom is stopped short of that.
     #[test]
     fn a_bare_system_holds_the_camera_off() {
         assert!(SUBGRIDLESS_FLOOR > MIN_RADIUS, "the floor is no floor");
         assert_eq!(zoom_floor(None, false), SUBGRIDLESS_FLOOR);
+    }
+
+    /// And it stops short of where the mark begins to swell
+    ///
+    /// A bare system is drawn at [`crate::systems::bodies::STAND_IN`], and
+    /// [`crate::systems::scale`]'s `shell` swells that from a crisp mark into
+    /// the system's whole extent once it subtends more than
+    /// [`crate::systems::bodies::spawn::WORTH_SIZING`]. Held at the floor the
+    /// mark stays under that, so it never blurs into a disc the camera cannot
+    /// get past.
+    #[test]
+    fn the_floor_keeps_a_bare_mark_from_swelling() {
+        let away = SUBGRIDLESS_FLOOR as f64 * crate::space::LIGHT_YEAR;
+        let seen = crate::systems::bodies::STAND_IN as f64 / away;
+        assert!(
+            seen <= crate::systems::bodies::spawn::WORTH_SIZING as f64,
+            "a bare mark subtends {seen} rad, past where it swells"
+        );
     }
 
     /// And a scroll cannot drive through that floor
