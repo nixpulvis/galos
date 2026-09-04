@@ -38,11 +38,11 @@ pub const CROSS: f32 = 11.;
 
 /// How tall a number standing over the plane draws, in logical pixels
 ///
-/// The line box, which for one line of text is the size the face is set at.
-/// The size the chrome's smallest lettering is set at: these are read at a
-/// glance off a map rather than pored over, and there are up to a dozen of
-/// them on screen at once.
-pub const READS: f32 = 8.;
+/// Set to the chrome's own smallest lettering — the size the names are drawn
+/// at — so a coordinate reads as easily as a system's name does. Read at a
+/// glance off a map rather than pored over, with up to a dozen on screen at
+/// once.
+pub const READS: f32 = 12.;
 
 /// How far below the mark the middle's numbers are hung, in pixels
 ///
@@ -245,8 +245,12 @@ struct Plumb {
 }
 
 /// Everything a located thing is asked for
-type Mark =
-    (Entity, &'static CellCoord, &'static Transform, &'static ViewVisibility);
+type Mark = (
+    Entity,
+    &'static CellCoord,
+    &'static Transform,
+    &'static InheritedVisibility,
+);
 
 /// Work out what each plane is worth marking, and where those places stand
 ///
@@ -276,8 +280,10 @@ pub(super) fn locate(
     )>,
     // Whether a thing is drawn as well as located. Something the caller has
     // hidden is not there to be located, and a line dropped from where it
-    // would have stood is a line about nothing. Settled in `PostUpdate`, so
-    // this is last frame's answer.
+    // would have stood is a line about nothing. `InheritedVisibility`, not
+    // `ViewVisibility`: a system carries no mesh of its own — its shell is a
+    // child — so nothing ever sets its `ViewVisibility` and gating on that
+    // dropped every system's line. Settled in `PostUpdate`, a frame stale.
     located: Query<Mark, With<Located>>,
     grids: Grids,
 ) {
@@ -324,11 +330,14 @@ pub(super) fn locate(
     }
 }
 
-/// The world size a readout's text mesh is built at
+/// The size a readout's glyphs are rasterised into the atlas at
 ///
-/// The line box, which whatever places it scales down to the height it wants
-/// it drawn at. Any figure does; this one keeps the scale near one.
-const SIZE: f32 = 64.;
+/// About twice [`READS`], so a glyph is baked at roughly the pixels it is
+/// drawn across and minified only about two to one on screen. Baked far larger
+/// — it was sixty-four — the atlas was shrunk eight to one down to [`READS`]
+/// and the strokes washed out to a grey smear, which a 2× scale factor had the
+/// pixels to hide and a 1× one did not. See `docs/night-sky.md`.
+const SIZE: f32 = 24.;
 
 /// The nearest a readout is sized against, in whatever the world is drawn in
 ///
@@ -531,8 +540,19 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
         let facing = eye.map(|(at, _)| at.rotation);
         let seen = eye.and_then(|(at, camera)| {
             let viewport = camera.logical_viewport_size()?;
-            let cot_half_fov = camera.clip_from_view().y_axis.y;
-            Some((at.translation, at.rotation, viewport, cot_half_fov))
+            let clip = camera.clip_from_view();
+            // `w_axis.z` is the near plane of the reversed-infinite projection,
+            // the same figure the shader reads. A readout is pulled to a few
+            // times it so its mesh is built near the origin rather than out at
+            // the plane's galaxy coordinate, where an f32 clip transform tears
+            // it (see `docs/night-sky.md`). `y_axis.y` is `1 / tan(fov_y / 2)`.
+            Some((
+                at.translation,
+                at.rotation,
+                viewport,
+                clip.y_axis.y,
+                clip.w_axis.z,
+            ))
         });
 
         // Every plane at once, though only one is normally drawn. Two rulings on
@@ -560,7 +580,7 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
         // Where the middle of the view is written, which everything else
         // stands clear of. Only the row that is drawn: a middle switched off or
         // faded out asks nothing of anybody.
-        let middle = seen.and_then(|(_, facing, viewport, cot_half_fov)| {
+        let middle = seen.and_then(|(_, facing, viewport, cot_half_fov, _)| {
             let (one, _) = says
                 .iter()
                 .zip(&inks)
@@ -592,7 +612,7 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
             // Nothing to say, or a plane so far faded where it would have stood
             // that saying it would be saying it about nothing.
             let ink = inks.get(nth).copied().unwrap_or(0.);
-            let Some((says, (eye, facing, viewport, cot_half_fov))) =
+            let Some((says, (eye, facing, viewport, cot_half_fov, near))) =
                 says.get(nth).zip(seen).filter(|_| ink > 0.)
             else {
                 visible.set_if_neq(Visibility::Hidden);
@@ -624,18 +644,26 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
 
             let per_pixel =
                 world_per_pixel(cot_half_fov, viewport.y, depth.max(MIN_DEPTH));
-            // In the world, from the eye, which is where the readout is about.
-            // The floating origin's own transform is its place in the frame
-            // everything is drawn in, so this is a world position and not an
-            // offset from one.
-            place.translation =
-                eye + says.from_eye.as_vec3() + says.hung * per_pixel;
+            // The offset from the eye to where the readout stands at its true
+            // depth, then pulled in along that same ray to a few times the near
+            // plane. The mesh is built there, close to the origin where the f32
+            // clip transform holds, rather than out at the plane's galaxy
+            // coordinate where it tears. The ray is unchanged, so the screen
+            // position does not move and the row goes on tracking the grid the
+            // GPU draws; the size is kept by measuring the pixel at the depth it
+            // is pulled to. See `docs/night-sky.md` and `super::super::scale`.
+            let off = says.from_eye + (says.hung * per_pixel).as_dvec3();
+            let pulled = (near * 3.).max(MIN_DEPTH);
+            let scale = pulled / into_view(facing, off).max(MIN_DEPTH);
+            place.translation = eye + (off * scale as f64).as_vec3();
             // Facing the camera, a row of text read edge on being no row at
             // all.
             place.rotation = facing;
             // The line box is exactly `SIZE` tall, so this is the height the row
             // draws at, in pixels, whatever the camera is doing.
-            place.scale = Vec3::splat(READS * per_pixel / SIZE);
+            place.scale = Vec3::splat(
+                READS * world_per_pixel(cot_half_fov, viewport.y, pulled) / SIZE,
+            );
 
             // Both of these are read before they are written, so that a readout
             // saying what it said last frame does not have its mesh rebuilt for
@@ -648,7 +676,11 @@ pub(super) fn readouts(face: Face) -> impl FnMut(Standing) {
             }
 
             if let Some(mut painted) = materials.get_mut(&painted.0) {
-                painted.base_color = says.hue.with_alpha(ink);
+                // Twice the ink the ruling paints its own numbers in: a readout
+                // stands over the lines to be read outright, not glanced at as
+                // part of the weave, so it wants the contrast the faint plane
+                // colour alone does not give it.
+                painted.base_color = says.hue.with_alpha((ink * 2.).min(1.));
             }
         }
     }
@@ -717,10 +749,12 @@ fn lettered(text: &Text3d) -> Option<&str> {
 /// them in the same pass as the plane, so a line dropped to the ruling is drawn
 /// exactly as the ruling's own lines are.
 ///
-/// [`RulerMarks`] is what keeps that true. The map's other gizmos, the rings
-/// and the leaders, were moved onto the overlay to be drawn over the galaxy
-/// with the names, and these belong in it: a line dropped to a plane that is
-/// itself in the scene has to be occluded by whatever the plane is.
+/// [`RulerMarks`] keeps them a group of their own, apart from the annotation
+/// gizmos that moved onto the overlay. Like the readout meshes, each cross and
+/// dropped line is pulled in to near the camera before it is drawn, so its
+/// gizmo is built where an f32 clip transform still holds rather than out at
+/// the plane's galaxy coordinate where it tears. See [`readouts`] and
+/// `docs/night-sky.md`.
 pub(super) fn marks(
     planes: Query<(&Plane, &Reading, &Plumbs)>,
     eyes: Query<(&Transform, &Camera), With<FloatingOrigin>>,
@@ -728,51 +762,49 @@ pub(super) fn marks(
 ) {
     let Ok((at, camera)) = eyes.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
-    let cot_half_fov = camera.clip_from_view().y_axis.y;
+    let clip = camera.clip_from_view();
+    let cot_half_fov = clip.y_axis.y;
     let facing = at.rotation;
     let eye = at.translation;
+    // A place is pulled in along its own ray to a few times the near plane and
+    // drawn there, so the gizmo is built near the origin. The ray is unchanged,
+    // so where it lands on screen is kept; the arm is measured at the depth it
+    // is pulled to. `clip.w_axis.z` is the near plane of the reversed-infinite
+    // projection, the same figure the readouts pull to.
+    let pulled = (clip.w_axis.z * 3.).max(MIN_DEPTH);
+    let arm = CROSS * world_per_pixel(cot_half_fov, viewport.y, pulled);
+    let pull = |from_eye: DVec3| {
+        let d = into_view(facing, from_eye).max(MIN_DEPTH);
+        eye + (from_eye * (pulled / d) as f64).as_vec3()
+    };
 
     for (plane, reading, plumbs) in &planes {
         if reading.strength <= 0. {
             continue;
         }
         let hue = plane.color;
-        // Where a place on the plane is in the world, how long an arm of its
-        // cross comes to there, and what the two are drawn in.
-        let scratched = |from_eye: DVec3, ink: f32| {
-            let depth = into_view(facing, from_eye).max(MIN_DEPTH);
-            (
-                eye + from_eye.as_vec3(),
-                CROSS * world_per_pixel(cot_half_fov, viewport.y, depth),
-                hue.with_alpha(drawn_at(
-                    ink * reading.strength,
-                    reading.bright,
-                )),
-            )
+        // What a cross or a line at a given strength is drawn in.
+        let ink = |ink: f32| {
+            hue.with_alpha(drawn_at(ink * reading.strength, reading.bright))
         };
 
         if reading.middle {
             let middle = reading.middle_from_eye(plane.facing);
             let left = faded(middle, plane.reach);
-            let (at, arm, color) = scratched(middle, INK * left);
-            cross(&mut gizmos, at, plane.facing, arm, color);
+            cross(&mut gizmos, pull(middle), plane.facing, arm, ink(INK * left));
         }
 
         for plumb in &plumbs.0 {
+            // The fade is by the true distance to the horizon, not the pulled
+            // one, so a mark goes out with the plane it stands on.
             let left = faded(plumb.foot, plane.reach);
-            let (foot, arm, color) = scratched(plumb.foot, INK * left);
-            cross(&mut gizmos, foot, plane.facing, arm, color);
-            // The line at the ink the ruling's widest lines are drawn in, so
-            // that it reads as one of the plane's rather than as something
-            // laid over it.
-            gizmos.line(
-                eye + plumb.top.as_vec3(),
-                foot,
-                hue.with_alpha(drawn_at(
-                    MAJOR * reading.strength * left,
-                    reading.bright,
-                )),
-            );
+            let foot = pull(plumb.foot);
+            cross(&mut gizmos, foot, plane.facing, arm, ink(INK * left));
+            // At the ink the ruling's widest lines are drawn in, so it reads as
+            // one of the plane's rather than as something laid over it. Both
+            // ends pulled in, so the line keeps its place on screen while its
+            // gizmo is built near the origin.
+            gizmos.line(pull(plumb.top), foot, ink(MAJOR * left));
         }
     }
 }

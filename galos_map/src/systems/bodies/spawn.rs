@@ -49,7 +49,6 @@ use crate::systems::roundness::Roundness;
 use crate::systems::route::{LineList, LineStrip};
 use crate::systems::selection::Selection;
 use crate::systems::spawn::Shell;
-use bevy::camera::visibility::ViewVisibility;
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -282,7 +281,7 @@ fn fade(
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     holding: Res<HeldSystem>,
-    mut systems: Query<(Entity, &System, &ViewVisibility, &mut Strength)>,
+    mut systems: Query<(Entity, &System, &Visibility, &mut Strength)>,
 ) {
     let Ok(eye) = camera.single().map(|camera| camera.eye) else { return };
     let drawing = holding.of();
@@ -294,7 +293,7 @@ fn fade(
         // handover rides (see [`crate::grid`]). It is stepped even when a filter
         // has hidden it, or the plane ruled inside it would never give way back
         // to the galaxy on the way up.
-        if !visible.get() && Some(entity) != drawing {
+        if *visible == Visibility::Hidden && Some(entity) != drawing {
             continue;
         }
         // Only the one system whose insides the map is holding may give way to
@@ -1672,7 +1671,7 @@ mod tests {
             .world_mut()
             .spawn((
                 crate::systems::tests::reaching(1, 0., 1.5e12),
-                ViewVisibility::VISIBLE,
+                Visibility::Visible,
             ))
             .id();
         // Held, since a mark only goes out where the map is drawing what it

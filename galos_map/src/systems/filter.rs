@@ -862,7 +862,8 @@ impl DimTo {
     /// into something else.
     ///
     /// For what is painted straight rather than through a material: the two
-    /// rings are gizmos, and a gizmo takes its color at the call.
+    /// rings are painted flat in screen space with egui, taking their colour
+    /// at the call rather than reading it off a shell's fading handle.
     pub fn as_drawn(&self, color: Srgba, filtered: bool) -> Srgba {
         if filtered {
             Srgba { alpha: color.alpha * self.opacity(), ..color }

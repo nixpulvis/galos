@@ -34,16 +34,16 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
-use crate::systems::labels::{screen_position, world_per_pixel};
+use crate::systems::labels::{color32, screen_position};
 use crate::systems::pointing::{
-    DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_POINTS,
-    overlay_plane,
+    DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_STROKE,
 };
 use crate::ui::Gesture;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Selection>();
@@ -57,9 +57,14 @@ pub fn plugin(app: &mut App) {
             .in_set(MapSet::Present)
             .after(super::pointing::point_at),
     );
-    // Reads where a star ended up rather than deciding it, so it waits for
-    // the transforms to be worked out, as `pointing::ring` does.
-    app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
+    // Painted flat in screen space with egui, in the same pass the names are,
+    // so the ring holds its shape at galaxy coordinates where a mesh tears.
+    // Before the names so its layer sits beneath their grounds, as the ring
+    // camera sat beneath the grounds' before. See [`super::labels::draw_names`].
+    app.add_systems(
+        EguiPrimaryContextPass,
+        ring.before(super::labels::draw_names),
+    );
 }
 
 /// The color everything about the selection is drawn in
@@ -536,7 +541,7 @@ fn clear_when_nothing_is_clicked(
 /// standing in for something too small to see, and a ring left around a system
 /// the camera is standing inside is a ring around the view.
 fn ring(
-    mut gizmos: Gizmos,
+    mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
     holding: Res<HeldSystem>,
     selected: Query<
@@ -544,72 +549,73 @@ fn ring(
             &System,
             &Strength,
             &Indicator,
+            &Visibility,
             Has<Filtered>,
             Has<crate::systems::route::Hop>,
         ),
         With<Selected>,
     >,
-    // Whatever inside a system is picked out, which carries neither a filter
-    // nor a galactic position of its own.
-    inside: Query<(&GlobalTransform, &Indicator), (With<Body>, With<Selected>)>,
-    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
+    // Whatever inside a system is picked out, read off the grid holding it the
+    // way its name is, so it carries neither a filter nor a galactic position
+    // of its own.
+    inside: Query<(Entity, &Indicator), (With<Body>, With<Selected>)>,
+    places: Places,
     dim: Res<DimTo>,
-) {
-    let Ok((orbit, camera)) = camera.single() else { return };
-    let Some(viewport) = camera.logical_viewport_size() else { return };
+) -> Result {
+    let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
+    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
-    let Ok(eye) = eye_at.single() else { return };
 
-    // A selected system is ringed where the camera can see it rather than out
-    // at its own ~1e17 m coordinate, where the ring's geometry tears in f32.
-    // Projected to the screen and drawn back onto the plane the camera carries,
-    // as [`super::pointing::ring`] draws the stops. See `docs/night-sky.md`.
-    let right = orbit.rotation * Vec3::X;
-    let up = orbit.rotation * Vec3::Y;
-    let ahead = orbit.rotation * Vec3::NEG_Z;
-    let depth = overlay_plane(orbit.radius);
-    let pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
-    let middle = eye.translation() + ahead * depth;
-    let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
+    // A selected system is ringed where it lands on screen rather than out at
+    // its own ~1e17 m coordinate, where a ring drawn as a mesh tears in the f32
+    // clip transform (see `docs/night-sky.md`). Painted flat with egui, in the
+    // same pass and the same way [`super::labels::draw_names`] paints the names
+    // and their leaders, so the mark and the name it belongs to are one thing.
+    let ctx = contexts.ctx_mut()?;
+    let painter = ctx.layer_painter(super::labels::annotations_layer());
+    let stroke = |color: Srgba| egui::Stroke::new(RING_STROKE, color32(color));
 
-    // Whatever inside a system is picked out, drawn where it stands: it is in
-    // here with the camera, at coordinates the floating origin keeps precise.
-    for (at, indicator) in &inside {
-        let offset = (at.translation() - eye.translation()).as_dvec3();
-        let radius = super::pointing::drawn_radius_of(
-            orbit,
-            cot_half_fov,
-            viewport,
-            offset,
+    // Whatever inside a system is picked out, read off the grid holding it, as
+    // its name is, so it is placed against the view it is drawn into.
+    for (entity, indicator) in &inside {
+        let Some(place) = places.of(entity) else { continue };
+        let Some(at) = screen_position(orbit, cot_half_fov, viewport, place)
+        else {
+            continue;
+        };
+        painter.circle_stroke(
+            egui::pos2(at.x, at.y),
             indicator.0,
+            stroke(SELECTION),
         );
-
-        gizmos
-            .circle(
-                Isometry3d::new(at.translation(), orbit.rotation),
-                radius,
-                SELECTION,
-            )
-            .resolution(RING_POINTS);
     }
 
-    for (system, mark, indicator, filtered, hop) in &selected {
+    for (system, mark, indicator, visibility, filtered, hop) in &selected {
         // A stop a route reaches is ringed by [`super::pointing::ring`], in
         // this same color, while the map is holding a system. Everything drawn
-        // for a stop then is drawn where the camera can see it, and a ring here
-        // would be out at the stop's true distance with the rest a jump nearer.
+        // for a stop then is drawn together there.
         if hop && holding.of().is_some() {
             continue;
         }
 
-        // The strength is zero for a system the map is not drawing, so a
-        // filtered-out or out-of-view selection rings nothing.
+        // A selection outlives the spyglass hiding its star — it is held
+        // through a zoom out and back — but its ring must not: a ring painted
+        // around a star the spyglass has taken off the map is a mark around
+        // empty sky. Gated as the name is in [`super::labels::choose_names`],
+        // so the ring, the name and the star agree on when a selection shows.
+        // The strength cannot answer this on its own: it stays whole for a
+        // system held out of reach, the fade being for the mark going out as
+        // the camera comes inside the system, not for the spyglass hiding it.
+        if *visibility == Visibility::Hidden {
+            continue;
+        }
+
         let standing = mark.0;
         if standing <= 0. {
             continue;
         }
 
-        let Some(on) = screen_position(
+        let Some(at) = screen_position(
             orbit,
             cot_half_fov,
             viewport,
@@ -618,14 +624,14 @@ fn ring(
             continue;
         };
 
-        gizmos
-            .circle(
-                Isometry3d::new(placed(on - viewport * 0.5), orbit.rotation),
-                indicator.0 * pixel,
-                going(ringed(&dim, filtered), standing),
-            )
-            .resolution(RING_POINTS);
+        painter.circle_stroke(
+            egui::pos2(at.x, at.y),
+            indicator.0,
+            stroke(going(ringed(&dim, filtered), standing)),
+        );
     }
+
+    Ok(())
 }
 
 /// `color` with `standing` of it left

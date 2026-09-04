@@ -2,8 +2,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
-use crate::systems::bodies::spawn::{Body, Places, Strength};
-use crate::systems::scale::View;
+use crate::systems::bodies::spawn::{Body, Places};
 use crate::systems::{
     Spyglass, System,
     fetch::FetchIndex,
@@ -65,22 +64,6 @@ pub fn plugin(app: &mut App) {
     // Rebakes the star texture when the profile changes; guarded inside, like
     // `reexpose`, so a resting frame does nothing.
     app.add_systems(Update, reprofile.in_set(MapSet::Populate));
-    // One view draws at a time, so these never run in the same frame; the
-    // scheduler cannot see that from the run conditions, so they are marked
-    // ambiguous as `scale`'s sizing pair is. `shells` also puts a star back on
-    // the shells' own layer after the realistic view moved it to the eye's.
-    app.add_systems(
-        Update,
-        shells
-            .in_set(MapSet::Present)
-            .ambiguous_with(photometry)
-            .run_if(resource_equals(View::Map)),
-    );
-    // `photometry` once moved a shell onto the eye's bloomed layer so it drew
-    // as a glint; the realistic view now draws through the flat field like the
-    // map does, on its own bloomed camera, so nothing routes shells to layer
-    // zero any more. The shell mesh is left where it spawned, unshown; see
-    // [`crate::systems::field`].
 
     app.add_observer(select_on_click);
     // Answers what is pointed at this frame, which `point_at` decides.
@@ -105,16 +88,6 @@ pub struct SystemMaterials {
     bright: Vec<Handle<StandardMaterial>>,
     /// The same colors, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
-    /// The same colors again, in every step of the fade a shell goes out
-    /// through
-    ///
-    /// Laid out as [`Hue::ALL`] by step, so a shell part way out follows its
-    /// own hue and its own strength to a handle and nothing has to be assigned
-    /// or repainted. Which is what lets two of them be part way at once: only
-    /// the held system's mark goes out, but the one just let go of is still
-    /// coming back while the next is going, and a single handle repainted per
-    /// frame would draw both at whichever strength was written last.
-    fading: Vec<Handle<StandardMaterial>>,
     /// A star drawn as itself: emissive, additive and blackbody-tinted, for the
     /// realistic view
     ///
@@ -139,17 +112,6 @@ impl SystemMaterials {
         &set[hue as usize]
     }
 
-    /// And the handle for `hue` at `strength` of the way out
-    ///
-    /// Stepped to [`FADE_STEPS`], the whole fade being painted once rather
-    /// than a handle repainted per shell per frame.
-    fn going(&self, hue: Hue, strength: f32) -> &Handle<StandardMaterial> {
-        let step =
-            (strength.clamp(0., 1.) * FADE_STEPS as f32).round() as usize;
-
-        &self.fading[hue as usize * (FADE_STEPS + 1) + step]
-    }
-
     /// The handle for a star in temperature bucket `bucket` at brightness step
     /// `step`.
     fn photometric(
@@ -161,16 +123,6 @@ impl SystemMaterials {
             + step.min(MAG_STEPS)]
     }
 }
-
-/// How many steps a shell is drawn going out in
-///
-/// The strength runs the emission, a shell being opaque now and its fill left
-/// where it is, and a mark does not always go out at the pace
-/// [`super::bodies::spawn::GOES_OUT_IN`] bounds: a camera coming in slowly
-/// leaves the distance in charge, and the fade can take seconds. So the steps
-/// are cut fine enough not to be seen at that pace either, under a percent of
-/// the strength apiece.
-const FADE_STEPS: usize = 128;
 
 /// How bright a shell's glow is emitted, at full strength
 ///
@@ -1181,7 +1133,7 @@ pub fn spawn_systems(
 ///
 /// A row fetched again is written over the one already there, and the
 /// position it carries is free to differ from the one it replaces. What a
-/// star is drawn *in* follows the row as well, and [`shells`] settles that.
+/// star is drawn *in* follows the row as well.
 fn update(
     systems_query: Query<(Entity, Ref<System>)>,
     galaxy: Res<Galaxy>,
@@ -1193,81 +1145,6 @@ fn update(
     for (entity, system) in &systems_query {
         if system.is_changed() {
             commands.entity(entity).insert(placement(&system, grid));
-        }
-    }
-}
-
-/// Decide how each shell is drawn, and whether it is drawn at all
-///
-/// Three things decide it and one of them has to write the material, so all
-/// three are settled here: the color scheme says which hue, the filters say
-/// how faintly, and how near the camera has come says how much of the shell is
-/// left at all.
-///
-/// A shell is a mark standing in for a system too small to see. It fades out
-/// as the camera closes and is gone by the time what is inside the system is
-/// drawn, which is what the camera came for. Past there the shell is a lit
-/// sphere around the camera, drawn from the galaxy's scale where a float has
-/// nothing left over at the size it is; and for a system that is one star and
-/// nothing else it sits all but exactly on that star's surface.
-///
-/// A shell on its way out points at a handle painted for that step of the fade,
-/// and every other shell at the shared handle for its hue. So a fade repaints
-/// nothing, and any number of shells may be fading at once.
-///
-/// Decided afresh each frame and written only where it differs, as
-/// [`super::labels::tint_marked_names`] is. A mark is applied by a command and
-/// so lands a frame after the filter that asked for it, which leaves nothing
-/// that both runs after the mark and can still see what changed.
-pub(super) fn shells(
-    color_by: Res<ColorBy>,
-    dim: Res<DimTo>,
-    materials: Res<SystemMaterials>,
-    mut shells: Query<
-        (
-            &System,
-            &Strength,
-            Has<Filtered>,
-            &mut MeshMaterial3d<StandardMaterial>,
-            &ViewVisibility,
-            &mut RenderLayers,
-        ),
-        With<Shell>,
-    >,
-) {
-    for (system, mark, filtered, mut material, visible, mut layers) in
-        &mut shells
-    {
-        // Off the frame a shell is not drawn, so which handle it points at is
-        // not settled. It is settled again the frame it comes back on.
-        if !visible.get() {
-            continue;
-        }
-        // How much of the mark is left. At nothing the fading material is
-        // fully transparent, which is what takes a shell off screen now that
-        // it shares an entity with its system: hiding the entity would take
-        // the system's bodies and labels with it. Only the held system ever
-        // fades, so only ever one shell is the transparent kind.
-        let standing = mark.0;
-        let hue = hue(system, &color_by);
-        let wanted = if standing < 1. {
-            // Dimmed by the filters first and by the fade after, so a shell
-            // the filters were drawing faintly does not come back to full
-            // strength on its way out.
-            let strength = if filtered { dim.opacity() } else { 1. };
-            materials.going(hue, strength * standing)
-        } else {
-            materials.get(hue, filtered)
-        };
-        if material.0 != *wanted {
-            material.0 = wanted.clone();
-        }
-        // The realistic view moves a star onto the eye's bloomed layer; in the
-        // map view it belongs on the shells' own no-bloom layer, so put it back
-        // where a mode switch may have taken it from.
-        let layer = RenderLayers::layer(crate::camera::SHELLS_LAYER);
-        if *layers != layer {
-            *layers = layer;
         }
     }
 }
@@ -1434,17 +1311,6 @@ pub(crate) fn init_materials(
     };
     let bright = set(1.);
     let dim = set(dim.opacity());
-    let mut fading = Vec::with_capacity(Hue::ALL.len() * (FADE_STEPS + 1));
-    for hue in Hue::ALL {
-        for step in 0..=FADE_STEPS {
-            let strength = step as f32 / FADE_STEPS as f32;
-            fading.push(assets.add(star_material(
-                hue.color(),
-                strength,
-                AlphaMode::Blend,
-            )));
-        }
-    }
 
     // A star per temperature bucket per brightness step: the bucket fixes the
     // tint, the step fixes the flux, so [`photometry`] points each star at the
@@ -1470,7 +1336,6 @@ pub(crate) fn init_materials(
     commands.insert_resource(SystemMaterials {
         bright,
         dim,
-        fading,
         photometric,
     });
 }
@@ -1759,105 +1624,6 @@ mod tests {
         last.doubled(clickable(1), 0.1);
         assert!(!last.doubled(clickable(1), 0.2));
         assert!(last.doubled(clickable(1), 0.3));
-    }
-
-    /// How many shells were repainted
-    #[derive(Resource, Default)]
-    struct Repaints(usize);
-
-    fn count_repaints(
-        mut repaints: ResMut<Repaints>,
-        shells: Query<
-            (),
-            (Changed<MeshMaterial3d<StandardMaterial>>, With<Shell>),
-        >,
-    ) {
-        repaints.0 += shells.iter().count();
-    }
-
-    /// A world holding the colors and whatever shells are painted out of them
-    ///
-    /// Nothing keeps the marks up in it, so every shell stands whole and takes
-    /// the shared handle for its hue rather than a step of the fade.
-    fn painted() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Assets<StandardMaterial>>();
-        app.init_resource::<Assets<Mesh>>();
-        app.init_resource::<Assets<Image>>();
-        app.init_resource::<DimTo>();
-        app.init_resource::<Repaints>();
-        app.insert_resource(ColorBy::Allegiance);
-        app.insert_resource(StarExposure::default());
-        app.insert_resource(StarProfile::default());
-        app.add_systems(Startup, init_materials);
-        app.add_systems(Update, (shells, count_repaints).chain());
-        app
-    }
-
-    /// A system with a shell standing around it
-    fn shelled(app: &mut App) -> Entity {
-        app.world_mut()
-            .spawn((
-                crate::systems::tests::system(1),
-                Shell,
-                Strength::default(),
-                MeshMaterial3d::<StandardMaterial>::default(),
-                ViewVisibility::VISIBLE,
-                RenderLayers::layer(crate::camera::SHELLS_LAYER),
-            ))
-            .id()
-    }
-
-    /// How many shells have been repainted so far
-    fn repaints(app: &App) -> usize {
-        app.world().resource::<Repaints>().0
-    }
-
-    /// A frame that changes nothing leaves a shell's paint alone
-    ///
-    /// What the color is decided afresh each frame and written only where it
-    /// differs is for. Every shell in the sky is asked this every frame, and
-    /// the answer nearly always matches the handle it already points at.
-    #[test]
-    fn a_resting_frame_leaves_a_shell_painted_as_it_was() {
-        let mut app = painted();
-        shelled(&mut app);
-
-        // The shell arriving is a change of its own, and the frame after it is
-        // the first that could be said to be resting.
-        app.update();
-        app.update();
-        let settled = repaints(&app);
-
-        app.update();
-        assert_eq!(
-            repaints(&app),
-            settled,
-            "repainted a shell that had not moved"
-        );
-    }
-
-    /// And one whose system falls out of the filters is painted again
-    ///
-    /// Which is what the answer is worked out for. A guard that held through a
-    /// filter would leave the whole sky at full strength.
-    #[test]
-    fn a_filtered_shell_is_painted_again() {
-        let mut app = painted();
-        let system = shelled(&mut app);
-
-        app.update();
-        app.update();
-        let settled = repaints(&app);
-
-        app.world_mut().entity_mut(system).insert(Filtered);
-        app.update();
-
-        assert!(
-            repaints(&app) > settled,
-            "left a dimmed shell at full strength"
-        );
     }
 
     /// Switching the profile rebakes the one star texture in place
