@@ -476,6 +476,18 @@ pub(crate) fn world_per_pixel(
     2. * depth / (cot_half_fov * viewport_height)
 }
 
+/// The egui layer the map's own annotations are painted into
+///
+/// One background layer for the rings, the names, their grounds and the
+/// leaders alike: a single painter list shared by [`draw_names`] and the ring
+/// systems, filled in the order those systems run — the rings first, beneath
+/// the grounds — so nothing about the stacking is left to how egui happens to
+/// order two separate layers. Background, so the whole of it sits under the
+/// chrome and over the map.
+pub(crate) fn annotations_layer() -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Background, egui::Id::new("map-annotations"))
+}
+
 /// Where a point lands on screen, in logical pixels from the top left
 ///
 /// [`None`] for anything level with the camera or behind it, which has no
@@ -1525,10 +1537,7 @@ pub fn draw_names(
     // Under the chrome, which draws in the same order, and over the map, which
     // every egui layer is drawn over. Ordered before the chrome in the
     // schedule so its layer is registered first and sits beneath the panes.
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Background,
-        egui::Id::new("map-names"),
-    ));
+    let painter = ctx.layer_painter(annotations_layer());
     // The one face the chrome is set in as well, so a name on the map and the
     // same name in the bar are the one typeface. Egui's default monospace is
     // Hack, which is the face the chrome is set in.
@@ -1654,7 +1663,7 @@ fn faded(tint: Srgba, strength: f32) -> Srgba {
 /// [`Srgba`] channels are already gamma-encoded, the space [`egui::Color32`]
 /// holds, so they cross straight over; the alpha is not premultiplied on
 /// either side.
-fn color32(color: Srgba) -> egui::Color32 {
+pub(crate) fn color32(color: Srgba) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(
         (color.red * 255.) as u8,
         (color.green * 255.) as u8,

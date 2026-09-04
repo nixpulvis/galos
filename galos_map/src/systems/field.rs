@@ -31,9 +31,13 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{Exposure, Hdr, ScalingMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::image::{Image, ImageSampler};
 use bevy::math::DVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::post_process::bloom::Bloom;
+use bevy::render::render_resource::{
+    Extent3d, TextureDimension, TextureFormat,
+};
 use bevy::prelude::*;
 use galos_photometry::{Distance, Magnitude};
 
@@ -76,27 +80,40 @@ struct FieldMaterials {
 /// held to a sliver of a pixel rather than allowed to vanish.
 const SMALLEST: f32 = 0.75;
 
+/// The side of the disc-mask texture, in texels
+///
+/// A mark is a handful of pixels at most until the camera is close enough to
+/// descend, so the mask needs no more than this to round it, and small enough
+/// that a linear fetch at a pixel or two still lands on the solid centre.
+const MARK_TEXELS: u32 = 64;
+
 /// Put the field's mesh, its two materials, and the origin camera up
 fn spawn_field(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     // A degenerate mesh to begin with; `build_field` swaps in a fresh one
     // holding the frame's stars each frame.
     let mesh =
         meshes.add(field_mesh(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
-    // White base, so the per-vertex colour is the whole of what a mark comes
-    // out. Both are points a pixel or two across — too small to carry the
-    // point-spread texture, which at that size samples its own faint edge and
-    // vanishes; the shape is the point and, in the realistic view, the bloom
-    // the field's camera spreads over it. The map's is a flat solid dot, its
-    // fade in the alpha, blended over the galaxy. The realistic view's is the
+    // A disc mask, so a mark is a round dot rather than the square its bare
+    // quad would draw. White and opaque at the centre and clear at the
+    // corners in every channel: the map's solid dot reads the alpha for its
+    // blend over the galaxy, the realistic view's additive glint reads the
+    // colour, so masking both keeps the corners off whichever way it is
+    // painted.
+    //
+    // The per-vertex colour is the rest of what a mark comes out. The map's is
+    // a flat solid dot, its fade in the alpha; the realistic view's is the
     // blackbody colour at its HDR level, added and left for the bloom to grow
     // a bright star past its faint neighbours. Unlit either way: a mark is a
     // light, not a thing lit by one.
+    let mask = images.add(disc_mask());
     let solid = materials.add(StandardMaterial {
         base_color: Color::WHITE,
+        base_color_texture: Some(mask.clone()),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         cull_mode: None,
@@ -104,6 +121,7 @@ fn spawn_field(
     });
     let glint = materials.add(StandardMaterial {
         base_color: Color::WHITE,
+        base_color_texture: Some(mask),
         alpha_mode: AlphaMode::Add,
         unlit: true,
         cull_mode: None,
@@ -315,4 +333,71 @@ fn field_mesh(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
     mesh
+}
+
+/// A round mask for the field's marks: white and opaque at the centre, clear
+/// at the rim
+///
+/// The marks are screen-aligned quads, and painted bare they are squares.
+/// Sampled as a material's base colour, this cuts each quad to the disc
+/// inscribed in it — in every channel, so it rounds the solid mark's alpha and
+/// the glint's colour alike. A texel and a half of fade at the rim antialiases
+/// the edge; the centre holds solid at any size, so a mark a pixel across is
+/// still a point of light rather than a sample of a faint edge that vanishes.
+fn disc_mask() -> Image {
+    let n = MARK_TEXELS;
+    let centre = (n as f32 - 1.) / 2.;
+    let mut data = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let dx = x as f32 - centre;
+            let dy = y as f32 - centre;
+            let dist = (dx * dx + dy * dy).sqrt();
+            // Solid out to the quad's edge, then a texel and a half to clear.
+            let mask = ((centre - dist) / 1.5).clamp(0., 1.);
+            let value = (mask * 255.) as u8;
+            let texel = ((y * n + x) * 4) as usize;
+            data[texel] = value;
+            data[texel + 1] = value;
+            data[texel + 2] = value;
+            data[texel + 3] = value;
+        }
+    }
+    let mut image = Image::new(
+        Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
+    image
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mark is a disc, not the square its quad would draw bare
+    ///
+    /// A solid centre and clear corners, in every channel, so the box the eye
+    /// used to read is gone whichever way the mark is painted.
+    #[test]
+    fn the_mark_mask_is_round() {
+        let image = disc_mask();
+        let n = MARK_TEXELS as usize;
+        let data = image.data.expect("the mask carries its texels");
+
+        let centre = ((n / 2) * n + n / 2) * 4;
+        assert_eq!(
+            &data[centre..centre + 4],
+            &[255, 255, 255, 255],
+            "the centre of the mark is not solid"
+        );
+        assert_eq!(
+            &data[0..4],
+            &[0, 0, 0, 0],
+            "the corner of the quad is still drawn"
+        );
+    }
 }

@@ -546,10 +546,10 @@ pub(crate) fn size_photometrically(
 /// turns with the camera, so half the sky blinks in and out as it pitches and
 /// zooms (see `docs/night-sky.md`). So the shell is not drawn where it is. Its
 /// centre is projected on the CPU in f64 and the mesh placed on the eye→system
-/// ray at [`super::pointing::overlay_plane`]'s depth — the same near plane the
-/// rings are drawn on, close enough to the origin to stay precise — kept at the
-/// pixel size and facing [`size_by_distance`] and [`size_photometrically`]
-/// worked out, so it reads the same while it draws at all.
+/// ray just past the near plane — the smallest coordinate it can be drawn at
+/// without being clipped, and so the most precise — kept at the pixel size
+/// [`size_by_distance`] and [`size_photometrically`] worked out and facing the
+/// camera, so it reads the same while it draws at all.
 ///
 /// Only the shells the map is still standing in for. One flown into wears a
 /// [`Grid`] and is drawn as the system itself, near the origin, where the

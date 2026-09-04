@@ -385,10 +385,8 @@ pub fn visibility(
     spyglass: Res<Spyglass>,
     dim: Res<filter::DimTo>,
     mut in_reach: ResMut<InReach>,
-    bounded: Option<Res<bounded::LodFetch>>,
 ) {
     let Ok(camera) = camera.single() else { return };
-    let all_in_reach = bounded.as_deref().map_or(false, |b| b.0);
     let excluded_are_drawn = dim.0 > 0.;
 
     // TODO(bounded): this counts drawn entities, which under the walk is the
@@ -402,8 +400,8 @@ pub fn visibility(
     // it stays a count of drawn-and-admitted, or wants its own answer.
     let mut tally = InReach::default();
     for (system, mut visibility, filtered, hop) in &mut systems {
-        let within = all_in_reach
-            || spyglass.reaches(camera.center, DVec3::from(system.position));
+        let within =
+            spyglass.reaches(camera.center, DVec3::from(system.position));
         if within {
             tally.total += 1;
             if !filtered {
