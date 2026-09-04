@@ -51,14 +51,16 @@
 use crate::camera::OrbitCamera;
 use crate::ruled::{
     self, Decade, DistanceUnit, EDGE_ON, FIGURES_ACROSS, Family, INK, Located,
-    NUMBERED, Number, Numbered, Painted, Plane, Reading, RuledPlugin, drawn_at,
-    numbering, ruling, snapped_to, ticked,
+    NUMBERED, Number, Numbered, Painted, Plane, Reading, RuledPlugin,
+    drawn_at, faded, numbering, off_plane, ruling, snapped_to, ticked, told,
 };
 use crate::schedule::MapSet;
 use crate::space::{self, Map};
 use crate::systems::System;
-use crate::systems::bodies::spawn::{Body, Strength};
+use crate::systems::bodies::spawn::{Body, Places, Strength};
 use crate::systems::selection::Selected;
+use crate::systems::labels::{annotations_layer, color32, screen_offset};
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
@@ -91,6 +93,14 @@ pub fn plugin(app: &mut App) {
     app.add_systems(
         Update,
         (rule, mark_out).in_set(MapSet::Present).in_set(ruled::Ruling),
+    );
+    // Flat on the screen, in egui's own pass, under the chrome and over the
+    // map — the same layer and the same reason the names and rings are drawn
+    // there. Ordered before the lettering so the annotation layer is registered
+    // beneath the panes, as [`crate::systems::labels::draw_names`] is.
+    app.add_systems(
+        EguiPrimaryContextPass,
+        draw_readouts.before(crate::ui::lettering),
     );
 }
 
@@ -169,6 +179,45 @@ const FADE_BEYOND: f64 = 6.;
 /// Cold and unsaturated, so that it reads as chrome laid over the sky rather
 /// than as more of the sky. Every star on the map is warmer than this.
 const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
+
+/// How tall a readout's numbers are drawn, in logical pixels
+///
+/// A touch under the names ([`crate::systems::labels::NAME_HEIGHT`]) and the
+/// chrome's smallest lettering, so a coordinate sits nearer the size of the
+/// numbers painted along the grid it is read against rather than standing over
+/// them.
+const READS: f32 = 10.5;
+
+/// How far below a mark its three numbers hang, in pixels
+///
+/// Below rather than above, so the number is read against clear screen rather
+/// than into the mark it is about.
+const LIFT: f32 = 32.;
+
+/// How far beside a dropped line its offset stands, in pixels
+const ASIDE: f32 = 6.;
+
+/// How long each arm of a cross marking a place is, in pixels
+const CROSS: f32 = 6.;
+
+/// How wide a dropped line is painted, in logical pixels
+///
+/// Bolder than a hairline so it reads as one of the plane's ruling lines rather
+/// than a scratch. Painted flat, so it holds that weight at every zoom.
+const LINE_STROKE: f32 = 2.;
+
+/// And how wide a cross marking a place is
+const MARK_STROKE: f32 = 1.5;
+
+/// How near a dropped line's numbers may come to the middle's before they give
+/// way, in pixels
+///
+/// A row is three numbers with a power, a unit and two commas — some forty
+/// characters of a [`READS`] tall monospaced face centred on its place, running
+/// about ninety five either side and half a line above and below. Two rows
+/// nearer than that are written through each other and neither can be read, and
+/// of the pair the middle is the one kept.
+const CROWDS: Vec2 = Vec2::new(96., 10.);
 
 /// Everything one of the map's planes is written through
 ///
@@ -336,9 +385,6 @@ struct Placement<'a> {
     step: f64,
     /// How much of this space is on screen, in [`Placement::unit`]
     across: f64,
-    /// Where the camera is, in [`Placement::unit`] and measured from whatever
-    /// the space is measured from
-    eye: DVec3,
     /// How far its ruling reaches before it has faded out, in metres
     reach: f64,
     /// How much of this space's ruling is drawn, as the descent hands the map
@@ -356,7 +402,6 @@ impl Placement<'_> {
     fn reading(&self, middle: bool, bright: f32) -> Reading {
         Reading {
             at: self.at,
-            eye: self.eye,
             step: self.step,
             unit: self.unit,
             strength: self.showing(),
@@ -405,6 +450,188 @@ fn mark_out(
             commands.entity(entity).try_remove::<Located>();
         }
     }
+}
+
+/// Paint the numbers standing over the planes, flat on the screen
+///
+/// The place the camera is looking at, and each thing picked out: the three
+/// numbers the plane says about it, a cross where it meets the plane, and — for
+/// a thing off the plane — a line dropped to it with how far off it went beside
+/// it.
+///
+/// Painted in screen space, projected on the processor in `f64`, rather than
+/// drawn as text meshes out at a system's galaxy coordinate. A mesh there is
+/// transformed by an f32 clip transform that resolves only to the grid's cell
+/// over `2^24` — some light seconds — so it jitters by many pixels as the
+/// floating origin recenters, once the camera is zoomed inside that step and
+/// before it has descended onto a system's own metre grid. A single point
+/// projected in `f64` from the camera and the thing's true position is steady
+/// to well under a pixel at any zoom. The same reason the names, rings and
+/// leaders are drawn flat; see [`crate::systems::labels::draw_names`] and
+/// `docs/night-sky.md`.
+///
+/// What it gives up by leaving the scene is being tonemapped with the plane and
+/// hidden behind whatever galaxy stands in front of it. A readout is chrome
+/// laid over the map, the same as a name, and reads as one.
+fn draw_readouts(
+    mut contexts: EguiContexts,
+    camera: Query<(&OrbitCamera, &Camera)>,
+    planes: Query<(&Ruler, &Plane, &Reading)>,
+    // Picked-out systems, placed against the galaxy plane by their true `f64`
+    // position rather than an f32 grid remainder, which is the whole of the fix.
+    systems: Query<
+        (&System, &InheritedVisibility),
+        (With<Selected>, With<Located>),
+    >,
+    // And picked-out bodies, against a system's own plane. Read off the grid
+    // holding them, which is near the origin and so already exact.
+    bodies: Query<
+        (Entity, &InheritedVisibility),
+        (With<Body>, With<Selected>, With<Located>),
+    >,
+    places: Places,
+) -> Result {
+    let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
+    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
+    let cot = camera.clip_from_view().y_axis.y;
+
+    let ctx = contexts.ctx_mut()?;
+    let painter = ctx.layer_painter(annotations_layer());
+    let font = egui::FontId::new(READS, egui::FontFamily::Monospace);
+    let hue = Srgba::from(LINE);
+    // How far a readout stands before it has faded into the plane's horizon, in
+    // light years — the same reach the shader fades the plane's own lines over.
+    let reach = orbit.radius as f64 * FADE_BEYOND;
+    // The plane hangs through what the camera looks at, so its altitude is the
+    // middle's own, in absolute light years.
+    let plane_y = orbit.center.y;
+
+    let project =
+        |place: DVec3| screen_offset(orbit, cot, viewport, place - orbit.eye);
+    let seg = |a: Vec2, b: Vec2, width: f32, color: egui::Color32| {
+        painter.line_segment(
+            [egui::pos2(a.x, a.y), egui::pos2(b.x, b.y)],
+            egui::Stroke::new(width, color),
+        );
+    };
+    // A cross laid in the plane along its own axes, so it lies on the grid and
+    // foreshortens with it rather than floating flat over the view. Its arms are
+    // sized in the world to draw about [`CROSS`] pixels at the depth the place
+    // lies at — measured into the view, not along the plane's own normal, or a
+    // plane seen face on would size its cross to nothing.
+    let cross = |at: DVec3, facing: Quat, color: egui::Color32| {
+        let ahead =
+            (at - orbit.eye).dot((orbit.rotation * Vec3::NEG_Z).as_dvec3());
+        if ahead <= 0. {
+            return;
+        }
+        let per_pixel = 2. * ahead / (cot as f64 * viewport.y as f64);
+        let arm = CROSS as f64 * per_pixel;
+        for axis in [Vec3::X, Vec3::Z] {
+            let along = (facing * axis).as_dvec3() * arm;
+            if let (Some(a), Some(b)) = (project(at - along), project(at + along))
+            {
+                seg(a, b, MARK_STROKE, color);
+            }
+        }
+    };
+    let row = |at: Vec2, align, said: String, color: egui::Color32| {
+        painter.text(egui::pos2(at.x, at.y), align, said, font.clone(), color);
+    };
+
+    for (ruler, plane, reading) in &planes {
+        if reading.strength <= 0. {
+            continue;
+        }
+        let unit = reading.unit;
+        // Where this space is measured from, in absolute light years. The
+        // middle is said in the plane's unit out from here, so undoing that on
+        // the middle recovers it: nought for the galaxy, the star for a system.
+        let from =
+            orbit.center - reading.at * (unit.metres / space::LIGHT_YEAR);
+
+        // What a mark or a number `base` strong is drawn in, faded by how far
+        // toward the plane's horizon its place lies.
+        let inked = |place: DVec3, base: f32| {
+            drawn_at(base * faded(place - orbit.eye, reach), reading.bright)
+                * reading.strength
+        };
+        let tint = |place: DVec3, base: f32| {
+            color32(hue.with_alpha(inked(place, base).clamp(0., 1.)))
+        };
+        // A number stands over the lines to be read outright, so it is drawn
+        // half again the ink the plane paints its own numbers in.
+        let lettered = |place: DVec3, base: f32| {
+            color32(hue.with_alpha((inked(place, base) * 1.5).clamp(0., 1.)))
+        };
+
+        // The middle of the view: the three numbers of the place looked at,
+        // marked and hung below. Kept for the crowding test below either way.
+        let middle = reading.middle.then(|| project(orbit.center)).flatten();
+        if let Some(at) = middle {
+            cross(orbit.center, plane.facing, tint(orbit.center, INK));
+            row(
+                at + Vec2::new(0., LIFT),
+                egui::Align2::CENTER_CENTER,
+                format!("{} {}", told(reading.at, reading.step), unit.mark),
+                lettered(orbit.center, INK),
+            );
+        }
+
+        // Everything picked out in this plane's space: a line dropped to the
+        // plane, the three numbers under its foot, and how far off it went
+        // beside the line. Systems out in the galaxy; bodies inside a system.
+        // A thing the caller has hidden is not there to be located, and a line
+        // dropped from where it would have stood is a line about nothing.
+        let located: Vec<DVec3> = if ruler.inside {
+            bodies
+                .iter()
+                .filter(|(_, shown)| shown.get())
+                .filter_map(|(body, _)| places.of(body))
+                .collect()
+        } else {
+            systems
+                .iter()
+                .filter(|(_, shown)| shown.get())
+                .map(|(system, _)| system.position())
+                .collect()
+        };
+        for place in located {
+            let foot_at = DVec3::new(place.x, plane_y, place.z);
+            let (Some(top), Some(foot)) = (project(place), project(foot_at))
+            else {
+                continue;
+            };
+            // The line, kept clearly visible as the connector to what is picked
+            // out, and a cross where it meets the plane.
+            seg(top, foot, LINE_STROKE, tint(foot_at, INK));
+            cross(foot_at, plane.facing, tint(foot_at, INK));
+
+            // Its three numbers under the foot, and how far off the plane it
+            // stands beside the line — unless they would be written through the
+            // middle's, of which the middle is the one kept.
+            let below = foot + Vec2::new(0., LIFT);
+            let crowds = middle
+                .is_some_and(|m| (below - m).abs().cmplt(CROWDS).all());
+            if !crowds {
+                let at_unit = (place - from) * space::LIGHT_YEAR / unit.metres;
+                row(
+                    below,
+                    egui::Align2::CENTER_CENTER,
+                    format!("{} {}", told(at_unit, reading.step), unit.mark),
+                    lettered(foot_at, INK),
+                );
+                if let Some(said) =
+                    off_plane(at_unit.y - reading.at.y, reading.step, unit)
+                {
+                    let mid = (top + foot) / 2. + Vec2::new(ASIDE, 0.);
+                    row(mid, egui::Align2::LEFT_CENTER, said, lettered(place, INK));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Work out how to rule one space
@@ -457,7 +684,6 @@ fn placed<'a>(
         crossing,
         across,
         step,
-        eye: spoken(orbit.eye),
         // In metres, being a distance out through the world rather than a
         // distance across the plane. Past the far side of the view, so that
         // what fades is the horizon rather than what is looked at.
