@@ -30,6 +30,16 @@ struct Loaded<'w> {
     factions: Res<'w, Factions>,
 }
 
+/// What the descent into a system is made of, bundled for the same reason
+/// [`Loaded`] is
+#[derive(SystemParam)]
+struct Descent<'w, 's> {
+    contents: Res<'w, crate::systems::bodies::Contents>,
+    handover: Res<'w, crate::grid::Handover>,
+    systems: Query<'w, 's, (&'static System, Has<big_space::prelude::Grid>)>,
+    bodies: Query<'w, 's, (), With<crate::systems::bodies::spawn::Inside>>,
+}
+
 pub fn plugin(app: &mut App) {
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     app.init_resource::<ShowDiagnostics>();
@@ -87,6 +97,7 @@ fn diagnostics(
     store: Res<DiagnosticsStore>,
     systems: Query<(), With<System>>,
     camera: Query<&OrbitCamera>,
+    descent: Descent,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -183,16 +194,18 @@ fn diagnostics(
                     pair(
                         ui,
                         "radius",
-                        &format!("{:.0} ly", spyglass.radius),
+                        &reach(spyglass.radius),
                         "How far the spyglass reaches from what the camera \
-                         looks at. Everything inside is fetched and drawn.",
+                         looks at. Everything inside is fetched and drawn. It \
+                         follows the camera all the way in, so inside a \
+                         system it is a fraction of a light year.",
                     );
                     let keep =
                         spyglass.radius as f64 * crate::systems::EVICT_MARGIN;
                     pair(
                         ui,
                         "keep",
-                        &format!("{keep:.0} ly"),
+                        &reach(keep as f32),
                         "How far a system is kept before it is dropped: the \
                          radius times the eviction margin. Wider than the \
                          reach so the edge does not churn.",
@@ -223,6 +236,122 @@ fn diagnostics(
                         &tasks.surveyed.len().to_string(),
                         "Regions the map remembers holding, so it does not ask \
                          again. Clamped to what the evictor still holds.",
+                    );
+                },
+            );
+            ui.separator();
+            row(
+                ui,
+                "descent",
+                "What the map holds about the system the camera is standing \
+                 in, and how far along the descent into it has got. Every \
+                 step here has to happen for a system's bodies and its own \
+                 ruled grid to be drawn.",
+                |ui| {
+                    pair(
+                        ui,
+                        "held",
+                        &descent
+                            .contents
+                            .of()
+                            .map_or("—".to_string(), |it| it.to_string()),
+                        "Which system the body poll is holding, by address. \
+                         The nearest one to what the camera looks at, within \
+                         five light years of it.",
+                    );
+                    pair(
+                        ui,
+                        "rows",
+                        &match descent.contents.extent() {
+                            Some(extent) => format!(
+                                "{} stars, {} bodies, {:.2e} m",
+                                descent.contents.stars().len(),
+                                descent.contents.bodies().len(),
+                                extent,
+                            ),
+                            None => "none".to_string(),
+                        },
+                        "What came back about it, and how far the rows say it \
+                         reaches. Nothing here is nothing to descend into: \
+                         the camera is held off at a floor and no sub-grid is \
+                         ever drawn.",
+                    );
+                    // The one the poll would hold, worked out the way
+                    // `bodies::fetch::choose` works it out: whichever system
+                    // is nearest what the camera looks at. Named rather than
+                    // addressed, a `System`'s address being its own module's.
+                    let nearest = camera.single().ok().and_then(|orbit| {
+                        descent
+                            .systems
+                            .iter()
+                            .map(|(system, grid)| {
+                                (
+                                    system,
+                                    grid,
+                                    orbit.center.distance(system.position()),
+                                )
+                            })
+                            .min_by(|(_, _, one), (_, _, other)| {
+                                one.total_cmp(other)
+                            })
+                            .map(|(system, grid, _)| (system, grid, orbit))
+                    });
+                    pair(
+                        ui,
+                        "nearest",
+                        &nearest.map_or("—".to_string(), |(system, ..)| {
+                            system.name().to_string()
+                        }),
+                        "The system nearest what the camera looks at, which \
+                         is the one the poll asks about.",
+                    );
+                    pair(
+                        ui,
+                        "seen",
+                        &nearest.map_or(
+                            "—".to_string(),
+                            |(system, _, orbit)| {
+                                let away = crate::space::metres(
+                                    orbit.eye - system.position(),
+                                )
+                                .length()
+                                    as f32;
+                                format!("{:.2e} rad", system.reach() / away)
+                            },
+                        ),
+                        "How much of the sky it takes up from where the eye \
+                         stands. Its bodies are drawn past 1.00e-2 of a \
+                         radian and kept past 8.00e-3, so anything under \
+                         that is a camera not yet near enough to descend.",
+                    );
+                    pair(
+                        ui,
+                        "inside",
+                        &nearest.map_or("—".to_string(), |(_, grid, _)| {
+                            if grid {
+                                "descended".to_string()
+                            } else {
+                                "not descended".to_string()
+                            }
+                        }),
+                        "Whether it is wearing a grid of its own, which it \
+                         does only while its contents are drawn. This is what \
+                         the sub-grid's ruled plane hangs from.",
+                    );
+                    pair(
+                        ui,
+                        "bodies",
+                        &descent.bodies.iter().count().to_string(),
+                        "How many things are drawn inside it.",
+                    );
+                    pair(
+                        ui,
+                        "ruler",
+                        &format!("{:.2} out", descent.handover.0),
+                        "How far the ruler has changed hands: one is the \
+                         galaxy's light-year grid, nothing is the system's \
+                         own light-second one, and between them it is \
+                         crossing the sphere about the system.",
                     );
                 },
             );
@@ -350,4 +479,23 @@ fn pair(ui: &mut egui::Ui, name: &str, value: &str, help: &str) {
 /// A flag as the word for the state it is in.
 fn on_off(flag: bool) -> &'static str {
     if flag { "on" } else { "off" }
+}
+
+/// A reach in light years, said at a precision that survives being small
+///
+/// The reach follows the camera all the way in
+/// ([`crate::systems::reach_with_camera`]), so inside a system it is
+/// thousandths of a light year and whole light years read as nought. Said in
+/// light seconds under a hundredth of one, which is the scale a system's own
+/// grid is ruled in.
+fn reach(light_years: f32) -> String {
+    if light_years >= 1. {
+        format!("{light_years:.0} ly")
+    } else if light_years >= 1e-2 {
+        format!("{light_years:.3} ly")
+    } else {
+        let seconds =
+            f64::from(light_years) * crate::space::LIGHT_YEAR / 299_792_458.;
+        format!("{seconds:.0} Ls")
+    }
 }
