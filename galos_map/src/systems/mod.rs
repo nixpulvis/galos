@@ -261,17 +261,24 @@ impl Spyglass {
     /// that far shows the two ends and nothing around them.
     pub const OPENING: f32 = 10.;
 
-    /// The shortest reach worth offering, in light years
+    /// The shortest reach the rail offers, in light years
     ///
-    /// Stars stand far enough apart that a shorter one shows the system at
-    /// the middle of it and nothing else, so every setting under it draws the
-    /// same picture.
+    /// Not a floor under the reach itself. The reach follows the camera all
+    /// the way in (see [`reach_with_camera`]): standing on Sol with the
+    /// spyglass following, what the camera can see is a fraction of a light
+    /// year and Alpha Centauri four of them off is out of it, which is the
+    /// whole of what the reach is for. Held off the camera at five, every
+    /// system within five light years was drawn however far in the camera
+    /// came, and a system flown into was shown among its neighbours rather
+    /// than alone.
     ///
-    /// Measured over a sample of inhabited systems, counting what stands
-    /// within reach of each: at 1, 2, 3 and 5 light years the middling answer
-    /// is one system, which is the one being stood on. It first rises at 8,
-    /// reaches 4 by 10, and 19 by 20.
-    pub const FLOOR: f32 = 5.;
+    /// What this is is the least end of the [`crate::ui`] rail, which is
+    /// logarithmic and so needs one above nothing. A thousandth of a light
+    /// year is some sixty astronomical units — inside a system rather than
+    /// between them — so the rail reaches everywhere a hand would ask for. A
+    /// reach the camera has drawn in under this is a setting like any other:
+    /// the rail shows it held to its own least and leaves it alone underneath.
+    pub const FLOOR: f32 = 1e-3;
 
     /// The longest, in light years
     ///
@@ -661,7 +668,13 @@ pub fn reach_with_camera(
     // say.
     let seen = crate::camera::framed(camera.target_radius, lens.single().ok());
     let inside = seen * (100 - FOLLOW_MARGIN) as f32 / 100.;
-    let reach = inside.clamp(Spyglass::FLOOR, Spyglass::CEILING);
+    // No least. The reach is what the camera can see, and a camera standing on
+    // one system can see a fraction of a light year: held off at
+    // [`Spyglass::FLOOR`] the sky within five light years was drawn however
+    // far in the camera came, so flying into Sol left Alpha Centauri on the
+    // map. Only the galaxy's own edge bounds it, past which a wider reach asks
+    // for exactly the same systems.
+    let reach = inside.min(Spyglass::CEILING);
 
     // Only where it moved. Nothing watches this resource for changes today,
     // and writing the same number every frame is how that stops being true
@@ -1439,15 +1452,37 @@ pub(crate) mod tests {
         assert_eq!(reach, Spyglass::CEILING);
     }
 
-    /// And never falls under the shortest reach worth offering
+    /// And it follows the camera all the way in, with no least
+    ///
+    /// The reported trouble. Zoomed into Sol with the spyglass following, what
+    /// the camera can see is a fraction of a light year, so Alpha Centauri
+    /// four of them off is out of reach and Sol is looked at alone. Held off
+    /// at [`Spyglass::FLOOR`] the reach stopped at five light years however
+    /// far in the camera came, and it never was.
     #[test]
-    fn the_reach_stops_where_it_would_show_one_system() {
-        let mut app = linked(1e-3, false, true);
+    fn the_reach_follows_the_camera_the_whole_way_in() {
+        // Standing a hundredth of a light year off, which is well inside a
+        // system and about where the map draws what is in one.
+        let mut app = linked(1e-2, false, true);
 
         app.update();
 
         let (reach, _) = linkage(&mut app);
-        assert_eq!(reach, Spyglass::FLOOR);
+        assert_eq!(reach, following(1e-2));
+
+        // The neighbour four light years off is out of it.
+        let spyglass = app.world().resource::<Spyglass>();
+        assert!(
+            !spyglass.reaches(DVec3::ZERO, DVec3::new(0., 0., 4.4)),
+            "a system four light years off was still in reach at {reach}"
+        );
+
+        // And nothing clamps it: further in still, the reach goes under even
+        // the least the rail offers.
+        let mut deeper = linked(1e-4, false, true);
+        deeper.update();
+        let (tiny, _) = linkage(&mut deeper);
+        assert!(tiny < Spyglass::FLOOR, "the reach stopped at {tiny}");
     }
 
     /// Not following, the reach is left where it was set

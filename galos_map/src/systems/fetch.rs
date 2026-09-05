@@ -386,6 +386,17 @@ pub fn fetch(
     }
 }
 
+/// The least region the map asks the database for, in light years
+///
+/// A floor under the question, not under what is drawn. The reach follows the
+/// camera all the way in, and a camera standing inside a system reaches a
+/// thousandth of a light year — a question so narrow that panning off the
+/// system finds nothing loaded and nothing on the way. A light year is one
+/// query for the neighbourhood the camera is standing in, which is where a pan
+/// from inside a system can reach before the reach has widened enough to ask
+/// again. What of it draws is still the reach's to say.
+const FETCH_LEAST: f32 = 1.;
+
 /// Ask for every system the spyglass reaches, read from the index cells
 ///
 /// The whole region rather than what the filters admit: the cells are static
@@ -417,7 +428,17 @@ fn fetch_spyglass(
 ) {
     let Ok(camera) = camera_query.single() else { return };
     let center = camera.center.as_ivec3();
-    let key = FetchIndex::Region(center, spyglass.radius as i32, None, None);
+    // What to ask the database for, which is not what the spyglass draws. The
+    // reach follows the camera with no least (see
+    // [`crate::systems::reach_with_camera`]), and a camera standing inside a
+    // system asks for a reach of thousandths of a light year: rounded down to
+    // the whole light years the region is keyed and read in, that is a region
+    // of nought, so nothing is ever fetched and a pan onto a neighbour finds
+    // empty sky. So the question is rounded up to the light year, and never
+    // under [`FETCH_LEAST`]. What is drawn is still only what the reach holds;
+    // this only decides what is in hand to draw from.
+    let asking = spyglass.radius.ceil().max(FETCH_LEAST);
+    let key = FetchIndex::Region(center, asking as i32, None, None);
     let now = time.last_update().unwrap_or(time.startup());
     if spyglass_condition(&key, tasks, now, last_fetched_at, throttle, poll) {
         debug!("fetching {:?} @ {:?}", key, now.duration_since(time.startup()));
@@ -430,7 +451,7 @@ fn fetch_spyglass(
         let names = Names::clone(names);
         let populated = Populated::clone(populated);
         let cent = [center.x as f64, center.y as f64, center.z as f64];
-        let range = spyglass.radius.floor() as f64;
+        let range = f64::from(asking);
         // Which cells the region touches is settled here off the resident
         // index; the task only reads the payloads those cells point at.
         let cells = index.0.region(cent, range);

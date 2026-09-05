@@ -25,8 +25,8 @@ use crate::systems::filter::{
 };
 use crate::systems::info::Panels;
 use crate::systems::info::lasting;
-use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::labels::ShowBodyNames;
+use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
@@ -482,16 +482,25 @@ const RADIUS_DRAG: f32 = 0.005;
 /// with nothing to say it happened and no way to get it back but to ask again.
 fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
     let ceiling = ceiling.clamp(Spyglass::FLOOR, Spyglass::CEILING);
-    // The galaxy's own bounds do not move, so a radius outside them is out of
-    // range rather than merely out of reach, and is corrected once and kept.
-    *radius = radius.clamp(Spyglass::FLOOR, Spyglass::CEILING);
+    // The galaxy's own outer bound does not move, so a radius past it is out
+    // of range rather than merely out of reach, and is corrected once and
+    // kept.
+    //
+    // There is no such bound underneath. The reach follows the camera all the
+    // way in (see [`crate::systems::reach_with_camera`]), so a radius under
+    // the rail's own least is a real setting and not a mistake to be
+    // corrected: writing the rail's least back would hold the sky within a
+    // thousandth of a light year open every frame this pane is drawn, and put
+    // the neighbours of a system flown into back on the map. Shown held to the
+    // rail and left alone underneath, as a radius over the ceiling is.
+    *radius = radius.min(Spyglass::CEILING);
     // Read before the rail borrows it, and the reason it is read at all.
     let speed = (*radius * RADIUS_DRAG).max(f32::EPSILON) as f64;
     fill_width(ui, VALUE_WIDTH);
 
     // What the widgets work on. They hold whatever they are given inside the
     // range, so this is the copy that gets held rather than the setting.
-    let mut asked = radius.min(ceiling);
+    let mut asked = radius.clamp(Spyglass::FLOOR, ceiling);
 
     let response = ui
         .horizontal(|ui| {
@@ -5334,15 +5343,26 @@ mod tests {
         radius
     }
 
-    /// A radius outside the galaxy is brought inside it
+    /// A radius past the galaxy's edge is brought inside it
     ///
-    /// These two bounds do not move, so a radius outside them is not a
-    /// setting the map cannot honor yet but one it can never honor, and
-    /// correcting it loses nothing that could come back.
+    /// That bound does not move, so a radius past it is not a setting the map
+    /// cannot honor yet but one it can never honor, and correcting it loses
+    /// nothing that could come back.
     #[test]
     fn a_radius_is_held_within_the_galaxy() {
-        assert_eq!(drawn_radius(0.01, 100.), Spyglass::FLOOR);
         assert_eq!(drawn_radius(5e6, 5e6), Spyglass::CEILING);
+    }
+
+    /// A radius under the rail's least is kept, not written up to it
+    ///
+    /// The reach follows the camera all the way in
+    /// ([`crate::systems::reach_with_camera`]), so a reach drawn in under the
+    /// rail is a real setting. Written back, this pane being open would hold
+    /// the sky within a thousandth of a light year open every frame and put
+    /// the neighbours of a system flown into back on the map.
+    #[test]
+    fn a_radius_under_the_rail_is_kept() {
+        assert_eq!(drawn_radius(1e-6, 100.), 1e-6);
     }
 
     /// A ceiling that comes down does not take the setting with it
