@@ -11,13 +11,13 @@ use crate::systems::System;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
-    Label, PlateText, color32, depth, depth_of, name_rect, screen_offset,
+    Label, PlateText, color32, depth, name_rect, screen_offset,
     screen_position, world_per_pixel,
 };
+use crate::systems::scale::View;
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
 use bevy::camera::RenderTarget;
-use bevy::camera::visibility::ViewVisibility;
 use bevy::ecs::entity::EntityHashMap;
 use bevy::math::DVec3;
 use bevy::picking::backend::{HitData, PointerHits};
@@ -69,11 +69,20 @@ pub fn plugin(app: &mut App) {
 /// happen to have all changed at once.
 pub const INDICATOR: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
 
-/// How much wider than its star a system's indicator is drawn
+/// How much air a system's mark leaves around its star, as a radius in pixels
 ///
-/// Far enough out to read as something around the star rather than as part
-/// of it.
-const INDICATOR_MARGIN: f32 = 1.5;
+/// A gap on the glass rather than a multiple of the star, which is the whole
+/// of what keeps a ring a ring. A multiple reads well while a mark is a
+/// handful of pixels and turns into a halo once one is not: a prominent
+/// system's mark runs to `scale`'s `POP_MAX` times its `NEAREST` share of the
+/// sky, tens of pixels across, and half again of that is a hoop with the star
+/// loose inside it.
+///
+/// Held instead at a fixed few pixels, so the ring hugs whatever is drawn at
+/// every size and there is no ceiling to impose: what bounds it is the bound
+/// already on the mark. Near enough what the old multiple came to at the size
+/// the floor takes over, so the sky at large is ringed as it was.
+const INDICATOR_AIR: f32 = 4.;
 
 /// The smallest an indicator may be, as a radius in logical pixels
 ///
@@ -82,18 +91,6 @@ const INDICATOR_MARGIN: f32 = 1.5;
 /// pixels because that is what aiming is done in, so the target stays the
 /// same size to the hand at every zoom.
 const INDICATOR_MIN_RADIUS: f32 = 9.5;
-
-/// The largest an indicator may be, as a radius in logical pixels
-///
-/// A ring is a mark around a system, not a halo over it. Left uncapped it is
-/// [`INDICATOR_MARGIN`] times the shell behind it, and that shell has no fixed
-/// size on screen: a bare system held at [`crate::camera`]'s zoom floor is
-/// drawn at its whole stand-in extent, and a bright star's point spread swells
-/// the same way, either of which would circle half the view. So the ring is
-/// held to a small fixed margin however large the shell grows — a touch above
-/// the floor, enough that a mark just short of being flown into still reads as
-/// ringed, and no more.
-const INDICATOR_MAX_RADIUS: f32 = 14.;
 
 /// The smallest a body's mark may be, as a radius in logical pixels
 ///
@@ -193,10 +190,11 @@ pub(crate) const RING_STROKE: f32 = 1.5;
 /// planet a hundred and sixty pixels wide. A tenth is a few pixels where a
 /// body is small enough for a few pixels to show and grows with it from there.
 ///
-/// Gentler than [`INDICATOR_MARGIN`], which is what a system's shell is given.
-/// A shell is a handful of pixels across and half again of it is still a
-/// handful; a planet filling the view would be ringed off the edge of the
-/// screen.
+/// Where a system's mark leaves a flat [`INDICATOR_AIR`] instead. A body's own
+/// size is what it is marked by, and a planet filling the view would be ringed
+/// off the edge of the screen by a fraction as generous as a tenth if the
+/// fraction were all there was; a shell is a mark in the first place and never
+/// grows past the bound on marks.
 const BODY_MARGIN: f32 = 0.1;
 
 /// The least air it leaves, as a radius in pixels
@@ -452,17 +450,18 @@ pub(super) fn point_at(
 /// what answers the pointer, so the mark and the area that catches cannot
 /// come apart.
 ///
-/// A shell is drawn in metres and holds a size that changes with the camera,
-/// so it is measured into pixels here and held between a floor and a ceiling
-/// (see [`system_mark`]). Where the shell is too small to aim at, which is
-/// nearly everywhere, the floor is the whole of the answer; where it has
-/// swelled toward being flown into, or a bright star's point spread has run
-/// away with it, the ceiling holds the ring to a mark rather than a halo.
+/// Taken from the pixels [`super::field`] paints the star at rather than
+/// worked out again from the shell, and measured out along the line to the
+/// system as the field measures it. Read a second way the two came apart: a
+/// ring held to a ceiling of its own was drawn inside a mark the field had
+/// grown past it, and a mark converted through the depth into the view sat off
+/// its star towards the edges of the frame.
 ///
 /// A shell that is not drawn is not measured: a mark taken from a sphere
 /// nobody can see would put the whole viewport up as one system's target.
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
+    view: Res<View>,
     mut systems: Query<
         (&System, &Transform, &Visibility, &Strength, &mut Indicator),
         With<Shell>,
@@ -472,13 +471,13 @@ pub fn size_indicators(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (system, shell, view, mark, mut indicator) in &mut systems {
+    for (system, shell, shown, mark, mut indicator) in &mut systems {
         // Off the frame the mark cannot be aimed at, so the pixels it would
         // take are not worked out; held at the floor so a hidden or off-screen
         // system is no easier to hit than an absent one. A hidden system reads
         // as off the frame here, its inherited visibility being what culling
         // asks first.
-        if *view == Visibility::Hidden {
+        if *shown == Visibility::Hidden {
             if indicator.0 != INDICATOR_MIN_RADIUS {
                 indicator.0 = INDICATOR_MIN_RADIUS;
             }
@@ -488,13 +487,16 @@ pub fn size_indicators(
         let drawn = if mark.0 > 0. { shell.scale.x } else { 0. };
 
         // A metre, which is as near as the camera may be pulled to anything.
-        // What the floor is for is the sign rather than the distance.
-        let into_view = depth(orbit, DVec3::from(system.position)).max(1.);
-        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
+        // What the floor is for is the sign rather than the distance. Along the
+        // line to the system, which is what the field sizes by.
+        let away =
+            crate::space::metres(orbit.eye - DVec3::from(system.position))
+                .length() as f32;
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
         // Only where it moved, as everything asked of every system every frame
         // is. Nothing watches a mark for changes today, and writing one
         // regardless is how that stops being safe without anyone meaning it to.
-        let wanted = system_mark(drawn, per_pixel);
+        let wanted = system_mark(&view, drawn, per_pixel);
         if indicator.0 != wanted {
             indicator.0 = wanted;
         }
@@ -504,14 +506,23 @@ pub fn size_indicators(
 /// How large a system's mark is, where its shell is `drawn` metres across and a
 /// pixel covers `per_pixel`
 ///
-/// The shell measured into pixels and stood off by [`INDICATOR_MARGIN`], then
-/// held between [`INDICATOR_MIN_RADIUS`] and [`INDICATOR_MAX_RADIUS`]. The floor
-/// keeps a system too small to aim at aimable; the ceiling keeps one drawn large
-/// — a bare system at the zoom floor, or a bright star's point spread — from
-/// wearing a ring that circles the view rather than the star.
-fn system_mark(drawn: f32, per_pixel: f32) -> f32 {
-    let shell = drawn * INDICATOR_MARGIN / per_pixel.max(f32::MIN_POSITIVE);
-    shell.clamp(INDICATOR_MIN_RADIUS, INDICATOR_MAX_RADIUS)
+/// The pixels the field paints the star at ([`super::field::drawn_radius`]) and
+/// [`INDICATOR_AIR`] of air around them, floored at [`INDICATOR_MIN_RADIUS`]
+/// where the star is too small to aim at — which is nearly everywhere, and is
+/// where the floor is the whole of the answer.
+///
+/// No ceiling. A gap in pixels holds the ring to the star at every size, so
+/// there is nothing left for one to guard against: a mark cannot run away
+/// without the star running away with it, and what bounds the star bounds
+/// both. A ceiling here is what drew the ring inside the mark.
+///
+/// A star the field draws none of — a sliver under the eye's floor in the
+/// realistic view — is still marked at the floor. It may be named, picked out
+/// or a route's stop, and each of those has to be aimed at.
+fn system_mark(view: &View, drawn: f32, per_pixel: f32) -> f32 {
+    let star = super::field::drawn_radius(view, drawn, per_pixel).unwrap_or(0.);
+
+    (star + INDICATOR_AIR).max(INDICATOR_MIN_RADIUS)
 }
 
 /// Work out how large each body's mark is, in pixels
@@ -605,19 +616,14 @@ const MAX_HITS: usize = 256;
 fn hits(
     pointers: Query<(&PointerId, &PointerLocation)>,
     window: Query<Entity, With<PrimaryWindow>>,
-    cameras: Query<(
-        Entity,
-        &Camera,
-        &RenderTarget,
-        &OrbitCamera,
-        &GlobalTransform,
-    )>,
+    cameras: Query<(Entity, &Camera, &RenderTarget, &OrbitCamera)>,
     systems: Query<(Entity, &System, &Indicator, &Visibility)>,
-    bodies: Query<(Entity, &GlobalTransform, &Indicator, &ViewVisibility)>,
+    bodies: Query<(Entity, &Indicator), With<Body>>,
+    places: Places,
     labels: Query<(Entity, &ChildOf, &PlateText), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
 ) {
-    let Ok((eye, camera, target, orbit, eye_at)) = cameras.single() else {
+    let Ok((eye, camera, target, orbit)) = cameras.single() else {
         return;
     };
     let Some(viewport) = camera.logical_viewport_size() else { return };
@@ -684,28 +690,33 @@ fn hits(
             }
         }
 
-        // Everything inside a system, measured from the camera rather than
-        // from the galaxy. A body is drawn at its own size, so its mark is
-        // its own outline, and one drawn over another is settled by which is
-        // nearer, exactly as two overlapping spheres would be.
-        for (entity, body_at, indicator, drawn) in &bodies {
-            if !drawn.get() {
-                continue;
-            }
-            let offset =
-                (body_at.translation() - eye_at.translation()).as_dvec3();
+        // Everything inside a system. A body is drawn at its own size, so its
+        // mark is its own outline, and one drawn over another is settled by
+        // which is nearer, exactly as two overlapping spheres would be.
+        //
+        // Where it stands is read off the grid holding it, exactly as
+        // [`super::labels::draw_names`] and the two rings read it. Taken from
+        // the `GlobalTransform` instead, as this did, a body is caught a frame
+        // behind where its name is drawn — and a body spawned this frame has
+        // no global transform yet at all, so its name was drawn on it while
+        // the pointer was still being tested against the origin. That is a
+        // name up and nothing to click.
+        //
+        // Nor is a body gated on its `ViewVisibility` any more. That is
+        // settled by the render, a frame later than the name is chosen, so a
+        // body only just drawn was named before it could be caught. What a
+        // body's existence means is that its system's contents are on the map,
+        // which is the same thing its name is granted on; being off the frame
+        // is answered below, by the projection giving nothing for anything the
+        // camera cannot see.
+        for (entity, indicator) in &bodies {
+            let Some(place) = places.of(entity) else { continue };
             let Some(on_screen) =
-                screen_offset(orbit, cot_half_fov, viewport, offset)
+                screen_position(orbit, cot_half_fov, viewport, place)
             else {
                 continue;
             };
-            let hit = HitData {
-                camera: eye,
-                depth: depth_of(orbit, offset),
-                position: None,
-                normal: None,
-                extra: None,
-            };
+            let hit = caught(eye, place);
             if on_screen.distance(at) <= indicator.0 {
                 picks.push((entity, hit.clone()));
             }
@@ -1218,18 +1229,41 @@ mod tests {
         assert!(BODY_MIN_RADIUS < INDICATOR_MIN_RADIUS);
     }
 
-    /// A system's ring holds a small margin however large its shell grows
+    /// A system's ring stands outside the mark the field draws, at every size
     ///
-    /// The reported trouble: a bare system at the zoom floor, and a bright
-    /// star's point spread, drew a shell large enough that a ring
-    /// [`INDICATOR_MARGIN`] times it circled the view. The floor keeps a mark
-    /// aimable and the ceiling keeps it a mark, whatever the shell does between.
+    /// The reported trouble, both ways round. A ring held to a ceiling of its
+    /// own was drawn *inside* a prominent system's mark — a blue circle sunk
+    /// in a yellow disc — and a ring taken as a multiple of the mark instead
+    /// wore a hoop around it. So the gap is [`INDICATOR_AIR`] pixels wherever
+    /// the star is large enough to show, and the floor takes over where it is
+    /// not.
     #[test]
-    fn a_system_ring_never_becomes_a_halo() {
-        assert_eq!(system_mark(0., 1.), INDICATOR_MIN_RADIUS);
-        assert_eq!(system_mark(1e12, 1.), INDICATOR_MAX_RADIUS);
-        // In between, the shell is stood off by the margin and passed through.
-        assert_eq!(system_mark(8., 1.), 8. * INDICATOR_MARGIN);
+    fn a_system_ring_stands_outside_the_mark_it_rings() {
+        // A dot, a mark the floor still covers, and marks past it: the
+        // prominent system's tens of pixels, and one far past anything the
+        // bounds on a mark allow.
+        for drawn in [0., 1e-3, 1., 5.5, 8., 34., 1e3] {
+            for view in [View::Map, View::Realistic] {
+                let star = super::super::field::drawn_radius(&view, drawn, 1.)
+                    .unwrap_or(0.);
+                let ring = system_mark(&view, drawn, 1.);
+
+                assert!(
+                    ring > star,
+                    "a {star} px mark wore a {ring} px ring in {view:?}"
+                );
+                assert!(
+                    ring >= INDICATOR_MIN_RADIUS,
+                    "a {ring} px ring is under the floor in {view:?}"
+                );
+                // And no further out than the air, so it never reads as a halo
+                // however large the mark grows.
+                assert!(
+                    ring - star <= INDICATOR_AIR.max(INDICATOR_MIN_RADIUS),
+                    "a {star} px mark wore a {ring} px ring in {view:?}"
+                );
+            }
+        }
     }
 
     /// A world holding one system and one body, both under the pointer
@@ -1504,16 +1538,16 @@ mod tests {
 
     /// A world holding a camera and a system with a shell drawn around it
     ///
-    /// The shell is sized so its ring lands in the responsive band — over
-    /// [`INDICATOR_MIN_RADIUS`] and under [`INDICATOR_MAX_RADIUS`] — once the
-    /// camera has come in, and at the floor when it stands off. A ring pinned at
-    /// either bound says nothing about where the camera is, so a shell that
-    /// lifts off the floor as the camera nears is what leaves the mark with
+    /// The shell is sized so its mark lifts clear of [`INDICATOR_MIN_RADIUS`]
+    /// once the camera has come in, and sits at the floor when it stands off.
+    /// A mark pinned at the floor says nothing about where the camera is, so a
+    /// shell that lifts off it as the camera nears is what leaves the mark with
     /// anything to say.
     fn sized() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Marks>();
+        app.insert_resource(View::Map);
         app.add_systems(Update, (size_indicators, count_marks).chain());
         app.world_mut().spawn((looking(), crate::systems::tests::seeing()));
 
