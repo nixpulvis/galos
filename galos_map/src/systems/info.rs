@@ -688,7 +688,12 @@ fn described(
                 field(
                     ui,
                     "App. magnitude",
-                    format!("{:.1}", Magnitude(m as f64).apparent(Distance::light_years(away)).0),
+                    format!(
+                        "{:.1}",
+                        Magnitude(m as f64)
+                            .apparent(Distance::light_years(away))
+                            .0
+                    ),
                 );
             }
             if let Some(t) = system.baked_temperature() {

@@ -485,7 +485,10 @@ pub(crate) fn world_per_pixel(
 /// order two separate layers. Background, so the whole of it sits under the
 /// chrome and over the map.
 pub(crate) fn annotations_layer() -> egui::LayerId {
-    egui::LayerId::new(egui::Order::Background, egui::Id::new("map-annotations"))
+    egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("map-annotations"),
+    )
 }
 
 /// Where a point lands on screen, in logical pixels from the top left
