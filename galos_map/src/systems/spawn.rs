@@ -18,7 +18,7 @@ use crate::systems::{
 use crate::ui::{Gesture, PressOwner};
 use crate::{Names, Populated};
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::{RenderLayers, ViewVisibility};
+use bevy::camera::visibility::RenderLayers;
 use bevy::diagnostic::FrameCount;
 use bevy::image::{Image, ImageSampler};
 use bevy::light::NotShadowCaster;
@@ -33,10 +33,10 @@ use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
 use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
-use galos_index::aggregate::{TEMP_BUCKETS, bucket_temperature};
+use galos_index::aggregate::bucket_temperature;
 use galos_index::meta::Economies;
 use galos_photometry::psf::{ProfileKind, Psf};
-use galos_photometry::{Distance, Magnitude, Temperature};
+use galos_photometry::{Magnitude, Temperature};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Deref,
@@ -58,11 +58,8 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, drain_spawns.in_set(MapSet::Populate).after(spawn));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
     app.add_systems(Update, redim.in_set(MapSet::Populate));
-    // Repaints the star palette when the exposure moves; guarded on the change
-    // inside, so a resting frame does nothing.
-    app.add_systems(Update, reexpose.in_set(MapSet::Populate));
-    // Rebakes the star texture when the profile changes; guarded inside, like
-    // `reexpose`, so a resting frame does nothing.
+    // Rebakes the star texture when the profile changes; guarded on the
+    // change inside, so a resting frame does nothing.
     app.add_systems(Update, reprofile.in_set(MapSet::Populate));
 
     app.add_observer(select_on_click);
@@ -88,16 +85,6 @@ pub struct SystemMaterials {
     bright: Vec<Handle<StandardMaterial>>,
     /// The same colors, at whatever [`DimTo`] is asking
     dim: Vec<Handle<StandardMaterial>>,
-    /// A star drawn as itself: emissive, additive and blackbody-tinted, for the
-    /// realistic view
-    ///
-    /// Laid out as [`galos_index::aggregate::TEMP_BUCKETS`] rows of
-    /// [`MAG_STEPS`]` + 1` steps, so a star follows its temperature bucket and
-    /// how bright it looks to a handle with nothing painted per frame. The
-    /// emission is the step's flux on a compressed ramp (see
-    /// [`photometric_emissive`]), so a bright star's core outshines a faint
-    /// one's — which is how a constellation's stars stand out from the field.
-    photometric: Vec<Handle<StandardMaterial>>,
 }
 
 impl SystemMaterials {
@@ -110,17 +97,6 @@ impl SystemMaterials {
     fn get(&self, hue: Hue, dimmed: bool) -> &Handle<StandardMaterial> {
         let set = if dimmed { &self.dim } else { &self.bright };
         &set[hue as usize]
-    }
-
-    /// The handle for a star in temperature bucket `bucket` at brightness step
-    /// `step`.
-    fn photometric(
-        &self,
-        bucket: usize,
-        step: usize,
-    ) -> &Handle<StandardMaterial> {
-        &self.photometric[bucket.min(TEMP_BUCKETS - 1) * (MAG_STEPS + 1)
-            + step.min(MAG_STEPS)]
     }
 }
 
@@ -165,7 +141,14 @@ const GAMMA: f64 = 0.4;
 /// The reference the compressed ramp hangs from: a magnitude-zero star (flux
 /// one) is emitted at this, and [`StarExposure`] lifts or lowers the whole ramp
 /// by stops from there.
-const BRIGHT: f32 = 8.;
+///
+/// High because the field draws this level through the point-spread profile
+/// (see [`super::field`]), which piles the light into a tight core and lets it
+/// fall to dim wings — most of a mark is wing. A flat mark of the same peak
+/// spread its whole level across the disc and read far brighter, so it sat near
+/// eight; the profile deposits a fraction of that, so the reference climbs to
+/// meet it. Set by eye, roughly five stops up.
+const BRIGHT: f32 = 256.;
 
 /// Which brightness step an apparent magnitude falls on, clamped to the range
 pub(crate) fn mag_step(apparent: f64) -> usize {
@@ -190,11 +173,12 @@ const STAR_ZERO_POINT: f64 = 8.0;
 /// shown and draws in fainter ones whose peak now clears the floor — the way
 /// turning up an exposure does; closing it does the reverse. So how many stars
 /// there are and how large they draw falls out of this and the physics, with no
-/// magnitude limit set by hand. It scales the core each star is lit at too,
-/// through [`reexpose`].
+/// magnitude limit set by hand.
 #[derive(Resource)]
 pub struct StarExposure(pub f32);
 
+/// The dial rests at zero: neutral, the tuned look, a stop either way from
+/// there.
 impl Default for StarExposure {
     fn default() -> Self {
         StarExposure(0.)
@@ -222,10 +206,11 @@ impl StarExposure {
 /// The emission a photometric star of temperature `bucket` and brightness
 /// `step` is drawn at, at exposure `factor`
 ///
-/// The one place the palette's colour is worked out, so [`init_materials`] and
-/// [`reexpose`] cannot bake it two ways. The tint is the bucket's blackbody
-/// colour; the strength is the step's flux compressed by [`GAMMA`], lifted by
-/// [`BRIGHT`] and the exposure, so a bright star's core outshines a faint one's.
+/// The one place the realistic view's colour is worked out — the field's
+/// per-vertex glint reads it (see [`super::field`]). The tint is the bucket's
+/// blackbody colour; the strength is the step's flux compressed by [`GAMMA`],
+/// lifted by [`BRIGHT`] and the exposure, so a bright star's core outshines a
+/// faint one's.
 pub(crate) fn photometric_emissive(
     bucket: usize,
     step: usize,
@@ -235,32 +220,6 @@ pub(crate) fn photometric_emissive(
     let mag = MAG_HI + (step as f64 / MAG_STEPS as f64) * (MAG_LO - MAG_HI);
     let level = BRIGHT * Magnitude(mag).flux().0.powf(GAMMA) as f32 * factor;
     LinearRgba::rgb(tint[0] * level, tint[1] * level, tint[2] * level)
-}
-
-/// A photometric star material: emissive, additive and blackbody-tinted
-///
-/// Black albedo, so the lit path adds no reflected light on top of the
-/// emission — the star is the light, not a thing lit by one, as the body stars
-/// are. `unlit` would skip the emissive entirely: Bevy only adds emissive
-/// inside the lit path.
-fn photometric_material(
-    bucket: usize,
-    step: usize,
-    factor: f32,
-    psf: Handle<Image>,
-) -> StandardMaterial {
-    StandardMaterial {
-        base_color: Color::BLACK,
-        emissive: photometric_emissive(bucket, step, factor),
-        // The point spread the emissive is shaped by: a bright core falling off
-        // to nothing, so a star reads as a cored glint and never a flat disc.
-        emissive_texture: Some(psf),
-        alpha_mode: AlphaMode::Add,
-        // One quad billboarded to the eye, drawn from whichever side it is
-        // caught rather than culled to nothing.
-        cull_mode: None,
-        ..default()
-    }
 }
 
 /// How wide the baked point spread is, in texels a side
@@ -1149,57 +1108,6 @@ fn update(
     }
 }
 
-/// Draw each resolvable system as the star it is, for the realistic view
-///
-/// A star is tinted by its blackbody temperature and lit at one core strength;
-/// what sets a bright star apart from a faint one is its drawn size, which
-/// [`super::scale::size_photometrically`] grows with how far it sits below the
-/// limiting magnitude. Brightness is a logarithm, so a star a hundred times
-/// brighter is a few sizes larger, not a hundred — no star runs away.
-///
-/// Moved onto the eye's own render layer, off the shells' no-bloom one, so the
-/// bloom softens it into a glint. [`shells`] puts it back on a switch to the
-/// map view.
-///
-/// Decided afresh each frame and written only where it differs, as [`shells`]
-/// is, and skips a star not drawn this frame for the same reason.
-pub(super) fn photometry(
-    materials: Res<SystemMaterials>,
-    camera: Query<&OrbitCamera>,
-    mut stars: Query<
-        (
-            &System,
-            &mut MeshMaterial3d<StandardMaterial>,
-            &mut RenderLayers,
-            &ViewVisibility,
-        ),
-        With<Shell>,
-    >,
-) {
-    let Ok(orbit) = camera.single() else {
-        return;
-    };
-    let scene = RenderLayers::layer(0);
-    for (system, mut material, mut layers, visible) in &mut stars {
-        if !visible.get() {
-            continue;
-        }
-        let apparent = Magnitude(system.absolute_magnitude())
-            .apparent(Distance::light_years(
-                orbit.eye.distance(system.position()),
-            ))
-            .0;
-        let wanted =
-            materials.photometric(system.temp_bucket(), mag_step(apparent));
-        if material.0 != *wanted {
-            material.0 = wanted.clone();
-        }
-        if *layers != scene {
-            *layers = scene.clone();
-        }
-    }
-}
-
 /// Repaint the dimmed colors when the slider moves
 ///
 /// The handles stay as they are, so nothing has to be told which material it
@@ -1293,7 +1201,6 @@ pub(crate) fn init_materials(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     dim: Res<DimTo>,
-    exposure: Res<StarExposure>,
     star_profile: Res<StarProfile>,
     mut commands: Commands,
 ) {
@@ -1312,64 +1219,22 @@ pub(crate) fn init_materials(
     let bright = set(1.);
     let dim = set(dim.opacity());
 
-    // A star per temperature bucket per brightness step: the bucket fixes the
-    // tint, the step fixes the flux, so [`photometry`] points each star at the
-    // handle for its colour and how bright it looks. Baked at the current
-    // exposure; [`reexpose`] repaints on a move.
-    let factor = exposure.factor();
+    // The baked point spread every realistic star's glint is sampled through
+    // (see [`super::field`]); [`reprofile`] rewrites it when the profile
+    // changes.
     let psf = images.add(star_psf(star_profile.0));
-    let mut photometric = Vec::with_capacity(TEMP_BUCKETS * (MAG_STEPS + 1));
-    for bucket in 0..TEMP_BUCKETS {
-        for step in 0..=MAG_STEPS {
-            photometric.push(assets.add(photometric_material(
-                bucket,
-                step,
-                factor,
-                psf.clone(),
-            )));
-        }
-    }
     commands.insert_resource(StarSprite {
         quad: meshes.add(Rectangle::new(1., 1.)),
         psf,
     });
-    commands.insert_resource(SystemMaterials {
-        bright,
-        dim,
-        photometric,
-    });
-}
-
-/// Repaint the star palette when the exposure moves
-///
-/// The emission the realistic view draws a star at is baked into the palette,
-/// so a change to the exposure is a change to every handle. Recolouring the
-/// shared assets repaints every star drawn in them at once, as [`redim`] does
-/// for the dimmed shells. Guarded on the change: the palette is a thousand
-/// assets, and re-uploading them every frame is not free.
-fn reexpose(
-    exposure: Res<StarExposure>,
-    materials: Res<SystemMaterials>,
-    mut assets: ResMut<Assets<StandardMaterial>>,
-) {
-    if !exposure.is_changed() {
-        return;
-    }
-    let factor = exposure.factor();
-    for (index, handle) in materials.photometric.iter().enumerate() {
-        let bucket = index / (MAG_STEPS + 1);
-        let step = index % (MAG_STEPS + 1);
-        if let Some(mut material) = assets.get_mut(handle) {
-            material.emissive = photometric_emissive(bucket, step, factor);
-        }
-    }
+    commands.insert_resource(SystemMaterials { bright, dim });
 }
 
 /// Rebake the star point spread when the profile changes
 ///
 /// The sprite's texture is the profile's shape ([`star_psf`]); a change to the
 /// profile is a change to that one image, and rewriting it in place repaints
-/// every star drawn through it at once, as [`reexpose`] does for the palette.
+/// every star drawn through it at once, the field's glint included.
 /// Guarded on the change, since baking and re-uploading the texture is not free.
 fn reprofile(
     profile: Res<StarProfile>,

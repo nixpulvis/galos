@@ -23,9 +23,10 @@ use crate::systems::System;
 use crate::systems::bodies::spawn::Strength;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{screen_position, world_per_pixel};
-use crate::systems::scale::View;
+use crate::systems::scale::{UNSEEN, View};
 use crate::systems::spawn::{
-    ColorBy, Shell, StarExposure, hue, mag_step, photometric_emissive,
+    ColorBy, Shell, StarExposure, StarSprite, hue, mag_step,
+    photometric_emissive,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
@@ -35,14 +36,19 @@ use bevy::image::{Image, ImageSampler};
 use bevy::math::DVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::post_process::bloom::Bloom;
+use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use bevy::prelude::*;
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Startup, spawn_field);
+    // After `init_materials`, whose `StarSprite` carries the baked point
+    // spread the realistic glint is painted through.
+    app.add_systems(
+        Startup,
+        spawn_field.after(crate::systems::spawn::init_materials),
+    );
     app.add_systems(Update, tune_field);
     app.add_systems(
         Update,
@@ -76,9 +82,64 @@ struct FieldMaterials {
 
 /// The smallest a mark is drawn, as a radius in pixels
 ///
-/// A star too far to resolve is still a point of light, not nothing, so it is
-/// held to a sliver of a pixel rather than allowed to vanish.
+/// The map view's floor: a distant system is still a point of light, not
+/// nothing, so its mark is held here rather than allowed to vanish. The
+/// realistic view floors instead on the eye's own limit, drawing only the
+/// stars that clear it (see [`build_field`]).
 const SMALLEST: f32 = 0.75;
+
+/// The pixel radius to draw a system's mark at, or `None` to leave it undrawn
+///
+/// `raw` is the radius the view's sizing system settled, read off the world
+/// size it left on the shell. The two views floor it apart:
+///
+/// - [`View::Map`] holds every system to [`SMALLEST`], so a distant one stays
+///   a point rather than a sub-pixel speck.
+/// - [`View::Realistic`] draws only the stars that clear the eye's floor. One
+///   that did not was shrunk by [`super::scale::size_photometrically`] to the
+///   [`UNSEEN`] sliver — kept nonzero so a name still places on it — and is
+///   not a drawn star. Flooring it up to [`SMALLEST`] the way the map does
+///   would light the whole sub-floor sky; so a sliver is dropped and every
+///   cleared star keeps its own photometric radius, no floor.
+fn mark_radius(view: &View, raw: f32) -> Option<f32> {
+    match view {
+        View::Map => Some(raw.max(SMALLEST)),
+        // The sliver's own radius is `UNSEEN / 2`; anything larger cleared the
+        // floor and is drawn at that radius.
+        View::Realistic => (raw > UNSEEN * 0.5).then_some(raw),
+    }
+}
+
+/// The pixel radius this draws a system's mark at, or `None` where it draws
+/// none
+///
+/// `scale` is the world size the view's sizing system left on the shell and
+/// `per_pixel` how much world a pixel covers where the system stands. The two
+/// views write that size in different terms: the map's shell is a unit-radius
+/// sphere, so its scale is the radius outright, where
+/// [`super::scale::size_photometrically`] writes twice the star's pixel radius
+/// as a world size on a unit quad. So the map reads the scale straight and the
+/// realistic view halves it — read the same way, the map mark would come out
+/// half the extent and stand inside the orbits it is meant to enclose.
+///
+/// The one answer, so that what the field paints and what
+/// [`super::pointing::size_indicators`] rings and catches the pointer over
+/// cannot come apart. A ring worked out from a second reading of the same
+/// shell was drawn inside the mark it was meant to be around.
+pub(crate) fn drawn_radius(
+    view: &View,
+    scale: f32,
+    per_pixel: f32,
+) -> Option<f32> {
+    let raw = scale / per_pixel.max(f32::MIN_POSITIVE);
+    mark_radius(
+        view,
+        match view {
+            View::Map => raw,
+            View::Realistic => raw * 0.5,
+        },
+    )
+}
 
 /// The side of the disc-mask texture, in texels
 ///
@@ -93,27 +154,29 @@ fn spawn_field(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    sprite: Res<StarSprite>,
 ) {
     // A degenerate mesh to begin with; `build_field` swaps in a fresh one
     // holding the frame's stars each frame.
     let mesh =
         meshes.add(field_mesh(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
-    // A disc mask, so a mark is a round dot rather than the square its bare
-    // quad would draw. White and opaque at the centre and clear at the
-    // corners in every channel: the map's solid dot reads the alpha for its
-    // blend over the galaxy, the realistic view's additive glint reads the
-    // colour, so masking both keeps the corners off whichever way it is
-    // painted.
+    // The two marks are cut to a round profile, so a bare quad never shows as
+    // a square. The map's is a disc: a flat solid dot, its fade in the alpha
+    // for the blend over the galaxy. The realistic view's is the shared point
+    // spread ([`super::spawn::star_psf`]) — a bright core falling to nothing —
+    // so a star is a cored glow the camera's bloom spreads into a glint,
+    // never the flat disc a hard mask draws. The profile peaks solid at its
+    // centre, so a mark a pixel or two across still lands a bright point
+    // rather than a sample of its faint edge.
     //
-    // The per-vertex colour is the rest of what a mark comes out. The map's is
-    // a flat solid dot, its fade in the alpha; the realistic view's is the
-    // blackbody colour at its HDR level, added and left for the bloom to grow
-    // a bright star past its faint neighbours. Unlit either way: a mark is a
-    // light, not a thing lit by one.
+    // The per-vertex colour is the rest: the map's fade in the alpha, the
+    // realistic view's blackbody colour at its HDR level, added for the bloom
+    // to grow a bright star past its faint neighbours. Unlit either way: a
+    // mark is a light, not a thing lit by one.
     let mask = images.add(disc_mask());
     let solid = materials.add(StandardMaterial {
         base_color: Color::WHITE,
-        base_color_texture: Some(mask.clone()),
+        base_color_texture: Some(mask),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         cull_mode: None,
@@ -121,7 +184,7 @@ fn spawn_field(
     });
     let glint = materials.add(StandardMaterial {
         base_color: Color::WHITE,
-        base_color_texture: Some(mask),
+        base_color_texture: Some(sprite.psf.clone()),
         alpha_mode: AlphaMode::Add,
         unlit: true,
         cull_mode: None,
@@ -239,9 +302,12 @@ fn build_field(
         };
         let away = crate::space::metres(orbit.eye - position).length() as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
-        // The pixel size the view's sizing system settled, read back off the
-        // world size it left on the shell.
-        let radius = (drawn.scale.x / per_pixel * 0.5).max(SMALLEST);
+        // The pixel radius the view's sizing system settled, read back off the
+        // world size it left on the shell, then floored or dropped by the
+        // view; see [`drawn_radius`].
+        let Some(radius) = drawn_radius(&view, drawn.scale.x, per_pixel) else {
+            continue;
+        };
 
         // How much of the mark is left: dimmed where the filters exclude it,
         // faded as it goes out.
@@ -250,15 +316,15 @@ fn build_field(
             fade *= dim.opacity();
         }
         let color = match *view {
-            // A flat solid dot in the allegiance colour, its fade in the
-            // alpha for the blend over the galaxy.
+            // A flat solid dot in the allegiance colour, its fade in the alpha
+            // for the blend over the galaxy.
             View::Map => {
                 let c = LinearRgba::from(hue(system, &color_by).color());
                 [c.red, c.green, c.blue, fade]
             }
-            // A photometric glint: the blackbody tint at its HDR level, shaped
-            // by the point spread and spread by the bloom. The blend is
-            // additive, so the fade scales the emission, not an alpha.
+            // A photometric glint: the blackbody tint at its HDR level, spread
+            // by the bloom, added rather than blended so the fade scales the
+            // emission, not an alpha.
             View::Realistic => {
                 let apparent = Magnitude(system.absolute_magnitude())
                     .apparent(Distance::light_years(
@@ -399,5 +465,20 @@ mod tests {
             &[0, 0, 0, 0],
             "the corner of the quad is still drawn"
         );
+    }
+
+    /// The realistic view draws only the stars that clear the eye's floor
+    ///
+    /// A star below it is shrunk to the [`UNSEEN`] sliver by
+    /// `size_photometrically`; drawn as a mark it lit the whole sub-floor sky.
+    /// So a sliver is not drawn, a cleared star keeps its own radius with no
+    /// floor, and only the map holds every system up to [`SMALLEST`].
+    #[test]
+    fn the_realistic_view_drops_a_sub_floor_star() {
+        assert_eq!(mark_radius(&View::Realistic, UNSEEN * 0.5), None);
+        assert_eq!(mark_radius(&View::Realistic, 0.6), Some(0.6));
+        assert_eq!(mark_radius(&View::Realistic, 4.0), Some(4.0));
+        assert_eq!(mark_radius(&View::Map, UNSEEN * 0.5), Some(SMALLEST));
+        assert_eq!(mark_radius(&View::Map, 3.0), Some(3.0));
     }
 }

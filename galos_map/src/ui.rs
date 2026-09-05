@@ -999,8 +999,8 @@ pub fn chrome(
                 })
                 .inner;
             // Only when it lands somewhere new, so a slider reporting the same
-            // value frame after frame does not repaint the whole palette each
-            // time; see [`crate::systems::spawn::reexpose`].
+            // value frame after frame does not mark `StarExposure` changed and
+            // trip every reader of it needlessly.
             if slider.changed() && settings.star_exposure.0 != ev {
                 settings.star_exposure.0 = ev;
             }

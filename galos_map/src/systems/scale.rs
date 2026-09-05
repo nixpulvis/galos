@@ -11,7 +11,7 @@
 //! been squeezed down under it. [`View::Realistic`] draws a bare point for the
 //! eye's bloom to spread into a star, sized to a pixel whatever the distance so
 //! that a star's brightness is what reads and not its disc; see
-//! [`super::spawn::photometry`], which paints it.
+//! [`super::field`], which paints it.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
@@ -441,7 +441,7 @@ const DOT_RADIUS: f32 = 0.6;
 /// invisible while the name it carries keeps a scale to be read against. This
 /// is how the realistic view keeps a marked-but-undrawn star named, the way the
 /// map view keeps a selection named from behind the spyglass.
-const UNSEEN: f32 = 1e-3;
+pub(crate) const UNSEEN: f32 = 1e-3;
 
 /// The visible radius of a star's point spread, in screen pixels
 ///
