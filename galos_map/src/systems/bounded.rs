@@ -237,8 +237,21 @@ fn collect(
 ///
 /// The prefix is pushed to the shared spawn queue, which builds only the
 /// systems not already on the map, and everything outside every cell's prefix
-/// is queued to drop. The held system is spared, since the camera's
-/// FloatingOrigin hangs under it.
+/// is queued to drop.
+///
+/// Three things are spared, as [`super::evict`] spares them on the spyglass
+/// path: the system the camera is standing in, since its `FloatingOrigin`
+/// hangs under it; a route's stops, which are how the way on is found; and
+/// whatever the user has picked out, which they are holding onto by hand.
+/// Dropping a selection here does not merely lose it — the ring and the row go
+/// on naming it, so [`super::fetch::fetch_selected`] builds the star again the
+/// moment [`super::selection::follow_selection`] rewrites the row, and the
+/// walk drops it again on the next frame. A system flickering in and out every
+/// frame is what that came to.
+///
+/// The set is written rather than added to, so a system the walk wants again
+/// is not carried off by an eviction queued for it several frames ago and
+/// still waiting on the budget.
 fn reconcile(
     cameras: Query<(&OrbitCamera, &Camera)>,
     index: Res<ResidentIndex>,
@@ -248,7 +261,8 @@ fn reconcile(
     holding: Res<HeldSystem>,
     spyglass: Res<Spyglass>,
     view_mode: Res<View>,
-    systems: Query<(Entity, &System)>,
+    selection: Res<crate::systems::selection::Selection>,
+    systems: Query<(Entity, &System, Has<crate::systems::route::Hop>)>,
     mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
 ) {
@@ -269,7 +283,8 @@ fn reconcile(
     };
 
     let existing: HashSet<i64> =
-        systems.iter().map(|(_, system)| system.address).collect();
+        systems.iter().map(|(_, system, _)| system.address).collect();
+    let picked: HashSet<i64> = selection.addresses().into_iter().collect();
 
     // The resolvable prefix of every resident cell: the systems close enough to
     // separate. Build only the ones not already drawn; note every one wanted.
@@ -305,15 +320,21 @@ fn reconcile(
 
     // Everything outside every prefix goes: the tail a cell sheds as it
     // recedes, the systems of a cell whose payload has been freed, and —
-    // clearing — whatever fell outside the bubble above.
-    for (entity, system) in &systems {
-        if Some(entity) == holding.of() {
-            continue;
-        }
-        if !wanted.contains(&system.address) {
-            evictions.0.insert(entity);
-        }
-    }
+    // clearing — whatever fell outside the bubble above. Written whole, so a
+    // system the walk has taken back is not still down for eviction.
+    evictions.0 = systems
+        .iter()
+        .filter(|(entity, system, hop)| {
+            if Some(*entity) == holding.of()
+                || *hop
+                || picked.contains(&system.address)
+            {
+                return false;
+            }
+            !wanted.contains(&system.address)
+        })
+        .map(|(entity, ..)| entity)
+        .collect();
 }
 
 /// Free the payloads of cells the walk no longer wants
@@ -458,6 +479,115 @@ mod tests {
             app.world().get::<ChildOf>(eye).map(|of| of.parent()),
             Some(map),
             "the camera stayed inside a system the switch will despawn",
+        );
+    }
+
+    /// A world with the walk holding nothing, so every system is out of reach
+    /// of every prefix and only what is spared survives
+    fn walking() -> App {
+        let mut app = App::new();
+        app.add_systems(Update, reconcile);
+        app.init_resource::<PendingEvictions>();
+        app.init_resource::<PendingSpawns>();
+        app.init_resource::<ResidentCells>();
+        app.init_resource::<HeldSystem>();
+        app.init_resource::<crate::systems::selection::Selection>();
+        app.insert_resource(ResidentIndex(galos_index::Index::default()));
+        app.insert_resource(Populated::default());
+        app.insert_resource(Names::new(Vec::new()));
+        app.insert_resource(View::Map);
+        app.insert_resource(Spyglass {
+            fetch: true,
+            radius: 50.,
+            clear: true,
+            lock_camera: false,
+            follow_camera: true,
+        });
+        app.world_mut()
+            .spawn((OrbitCamera::default(), crate::systems::tests::seeing()));
+        app
+    }
+
+    /// Which systems the walk has queued to drop
+    fn dropping(app: &mut App) -> Vec<i64> {
+        let queued = app.world().resource::<PendingEvictions>().0.clone();
+        let mut addresses: Vec<i64> = queued
+            .iter()
+            .filter_map(|&entity| app.world().get::<System>(entity))
+            .map(|system| system.address)
+            .collect();
+        addresses.sort();
+        addresses
+    }
+
+    /// The walk does not drop what the user has picked out
+    ///
+    /// The reported trouble: a selection panned away from and zoomed past fell
+    /// outside every cell's prefix, so the walk dropped its star — and
+    /// `fetch::fetch_selected` built it again the moment
+    /// `selection::follow_selection` rewrote the row off the star that had just
+    /// arrived. The two ran a frame apart, and the system flickered in and out
+    /// for as long as the selection stood. Spared here, as
+    /// [`super::evict`] spares it on the spyglass path.
+    #[test]
+    fn the_walk_does_not_drop_a_selection() {
+        use crate::systems::selection::{Picked, Selection};
+        use crate::systems::tests::system;
+
+        let mut app = walking();
+        let picked = system(1);
+        app.world_mut().spawn(picked.clone());
+        app.world_mut().spawn(system(2));
+        app.world_mut().resource_mut::<Selection>().set(Picked::System(picked));
+
+        app.update();
+
+        assert_eq!(
+            dropping(&mut app),
+            vec![2],
+            "the walk dropped the star the selection is drawn on"
+        );
+    }
+
+    /// Nor a stop on a route, which is how the way on is found
+    #[test]
+    fn the_walk_does_not_drop_a_route_stop() {
+        use crate::systems::route::Hop;
+        use crate::systems::tests::system;
+
+        let mut app = walking();
+        app.world_mut().spawn((system(1), Hop::Next));
+        app.world_mut().spawn(system(2));
+
+        app.update();
+
+        assert_eq!(dropping(&mut app), vec![2], "the walk dropped a stop");
+    }
+
+    /// An eviction is re-decided every frame, not left standing
+    ///
+    /// The queue is drained against a budget, so an entry may wait frames. Held
+    /// rather than rewritten, a system the walk had taken back — picked out
+    /// since it was queued, or resolvable again — would be carried off by the
+    /// eviction it no longer deserves.
+    #[test]
+    fn an_eviction_is_let_go_of_when_the_walk_takes_a_system_back() {
+        use crate::systems::selection::{Picked, Selection};
+        use crate::systems::tests::system;
+
+        let mut app = walking();
+        let picked = system(1);
+        app.world_mut().spawn(picked.clone());
+        app.update();
+        assert_eq!(dropping(&mut app), vec![1], "nothing was queued to drop");
+
+        // Picked out while the eviction sits in the queue.
+        app.world_mut().resource_mut::<Selection>().set(Picked::System(picked));
+        app.update();
+
+        assert!(
+            dropping(&mut app).is_empty(),
+            "the selection was carried off by a stale eviction"
         );
     }
 }
