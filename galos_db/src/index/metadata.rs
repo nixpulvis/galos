@@ -1,415 +1,313 @@
-//! Building the galaxy index from the database.
+//! The serving metadata beside the cell tree, and how a watch keeps it current.
 //!
-//! This is the one place the derived index meets the authoritative dataset. It
-//! reads every positioned system and its scanned stars, turns them into the
-//! photometry the ordering and the glow need, through `galos_photometry`'s
-//! fallback chain, since two-thirds of systems carry no scanned star, and
-//! hands the result to `galos_index`'s pure builder. Nothing about the tree
-//! lives here; this crate knows the database and the builder knows the tree,
-//! and they meet at [`System`].
+//! The cells carry what the map draws. These carry what a click wants: the
+//! populated table the map colours and filters by, the names table a search and
+//! a route read, the faction names, and one file of bodies per system.
 //!
-//! The queries are deliberately unchecked `sqlx::query`, not the `query!`
-//! macro, so the build tool needs no compile-time database and no cached
-//! metadata beyond what the rest of the crate already carries. The columns are
-//! read back by name.
+//! All four were derived wholesale from the database every time the index
+//! published, which a full build wants and a watch cannot afford: the names
+//! table alone is every positioned system, so a pass that had fifty arrivals to
+//! publish read two million rows and rewrote a hundred megabytes to say so. So
+//! a watch holds the three tables open here — [`Metadata`] — and
+//! [`follow`](Metadata::follow) reads only the systems that changed, patches
+//! them in, and writes only what that moved: the names chunks the arrivals
+//! landed in, the populated table when a political column really did change,
+//! the faction names when a new one is reported. The body files were already
+//! written per changed system and stay that way.
+//!
+//! Patching rests on the changed set being complete, which is
+//! [`changed_addresses`](super::changed_addresses)'s business, and on a table
+//! being able to tell that a system reported again says nothing new, which is
+//! each record's `PartialEq`. Where the feed does slip a change past the cursor
+//! — a write refused for being older than the row it would replace, which the
+//! sync counts — the system converges the next time anything touches it, since
+//! every patch rebuilds its whole record from the current row rather than
+//! editing what is held.
 
 use crate::barycenters::Barycenter;
 use crate::bodies::{composition, Body, Parent, Surface};
 use crate::stars::Star;
 use crate::{orbit, Database, Result};
 use elite_journal::body::{Discovery, Material, Orbit, Spin};
-use galos_index::source::write_meta;
-use galos_index::{
-    meta, source, BuildParams, Checkpoint, Index, Snapshot, System, Tree,
-};
-use galos_photometry::{ClassLight, Magnitude, Temperature};
+use galos_index::source::{read_meta, write_meta};
+use galos_index::{meta, source, NameTable};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
-use std::collections::HashMap;
-use std::fmt;
+use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::Path;
-use std::time::{Duration, Instant};
-use tracing::{debug, info};
 
-/// The edges between the eight Recency buckets, in days since a system was last
-/// written. Updated today lands in bucket 0, untouched for a decade in bucket 7.
-const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
+/// The columns a [`meta::NameEntry`] is read from.
+const NAMES_SELECT: &str = "SELECT address, name, \
+     ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z \
+     FROM systems";
 
-/// Which Recency bucket an age in days falls in, `0..8`.
-fn age_bucket(days: i64) -> usize {
-    AGE_EDGES.iter().filter(|&&edge| days >= edge).count()
-}
-
-/// One system's photometry, by the fallback chain: its scanned stars summed if
-/// it has any, else the class it is named for, else a default.
+/// The columns a [`meta::PopulatedSystem`] is read from.
 ///
-/// `stars` is the `(absolute magnitude, temperature)` of every scanned star.
-/// Their light adds, so the magnitudes combine to one figure and the tint is
-/// the brightest star's, which dominates it. With no stars the primary class
-/// stands in, and with no class the default M dwarf does.
-fn system_input(
-    address: i64,
-    position: [f64; 3],
-    primary_star_class: Option<&str>,
-    stars: &[(f64, f64)],
-    age_bucket: usize,
-) -> System {
-    let (absolute_magnitude, temperature) =
-        match Magnitude::combine(stars.iter().map(|&(m, _)| Magnitude(m))) {
-            Some(combined) => {
-                let tint = stars
-                    .iter()
-                    .copied()
-                    .min_by(|a, b| a.0.total_cmp(&b.0))
-                    .map(|(_, temperature)| temperature)
-                    .expect("a combined magnitude means at least one star");
-                (combined.0, tint)
-            }
-            None => {
-                let light = ClassLight::of(primary_star_class.unwrap_or(""));
-                (light.absolute_magnitude.0, light.temperature.0)
-            }
-        };
-    System {
-        id64: address as u64,
-        position,
-        absolute_magnitude,
-        temperature,
-        age_bucket,
-    }
-}
+/// Only factions with a row in `factions` are carried: `system_factions` holds
+/// ids EDDN has reported a system for but never named, and the client can
+/// neither name nor filter by one, so it would only stand as an unreadable line
+/// in a panel. They are gathered here rather than by a query per system.
+const POPULATED_SELECT: &str = "SELECT address, name, \
+     ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z, \
+     population, security, government, allegiance, \
+     primary_economy, secondary_economy, body_count, non_body_count, \
+     COALESCE( \
+         (SELECT array_agg(sf.faction_id) FROM system_factions sf \
+          WHERE sf.system_address = systems.address \
+            AND EXISTS ( \
+                SELECT 1 FROM factions f WHERE f.id = sf.faction_id \
+            )), \
+         ARRAY[]::integer[] \
+     ) AS factions \
+     FROM systems";
 
-/// Every scanned star grouped under its system: its visual `(absolute
-/// magnitude, temperature)`, for the given addresses, or all systems when
-/// `None`.
+/// The metadata artifacts, and how much of each a publish wrote.
 ///
-/// Each star's scanned magnitude is bolometric — its whole output as one figure
-/// — so it is turned into the visual magnitude the sky sees by
-/// [`Magnitude::visual`] before it is grouped. A star missing a magnitude or a
-/// temperature cannot be summed, so it is left out and its system falls to the
-/// class fallback like any other.
-async fn stars_by_system(
-    db: &Database,
-    addresses: Option<&[i64]>,
-) -> Result<HashMap<i64, Vec<(f64, f64)>>> {
-    let rows = match addresses {
-        None => {
-            sqlx::query(
-                "SELECT system_address, absolute_magnitude, temperature \
-                 FROM stars",
-            )
-            .fetch_all(&db.pool)
-            .await?
-        }
-        Some(addresses) => {
-            sqlx::query(
-                "SELECT system_address, absolute_magnitude, temperature \
-                 FROM stars WHERE system_address = ANY($1)",
-            )
-            .bind(addresses)
-            .fetch_all(&db.pool)
-            .await?
-        }
-    };
-    let mut stars: HashMap<i64, Vec<(f64, f64)>> = HashMap::new();
-    for row in rows {
-        let address: i64 = row.try_get("system_address")?;
-        let magnitude: Option<f32> = row.try_get("absolute_magnitude")?;
-        let temperature: Option<f32> = row.try_get("temperature")?;
-        // Elite's scanned magnitude is bolometric — a star's whole output as if
-        // all of it were visible — so convert it to the visual magnitude the
-        // sky reads. This is where a white dwarf keeps its faint scanned
-        // brightness and a neutron star or black hole falls to nothing, with no
-        // per-class figure. See [`Magnitude::visual`].
-        if let (Some(m), Some(t)) = (magnitude, temperature) {
-            let t = t as f64;
-            stars
-                .entry(address)
-                .or_default()
-                .push((Magnitude(m as f64).visual(Temperature(t)).0, t));
-        }
-    }
-    Ok(stars)
-}
-
-/// One `systems` row turned into build input through the photometry fallback.
-///
-/// The row carries `address`, the three `ST_?` coordinates, `primary_star_class`
-/// and `updated_at`; `now` dates the Recency bucket and `stars` supplies any scan.
-fn input_from_row(
-    row: &sqlx::postgres::PgRow,
-    stars: &HashMap<i64, Vec<(f64, f64)>>,
-    now: chrono::NaiveDateTime,
-) -> Result<System> {
-    let address: i64 = row.try_get("address")?;
-    let x: f64 = row.try_get("x")?;
-    let y: f64 = row.try_get("y")?;
-    let z: f64 = row.try_get("z")?;
-    let class: Option<String> = row.try_get("primary_star_class")?;
-    let updated: chrono::NaiveDateTime = row.try_get("updated_at")?;
-    let bucket = age_bucket((now - updated).num_days());
-    let system_stars = stars.get(&address).map(Vec::as_slice).unwrap_or(&[]);
-    Ok(system_input(address, [x, y, z], class.as_deref(), system_stars, bucket))
-}
-
-/// The addresses of systems changed since `since`: those whose own row moved or
-/// whose stars did, since a scan re-magnitudes a system without touching its row.
-async fn changed_addresses(
-    db: &Database,
-    since: chrono::NaiveDateTime,
-) -> Result<Vec<i64>> {
-    let rows = sqlx::query(
-        "SELECT address FROM systems WHERE updated_at > $1 AND position IS NOT NULL \
-         UNION \
-         SELECT DISTINCT system_address FROM stars WHERE updated_at > $1",
-    )
-    .bind(since)
-    .fetch_all(&db.pool)
-    .await?;
-    Ok(rows.iter().map(|row| row.get::<i64, _>("address")).collect())
-}
-
-/// Read every positioned system, with its stars, as build input.
-pub async fn read_inputs(db: &Database) -> Result<Vec<System>> {
-    let now = db.now().await?.naive_utc();
-    let stars = stars_by_system(db, None).await?;
-    let rows = sqlx::query(
-        "SELECT address, \
-                ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z, \
-                primary_star_class, updated_at \
-         FROM systems WHERE position IS NOT NULL",
-    )
-    .fetch_all(&db.pool)
-    .await?;
-    rows.iter().map(|row| input_from_row(row, &stars, now)).collect()
-}
-
-/// Build the index from the database and write it to `dir`, then the metadata
-/// sidecars beside it: the cell tree the map draws from and the records a click
-/// reads, written into one directory so a single transport serves both.
-pub async fn build_to_dir(db: &Database, dir: &Path) -> Result<BuildReport> {
-    let inputs = read_inputs(db).await?;
-    let built = Snapshot::build(&inputs, &BuildParams::default());
-    built.write(dir)?;
-    let meta = write_metadata(db, dir, None).await?;
-    Ok(BuildReport::of(inputs.len(), &built, meta))
-}
-
-/// Read the systems changed since `since`, with their stars, as build input.
-///
-/// Each is rebuilt whole from its current record through the same fallback
-/// [`read_inputs`] uses, so a system applied incrementally lands exactly where a
-/// full rebuild would put it.
-pub async fn read_changed(
-    db: &Database,
-    since: chrono::NaiveDateTime,
-) -> Result<Vec<System>> {
-    let now = db.now().await?.naive_utc();
-    let addresses = changed_addresses(db, since).await?;
-    if addresses.is_empty() {
-        return Ok(Vec::new());
-    }
-    let stars = stars_by_system(db, Some(&addresses)).await?;
-    let rows = sqlx::query(
-        "SELECT address, \
-                ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z, \
-                primary_star_class, updated_at \
-         FROM systems WHERE address = ANY($1) AND position IS NOT NULL",
-    )
-    .bind(&addresses)
-    .fetch_all(&db.pool)
-    .await?;
-    rows.iter().map(|row| input_from_row(row, &stars, now)).collect()
-}
-
-/// Build the index once, then keep it current as the feed writes to the
-/// database, publishing what each round of changes touched.
-///
-/// This rides on top of the sync rather than inside it: `galos-sync` writes
-/// systems to the database in real time, and this follows the rows those writes
-/// leave behind. It applies whatever is waiting since the cursor at once, then
-/// every `interval` reads those changed since the previous pass, moves each in
-/// the live [`Tree`] (a handful of cells apiece, not a rebuild), and writes only
-/// the cells that changed. The clock is read before each query, so a write
-/// racing the query is asked for again next pass rather than missed, and
-/// applying it twice is idempotent.
-///
-/// The metadata sidecars are refreshed the same pass the cells are. The three
-/// tables are derived wholesale from the current database, so each is rewritten
-/// whole rather than patched, and the per-system body files are rewritten for
-/// exactly the addresses that changed. Rewriting `names.bin` whole every pass is
-/// a known interim cost: it holds every positioned system, so a single changed
-/// system reserializes the lot, and the price is paid until the transport grows
-/// a way to publish a delta into it.
-///
-/// On start it resumes from `checkpoint` when one is present and still matches
-/// the served directory: the tree is rebuilt in memory from the checkpoint's
-/// inputs and the cursor followed from there, so a restart costs a rebuild in
-/// memory rather than a fresh read of the whole database and a rewrite of every
-/// file. A missing, unreadable, or stale checkpoint falls back to a full build.
-/// The checkpoint rides outside `dir`, is never served, and is rewritten after
-/// the initial build and after each publish that changes anything.
-pub async fn watch(
-    db: &Database,
-    dir: &Path,
-    checkpoint: &Path,
-    interval: Duration,
-) -> Result<()> {
-    let params = BuildParams::default();
-    let (mut tree, mut since) = match resume(dir, checkpoint, &params) {
-        Some((tree, cursor)) => {
-            info!(
-                systems = tree.len(),
-                cursor = %cursor,
-                checkpoint = %checkpoint.display(),
-                "resumed from checkpoint"
-            );
-            (tree, cursor)
-        }
-        None => {
-            let since = db.now().await?.naive_utc();
-            info!(dir = %dir.display(), "building initial index (reading every system)");
-            let start = Instant::now();
-            let inputs = read_inputs(db).await?;
-            let mut tree = Tree::build(&inputs, &params);
-            tree.write(dir)?;
-            write_metadata(db, dir, None).await?;
-            Checkpoint { cursor: since, inputs }.write(checkpoint)?;
-            info!(
-                systems = tree.len(),
-                elapsed = ?start.elapsed(),
-                "initial index built"
-            );
-            (tree, since)
-        }
-    };
-    info!(
-        dir = %dir.display(),
-        interval_secs = interval.as_secs(),
-        "watching for changes"
-    );
-
-    loop {
-        let now = db.now().await?.naive_utc();
-        let changed = read_changed(db, since).await?;
-        if changed.is_empty() {
-            debug!(since = %since, "polled, no changes");
-        } else {
-            let start = Instant::now();
-            tree.apply(&changed);
-            tree.publish(dir)?;
-            let touched = changed_addresses(db, since).await?;
-            write_metadata(db, dir, Some(&touched)).await?;
-            Checkpoint { cursor: now, inputs: tree.to_inputs() }
-                .write(checkpoint)?;
-            info!(
-                changed = changed.len(),
-                systems = tree.len(),
-                elapsed = ?start.elapsed(),
-                "index updated"
-            );
-        }
-        since = now;
-        async_std::task::sleep(interval).await;
-    }
-}
-
-/// Rebuild the live tree from a checkpoint, if one reads and still matches the
-/// served directory. Returns the tree and the cursor to follow from, or [`None`]
-/// to build from scratch.
-///
-/// The served directory must already be this tree's projection — a full build
-/// wrote it and every publish since kept it so — so the tree it dates is trusted
-/// only when the directory reads back and holds the same system count. A
-/// directory that is missing, half-written, or otherwise out of step is rebuilt
-/// rather than resumed onto, since the delta publishes repair only the cells the
-/// next changes touch, not ones already wrong.
-fn resume(
-    dir: &Path,
-    path: &Path,
-    params: &BuildParams,
-) -> Option<(Tree, chrono::NaiveDateTime)> {
-    let checkpoint = Checkpoint::read(path).ok()?;
-    let tree = Tree::build(&checkpoint.inputs, params);
-    let served = Index::read(dir).ok()?;
-    if served.root()?.aggregate.count() != tree.len() as u64 {
-        return None;
-    }
-    Some((tree, checkpoint.cursor))
-}
-
-/// The metadata sidecars, and how much of each was written.
-///
-/// The four artifacts a click into the map reads, counted so the build tool
-/// prints proof that each was written: the populated table, the name-and-place
-/// table, the faction names, and the per-system body files.
+/// The tables are counted whole, since that is what stands in the directory
+/// after the publish and what the build tool prints as proof each was written.
+/// `name_chunks` and `body_files` are what the publish actually touched, which
+/// is the whole point of a watch pass: a few files, not the galaxy.
 #[derive(Copy, Clone, Debug)]
 pub struct MetaReport {
     pub populated: usize,
     pub names: usize,
     pub factions: usize,
     pub body_files: usize,
+    /// How many of the names table's chunks were written.
+    pub name_chunks: usize,
 }
 
-/// Write the four metadata artifacts beside the cell tree in `dir`.
+/// The three metadata tables, held open across a watch.
 ///
-/// The populated, names and faction tables are each derived wholesale from the
-/// current database and written whole. `bodies_for` decides the body files:
-/// [`None`] rebuilds every system's, which is what a full build wants, and
-/// [`Some`] rewrites only the given addresses', which is what a watch pass
-/// wants once it knows what changed.
-async fn write_metadata(
+/// Each is the authority on what stands in the published directory: a patch
+/// reads the changed systems' current rows, moves the tables, and writes what
+/// moved. Held rather than re-derived, because deriving any of them is a read
+/// of the whole `systems` table.
+pub(super) struct Metadata {
+    names: NameTable,
+    /// The populated table by address, materialised in address order when
+    /// written. Keyed rather than chunked: it is a fortieth of the names table,
+    /// and its rows change with the feed rather than only arriving, so there is
+    /// no tail for changes to cluster in.
+    populated: HashMap<i64, meta::PopulatedSystem>,
+    /// The faction names, in id order. Ids come from a sequence and a name is
+    /// never rewritten (`Faction::create` conflicts onto the name on record),
+    /// so this only ever grows, past `high`.
+    factions: Vec<meta::Faction>,
+    /// The highest faction id read.
+    high: i32,
+}
+
+impl Metadata {
+    /// Derive the tables from the database and write everything: every names
+    /// chunk, both whole tables, and a body file for every system that has
+    /// anything on record. What a full build publishes.
+    ///
+    /// `names` comes from the caller rather than a read of its own, being the
+    /// other half of the read the cell tree was built from; see
+    /// [`read_galaxy`](super::read_galaxy).
+    pub(super) async fn build(
+        db: &Database,
+        dir: &Path,
+        names: Vec<meta::NameEntry>,
+    ) -> Result<(Metadata, MetaReport)> {
+        let names = NameTable::from_entries(names);
+        let populated = populated_of(db, None)
+            .await?
+            .into_iter()
+            .map(|system| (system.address, system))
+            .collect();
+        let factions = factions_above(db, 0).await?;
+        let high = factions.last().map(|f| f.id).unwrap_or(0);
+        let mut metadata = Metadata { names, populated, factions, high };
+        let report = metadata.publish(db, dir, None, true, true).await?;
+        Ok((metadata, report))
+    }
+
+    /// The tables as `dir` holds them, read back with no database at all.
+    ///
+    /// What a `--watch` restart resumes onto. The names chunks come back with
+    /// their boundaries intact, so the next publish appends where the run before
+    /// it left off and rewrites nothing it already wrote.
+    pub(super) fn resume(dir: &Path) -> io::Result<Metadata> {
+        let names = NameTable::read(dir)?;
+        let populated: Vec<meta::PopulatedSystem> =
+            read_meta(&source::populated_path(dir))?;
+        let factions: Vec<meta::Faction> =
+            read_meta(&source::factions_path(dir))?;
+        let high = factions.iter().map(|f| f.id).max().unwrap_or(0);
+        Ok(Metadata {
+            names,
+            populated: populated
+                .into_iter()
+                .map(|system| (system.address, system))
+                .collect(),
+            factions,
+            high,
+        })
+    }
+
+    /// How many systems the names table stands for: every positioned one, which
+    /// is what the served cell tree holds too.
+    pub(super) fn names(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Patch in the systems of `touched` and publish what that moved.
+    ///
+    /// Every one of `touched` is rebuilt from its current row, so applying the
+    /// same address twice lands in the same place and a system that has stopped
+    /// qualifying for a table — its position withdrawn, its population gone —
+    /// leaves it. A system whose record reads exactly as the one held changes
+    /// nothing and writes nothing, which is the common case: the feed reports
+    /// the same systems over and over.
+    pub(super) async fn follow(
+        &mut self,
+        db: &Database,
+        dir: &Path,
+        touched: &[i64],
+    ) -> Result<MetaReport> {
+        let entries = names_for(db, touched).await?;
+        let mut placed = HashSet::with_capacity(entries.len());
+        for entry in entries {
+            placed.insert(entry.address);
+            self.names.upsert(entry);
+        }
+
+        let systems = populated_of(db, Some(touched)).await?;
+        let mut inhabited = HashSet::with_capacity(systems.len());
+        let mut moved = false;
+        for system in systems {
+            inhabited.insert(system.address);
+            match self.populated.get(&system.address) {
+                Some(held) if *held == system => {}
+                _ => {
+                    self.populated.insert(system.address, system);
+                    moved = true;
+                }
+            }
+        }
+
+        for address in touched {
+            if !placed.contains(address) {
+                self.names.remove(*address);
+            }
+            if !inhabited.contains(address)
+                && self.populated.remove(address).is_some()
+            {
+                moved = true;
+            }
+        }
+
+        let named = factions_above(db, self.high).await?;
+        let reported = !named.is_empty();
+        if let Some(highest) = named.last() {
+            self.high = highest.id;
+            self.factions.extend(named);
+        }
+
+        self.publish(db, dir, Some(touched), moved, reported).await
+    }
+
+    /// Write the dirty names chunks, whichever whole tables changed, and the
+    /// body files of `bodies_for` — every system's for a full build, the
+    /// changed ones' for a watch pass.
+    async fn publish(
+        &mut self,
+        db: &Database,
+        dir: &Path,
+        bodies_for: Option<&[i64]>,
+        populated: bool,
+        factions: bool,
+    ) -> Result<MetaReport> {
+        let name_chunks = self.names.publish(dir)?;
+        if populated {
+            write_populated(dir, &self.populated)?;
+        }
+        if factions {
+            write_meta(&source::factions_path(dir), &self.factions)?;
+        }
+        Ok(MetaReport {
+            populated: self.populated.len(),
+            names: self.names.len(),
+            factions: self.factions.len(),
+            body_files: write_bodies(db, dir, bodies_for).await?,
+            name_chunks,
+        })
+    }
+}
+
+/// The name and place of each of `addresses` that has one.
+///
+/// Every positioned system belongs in the names table, not just the populated
+/// ones, since a search reaches any name and a route steps between any two
+/// places. An address that comes back with no row is a system that is not
+/// positioned, and the caller takes it out of the table it stands in.
+async fn names_for(
     db: &Database,
-    dir: &Path,
-    bodies_for: Option<&[i64]>,
-) -> Result<MetaReport> {
-    Ok(MetaReport {
-        populated: write_populated(db, dir).await?,
-        names: write_names(db, dir).await?,
-        factions: write_factions(db, dir).await?,
-        body_files: write_bodies(db, dir, bodies_for).await?,
+    addresses: &[i64],
+) -> Result<Vec<meta::NameEntry>> {
+    let rows = sqlx::query(&format!(
+        "{NAMES_SELECT} WHERE address = ANY($1) AND position IS NOT NULL"
+    ))
+    .bind(addresses)
+    .fetch_all(&db.pool)
+    .await?;
+
+    rows.iter().map(name_from_row).collect()
+}
+
+/// One `systems` row as the names table's record of it. The row carries
+/// `address`, `name` and the three `ST_?` coordinates.
+pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
+    let x: f64 = row.try_get("x")?;
+    let y: f64 = row.try_get("y")?;
+    let z: f64 = row.try_get("z")?;
+    Ok(meta::NameEntry {
+        address: row.try_get("address")?,
+        name: row.try_get("name")?,
+        position: [x as f32, y as f32, z as f32],
     })
 }
 
-/// Write `populated.bin`: the dynamic set the map colours and navigates by.
+/// Every populated system with a place, or those of `addresses` alone.
 ///
-/// Every system with a population and a place, with the political columns a
-/// filter reads and the ids of the named factions present in it, gathered in
-/// one query rather than one per system. Only factions with a row in
-/// `factions` are carried: `system_factions` holds ids EDDN has reported a
-/// system for but never named, and the client can neither name nor filter by
-/// one, so it would only stand as an unreadable line in a panel. A population
-/// without a position is left out: the map only ever colours a system it
-/// draws, and it draws only positioned ones, so a [`meta::PopulatedSystem`]
-/// carries a fixed `[f32; 3]` and never an absent one.
+/// A population without a position is left out: the map only ever colours a
+/// system it draws, and it draws only positioned ones, so a
+/// [`meta::PopulatedSystem`] carries a fixed `[f32; 3]` and never an absent one.
 /// The reach is the far edge of what is on record, read for the whole set at
 /// once by [`reaches`].
-async fn write_populated(db: &Database, dir: &Path) -> Result<usize> {
-    let rows = sqlx::query(
-        "SELECT address, name, \
-                ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z, \
-                population, security, government, allegiance, \
-                primary_economy, secondary_economy, body_count, non_body_count, \
-                COALESCE( \
-                    (SELECT array_agg(sf.faction_id) FROM system_factions sf \
-                     WHERE sf.system_address = systems.address \
-                       AND EXISTS ( \
-                           SELECT 1 FROM factions f WHERE f.id = sf.faction_id \
-                       )), \
-                    ARRAY[]::integer[] \
-                ) AS factions \
-         FROM systems WHERE population > 0 AND position IS NOT NULL",
-    )
-    .fetch_all(&db.pool)
-    .await?;
+async fn populated_of(
+    db: &Database,
+    addresses: Option<&[i64]>,
+) -> Result<Vec<meta::PopulatedSystem>> {
+    let rows = match addresses {
+        None => {
+            sqlx::query(&format!(
+                "{POPULATED_SELECT} \
+             WHERE population > 0 AND position IS NOT NULL"
+            ))
+            .fetch_all(&db.pool)
+            .await?
+        }
+        Some(addresses) => {
+            sqlx::query(&format!(
+                "{POPULATED_SELECT} WHERE address = ANY($1) \
+             AND population > 0 AND position IS NOT NULL"
+            ))
+            .bind(addresses)
+            .fetch_all(&db.pool)
+            .await?
+        }
+    };
 
     let addresses: Vec<i64> =
         rows.iter().map(|row| row.get::<i64, _>("address")).collect();
     let reach = reaches(db, &addresses).await?;
 
-    let populated = rows
-        .iter()
-        .map(|row| -> Result<meta::PopulatedSystem> {
+    rows.iter()
+        .map(|row| {
             let address: i64 = row.try_get("address")?;
             let x: f64 = row.try_get("x")?;
             let y: f64 = row.try_get("y")?;
@@ -431,62 +329,44 @@ async fn write_populated(db: &Database, dir: &Path) -> Result<usize> {
                 reach: reach.get(&address).copied(),
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-
-    write_meta(&source::populated_path(dir), &populated)?;
-    Ok(populated.len())
+        .collect()
 }
 
-/// Write `names.bin`: the name and place of every positioned system, which is
-/// the search index and the routing graph in one. Every positioned system, not
-/// just the populated ones, since a search reaches any name and a route steps
-/// between any two places.
-async fn write_names(db: &Database, dir: &Path) -> Result<usize> {
-    let rows = sqlx::query(
-        "SELECT address, name, \
-                ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z \
-         FROM systems WHERE position IS NOT NULL",
-    )
-    .fetch_all(&db.pool)
-    .await?;
+/// The factions named since id `above`, in id order.
+///
+/// Ids come from a sequence, so a new faction is always a higher id than every
+/// one already read, and a name on record is never rewritten. The whole table is
+/// `above = 0`.
+async fn factions_above(
+    db: &Database,
+    above: i32,
+) -> Result<Vec<meta::Faction>> {
+    let rows =
+        sqlx::query("SELECT id, name FROM factions WHERE id > $1 ORDER BY id")
+            .bind(above)
+            .fetch_all(&db.pool)
+            .await?;
 
-    let names = rows
-        .iter()
-        .map(|row| -> Result<meta::NameEntry> {
-            let x: f64 = row.try_get("x")?;
-            let y: f64 = row.try_get("y")?;
-            let z: f64 = row.try_get("z")?;
-            Ok(meta::NameEntry {
-                address: row.try_get("address")?,
-                name: row.try_get("name")?,
-                position: [x as f32, y as f32, z as f32],
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    write_meta(&source::names_path(dir), &names)?;
-    Ok(names.len())
-}
-
-/// Write `factions.bin`: the whole faction id-to-name table, small and read
-/// whole by the client that looks a system's faction ids up in it.
-async fn write_factions(db: &Database, dir: &Path) -> Result<usize> {
-    let rows = sqlx::query("SELECT id, name FROM factions")
-        .fetch_all(&db.pool)
-        .await?;
-
-    let factions = rows
-        .iter()
-        .map(|row| -> Result<meta::Faction> {
+    rows.iter()
+        .map(|row| {
             Ok(meta::Faction {
                 id: row.try_get("id")?,
                 name: row.try_get("name")?,
             })
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect()
+}
 
-    write_meta(&source::factions_path(dir), &factions)?;
-    Ok(factions.len())
+/// Write `populated.bin`: the dynamic set the map colours and navigates by, in
+/// address order so the same table is always the same bytes.
+fn write_populated(
+    dir: &Path,
+    populated: &HashMap<i64, meta::PopulatedSystem>,
+) -> Result<usize> {
+    let mut table: Vec<&meta::PopulatedSystem> = populated.values().collect();
+    table.sort_unstable_by_key(|system| system.address);
+    write_meta(&source::populated_path(dir), &table)?;
+    Ok(table.len())
 }
 
 /// Write `bodies/<address>.bin`: one [`meta::SystemBodies`] per system that has
@@ -668,7 +548,7 @@ async fn all_barycenters(
         Some(addresses) => {
             sqlx::query(
                 "SELECT * FROM barycenters WHERE system_address = ANY($1) \
-             ORDER BY system_address",
+                 ORDER BY system_address",
             )
             .bind(addresses)
             .fetch_all(&db.pool)
@@ -888,118 +768,9 @@ fn meta_barycenter(barycenter: Barycenter) -> meta::Barycenter {
     }
 }
 
-/// A summary of a build, for the binary to print and check.
-#[derive(Copy, Clone, Debug)]
-pub struct BuildReport {
-    pub systems: usize,
-    pub points: usize,
-    pub cells: usize,
-    pub leaves: usize,
-    pub deepest_level: u8,
-    pub max_leaf_points: usize,
-    /// The metadata sidecars written beside the tree.
-    pub meta: MetaReport,
-}
-
-impl BuildReport {
-    fn of(systems: usize, built: &Snapshot, meta: MetaReport) -> BuildReport {
-        let leaves = built.index.cells().filter(|c| c.is_leaf()).count();
-        let deepest_level =
-            built.index.cells().map(|c| c.id.level).max().unwrap_or(0);
-        let max_leaf_points = built
-            .index
-            .cells()
-            .filter(|c| c.is_leaf())
-            .map(|c| built.payload(c.id).len())
-            .max()
-            .unwrap_or(0);
-        BuildReport {
-            systems,
-            points: built.point_count(),
-            cells: built.index.len(),
-            leaves,
-            deepest_level,
-            max_leaf_points,
-            meta,
-        }
-    }
-
-    /// Whether every system landed in exactly one cell: the partition holds.
-    pub fn is_consistent(&self) -> bool {
-        self.points == self.systems
-    }
-}
-
-impl fmt::Display for BuildReport {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{} systems -> {} cells ({} leaves, {} internal), \
-             deepest level {}, largest leaf {} systems, {} placed{}; \
-             metadata: {} populated, {} names, {} factions, {} body files",
-            self.systems,
-            self.cells,
-            self.leaves,
-            self.cells - self.leaves,
-            self.deepest_level,
-            self.max_leaf_points,
-            self.points,
-            if self.is_consistent() { "" } else { " (MISMATCH)" },
-            self.meta.populated,
-            self.meta.names,
-            self.meta.factions,
-            self.meta.body_files,
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Scanned stars sum to one magnitude and take the brightest's tint.
-    #[test]
-    fn scanned_stars_combine_and_take_the_brightest_tint() {
-        // Two equal stars are about 0.75 mag brighter together than either.
-        let stars = [(4.83, 5772.0), (4.83, 3000.0)];
-        let s = system_input(42, [0.0; 3], Some("G"), &stars, 0);
-        assert!((s.absolute_magnitude - (4.83 - 0.7526)).abs() < 0.01);
-        assert_eq!(s.id64, 42);
-
-        // A distinct brightest star pins the tint to its temperature.
-        let stars = [(2.0, 9000.0), (5.0, 3000.0)];
-        let s = system_input(42, [0.0; 3], Some("G"), &stars, 0);
-        assert_eq!(s.temperature, 9000.0);
-    }
-
-    /// A starless system takes its named class.
-    #[test]
-    fn a_starless_system_falls_back_to_its_class() {
-        let s = system_input(1, [0.0; 3], Some("M"), &[], 0);
-        let m = ClassLight::of("M");
-        assert_eq!(s.absolute_magnitude, m.absolute_magnitude.0);
-        assert_eq!(s.temperature, m.temperature.0);
-    }
-
-    /// No stars and no class is the default dwarf.
-    #[test]
-    fn no_stars_and_no_class_is_the_default_dwarf() {
-        let s = system_input(1, [0.0; 3], None, &[], 0);
-        assert_eq!(
-            s.absolute_magnitude,
-            galos_photometry::ClassLight::DEFAULT.absolute_magnitude.0
-        );
-    }
-
-    /// The Recency bucket climbs with the days since an update.
-    #[test]
-    fn age_buckets_climb_with_the_days() {
-        assert_eq!(age_bucket(0), 0);
-        assert_eq!(age_bucket(1), 1);
-        assert_eq!(age_bucket(6), 1);
-        assert_eq!(age_bucket(7), 2);
-        assert_eq!(age_bucket(10_000), 7);
-    }
 
     /// A system's bodies survive the trip out to disk and back through the
     /// same path helpers, format and reader the client uses.

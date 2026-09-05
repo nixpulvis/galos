@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 
 /// The populated-systems table, resident once and read for every colour.
 pub const POPULATED_FILE: &str = "populated.bin";
-/// Every system's name and position: the search index and routing graph.
-pub const NAMES_FILE: &str = "names.bin";
+/// The subdirectory the names table's chunk files live in.
+pub const NAMES_DIR: &str = "names";
 /// The faction id-to-name table, small and read whole.
 pub const FACTIONS_FILE: &str = "factions.bin";
 /// The subdirectory of per-system body files.
@@ -40,9 +40,22 @@ pub fn populated_path(dir: &Path) -> PathBuf {
     dir.join(POPULATED_FILE)
 }
 
-/// The names table's path within a build directory.
-pub fn names_path(dir: &Path) -> PathBuf {
-    dir.join(NAMES_FILE)
+/// The names table's chunk directory within a build directory.
+pub fn names_dir(dir: &Path) -> PathBuf {
+    dir.join(NAMES_DIR)
+}
+
+/// One chunk of the names table, numbered from zero. The numbering is the
+/// whole of the layout: a reader takes them in order until one is missing, so
+/// the table needs no manifest kept in step with it.
+pub fn names_chunk_path(dir: &Path, chunk: usize) -> PathBuf {
+    names_dir(dir).join(format!("{chunk:05}.bin"))
+}
+
+/// The whole names table, every chunk of `dir` in order. The client's read;
+/// the builder holds the same chunks open as a [`NameTable`](crate::NameTable).
+pub fn read_names(dir: &Path) -> io::Result<Vec<NameEntry>> {
+    Ok(crate::names::read_chunks(dir)?.concat())
 }
 
 /// The factions table's path within a build directory.
@@ -64,8 +77,10 @@ pub fn write_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
 
-/// Read a metadata value back from a file, MessagePack-decoded.
-fn read_meta<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
+/// Read a metadata value back from a file, MessagePack-decoded. The reader half
+/// of [`write_meta`], and what a builder resuming onto a directory reads its own
+/// published tables back through.
+pub fn read_meta<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
     let bytes = std::fs::read(path)?;
     rmp_serde::from_slice(&bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -131,7 +146,7 @@ impl Source for FsSource {
     }
 
     async fn names(&self) -> io::Result<Vec<NameEntry>> {
-        read_meta(&names_path(&self.dir))
+        read_names(&self.dir)
     }
 
     async fn factions(&self) -> io::Result<Vec<Faction>> {

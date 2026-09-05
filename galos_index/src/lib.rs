@@ -21,6 +21,7 @@ pub mod checkpoint;
 pub mod geometry;
 pub mod meta;
 pub mod moments;
+pub mod names;
 pub mod serialization;
 pub mod source;
 pub mod store;
@@ -39,6 +40,7 @@ pub use meta::{
     Star, Surface, SystemBodies,
 };
 pub use moments::Moments;
+pub use names::NameTable;
 pub use serialization::{Codec, Decode, Encode, FixedCodec};
 pub use source::{FsSource, Source};
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
