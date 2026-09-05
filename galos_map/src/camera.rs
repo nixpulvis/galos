@@ -171,6 +171,26 @@ fn subgridless_floor(reach: f32) -> f32 {
             * crate::space::LIGHT_YEAR as f32)
 }
 
+/// How near what the camera looks at has to be to a system for it to count as
+/// standing in it, in metres
+///
+/// One sphere, the same about every system. A system's contents are drawn once
+/// it subtends [`crate::systems::bodies::spawn::WORTH_DRAWING`] and every
+/// system reaches at least [`crate::systems::bodies::STAND_IN`], so this is
+/// exactly the nearest the camera can be to the narrowest system without its
+/// insides being drawn: about a thousand astronomical units.
+///
+/// A fixed distance where the ruled plane changes hands on the mark's own fade
+/// (see [`crate::grid`]), and the difference is not an oversight. The fade is
+/// an angle scaled by how far the system reaches, so it begins seventeen light
+/// years out for a system reaching a fifth of one — and a floor is only ever
+/// applied to a system with *nothing* to descend into, whose mark therefore
+/// never fades at all. Read the fade here and a wide neighbour would hold the
+/// camera off from four light years away, which is the trouble
+/// [`crate::systems::bodies::fetch::Approach::stood_in`] exists to answer.
+pub(crate) const STOOD_IN: f32 = crate::systems::bodies::STAND_IN
+    / crate::systems::bodies::spawn::WORTH_DRAWING;
+
 /// How near the near plane sits, as a fraction of the orbit radius
 ///
 /// Nothing can be drawn nearer to the camera than its near plane, and the map

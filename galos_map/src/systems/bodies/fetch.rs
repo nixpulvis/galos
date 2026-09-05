@@ -103,15 +103,16 @@ pub struct Approach {
 impl Approach {
     /// Whether the camera is standing in the system rather than beside it
     ///
-    /// The same sphere the ruler changes hands across
-    /// ([`crate::grid::RULES_BEYOND`]), which is the map's one answer to
-    /// "inside this system": it is exactly the nearest the camera can be to a
-    /// system without its insides being drawn, and it is the same distance for
-    /// every system, so a wide one does not claim the sky its neighbours stand
-    /// in.
+    /// [`crate::camera::STOOD_IN`], which is the same distance for every
+    /// system, so a wide one does not claim the sky its neighbours stand in.
+    /// Not how far the system reaches, and not the band its mark fades over:
+    /// the floor this answers for is only ever applied to a system with
+    /// nothing to descend into, whose mark never fades, and a fifth of a light
+    /// year of reach would otherwise hold the camera off from four light years
+    /// away.
     pub fn stood_in(&self) -> bool {
         f64::from(self.away) * crate::space::LIGHT_YEAR
-            <= f64::from(crate::grid::RULES_BEYOND)
+            <= f64::from(crate::camera::STOOD_IN)
     }
 }
 

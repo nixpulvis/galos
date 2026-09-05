@@ -38,6 +38,13 @@ struct Descent<'w, 's> {
     handover: Res<'w, crate::grid::Handover>,
     systems: Query<'w, 's, (&'static System, Has<big_space::prelude::Grid>)>,
     bodies: Query<'w, 's, (), With<crate::systems::bodies::spawn::Inside>>,
+    /// What each of the two ruled planes came to, so an unruled sky can be
+    /// told apart from a ruling the handover has put on the other plane.
+    planes: Query<
+        'w,
+        's,
+        (&'static crate::grid::Ruler, &'static crate::ruled::Reading),
+    >,
 }
 
 pub fn plugin(app: &mut App) {
@@ -346,12 +353,83 @@ fn diagnostics(
                     );
                     pair(
                         ui,
+                        "shell",
+                        &nearest.map_or(
+                            "—".to_string(),
+                            |(system, _, orbit)| {
+                                let away = crate::space::metres(
+                                    orbit.eye - system.position(),
+                                )
+                                .length()
+                                    as f32;
+                                let shell = crate::systems::scale::drawn_shell(
+                                    system.reach(),
+                                );
+                                format!("{:.2} out", away / shell)
+                            },
+                        ),
+                        "Where the eye stands in the shell drawn around it, \
+                         as a multiple of that shell's own radius. One is its \
+                         surface, so anything under one is a camera inside \
+                         the system, and that is what the ruler changes hands \
+                         across.",
+                    );
+                    pair(
+                        ui,
+                        "mark",
+                        &nearest.map_or(
+                            "—".to_string(),
+                            |(system, _, orbit)| {
+                                format!(
+                                    "{:.2} left",
+                                    crate::systems::bodies::spawn::standing_for(
+                                        system, orbit.eye,
+                                    )
+                                )
+                            },
+                        ),
+                        "How much of the mark standing for it is left, which \
+                         is what its shell is painted at. One is a whole \
+                         mark, nothing is a mark wholly given way to the \
+                         system drawn in its place. Only the system the map \
+                         is holding ever fades.",
+                    );
+                    pair(
+                        ui,
                         "ruler",
                         &format!("{:.2} out", descent.handover.0),
                         "How far the ruler has changed hands: one is the \
                          galaxy's light-year grid, nothing is the system's \
-                         own light-second one, and between them it is \
-                         crossing the sphere about the system.",
+                         own light-second one, and between them neither is \
+                         drawn. Read against `mark` above, which is what it \
+                         follows.",
+                    );
+                    pair(
+                        ui,
+                        "planes",
+                        &{
+                            let strength = |inside: bool| {
+                                descent
+                                    .planes
+                                    .iter()
+                                    .find(|(ruler, _)| ruler.inside == inside)
+                                    .map_or(f32::NAN, |(_, reading)| {
+                                        reading.strength
+                                    })
+                            };
+                            format!(
+                                "galaxy {:.2}, system {:.2}",
+                                strength(false),
+                                strength(true)
+                            )
+                        },
+                        "What each plane came to, which is the share above \
+                         after the plane's own ladder and its horizon have \
+                         had their say. Both at nothing is an unruled sky: \
+                         either the handover is passing between them, or \
+                         whichever has the share cannot draw at this zoom. A \
+                         dash for the system's is no plane at all, the camera \
+                         not being in one.",
                     );
                 },
             );

@@ -203,7 +203,23 @@ const ANGULAR: f32 = 4e-4;
 /// module, and the two are not in the same units: that one is an angle and
 /// this a multiple of a length, so the comparison takes an inversion.
 /// `a_mark_is_gone_before_the_camera_reaches_the_shell` is what holds it.
-const MARGIN: f32 = 1.2;
+pub(crate) const MARGIN: f32 = 1.2;
+
+/// How wide the shell drawn around a system reaching `reach` is, in metres
+///
+/// The surface of the disc [`super::field`] paints once the system is near
+/// enough to be drawn as itself rather than as a mark — [`shell`]'s own answer
+/// with the mark taken out of it, which is what it settles to from
+/// [`WORTH_KEEPING`] inward.
+///
+/// What it is for outside this module is the one boundary the map has for
+/// being *inside* a system: cross it and the camera is within the thing the
+/// shell stands for. [`crate::grid`] hands the ruled plane over across it, and
+/// [`MARGIN`] being held where it is — under twenty reaches — is what keeps
+/// two systems' shells from standing in each other.
+pub(crate) fn drawn_shell(reach: f32) -> f32 {
+    reach * MARGIN
+}
 
 /// How large a system is drawn, in metres
 ///
