@@ -1,7 +1,7 @@
 use crate::schedule::MapSet;
-use crate::systems::{Spyglass, System};
 use crate::systems::bodies::Contents;
 use crate::systems::bodies::spawn::{Body, Inside};
+use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Exposure, Hdr};
@@ -131,46 +131,45 @@ const PIXELS_PER_LINE: f32 = 16.;
 pub(crate) const MIN_RADIUS: f32 = (1. / crate::space::LIGHT_YEAR) as f32;
 pub(crate) const MAX_RADIUS: f32 = 1e6;
 
-/// How near the camera may be pulled to a body it has descended to, as a
-/// multiple of that body's own radius
-///
-/// Inside a system the near end of the zoom is a body's surface, not
-/// [`MIN_RADIUS`]. A hair outside it is as close as looking at a thing gets;
-/// nearer still puts the camera inside the mesh, which turns inside out, and
-/// the body it came to see is gone. A tenth again past the radius leaves the
-/// whole disc in view with no black around it.
-const BODY_CLEARANCE: f32 = 1.1;
-
 /// How near the camera may be pulled to a system it cannot descend into, in
-/// light years
+/// light years, where the system reaches `reach` metres
 ///
 /// Everything inside a system is drawn on that system's own metre-fine grid,
 /// which the camera descends onto once the system is near and its contents are
-/// in hand (see [`crate::systems::bodies::spawn::draw`]). A system with nothing
-/// recorded in it never gains that grid, so it stays a mark out on the galaxy
-/// grid — and up close that mark is not a crisp dot. It is drawn at the
-/// system's [`crate::systems::bodies::STAND_IN`] extent, which
-/// [`crate::systems::scale`]'s `shell` swells from a mark into a whole ball
-/// once it subtends more than [`crate::systems::bodies::spawn::WORTH_SIZING`].
-/// For a real system that is the moment the map descends into it and draws its
-/// bodies instead; a bare one has nothing to descend into, so left to zoom it
-/// would fill the view with a blurry sphere the camera cannot get past, its
-/// bloomed edge spreading across the screen.
+/// in hand (see [`crate::systems::bodies::spawn`]'s `draw`). A system with
+/// nothing recorded in it never gains that grid, so it stays a mark out on the
+/// galaxy grid — and up close that mark is not a crisp dot. It is drawn at the
+/// system's own extent, which [`crate::systems::scale`]'s `shell` swells from a
+/// mark into a whole ball once it subtends more than
+/// [`crate::systems::bodies::spawn::WORTH_SIZING`]. For a real system that is
+/// the moment the map descends into it and draws its bodies instead; a bare one
+/// has nothing to descend into, so left to zoom it would fill the view with a
+/// blurry sphere the camera cannot get past, its bloomed edge spreading across
+/// the screen.
 ///
-/// So the camera is held where the mark is still a mark: `STAND_IN` over
-/// `WORTH_SIZING`, the distance at which the stand-in extent just begins to
-/// count. About a twenty-fifth of a light year, far short of where a real
-/// system would already have been descended into, and far past the coarse
-/// galaxy-grid step that once set the mark jittering here — so it clears that
-/// older trouble along the way.
+/// So the camera is held where the mark has just filled out: the system's reach
+/// over [`crate::systems::bodies::spawn::WORTH_KEEPING`], the angle at which
+/// the swell completes and the mark stops growing.
+///
+/// Off the system's own reach rather than off
+/// [`crate::systems::bodies::STAND_IN`], which is only the floor under a reach.
+/// A fixed distance is the wrong shape for an angular question, and it showed:
+/// held at `STAND_IN / WORTH_KEEPING` for everything, a system reaching a fifth
+/// of a light year stopped the camera with its mark ten radians across — a ball
+/// filling the sky — while one with nothing on record was still a speck at the
+/// same remove, so the camera seemed to come right in and find nothing. One
+/// looked like a wall and the other like a hole, from one rule. Taken off the
+/// reach, every bare system stops with its mark the same size.
 ///
 /// This holds only a system with nothing to descend into. One the map could
 /// descend into is loaded well before it is reached and let through by
 /// [`zoom_floor`] on that account, so the floor never keeps a system the map
 /// could draw from being drawn.
-const SUBGRIDLESS_FLOOR: f32 = crate::systems::bodies::STAND_IN
-    / (crate::systems::bodies::spawn::WORTH_SIZING
-        * crate::space::LIGHT_YEAR as f32);
+fn subgridless_floor(reach: f32) -> f32 {
+    reach
+        / (crate::systems::bodies::spawn::WORTH_KEEPING
+            * crate::space::LIGHT_YEAR as f32)
+}
 
 /// How near the near plane sits, as a fraction of the orbit radius
 ///
@@ -435,21 +434,32 @@ pub(crate) fn framed(radius: f32, projection: Option<&Projection>) -> f32 {
 /// [`MIN_RADIUS`] is a floor of last resort; what should stop the camera is
 /// the thing it is looking at. Two things do, here:
 ///
-/// - Down among a system's bodies, `nearest_body_radius` is the radius of the
-///   nearest one, in metres, and the camera is held [`BODY_CLEARANCE`] past
-///   its surface so it never ends up inside it.
+/// - Down among a system's bodies, `nearest_body_view` is how far the nearest
+///   one has to be stood back to keep its whole disc in view (see
+///   [`stand_back`]); the zoom stops there rather than flying into its surface
+///   and filling the screen with it.
 /// - Out on the galaxy grid with nothing to descend into, the mark is held at
-///   [`SUBGRIDLESS_FLOOR`], short of where that grid's coarse step would set
-///   it jittering. A system the map could descend into is loaded well before
-///   it is reached, so `descendable` is true for it and it is let through to
-///   the fine grid the descent puts it on.
-fn zoom_floor(nearest_body_radius: Option<f32>, descendable: bool) -> f32 {
-    match nearest_body_radius {
-        Some(radius) => {
-            (radius as f64 / crate::space::LIGHT_YEAR) as f32 * BODY_CLEARANCE
-        }
+///   [`subgridless_floor`] of the system's own reach, where the mark has just
+///   filled out. A system the map could descend into is loaded well before it
+///   is reached, so `descendable` is true for it and it is let through to the
+///   fine grid the descent puts it on.
+///
+/// `reaching` is how far the system the camera is closing on reaches, in
+/// metres ([`crate::systems::bodies::fetch::Approaching`]). Nothing where the
+/// camera is out of reach of every system, which is a camera with nothing to
+/// be held off by: the floor falls back to the least reach the map draws, so
+/// it is the same figure it always was for a system with nothing on record.
+fn zoom_floor(
+    nearest_body_view: Option<f32>,
+    descendable: bool,
+    reaching: Option<f32>,
+) -> f32 {
+    match nearest_body_view {
+        Some(view) => view,
         None if descendable => MIN_RADIUS,
-        None => SUBGRIDLESS_FLOOR,
+        None => subgridless_floor(
+            reaching.unwrap_or(crate::systems::bodies::STAND_IN),
+        ),
     }
 }
 
@@ -745,16 +755,19 @@ pub fn orbit_camera(
             &mut CellCoord,
             &mut Transform,
             Option<&ChildOf>,
+            Option<&Projection>,
         ),
         Without<Inside>,
     >,
     windows: Query<&Window, With<PrimaryWindow>>,
-    // A system with contents loaded nearby, about to be descended into. An
-    // `Option` so the camera's own tests need not stand one up.
+    // A system with contents loaded nearby, about to be descended into, and
+    // how far the one being closed on reaches. `Option` so the camera's own
+    // tests need not stand either up.
     contents: Option<Res<Contents>>,
+    approaching: Option<Res<crate::systems::bodies::fetch::Approaching>>,
 ) {
     let Ok(grid) = grids.single() else { return };
-    let Ok((mut orbit, mut cell, mut transform, child_of)) =
+    let Ok((mut orbit, mut cell, mut transform, child_of, projection)) =
         cameras.single_mut()
     else {
         return;
@@ -821,13 +834,13 @@ pub fn orbit_camera(
             (orbit.target_radius * zoom.exp()).clamp(MIN_RADIUS, MAX_RADIUS);
     }
 
-    // The near end of the zoom is the thing being looked at, not the metre
-    // `MIN_RADIUS` floor of last resort: a body has its own surface to stop
-    // short of, and a system with nothing to descend into has the galaxy
-    // grid's coarse step, past which its mark jitters as the camera moves.
-    // Taken from where the camera stands now, a frame stale and none the
-    // worse for it through a zoom that eases.
-    let nearest_body_radius = descended.and_then(|(grid, system)| {
+    // Down among a system's bodies the near end of the zoom is the nearest
+    // body framed — stood back far enough to keep its whole disc in view, the
+    // same framing the camera uses over everything else (see [`stand_back`]).
+    // Nearer than that fills the screen with the body's surface and reads as
+    // flying into it. Taken from where the camera stands now, a frame stale
+    // and none the worse for it through a zoom that eases.
+    let nearest_body_view = descended.and_then(|(grid, system)| {
         bodies
             .iter()
             .map(|(body, cell, at)| {
@@ -837,11 +850,16 @@ pub fn orbit_camera(
                 (place.distance(orbit.center), body.radius)
             })
             .min_by(|(one, _), (other, _)| one.total_cmp(other))
-            .map(|(_, radius)| radius)
+            .map(|(_, radius)| {
+                stand_back(
+                    (radius as f64 / crate::space::LIGHT_YEAR) as f32,
+                    projection,
+                )
+            })
     });
-    let descendable =
-        contents.as_deref().and_then(Contents::extent).is_some();
-    let floor = zoom_floor(nearest_body_radius, descendable);
+    let descendable = contents.as_deref().and_then(Contents::extent).is_some();
+    let reaching = approaching.as_deref().and_then(|it| it.0);
+    let floor = zoom_floor(nearest_body_view, descendable, reaching);
     // Held to the spyglass the reach owns the distance, so the target is left
     // to it then; only the eased radius below is kept off the floor, which a
     // galaxy-wide reach clears in any case.
@@ -1281,20 +1299,20 @@ mod tests {
         assert!(asked(&mut app) > 100., "stayed at {}", asked(&mut app));
     }
 
-    /// Descended among the bodies, the camera stops at the nearest surface
+    /// Descended among the bodies, the zoom stops with the nearest body framed
     ///
-    /// A body has its own radius to be looked at from, so the zoom is held a
-    /// hair outside it rather than at the metre floor, which would put the
-    /// camera inside the thing it came to see.
+    /// A body is stood back far enough to keep its whole disc in view — the
+    /// same framing the camera uses over everything else — not a hair off its
+    /// surface, which would fill the screen with it and read as flying in.
     #[test]
-    fn a_body_stops_the_zoom_at_its_surface() {
-        // Earth's radius, in the metres a body carries.
+    fn a_body_stops_the_zoom_framed() {
         let earth = 6.371e6_f32;
         let surface = (earth as f64 / crate::space::LIGHT_YEAR) as f32;
-        let floor = zoom_floor(Some(earth), true);
+        let framed = stand_back(surface, None);
 
-        assert!(floor > surface, "the camera sat on the surface");
-        assert_eq!(floor, surface * BODY_CLEARANCE);
+        // Well outside the surface, not hugging it: the whole body stays seen.
+        assert!(framed > surface * 2., "the body would overfill the view");
+        assert_eq!(zoom_floor(Some(framed), true, None), framed);
     }
 
     /// A system with contents loaded is left to descend
@@ -1304,7 +1322,7 @@ mod tests {
     /// galaxy grid tears, so the floor stands aside.
     #[test]
     fn a_loaded_system_lets_the_camera_in() {
-        assert_eq!(zoom_floor(None, true), MIN_RADIUS);
+        assert_eq!(zoom_floor(None, true, None), MIN_RADIUS);
     }
 
     /// A system with nothing to descend into holds the camera off
@@ -1313,33 +1331,49 @@ mod tests {
     /// in, with no descent to take over, so the zoom is stopped short of that.
     #[test]
     fn a_bare_system_holds_the_camera_off() {
-        assert!(SUBGRIDLESS_FLOOR > MIN_RADIUS, "the floor is no floor");
-        assert_eq!(zoom_floor(None, false), SUBGRIDLESS_FLOOR);
+        let least = subgridless_floor(crate::systems::bodies::STAND_IN);
+
+        assert!(least > MIN_RADIUS, "the floor is no floor");
+        assert_eq!(zoom_floor(None, false, None), least);
     }
 
-    /// And it stops short of where the mark begins to swell
+    /// And every bare system stops with its mark the same size
     ///
-    /// A bare system is drawn at [`crate::systems::bodies::STAND_IN`], and
-    /// [`crate::systems::scale`]'s `shell` swells that from a crisp mark into
-    /// the system's whole extent once it subtends more than
-    /// [`crate::systems::bodies::spawn::WORTH_SIZING`]. Held at the floor the
-    /// mark stays under that, so it never blurs into a disc the camera cannot
-    /// get past.
+    /// The reported trouble. The floor was a fixed distance off
+    /// [`crate::systems::bodies::STAND_IN`] while what it guards against is an
+    /// angle: with the body rows gone, a system reaching a fifth of a light
+    /// year stopped the camera with its mark ten radians across, filling the
+    /// sky, while one with nothing on record was still a speck at the same
+    /// remove — so the camera seemed to come right in and find nothing there.
+    /// One rule, two pictures. Off each system's own reach they agree.
     #[test]
-    fn the_floor_keeps_a_bare_mark_from_swelling() {
-        let away = SUBGRIDLESS_FLOOR as f64 * crate::space::LIGHT_YEAR;
-        let seen = crate::systems::bodies::STAND_IN as f64 / away;
-        assert!(
-            seen <= crate::systems::bodies::spawn::WORTH_SIZING as f64,
-            "a bare mark subtends {seen} rad, past where it swells"
-        );
+    fn every_bare_system_stops_with_its_mark_the_same_size() {
+        // A fifth of a light year, and a system with nothing on record.
+        for reach in [2.1e15_f32, crate::systems::bodies::STAND_IN] {
+            let floor = zoom_floor(None, false, Some(reach));
+            let away = floor as f64 * crate::space::LIGHT_YEAR;
+            let seen = f64::from(reach) / away;
+
+            // The mark has just filled out, wherever that leaves the camera.
+            assert!(
+                seen > crate::systems::bodies::spawn::WORTH_SIZING as f64,
+                "a system reaching {reach} m stopped with its mark at \
+                 {seen} rad, before the swell begins"
+            );
+            assert!(
+                seen <= crate::systems::bodies::spawn::WORTH_KEEPING as f64
+                    + 1e-9,
+                "a system reaching {reach} m stopped with its mark at \
+                 {seen} rad, past where it fills out"
+            );
+        }
     }
 
     /// And a scroll cannot drive through that floor
     ///
     /// The whole of the reported trouble: pulling hard into a system with no
     /// sub-grid shredded its mark on the galaxy grid. Now the zoom comes to
-    /// rest at [`SUBGRIDLESS_FLOOR`] however long the wheel is turned.
+    /// rest at the floor however long the wheel is turned.
     #[test]
     fn a_subgridless_system_stops_the_zoom_short() {
         let mut app = scrolled(1e-2, spyglass(false, false));
@@ -1352,7 +1386,10 @@ mod tests {
             app.update();
         }
 
-        assert_eq!(asked(&mut app), SUBGRIDLESS_FLOOR);
+        assert_eq!(
+            asked(&mut app),
+            subgridless_floor(crate::systems::bodies::STAND_IN)
+        );
     }
 
     /// Where [`approach`] lands after `steps` frames of `dt` seconds each

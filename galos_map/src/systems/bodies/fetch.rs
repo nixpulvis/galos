@@ -19,6 +19,7 @@ use std::time::Instant;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Polling>();
+    app.init_resource::<Approaching>();
     app.add_systems(Update, choose.in_set(MapSet::Fetch));
     app.add_systems(Update, collect.in_set(MapSet::Populate));
 }
@@ -48,10 +49,10 @@ const ASK_WITHIN: f32 = 5.;
 /// else was near enough to be asked about.
 const HOLD_WITHIN: f32 = 7.;
 
-/// Which of `systems` the map should be holding, by address
+/// Which of `systems` the map should be holding
 ///
-/// Whichever is nearest what the camera is looking at, each given as its
-/// address and how far off it is.
+/// Whichever is nearest what the camera is looking at, each given as whatever
+/// the caller needs of it and how far off it is.
 ///
 /// Nearest rather than largest in the sky. A system is drawn as itself once it
 /// takes up enough of the view, and how much that is follows its own reach, so
@@ -59,19 +60,49 @@ const HOLD_WITHIN: f32 = 7.;
 /// Centauri fills more of the sky from Sol than Sol does from a hundredth of a
 /// light year out. Asked which system takes up the most, a camera standing on
 /// Sol answers Alpha Centauri.
-fn worth_holding(systems: impl Iterator<Item = (i64, f64)>) -> Option<i64> {
+///
+/// What each system is given as is the caller's, so one pass answers both the
+/// address to ask about and whatever else is wanted of the system the camera
+/// is closing on — [`Approaching`] wants its reach.
+fn worth_holding<T>(systems: impl Iterator<Item = (T, f64)>) -> Option<T> {
     systems
         .filter(|(_, away)| *away <= ASK_WITHIN as f64)
         .min_by(|(_, one), (_, other)| one.total_cmp(other))
-        .map(|(address, _)| address)
+        .map(|(it, _)| it)
 }
+
+/// How far the system the camera is closing on reaches, in metres
+///
+/// The nearest one to what the camera looks at, which is the one the poll asks
+/// about and the one the camera is about to be stopped short of if it turns out
+/// to have nothing to descend into. Written here because this is where that
+/// system is already picked out, once a frame, off a scan the poll makes
+/// anyway; read by [`crate::camera`]'s `subgridless_floor`.
+///
+/// Nothing where the camera is out of reach of every system, which is a camera
+/// with nothing to be held off by.
+#[derive(Resource, Default)]
+pub struct Approaching(pub Option<f32>);
 
 /// Whether a system already held goes on being held
 ///
-/// Being inside it is enough on its own, however far the crosshair has been
-/// panned from it. Otherwise it holds while it is anywhere near, which is what
-/// keeps a camera standing between two systems from swapping between them
-/// every frame.
+/// A system being closed on is held though the crosshair has left it behind:
+/// `standing` under one says its mark is part way out, so its contents, the
+/// grid they stand in and the plane the ruler has handed the sky to are all on
+/// the map, and letting go of the rows takes all of it away. Otherwise it holds
+/// while it is anywhere near, which is what keeps a camera standing between two
+/// systems from swapping between them every frame.
+///
+/// Asked only of a system nothing else is nearer than. Being inside one is
+/// *not* enough on its own, however much the fade suggests it: [`WORTH_MARKING`]
+/// is an angle, so a system reaching a fifth of a light year has a mark still
+/// going out sixteen light years away, and holding the rows on that ground
+/// would leave the map unable to descend into a neighbour the camera has been
+/// panned right onto. Whichever system the crosshair is nearest is the one
+/// worth holding; that the handover has to be an even one is
+/// [`crate::grid::rule`]'s to answer, not this.
+///
+/// [`WORTH_MARKING`]: super::spawn::WORTH_MARKING
 fn holds_still(standing: f32, away: f64) -> bool {
     standing < 1. || away <= HOLD_WITHIN as f64
 }
@@ -138,19 +169,29 @@ fn choose(
     poll: Res<Poll>,
     mut contents: ResMut<Contents>,
     mut polling: ResMut<Polling>,
+    mut approaching: ResMut<Approaching>,
 ) {
     let Ok(center) = camera.single().map(|camera| camera.center) else {
         return;
     };
     let now = time.last_update().unwrap_or(time.startup());
 
-    let nearest = worth_holding(systems.iter().map(|(system, _)| {
-        (system.address, center.distance(system.position()))
+    // One pass, answering both which system to ask about and how far it
+    // reaches. The reach is the camera's to read: it is what the zoom is
+    // stopped short of where the system turns out to have nothing to descend
+    // into (see [`Approaching`]).
+    let closing = worth_holding(systems.iter().map(|(system, _)| {
+        ((system.address, system.reach()), center.distance(system.position()))
     }));
+    let nearest = closing.map(|(address, _)| address);
+    let reaching = closing.map(|(_, reach)| reach);
+    if approaching.0 != reaching {
+        approaching.0 = reaching;
+    }
 
-    // What is held stays held while the camera is inside it, and while it is
-    // anywhere near and nothing else is nearer, so that standing between two
-    // systems does not swap between them every frame.
+    // What is held stays held while nothing else is nearer and either the
+    // camera is closing on it or it is anywhere near, so that standing between
+    // two systems does not swap between them every frame. See [`holds_still`].
     if let Some(held) = contents.of()
         && nearest.is_none_or(|near| near == held)
         && systems.iter().any(|(system, standing)| {
@@ -275,5 +316,21 @@ mod tests {
         assert!(holds_still(0.3, 20.));
         assert!(holds_still(1., 1.));
         assert!(!holds_still(1., 9.));
+    }
+
+    /// But a nearer system takes the rows, whatever the fade says
+    ///
+    /// `holds_still` is asked only of a system nothing else is nearer than,
+    /// and that gate is load-bearing. [`super::spawn::WORTH_MARKING`] is an
+    /// angle, so a system reaching a fifth of a light year still reads as part
+    /// way out sixteen light years off: held on that ground it would keep the
+    /// rows against a neighbour the camera had been panned right onto, and the
+    /// map could never descend into the neighbour at all.
+    #[test]
+    fn the_nearest_system_is_the_one_worth_holding() {
+        let alpha_centauri = (1, 4.4);
+        let sol = (2, 0.);
+
+        assert_eq!(worth_holding([alpha_centauri, sol].into_iter()), Some(2));
     }
 }
