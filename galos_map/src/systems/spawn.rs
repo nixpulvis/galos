@@ -8,9 +8,8 @@ use crate::systems::{
     fetch::FetchIndex,
     fetch::FetchTasks,
     fetch::RawSystem,
-    filter::{DimTo, Filtered, Filtering, Filters},
+    filter::{Filtered, Filtering, Filters},
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
-    roundness::Roundness,
     route::spawn::{framing, spawn_route},
     route::{self, PlottedRoute, Route},
     selection::{Picked, PickedBody, Selection},
@@ -18,10 +17,8 @@ use crate::systems::{
 use crate::ui::{Gesture, PressOwner};
 use crate::{Names, Populated};
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::RenderLayers;
 use bevy::diagnostic::FrameCount;
 use bevy::image::{Image, ImageSampler};
-use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
 use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
@@ -49,7 +46,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(StarExposure::default());
     app.insert_resource(StarProfile::default());
 
-    app.add_systems(Startup, init_materials);
+    app.add_systems(Startup, bake_star_psf);
     app.init_resource::<PendingSpawns>();
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     // Turns a bounded number of queued systems into entities each frame, so a
@@ -57,7 +54,6 @@ pub fn plugin(app: &mut App) {
     // which fills the queue from what the fetch tasks return.
     app.add_systems(Update, drain_spawns.in_set(MapSet::Populate).after(spawn));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
-    app.add_systems(Update, redim.in_set(MapSet::Populate));
     // Rebakes the star texture when the profile changes; guarded on the
     // change inside, so a resting frame does nothing.
     app.add_systems(Update, reprofile.in_set(MapSet::Populate));
@@ -71,48 +67,6 @@ pub fn plugin(app: &mut App) {
             .after(super::pointing::point_at),
     );
 }
-
-/// What a star is drawn in, at full strength and dimmed
-///
-/// Two sets of the same colors rather than one recolored per star, because
-/// the color lives on a shared asset. A star moves between the sets by
-/// swapping which handle it points at, which repaints only that star, and the
-/// dim set is recolored in place when [`DimTo`] moves, which is meant to
-/// repaint every dimmed star at once.
-#[derive(Resource)]
-pub struct SystemMaterials {
-    /// One per color, indexed as [`hue`] answers
-    bright: Vec<Handle<StandardMaterial>>,
-    /// The same colors, at whatever [`DimTo`] is asking
-    dim: Vec<Handle<StandardMaterial>>,
-}
-
-impl SystemMaterials {
-    /// The handle for `hue`, at the strength `dimmed` asks for
-    ///
-    /// Lent rather than handed over. This is asked of every shell every frame
-    /// and the answer nearly always matches what the shell already points at,
-    /// so a handle taken by value would be an atomic pair per star per frame
-    /// spent on a comparison.
-    fn get(&self, hue: Hue, dimmed: bool) -> &Handle<StandardMaterial> {
-        let set = if dimmed { &self.dim } else { &self.bright };
-        &set[hue as usize]
-    }
-}
-
-/// How bright a shell's glow is emitted, at full strength
-///
-/// Full. A shell draws opaque and without bloom now, so its colour is the
-/// emission itself rather than a haze spread around a white-hot core, and the
-/// emission has to carry the hue on its own.
-///
-/// One, so a resting mark is emitted at the colour it was named in: the
-/// palette runs each channel from nothing to one (see [`Hue::color`]), and
-/// [`crate::camera::shells_view`] draws the shells past the filmic curve, so
-/// an emission of one reaches the screen as that colour at full and none of
-/// it clips or washes. Lower would only dim it towards black; the fade takes
-/// a mark out that way, but a mark standing does so at full.
-const SHELL_GLOW: f32 = 1.;
 
 /// The apparent-magnitude range the palette resolves brightness over
 ///
@@ -235,7 +189,7 @@ const PSF_TEXELS: u32 = 128;
 /// [`super::scale::size_photometrically`]), so brightness reads as size with no
 /// disc ever drawn. Linear rather than sRGB, so it multiplies the emissive
 /// straight; the channels carry the shape and the tint is the material's.
-fn star_psf(profile: ProfileKind) -> Image {
+pub(crate) fn star_psf(profile: ProfileKind) -> Image {
     let n = PSF_TEXELS;
     let centre = (n as f32 - 1.) / 2.;
     // A compact core: a tenth of its peak a fifth of the way out, all but gone
@@ -266,16 +220,16 @@ fn star_psf(profile: ProfileKind) -> Image {
     image
 }
 
-/// The quad every realistic star is drawn on
+/// The point spread every star's mark is painted through
 ///
-/// One unit billboard shared by every star, turned to the eye and sized each
-/// frame by [`super::scale::size_photometrically`] and painted from the
-/// photometric palette, whose [`star_psf`] gives it its shape.
+/// One baked image shared by the whole sky, so the map and `galos_sky` wear
+/// the same instrument. [`super::field`] samples it per mark in the realistic
+/// view — a bright core falling to nothing, which the camera's bloom spreads
+/// into a glint — and [`reprofile`] rewrites it in place when the profile
+/// changes, repainting every star at once.
 #[derive(Resource)]
 pub(crate) struct StarSprite {
-    pub quad: Handle<Mesh>,
-    /// The baked point-spread texture every star's sprite samples;
-    /// [`reprofile`] rewrites it when the profile changes.
+    /// What [`star_psf`] baked, under the handle [`super::field`] cloned.
     pub psf: Handle<Image>,
 }
 
@@ -292,9 +246,8 @@ pub struct StarProfile(pub ProfileKind);
 /// The colors a star may be drawn in
 ///
 /// Named rather than numbered, so that a scheme below says which color it
-/// means. The two material sets are laid out in [`Hue::ALL`] order and
-/// indexed by the hue itself, so there is one list of colors rather than a
-/// list and a set of numbers agreeing with it.
+/// means. One colour each, and nothing indexes them: [`super::field`] asks
+/// [`Hue::color`] for the three channels it paints a mark with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Hue {
     Green,
@@ -308,71 +261,27 @@ pub enum Hue {
 }
 
 impl Hue {
-    /// Every hue, in the order the material sets hold them
-    const ALL: [Hue; 8] = [
-        Hue::Green,
-        Hue::Cyan,
-        Hue::Red,
-        Hue::Orange,
-        Hue::Yellow,
-        Hue::Blue,
-        Hue::Magenta,
-        Hue::Grey,
-    ];
-
     /// What the hue is painted in
     ///
-    /// Alpha is part of it: a star is drawn as a translucent ball with a glow
-    /// over it, and the grey a system with nothing on record comes out is
-    /// fainter than the rest so that an unknown system does not read as a
-    /// finding.
+    /// The colour alone. What [`super::field`] paints a mark at is these
+    /// three channels and a fade of its own — how much of the mark is left as
+    /// it goes out, and how far the filters have dimmed it — so an alpha
+    /// carried here would be read by nobody. The grey a system with nothing
+    /// on record comes out is darker than the rest, so that an unknown system
+    /// does not read as a finding.
     pub(crate) const fn color(self) -> Color {
         match self {
-            Hue::Green => Color::srgba(0., 1., 0., 0.4),
-            Hue::Cyan => Color::srgba(0., 1., 1., 0.4),
-            Hue::Red => Color::srgba(1., 0., 0., 0.4),
-            Hue::Orange => Color::srgba(1., 0.5, 0., 0.4),
-            Hue::Yellow => Color::srgba(1., 1., 0., 0.4),
-            Hue::Blue => Color::srgba(0., 0., 1., 0.4),
-            Hue::Magenta => Color::srgba(1., 0., 1., 0.4),
-            Hue::Grey => Color::srgba(0.15, 0.15, 0.15, 0.3),
+            Hue::Green => Color::srgb(0., 1., 0.),
+            Hue::Cyan => Color::srgb(0., 1., 1.),
+            Hue::Red => Color::srgb(1., 0., 0.),
+            Hue::Orange => Color::srgb(1., 0.5, 0.),
+            Hue::Yellow => Color::srgb(1., 1., 0.),
+            Hue::Blue => Color::srgb(0., 0., 1.),
+            Hue::Magenta => Color::srgb(1., 0., 1.),
+            Hue::Grey => Color::srgb(0.15, 0.15, 0.15),
         }
     }
 }
-
-/// How a star is painted in `color`, at `strength` of full, blended or not
-///
-/// A resting mark is drawn opaque, so a wide field of them costs only the
-/// nearest at each pixel and there is nothing to sort. A mark on its way out
-/// is drawn blended instead: fading an opaque disc leaves it standing dark
-/// over the contents drawn in its place, the same disc reading one way against
-/// empty space and another over a lit system, so a mark goes out and comes
-/// back looking unlike itself. Blended, it crosses with what is behind it the
-/// same both ways. Only the held system ever goes out, so at most one mark is
-/// ever the blended kind and the field pays nothing for it.
-///
-/// The glow and the coverage both follow `strength`, the glow being most of
-/// what a mark reads as and the coverage what lets the contents through.
-fn star_material(
-    color: Color,
-    strength: f32,
-    mode: AlphaMode,
-) -> StandardMaterial {
-    let coverage = match mode {
-        AlphaMode::Blend => strength,
-        _ => 1.,
-    };
-    StandardMaterial {
-        base_color: color.with_alpha(coverage),
-        alpha_mode: mode,
-        emissive: LinearRgba::from(color.with_alpha(1.))
-            * SHELL_GLOW
-            * strength,
-        ..default()
-    }
-}
-
-// pub struct SystemMaterials(pub HashMap<String, Handle<StandardMaterial>>);
 
 /// Determains what color to draw in system view mode.
 #[derive(Resource, Copy, Clone, Debug, PartialEq)]
@@ -392,22 +301,23 @@ pub enum ColorBy {
 #[derive(Resource)]
 pub struct ShowNames(pub bool);
 
-/// A whole system, drawn as one thing
+/// A system the field paints a star for
 ///
-/// From far enough away nothing in a system can be told apart from anything
-/// else in it, so what is drawn is a single sphere standing for the lot. Up
-/// close the same sphere is the edge of what the system takes up, and its
-/// contents are drawn inside it.
+/// A marker and nothing else. From far enough away nothing in a system can be
+/// told apart from anything else in it, so what is drawn is one mark standing
+/// for the lot; up close the same mark is the edge of what the system takes
+/// up, and its contents are drawn inside it.
+///
+/// Nothing is drawn where the mark is. A mesh at a system's true coordinate
+/// sits out where the f32 clip transform tears it apart, so the mark is
+/// painted flat in screen space by [`super::field`], off this entity's
+/// position and the size [`super::scale`] writes onto it. That size is an
+/// exaggeration far larger than the system — a system drawn at its own scale
+/// is invisible from the next one over — and the field divides it back out to
+/// pixels, which is the whole of what it is for.
 ///
 /// Not a star. A system is a place, a star is a thing in it, and there may be
 /// several; those are read from the `stars` table and drawn within this.
-///
-/// [`super::scale`] writes a size onto this entity rather than onto the
-/// system, because a shell is drawn far larger than the system is so as to
-/// stay visible from light years away. Scale is inherited, so anything sharing
-/// an entity with it would be stretched by the same exaggeration; keeping the
-/// shell on a child of its own leaves the system's transform meaning what it
-/// says, and lets labels and bodies sit at their true size.
 #[derive(Component)]
 pub struct Shell;
 
@@ -870,10 +780,7 @@ fn drain_spawns(
     systems_query: Query<(Entity, &System)>,
     galaxy: Res<Galaxy>,
     grids: Query<&Grid>,
-    color_by: Res<ColorBy>,
     filtering: Filtering,
-    roundness: Res<Roundness>,
-    materials: Res<SystemMaterials>,
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     spyglass: Res<Spyglass>,
@@ -903,12 +810,9 @@ fn drain_spawns(
         &systems_query,
         &galaxy,
         grid,
-        &color_by,
         &filtering.filters,
         filtering.excluded_are_drawn(),
         &mut commands,
-        &roundness,
-        &materials,
         &time,
         &arrived_at,
     );
@@ -999,9 +903,11 @@ pub(crate) fn system_at(
 /// Create or refresh the entities for each row fetched
 ///
 /// A [`System`] carries the database row and the grid placement, is what the
-/// rest of the map addresses, and is itself drawn as the [`Shell`] standing
-/// for it. Labels hang off it alongside and are drawn far smaller, dividing
-/// the shell's scale back out; see [`super::labels::face_camera`].
+/// rest of the map addresses, and wears the [`Shell`] marker the field paints
+/// its star from. Its name is not hung on it as a mesh: names, rings and
+/// leaders are painted flat in screen space from the projected position (see
+/// [`super::labels::draw_names`]), so nothing has to undo the exaggerated
+/// size [`super::scale`] writes here.
 ///
 /// A row already on the map has its [`System`] replaced rather than being
 /// respawned, which [`update`] then acts on.
@@ -1015,12 +921,9 @@ pub fn spawn_systems(
     systems: &Query<(Entity, &System)>,
     galaxy: &Res<Galaxy>,
     grid: &Grid,
-    color_by: &Res<ColorBy>,
     filters: &Filters,
     excluded_are_drawn: bool,
     commands: &mut Commands,
-    roundness: &Res<Roundness>,
-    materials: &Res<SystemMaterials>,
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
 ) {
@@ -1058,13 +961,14 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            // The star is drawn dimmed here as well as in `filter::mark`, since
-            // a mark applied by a command lands at the next sync point and the
-            // star would be drawn once at full strength before it arrived.
-            let drawn = star(&system, color_by, roundness, materials, excluded);
             let mut spawned = commands.spawn((
                 placement(&system, grid),
                 system,
+                // What the map draws as a star, and no more than a marker:
+                // the field paints the mark from this entity's position and
+                // the size `super::scale` writes onto it, so there is no
+                // mesh, material or render layer to carry.
+                Shell,
                 // Fitted by `pointing::size_indicators` before the first
                 // draw, and what the pointer is tested against.
                 Indicator::default(),
@@ -1083,7 +987,6 @@ pub fn spawn_systems(
             if excluded {
                 spawned.insert(Filtered);
             }
-            spawned.insert(drawn);
         }
     }
 }
@@ -1104,28 +1007,6 @@ fn update(
     for (entity, system) in &systems_query {
         if system.is_changed() {
             commands.entity(entity).insert(placement(&system, grid));
-        }
-    }
-}
-
-/// Repaint the dimmed colors when the slider moves
-///
-/// The handles stay as they are, so nothing has to be told which material it
-/// is pointing at. Recoloring a shared asset repaints everything drawn in
-/// it, which here is every star the filters exclude, and is the point.
-fn redim(
-    dim: Res<DimTo>,
-    materials: Res<SystemMaterials>,
-    mut assets: ResMut<Assets<StandardMaterial>>,
-) {
-    if !dim.is_changed() {
-        return;
-    }
-
-    for (handle, hue) in materials.dim.iter().zip(Hue::ALL) {
-        if let Some(mut material) = assets.get_mut(handle) {
-            *material =
-                star_material(hue.color(), dim.opacity(), AlphaMode::Opaque);
         }
     }
 }
@@ -1152,41 +1033,6 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
     (cell, Transform::from_translation(translation))
 }
 
-/// The shell a system is drawn as
-///
-/// Inserted onto the [`System`] entity itself rather than hung off it, so the
-/// system is drawn as its own shell. [`super::scale`] writes a size onto that
-/// entity each frame; the size is an exaggeration far larger than a metre, and
-/// the labels alongside divide it back out (see [`super::labels::face_camera`]).
-///
-/// Nothing aims at it. What answers the pointer is the system itself, over
-/// the mark [`super::pointing::Indicator`] holds, so a system is as easy to
-/// hit as the ring says it is however small the shell is drawn.
-fn star(
-    system: &System,
-    color_by: &Res<ColorBy>,
-    roundness: &Res<Roundness>,
-    materials: &Res<SystemMaterials>,
-    dimmed: bool,
-) -> impl Bundle {
-    (
-        Shell,
-        // Fitted by `super::scale` before the first draw, as the size is.
-        Mesh3d(roundness.coarsest()),
-        MeshMaterial3d(materials.get(hue(system, color_by), dimmed).clone()),
-        NotShadowCaster,
-        // Never frustum-culled. A shell's true coordinate is out where the f32
-        // frustum test misjudges it, and [`super::scale::pull_stars`] draws it
-        // on a near plane only for shells left visible — so the cull must be
-        // kept from hiding one before it is pulled in.
-        bevy::camera::visibility::NoFrustumCulling,
-        // Drawn on its own layer by a camera without bloom, so a wide field of
-        // shells is opaque and the nearest covers the rest while the bodies
-        // keep the glow. See [`crate::camera::SHELLS_LAYER`].
-        RenderLayers::layer(crate::camera::SHELLS_LAYER),
-    )
-}
-
 /// Which color a star is drawn in
 pub(crate) fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     match color_by.deref() {
@@ -1196,38 +1042,19 @@ pub(crate) fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     }
 }
 
-pub(crate) fn init_materials(
-    mut assets: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+/// Bake the point spread every star's mark is painted through
+///
+/// One image for the whole sky, put up before [`super::field`]'s own startup
+/// reads it. Nothing else is prepared here: a mark is painted flat in screen
+/// space from a system's position and its size, so there is no per-star mesh
+/// or material to build.
+pub(crate) fn bake_star_psf(
     mut images: ResMut<Assets<Image>>,
-    dim: Res<DimTo>,
     star_profile: Res<StarProfile>,
     mut commands: Commands,
 ) {
-    let mut set = |strength: f32| {
-        Hue::ALL
-            .into_iter()
-            .map(|hue| {
-                assets.add(star_material(
-                    hue.color(),
-                    strength,
-                    AlphaMode::Opaque,
-                ))
-            })
-            .collect()
-    };
-    let bright = set(1.);
-    let dim = set(dim.opacity());
-
-    // The baked point spread every realistic star's glint is sampled through
-    // (see [`super::field`]); [`reprofile`] rewrites it when the profile
-    // changes.
     let psf = images.add(star_psf(star_profile.0));
-    commands.insert_resource(StarSprite {
-        quad: meshes.add(Rectangle::new(1., 1.)),
-        psf,
-    });
-    commands.insert_resource(SystemMaterials { bright, dim });
+    commands.insert_resource(StarSprite { psf });
 }
 
 /// Rebake the star point spread when the profile changes
@@ -1501,14 +1328,9 @@ mod tests {
     fn switching_the_profile_rebakes_the_star_texture() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Assets<StandardMaterial>>();
-        app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<Image>>();
-        app.init_resource::<DimTo>();
-        app.insert_resource(ColorBy::Allegiance);
-        app.insert_resource(StarExposure::default());
         app.insert_resource(StarProfile(ProfileKind::Moffat));
-        app.add_systems(Startup, init_materials);
+        app.add_systems(Startup, bake_star_psf);
         app.add_systems(Update, reprofile);
         app.update();
 

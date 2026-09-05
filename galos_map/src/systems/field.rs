@@ -11,13 +11,13 @@
 //! precision left to lose: the field is exact and still at every zoom, pitch,
 //! and turn, and it is one draw call however many stars there are.
 //!
-//! The [`Shell`] entities stay on the galaxy grid, where the map addresses them
-//! for picking, filtering, and flying in. They simply stop being what draws the
-//! star; this does the drawing, off their position alone.
+//! The [`Shell`] entities stay on the galaxy grid, where the map addresses
+//! them for picking, filtering, and flying in, and they carry no mesh,
+//! material or render layer of their own — nothing draws a shell where it
+//! stands. This does all of the drawing, off a shell's position and the size
+//! [`super::scale`] leaves on it.
 
-use crate::camera::{
-    FIELD_LAYER, OrbitCamera, SHELLS_LAYER, STAR_BLOOM, ShellsView,
-};
+use crate::camera::{FIELD_LAYER, FIELD_ORDER, OrbitCamera, STAR_BLOOM};
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::bodies::spawn::Strength;
@@ -43,11 +43,11 @@ use bevy::render::render_resource::{
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
-    // After `init_materials`, whose `StarSprite` carries the baked point
+    // After `bake_star_psf`, whose `StarSprite` carries the baked point
     // spread the realistic glint is painted through.
     app.add_systems(
         Startup,
-        spawn_field.after(crate::systems::spawn::init_materials),
+        spawn_field.after(crate::systems::spawn::bake_star_psf),
     );
     app.add_systems(Update, tune_field);
     app.add_systems(
@@ -97,10 +97,10 @@ const SMALLEST: f32 = 0.75;
 ///   a point rather than a sub-pixel speck.
 /// - [`View::Realistic`] draws only the stars that clear the eye's floor. One
 ///   that did not was shrunk by [`super::scale::size_photometrically`] to the
-///   [`UNSEEN`] sliver — kept nonzero so a name still places on it — and is
-///   not a drawn star. Flooring it up to [`SMALLEST`] the way the map does
-///   would light the whole sub-floor sky; so a sliver is dropped and every
-///   cleared star keeps its own photometric radius, no floor.
+///   [`UNSEEN`] sliver, which is the sentinel that says it did not clear the
+///   floor. Flooring it up to [`SMALLEST`] the way the map does would light
+///   the whole sub-floor sky; so a sliver is dropped and every cleared star
+///   keeps its own photometric radius, no floor.
 fn mark_radius(view: &View, raw: f32) -> Option<f32> {
     match view {
         View::Map => Some(raw.max(SMALLEST)),
@@ -213,7 +213,7 @@ fn spawn_field(
         Tonemapping::None,
         Exposure::SUNLIGHT,
         Camera {
-            order: SHELLS_LAYER as isize,
+            order: FIELD_ORDER,
             clear_color: ClearColorConfig::None,
             ..default()
         },
@@ -226,7 +226,7 @@ fn spawn_field(
     ));
 }
 
-/// Turn the field to the view and leave the shells' camera off
+/// Turn the field to the view
 ///
 /// The field draws every view. The map wants flat solid marks and no bloom;
 /// the realistic view wants the glint material and the star bloom to spread
@@ -234,11 +234,7 @@ fn spawn_field(
 fn tune_field(
     view: Res<View>,
     mut commands: Commands,
-    mut field: Query<
-        (Entity, &mut Camera),
-        (With<FieldCamera>, Without<ShellsView>),
-    >,
-    mut shells: Query<&mut Camera, (With<ShellsView>, Without<FieldCamera>)>,
+    field: Query<Entity, With<FieldCamera>>,
     mut mark: Query<&mut MeshMaterial3d<StandardMaterial>, With<FieldMark>>,
     palette: Res<FieldMaterials>,
 ) {
@@ -246,16 +242,12 @@ fn tune_field(
         return;
     }
     let realistic = matches!(*view, View::Realistic);
-    if let Ok((entity, mut camera)) = field.single_mut() {
-        camera.is_active = true;
+    if let Ok(entity) = field.single() {
         if realistic {
             commands.entity(entity).insert(STAR_BLOOM);
         } else {
             commands.entity(entity).remove::<Bloom>();
         }
-    }
-    if let Ok(mut camera) = shells.single_mut() {
-        camera.is_active = false;
     }
     if let Ok(mut material) = mark.single_mut() {
         let wanted = if realistic { &palette.glint } else { &palette.solid };

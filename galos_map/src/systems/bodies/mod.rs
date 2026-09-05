@@ -215,6 +215,17 @@ impl Contents {
         self.of
     }
 
+    /// Whether the answer about it is still on its way
+    ///
+    /// [`Contents::extent`] is `None` both for a system with nothing in it and
+    /// for one whose rows have not landed yet, and those mean opposite things
+    /// to whatever would hold the camera off a system with nothing to descend
+    /// into. This tells the two apart, so a question in flight is not read as
+    /// an empty answer.
+    pub fn asking(&self) -> bool {
+        matches!(self.state, FetchState::Asking)
+    }
+
     /// Which answer about this system is being held
     ///
     /// Nothing to read into the number itself. It stands still while the

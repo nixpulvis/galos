@@ -64,7 +64,7 @@ const DEFAULT_NAME_RADIUS: f32 = 20.;
 /// The line box, which for a single line of text is the size the font is
 /// set at. The one number that decides how large a name is; everything else
 /// follows from the viewport and where the camera is.
-pub(super) const NAME_HEIGHT: f32 = 12.;
+pub(crate) const NAME_HEIGHT: f32 = 12.;
 
 /// How far from what the camera looks at a system may be and still be named
 ///
@@ -579,8 +579,9 @@ pub(crate) fn choose_names(
     show_body_names: Res<ShowBodyNames>,
     systems: Query<Candidate<'_, &'static System>>,
     bodies: Query<(Entity, &Body, &Indicator)>,
-    // Where a body stands, read the same way [`face_camera`] reads it. Which
-    // names are drawn is decided by packing their boxes, and where each one
+    // Where a body stands, read off the same `Places` that `draw_names`
+    // paints it by. Which names are drawn is decided by packing their boxes,
+    // and where each one
     // lands is decided there; taken from two different answers about where a
     // body is, the packing settles a screen the names are then drawn onto
     // somewhere else, and through a zoom the two are a quarter of the way
@@ -1281,7 +1282,7 @@ pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
     let width = letters as f32 * ADVANCE * size;
     let margin = size * CROWDING;
 
-    // `face_camera` puts a name up and to the right of what it names by this
+    // `draw_names` puts a name up and to the right of what it names by this
     // same standoff and these same multiples of its height.
     let left = at.x + clear + size * GAP;
     let middle = at.y - size * RISE;

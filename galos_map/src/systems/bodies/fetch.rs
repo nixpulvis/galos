@@ -71,18 +71,49 @@ fn worth_holding<T>(systems: impl Iterator<Item = (T, f64)>) -> Option<T> {
         .map(|(it, _)| it)
 }
 
-/// How far the system the camera is closing on reaches, in metres
+/// The system the camera is closing on, as the zoom floor reads it
 ///
 /// The nearest one to what the camera looks at, which is the one the poll asks
 /// about and the one the camera is about to be stopped short of if it turns out
 /// to have nothing to descend into. Written here because this is where that
 /// system is already picked out, once a frame, off a scan the poll makes
-/// anyway; read by [`crate::camera`]'s `subgridless_floor`.
+/// anyway; read by [`crate::camera`]'s `zoom_floor`.
 ///
 /// Nothing where the camera is out of reach of every system, which is a camera
 /// with nothing to be held off by.
 #[derive(Resource, Default)]
-pub struct Approaching(pub Option<f32>);
+pub struct Approaching(pub Option<Approach>);
+
+/// What the camera needs of the system it is closing on
+///
+/// Both halves are needed together. A floor taken off the reach alone held the
+/// camera off a system it was nowhere near: [`ASK_WITHIN`] is five light years
+/// wide, so a wide neighbour became the system the floor was read from while
+/// the camera stood on another, and a fifth of a light year of reach is a floor
+/// twenty-five light years out. How far off it stands is what says whether the
+/// zoom is closing on it at all.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Approach {
+    /// How far it reaches from its arrival star, in metres
+    pub reach: f32,
+    /// How far it stands from what the camera is looking at, in light years
+    pub away: f32,
+}
+
+impl Approach {
+    /// Whether the camera is standing in the system rather than beside it
+    ///
+    /// The same sphere the ruler changes hands across
+    /// ([`crate::grid::RULES_BEYOND`]), which is the map's one answer to
+    /// "inside this system": it is exactly the nearest the camera can be to a
+    /// system without its insides being drawn, and it is the same distance for
+    /// every system, so a wide one does not claim the sky its neighbours stand
+    /// in.
+    pub fn stood_in(&self) -> bool {
+        f64::from(self.away) * crate::space::LIGHT_YEAR
+            <= f64::from(crate::grid::RULES_BEYOND)
+    }
+}
 
 /// Whether a system already held goes on being held
 ///
@@ -181,12 +212,14 @@ fn choose(
     // stopped short of where the system turns out to have nothing to descend
     // into (see [`Approaching`]).
     let closing = worth_holding(systems.iter().map(|(system, _)| {
-        ((system.address, system.reach()), center.distance(system.position()))
+        let away = center.distance(system.position());
+        let approach = Approach { reach: system.reach(), away: away as f32 };
+        ((system.address, approach), away)
     }));
     let nearest = closing.map(|(address, _)| address);
-    let reaching = closing.map(|(_, reach)| reach);
-    if approaching.0 != reaching {
-        approaching.0 = reaching;
+    let closing = closing.map(|(_, approach)| approach);
+    if approaching.0 != closing {
+        approaching.0 = closing;
     }
 
     // What is held stays held while nothing else is nearer and either the

@@ -97,11 +97,27 @@ pub fn plugin(app: &mut App) {
     );
     // Flat on the screen, in egui's own pass, under the chrome and over the
     // map — the same layer and the same reason the names and rings are drawn
-    // there. Ordered before the lettering so the annotation layer is registered
+    // there.
+    //
+    // First of the four painters writing into that one shared layer
+    // ([`crate::systems::labels::annotations_layer`]), where paint order is
+    // stacking order and so run order is what decides which mark ends up on
+    // top. The readouts are the plane's own ruling, the substrate the map is
+    // read against rather than anything picked out on it, so they go under
+    // the marks and under the names: a dropline or a readout row painted
+    // over a name's ground would cross the words the map is read by. Left to
+    // the executor the stacking would be whichever painter it happened to
+    // reach first, which is why the whole of it is spelled out here.
+    //
+    // Before the lettering as well, so the annotation layer is registered
     // beneath the panes, as [`crate::systems::labels::draw_names`] is.
     app.add_systems(
         EguiPrimaryContextPass,
-        draw_readouts.before(crate::ui::lettering),
+        draw_readouts
+            .before(crate::systems::pointing::ring)
+            .before(crate::systems::selection::ring)
+            .before(crate::systems::labels::draw_names)
+            .before(crate::ui::lettering),
     );
 }
 
@@ -242,7 +258,7 @@ type PlaneParts = (
 /// written onto the one plane the two share an origin and an altitude by
 /// construction rather than by two placements agreeing.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-struct Ruler {
+pub(crate) struct Ruler {
     /// Ruled in a system's own grid rather than in the galaxy's
     inside: bool,
 }
@@ -373,7 +389,7 @@ const RULES_WITHIN: f32 = RULES_BEYOND / 4.;
 /// A thousand astronomical units, as it works out, fading down to two hundred
 /// and fifty: outside the planets of all but the widest systems, and well
 /// inside the space between them.
-const RULES_BEYOND: f32 = crate::systems::bodies::STAND_IN
+pub(crate) const RULES_BEYOND: f32 = crate::systems::bodies::STAND_IN
     / crate::systems::bodies::spawn::WORTH_DRAWING;
 
 /// How far out through the handover a camera `away` metres from the system it
@@ -561,7 +577,7 @@ fn mark_out(
 /// What it gives up by leaving the scene is being tonemapped with the plane and
 /// hidden behind whatever galaxy stands in front of it. A readout is chrome
 /// laid over the map, the same as a name, and reads as one.
-fn draw_readouts(
+pub(crate) fn draw_readouts(
     mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
     planes: Query<(&Ruler, &Plane, &Reading)>,

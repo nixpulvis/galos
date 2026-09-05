@@ -20,8 +20,7 @@ use super::System;
 use super::bodies::spawn::{Body, WORTH_KEEPING, WORTH_SIZING};
 use super::labels::{depth_of, world_per_pixel};
 use super::roundness::Roundness;
-use super::spawn::{Shell, StarExposure, StarSprite};
-use bevy::camera::visibility::ViewVisibility;
+use super::spawn::{Shell, StarExposure};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::Grid;
@@ -58,11 +57,6 @@ pub fn plugin(app: &mut App) {
     // does. What it writes is read by the next frame's propagation, which is
     // a frame behind and nowhere near enough movement to see.
     app.add_systems(PostUpdate, size_inside.after(TransformSystems::Propagate));
-    // `pull_stars` once relocated the realistic view's shell billboards onto a
-    // near plane to keep the f32 clip transform from tearing them; the field
-    // draws that view now, in screen space, so nothing relocates a shell any
-    // more. The function is kept for its tests until the shell-draw machinery
-    // is retired wholesale; see [`crate::systems::field`].
 }
 
 #[derive(Resource, Debug, PartialEq)]
@@ -259,9 +253,11 @@ fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
 
 /// Draw each system large enough to be seen from where the camera is
 ///
-/// The size goes on the shell, which now shares an entity with the [`System`]
-/// it stands for. The labels hung off that entity are drawn far smaller and
-/// divide the shell's scale back out; see [`super::labels::face_camera`].
+/// The size goes on the shell, which shares an entity with the [`System`] it
+/// stands for. Nothing is drawn where it is: [`super::field`] reads the size
+/// back off the transform, divides it by what a pixel covers out there, and
+/// paints the mark flat in screen space, so this one number is what the
+/// sizing and the drawing agree through.
 ///
 /// How far a system reaches is read off the system itself, which every one of
 /// them carries. Asking the system the map is holding the insides of instead
@@ -278,21 +274,15 @@ fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
 pub fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
-    camera: Query<(&OrbitCamera, &Camera)>,
-    roundness: Res<Roundness>,
-    mut shells: Query<
-        (&mut Transform, &System, &mut Mesh3d, &Visibility),
-        With<Shell>,
-    >,
+    camera: Query<&OrbitCamera>,
+    mut shells: Query<(&mut Transform, &System, &Visibility), With<Shell>>,
 ) {
     if !shells.is_empty() {
-        let Ok((orbit, camera)) = camera.single() else { return };
-        let Some(viewport) = camera.logical_viewport_size() else { return };
-        let cot_half_fov = camera.clip_from_view().y_axis.y;
+        let Ok(orbit) = camera.single() else { return };
         let eye = orbit.eye;
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut drawn, system, mut mesh, visible) in shells.iter_mut() {
+        for (mut drawn, system, visible) in shells.iter_mut() {
             // Out of the spyglass is not drawn, so the size it would draw at
             // is not worked out. Its scale is left where it last stood, which
             // is close enough for the frame it comes back on.
@@ -315,25 +305,6 @@ pub fn size_by_distance(
             // it are gated on that mark.
             if drawn.scale.x != size {
                 drawn.scale = Vec3::splat(size);
-            }
-
-            // A shell coming back from the realistic view was turned to face
-            // the eye. A sphere reads the same at any turn, but leave it square
-            // so nothing downstream meets a tilted mark.
-            if drawn.rotation != Quat::IDENTITY {
-                drawn.rotation = Quat::IDENTITY;
-            }
-
-            // Measured out along the line to the system rather than into the
-            // view, which is what the size itself is measured by. A mark off
-            // to one side is drawn a little coarser than it strictly asks for,
-            // by well under the pixel the rungs are set by, and the two agree
-            // about how far away a system is.
-            let per_pixel =
-                world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
-            let wanted = roundness.at(&mesh.0, size / per_pixel);
-            if mesh.0 != *wanted {
-                mesh.0 = wanted.clone();
             }
         }
     }
@@ -433,14 +404,26 @@ const DOT_RADIUS: f32 = 0.6;
 
 /// The size a star below the flux floor shrinks to, as a fraction of a pixel
 ///
-/// Not zero. A star fainter than the exposure floor is not drawn, but a name
-/// may still be hung on it — selected, pointed at, or a route stop — and a
-/// name is a child of the star's entity and inherits its scale, so a zero
-/// would collapse the name to nothing (see [`super::labels::face_camera`]). A
-/// thousandth of a pixel is far below what any screen shows, so the star stays
-/// invisible while the name it carries keeps a scale to be read against. This
-/// is how the realistic view keeps a marked-but-undrawn star named, the way the
-/// map view keeps a selection named from behind the spyglass.
+/// Not zero, though no longer for the reason it was written for: a name is
+/// painted flat in screen space now (see [`super::labels::draw_names`]) and
+/// inherits nothing from the star, so a star of no size would still be named
+/// and still be aimed at — [`super::pointing`] floors a system's mark at a
+/// size for the hand whatever the field draws.
+///
+/// What reads it is the field. `super::field::mark_radius` takes the size
+/// back off the shell, halves it, and draws a realistic star only where what
+/// is left is more than half of this, so the sliver is the one thing saying
+/// "this star did not clear the exposure floor" — and that test is the whole
+/// of what keeps the sub-floor sky dark. The map's floor applied here instead
+/// would draw every star under the floor as a point of light.
+///
+/// A thousandth of a pixel puts it three orders under the smallest star that
+/// draws ([`DOT_RADIUS`]), which is the room the test wants on both sides:
+/// the size reaches the field having round-tripped through a multiply and a
+/// divide by `per_pixel`, and nothing that survives that lands near the
+/// threshold. What it may not be is anything approaching twice
+/// [`DOT_RADIUS`] — at `1.2` the test would begin dropping stars that did
+/// clear the floor.
 pub(crate) const UNSEEN: f32 = 1e-3;
 
 /// The visible radius of a star's point spread, in screen pixels
@@ -471,28 +454,27 @@ fn psf_radius(energy: f64) -> f32 {
     ((PSF_GROWTH * energy.ln()) as f32).max(DOT_RADIUS)
 }
 
-/// Draw each system as its point spread, for the realistic view
+/// Size each system by its point spread, for the realistic view
 ///
-/// A star is a billboard carrying the fixed Moffat point spread (see
-/// [`super::spawn::star_psf`]), sized to the radius that spread clears above
-/// the eye's floor by [`psf_radius`] and turned to face the camera. A brighter
-/// star clears more of the same profile, so it draws larger and a fainter one
-/// smaller, both by the log of their brightness; opening the exposure grows
-/// them all and draws fainter ones in; and a star whose peak is under the floor
-/// has no size and drops out. The tint and the core's shape are the sprite's.
+/// A star is sized to the radius its point spread (`super::spawn::star_psf`)
+/// clears above the eye's floor, by [`psf_radius`]. A brighter star clears
+/// more of the same profile, so it draws larger and a fainter one smaller,
+/// both by the log of their brightness; opening the exposure grows them all
+/// and draws fainter ones in; and a star whose peak is under the floor is cut
+/// to the [`UNSEEN`] sliver and drawn by nobody. What is written is a world
+/// size, which [`super::field`] takes back to pixels and paints the glint at.
 ///
 /// A shell the camera has descended into is skipped: it wears a [`Grid`] now
-/// and its transform is that sub-grid's placement, read by `big_space`, not a
-/// billboard's facing. Turning it to face the eye would tilt the sub-grid the
-/// camera hangs in and swing the galaxy's whole sky off with it; the entity is
-/// left to `super::bodies::spawn::draw`, which squares its transform when it
-/// hands the shell over to the grid.
+/// and its transform is that sub-grid's placement, read by `big_space`. A
+/// pixel-sized scale written onto it would shrink the whole system hanging in
+/// that grid by the same amount, and the size answers nothing there in any
+/// case — the camera is inside the system, drawing its contents rather than a
+/// mark standing in for them.
 pub(crate) fn size_photometrically(
     camera: Query<(&OrbitCamera, &Camera)>,
     exposure: Res<StarExposure>,
-    sprite: Res<StarSprite>,
     mut shells: Query<
-        (&mut Transform, &System, &mut Mesh3d, &Visibility),
+        (&mut Transform, &System, &Visibility),
         (With<Shell>, Without<Grid>),
     >,
 ) {
@@ -504,11 +486,7 @@ pub(crate) fn size_photometrically(
     };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
     let zero_point = exposure.zero_point();
-    // Turned to line up with the camera, written straight in as a local
-    // rotation the way [`super::labels::face_camera`] does: a system is never
-    // itself rotated, so its local frame is the world's.
-    let facing = orbit.rotation;
-    for (mut drawn, system, mut mesh, visible) in shells.iter_mut() {
+    for (mut drawn, system, visible) in shells.iter_mut() {
         if *visible == Visibility::Hidden {
             continue;
         }
@@ -529,99 +507,6 @@ pub(crate) fn size_photometrically(
         if drawn.scale.x != size {
             drawn.scale = Vec3::splat(size);
         }
-        if drawn.rotation != facing {
-            drawn.rotation = facing;
-        }
-        if mesh.0 != sprite.quad {
-            mesh.0 = sprite.quad.clone();
-        }
-    }
-}
-
-/// Draw each system's shell on a plane the camera carries, not where it is
-///
-/// A shell sits at its system's true coordinate, up to ~1e17 m from the
-/// floating origin, and there the f32 clip transform `view_proj · model` runs
-/// out of bits: the mesh comes out torn or gone, and which triangles survive
-/// turns with the camera, so half the sky blinks in and out as it pitches and
-/// zooms (see `docs/night-sky.md`). So the shell is not drawn where it is. Its
-/// centre is projected on the CPU in f64 and the mesh placed on the eye→system
-/// ray just past the near plane — the smallest coordinate it can be drawn at
-/// without being clipped, and so the most precise — kept at the pixel size
-/// [`size_by_distance`] and [`size_photometrically`] worked out and facing the
-/// camera, so it reads the same while it draws at all.
-///
-/// Only the shells the map is still standing in for. One flown into wears a
-/// [`Grid`] and is drawn as the system itself, near the origin, where the
-/// precision holds.
-///
-/// The `GlobalTransform` is overwritten, not the `Transform`: a system's true
-/// coordinate is what everything else asks of it — where its name is laid out,
-/// where the pointer is tested — so the shell keeps it and only what reaches
-/// the renderer is moved. Written after `big_space` has propagated, so it is
-/// this that the renderer reads.
-pub fn pull_stars(
-    camera: Query<(&OrbitCamera, &GlobalTransform)>,
-    mut shells: Query<
-        (&System, &Transform, &mut GlobalTransform, &ViewVisibility),
-        (With<Shell>, Without<Grid>, Without<OrbitCamera>),
-    >,
-) {
-    let Ok((orbit, eye)) = camera.single() else { return };
-    let eye_render = eye.translation();
-    let forward = (orbit.rotation * Vec3::NEG_Z).as_dvec3();
-    // Just past the near clip plane: the smallest coordinate a star can be
-    // drawn at without being clipped, and so the most precise. The plane is a
-    // ten-thousandth of the zoom, held under [`crate::camera::NEAR_CEILING`],
-    // which keeps this close to the eye's own neighbourhood at every zoom —
-    // where the f32 transform holds — rather than out where a field spread to
-    // the edges tears. Three times it, to clear the plane at the corners of
-    // the view where the ray runs longer than down the middle.
-    let near = ((orbit.radius as f64 * crate::space::LIGHT_YEAR) as f32
-        * crate::camera::NEAR_FRACTION)
-        .min(crate::camera::NEAR_CEILING)
-        * 3.;
-
-    // How far a shell has to be for pulling it in to be worth it. Nearer than
-    // this its true coordinate is already in the eye's own precise
-    // neighbourhood, where it draws cleanly at full size; pulling it onto the
-    // near plane would shrink its mesh below what a float resolves at the eye's
-    // own magnitude and collapse it — which is what tore a shell apart as the
-    // camera came in on it. Well under where the clip transform starts to tear
-    // one left where it is.
-    const PULL_BEYOND: f32 = 1e16;
-
-    for (system, local, mut global, visible) in &mut shells {
-        if !visible.get() {
-            continue;
-        }
-        // Close enough to draw where it is: see [`PULL_BEYOND`]. Leaving it
-        // keeps its true depth, so it still sorts against whatever it is near.
-        if global.translation().length() < PULL_BEYOND {
-            continue;
-        }
-        let offset =
-            crate::space::metres(DVec3::from(system.position) - orbit.eye);
-        let away = offset.length() as f32;
-        // Behind the eye, or sitting on it: nothing to draw where it is seen.
-        // Its mesh is left with no size rather than at a coordinate that tears.
-        if offset.dot(forward) <= 0. || away < 1. {
-            *global = GlobalTransform::from(Transform::from_scale(Vec3::ZERO));
-            continue;
-        }
-        // Along the ray to the system, out at the near plane: the same screen
-        // point, at a depth the f32 transform holds.
-        let direction = (offset / away as f64).as_vec3();
-        let translation = eye_render + direction * near;
-        // The size was worked out for the true distance; a pixel covers that
-        // much less world out here, so the world size shrinks by the same ratio
-        // and the mark holds the pixels it was given.
-        let scale = local.scale * (near / away);
-        *global = GlobalTransform::from(Transform {
-            translation,
-            rotation: local.rotation,
-            scale,
-        });
     }
 }
 
@@ -1048,11 +933,9 @@ mod tests {
     fn sky() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Assets<Mesh>>();
         app.init_resource::<SystemsStats>();
         app.init_resource::<Writes>();
         app.insert_resource(ScalePopulation(false));
-        app.add_plugins(crate::systems::roundness::plugin);
         app.world_mut()
             .spawn((OrbitCamera::default(), crate::systems::tests::seeing()));
         app
@@ -1064,7 +947,6 @@ mod tests {
             system,
             Shell,
             Transform::default(),
-            Mesh3d::default(),
             Visibility::Visible,
         ));
     }

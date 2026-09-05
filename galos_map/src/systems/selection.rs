@@ -252,7 +252,7 @@ impl Selection {
     /// Move a selection resting on any body of the system at `address` back
     /// onto the system, collapsed to one
     ///
-    /// The other half of [`rebind_system_to_body`]: ascending out of a system
+    /// The other half of [`Selection::rebind_system_to_body`]: ascending out
     /// carries a selection made on anything inside it — the arrival star it
     /// descended onto, or a planet picked out since — back onto the system, so
     /// it survives the trip out rather than being let go with the bodies.
@@ -576,7 +576,7 @@ fn clear_when_nothing_is_clicked(
 /// stands around. Everything the map draws for a system as a whole is a mark
 /// standing in for something too small to see, and a ring left around a system
 /// the camera is standing inside is a ring around the view.
-fn ring(
+pub(crate) fn ring(
     mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
     holding: Res<HeldSystem>,
