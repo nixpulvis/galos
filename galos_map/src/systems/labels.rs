@@ -1,7 +1,7 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
-use crate::systems::filter::{DimTo, Filtered};
+use crate::systems::filter::Filtered;
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
 use crate::systems::scale::View;
 use crate::systems::selection::{SELECTION, Selected};
@@ -262,20 +262,27 @@ const SELECTED_WEIGHT: f32 = 1000.;
 
 /// Whether a system is asked for a name at all
 ///
-/// Two ways to be passed over, two to be asked for regardless, and one that
-/// settles it whatever the other four say.
+/// Two ways to be passed over, one to be asked for over the softer of them,
+/// and one that settles it whatever the rest say.
 ///
 /// A name is read or it is not; there is no faint reading of one. So a system
 /// the filters exclude gives its name up rather than keeping it dimly: a sky
 /// of faint names over dim stars has nothing legible in it, and what the
-/// filters admit is what the user asked to be able to read. The toggle says
-/// the same thing about every system at once.
+/// filters admit is what the user asked to be able to read.
 ///
-/// Being marked out beats both. Pointing at a system or picking it out is
-/// asking for it by name, which is the one thing a name is for, and neither
-/// the toggle nor a filter has any business refusing it.
+/// A filter refuses outright, marked out or not. It is the one answer that
+/// cannot be overridden by pointing at the star, because a name awarded to
+/// an excluded system is a name that has to be drawn dimly to say it is
+/// excluded — and a dim name is the thing there is no such thing as. What
+/// that came to on screen was a name faded to nothing over its own ground,
+/// which reads as an empty box hanging off a star. Better not to lay one out.
 ///
-/// `stands` beats being marked out. It is whether the map is still standing a
+/// The names toggle is the softer refusal, and yields: it says the same thing
+/// about every system at once rather than about this one, so pointing at a
+/// system or picking it out is still asking for it by name, and the toggle
+/// has no business refusing that.
+///
+/// `stands` beats all of it. It is whether the map is still standing a
 /// mark in for the system, and the name is part of that mark: once the camera
 /// is inside, what is drawn there is the system itself, and the things in it
 /// carry their own names. A name left hanging over them would be the label of
@@ -293,7 +300,7 @@ fn worth_naming(
     pointed_at: bool,
     selected: bool,
 ) -> bool {
-    stands && (pointed_at || selected || (shown && !filtered))
+    stands && !filtered && (pointed_at || selected || shown)
 }
 
 /// Where a system stands relative to what its view names by
@@ -1513,13 +1520,16 @@ pub fn draw_names(
     // The marks that colour a name and where its system stands. Spelled
     // `Without<Label>` so the scheduler can prove the token query disjoint
     // from these; a token is neither a system nor a body.
+    //
+    // No `Filtered` among them: an excluded system is never laid out a name
+    // at all, so a token's parent is admitted by construction. See
+    // [`worth_naming`].
     systems: Query<
         (
             &System,
             &Indicator,
             Has<PointedAt>,
             Has<Selected>,
-            Has<Filtered>,
             Has<crate::systems::route::Hop>,
         ),
         Without<Label>,
@@ -1529,7 +1539,6 @@ pub fn draw_names(
         (With<Body>, Without<Label>),
     >,
     places: Places,
-    dim: Res<DimTo>,
 ) -> Result {
     let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
     let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
@@ -1553,7 +1562,7 @@ pub fn draw_names(
         // [`choose_names`] reads it, so the name is placed against the view it
         // is about to be drawn into.
         let (at, clear, tint, leader) =
-            if let Ok((system, indicator, pointed, selected, filtered, hop)) =
+            if let Ok((system, indicator, pointed, selected, hop)) =
                 systems.get(thing)
             {
                 let Some(at) = screen_position(
@@ -1564,11 +1573,12 @@ pub fn draw_names(
                 ) else {
                     continue;
                 };
-                let tint = faded(
+                (
+                    at,
+                    indicator.0,
                     marked_tint(pointed, selected),
-                    if filtered { dim.opacity() } else { 1. },
-                );
-                (at, indicator.0, tint, !(pointed || selected || hop))
+                    !(pointed || selected || hop),
+                )
             } else if let Ok((indicator, pointed, selected)) = bodies.get(thing)
             {
                 let Some(place) = places.of(thing) else { continue };
@@ -1649,15 +1659,6 @@ fn marked_tint(pointed_at: bool, selected: bool) -> Srgba {
     } else {
         Srgba::WHITE
     }
-}
-
-/// `tint` at `strength` of full
-///
-/// The alpha carries it, not the colour: a name dimmed by darkening would go
-/// black against the sky and read as a hole rather than as something standing
-/// further back.
-fn faded(tint: Srgba, strength: f32) -> Srgba {
-    Srgba { alpha: tint.alpha * strength, ..tint }
 }
 
 /// An sRGB colour as egui knows it
@@ -1794,19 +1795,27 @@ mod tests {
         assert!(!worth_naming(STANDS, true, true, false, false));
     }
 
-    /// And keeps it while it is pointed at or picked out
+    /// And does not get it back for being pointed at or picked out
     ///
-    /// Either is asking for the system by name, which is the one thing a
-    /// name is for.
+    /// Reported as an empty box hanging off an excluded star: the name was
+    /// awarded for being marked out and then faded to nothing for being
+    /// excluded, while the ground it is read against stayed opaque. There is
+    /// no dim reading of a name, so the answer is not to lay one out.
     #[test]
-    fn a_marked_system_is_named_through_a_filter() {
-        assert!(worth_naming(STANDS, true, true, true, false));
-        assert!(worth_naming(STANDS, true, true, false, true));
+    fn a_filtered_system_is_not_named_even_when_marked_out() {
+        assert!(!worth_naming(STANDS, true, true, true, false));
+        assert!(!worth_naming(STANDS, true, true, false, true));
+        // Nor with the toggle off as well, which refuses it twice over.
+        assert!(!worth_naming(STANDS, false, true, true, false));
+        assert!(!worth_naming(STANDS, false, true, false, true));
     }
 
-    /// The names toggle bars one the same way, and yields the same way
+    /// The names toggle bars one, and yields where a filter does not
+    ///
+    /// The toggle says the same thing about every system at once rather than
+    /// about this one, so asking for a system by name overrides it.
     #[test]
-    fn the_names_toggle_bars_and_yields_as_a_filter_does() {
+    fn the_names_toggle_yields_to_being_marked_out() {
         assert!(!worth_naming(STANDS, false, false, false, false));
         assert!(worth_naming(STANDS, false, false, true, false));
         assert!(worth_naming(STANDS, false, false, false, true));
@@ -1817,13 +1826,6 @@ mod tests {
     fn an_admitted_system_follows_the_toggle() {
         assert!(worth_naming(STANDS, true, false, false, false));
         assert!(!worth_naming(STANDS, false, false, false, false));
-    }
-
-    /// Marked out beats both at once
-    #[test]
-    fn a_marked_system_is_named_with_everything_against_it() {
-        assert!(worth_naming(STANDS, false, true, true, false));
-        assert!(worth_naming(STANDS, false, true, false, true));
     }
 
     /// A system the camera has come inside is not named at all
