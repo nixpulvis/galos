@@ -1378,11 +1378,8 @@ fn main_bar(
                         filter.active.bypass_change_detection(),
                         &mut place,
                     );
-                    if let Some(position) = went {
-                        camera.write(MoveCamera {
-                            position: Some(position),
-                            framing: None,
-                        });
+                    if let Some(went) = went {
+                        camera.write(went);
                     }
                     // Drawn whether or not the form is out, as the selection
                     // is and for the same reason. A half lit sky with
@@ -1836,7 +1833,9 @@ pub(crate) fn system_list<'a>(
 /// the rows already read well, and a line saying "1 system" over a row naming
 /// it says the same thing twice.
 /// `travelled` is where a row asked the camera to go, which the caller writes
-/// rather than this, as [`found`] does and for the same reason.
+/// rather than this, as [`found`] does and for the same reason. A whole move
+/// rather than a place: a row says where alone, and the summary line's control
+/// to frame the set says how much to take in as well.
 ///
 /// Answers whether a route between what is picked out was asked for, which is
 /// [`whole_selection`]'s to say and the caller's to act on: the form that
@@ -1847,7 +1846,7 @@ fn selected(
     selection: &mut Selection,
     contents: &Contents,
     center: Option<DVec3>,
-    travelled: &mut Option<DVec3>,
+    travelled: &mut Option<MoveCamera>,
     panels: &mut Panels,
     filters: &mut Filters,
     place: &mut usize,
@@ -1864,8 +1863,8 @@ fn selected(
     // it is counted from. See the end of this function.
     let from = *place;
 
-    let routing =
-        selection.len() > 1 && whole_selection(ui, selection, filters);
+    let routing = selection.len() > 1
+        && whole_selection(ui, selection, filters, travelled);
 
     let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
         + (ROW_PADDING + ROW_MARGIN) * 2.
@@ -2014,7 +2013,11 @@ fn selected(
 
     if let Some((index, action)) = chose {
         match action {
-            SelectionAction::Travel => *travelled = selection.position(index),
+            SelectionAction::Travel => {
+                *travelled = selection.position(index).map(|position| {
+                    MoveCamera { position: Some(position), framing: None }
+                })
+            }
             // Whatever the row is about. A system is described from the row
             // the bar holds; what is inside one is described from the rows the
             // map is holding, which it has for as long as the thing is drawn,
@@ -2073,10 +2076,20 @@ const SELECTED: usize = 5;
 ///
 /// It reaches the form rather than plotting, since a route still wants a jump
 /// range and there is nowhere here to say one.
+///
+/// And offers to frame the lot: to stand the camera back over the middle of
+/// what is picked out, far enough to take all of it in. A space walks the set
+/// one at a time and says nothing about how far out to stand, and a set
+/// gathered across the galaxy is one the user wants to see whole before
+/// walking it. Systems and bodies alike, a body being somewhere as much as a
+/// system is. Not offered where they all stand in one place, there being
+/// nothing to stand back from and a frame over nothing being a camera pulled
+/// in to a metre.
 fn whole_selection(
     ui: &mut Ui,
     selection: &Selection,
     filters: &mut Filters,
+    travelled: &mut Option<MoveCamera>,
 ) -> bool {
     // The systems alone, [`Filter`] naming systems by address and testing a
     // [`System`]. A body is counted among what is picked out, and there is as
@@ -2099,8 +2112,33 @@ fn whole_selection(
         if ends_of(selection).is_ok() {
             routing = ui.button("Route").clicked();
         }
+        if let Some((middle, extent)) = spanned(selection)
+            && ui.button("Frame").clicked()
+        {
+            *travelled = Some(MoveCamera {
+                position: Some(middle),
+                framing: Some(extent),
+            });
+        }
     });
     routing
+}
+
+/// The middle of everything picked out, and how far it reaches from there
+///
+/// Nothing where it reaches nowhere: one thing alone, or several standing in
+/// the one place, which is a place to fly to rather than a span to take in.
+///
+/// The same [`crate::systems::route::spawn::framing`] a plotted route is
+/// framed by, so a set and the route through it are stood back from the same
+/// way.
+fn spanned(selection: &Selection) -> Option<(DVec3, f32)> {
+    let places: Vec<DVec3> = (0..selection.len())
+        .filter_map(|index| selection.position(index))
+        .collect();
+    let (middle, extent) = crate::systems::route::spawn::framing(&places)?;
+
+    (extent > 0.).then_some((middle, extent))
 }
 
 /// A count with its digits grouped in threes
@@ -4219,6 +4257,37 @@ mod tests {
         assert!(several.contains(&"Filter".to_owned()), "{several:?}");
     }
 
+    /// A set that spans somewhere is offered a frame over the whole of it
+    ///
+    /// Systems and bodies alike, both being somewhere. Several standing in
+    /// one place are not offered it: a frame over nothing is a camera pulled
+    /// in to a metre. Nor is one alone, there being no summary line to offer
+    /// it from.
+    #[test]
+    fn a_set_that_spans_somewhere_is_offered_a_frame() {
+        let spread = rows_said(&[body(1, "SOL A", 0.), body(2, "SOL B", 5.)]);
+        let heaped = rows_said(&[body(1, "SOL A", 3.), body(2, "SOL B", 3.)]);
+        let alone = selection_said(&["SOL"]);
+
+        assert!(spread.contains(&"Frame".to_owned()), "{spread:?}");
+        assert!(!heaped.contains(&"Frame".to_owned()), "{heaped:?}");
+        assert!(!alone.contains(&"Frame".to_owned()), "{alone:?}");
+    }
+
+    /// What a frame takes in is the middle of the set and its reach from there
+    ///
+    /// Which is what tells a frame from a flight: a row says where alone, and
+    /// this says how much to stand back for as well.
+    #[test]
+    fn a_frame_stands_over_the_middle_of_the_set() {
+        assert_eq!(
+            spanned(&strung_out(&[0., 10., 4.])),
+            Some((DVec3::new(5., 0., 0.), 5.))
+        );
+        assert_eq!(spanned(&strung_out(&[7.])), None);
+        assert_eq!(spanned(&Selection::default()), None);
+    }
+
     /// A selection holding a system at each of `places`, on the x axis
     fn strung_out(places: &[f64]) -> Selection {
         let mut selection = Selection::default();
@@ -4367,7 +4436,9 @@ mod tests {
                 &mut selection,
                 &Contents::default(),
                 None,
-                &mut travelled,
+                // Its own, `found` above taking a place where this takes a
+                // whole move. Neither test reads what a row asked for.
+                &mut None,
                 &mut panels,
                 &mut filters,
                 &mut place,
@@ -4493,7 +4564,9 @@ mod tests {
                 &mut held,
                 &Contents::default(),
                 None,
-                &mut travelled,
+                // Its own, `found` above taking a place where this takes a
+                // whole move. Neither test reads what a row asked for.
+                &mut None,
                 &mut panels,
                 &mut applied_to,
                 &mut place,

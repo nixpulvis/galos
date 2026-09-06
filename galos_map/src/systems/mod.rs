@@ -639,7 +639,8 @@ pub(crate) fn zoom_with_spyglass(
 ) {
     if spyglass.locks_camera() {
         if let Ok(mut camera) = camera.single_mut() {
-            camera.target_radius = spyglass.radius * 3.;
+            camera.target_radius =
+                crate::camera::opening_radius(spyglass.radius);
         }
     }
 }

@@ -97,7 +97,19 @@ pub(crate) const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 /// with no ruler on it at all. Square to it the ruling runs straight up and
 /// down the screen, which reads as a frame over the view rather than as a floor
 /// under it. A third off in both shows the plane as a plane.
-const OPENS_AT: f32 = FRAC_PI_2 / 3.;
+pub(crate) const OPENS_AT: f32 = FRAC_PI_2 / 3.;
+
+/// How far back the camera stands to take in a reach, where the reach is what
+/// sets the distance
+///
+/// Three times the reach, in three places: what the map opens at, what the
+/// spyglass holds the camera to while it locks it, and what the home key
+/// stands the camera back to. One figure rather than three, so that going
+/// home is the map opening again rather than a fourth idea of how far out
+/// that is.
+pub(crate) fn opening_radius(reach: f32) -> f32 {
+    reach * 3.
+}
 
 /// Radians of orbit per pixel of pointer travel
 const ORBIT_RATE: f32 = 5e-3;
@@ -624,8 +636,8 @@ pub(crate) fn camera(spyglass: &Spyglass) -> impl Bundle {
         // Every other entity is drawn relative to this one.
         FloatingOrigin,
         OrbitCamera {
-            radius: spyglass.radius * 3.,
-            target_radius: spyglass.radius * 3.,
+            radius: opening_radius(spyglass.radius),
+            target_radius: opening_radius(spyglass.radius),
             ..default()
         },
         Bloom::NATURAL,

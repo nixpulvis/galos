@@ -20,8 +20,8 @@
 //! sit one keystroke from the ones that pan and search with nothing to undo it.
 
 use crate::camera::{
-    MAX_RADIUS, MIN_RADIUS, MoveCamera, OrbitCamera, PITCH_LIMIT, move_camera,
-    orbit_camera,
+    MAX_RADIUS, MIN_RADIUS, MoveCamera, OPENS_AT, OrbitCamera, PITCH_LIMIT,
+    move_camera, opening_radius, orbit_camera,
 };
 use crate::grid::ShowGrid;
 use crate::schedule::MapSet;
@@ -40,7 +40,7 @@ pub fn plugin(app: &mut App) {
     // answers.
     app.add_systems(
         Update,
-        (toggle, open_search, shut_search, fly).in_set(MapSet::Search),
+        (toggle, open_search, shut_search, fly, home).in_set(MapSet::Search),
     );
     // Between the two systems that already write the camera. After the one
     // that starts a commanded move, since a key cancels one, and before the
@@ -332,6 +332,48 @@ fn fly(
     };
 
     camera.write(MoveCamera { position: Some(position), framing: None });
+}
+
+/// Put the camera back where the map opened
+///
+/// `H`, for home. The map opens looking at Sol from the opening distance and
+/// a third of a quarter turn off in each angle, and a user who has flown to
+/// the rim and panned about out there has nothing else that gets them back: a
+/// search finds a name, and Sol is a name they would have to know to type.
+///
+/// The center is asked for as any move is, so the camera flies there rather
+/// than jumping. The pitch and the distance are written directly, there being
+/// no move that says anything about them, and they ease into place as they do
+/// after any drag.
+///
+/// The yaw is left alone. It is which side of the target the camera stands
+/// on, and nothing about coming home says the user wanted to stand somewhere
+/// else: swinging the view round on the way is a turn nobody asked for. The
+/// pitch is written because it is what the ruled plane is read at -- level
+/// with the plane the ruler is edge on and faded out, so a map that came home
+/// flat would come home with no floor under it.
+///
+/// The distance stands down while the spyglass holds the camera, as a zoom
+/// does and for the reason a zoom does: the reach writes it back on the next
+/// frame, and a camera that pulled in and was pushed out again is a camera
+/// lurching.
+fn home(
+    keys: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<Keyboard>,
+    spyglass: Res<Spyglass>,
+    mut cameras: Query<&mut OrbitCamera>,
+    mut camera: MessageWriter<MoveCamera>,
+) {
+    if keyboard.typing || !bare(&keys) || !keys.just_pressed(KeyCode::KeyH) {
+        return;
+    }
+    let Ok(mut orbit) = cameras.single_mut() else { return };
+
+    camera.write(MoveCamera { position: Some(DVec3::ZERO), framing: None });
+    orbit.target_pitch = -OPENS_AT;
+    if !spyglass.locks_camera() {
+        orbit.target_radius = opening_radius(Spyglass::OPENING);
+    }
 }
 
 /// Take the map's annotations off the sky and put them back
@@ -1284,6 +1326,91 @@ mod tests {
     /// What each of those moves said about how much to take in
     fn framings(app: &App) -> &[Option<f32>] {
         &app.world().resource::<Went>().framings
+    }
+
+    /// A world standing `radius` back with `spyglass` set, answering `H`
+    fn wandered(radius: f32, spyglass: Spyglass) -> App {
+        let mut app = looking(radius);
+        app.insert_resource(spyglass);
+        app.init_resource::<Went>();
+        app.add_message::<MoveCamera>();
+        app.add_systems(Update, (home, note_moves).chain());
+        app
+    }
+
+    /// The pitch the camera has been asked for
+    fn tilted(app: &mut App) -> f32 {
+        app.world_mut()
+            .query::<&OrbitCamera>()
+            .single(app.world())
+            .unwrap()
+            .target_pitch
+    }
+
+    /// `H` sends the camera back to where the map opened
+    ///
+    /// Sol, from the opening distance, at the opening angles. The center is
+    /// asked for as a move so the camera flies there; the angles and the
+    /// distance are written, there being no move that says anything of them.
+    #[test]
+    fn a_key_sends_the_camera_home() {
+        let mut app = wandered(1000., spyglass(false, false));
+        pointed(&mut app, somewhere(500.));
+        {
+            let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+            let mut orbit = cameras.single_mut(app.world_mut()).unwrap();
+            orbit.target_yaw = 2.;
+            orbit.target_pitch = -1.;
+        }
+
+        pressed(&mut app, &[KeyCode::KeyH]);
+
+        assert_eq!(went(&app), [DVec3::ZERO]);
+        assert_eq!(back(&mut app), opening_radius(Spyglass::OPENING));
+        assert_eq!(tilted(&mut app), -OPENS_AT);
+    }
+
+    /// And leaves the camera standing where it stood around it
+    ///
+    /// The yaw is which side of the target the camera is on. Coming home says
+    /// nothing about wanting to stand somewhere else, and a view that swung
+    /// round on the way is a turn nobody asked for.
+    #[test]
+    fn going_home_does_not_turn_the_camera() {
+        let mut app = wandered(1000., spyglass(false, false));
+        {
+            let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+            cameras.single_mut(app.world_mut()).unwrap().target_yaw = 2.;
+        }
+
+        pressed(&mut app, &[KeyCode::KeyH]);
+
+        assert_eq!(facing(&mut app), 2.);
+    }
+
+    /// A camera the spyglass holds goes home at the distance it is held at
+    ///
+    /// The reach writes the distance back on the next frame, and a camera
+    /// that pulled in and was pushed out again is a camera lurching.
+    #[test]
+    fn a_held_camera_goes_home_at_the_reach_it_is_held_at() {
+        let mut app = wandered(100., spyglass(true, false));
+
+        pressed(&mut app, &[KeyCode::KeyH]);
+
+        assert_eq!(went(&app), [DVec3::ZERO]);
+        assert_eq!(back(&mut app), 100.);
+    }
+
+    /// An H typed into a name is not a map being sent home
+    #[test]
+    fn typing_a_name_does_not_send_the_map_home() {
+        let mut app = wandered(100., spyglass(false, false));
+        type_a_name(&mut app);
+
+        pressed(&mut app, &[KeyCode::KeyH]);
+
+        assert!(went(&app).is_empty(), "{:?}", went(&app));
     }
 
     /// Space goes to the first thing picked out

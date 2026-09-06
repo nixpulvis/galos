@@ -62,6 +62,7 @@ started on a slider goes on talking to the slider wherever the pointer wanders.
 | `C` `V` | Lower and raise it over the plane |
 | `F` `R` | Zoom in and out |
 | `Space` | Fly to what is picked out, one at a time |
+| `H` | Go home: Sol, from where the map opened |
 | `L` | Show or hide the labels |
 | `O` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
