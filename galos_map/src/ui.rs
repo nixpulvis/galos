@@ -1439,11 +1439,23 @@ fn main_bar(
                     // the form, in the same pass, so that the section it asked
                     // for is under the control that asked the moment it is
                     // clicked rather than a frame later.
-                    search.expanded |= routing;
+                    // And says which of the two was asked for, the form
+                    // being where the order is settled and where a user who
+                    // asked from here can see what they asked.
+                    if let Some(order) = routing {
+                        search.tour = order == Order::Cheapest;
+                    }
+                    search.expanded |= routing.is_some();
                     if search.expanded {
                         taken |= filter_section(ui, filter);
                         taken |= route_section(
-                            ui, search, selection, searched, plot, how, routing,
+                            ui,
+                            search,
+                            selection,
+                            searched,
+                            plot,
+                            how,
+                            routing.is_some(),
                         );
                     }
 
@@ -1870,9 +1882,9 @@ fn selected(
     filters: &mut Filters,
     flown: Option<Flown>,
     place: &mut usize,
-) -> bool {
+) -> Option<Order> {
     if selection.is_empty() {
-        return false;
+        return None;
     }
 
     let gap = ui.spacing().item_spacing.x;
@@ -1883,8 +1895,9 @@ fn selected(
     // it is counted from. See the end of this function.
     let from = *place;
 
-    let routing = selection.len() > 1
-        && whole_selection(ui, selection, filters, flown, travelled);
+    let routing = (selection.len() > 1)
+        .then(|| whole_selection(ui, selection, filters, flown, travelled))
+        .flatten();
 
     let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
         + (ROW_PADDING + ROW_MARGIN) * 2.
@@ -2075,6 +2088,19 @@ enum SelectionAction {
     LetGo,
 }
 
+/// Whose order a trip's stops are reached in
+///
+/// The one thing that tells the two asks apart: a set picked out in an order
+/// is an itinerary, and the same set picked out by looking around is a set of
+/// destinations with a cheapest way round it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Order {
+    /// The order the systems were picked
+    Picked,
+    /// Whichever order reaches them all for the fewest jumps
+    Cheapest,
+}
+
 /// How many selected systems the bar shows before the rows start scrolling
 const SELECTED: usize = 5;
 
@@ -2111,12 +2137,12 @@ fn whole_selection(
     filters: &mut Filters,
     flown: Option<Flown>,
     travelled: &mut Option<MoveCamera>,
-) -> bool {
+) -> Option<Order> {
     // The systems alone, [`Filter`] naming systems by address and testing a
     // [`System`]. A body is counted among what is picked out, and there is as
     // yet no filter for it to build.
     let picked = selection.systems().count();
-    let mut routing = false;
+    let mut routing = None;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{picked} systems")).weak());
         // Offered only where there is a system to filter on. A set of bodies
@@ -2130,8 +2156,17 @@ fn whole_selection(
                 systems: selection.addresses(),
             });
         }
-        if stops_of(selection).is_ok() {
-            routing = ui.button("Route").clicked();
+        if let Ok(stops) = stops_of(selection) {
+            if ui.button("Route").clicked() {
+                routing = Some(Order::Picked);
+            }
+            // Offered beside it only where there is an order to settle. Two
+            // stops have one; three or more picked out are as likely to be a
+            // set of destinations as an itinerary, and which of the two they
+            // are is the user's to say rather than the map's to guess.
+            if stops.len() > 2 && ui.button("Tour").clicked() {
+                routing = Some(Order::Cheapest);
+            }
         }
         if let Some((middle, extent)) = spanned(selection)
             && ui.button("Frame").clicked()
@@ -6435,6 +6470,23 @@ mod tests {
     fn a_range_of_nothing_or_less_is_refused() {
         assert!(jump_range("0").is_err());
         assert!(jump_range("-5").is_err());
+    }
+
+    /// A set of three or more is offered a tour beside a route
+    ///
+    /// The two asks a set of systems can be: the order they were picked, or
+    /// whichever order reaches them all for the fewest jumps. Two of them are
+    /// offered only the route, there being one order to reach two systems in
+    /// and nothing for a tour to settle.
+    #[test]
+    fn a_set_of_several_is_offered_a_tour_as_well_as_a_route() {
+        let pair = selection_said(&["SOL", "BARNARD"]);
+        let several = selection_said(&["SOL", "BARNARD", "WOLF 359"]);
+
+        assert!(pair.contains(&"Route".to_owned()), "{pair:?}");
+        assert!(!pair.contains(&"Tour".to_owned()), "{pair:?}");
+        assert!(several.contains(&"Route".to_owned()), "{several:?}");
+        assert!(several.contains(&"Tour".to_owned()), "{several:?}");
     }
 
     /// The stops go out in the order they were picked, unless the map is asked
