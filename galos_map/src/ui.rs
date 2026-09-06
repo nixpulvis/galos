@@ -1533,10 +1533,14 @@ fn main_bar(
     // Nothing where the filter admits nowhere: a span names no systems of its
     // own, and a faction with nothing on record is a frame over nothing,
     // which is a camera pulled in to a metre.
-    if let Some(framed) = row_ask.framed {
-        let places: Vec<DVec3> = framed
-            .systems(&filter.populated, &filter.names)
+    let framing: Vec<Filter> =
+        row_ask.framed.into_iter().chain(row_ask.framed_all).collect();
+    if !framing.is_empty() {
+        let places: Vec<DVec3> = framing
             .iter()
+            .flat_map(|filter_| {
+                filter_.systems(&filter.populated, &filter.names)
+            })
             .map(|system| system.position())
             .collect();
         if let Some((middle, extent)) =
@@ -2790,6 +2794,15 @@ fn applied(
     }
     match whole {
         Some((FilterAction::Toggle, rows)) => filters.toggle_all(&rows),
+        // Every filter of the section at once, so what the camera stands back
+        // to take in is all of them together rather than each in turn.
+        Some((FilterAction::Frame, rows)) => {
+            ask.framed_all = rows
+                .iter()
+                .filter_map(|index| filters.get(*index))
+                .map(|active| active.filter.clone())
+                .collect();
+        }
         Some((FilterAction::LetGo, rows)) => filters.clear(&rows),
         None => {}
     }
@@ -2861,6 +2874,12 @@ struct RowAsk {
     chosen: Option<Filter>,
     /// The filter a double click asked to see the whole of
     framed: Option<Filter>,
+    /// Every filter of a section, where its own row asked to see them all
+    ///
+    /// Apart from [`Self::framed`] because it is a set rather than one of
+    /// them: the camera stands back to take in all of them together, which is
+    /// not where it would stand for any one.
+    framed_all: Vec<Filter>,
 }
 
 /// Which group of the bar's filter rows a filter stands in
@@ -3167,9 +3186,12 @@ fn dot(ui: &mut Ui, radius: f32, color: egui::Color32) {
 }
 
 /// What the bar can be asked to do with the filters as a set
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum FilterAction {
     /// Turn every filter off, or every one back on
     Toggle,
+    /// Send the camera to see the whole of what all of them admit
+    Frame,
     /// Take them all away
     LetGo,
 }
@@ -3262,14 +3284,31 @@ fn whole_set(
 
     let Buttons { close, .. } = place_buttons(ui, rect, buttons, of);
 
-    let asked = if close.clicked() {
-        Some(FilterAction::LetGo)
-    } else if row.clicked() {
-        Some(FilterAction::Toggle)
-    } else {
-        None
+    // The switch, as the rows below have. Said of all of them at once, which
+    // is what this row is for.
+    let switch = ui.interact(
+        egui::Rect::from_center_size(dot, egui::Vec2::splat(DOT * 2.)),
+        ui.id().with((of, "dot")),
+        egui::Sense::click(),
+    );
+
+    // Read in the same order a row below is, by the same rule: see
+    // [`asked_of_row`]. A click on the name alone asks nothing here, there
+    // being no one filter for a section to be the one being worked with.
+    let asked = match asked_of_row(
+        close.clicked(),
+        false,
+        switch.clicked(),
+        row.double_clicked(),
+        false,
+    ) {
+        Some(RowGesture::LetGo) => Some(FilterAction::LetGo),
+        Some(RowGesture::Toggle) => Some(FilterAction::Toggle),
+        Some(RowGesture::Frame) => Some(FilterAction::Frame),
+        _ => None,
     };
     row.on_hover_cursor(egui::CursorIcon::PointingHand);
+    switch.on_hover_cursor(egui::CursorIcon::PointingHand);
     asked
 }
 
@@ -5624,6 +5663,33 @@ mod tests {
     /// for its two ends, so its row would otherwise say nothing about the one
     /// thing it was plotted to find out. A faction's name is all its row has
     /// to say, and a set says how many it holds in its own name already.
+    /// A section's own row reads the same way as the rows under it
+    ///
+    /// The dot turns all of them off, a double click frames all of them, and
+    /// the mark takes them all away -- the row's three gestures said of the
+    /// whole section at once, which is what the row is for.
+    ///
+    /// A click on the name asks nothing. There is no one filter for a section
+    /// to be the one being worked with, so the gesture that would say which
+    /// has nothing to say here.
+    #[test]
+    fn a_sections_row_reads_like_the_rows_under_it() {
+        let asked = |close, switch, double| match asked_of_row(
+            close, false, switch, double, false,
+        ) {
+            Some(RowGesture::LetGo) => Some(FilterAction::LetGo),
+            Some(RowGesture::Toggle) => Some(FilterAction::Toggle),
+            Some(RowGesture::Frame) => Some(FilterAction::Frame),
+            _ => None,
+        };
+
+        assert_eq!(asked(false, true, false), Some(FilterAction::Toggle));
+        assert_eq!(asked(false, false, true), Some(FilterAction::Frame));
+        assert_eq!(asked(true, false, false), Some(FilterAction::LetGo));
+        // A press on the name alone, which used to turn them all off.
+        assert_eq!(asked(false, false, false), None);
+    }
+
     /// What a press on a row means depends on where in it it landed
     ///
     /// Five things share the space of a row and a press lands on one of them.
