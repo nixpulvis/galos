@@ -10,7 +10,8 @@
 //! It is async for that reason and no other: the FS reads are blocking and
 //! their futures resolve at once, but an HTTP impl to come is genuinely async,
 //! and a sync trait now would force every call site to change when it lands.
-//! Boxed through [`async_trait`] so a client can hold `Arc<dyn Source>` and pick
+//! Boxed through `async_trait` so a client can hold `Arc<dyn Source>`
+//! and pick
 //! its transport at runtime.
 //!
 //! The path helpers are the file-layout contract the builder writes to and this

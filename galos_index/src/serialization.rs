@@ -260,6 +260,14 @@ impl Decode for Vec<Point> {
 const INDEX_MAGIC: [u8; 4] = *b"GIDX";
 /// Zero while the format is pre-1.0 and free to change; bumped once the first
 /// cut is settled.
+///
+/// So a record may change width without this moving, and has: the age buckets
+/// went from `u64` to `u32`. What makes that safe is not the version but the
+/// length check in [`Index`]'s own `decode` — a stale file carries the same
+/// magic and the same zero, so nothing in the header tells it apart, and only
+/// its size does. A build is the fix, and rebuilding is cheap against inputs
+/// that are already to hand. Once these bytes have to outlive a rebuild —
+/// anything shipped, anything served — a width change costs a bump.
 const INDEX_VERSION: u16 = 0;
 
 impl Encode for Index {
@@ -277,8 +285,20 @@ impl Encode for Index {
 }
 
 impl Decode for Index {
-    /// [`None`] if the header is not one this reads. A tail short of a full
-    /// record is dropped rather than failed, as the payload is.
+    /// [`None`] for a header this does not read, and for a body that disagrees
+    /// with it.
+    ///
+    /// The header says how many cells follow and a cell is a fixed width, so
+    /// the length is a thing the file can be held to: anything but exactly
+    /// `count * Cell::LEN` bytes of body was written by a different build of
+    /// this code. That is the check that makes a record's width safe to change
+    /// while `INDEX_VERSION` stands at zero — without it a stale index
+    /// passes the header, decodes one record's bytes as another's, and hands
+    /// back a plausible-looking tree of nonsense. Refused here, it is a
+    /// rebuild instead of a wrong sky.
+    ///
+    /// Unlike the payload, which drops a short tail rather than failing: a
+    /// payload block carries no count to be held against.
     fn decode(cur: &mut &[u8]) -> Option<Index> {
         if <[u8; 4]>::decode(cur)? != INDEX_MAGIC {
             return None;
@@ -287,12 +307,12 @@ impl Decode for Index {
             return None;
         }
         let count = u32::decode(cur)? as usize;
+        if cur.len() != count * Cell::LEN {
+            return None;
+        }
         let mut cells = Vec::with_capacity(count);
         for _ in 0..count {
-            match Cell::decode(cur) {
-                Some(cell) => cells.push(cell),
-                None => break,
-            }
+            cells.push(Cell::decode(cur)?);
         }
         Some(Index::from_cells(cells))
     }
@@ -404,5 +424,33 @@ mod tests {
             Index::from_bytes(b"nope and then some padding bytes"),
             None
         );
+    }
+    /// An index written when a record was a different width is refused
+    ///
+    /// [`INDEX_VERSION`] stands at zero and does not move for a width change,
+    /// so a stale file carries the same magic and the same version and the
+    /// header cannot tell it apart. Only its length can. Without this the
+    /// decoder reads one record's bytes as another's and hands back a tree of
+    /// plausible nonsense — the wrong sky, drawn with no complaint.
+    ///
+    /// Both directions, since a record may grow as easily as shrink.
+    #[test]
+    fn an_index_of_another_width_is_refused() {
+        let cell = Cell {
+            id: CellId::ROOT,
+            rank_lo: 0,
+            rank_hi: 512,
+            child_mask: 0xFF,
+            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+        };
+        let bytes = Index::from_cells([cell]).to_bytes();
+        assert!(Index::from_bytes(&bytes).is_some(), "a good file reads");
+
+        let mut wider = bytes.clone();
+        wider.extend_from_slice(&[0u8; 32]);
+        assert_eq!(Index::from_bytes(&wider), None, "a wider record read");
+
+        let narrower = &bytes[..bytes.len() - 32];
+        assert_eq!(Index::from_bytes(narrower), None, "a narrower record read");
     }
 }

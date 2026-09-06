@@ -87,8 +87,18 @@ pub struct Aggregate {
     /// Counts per age bucket, a column of the record so a Recency span can be
     /// answered by prefix sum off the aggregates alone. Every build writes it
     /// and nothing reads it back yet: the Recency filter asks per system, off
-    /// `updated_at`. It stays because dropping it changes the record width.
-    aged: [u64; AGE_BUCKETS],
+    /// `updated_at`.
+    ///
+    /// `u32` rather than `u64`, which halves what the column costs and loses
+    /// nothing: a bucket counts systems, the buckets of one cell sum to its
+    /// `count`, and the root's count is the galaxy's — 129 million against the
+    /// four billion a `u32` holds, so there are five doublings of headroom
+    /// over every system on record. `galaxy.md` budgets these at sixteen bytes
+    /// by storing each bucket as a `u16` share of `count` instead; measured
+    /// over a real build that rounds the smallest buckets away to nothing, and
+    /// the smallest bucket is the recently-changed one the axis exists to
+    /// show. Exact at twice the width is the better trade.
+    aged: [u32; AGE_BUCKETS],
 }
 
 impl Aggregate {
@@ -262,7 +272,7 @@ record! {
         flux: [f64; TEMP_BUCKETS],
         light: Moments,
         mass: Moments,
-        aged: [u64; AGE_BUCKETS],
+        aged: [u32; AGE_BUCKETS],
     }
 }
 

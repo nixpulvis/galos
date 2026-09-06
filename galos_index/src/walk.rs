@@ -460,7 +460,7 @@ fn slice_spacing(cell: &Cell) -> f64 {
 /// How many of a cell's own systems separate on screen: the prefix of its
 /// magnitude-ordered payload worth drawing as discrete marks.
 ///
-/// The slice's systems sit [`slice_spacing`] apart across the subtree. Where
+/// The slice's systems sit `slice_spacing` apart across the subtree. Where
 /// that already subtends the mark separation every one draws; where it is
 /// finer the prefix is decimated to the separation — `slice · (projected /
 /// MARK_SEPARATION_PX)^3` — so the drawn systems land one mark apart whatever
