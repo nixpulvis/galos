@@ -1141,7 +1141,6 @@ fn admitted(
     }
 
     ui.label(egui::RichText::new(summary(filter, systems.len())).weak());
-    ui.add_space(MARGIN);
 
     let line = ui.text_style_height(&egui::TextStyle::Body)
         + crate::ui::LINE_PADDING * 2.
@@ -1199,6 +1198,24 @@ fn admitted(
             _ => std::cmp::Ordering::Equal,
         });
     }
+
+    // What flying it comes to, for a route. Under the summary, which says what
+    // the ship was plotted at, this says what the plot asks of it: how far it
+    // is all told, and the longest single jump, which is the one deciding
+    // whether the ship as it stands can make the trip at all.
+    if filter.ordered()
+        && let Some((total, longest)) =
+            flying(order.iter().filter_map(|(_, leg)| *leg))
+    {
+        ui.label(
+            egui::RichText::new(format!(
+                "{total:.1} Ly flown, longest jump {longest:.1} Ly"
+            ))
+            .weak(),
+        );
+    }
+
+    ui.add_space(MARGIN);
 
     // The list as text, for wherever it is wanted next. A route is flown in
     // the game with a hand on the keyboard, and a faction's holdings are read
@@ -1348,6 +1365,18 @@ fn copied(ui: &mut Ui, name: &str, value: String) {
         ui.ctx().copy_text(value);
     }
     ui.end_row();
+}
+
+/// What a route comes to, flown: how far all told, and the longest jump in it
+///
+/// Nothing for a route with no leg to fly, there being nothing to add up and
+/// no jump to be the longest. One pass, since both answers come off the same
+/// legs and a route is walked to draw it anyway.
+fn flying(legs: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
+    legs.fold(None, |so_far, leg| match so_far {
+        None => Some((leg, leg)),
+        Some((total, longest)) => Some((total + leg, longest.max(leg))),
+    })
 }
 
 /// A list of systems as text, one to a line, as the panel draws them
@@ -2141,7 +2170,12 @@ mod tests {
             );
         })
         .into_iter()
-        .filter(|said| said.ends_with(" Ly"))
+        // A line that is a distance and nothing else. What the whole route
+        // comes to is said in light years too, and is not a row's.
+        .filter(|said| {
+            said.strip_suffix(" Ly")
+                .is_some_and(|figure| figure.parse::<f64>().is_ok())
+        })
         .collect()
     }
 
@@ -2441,6 +2475,43 @@ mod tests {
     /// A faction filter, by id, called after it
     fn faction(id: i32) -> Filter {
         Filter::Faction { id, name: format!("Faction {id}") }
+    }
+
+    /// What a route comes to, flown, is the whole of it and its worst leg
+    ///
+    /// The longest jump is what says whether the ship can make the trip; the
+    /// range it was plotted at was what was asked, not what is needed. A
+    /// route with no leg to fly has neither answer.
+    #[test]
+    fn a_route_comes_to_its_whole_length_and_its_longest_jump() {
+        assert_eq!(flying([5., 12., 3.].into_iter()), Some((20., 12.)));
+        assert_eq!(flying([7.].into_iter()), Some((7., 7.)));
+        assert_eq!(flying(std::iter::empty()), None);
+    }
+
+    /// And the panel says it for a route alone
+    ///
+    /// A faction's holdings are not flown in any order, so there is nothing
+    /// about them to add up.
+    #[test]
+    fn the_panel_says_what_a_route_comes_to_and_no_more() {
+        let held = [
+            placed(1, [0., 0., 0.]),
+            placed(2, [3., 4., 0.]),
+            placed(3, [3., 4., 12.]),
+        ];
+
+        let route = listing(&plotted_for("SOL -> BARNARD", "10"), &held);
+        assert!(
+            route.contains(&"17.0 Ly flown, longest jump 12.0 Ly".to_owned()),
+            "{route:?}"
+        );
+
+        let holdings = listing(&faction(7), &held);
+        assert!(
+            !holdings.iter().any(|said| said.contains("flown")),
+            "{holdings:?}"
+        );
     }
 
     /// The list copied is the list drawn, a system to a line
