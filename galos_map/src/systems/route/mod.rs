@@ -133,6 +133,34 @@ pub(crate) struct Flown {
     pub(crate) longest: f64,
 }
 
+/// Whether what is picked out is the trip that was asked for
+///
+/// The same systems, as a set rather than in order: the cheapest order flies
+/// a trip in an order nobody picked, and it is the same trip through the same
+/// systems for all that.
+///
+/// Names rather than addresses, both sides being spelled by the rows the trip
+/// was gathered from. Bodies picked out beside the systems are not weighed: a
+/// body is a thing inside a system rather than a stop, and picking one out
+/// does not make the trip somebody else's.
+fn holds_the_trip(
+    selection: &crate::systems::selection::Selection,
+    stops: &[String],
+) -> bool {
+    let mut picked: Vec<String> = selection
+        .systems()
+        .map(|system| system.name().to_lowercase())
+        .collect();
+    let mut asked: Vec<String> =
+        stops.iter().map(|stop| stop.to_lowercase()).collect();
+    picked.sort();
+    picked.dedup();
+    asked.sort();
+    asked.dedup();
+
+    !asked.is_empty() && picked == asked
+}
+
 /// Add the trip up over its legs
 ///
 /// A leg is matched to the trip by the pair it runs between, spelled either
@@ -145,12 +173,19 @@ pub(crate) struct Flown {
 /// from had gone would be a figure about nothing.
 fn tally_trip(
     trip: Res<Trip>,
+    selection: Res<crate::systems::selection::Selection>,
     lines: Query<(&Route, &Path)>,
     mut flown: ResMut<TripFlown>,
 ) {
     let legs: Vec<(String, String)> =
         trip.0.windows(2).map(|leg| (leg[0].clone(), leg[1].clone())).collect();
-    if legs.is_empty() {
+    // Nothing unless what is picked out is the trip. The figure is said on
+    // the selection's own summary line, under the count of what is held, so
+    // it reads as being about what is held: a user who plots a trip and then
+    // picks out two other systems was being told what some other trip came
+    // to. A trip is still drawn and its legs still say what they come to on
+    // their own rows; this is the line that has to stop talking.
+    if legs.is_empty() || !holds_the_trip(&selection, &trip.0) {
         if flown.0.is_some() {
             flown.0 = None;
         }
@@ -1193,6 +1228,47 @@ mod tests {
             .map(|entry| entry.filter.name().to_owned())
             .collect();
         assert_eq!(rows, vec!["SOL -> LAVE", "WOLF 359 -> SIRIUS"]);
+    }
+
+    /// What a trip came to is said only while the trip is what is held
+    ///
+    /// Reported: a trip plotted, then two other systems picked out, and the
+    /// selection's summary line went on saying what the trip came to. It is
+    /// said under the count of what is held, so it reads as being about what
+    /// is held.
+    ///
+    /// As a set rather than in order, since the cheapest order flies a trip
+    /// in an order nobody picked and it is the same trip for all that.
+    #[test]
+    fn a_trips_figures_are_said_only_of_the_trip() {
+        let stops = ["SOL".to_owned(), "LAVE".to_owned(), "DISO".to_owned()];
+
+        assert!(holds_the_trip(&picking(&["SOL", "LAVE", "DISO"]), &stops));
+        // The order it was flown in is not the order it was picked in.
+        assert!(holds_the_trip(&picking(&["DISO", "SOL", "LAVE"]), &stops));
+        // Spelled as the rows spell them either way.
+        assert!(holds_the_trip(&picking(&["sol", "lave", "diso"]), &stops));
+
+        // Two other systems entirely, which is the report.
+        assert!(!holds_the_trip(&picking(&["WOLF 359", "SIRIUS"]), &stops));
+        // And part of it is not it: a stop let go of leaves a trip whose
+        // figures are about a leg nobody is holding.
+        assert!(!holds_the_trip(&picking(&["SOL", "LAVE"]), &stops));
+        assert!(!holds_the_trip(&picking(&[]), &stops));
+    }
+
+    /// A selection holding a system called each of `names`
+    fn picking(names: &[&str]) -> crate::systems::selection::Selection {
+        let mut selection = crate::systems::selection::Selection::default();
+        for (at, name) in names.iter().enumerate() {
+            selection.pick(
+                crate::systems::selection::Picked::System(
+                    crate::systems::tests::named(at as i64 + 1, name),
+                ),
+                true,
+            );
+        }
+        selection
     }
 
     /// A trip is looked at whole, once, however many legs it has
