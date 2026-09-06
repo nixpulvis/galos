@@ -959,15 +959,16 @@ fn turning(ui: &mut Ui, spin: &Spin) {
 
 /// The path a thing takes about whatever it goes round
 ///
-/// Nothing to say for the one that goes round nothing, which is the star a
-/// system arrives at.
+/// One line saying None for the one that goes round nothing, which is the
+/// star a system arrives at, as a body with no surface is one line saying the
+/// same.
 fn circling(
     ui: &mut Ui,
     orbit: Option<&Orbit>,
     clock: &mut crate::systems::bodies::Clock,
 ) {
     let Some(orbit) = orbit else {
-        field(ui, "Orbit", "Goes round nothing".into());
+        field(ui, "Orbit", "None".into());
         return;
     };
 
