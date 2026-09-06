@@ -1439,23 +1439,11 @@ fn main_bar(
                     // the form, in the same pass, so that the section it asked
                     // for is under the control that asked the moment it is
                     // clicked rather than a frame later.
-                    // And says which of the two was asked for, the form
-                    // being where the order is settled and where a user who
-                    // asked from here can see what they asked.
-                    if let Some(order) = routing {
-                        search.tour = order == Order::Cheapest;
-                    }
-                    search.expanded |= routing.is_some();
+                    search.expanded |= routing;
                     if search.expanded {
                         taken |= filter_section(ui, filter);
                         taken |= route_section(
-                            ui,
-                            search,
-                            selection,
-                            searched,
-                            plot,
-                            how,
-                            routing.is_some(),
+                            ui, search, selection, searched, plot, how, routing,
                         );
                     }
 
@@ -1882,9 +1870,9 @@ fn selected(
     filters: &mut Filters,
     flown: Option<Flown>,
     place: &mut usize,
-) -> Option<Order> {
+) -> bool {
     if selection.is_empty() {
-        return None;
+        return false;
     }
 
     let gap = ui.spacing().item_spacing.x;
@@ -1895,9 +1883,8 @@ fn selected(
     // it is counted from. See the end of this function.
     let from = *place;
 
-    let routing = (selection.len() > 1)
-        .then(|| whole_selection(ui, selection, filters, flown, travelled))
-        .flatten();
+    let routing = selection.len() > 1
+        && whole_selection(ui, selection, filters, flown, travelled);
 
     let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
         + (ROW_PADDING + ROW_MARGIN) * 2.
@@ -2088,19 +2075,6 @@ enum SelectionAction {
     LetGo,
 }
 
-/// Whose order a trip's stops are reached in
-///
-/// The one thing that tells the two asks apart: a set picked out in an order
-/// is an itinerary, and the same set picked out by looking around is a set of
-/// destinations with a cheapest way round it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Order {
-    /// The order the systems were picked
-    Picked,
-    /// Whichever order reaches them all for the fewest jumps
-    Cheapest,
-}
-
 /// How many selected systems the bar shows before the rows start scrolling
 const SELECTED: usize = 5;
 
@@ -2137,12 +2111,12 @@ fn whole_selection(
     filters: &mut Filters,
     flown: Option<Flown>,
     travelled: &mut Option<MoveCamera>,
-) -> Option<Order> {
+) -> bool {
     // The systems alone, [`Filter`] naming systems by address and testing a
     // [`System`]. A body is counted among what is picked out, and there is as
     // yet no filter for it to build.
     let picked = selection.systems().count();
-    let mut routing = None;
+    let mut routing = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{picked} systems")).weak());
         // Offered only where there is a system to filter on. A set of bodies
@@ -2156,17 +2130,8 @@ fn whole_selection(
                 systems: selection.addresses(),
             });
         }
-        if let Ok(stops) = stops_of(selection) {
-            if ui.button("Route").clicked() {
-                routing = Some(Order::Picked);
-            }
-            // Offered beside it only where there is an order to settle. Two
-            // stops have one; three or more picked out are as likely to be a
-            // set of destinations as an itinerary, and which of the two they
-            // are is the user's to say rather than the map's to guess.
-            if stops.len() > 2 && ui.button("Tour").clicked() {
-                routing = Some(Order::Cheapest);
-            }
+        if stops_of(selection).is_ok() {
+            routing = ui.button("Route").clicked();
         }
         if let Some((middle, extent)) = spanned(selection)
             && ui.button("Frame").clicked()
@@ -2419,14 +2384,39 @@ fn stops_of(selection: &Selection) -> Result<Vec<&str>, &'static str> {
 /// answers with. A distance standing under a line saying there is no route to
 /// plot yet would be answering a question the form has just said it cannot
 /// take.
-fn apart(selection: &Selection) -> Option<f64> {
-    let places: Vec<_> =
+fn apart(selection: &Selection, order: &[usize]) -> Option<f64> {
+    let places: Vec<DVec3> =
         selection.systems().map(|system| system.position()).collect();
-    if places.len() < 2 {
+    if order.len() < 2 {
         return None;
     }
 
-    Some(places.windows(2).map(|leg| leg[0].distance(leg[1])).sum())
+    Some(
+        order
+            .windows(2)
+            .filter_map(|leg| {
+                Some((*places.get(leg[0])?, *places.get(leg[1])?))
+            })
+            .map(|(from, to)| from.distance(to))
+            .sum(),
+    )
+}
+
+/// The order the trip will be flown in, as indices into what is picked out
+///
+/// The order they were picked, or the cheapest order to reach them all in
+/// where that was asked for and a range is in hand to cost a leg with. The
+/// ordering itself is [`crate::systems::route::tour`]'s.
+///
+/// One place decides it, so what the form says the trip comes to and what the
+/// trip is actually asked for cannot disagree.
+fn flown_order(selection: &Selection, tour: Option<f64>) -> Vec<usize> {
+    let places: Vec<DVec3> =
+        selection.systems().map(|system| system.position()).collect();
+    match tour {
+        Some(range) => crate::systems::route::tour::ordered(&places, range),
+        None => (0..places.len()).collect(),
+    }
 }
 
 /// The stops as the trip is to be flown, named
@@ -2442,16 +2432,9 @@ fn asked_in_order(
     selection: &Selection,
     tour: Option<f64>,
 ) -> Vec<String> {
-    let Some(range) = tour else {
-        return stops.iter().map(|stop| stop.to_string()).collect();
-    };
-
-    // The same systems `stops_of` named, in the same order, so an index into
-    // one is an index into the other.
-    let places: Vec<DVec3> =
-        selection.systems().map(|system| system.position()).collect();
-
-    crate::systems::route::tour::ordered(&places, range)
+    // The systems `stops_of` named, in the same order, so an index into one
+    // is an index into the other.
+    flown_order(selection, tour)
         .into_iter()
         .filter_map(|at| stops.get(at))
         .map(|stop| stop.to_string())
@@ -2462,10 +2445,19 @@ fn asked_in_order(
 ///
 /// A pair is so far apart. More are so far in so many legs, the legs being
 /// what a longer set is flown in and what the figure is the sum of.
-fn apart_said(away: f64, stops: usize) -> String {
-    match stops.checked_sub(1) {
-        Some(legs) if legs > 1 => format!("{away:.1} Ly over {legs} legs"),
-        _ => format!("{away:.1} Ly apart"),
+///
+/// How far is [`None`] where the cheapest order was asked for and no range
+/// has been typed to work it out with: which order the trip is flown in
+/// settles what it comes to, and the range settles the order. So the legs are
+/// counted, which is known either way, and no distance is claimed. A figure
+/// measured along an order the trip will not be flown in is worse than none.
+fn apart_said(away: Option<f64>, stops: usize) -> String {
+    let legs = stops.saturating_sub(1);
+    match (away, legs) {
+        (Some(away), 0 | 1) => format!("{away:.1} Ly apart"),
+        (Some(away), legs) => format!("{away:.1} Ly over {legs} legs"),
+        (None, 1) => "1 leg".to_owned(),
+        (None, legs) => format!("{legs} legs"),
     }
 }
 
@@ -2497,22 +2489,31 @@ fn route_section(
     heading(ui, "Route", true);
     let mut taken = false;
 
-    // Which two systems it runs between. Said rather than asked for, since
-    // what answers it is a gesture out on the map, and a form with nothing on
-    // it about the ends is a form that plots between systems it never names.
+    // Which systems it runs through is not said here. They are the rows in
+    // the bar above, named there and in that order, and a form that spelled
+    // them out again would say the same thing twice -- at six stops, in a
+    // line of names longer than the bar is wide.
     let stops = stops_of(selection);
-    match &stops {
-        Ok(stops) => ui.label(stops.join(ARROW)),
+    if let Err(why) = &stops {
         // Weakly. Nothing has gone wrong: the user is part way through
         // asking, and a form in red before it has been filled in is a form
         // scolding whoever fills it in.
-        Err(why) => ui.label(egui::RichText::new(*why).weak()),
-    };
-    // And how far they run, which is the one thing about the plot the map can
-    // say before it is asked for. Under the names rather than at the end of
-    // them, since two long names and a number on one line wrap into a
-    // paragraph in a bar this wide.
-    if let (Some(away), Ok(stops)) = (apart(selection), &stops) {
+        ui.label(egui::RichText::new(*why).weak());
+    }
+    // How far it runs, which is the one thing about the plot the map can say
+    // before it is asked for -- measured along the order it will be flown in,
+    // which is what the cheapest-order box below changes.
+    let tour = search
+        .tour
+        .then(|| {
+            typed(&search.route_range).and_then(|typed| jump_range(typed).ok())
+        })
+        .flatten();
+    if let Ok(stops) = &stops {
+        let order = flown_order(selection, tour);
+        let away = (!search.tour || tour.is_some())
+            .then(|| apart(selection, &order))
+            .flatten();
         ui.label(egui::RichText::new(apart_said(away, stops.len())).weak());
     }
     ui.add_space(FIELD_GAP);
@@ -4516,18 +4517,25 @@ mod tests {
         selection
     }
 
+    /// How far a trip runs, measured along the picked order
+    fn ran(along: &[f64]) -> Option<f64> {
+        let picked = strung_out(along);
+        let order = flown_order(&picked, None);
+
+        apart(&picked, &order)
+    }
+
     /// A route is said to run as far as its legs come to
     ///
     /// The one thing about the plot that can be said before it is asked for,
     /// and what says whether a ship could make the trip at all. Over a pair
-    /// that is how far apart they stand; over more it is the legs summed, in
-    /// the order they were picked, which is the order they are flown.
+    /// that is how far apart they stand; over more it is the legs summed.
     #[test]
     fn a_route_runs_as_far_as_its_legs_come_to() {
-        assert_eq!(apart(&strung_out(&[3., 15.])), Some(12.));
-        assert_eq!(apart(&strung_out(&[3., 15., 20.])), Some(17.));
+        assert_eq!(ran(&[3., 15.]), Some(12.));
+        assert_eq!(ran(&[3., 15., 20.]), Some(17.));
         // Out and back: the legs are what is summed, not the span.
-        assert_eq!(apart(&strung_out(&[0., 10., 4.])), Some(16.));
+        assert_eq!(ran(&[0., 10., 4.]), Some(16.));
     }
 
     /// A set with no leg to fly is not measured at all
@@ -4536,8 +4544,24 @@ mod tests {
     /// answer a question the form has just said it cannot take.
     #[test]
     fn a_set_that_cannot_be_routed_is_not_measured() {
-        assert_eq!(apart(&strung_out(&[])), None);
-        assert_eq!(apart(&strung_out(&[3.])), None);
+        assert_eq!(ran(&[]), None);
+        assert_eq!(ran(&[3.]), None);
+    }
+
+    /// And it is measured along the order the trip will be flown in
+    ///
+    /// Which is the whole point of saying it: asked for the cheapest order,
+    /// the trip is not flown in the order it was picked, and a figure summed
+    /// along the picked order would be about a trip nobody is going to fly.
+    #[test]
+    fn a_trip_is_measured_along_the_order_it_will_be_flown() {
+        let picked = strung_out(&[0., 30., 10., 20.]);
+
+        let as_picked = apart(&picked, &flown_order(&picked, None));
+        let cheapest = apart(&picked, &flown_order(&picked, Some(10.)));
+
+        assert_eq!(as_picked, Some(60.));
+        assert_eq!(cheapest, Some(30.));
     }
 
     /// And how it is said turns on whether there is more than one leg
@@ -4546,9 +4570,21 @@ mod tests {
     /// figure is no longer a gap between two things but a distance flown.
     #[test]
     fn a_longer_route_is_said_in_legs() {
-        assert_eq!(apart_said(12., 2), "12.0 Ly apart");
-        assert_eq!(apart_said(17., 3), "17.0 Ly over 2 legs");
-        assert_eq!(apart_said(4., 0), "4.0 Ly apart");
+        assert_eq!(apart_said(Some(12.), 2), "12.0 Ly apart");
+        assert_eq!(apart_said(Some(17.), 3), "17.0 Ly over 2 legs");
+        assert_eq!(apart_said(Some(4.), 0), "4.0 Ly apart");
+    }
+
+    /// A trip whose order is not settled yet says its legs and no distance
+    ///
+    /// The cheapest order asked for and no range typed to work it out with:
+    /// the range settles the order and the order settles the distance, so the
+    /// legs are all that is known. Saying a figure anyway would be measuring
+    /// along an order the trip will not be flown in.
+    #[test]
+    fn a_trip_with_no_order_settled_yet_claims_no_distance() {
+        assert_eq!(apart_said(None, 6), "5 legs");
+        assert_eq!(apart_said(None, 2), "1 leg");
     }
 
     /// The selection rows each answer for themselves
@@ -6470,23 +6506,6 @@ mod tests {
     fn a_range_of_nothing_or_less_is_refused() {
         assert!(jump_range("0").is_err());
         assert!(jump_range("-5").is_err());
-    }
-
-    /// A set of three or more is offered a tour beside a route
-    ///
-    /// The two asks a set of systems can be: the order they were picked, or
-    /// whichever order reaches them all for the fewest jumps. Two of them are
-    /// offered only the route, there being one order to reach two systems in
-    /// and nothing for a tour to settle.
-    #[test]
-    fn a_set_of_several_is_offered_a_tour_as_well_as_a_route() {
-        let pair = selection_said(&["SOL", "BARNARD"]);
-        let several = selection_said(&["SOL", "BARNARD", "WOLF 359"]);
-
-        assert!(pair.contains(&"Route".to_owned()), "{pair:?}");
-        assert!(!pair.contains(&"Tour".to_owned()), "{pair:?}");
-        assert!(several.contains(&"Route".to_owned()), "{several:?}");
-        assert!(several.contains(&"Tour".to_owned()), "{several:?}");
     }
 
     /// The stops go out in the order they were picked, unless the map is asked
