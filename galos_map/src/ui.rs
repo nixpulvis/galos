@@ -29,6 +29,7 @@ use crate::systems::labels::ShowBodyNames;
 use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
 use crate::systems::route::graph::Routing;
+use crate::systems::route::{Flown, TripFlown};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
 use crate::systems::spawn::{
@@ -681,6 +682,7 @@ pub(crate) fn chrome(
     mut press: ResMut<PressOwner>,
     mut panels: ResMut<Panels>,
     mut filter: FilterBar,
+    flown: Res<TripFlown>,
 ) -> Result {
     // Giving up here takes [`PressOwner::settle`] at the end with it, and
     // nothing
@@ -1099,6 +1101,7 @@ pub(crate) fn chrome(
         &mut bar.plot,
         &mut bar.how,
         &mut filter,
+        flown.0,
     );
     gear(ctx, edge, middle, &mut open.0);
 
@@ -1260,6 +1263,7 @@ fn main_bar(
     plot: &mut Plot,
     how: &mut Routing,
     filter: &mut FilterBar,
+    flown: Option<Flown>,
 ) -> (bool, f32) {
     let style = ctx.global_style();
     let mut frame =
@@ -1381,6 +1385,7 @@ fn main_bar(
                         &mut went,
                         panels,
                         filter.active.bypass_change_detection(),
+                        flown,
                         &mut place,
                     );
                     if let Some(went) = went {
@@ -1846,6 +1851,7 @@ pub(crate) fn system_list<'a>(
 /// [`whole_selection`]'s to say and the caller's to act on: the form that
 /// answers it
 /// is drawn further down the bar.
+#[allow(clippy::too_many_arguments)]
 fn selected(
     ui: &mut Ui,
     selection: &mut Selection,
@@ -1854,6 +1860,7 @@ fn selected(
     travelled: &mut Option<MoveCamera>,
     panels: &mut Panels,
     filters: &mut Filters,
+    flown: Option<Flown>,
     place: &mut usize,
 ) -> bool {
     if selection.is_empty() {
@@ -1869,7 +1876,7 @@ fn selected(
     let from = *place;
 
     let routing = selection.len() > 1
-        && whole_selection(ui, selection, filters, travelled);
+        && whole_selection(ui, selection, filters, flown, travelled);
 
     let height = ui.text_style_height(&egui::TextStyle::Body).max(DOT)
         + (ROW_PADDING + ROW_MARGIN) * 2.
@@ -2094,6 +2101,7 @@ fn whole_selection(
     ui: &mut Ui,
     selection: &Selection,
     filters: &mut Filters,
+    flown: Option<Flown>,
     travelled: &mut Option<MoveCamera>,
 ) -> bool {
     // The systems alone, [`Filter`] naming systems by address and testing a
@@ -2126,7 +2134,37 @@ fn whole_selection(
             });
         }
     });
+    // What the trip through them came to, once any of it is drawn. Under the
+    // line rather than on it: three figures beside three controls is a row
+    // that wraps in a bar this wide.
+    //
+    // Here rather than in a panel because a trip is several routes and each
+    // panel is one leg: a leg's panel says what that leg comes to, and this
+    // is the only place that stands for the whole of it. The legs are added
+    // up by `route::tally_trip`; nothing is worked out here.
+    if let Some(flown) = flown {
+        ui.label(egui::RichText::new(flown_said(&flown)).weak());
+    }
     routing
+}
+
+/// What a trip that has been plotted comes to
+///
+/// How far it is flown all told, and the longest single jump in any of its
+/// legs, which is the figure that says whether the ship as it stands can fly
+/// the trip: each leg's panel says only its own, and the worst of them
+/// decides.
+///
+/// Says how far along the legs are while some are still landing, since a
+/// total over three legs of five is not what the trip comes to and reads as
+/// though it were.
+fn flown_said(flown: &Flown) -> String {
+    let Flown { legs, of, total, longest } = flown;
+    if legs < of {
+        return format!("{legs} of {of} legs: {total:.1} Ly so far");
+    }
+
+    format!("{total:.1} Ly flown, longest jump {longest:.1} Ly")
 }
 
 /// The middle of everything picked out, and how far it reaches from there
@@ -4064,6 +4102,7 @@ mod tests {
                 &mut travelled,
                 &mut panels,
                 &mut filters,
+                None,
                 &mut 0,
             );
         })
@@ -4103,6 +4142,7 @@ mod tests {
                 &mut None,
                 &mut Panels::default(),
                 &mut Filters::default(),
+                None,
                 &mut 0,
             );
         })
@@ -4142,6 +4182,7 @@ mod tests {
                 &mut None,
                 &mut Panels::default(),
                 &mut Filters::default(),
+                None,
                 &mut 0,
             );
         });
@@ -4168,6 +4209,7 @@ mod tests {
                 &mut None,
                 &mut Panels::default(),
                 &mut Filters::default(),
+                None,
                 &mut 0,
             );
         });
@@ -4207,6 +4249,7 @@ mod tests {
                 &mut None,
                 &mut Panels::default(),
                 &mut Filters::default(),
+                None,
                 &mut 0,
             );
         });
@@ -4234,6 +4277,7 @@ mod tests {
                 &mut None,
                 &mut Panels::default(),
                 &mut Filters::default(),
+                None,
                 &mut 0,
             );
         });
@@ -4447,6 +4491,7 @@ mod tests {
                     &mut travelled,
                     &mut panels,
                     &mut filters,
+                    None,
                     &mut 0,
                 );
             });
@@ -4494,6 +4539,7 @@ mod tests {
                 &mut travelled,
                 &mut panels,
                 &mut filters,
+                None,
                 &mut 0,
             );
         }
@@ -4544,6 +4590,7 @@ mod tests {
                 &mut None,
                 &mut panels,
                 &mut filters,
+                None,
                 &mut place,
             );
             applied(ui, &mut filters, &mut panels, &mut place);
@@ -4672,6 +4719,7 @@ mod tests {
                 &mut None,
                 &mut panels,
                 &mut applied_to,
+                None,
                 &mut place,
             );
             applied(ui, &mut applied_to, &mut panels, &mut place);

@@ -596,6 +596,21 @@ impl Filters {
         self.revision += 1;
     }
 
+    /// Ask a filter, keeping it at `index` among the ones already asked
+    ///
+    /// For a set of filters that arrive in no particular order and mean
+    /// something in one: the legs of a trip land as their walks finish, and a
+    /// trip whose rows read in the order they happened to come back is a trip
+    /// in the wrong order.
+    pub fn insert(&mut self, index: usize, filter: Filter) {
+        if self.asked.iter().any(|active| active.filter == filter) {
+            return;
+        }
+        let at = index.min(self.asked.len());
+        self.asked.insert(at, Entry { filter, enabled: true });
+        self.revision += 1;
+    }
+
     /// Stop asking the filter at `index`
     pub fn remove(&mut self, index: usize) {
         if index < self.asked.len() {

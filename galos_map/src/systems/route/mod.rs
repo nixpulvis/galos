@@ -28,7 +28,15 @@ pub fn plugin(app: &mut App) {
     );
     // Where the trip is asked for rather than where its legs land, which is
     // the whole point of it: see `frame_trip`.
+    app.init_resource::<Trip>();
+    app.init_resource::<TripFlown>();
     app.add_systems(Update, frame_trip.in_set(MapSet::Fetch));
+    // After the lines have been cut back to what is on the map, so the legs
+    // it adds up are the legs that are drawn.
+    app.add_systems(
+        Update,
+        tally_trip.in_set(MapSet::Present).after(follow_filters),
+    );
     // Once the lines and the filters have settled, so what is drawn faintly
     // this frame answers what is being asked this frame.
     app.add_systems(
@@ -75,6 +83,102 @@ impl Path {
     /// The line as it stands, whole
     pub(super) fn whole(&self) -> Vec<Vec3> {
         self.stops.iter().map(|(_, at)| *at).collect()
+    }
+
+    /// The two systems this leg runs between, by address
+    fn ends(&self) -> Option<(i64, i64)> {
+        Some((self.stops.first()?.0, self.stops.last()?.0))
+    }
+
+    /// How far the whole leg is flown, and its longest single jump, in light
+    /// years
+    ///
+    /// Off the line's own points, which are the hops the router came back
+    /// with. The points are metres from the line's midpoint, that being what
+    /// a vertex is measured in; light years are what the map states.
+    fn flown(&self) -> (f64, f64) {
+        self.stops.windows(2).fold((0., 0.), |(total, longest), jump| {
+            let far = (jump[1].1 - jump[0].1).as_dvec3().length()
+                / crate::space::LIGHT_YEAR;
+            (total + far, longest.max(far))
+        })
+    }
+}
+
+/// The stops the map is showing a trip through, in the order flown
+///
+/// What was last asked for, kept because a trip is several routes and nothing
+/// else says which of the routes held are one trip.
+#[derive(Resource, Default)]
+pub(crate) struct Trip(pub(crate) Vec<String>);
+
+/// What the trip on the map comes to, flown, once its legs are in
+#[derive(Resource, Default)]
+pub(crate) struct TripFlown(pub(crate) Option<Flown>);
+
+/// A trip added up over the legs that have landed
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Flown {
+    /// How many of its legs are drawn
+    pub(crate) legs: usize,
+    /// How many it has
+    pub(crate) of: usize,
+    /// How far the whole of it is flown, in light years
+    pub(crate) total: f64,
+    /// The longest single jump in any of its legs, in light years
+    ///
+    /// The one figure that says whether the ship as it stands can fly the
+    /// trip: the worst of the legs decides, and each leg's own panel says
+    /// only its own.
+    pub(crate) longest: f64,
+}
+
+/// Add the trip up over its legs
+///
+/// A leg is matched to the trip by the pair it runs between, spelled either
+/// way: the trip holds what the user typed and a line is named as the rows
+/// name it.
+///
+/// Counted afresh each frame rather than when a leg lands, so it answers the
+/// legs that are drawn now. Legs land one at a time and a line closed takes
+/// its leg back out, and a total that stood after the leg it was measured
+/// from had gone would be a figure about nothing.
+fn tally_trip(
+    trip: Res<Trip>,
+    lines: Query<(&Route, &Path)>,
+    mut flown: ResMut<TripFlown>,
+) {
+    let legs: Vec<(String, String)> =
+        trip.0.windows(2).map(|leg| (leg[0].clone(), leg[1].clone())).collect();
+    if legs.is_empty() {
+        if flown.0.is_some() {
+            flown.0 = None;
+        }
+        return;
+    }
+
+    let mut tally = Flown { legs: 0, of: legs.len(), total: 0., longest: 0. };
+    for (from, to) in &legs {
+        let found = lines.iter().find(|(route, path)| {
+            let Filter::Route { label, .. } = &route.0 else { return false };
+            let Some((start, end)) = label.split_once(crate::ui::ARROW) else {
+                return false;
+            };
+            path.ends().is_some()
+                && start.eq_ignore_ascii_case(from)
+                && end.eq_ignore_ascii_case(to)
+        });
+        let Some((_, path)) = found else { continue };
+
+        let (total, longest) = path.flown();
+        tally.legs += 1;
+        tally.total += total;
+        tally.longest = tally.longest.max(longest);
+    }
+
+    let said = (tally.legs > 0).then_some(tally);
+    if flown.0 != said {
+        flown.0 = said;
     }
 }
 
@@ -337,11 +441,14 @@ impl PlottedRoute {
 fn frame_trip(
     mut asked: MessageReader<Search>,
     names: Res<Names>,
+    mut trip: ResMut<Trip>,
     mut camera: MessageWriter<MoveCamera>,
     mut spyglass: ResMut<Spyglass>,
 ) {
     for ask in asked.read() {
         let Search::Route { stops, .. } = ask else { continue };
+        // Which routes held are one trip, for whatever adds it up later.
+        trip.0 = stops.clone();
         // Whatever is on record. A stop the names table does not know is a
         // leg that will come back with nothing, and the form is already
         // saying so; the trip is still framed over the stops that are real.
@@ -385,6 +492,7 @@ fn frame_trip(
 /// leg's; see [`frame_trip`].
 fn plotted(
     mut plotted: MessageReader<PlottedRoute>,
+    trip: Res<Trip>,
     mut filters: ResMut<Filters>,
     mut selected: ResMut<SelectedRoute>,
 ) {
@@ -398,10 +506,53 @@ fn plotted(
 
         // Beside whatever is already plotted rather than in place of it. Each
         // route keeps its own line and its own row, so plotting a second is
-        // asking to see both. The same route asked for twice is deduped by
-        // `add`, there being nothing to see twice.
-        filters.add(route.filter());
+        // asking to see both. The same route asked for twice is deduped,
+        // there being nothing to see twice.
+        //
+        // In the trip's order rather than where it lands. The legs are walked
+        // at once and land as each finishes, which is an order nobody chose:
+        // a trip picked out SOL, LAVE, DISO reads as its three rows, and they
+        // have to be those three in that order or the trip is a set again.
+        let at = placed_at(&route.label, &trip.0, &filters);
+        filters.insert(at, route.filter());
     }
+}
+
+/// Where a leg's row belongs among the rows already there
+///
+/// After every leg of the same trip that is flown before it, and before every
+/// one flown after. Anything else held -- a faction, a hand-picked set, a
+/// route from some earlier trip -- is left where it is: the trip orders its
+/// own legs and says nothing about anyone else's.
+///
+/// The end of the list for a route that is no leg of this trip, which is what
+/// [`Filters::add`] would have done with it.
+fn placed_at(label: &str, stops: &[String], filters: &Filters) -> usize {
+    let Some(leg) = leg_of(label, stops) else {
+        return filters.iter().count();
+    };
+
+    filters
+        .iter()
+        .position(|entry| match &entry.filter {
+            Filter::Route { label, .. } => {
+                leg_of(label, stops).is_some_and(|held| held > leg)
+            }
+            _ => false,
+        })
+        .unwrap_or(filters.iter().count())
+}
+
+/// Which leg of a trip through `stops` a route named `label` is, if it is one
+///
+/// Matched on the pair it runs between, spelled either way: the trip holds
+/// what the user typed and a line is named as the rows name it.
+fn leg_of(label: &str, stops: &[String]) -> Option<usize> {
+    let (start, end) = label.split_once(crate::ui::ARROW)?;
+
+    stops.windows(2).position(|leg| {
+        start.eq_ignore_ascii_case(&leg[0]) && end.eq_ignore_ascii_case(&leg[1])
+    })
 }
 
 /// Keep each line answering to the row that names it
@@ -922,6 +1073,7 @@ mod tests {
         app.add_message::<Search>();
         app.add_message::<MoveCamera>();
         app.insert_resource(Names::reaching(entries, Vec::new()));
+        app.init_resource::<Trip>();
         app.insert_resource(Spyglass {
             fetch: true,
             radius: Spyglass::OPENING,
@@ -963,6 +1115,83 @@ mod tests {
             DVec3::new(extent as f64, 0., 0.),
         ])
         .radius
+    }
+
+    /// A trip's legs read in the trip's order, whatever order they land in
+    ///
+    /// The reported trouble. The legs are walked at once and each row is
+    /// written when its own walk finishes, so the rows came out in the order
+    /// the router happened to answer -- an order nobody chose. A trip picked
+    /// out as SOL, LAVE, DISO is those two legs in that order, or it is a set
+    /// again.
+    #[test]
+    fn a_trips_legs_read_in_the_order_they_are_flown() {
+        let stops = ["SOL", "LAVE", "DISO", "REORTE"];
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<PlottedRoute>();
+        app.init_resource::<Filters>();
+        app.init_resource::<SelectedRoute>();
+        app.insert_resource(Trip(
+            stops.iter().map(|stop| stop.to_string()).collect(),
+        ));
+        app.add_systems(Update, plotted);
+
+        // Backwards, which is as good an order as any other: what decides it
+        // is which walk finished first.
+        for leg in [2, 0, 1] {
+            app.world_mut().write_message(PlottedRoute {
+                label: format!(
+                    "{}{}{}",
+                    stops[leg],
+                    crate::ui::ARROW,
+                    stops[leg + 1]
+                ),
+                systems: vec![leg as i64],
+                range: "10".to_owned(),
+            });
+            app.update();
+        }
+
+        let rows: Vec<String> = app
+            .world()
+            .resource::<Filters>()
+            .iter()
+            .map(|entry| entry.filter.name().to_owned())
+            .collect();
+        assert_eq!(rows, vec!["SOL -> LAVE", "LAVE -> DISO", "DISO -> REORTE"]);
+    }
+
+    /// And a route that is no leg of it is left at the end
+    ///
+    /// A faction, a hand-picked set, a route from some earlier trip: the trip
+    /// orders its own legs and says nothing about anyone else's.
+    #[test]
+    fn a_route_that_is_no_leg_of_the_trip_goes_last() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<PlottedRoute>();
+        app.init_resource::<Filters>();
+        app.init_resource::<SelectedRoute>();
+        app.insert_resource(Trip(vec!["SOL".to_owned(), "LAVE".to_owned()]));
+        app.add_systems(Update, plotted);
+
+        for label in ["SOL -> LAVE", "WOLF 359 -> SIRIUS"] {
+            app.world_mut().write_message(PlottedRoute {
+                label: label.to_owned(),
+                systems: vec![1],
+                range: "10".to_owned(),
+            });
+            app.update();
+        }
+
+        let rows: Vec<String> = app
+            .world()
+            .resource::<Filters>()
+            .iter()
+            .map(|entry| entry.filter.name().to_owned())
+            .collect();
+        assert_eq!(rows, vec!["SOL -> LAVE", "WOLF 359 -> SIRIUS"]);
     }
 
     /// A trip is looked at whole, once, however many legs it has
@@ -1220,6 +1449,7 @@ mod tests {
             follow_camera: false,
         });
         app.insert_resource(SelectedRoute(Some(asking(&[1, 2]))));
+        app.init_resource::<Trip>();
         app.add_systems(Update, plotted);
 
         app.world_mut().write_message(PlottedRoute {
