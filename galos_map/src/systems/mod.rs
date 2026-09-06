@@ -157,13 +157,27 @@ impl System {
 
     /// How far the system reaches from its arrival star, in metres
     ///
-    /// Never under [`bodies::STAND_IN`], which stands in for a system the map
-    /// cannot say the size of and is a floor under one that says it is smaller
-    /// than a mark. A star with nothing on record around it reaches a
-    /// twenty-five thousandth of that, and a shell drawn there is a skin on
-    /// the star rather than a mark around the system.
+    /// [`bodies::STAND_IN`] where nothing in it has been scanned, which is
+    /// four systems in five: the map has to draw them at some size and this is
+    /// the size it assumes.
+    ///
+    /// A *floor* under a recorded reach is what this used to be, and it was
+    /// wrong by an order of magnitude wherever the record was smaller than the
+    /// assumption. WISE 0855-0714 holds fifteen bodies out to 2.47 AU and was
+    /// drawn with a twelve-AU shell around them, because ten AU is what a
+    /// system that has said nothing is taken to be. What a system has said
+    /// about itself is not something to take the maximum of.
+    ///
+    /// Nothing needs a floor under it. The reach is measured to the far edge
+    /// of the furthest thing on record — a lone star's own limb included — so
+    /// the shell drawn at [`scale::MARGIN`] of it always encloses what is
+    /// inside, and the mark [`scale::shell`] draws instead is what keeps a
+    /// small system visible from a distance.
+    ///
+    /// [`scale::MARGIN`]: crate::systems::scale::MARGIN
+    /// [`scale::shell`]: crate::systems::scale
     pub fn reach(&self) -> f32 {
-        self.reach.unwrap_or_default().max(bodies::STAND_IN)
+        self.reach.unwrap_or(bodies::STAND_IN)
     }
 
     /// The absolute magnitude the realistic view reads the star's brightness

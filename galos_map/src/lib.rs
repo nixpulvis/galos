@@ -46,14 +46,15 @@ pub struct ResidentIndex(pub Index);
 #[derive(Resource, Default, Clone)]
 pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
 
-/// Every system's name and where it sits: the search index and the routing
-/// graph in one resident table.
+/// Every system's name, where it sits, and how far it reaches: what the map
+/// knows about any system without asking for it.
 ///
-/// Held whole rather than fetched, since a search reaches any name and a route
-/// steps between any two positions. The positions here are the graph the
-/// router walks, so routing needs nothing loaded past this.
-/// Cheap to clone: the two tables sit behind [`Arc`]s so a fetch task can take
-/// a handle and name and colour its systems off the main thread. They are
+/// Held whole rather than fetched, since a search reaches any name, a route
+/// steps between any two positions, and every system in the sky is drawn at
+/// the size its reach says. The positions here are the graph the router walks,
+/// so routing needs nothing loaded past this.
+/// Cheap to clone: the tables sit behind [`Arc`]s so a fetch task can take a
+/// handle and name and colour its systems off the main thread. They are
 /// loaded once at startup and never mutated, so nothing is fighting over them.
 #[derive(Resource, Default, Clone)]
 pub struct Names {
@@ -61,6 +62,13 @@ pub struct Names {
     pub entries: Arc<Vec<NameEntry>>,
     /// Address to its entry, for the O(1) lookup a selection wants.
     pub by_address: Arc<HashMap<i64, usize>>,
+    /// How far each scanned system reaches, in metres, by address.
+    ///
+    /// Its own table on disk (`reaches.bin`) and its own map here, since it
+    /// covers a fifth of the index against the name table's whole: a system
+    /// with nothing scanned in it is absent, which is how the map tells "small"
+    /// from "not on record" and stands in for the second.
+    pub reaches: Arc<HashMap<i64, f32>>,
 }
 
 /// Faction id to the name it is shown under, read whole and held.
@@ -75,11 +83,33 @@ impl Populated {
 }
 
 impl Names {
-    /// Build the resident table and its address index from the raw entries.
+    /// Build the resident table and its address index from the raw entries,
+    /// with no reach on record for any of them.
     pub fn new(entries: Vec<NameEntry>) -> Names {
+        Names::reaching(entries, Vec::new())
+    }
+
+    /// The same, with the reaches table beside it.
+    pub fn reaching(
+        entries: Vec<NameEntry>,
+        reaches: Vec<galos_index::SystemReach>,
+    ) -> Names {
         let by_address =
             entries.iter().enumerate().map(|(i, e)| (e.address, i)).collect();
-        Names { entries: Arc::new(entries), by_address: Arc::new(by_address) }
+
+        Names {
+            entries: Arc::new(entries),
+            by_address: Arc::new(by_address),
+            reaches: Arc::new(
+                reaches.into_iter().map(|it| (it.address, it.reach)).collect(),
+            ),
+        }
+    }
+
+    /// How far the system at `address` reaches, in metres, where anything in
+    /// it has been scanned.
+    pub fn reach(&self, address: i64) -> Option<f32> {
+        self.reaches.get(&address).copied()
     }
 
     /// The entry for an address, if the table holds it.

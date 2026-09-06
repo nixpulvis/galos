@@ -177,6 +177,15 @@ fn diagnostics(
                     );
                     pair(
                         ui,
+                        "reaches",
+                        &loaded.names.reaches.len().to_string(),
+                        "Systems with a reach on record — how far each one \
+                         holds anything scanned, which is the size its shell \
+                         is drawn at. A system absent from it has nothing \
+                         scanned in it and is stood in for.",
+                    );
+                    pair(
+                        ui,
                         "factions",
                         &loaded.factions.0.len().to_string(),
                         "Faction id-to-name entries.",

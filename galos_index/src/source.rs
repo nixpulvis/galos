@@ -18,7 +18,9 @@
 
 use crate::cache::Point;
 use crate::geometry::CellId;
-use crate::meta::{Faction, NameEntry, PopulatedSystem, SystemBodies};
+use crate::meta::{
+    Faction, NameEntry, PopulatedSystem, SystemBodies, SystemReach,
+};
 use crate::walk::Index;
 use async_trait::async_trait;
 use serde::Serialize;
@@ -30,6 +32,9 @@ use std::path::{Path, PathBuf};
 pub const POPULATED_FILE: &str = "populated.bin";
 /// The subdirectory the names table's chunk files live in.
 pub const NAMES_DIR: &str = "names";
+/// How far each scanned system reaches, resident once and read for every
+/// system the map draws.
+pub const REACHES_FILE: &str = "reaches.bin";
 /// The faction id-to-name table, small and read whole.
 pub const FACTIONS_FILE: &str = "factions.bin";
 /// The subdirectory of per-system body files.
@@ -61,6 +66,11 @@ pub fn read_names(dir: &Path) -> io::Result<Vec<NameEntry>> {
 /// The factions table's path within a build directory.
 pub fn factions_path(dir: &Path) -> PathBuf {
     dir.join(FACTIONS_FILE)
+}
+
+/// The reaches table's path within a build directory.
+pub fn reaches_path(dir: &Path) -> PathBuf {
+    dir.join(REACHES_FILE)
 }
 
 /// A system's body file within a build directory, keyed by address.
@@ -104,6 +114,11 @@ pub trait Source: Send + Sync {
 
     /// The faction id-to-name table, read whole and cached by the caller.
     async fn factions(&self) -> io::Result<Vec<Faction>>;
+
+    /// How far each scanned system reaches from its arrival star, held
+    /// resident: the map sizes every system it draws by this and cannot wait
+    /// on a fetch for it.
+    async fn reaches(&self) -> io::Result<Vec<SystemReach>>;
 
     /// The bodies inside a system, fetched when a click opens it. Empty where
     /// the system has no scan on record.
@@ -151,6 +166,10 @@ impl Source for FsSource {
 
     async fn factions(&self) -> io::Result<Vec<Faction>> {
         read_meta(&factions_path(&self.dir))
+    }
+
+    async fn reaches(&self) -> io::Result<Vec<SystemReach>> {
+        read_meta(&reaches_path(&self.dir))
     }
 
     async fn bodies(&self, address: i64) -> io::Result<SystemBodies> {

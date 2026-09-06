@@ -838,6 +838,11 @@ pub(crate) fn build_system(
         .get(raw.address)
         .map(|entry| entry.name.clone())
         .unwrap_or_else(|| raw.address.to_string());
+    // How far it reaches comes from the reaches table rather than from the
+    // political one: most systems with anything scanned in them are not
+    // populated, and a system drawn at a stood-in size wears a shell many
+    // times the orbits inside it.
+    let reach = names.reach(raw.address);
     match populated.get(raw.address) {
         Some(p) => System {
             address: raw.address,
@@ -851,7 +856,7 @@ pub(crate) fn build_system(
             factions: p.factions.clone(),
             body_count: p.body_count,
             non_body_count: p.non_body_count,
-            reach: p.reach,
+            reach,
             absolute_magnitude: raw.magnitude,
             temp_bucket: raw.temp_bucket,
             updated_at: Utc::now(),
@@ -868,7 +873,7 @@ pub(crate) fn build_system(
             factions: Vec::new(),
             body_count: None,
             non_body_count: None,
-            reach: None,
+            reach,
             absolute_magnitude: raw.magnitude,
             temp_bucket: raw.temp_bucket,
             updated_at: Utc::now(),

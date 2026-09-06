@@ -450,7 +450,8 @@ impl fmt::Display for BuildReport {
             f,
             "{} systems -> {} cells ({} leaves, {} internal), \
              deepest level {}, largest leaf {} systems, {} placed{}; \
-             metadata: {} populated, {} names, {} factions, {} body files",
+             metadata: {} populated, {} names, {} reaches, {} factions, \
+             {} body files",
             self.systems,
             self.cells,
             self.leaves,
@@ -461,6 +462,7 @@ impl fmt::Display for BuildReport {
             if self.is_consistent() { "" } else { " (MISMATCH)" },
             self.meta.populated,
             self.meta.names,
+            self.meta.reaches,
             self.meta.factions,
             self.meta.body_files,
         )

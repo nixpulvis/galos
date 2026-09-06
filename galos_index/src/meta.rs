@@ -40,7 +40,23 @@ pub struct PopulatedSystem {
     pub factions: Vec<i32>,
     pub body_count: Option<i32>,
     pub non_body_count: Option<i32>,
-    pub reach: Option<f32>,
+}
+
+/// How far a system reaches from its arrival star, in metres.
+///
+/// The far edge of the furthest thing on record, over its bodies, its stars
+/// and the points a close pair goes round. Its own table rather than a column
+/// on [`PopulatedSystem`], because the map sizes *every* system it draws by
+/// this and only one in forty of them is populated — and its own table rather
+/// than a column on [`NameEntry`], because a reach is the one thing here that
+/// really changes with the feed: a scan arrives and the system it is about
+/// grows. Names and positions change about never, which is what lets that
+/// table be published in chunks.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SystemReach {
+    pub address: i64,
+    /// Metres from the arrival star to the far edge of what is on record
+    pub reach: f32,
 }
 
 /// A name and where it is: the search index and the routing graph in one.

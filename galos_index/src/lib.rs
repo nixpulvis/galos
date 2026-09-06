@@ -37,7 +37,7 @@ pub use checkpoint::Checkpoint;
 pub use geometry::{Aabb, CellId};
 pub use meta::{
     Barycenter, Body, Economies, Faction, NameEntry, Parent, PopulatedSystem,
-    Star, Surface, SystemBodies,
+    Star, Surface, SystemBodies, SystemReach,
 };
 pub use moments::Moments;
 pub use names::NameTable;

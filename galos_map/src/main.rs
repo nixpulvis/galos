@@ -17,25 +17,29 @@ fn main() {
     let dir = std::env::var("GALOS_INDEX_DIR")
         .unwrap_or_else(|_| ".galos_index".to_string());
     let source = FsSource::new(&dir);
-    let (index, populated, names, factions) = future::block_on(async {
-        let index = source
-            .index()
-            .await
-            .unwrap_or_else(|e| panic!("reading the index at {dir}: {e}"));
-        let populated = source.populated().await.unwrap_or_default();
-        let names = source.names().await.unwrap_or_default();
-        let factions = source.factions().await.unwrap_or_default();
-        (index, populated, names, factions)
-    });
+    let (index, populated, names, reaches, factions) =
+        future::block_on(async {
+            let index = source
+                .index()
+                .await
+                .unwrap_or_else(|e| panic!("reading the index at {dir}: {e}"));
+            let populated = source.populated().await.unwrap_or_default();
+            let names = source.names().await.unwrap_or_default();
+            let reaches = source.reaches().await.unwrap_or_default();
+            let factions = source.factions().await.unwrap_or_default();
+            (index, populated, names, reaches, factions)
+        });
 
     // Said before the log plugin is up, so plain stderr. What loaded is the
     // first thing to check when the map draws but nothing is coloured or named.
     eprintln!(
-        "galos: index {} has {} cells, {} populated, {} names, {} factions",
+        "galos: index {} has {} cells, {} populated, {} names, \
+         {} reaches, {} factions",
         dir,
         index.len(),
         populated.len(),
         names.len(),
+        reaches.len(),
         factions.len(),
     );
     // A cell tree with no metadata beside it is a stale or half-written build:
@@ -93,7 +97,7 @@ fn main() {
         populated.into_iter().map(|s| (s.address, s)).collect(),
     )));
     app.insert_resource(Jumps(Arc::new(jumps)));
-    app.insert_resource(Names::new(names));
+    app.insert_resource(Names::reaching(names, reaches));
     app.insert_resource(Factions(
         factions.into_iter().map(|f| (f.id, f.name)).collect(),
     ));

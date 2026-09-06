@@ -73,12 +73,14 @@ pub struct MetaReport {
     pub populated: usize,
     pub names: usize,
     pub factions: usize,
+    /// How many systems have a reach on record, which is every scanned one.
+    pub reaches: usize,
     pub body_files: usize,
     /// How many of the names table's chunks were written.
     pub name_chunks: usize,
 }
 
-/// The three metadata tables, held open across a watch.
+/// The four metadata tables, held open across a watch.
 ///
 /// Each is the authority on what stands in the published directory: a patch
 /// reads the changed systems' current rows, moves the tables, and writes what
@@ -91,6 +93,13 @@ pub(super) struct Metadata {
     /// and its rows change with the feed rather than only arriving, so there is
     /// no tail for changes to cluster in.
     populated: HashMap<i64, meta::PopulatedSystem>,
+    /// How far each scanned system reaches, by address. Keyed for the same
+    /// reason the populated table is, and more so: a reach moves whenever a
+    /// body is scanned, and the systems scanned in a pass are scattered across
+    /// the whole address space. Chunked alongside the names it would dirty
+    /// chunks all over the galaxy every pass, which is what chunking that
+    /// table was for.
+    reaches: HashMap<i64, f32>,
     /// The faction names, in id order. Ids come from a sequence and a name is
     /// never rewritten (`Faction::create` conflicts onto the name on record),
     /// so this only ever grows, past `high`.
@@ -101,8 +110,8 @@ pub(super) struct Metadata {
 
 impl Metadata {
     /// Derive the tables from the database and write everything: every names
-    /// chunk, both whole tables, and a body file for every system that has
-    /// anything on record. What a full build publishes.
+    /// chunk, all three whole tables, and a body file for every system that
+    /// has anything on record. What a full build publishes.
     ///
     /// `names` comes from the caller rather than a read of its own, being the
     /// other half of the read the cell tree was built from; see
@@ -118,10 +127,12 @@ impl Metadata {
             .into_iter()
             .map(|system| (system.address, system))
             .collect();
+        let reaches = reaches(db, None).await?;
         let factions = factions_above(db, 0).await?;
         let high = factions.last().map(|f| f.id).unwrap_or(0);
-        let mut metadata = Metadata { names, populated, factions, high };
-        let report = metadata.publish(db, dir, None, true, true).await?;
+        let mut metadata =
+            Metadata { names, populated, reaches, factions, high };
+        let report = metadata.publish(db, dir, None, true, true, true).await?;
         Ok((metadata, report))
     }
 
@@ -134,6 +145,8 @@ impl Metadata {
         let names = NameTable::read(dir)?;
         let populated: Vec<meta::PopulatedSystem> =
             read_meta(&source::populated_path(dir))?;
+        let reaches: Vec<meta::SystemReach> =
+            read_meta(&source::reaches_path(dir))?;
         let factions: Vec<meta::Faction> =
             read_meta(&source::factions_path(dir))?;
         let high = factions.iter().map(|f| f.id).max().unwrap_or(0);
@@ -142,6 +155,10 @@ impl Metadata {
             populated: populated
                 .into_iter()
                 .map(|system| (system.address, system))
+                .collect(),
+            reaches: reaches
+                .into_iter()
+                .map(|it| (it.address, it.reach))
                 .collect(),
             factions,
             high,
@@ -189,6 +206,20 @@ impl Metadata {
             }
         }
 
+        // A scan is what moves a reach, so this is the table a watch pass
+        // really does move: a system reported again with nothing new scanned
+        // reads exactly as the one held and writes nothing.
+        let reached = reaches(db, Some(touched)).await?;
+        let mut scanned = HashSet::with_capacity(reached.len());
+        let mut grew = false;
+        for (address, reach) in reached {
+            scanned.insert(address);
+            if self.reaches.get(&address) != Some(&reach) {
+                self.reaches.insert(address, reach);
+                grew = true;
+            }
+        }
+
         for address in touched {
             if !placed.contains(address) {
                 self.names.remove(*address);
@@ -197,6 +228,11 @@ impl Metadata {
                 && self.populated.remove(address).is_some()
             {
                 moved = true;
+            }
+            if !scanned.contains(address)
+                && self.reaches.remove(address).is_some()
+            {
+                grew = true;
             }
         }
 
@@ -207,7 +243,7 @@ impl Metadata {
             self.factions.extend(named);
         }
 
-        self.publish(db, dir, Some(touched), moved, reported).await
+        self.publish(db, dir, Some(touched), moved, grew, reported).await
     }
 
     /// Write the dirty names chunks, whichever whole tables changed, and the
@@ -219,11 +255,15 @@ impl Metadata {
         dir: &Path,
         bodies_for: Option<&[i64]>,
         populated: bool,
+        reaches: bool,
         factions: bool,
     ) -> Result<MetaReport> {
         let name_chunks = self.names.publish(dir)?;
         if populated {
             write_populated(dir, &self.populated)?;
+        }
+        if reaches {
+            write_reaches(dir, &self.reaches)?;
         }
         if factions {
             write_meta(&source::factions_path(dir), &self.factions)?;
@@ -232,6 +272,7 @@ impl Metadata {
             populated: self.populated.len(),
             names: self.names.len(),
             factions: self.factions.len(),
+            reaches: self.reaches.len(),
             body_files: write_bodies(db, dir, bodies_for).await?,
             name_chunks,
         })
@@ -276,8 +317,8 @@ pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
 /// A population without a position is left out: the map only ever colours a
 /// system it draws, and it draws only positioned ones, so a
 /// [`meta::PopulatedSystem`] carries a fixed `[f32; 3]` and never an absent one.
-/// The reach is the far edge of what is on record, read for the whole set at
-/// once by [`reaches`].
+/// How far a system reaches has its own table, [`write_reaches`]: most systems
+/// with anything scanned in them are not populated at all.
 async fn populated_of(
     db: &Database,
     addresses: Option<&[i64]>,
@@ -302,10 +343,6 @@ async fn populated_of(
         }
     };
 
-    let addresses: Vec<i64> =
-        rows.iter().map(|row| row.get::<i64, _>("address")).collect();
-    let reach = reaches(db, &addresses).await?;
-
     rows.iter()
         .map(|row| {
             let address: i64 = row.try_get("address")?;
@@ -326,7 +363,6 @@ async fn populated_of(
                 factions: row.try_get("factions")?,
                 body_count: row.try_get("body_count")?,
                 non_body_count: row.try_get("non_body_count")?,
-                reach: reach.get(&address).copied(),
             })
         })
         .collect()
@@ -366,6 +402,18 @@ fn write_populated(
     let mut table: Vec<&meta::PopulatedSystem> = populated.values().collect();
     table.sort_unstable_by_key(|system| system.address);
     write_meta(&source::populated_path(dir), &table)?;
+    Ok(table.len())
+}
+
+/// Write `reaches.bin`: how far each scanned system reaches, in address order
+/// so the same table is always the same bytes.
+fn write_reaches(dir: &Path, reaches: &HashMap<i64, f32>) -> Result<usize> {
+    let mut table: Vec<meta::SystemReach> = reaches
+        .iter()
+        .map(|(&address, &reach)| meta::SystemReach { address, reach })
+        .collect();
+    table.sort_unstable_by_key(|it| it.address);
+    write_meta(&source::reaches_path(dir), &table)?;
     Ok(table.len())
 }
 
@@ -425,16 +473,22 @@ async fn write_bodies(
     Ok(grouped.len())
 }
 
-/// How far each of `addresses` reaches from its arrival star, in metres: the
-/// far edge of the furthest thing on record, over bodies, stars and the points
-/// a close pair goes round. One grouped query rather than one per system, the
-/// same shape [`crate::systems`] reads a drawn region's reaches with.
+/// How far each system reaches from its arrival star, in metres: the far edge
+/// of the furthest thing on record, over bodies, stars and the points a close
+/// pair goes round. All of them for a full build, or those of `addresses` for a
+/// watch pass. One grouped query rather than one per system, the same shape
+/// [`crate::systems`] reads a drawn region's reaches with.
+///
+/// A system with nothing scanned in it comes back with no row at all, which is
+/// what leaves it out of the table: the map reads an absent reach as a system
+/// whose size is not on record and stands in for it.
 async fn reaches(
     db: &Database,
-    addresses: &[i64],
+    addresses: Option<&[i64]>,
 ) -> Result<HashMap<i64, f32>> {
-    let rows = sqlx::query(
-        "SELECT system_address AS address, \
+    // Every reaching thing, in the terms the outer query maxes over: how far
+    // out it stands, how far its own orbit carries it, and how wide it is.
+    const REACHING: &str = "SELECT system_address AS address, \
                 MAX(GREATEST(away, apoapsis) + radius) AS reach \
          FROM ( \
              SELECT system_address, \
@@ -443,27 +497,41 @@ async fn reaches(
                     (semi_major_axis \
                         * (1 + LEAST(eccentricity, 0.99)))::real AS apoapsis, \
                     radius \
-             FROM bodies WHERE system_address = ANY($1) \
-           UNION ALL \
+             FROM bodies";
+    const AND_STARS: &str = "           UNION ALL \
              SELECT system_address, \
                     (distance_from_arrival_ls * 299792458)::real, \
                     (COALESCE(semi_major_axis, 0) \
                         * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real, \
                     radius \
-             FROM stars WHERE system_address = ANY($1) \
-           UNION ALL \
+             FROM stars";
+    const AND_CENTERS: &str = "           UNION ALL \
              SELECT system_address, \
                     0::real, \
                     (COALESCE(semi_major_axis, 0) \
                         * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real, \
                     0::real \
-             FROM barycenters WHERE system_address = ANY($1) \
-         ) reaching \
-         GROUP BY system_address",
-    )
-    .bind(addresses)
-    .fetch_all(&db.pool)
-    .await?;
+             FROM barycenters";
+    const GROUPED: &str = ") reaching GROUP BY system_address";
+
+    let rows = match addresses {
+        None => {
+            sqlx::query(&format!(
+                "{REACHING} {AND_STARS} {AND_CENTERS} {GROUPED}"
+            ))
+            .fetch_all(&db.pool)
+            .await?
+        }
+        Some(addresses) => {
+            let of = " WHERE system_address = ANY($1)";
+            sqlx::query(&format!(
+                "{REACHING}{of} {AND_STARS}{of} {AND_CENTERS}{of} {GROUPED}"
+            ))
+            .bind(addresses)
+            .fetch_all(&db.pool)
+            .await?
+        }
+    };
 
     rows.iter()
         .map(|row| Ok((row.try_get("address")?, row.try_get("reach")?)))
