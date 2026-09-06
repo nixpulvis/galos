@@ -10,11 +10,22 @@ use galos_index::{Index, Source as IndexSource};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+// What `main.rs` stands the app up from, and no more than that. The binary is
+// its own crate and reaches the map through this one, so a module is `pub`
+// here exactly where the binary names it: each of these for its `plugin`, and
+// `systems` for `route::graph` besides. `ruled` is not among them — the ruled
+// plane goes up with `grid::plugin` — so it is held in, as its own submodules
+// already are.
+//
+// Worth spelling out because the map has no library consumers: nothing but
+// `main.rs` imports any of this, so `pub` past what it needs says a thing is
+// API when it is not, and `cargo doc` starts asking why a public item explains
+// itself in terms of private ones.
 pub mod camera;
 pub mod dev;
 pub mod grid;
 pub mod keys;
-pub mod ruled;
+pub(crate) mod ruled;
 pub mod schedule;
 pub mod search;
 pub mod space;

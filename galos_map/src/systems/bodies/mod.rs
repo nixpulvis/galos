@@ -18,9 +18,10 @@ use galos_index::meta::{
 use orbit::{Orbit, Orbits};
 use std::collections::HashSet;
 
-pub mod fetch;
-pub mod orbit;
-pub mod spawn;
+// Held in: the map reaches a system's insides through `bodies::plugin`.
+pub(crate) mod fetch;
+pub(crate) mod orbit;
+pub(crate) mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();

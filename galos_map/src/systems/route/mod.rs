@@ -522,9 +522,11 @@ fn emphasise(
     }
 }
 
-pub mod fetch;
+pub(crate) mod fetch;
+// The one module the binary names: it builds the jump graph from the
+// resident names before the app is up.
 pub mod graph;
-pub mod spawn;
+pub(crate) mod spawn;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]

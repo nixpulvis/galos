@@ -212,21 +212,24 @@ impl System {
     }
 }
 
-pub mod aggregate;
-pub mod bodies;
-pub mod bounded;
-pub mod despawn;
-pub mod fetch;
-pub mod field;
-pub mod filter;
-pub mod info;
-pub mod labels;
-pub mod pointing;
-pub mod roundness;
+// Held in but for `route`, whose `graph` the binary builds the jump graph
+// from before the app is up. Everything else here is reached through
+// `systems::plugin`; see the note in `crate`.
+pub(crate) mod aggregate;
+pub(crate) mod bodies;
+pub(crate) mod bounded;
+pub(crate) mod despawn;
+pub(crate) mod fetch;
+pub(crate) mod field;
+pub(crate) mod filter;
+pub(crate) mod info;
+pub(crate) mod labels;
+pub(crate) mod pointing;
+pub(crate) mod roundness;
 pub mod route;
-pub mod scale;
-pub mod selection;
-pub mod spawn;
+pub(crate) mod scale;
+pub(crate) mod selection;
+pub(crate) mod spawn;
 
 /// A global setting which controls the spyglass around the camera
 #[derive(Resource)]
