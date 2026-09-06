@@ -46,7 +46,7 @@ pub fn plugin(app: &mut App) {
 /// Map-wide, and the reason it is not filed under the spyglass. Three things
 /// go back over what the map already holds and all three keep this beat:
 /// [`super::bodies::fetch`] asks a system's interior again,
-/// [`super::filter::mark`] re-cuts the time filter as its span slides, and the
+/// [`super::filter`] re-cuts the time filter as its span slides, and the
 /// region fetch re-asks a region it has already surveyed. Only the last of
 /// those is the spyglass's, and it is the one that retires with it.
 ///
@@ -76,16 +76,16 @@ impl Poll {
 
 /// How long the map waits before asking about somewhere new, in milliseconds
 ///
-/// The region fetch's own, and only its own. [`spyglass_condition`] is the one
+/// The region fetch's own, and only its own. `spyglass_condition` is the one
 /// reader, so this rate-limits the region query and nothing else; it retires
-/// with the region path (see the TODO on [`fetch_spyglass`]), and until then
+/// with the region path (see the TODO on `fetch_spyglass`), and until then
 /// [`crate::ui`] offers it only while that path is the source.
 ///
 /// The walk wants no throttle. What the region fetch needs one for is that it
 /// asks the same question over and over — a sphere about a camera that keeps
 /// moving — so without a wait it re-asks most of what it already holds every
-/// frame. [`crate::systems::bounded::fetch`] instead asks for the cells it does
-/// not hold, each exactly once: a cell already resident or already on the wire
+/// frame. [`crate::systems::bounded`]'s own `fetch` instead asks for the cells
+/// it does not hold, each exactly once: a cell already resident or on the wire
 /// is skipped, so the question shrinks as the answers land and there is no
 /// runaway to hold back. A throttle there would only slow the view filling in.
 #[derive(Resource)]

@@ -86,6 +86,12 @@ struct FieldMaterials {
 /// nothing, so its mark is held here rather than allowed to vanish. The
 /// realistic view floors instead on the eye's own limit, drawing only the
 /// stars that clear it (see [`build_field`]).
+///
+/// The last word over [`super::scale`]'s own far-field angle, which settles to
+/// about half of this down an 1080 line window — so past roughly a thousand
+/// light years this is what a mark is drawn at, and nearer than that the angle
+/// is. The two are argued together in `scale::ANGULAR`, which is the place to
+/// read before moving either.
 const SMALLEST: f32 = 0.75;
 
 /// The pixel radius to draw a system's mark at, or `None` to leave it undrawn

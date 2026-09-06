@@ -180,17 +180,29 @@ const NEAREST: f32 = 4e-3;
 /// How large a system is drawn from far off, in radians
 ///
 /// What is left once distance has taken the rest away, which is past about two
-/// hundred light years. Half a pixel down the same window: by then every
-/// system in the sky is the same dot, and a mark that went on shrinking would
-/// leave nothing to see at all.
+/// hundred light years: by then every system in the sky is the same dot, and a
+/// mark that went on shrinking would leave nothing to see at all. An angle, so
+/// what it settles to is a size on screen rather than in the world — about
+/// half a pixel of radius down a 1080 line window at the default lens.
 ///
-/// TODO(#72): Half a pixel is under what a sphere can be sampled at, and this
-/// is [`SMALLEST_DRAWN`]'s trouble at half the size. A mark this wide falls
-/// across two to five of the four samples a pixel is drawn from, so its
-/// brightness nearly doubles and halves with where it lands between them.
-/// Down a 600 line window it is 0.29 of a pixel, under the 0.354 a lattice of
-/// four to the pixel can miss entirely, and the mark blinks out at some
-/// positions altogether.
+/// Half a pixel is under [`super::field`]'s own floor, and that floor is the
+/// last word: a mark is painted at `SMALLEST` (0.75 px of radius) or wider,
+/// whatever this works out to. So the two share the far sky between them, and
+/// which one decides is worth knowing:
+///
+/// - Out past roughly a thousand light years down an 1080 line window, this
+///   comes to under three quarters of a pixel and the field's floor decides.
+///   Measured: 0.52 px at the rim, 0.53 at ten thousand light years.
+/// - Nearer than that it decides itself — 1.08 px at two hundred light years —
+///   which is the band the "same dot" reading is really about.
+/// - Taller windows move the crossing down: at 1600 lines and up this decides
+///   the whole way out.
+/// - `ScalePopulation` multiplies this and not the floor, by up to
+///   [`POP_MAX`], so a busy system draws larger than the floor everywhere.
+///
+/// The floor is what guarantees a system is drawn at all; this is what makes
+/// the far field read as one depth rather than as a size falling away. Neither
+/// is redundant, and neither is the whole answer.
 const ANGULAR: f32 = 4e-4;
 
 /// How much larger than its system a shell is drawn
@@ -805,10 +817,17 @@ mod tests {
         );
     }
 
-    /// The far sky does not go dark
+    /// The far sky holds one apparent size rather than falling away
     ///
     /// A size in the world comes to nothing at the far rim, which is most of
-    /// what a map of the galaxy has on screen.
+    /// what a map of the galaxy has on screen, so past a couple of hundred
+    /// light years an angle takes over and the rim reads as one depth.
+    ///
+    /// Not what keeps the far sky lit — [`super::field`] floors the painted
+    /// radius, so a mark would be drawn here even if this came back at
+    /// nothing. What it holds is that the angle is the thing being held, which
+    /// is what `ScalePopulation` multiplies and what a tall window draws
+    /// wider.
     #[test]
     fn a_system_across_the_galaxy_is_still_a_mark() {
         assert!(seen(50_000.) >= ANGULAR);
