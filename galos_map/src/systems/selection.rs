@@ -22,11 +22,11 @@
 //! the same way for the sake of one list rather than out of need, and
 //! [`follow_selection`] is the one place either is matched to what is drawn.
 //!
-//! A click on empty sky lets go of a selection, so long as the click was the
-//! map's rather than the UI's. A search leaves the camera where it is, so what
-//! is picked out is what the user is working with rather than where they
-//! happen to be looking, and the press that shuts a form is no reason to throw
-//! a typed name away.
+//! A click on empty sky lets go of a selection and puts the bar's form away,
+//! so long as the click was the map's rather than the UI's. A search leaves
+//! the camera where it is, so what is picked out is what the user is working
+//! with rather than where they happen to be looking, and shutting the form is
+//! no reason to throw a typed name away.
 //!
 //! What the map knows about the selected system beyond its name is written
 //! out by [`mod@super::info`], which the user asks for separately.
@@ -52,7 +52,7 @@ pub fn plugin(app: &mut App) {
     // selection by a frame.
     app.add_systems(
         Update,
-        (clear_when_nothing_is_clicked, clear_not_drawn, follow_selection)
+        (nothing_clicked, clear_not_drawn, follow_selection)
             .chain()
             .in_set(MapSet::Present)
             .after(super::pointing::point_at),
@@ -521,14 +521,25 @@ fn clear_not_drawn(
 /// click on empty sky.
 ///
 /// Whose the click is covers what the pointer was over and what the UI spent
-/// it on both. Shutting the bar's form is done by pressing off it, and that
-/// press closing a form and letting go of a selection would be one gesture
-/// doing two things.
-fn clear_when_nothing_is_clicked(
+/// it on both, so a press that landed on the bar is none of this system's
+/// business.
+///
+/// And it puts the bar's form away, which is the one gesture doing two things
+/// on purpose. A press off the form used to shut it whatever it landed on,
+/// which took the click the map wanted for picking a system out; now the
+/// press reaches the map and this is what reads it. A click on a system means
+/// that system and leaves the form standing, since gathering what a route
+/// runs through is done with the form open. A click on nothing means nothing:
+/// let go of what is held, and put away the form asking about it.
+///
+/// The form is put away before the selection is looked at, since clicking
+/// empty sky with nothing held is still a click on nothing.
+fn nothing_clicked(
     gesture: Gesture,
     dragged: Query<&DragDistance>,
     pointed_at: Query<(), With<PointedAt>>,
     mut selection: ResMut<Selection>,
+    mut bar: ResMut<crate::ui::BarFields>,
 ) {
     if !gesture.on_map() {
         return;
@@ -536,7 +547,13 @@ fn clear_when_nothing_is_clicked(
     if dragged.iter().any(|travelled| travelled.0 > DRAG_THRESHOLD) {
         return;
     }
-    if !pointed_at.is_empty() || selection.is_empty() {
+    if !pointed_at.is_empty() {
+        return;
+    }
+
+    bar.shut();
+
+    if selection.is_empty() {
         return;
     }
 
@@ -842,12 +859,14 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
         app.init_resource::<PressOwner>();
+        // Asked to put the form away by the same click that lets go.
+        app.init_resource::<crate::ui::BarFields>();
 
         let mut selection = Selection::default();
         selection.set(picked(1));
         app.insert_resource(selection);
 
-        app.add_systems(Update, clear_when_nothing_is_clicked);
+        app.add_systems(Update, nothing_clicked);
         app
     }
 
@@ -889,6 +908,46 @@ mod tests {
         frame(&mut app, false, |buttons| buttons.release(PRIMARY));
 
         assert!(!holding(&app));
+    }
+
+    /// Whether the bar has been asked to put its form away
+    fn shutting(app: &App) -> bool {
+        app.world().resource::<crate::ui::BarFields>().shutting
+    }
+
+    /// And puts the bar's form away with it
+    ///
+    /// Reported: the form stayed open whatever was clicked, once a press off
+    /// it stopped being spent shutting it. A click on nothing is the gesture
+    /// that means nothing: let go of what is held, and put away the form
+    /// asking about it.
+    #[test]
+    fn a_click_on_nothing_puts_the_form_away() {
+        let mut app = clicked_on();
+
+        frame(&mut app, false, |buttons| buttons.press(PRIMARY));
+        assert!(!shutting(&app), "shut before the button came up");
+        frame(&mut app, false, |buttons| buttons.release(PRIMARY));
+
+        assert!(shutting(&app));
+    }
+
+    /// A click on something leaves it standing
+    ///
+    /// Which is what the form is open for: what a route runs through is
+    /// gathered by picking systems out, so a form that shut itself on the
+    /// first of them could never be given the second.
+    #[test]
+    fn a_click_on_something_leaves_the_form_standing() {
+        let mut app = clicked_on();
+        // Something under the pointer, as `pointing` marks it.
+        app.world_mut().spawn(PointedAt::reached(0.));
+
+        frame(&mut app, false, |buttons| buttons.press(PRIMARY));
+        frame(&mut app, false, |buttons| buttons.release(PRIMARY));
+
+        assert!(!shutting(&app));
+        assert!(holding(&app), "let go of a selection over a system");
     }
 
     /// A press the UI took is not the map's to answer

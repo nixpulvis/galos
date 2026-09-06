@@ -2457,19 +2457,31 @@ fn asked_in_order(
 
 /// What the form says of how far a route would run, before it is asked for
 ///
-/// A pair is so far apart. More are so far in so many legs, the legs being
-/// what a longer set is flown in and what the figure is the sum of.
+/// Nothing is routed yet, so nothing here knows what the trip will be flown
+/// in. What is known is where the stops stand: a pair is so far apart, and a
+/// longer set is the straight lines from each stop to the next, added up.
+///
+/// Which is a floor, not an answer. A ship flies in jumps and each one lands
+/// on a star rather than on a point along the line, so the trip that comes
+/// back is always longer than this and never shorter. Said as `at least`, so
+/// the figure claims what it can stand behind -- and so that it reads apart
+/// from the flown distance the selection line says once the legs are in,
+/// which is the real one.
+///
+/// A pair is the exception and needs no hedge: two systems are exactly as far
+/// apart as they are, whatever a ship does about it.
 ///
 /// How far is [`None`] where the cheapest order was asked for and no range
 /// has been typed to work it out with: which order the trip is flown in
 /// settles what it comes to, and the range settles the order. So the legs are
-/// counted, which is known either way, and no distance is claimed. A figure
-/// measured along an order the trip will not be flown in is worse than none.
+/// counted, which is known either way, and no distance is claimed.
 fn apart_said(away: Option<f64>, stops: usize) -> String {
     let legs = stops.saturating_sub(1);
     match (away, legs) {
         (Some(away), 0 | 1) => format!("{away:.1} Ly apart"),
-        (Some(away), legs) => format!("{away:.1} Ly over {legs} legs"),
+        (Some(away), legs) => {
+            format!("{legs} legs, at least {away:.1} Ly")
+        }
         (None, 1) => "1 leg".to_owned(),
         (None, legs) => format!("{legs} legs"),
     }
@@ -4597,12 +4609,16 @@ mod tests {
 
     /// And how it is said turns on whether there is more than one leg
     ///
-    /// A pair is so far apart. More is so far over so many legs, since the
-    /// figure is no longer a gap between two things but a distance flown.
+    /// Two systems are exactly as far apart as they stand, whatever a ship
+    /// does about it. A longer set is the straight lines added up, which is a
+    /// floor and not an answer: a jump lands on a star rather than on a point
+    /// along the line, so the trip that comes back is longer. It says `at
+    /// least` so that it claims only what it can stand behind, and so that it
+    /// reads apart from the flown distance said once the legs are in.
     #[test]
     fn a_longer_route_is_said_in_legs() {
         assert_eq!(apart_said(Some(12.), 2), "12.0 Ly apart");
-        assert_eq!(apart_said(Some(17.), 3), "17.0 Ly over 2 legs");
+        assert_eq!(apart_said(Some(17.), 3), "2 legs, at least 17.0 Ly");
         assert_eq!(apart_said(Some(4.), 0), "4.0 Ly apart");
     }
 
