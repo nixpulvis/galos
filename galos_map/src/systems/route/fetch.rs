@@ -1,18 +1,23 @@
-use crate::systems::fetch::{FetchIndex, FetchTasks, LastFetchedAt, RawSystem};
+use crate::systems::fetch::{FetchIndex, FetchTasks, RawSystem};
 use crate::systems::route::graph::Jumps;
 use crate::systems::spawn::build_system;
 use crate::{Names, Populated};
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 
-#[allow(clippy::too_many_arguments)]
+/// Walk the jump graph between two named systems and build the stops
+///
+/// No clock is written. [`LastFetchedAt`](crate::systems::fetch::LastFetchedAt)
+/// is the spyglass region fetch's own, measuring the throttle and the poll from
+/// the last region asked for; a route is not a region, and resetting it here
+/// put off the next region read by the throttle for no better reason than that
+/// the user had plotted something.
 pub fn fetch_route(
     start: String,
     end: String,
     range: String,
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
-    last_fetched_at: &mut ResMut<LastFetchedAt>,
     jumps: &Res<Jumps>,
     names: &Res<Names>,
     populated: &Res<Populated>,
@@ -63,5 +68,4 @@ pub fn fetch_route(
         (systems, None)
     });
     tasks.fetched.insert(index, (task, now));
-    **last_fetched_at = LastFetchedAt(now);
 }

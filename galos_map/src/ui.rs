@@ -747,20 +747,23 @@ pub fn chrome(
                     // Named for the half alone: inside the spyglass's own
                     // section, saying so again would be saying it twice.
                     ui.checkbox(&mut settings.spyglass.fetch, "Fetch");
-                    if settings.spyglass.fetch {
-                        // The throttle is the wait before asking about
-                        // somewhere new; the poll the wait before asking again
-                        // about somewhere already been, which only a still map
-                        // reaches. See the throttle/poll TODO in `fetch`.
+                    // The wait before asking about somewhere new. Offered only
+                    // where something reads it: `spyglass_condition` is the one
+                    // reader, and that runs only when the region fetch is the
+                    // source, so under the walk this would be a number the map
+                    // does not consult. The poll is not here for the opposite
+                    // reason — it is read map-wide, so it stands with the
+                    // source below.
+                    if throttle_offered(
+                        settings.spyglass.fetch,
+                        settings.bounded.0,
+                    ) {
                         ui.horizontal(|ui| {
                             field_name(ui, "Throttle");
                             ui.add(
                                 egui::DragValue::new(&mut settings.throttle.0)
                                     .suffix(" ms"),
                             );
-                        });
-                        ui.horizontal(|ui| {
-                            poll_value(ui, &mut settings.poll.0)
                         });
                     }
                 });
@@ -776,6 +779,15 @@ pub fn chrome(
         // ends the far-view entity explosion — and off falls back to the old
         // region fetch. Switching it clears the map and rebuilds from nothing.
         ui.checkbox(&mut settings.bounded.0, "LoD Fetch");
+        // How often the map goes back for what it already holds. Out here
+        // rather than under the spyglass because it is not the spyglass's:
+        // `bodies::fetch` asks the inside of a system on it, and
+        // `filter::mark` re-cuts the time filter on it, and neither has
+        // anything to do with a region. Under the spyglass it was reachable
+        // only while the bound was on and the region fetch with it, which hid
+        // the one control that governs what the map does whichever source is
+        // running.
+        ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
         ui.add_space(FIELD_GAP);
         ui.collapsing("Debug", |ui| {
             if ui.button("Despawn Systems").clicked() {
@@ -3651,6 +3663,20 @@ fn field_name(ui: &mut Ui, name: &str) {
     ui.label(egui::RichText::new(name).color(named));
 }
 
+/// Whether the throttle is worth putting on the pane
+///
+/// It measures the wait before the region query asks about somewhere new, and
+/// `spyglass_condition` is the only thing that reads it. That runs only when
+/// the region fetch is the map's source, so under the walk the box would set a
+/// number nothing consults — a control that answers the user with nothing,
+/// which is worse than no control.
+///
+/// `fetch` is the spyglass's own half: with it off the region is never asked
+/// for at all, throttle or no throttle.
+fn throttle_offered(fetch: bool, bounded: bool) -> bool {
+    fetch && !bounded
+}
+
 fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
     let mut enabled = opt.is_some();
     if ui.checkbox(&mut enabled, "Poll").changed() {
@@ -5347,6 +5373,31 @@ mod tests {
     #[test]
     fn a_radius_over_the_ceiling_is_kept() {
         assert_eq!(drawn_radius(5e4, 100.), 5e4);
+    }
+
+    /// The throttle is offered only where something reads it
+    ///
+    /// It times the region query and nothing else, and the region query runs
+    /// only when the spyglass is the map's source. Under the walk — which is
+    /// the default — the pane used to hold a box that set a number the map
+    /// would never consult.
+    #[test]
+    fn the_throttle_is_offered_only_to_the_source_that_reads_it() {
+        assert!(
+            throttle_offered(true, false),
+            "the region fetch is the source"
+        );
+        assert!(!throttle_offered(true, true), "the walk reads no throttle");
+    }
+
+    /// And not at all where the region is never asked for
+    ///
+    /// `fetch` off is the spyglass drawing what it has and asking for nothing,
+    /// so there is no question left for a wait to come before.
+    #[test]
+    fn a_spyglass_that_asks_for_nothing_is_offered_no_throttle() {
+        assert!(!throttle_offered(false, false));
+        assert!(!throttle_offered(false, true));
     }
 
     /// How much of the value one pixel of a `rail` pixels wide is worth

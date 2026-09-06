@@ -43,6 +43,13 @@ pub fn plugin(app: &mut App) {
 /// Zero asks every frame, which the two ends being different values is what
 /// makes sayable at all.
 ///
+/// Map-wide, and the reason it is not filed under the spyglass. Three things
+/// go back over what the map already holds and all three keep this beat:
+/// [`super::bodies::fetch`] asks a system's interior again,
+/// [`super::filter::mark`] re-cuts the time filter as its span slides, and the
+/// region fetch re-asks a region it has already surveyed. Only the last of
+/// those is the spyglass's, and it is the one that retires with it.
+///
 /// Only what has already been fetched waits this long. Somewhere new is a
 /// question the map has not put yet, and waits on [`Throttle`] instead.
 #[derive(Resource)]
@@ -67,20 +74,35 @@ impl Poll {
     }
 }
 
-// TODO(bounded): work out what throttle and poll mean under the LoD fetch, now
-// the default. Throttle gates only the spyglass region fetch (`fetch_spyglass`),
-// which stands down while LoD is on, so it is inert; the LoD payload fetch
-// (`bounded::fetch`) reads its missing cells every frame with no throttle or
-// poll at all. Poll is still live through `bodies::fetch` for a system's
-// interior, but its region half is inert the same way. Decide whether the LoD
-// fetch should rate-limit its reads (throttle) and re-poll cells for updates
-// (poll), or whether the two retire with the region path.
-
-/// The amount to throttle requests for new indices (millis).
+/// How long the map waits before asking about somewhere new, in milliseconds
+///
+/// The region fetch's own, and only its own. [`spyglass_condition`] is the one
+/// reader, so this rate-limits the region query and nothing else; it retires
+/// with the region path (see the TODO on [`fetch_spyglass`]), and until then
+/// [`crate::ui`] offers it only while that path is the source.
+///
+/// The walk wants no throttle. What the region fetch needs one for is that it
+/// asks the same question over and over — a sphere about a camera that keeps
+/// moving — so without a wait it re-asks most of what it already holds every
+/// frame. [`crate::systems::bounded::fetch`] instead asks for the cells it does
+/// not hold, each exactly once: a cell already resident or already on the wire
+/// is skipped, so the question shrinks as the answers land and there is no
+/// runaway to hold back. A throttle there would only slow the view filling in.
 #[derive(Resource)]
 pub struct Throttle(pub u64);
 
-/// A resource which keeps the instant the last fetch was made
+/// When the last region was asked for
+///
+/// The region fetch's clock, and what [`Throttle`] and the region half of
+/// [`Poll`] are both measured from. Written where a region goes on the wire and
+/// nowhere else: a route and a picked-out system are each asked for once by
+/// something the user just did, not by the map going back over what it holds,
+/// so neither earns a wait and neither sets this. `region_asked` says the same
+/// thing about what is in flight.
+///
+/// Nothing re-reads a cell the walk already holds, so there is no clock for the
+/// walk to keep. Picking up a republished index is a real gap and a separate
+/// one; it wants cells invalidated, which is more than a timer.
 #[derive(Resource)]
 pub struct LastFetchedAt(pub Instant);
 
@@ -386,7 +408,6 @@ pub fn fetch_searched(
     mut search_events: MessageReader<Search>,
     mut tasks: ResMut<FetchTasks>,
     time: Res<Time<Real>>,
-    mut last_fetched_at: ResMut<LastFetchedAt>,
     jumps: Res<crate::systems::route::graph::Jumps>,
     names: Res<Names>,
     populated: Res<Populated>,
@@ -404,7 +425,6 @@ pub fn fetch_searched(
                     range.into(),
                     &mut tasks,
                     &time,
-                    &mut last_fetched_at,
                     &jumps,
                     &names,
                     &populated,
@@ -702,16 +722,11 @@ pub(crate) mod tests {
         )
     }
 
-    /// A route is walked whichever source is loading the sky
+    /// A world wired as the map wires it, holding two systems a jump apart
     ///
-    /// The route fetch used to be registered on [`fetch`] and so gated with
-    /// the spyglass region read. [`crate::systems::bounded::LodFetch`] is on
-    /// by default, which stands that system down, so plotting a route
-    /// resolved its two ends and then asked for nothing at all: no hops, no
-    /// line, no framing. Wired as the map really wires it, with the walk as
-    /// the source, so the gate cannot come back without this failing.
-    #[test]
-    fn a_route_is_walked_under_the_walk() {
+    /// The map's own [`plugin`], so a run condition put back on the route
+    /// fetch fails in a test rather than in the app.
+    fn plotting() -> App {
         use galos_index::NameEntry;
         let entries = vec![
             NameEntry {
@@ -741,31 +756,99 @@ pub(crate) mod tests {
         ));
         app.insert_resource(Names::reaching(entries, Vec::new()));
         app.insert_resource(Populated::default());
-        // The map's own wiring, so a run condition put back on the route
-        // fetch fails here rather than in the app.
+        // What the region fetch needs to exist, so the source can be turned
+        // off in a test without `fetch` failing its parameters. No camera is
+        // spawned, so `fetch_spyglass` returns before it asks the transport
+        // anything: this is about the route, not the region.
+        app.insert_resource(ResidentIndex(galos_index::Index::default()));
+        app.insert_resource(Transport(std::sync::Arc::new(
+            galos_index::source::FsSource::new("no-such-index"),
+        )));
+        app.insert_resource(Spyglass {
+            radius: Spyglass::OPENING,
+            fetch: true,
+            clear: true,
+            lock_camera: false,
+            follow_camera: true,
+        });
         app.add_plugins(plugin);
+        app
+    }
 
-        assert!(
-            app.world().resource::<crate::systems::bounded::LodFetch>().0,
-            "the walk is meant to be the default source"
-        );
+    /// Ask for a route between the two systems [`plotting`] holds
+    fn plot(app: &mut App) {
         app.world_mut().write_message(Search::Route {
             start: "Start".into(),
             end: "End".into(),
             range: "10".into(),
         });
         app.update();
+    }
 
+    /// The stops a plotted route came back with, or nothing if it was never
+    /// asked for
+    fn walked(app: &mut App) -> Option<Vec<i64>> {
         let mut tasks = app.world_mut().resource_mut::<FetchTasks>();
         let (_, (task, _)) = tasks
             .fetched
             .iter_mut()
-            .find(|(index, _)| matches!(index, FetchIndex::Route(..)))
-            .expect("a route was never asked for");
+            .find(|(index, _)| matches!(index, FetchIndex::Route(..)))?;
         let (hops, _) = bevy::tasks::block_on(task);
+        Some(hops.iter().map(|hop| hop.address).collect())
+    }
 
-        let walked: Vec<i64> = hops.iter().map(|hop| hop.address).collect();
-        assert_eq!(walked, vec![1, 2], "the walk found no way across");
+    /// A route is walked whichever source is loading the sky
+    ///
+    /// The route fetch used to be registered on [`fetch`] and so carried the
+    /// region read's run condition. [`crate::systems::bounded::LodFetch`] is on
+    /// by default, which stands that system down, so plotting a route resolved
+    /// its two ends and then asked for nothing at all: no hops, no line, no
+    /// framing.
+    ///
+    /// Both sources, because the bug was a gate and either gate is one. Asked
+    /// under the walk it must not wait on the region fetch; asked under the
+    /// region fetch it must not wait on the walk. A route belongs to neither.
+    #[test]
+    fn a_route_is_walked_under_either_source() {
+        for walk in [true, false] {
+            let mut app = plotting();
+            app.insert_resource(crate::systems::bounded::LodFetch(walk));
+            plot(&mut app);
+
+            assert_eq!(
+                walked(&mut app),
+                Some(vec![1, 2]),
+                "no way across with the walk {}",
+                if walk { "on" } else { "off" }
+            );
+        }
+    }
+
+    /// And the walk is the source it is asked under by default
+    #[test]
+    fn the_walk_is_the_default_source() {
+        let app = plotting();
+        assert!(app.world().resource::<crate::systems::bounded::LodFetch>().0);
+    }
+
+    /// Plotting a route does not put the region read off
+    ///
+    /// [`LastFetchedAt`] is the region fetch's own clock: [`spyglass_condition`]
+    /// measures both the [`Throttle`] and the [`Poll`] from it. A route wrote it
+    /// too, so plotting one told the spyglass it had just asked about a region
+    /// it had not asked about, and the next region read waited out a throttle it
+    /// had not earned. Two questions, one clock, and only one of them a region.
+    #[test]
+    fn plotting_a_route_leaves_the_region_clock_alone() {
+        let mut app = plotting();
+        let before = app.world().resource::<LastFetchedAt>().0;
+        plot(&mut app);
+
+        assert_eq!(
+            app.world().resource::<LastFetchedAt>().0,
+            before,
+            "a route moved the clock the region read is timed by"
+        );
     }
 
     /// The map holding a star for each of `addresses`
