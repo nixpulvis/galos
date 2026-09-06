@@ -2187,29 +2187,17 @@ const CUT: &str = "..";
 /// An odd character over goes to the name that leads, that being the one read
 /// first, and the two ends are otherwise given exactly as much as each other.
 ///
-/// A route through more stops than two is cut to its two ends first: the stops
-/// between go as one, marked as cut, before either end gives up a character.
-/// Where it starts and where it ends is what a route is called after, and the
-/// row already says how many jumps lie between.
-///
 /// Counted in characters, which is a width now that everything is lettered in
 /// one.
 pub(crate) fn shortened(label: &str, room: usize) -> String {
-    let Some((start, rest)) = label.split_once(ARROW) else {
+    let Some((start, end)) = label.split_once(ARROW) else {
         return label.to_owned();
     };
     if label.chars().count() <= room {
         return label.to_owned();
     }
 
-    // The far end, and what stands between the two ends once the stops
-    // between have been cut out: the one arrow, or an arrow either side of
-    // the mark that says something was.
-    let (end, between) = match rest.rsplit_once(ARROW) {
-        Some((_, end)) => (end, format!("{ARROW}{CUT}{ARROW}")),
-        None => (rest, ARROW.to_owned()),
-    };
-    let names = room.saturating_sub(between.chars().count());
+    let names = room.saturating_sub(ARROW.chars().count());
     // An end cut below a character and the mark saying it was cut is an end
     // that says nothing, and two of those either side of an arrow say only
     // that a route runs between two systems. Where it comes to that, what
@@ -2228,7 +2216,7 @@ pub(crate) fn shortened(label: &str, room: usize) -> String {
         (names - half, half)
     };
 
-    format!("{}{between}{}", clipped(start, start_gets), clipped(end, end_gets))
+    format!("{}{ARROW}{}", clipped(start, start_gets), clipped(end, end_gets))
 }
 
 /// Say `name` in `room` characters
@@ -5848,33 +5836,6 @@ mod tests {
 
         assert_eq!(said, "SIGMA.. -> MINIS..");
         assert_eq!(said.chars().count(), 18);
-    }
-
-    /// A route through several stops is cut to its two ends
-    ///
-    /// The stops between go as one, marked as cut, before either end gives up
-    /// a character: where a route starts and where it ends is what it is
-    /// called after, and the row already says how many jumps lie between.
-    #[test]
-    fn a_route_through_several_is_cut_to_its_ends() {
-        let three = shortened("SOL -> WOLF 359 -> BARNARD", 20);
-
-        assert_eq!(three, "SOL -> .. -> BARNARD");
-        assert_eq!(three.chars().count(), 20);
-    }
-
-    /// And its ends are cut only once there is no middle left to cut
-    ///
-    /// A route whose ends alone will not fit is cut as a pair of ends is,
-    /// evenly, with the mark between saying the stops went first. Ten of the
-    /// twenty two characters go to what stands between the ends, so the ends
-    /// have six each.
-    #[test]
-    fn a_long_route_through_several_gives_up_its_ends_last() {
-        let said = shortened("SIGMA DRACONIS -> LAVE -> MINISTRY", 22);
-
-        assert_eq!(said, "SIGM.. -> .. -> MINI..");
-        assert_eq!(said.chars().count(), 22);
     }
 
     /// Two ends of the same length are cut to the same length

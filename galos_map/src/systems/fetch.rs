@@ -133,11 +133,13 @@ pub enum FetchIndex {
     /// stood. A span holds still until the user moves the control.
     Region(IVec3, i32, Option<Span>),
     // View<Frustum>,
-    /// A route through named systems, in the order flown, at a jump range
+    /// One leg of a trip: from one named system to the next, at a jump range
     ///
-    /// The range as it was typed, since it is part of what tells one route
-    /// from another and a float is no kind of key.
-    Route(Vec<String>, String),
+    /// A leg rather than a whole trip, so that a trip through several stops is
+    /// several of these, asked and answered one per leg. The range as it was
+    /// typed, since it is part of what tells one route from another and a
+    /// float is no kind of key.
+    Route(String, String, String),
     /// Named systems, by address
     ///
     /// What the map is asked for a row at a time rather than by where it is:
@@ -258,8 +260,8 @@ impl fmt::Debug for FetchIndex {
                 }
                 write!(f, ">")
             }
-            Route(stops, range) => {
-                write!(f, "<{}>{}>", stops.join("-"), range)
+            Route(start, end, range) => {
+                write!(f, "<{start}-{end}>{range}>")
             }
             Systems(addresses) => write!(f, "<{} named>", addresses.len()),
         }
@@ -721,6 +723,11 @@ pub(crate) mod tests {
                 name: "End".into(),
                 position: [5., 0., 0.],
             },
+            NameEntry {
+                address: 3,
+                name: "Onward".into(),
+                position: [10., 0., 0.],
+            },
         ];
 
         let mut app = App::new();
@@ -765,6 +772,86 @@ pub(crate) mod tests {
             range: "10".into(),
         });
         app.update();
+    }
+
+    /// Ask for a trip through `stops`
+    fn trip(app: &mut App, stops: &[&str]) {
+        app.world_mut().write_message(Search::Route {
+            stops: stops.iter().map(|stop| stop.to_string()).collect(),
+            range: "10".into(),
+        });
+        app.update();
+    }
+
+    /// Every leg the map is asking about, as its ends
+    fn legs(app: &App) -> Vec<(String, String)> {
+        let mut asked: Vec<(String, String)> = app
+            .world()
+            .resource::<FetchTasks>()
+            .fetched
+            .keys()
+            .filter_map(|index| match index {
+                FetchIndex::Route(start, end, _) => {
+                    Some((start.clone(), end.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        asked.sort();
+        asked
+    }
+
+    /// A trip through several stops is asked for a leg at a time
+    ///
+    /// Each leg is its own question, so each comes back with its own answer
+    /// about whether the ship can fly it, and one that cannot takes nothing
+    /// with it. Asked at once rather than in turn: they share the graph
+    /// behind an `Arc`, and a trip that walked its legs one after another
+    /// would take as long as the sum of them.
+    #[test]
+    fn a_trip_is_asked_for_a_leg_at_a_time() {
+        let mut app = plotting();
+
+        trip(&mut app, &["Start", "End", "Onward"]);
+
+        assert_eq!(
+            legs(&app),
+            vec![
+                ("End".to_owned(), "Onward".to_owned()),
+                ("Start".to_owned(), "End".to_owned()),
+            ]
+        );
+    }
+
+    /// A trip asked for again does not walk the legs it already holds
+    ///
+    /// The leg is the key, so the same pair asked twice is the one question.
+    /// Walking it again would drop the answer already in hand on the floor.
+    #[test]
+    fn a_leg_already_under_way_is_not_asked_twice() {
+        let mut app = plotting();
+
+        trip(&mut app, &["Start", "End", "Onward"]);
+        let first = legs(&app);
+        trip(&mut app, &["Start", "End", "Onward"]);
+
+        assert_eq!(legs(&app), first);
+        assert_eq!(legs(&app).len(), 2);
+    }
+
+    /// And a trip replaces the one before it, leg for leg
+    ///
+    /// Two trips landing at once would draw lines nobody asked for together,
+    /// and the form has room to say how one of them is getting on. A leg the
+    /// new trip shares with the old is kept rather than walked again.
+    #[test]
+    fn a_new_trip_drops_the_legs_of_the_one_before() {
+        let mut app = plotting();
+
+        trip(&mut app, &["Start", "End", "Onward"]);
+        trip(&mut app, &["Start", "End"]);
+
+        assert_eq!(legs(&app), vec![("Start".to_owned(), "End".to_owned())]);
     }
 
     /// The stops a plotted route came back with, or nothing if it was never
@@ -1034,8 +1121,7 @@ pub(crate) mod tests {
     /// map asking again for most of what it already holds.
     #[test]
     fn a_route_under_way_does_not_hold_the_spyglass_up() {
-        let route =
-            FetchIndex::Route(vec!["A".into(), "B".into()], "10".into());
+        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
 
         assert!(!region_asked([route].iter()));
     }
@@ -1115,8 +1201,7 @@ pub(crate) mod tests {
     /// A route is never a refresh of anything, nor refreshed by one
     #[test]
     fn a_route_is_always_a_new_question() {
-        let route =
-            FetchIndex::Route(vec!["A".into(), "B".into()], "10".into());
+        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
         assert!(!route.refreshes(&region(0, 10)));
         assert!(!region(0, 10).refreshes(&route));
         assert!(!route.refreshes(&route));
