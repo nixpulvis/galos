@@ -108,7 +108,7 @@ impl JumpGraph {
     /// The cost is one per jump, so the fewest-jumps route, and the heuristic is
     /// the straight-line distance in whole jumps, which never overstates what is
     /// left and so keeps A* admissible.
-    pub fn route(
+    pub(crate) fn route(
         &self,
         start: i64,
         end: i64,

@@ -84,7 +84,7 @@ impl Decade {
     /// row, drawn at both strengths laid over each other. Which is what the
     /// two planes did by being blended over each other, and is now arithmetic.
     ///
-    /// Widest first, [`ruled`] drawing each row into what the wider ones have
+    /// Widest first, `ruled` drawing each row into what the wider ones have
     /// left so that a line two rows fall on is drawn once.
     pub fn rows(&self, handed: f32) -> [Family; FAMILIES] {
         let over = |a: f32, b: f32| a + b - a * b;

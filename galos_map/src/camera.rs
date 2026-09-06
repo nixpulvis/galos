@@ -285,7 +285,7 @@ const TRAVEL_BRAKING: f32 = 10392.;
 /// Set by [`move_camera`] and cleared on arrival. `from` and `to` are
 /// absolute galactic positions in light years. `elapsed` counts up to
 /// `duration`, and the ratio of the two drives [`travelled`].
-pub struct Travel {
+pub(crate) struct Travel {
     from: DVec3,
     to: DVec3,
     elapsed: f32,
@@ -383,8 +383,8 @@ fn eased_position(value: DVec3, target: DVec3, fraction: f64) -> DVec3 {
 /// galactic rim apart any closer than a few thousand light seconds, which is
 /// most of the way across a star system.
 #[derive(Message, Debug)]
-pub struct MoveCamera {
-    pub position: Option<DVec3>,
+pub(crate) struct MoveCamera {
+    pub(crate) position: Option<DVec3>,
     /// How much to take in around it, in light years
     ///
     /// What is asked for is the thing to be seen, not how far back to stand
@@ -393,7 +393,7 @@ pub struct MoveCamera {
     ///
     /// Nothing leaves the zoom where the user left it, which is what a move
     /// that only says where to look should do.
-    pub framing: Option<f32>,
+    pub(crate) framing: Option<f32>,
 }
 
 /// The half angle a camera sees across when nothing says otherwise
@@ -524,37 +524,37 @@ fn zoom_floor(
 /// what the controls actually manipulate. The cell and transform are
 /// computed from those once per frame, so nothing is ever fought over.
 #[derive(Component)]
-pub struct OrbitCamera {
+pub(crate) struct OrbitCamera {
     /// Absolute galactic position the camera looks at, in light years
-    pub center: DVec3,
+    pub(crate) center: DVec3,
     /// Where the center is heading, which it approaches smoothly
-    pub target_center: DVec3,
+    pub(crate) target_center: DVec3,
     /// The move under way, if there is one
     ///
     /// While set, the center follows [`travelled`] between the move's two
     /// ends. Panning clears it.
-    pub travel: Option<Travel>,
+    pub(crate) travel: Option<Travel>,
     /// Absolute galactic position of the camera itself, in light years
     ///
     /// Derived from the center and the orbit, and published here because
     /// distances to stars are wanted by half the map. Reading it avoids
     /// having to undo the cell split to ask where the camera is.
-    pub eye: DVec3,
+    pub(crate) eye: DVec3,
     /// Which way the camera faces, for anything that wants to line up with it
-    pub rotation: Quat,
-    pub radius: f32,
-    pub target_radius: f32,
-    pub yaw: f32,
-    pub target_yaw: f32,
-    pub pitch: f32,
-    pub target_pitch: f32,
+    pub(crate) rotation: Quat,
+    pub(crate) radius: f32,
+    pub(crate) target_radius: f32,
+    pub(crate) yaw: f32,
+    pub(crate) target_yaw: f32,
+    pub(crate) pitch: f32,
+    pub(crate) target_pitch: f32,
     /// Fraction of the distance to a target left after one second
     ///
     /// Zero arrives at once, one never converges. Each control carries its
     /// own so they can settle at different speeds.
-    pub orbit_smoothness: f32,
-    pub pan_smoothness: f32,
-    pub zoom_smoothness: f32,
+    pub(crate) orbit_smoothness: f32,
+    pub(crate) pan_smoothness: f32,
+    pub(crate) zoom_smoothness: f32,
 }
 
 impl Default for OrbitCamera {
@@ -587,7 +587,7 @@ impl OrbitCamera {
     /// What the diagnostics panel reads to tell a view standing still from one
     /// still easing into place, since the evictor is meant to go quiet only
     /// once the camera stops moving.
-    pub fn is_settled(&self) -> bool {
+    pub(crate) fn is_settled(&self) -> bool {
         self.travel.is_none()
             && self.center == self.target_center
             && self.radius == self.target_radius
@@ -600,7 +600,7 @@ impl OrbitCamera {
 ///
 /// Handed to [`crate::space`] to spawn, because a camera that is not a child
 /// of the galaxy grid is not positioned by it.
-pub fn camera(spyglass: &Spyglass) -> impl Bundle {
+pub(crate) fn camera(spyglass: &Spyglass) -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
@@ -729,7 +729,7 @@ fn annotations() -> impl Bundle {
 /// Sets up a [`Travel`] from the camera's current center to the requested
 /// position. A message arriving mid-move replaces it, starting a fresh
 /// curve from wherever the camera has reached.
-pub fn move_camera(
+pub(crate) fn move_camera(
     mut query: Query<&mut OrbitCamera>,
     // Only the eye's. Three cameras draw the map and every one of them carries
     // a `Projection`, `Camera3d` requiring one, so a query for a bare
@@ -768,7 +768,7 @@ pub fn move_camera(
 /// The orbit is worked out in absolute light years and only split into a
 /// cell and a remainder at the very end, so the arithmetic never has to know
 /// about grids and the camera never lands between two cells.
-pub fn orbit_camera(
+pub(crate) fn orbit_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     over_ui: Res<PointerOverUi>,
@@ -1008,7 +1008,7 @@ pub fn orbit_camera(
 /// consults it when its normal is something other than straight back from the
 /// camera, and by default it is not. Giving it one would turn on the oblique
 /// clipping meant for portals and mirrors.
-pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
+pub(crate) fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
     let Ok((orbit, mut projection)) = cameras.single_mut() else { return };
     // The radius is a distance the map talks in and the planes are distances
     // it draws in, so this is one of the two places a light year is spoken to

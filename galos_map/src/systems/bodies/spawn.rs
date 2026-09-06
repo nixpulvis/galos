@@ -153,7 +153,7 @@ fn show_orbits(
 /// How large a system has to look before its own extent counts for its size,
 /// in radians
 ///
-/// The bottom of the ladder, and [`crate::systems::scale::shell`] is what
+/// The bottom of the ladder, and [`crate::systems::scale`]'s `shell` is what
 /// reads it. Below this a system is drawn as a mark and nothing else, however
 /// wide it is: a system reaching a fifth of a light year is drawn at its own
 /// size from four hundred light years off otherwise, a ball among its
@@ -1068,7 +1068,7 @@ fn drawn_body(
 /// back as.
 ///
 /// `bare` for a ring with nothing standing anywhere on it, which is drawn in
-/// dashes. See [`DASHES`].
+/// dashes. See `DASHES`.
 #[allow(clippy::too_many_arguments)]
 fn drawn_orbit(
     id: i16,

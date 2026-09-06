@@ -2,13 +2,13 @@
 //!
 //! A gear in the top left corner, the bar beside it, and the settings pane
 //! that gear slides out from the left edge. What is known about the system the
-//! user picked out is drawn by [`crate::systems::selection`], which owns the
+//! user picked out is drawn by `crate::systems::selection`, which owns the
 //! fields it reads.
 //!
 //! The bar leads with a search box, which is what it is asked for most, but it
 //! is not a search bar: three sections drop out of it, and search is one of
 //! them. Filters are another and have nothing to say to the other two, so they
-//! keep their own state in [`FilterBar`] and are reached through that alone. A
+//! keep their own state in `FilterBar` and are reached through that alone. A
 //! route is the third, and asks only what it may be flown in: which systems it
 //! runs between is what is picked out on the map.
 
@@ -124,7 +124,7 @@ pub(crate) fn styled(style: &mut egui::Style) {
 /// concluded. A wheel turned over a pane that was not there last frame turns
 /// the map as well, which is a pane the user has only just opened.
 #[derive(Resource, Default)]
-pub struct PointerOverUi(pub bool);
+pub(crate) struct PointerOverUi(pub(crate) bool);
 
 /// Whether the settings pane is out
 ///
@@ -132,7 +132,7 @@ pub struct PointerOverUi(pub bool);
 /// that toggles it, so that the gear knows how far in the pane has come and
 /// can stand clear of it.
 #[derive(Resource, Default)]
-pub struct SettingsOpen(bool);
+pub(crate) struct SettingsOpen(bool);
 
 /// What the chrome has taken of the keyboard
 ///
@@ -148,14 +148,14 @@ pub struct SettingsOpen(bool);
 /// Settled at the end of the chrome's own pass and read by the next frame's
 /// [`crate::schedule::MapSet::Search`], as [`PointerOverUi`] is.
 #[derive(Resource, Default)]
-pub struct Keyboard {
+pub(crate) struct Keyboard {
     /// Whether a field is being typed into
     ///
     /// A text field alone. Egui goes on holding a focus wherever tab last
     /// reached, a checkbox on the settings pane among them, and a checkbox does
     /// nothing with a letter. Reading [`Keyboard::focused`] instead would leave
     /// every letter the map is driven by dead until the focus was let go of.
-    pub typing: bool,
+    pub(crate) typing: bool,
     /// Whether anything in the chrome holds the focus
     ///
     /// What a binding on space or enter has to read instead. Egui reads either
@@ -166,7 +166,7 @@ pub struct Keyboard {
     /// Wider than [`Keyboard::typing`] only while the user is stepping the
     /// chrome by keyboard: a click grants no focus, so nothing else puts it on
     /// a control that is not a field.
-    pub focused: bool,
+    pub(crate) focused: bool,
 }
 
 /// Whose a press is
@@ -198,7 +198,7 @@ enum Owner {
 /// Reached through [`Gesture`] rather than read directly, that being where the
 /// one case this cannot answer straight away is handled.
 #[derive(Resource, Default)]
-pub struct PressOwner {
+pub(crate) struct PressOwner {
     /// Whose the press under way is, while a button is down
     owner: Option<Owner>,
     /// Whose a press was that came up in the same frame it went down
@@ -237,7 +237,11 @@ impl PressOwner {
     /// left as the simpler arrangement of the two. Should it ever be seen,
     /// the fix is to settle from a system of its own, reading what the UI
     /// wanted out of a resource rather than off the end of drawing.
-    pub fn settle(&mut self, buttons: &ButtonInput<MouseButton>, wanted: bool) {
+    pub(crate) fn settle(
+        &mut self,
+        buttons: &ButtonInput<MouseButton>,
+        wanted: bool,
+    ) {
         // Last frame's, which has now been read by everything that reads it.
         self.carried_over = None;
 
@@ -261,7 +265,7 @@ impl PressOwner {
     /// whose the press was, and a star that cannot be picked out on a slow
     /// map would be a worse answer than one picked out during a gesture the
     /// UI turned out to want.
-    pub fn taken_by_ui(&self) -> bool {
+    pub(crate) fn taken_by_ui(&self) -> bool {
         self.owner == Some(Owner::Ui)
     }
 }
@@ -273,7 +277,7 @@ impl PressOwner {
 /// Both halves are needed together: the button says what happened this frame
 /// and [`PressOwner`] says whose it was.
 #[derive(SystemParam)]
-pub struct Gesture<'w> {
+pub(crate) struct Gesture<'w> {
     buttons: Res<'w, ButtonInput<MouseButton>>,
     press: Res<'w, PressOwner>,
 }
@@ -285,7 +289,7 @@ impl Gesture<'_> {
     /// is until the end of that frame. A frame of a map that has not started
     /// turning yet, against a frame of one that turns under a press meant for
     /// a slider.
-    pub fn dragging_map(&self) -> bool {
+    pub(crate) fn dragging_map(&self) -> bool {
         self.press.owner == Some(Owner::Map)
     }
 
@@ -296,7 +300,7 @@ impl Gesture<'_> {
     /// one thing rather than a system holding its own copy of the input
     /// beside this, which would be two readings of the same buttons sitting
     /// where they could be told apart.
-    pub fn pressed(&self, button: MouseButton) -> bool {
+    pub(crate) fn pressed(&self, button: MouseButton) -> bool {
         self.buttons.pressed(button)
     }
 
@@ -307,7 +311,7 @@ impl Gesture<'_> {
     /// frame later, through [`PressOwner::carried_over`], which is the one
     /// place that
     /// wait is spelled out.
-    pub fn on_map(&self) -> bool {
+    pub(crate) fn on_map(&self) -> bool {
         if self.buttons.just_released(PRIMARY) {
             return self.press.owner == Some(Owner::Map);
         }
@@ -532,7 +536,7 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
 /// A resource rather than a local, so that what is typed outlives any one
 /// pass over the bar and can be read from outside the system that draws it.
 #[derive(Resource, Default)]
-pub struct BarFields {
+pub(crate) struct BarFields {
     /// The system named in the box the bar leads with
     system: Option<String>,
     /// How far the ship a route is plotted for jumps
@@ -554,13 +558,13 @@ pub struct BarFields {
     ///
     /// Set by a key and taken by the next pass over the bar, since only the
     /// pass that drew the box has a box to put the caret in.
-    opening: bool,
+    pub(crate) opening: bool,
     /// Whether the form has been asked to be put away
     ///
     /// The other half of [`BarFields::opening`], taken in the same place and
     /// for the same reason: only the pass that drew the fields can let go of
     /// the one holding the caret.
-    shutting: bool,
+    pub(crate) shutting: bool,
 }
 
 impl BarFields {
@@ -568,13 +572,8 @@ impl BarFields {
     ///
     /// What [`crate::keys`] does with a slash. The form drops out below it as
     /// it does for a click into the box, the focus being what opens it.
-    pub fn open(&mut self) {
+    pub(crate) fn open(&mut self) {
         self.opening = true;
-    }
-
-    /// Whether the box has been asked for and not yet given the caret
-    pub fn opening(&self) -> bool {
-        self.opening
     }
 
     /// Ask for the form to be put away and the caret taken out of it
@@ -583,13 +582,8 @@ impl BarFields {
     /// standing, as it is when a press puts the form away: the form is shut
     /// rather than the question thrown out, and the mark inside the box is what
     /// takes the answer away.
-    pub fn shut(&mut self) {
+    pub(crate) fn shut(&mut self) {
         self.shutting = true;
-    }
-
-    /// Whether the form has been asked to be put away
-    pub fn shutting(&self) -> bool {
-        self.shutting
     }
 }
 
@@ -598,7 +592,7 @@ impl BarFields {
 /// One parameter rather than nine. A system may take only sixteen, and these
 /// are all the same thing: what the pane is a pane of.
 #[derive(SystemParam)]
-pub struct Settings<'w> {
+pub(crate) struct Settings<'w> {
     spyglass: ResMut<'w, Spyglass>,
     view: ResMut<'w, View>,
     color_by: ResMut<'w, ColorBy>,
@@ -636,7 +630,7 @@ pub struct Settings<'w> {
 /// user is getting through, and only [`crate::systems::visibility`] knows
 /// which systems those are.
 #[derive(SystemParam)]
-pub struct FilterBar<'w, 's> {
+pub(crate) struct FilterBar<'w, 's> {
     /// The filters themselves, which the rows are drawn from and changed in
     ///
     /// Named for what it holds rather than for its type, since this is
@@ -670,7 +664,7 @@ pub struct FilterBar<'w, 's> {
     standstill: ResMut<'w, Standstill>,
 }
 
-pub fn chrome(
+pub(crate) fn chrome(
     mut contexts: EguiContexts,
     mut settings: Settings,
     mut bar: SearchBar,
@@ -1509,7 +1503,7 @@ fn let_go_of(ctx: &egui::Context, box_id: egui::Id) {
 /// the filters are: the bar is drawn by one system, a system may take sixteen
 /// things, and the bar asks about more than sixteen.
 #[derive(SystemParam)]
-pub struct SearchBar<'w> {
+pub(crate) struct SearchBar<'w> {
     /// Where a name typed into a field is sent to be looked up
     search: MessageWriter<'w, Search>,
     /// What to say about a name that found nothing
@@ -3890,7 +3884,7 @@ mod tests {
         clicked(false, "SOLATI", &mut selection);
 
         assert_eq!(selection.len(), 1);
-        assert_eq!(selection.name(0), Some("SOLATI"));
+        assert_eq!(selection.get(0).map(Picked::name), Some("SOLATI"));
     }
 
     /// A click with a modifier held gathers them up instead
@@ -3906,8 +3900,8 @@ mod tests {
         clicked(false, "SOL", &mut selection);
         clicked(true, "SOLATI", &mut selection);
 
-        assert_eq!(selection.name(0), Some("SOL"));
-        assert_eq!(selection.name(1), Some("SOLATI"));
+        assert_eq!(selection.get(0).map(Picked::name), Some("SOL"));
+        assert_eq!(selection.get(1).map(Picked::name), Some("SOLATI"));
     }
 
     /// And one already held is let go of
@@ -3922,7 +3916,7 @@ mod tests {
         clicked(true, "SOL", &mut selection);
 
         assert_eq!(selection.len(), 1);
-        assert_eq!(selection.name(0), Some("SOLATI"));
+        assert_eq!(selection.get(0).map(Picked::name), Some("SOLATI"));
     }
 
     /// Which system a name stands for
@@ -4923,7 +4917,8 @@ mod tests {
             watch_control(ui, &mut watch, &mut active, &mut standstill);
         });
 
-        assert!(active.admitted().is_none(), "an untouched control asked");
+        assert_eq!(active.span(), None, "an untouched control asked");
+        assert_eq!(active.iter().count(), 0, "a row appeared unasked");
     }
 
     /// Not over one, where it would be a second control for what the row
@@ -5053,7 +5048,7 @@ mod tests {
 
         filters.clear(&Section::Routes.rows(&filters));
 
-        assert_eq!(filters.len(), 1);
+        assert_eq!(filters.iter().count(), 1);
         assert!(Section::Routes.rows(&filters).is_empty());
         assert_eq!(
             filters.get(0).map(|held| held.filter.name()),

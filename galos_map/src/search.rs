@@ -34,21 +34,21 @@ const RESULTS: i64 = 25;
 /// the unplaceable ones would have to be dropped to hold them here, and the
 /// answer would be missing the systems it most needs to account for.
 #[derive(Resource, Default)]
-pub struct SearchResults(Vec<NameEntry>);
+pub(crate) struct SearchResults(Vec<NameEntry>);
 
 impl SearchResults {
     /// What was found, best first
-    pub fn iter(&self) -> impl Iterator<Item = &NameEntry> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &NameEntry> {
         self.0.iter()
     }
 
     /// Whether anything was found
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
     /// Hold `found` in place of what the last search found
-    pub fn set(&mut self, found: Vec<NameEntry>) {
+    pub(crate) fn set(&mut self, found: Vec<NameEntry>) {
         self.0 = found;
     }
 
@@ -58,7 +58,7 @@ impl SearchResults {
     /// no answer at all once that name is being typed over. Picking one of
     /// them out does not put the list away: choosing is what it is for, and
     /// several may be chosen from the one list.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.0.clear();
     }
 }
@@ -69,7 +69,7 @@ impl SearchResults {
 /// among them. Flying to one is impossible, and doing nothing at all reads
 /// exactly like the name not being in the database.
 #[derive(Resource, Default)]
-pub struct SearchNote(pub Option<String>);
+pub(crate) struct SearchNote(pub(crate) Option<String>);
 
 /// How the route last asked for is getting on
 ///
@@ -79,7 +79,7 @@ pub struct SearchNote(pub Option<String>);
 /// is which, a plot still being worked out and one that failed look exactly
 /// alike: nothing happens either way.
 #[derive(Resource, Default, Debug, PartialEq, Eq)]
-pub enum Plot {
+pub(crate) enum Plot {
     /// Nothing has been asked for, or what was asked for is drawn
     #[default]
     Nothing,
@@ -96,7 +96,7 @@ pub enum Plot {
 /// map neither goes there, fetches it, nor picks it out, so it is asked for
 /// by [`crate::systems::filter::Lookup`] instead.
 #[derive(Message, Debug)]
-pub enum Search {
+pub(crate) enum Search {
     System { name: String },
     Route { start: String, end: String, range: String },
 }
@@ -140,7 +140,7 @@ const PATIENCE: Duration = Duration::from_millis(50);
 /// database here. Waited for in the frame, that is a third of a second of a
 /// map that does not move.
 #[derive(Resource)]
-pub struct Pending<A, T> {
+pub(crate) struct Pending<A, T> {
     out: Option<(A, Instant, Task<T>)>,
     waiting: bool,
 }
@@ -185,7 +185,7 @@ impl<A, T> Pending<A, T> {
     /// What the spinner in the field is drawn from. Read rather than worked
     /// out where it is drawn, since the bar draws during egui's own pass and
     /// has no clock of its own to hand.
-    pub fn waiting(&self) -> bool {
+    pub(crate) fn waiting(&self) -> bool {
         self.waiting
     }
 }
@@ -194,7 +194,7 @@ impl<A, T> Pending<A, T> {
 ///
 /// The name is what its note is written against, a search that found nothing
 /// having to say which name found it.
-pub type Searching = Pending<String, Vec<NameEntry>>;
+pub(crate) type Searching = Pending<String, Vec<NameEntry>>;
 
 /// The pair of names a route is being worked out between, while they are
 /// being looked up

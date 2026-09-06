@@ -15,8 +15,8 @@
 //!
 //! It owns no drawing of its own: a built system is pushed onto the same
 //! [`PendingSpawns`] queue the spyglass fills and turned into an entity by
-//! [`super::spawn::drain_spawns`], and an evicted one onto [`PendingEvictions`]
-//! for [`super::drain_evictions`]. The rest of the map — visibility, sizing,
+//! [`super::spawn`]'s `drain_spawns`, and an evicted one onto
+//! [`PendingEvictions`] for `super`'s `drain_evictions`. The rest of the map — visibility, sizing,
 //! pointing, selection, labels — reads a [`System`] without caring which
 //! source spawned it.
 

@@ -6,7 +6,7 @@
 //! still works, it just does each step with the previous frame's answer.
 //!
 //! Bevy runs systems in an arbitrary order unless told otherwise, so the
-//! stages are spelled out here as [`MapSet`] rather than left to chance.
+//! stages are spelled out here as `MapSet` rather than left to chance.
 
 use bevy::prelude::*;
 
@@ -26,7 +26,7 @@ pub fn plugin(app: &mut App) {
 
 /// The stages of a frame, in the order they run
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MapSet {
+pub(crate) enum MapSet {
     /// Turn what the user asked for into camera moves, despawns and spyglass
     /// changes
     Search,

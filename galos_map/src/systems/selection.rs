@@ -29,7 +29,7 @@
 //! a typed name away.
 //!
 //! What the map knows about the selected system beyond its name is written
-//! out by [`super::info`], which the user asks for separately.
+//! out by [`mod@super::info`], which the user asks for separately.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
@@ -292,23 +292,6 @@ impl Selection {
         self.0.get(index)
     }
 
-    /// The system in the `index`th place, where that is what stands there
-    ///
-    /// A whole row, for whoever can read one. A [`System`]'s fields are
-    /// private to [`super`], so the bar reaches what it draws through
-    /// [`Picked`] and uses this only to hand the row on to a panel.
-    pub fn system(&self, index: usize) -> Option<&System> {
-        match self.0.get(index)? {
-            Picked::System(system) => Some(system),
-            Picked::Body(_) => None,
-        }
-    }
-
-    /// What the thing in the `index`th place is called
-    pub fn name(&self, index: usize) -> Option<&str> {
-        self.0.get(index).map(Picked::name)
-    }
-
     /// How many are picked out
     pub fn len(&self) -> usize {
         self.0.len()
@@ -494,7 +477,8 @@ fn follow_selection(
 ///
 /// Read off the mark rather than asked of the filters again. A span's near
 /// edge moves with the clock, so asking here would answer a moment later than
-/// [`crate::systems::filter::mark`] last cut, and a system would be let go of
+/// [`crate::systems::filter`]'s `mark` last cut, and a system would be let go
+/// of
 /// seconds before the star it named stopped being drawn. One decision, made
 /// where the mark is made, and both the sky and the selection follow it.
 ///
@@ -790,7 +774,7 @@ mod tests {
 
         let selection = app.world().resource::<Selection>();
         assert_eq!(selection.len(), 1, "the body outlived what it named");
-        assert_eq!(selection.name(0), Some("Test 1"));
+        assert_eq!(selection.get(0).map(Picked::name), Some("Test 1"));
     }
 
     /// And a system with nothing on the map is kept
@@ -1162,8 +1146,8 @@ mod tests {
 
         let selection = app.world().resource::<Selection>();
         assert_eq!(selection.addresses(), vec![1, 2]);
-        assert_eq!(selection.system(0).unwrap().population, 0);
-        assert_eq!(selection.system(1).unwrap().population, 900);
+        assert_eq!(selection.systems().nth(0).unwrap().population, 0);
+        assert_eq!(selection.systems().nth(1).unwrap().population, 900);
     }
 
     /// A system selected before it is on the map is marked when it arrives
@@ -1372,7 +1356,7 @@ mod tests {
 
     /// What the selection holds for the population
     fn population_shown(app: &App) -> u64 {
-        app.world().resource::<Selection>().system(0).unwrap().population
+        app.world().resource::<Selection>().systems().next().unwrap().population
     }
 
     /// The selection says where what is picked out is

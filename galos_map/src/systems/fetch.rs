@@ -1,6 +1,5 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::filter::Admitted;
 use crate::systems::selection::Selection;
 use crate::systems::spawn::{build_system, system_at};
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
@@ -120,20 +119,19 @@ impl Default for LastFetchedAt {
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub enum FetchIndex {
     // System<String>
-    /// Everywhere within a radius of a point, and what of it is wanted
+    /// Everywhere within a radius of a point, and how far back it looks
     ///
-    /// Nothing wanted in particular is the whole of what is there. Where the
-    /// filters have said what they admit, the region is asked for that alone,
-    /// which makes it a different question about the same place: adding or
-    /// dropping a filter is somewhere new rather than a refresh, and is
-    /// answered at the throttle rather than waiting out the poll.
+    /// The whole region rather than what the filters admit, however they are
+    /// set: the map draws everything in reach and `filter` dims what it
+    /// excludes, so there is nothing of them for the question to carry. See
+    /// `fetch_spyglass`.
     ///
-    /// The span a filter on time asks for is part of that question, and the
+    /// The span a filter on time asks for is part of the question, and the
     /// span rather than the moment it reaches back to: a moment is worked out
     /// afresh every frame, so a region carrying one would never match the last
     /// and the map would ask again at the throttle for as long as the filter
     /// stood. A span holds still until the user moves the control.
-    Region(IVec3, i32, Option<Admitted>, Option<Span>),
+    Region(IVec3, i32, Option<Span>),
     // View<Frustum>,
     Route(String, String, String),
     /// Named systems, by address
@@ -165,12 +163,11 @@ impl FetchIndex {
     fn refreshes(&self, last: &FetchIndex) -> bool {
         match (self, last) {
             (
-                FetchIndex::Region(center, radius, admitted, span),
-                FetchIndex::Region(before, reached, asked, spanned),
+                FetchIndex::Region(center, radius, span),
+                FetchIndex::Region(before, reached, spanned),
             ) => {
                 center == before
                     && radius <= reached
-                    && admitted == asked
                     && looks_back_no_further(span, spanned)
             }
             // Only the spyglass records what it last fetched, so neither a
@@ -246,20 +243,12 @@ impl fmt::Debug for FetchIndex {
         use FetchIndex::*;
 
         match self {
-            Region(center, radius, admitted, span) => {
+            Region(center, radius, span) => {
                 write!(
                     f,
                     "<({},{},{}),{}",
                     center.x, center.y, center.z, radius
                 )?;
-                if let Some(admitted) = admitted {
-                    write!(
-                        f,
-                        " admitting {} factions and {} systems",
-                        admitted.factions.len(),
-                        admitted.systems.len()
-                    )?;
-                }
                 if let Some(span) = span {
                     write!(f, " within {}s", span.num_seconds())?;
                 }
@@ -448,9 +437,9 @@ const FETCH_LEAST: f32 = 1.;
 /// Ask for every system the spyglass reaches, read from the index cells
 ///
 /// The whole region rather than what the filters admit: the cells are static
-/// and cheap to read, so the map draws everything in reach and [`filter`] dims
-/// what it excludes, rather than the fetch leaving it out and having nothing to
-/// draw faintly.
+/// and cheap to read, so the map draws everything in reach and
+/// [`super::filter`] dims what it excludes, rather than the fetch leaving it
+/// out and having nothing to draw faintly.
 //
 // TODO(bounded): retire this whole spyglass region-fetch path once the walk is
 // verified as the only source. It loads a full-density sphere, which is what
@@ -488,7 +477,7 @@ fn fetch_spyglass(
     // under [`FETCH_LEAST`]. What is drawn is still only what the reach holds;
     // this only decides what is in hand to draw from.
     let asking = spyglass.radius.ceil().max(FETCH_LEAST);
-    let key = FetchIndex::Region(center, asking as i32, None, None);
+    let key = FetchIndex::Region(center, asking as i32, None);
     let now = time.last_update().unwrap_or(time.startup());
     if spyglass_condition(&key, tasks, now, last_fetched_at, throttle, poll) {
         debug!("fetching {:?} @ {:?}", key, now.duration_since(time.startup()));
@@ -698,7 +687,7 @@ pub(crate) mod tests {
 
     /// A region of `radius` about `center` on the x axis, asked for whole
     fn region(center: i32, radius: i32) -> FetchIndex {
-        FetchIndex::Region(IVec3::new(center, 0, 0), radius, None, None)
+        FetchIndex::Region(IVec3::new(center, 0, 0), radius, None)
     }
 
     /// The same region, asked only for what was heard from within `secs`
@@ -706,19 +695,7 @@ pub(crate) mod tests {
         FetchIndex::Region(
             IVec3::new(center, 0, 0),
             radius,
-            None,
             Some(Span::seconds(secs)),
-        )
-    }
-
-    /// The same region, narrowed to the faction at `id`
-    fn region_admitting(center: i32, radius: i32, id: i32) -> FetchIndex {
-        let admitted = Admitted { factions: vec![id], systems: Vec::new() };
-        FetchIndex::Region(
-            IVec3::new(center, 0, 0),
-            radius,
-            Some(admitted),
-            None,
         )
     }
 
@@ -983,34 +960,6 @@ pub(crate) mod tests {
         // Covered by the two of them together and by neither alone, which is
         // asked again rather than worked out.
         assert!(!surveyed_already(&region(5, 10), &tasks.surveyed));
-    }
-
-    /// A region narrowed to a filter is a different question about the place
-    ///
-    /// Not a refresh of the region asked for whole, so it is answered at the
-    /// throttle rather than waiting out the poll. Adding a filter while the
-    /// excluded are not drawn changes what the map is asking for, and the
-    /// user is waiting on the answer.
-    #[test]
-    fn a_narrowed_region_does_not_refresh_the_whole_one() {
-        assert!(!region_admitting(0, 10, 7).refreshes(&region(0, 10)));
-        assert!(!region(0, 10).refreshes(&region_admitting(0, 10, 7)));
-    }
-
-    /// Nor does one narrowed to something else
-    #[test]
-    fn two_narrowings_are_two_questions() {
-        assert!(
-            !region_admitting(0, 10, 7).refreshes(&region_admitting(0, 10, 9))
-        );
-    }
-
-    /// The same narrowing about the same place is a refresh
-    #[test]
-    fn the_same_narrowed_region_refreshes() {
-        assert!(
-            region_admitting(0, 10, 7).refreshes(&region_admitting(0, 10, 7))
-        );
     }
 
     /// Turning a filter on time on is a refresh of what is already held

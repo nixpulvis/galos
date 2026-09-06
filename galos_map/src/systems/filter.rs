@@ -396,11 +396,6 @@ impl FactionResults {
         self.0.iter()
     }
 
-    /// Whether anything was found
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Stop offering whatever was found
     pub fn clear(&mut self) {
         self.0.clear();
@@ -622,11 +617,6 @@ impl Filters {
         }
     }
 
-    /// How many filters are being held, turned on or not
-    pub fn len(&self) -> usize {
-        self.asked.len()
-    }
-
     /// Whether none is held at all, which is a map showing the whole sky
     pub fn is_empty(&self) -> bool {
         self.asked.is_empty()
@@ -744,10 +734,6 @@ impl Filters {
 
     /// How far back an enabled filter on time looks, where one is asked
     ///
-    /// Read apart from [`Self::admitted`] because what it admits is nowhere in
-    /// particular, so it is fetched in its own right rather than as part of a
-    /// question about a region.
-    ///
     /// The span rather than the moment it reaches back to. A moment is a
     /// different value every time it is worked out, so a region carrying one
     /// would be somewhere new every frame; the span moves only when the user
@@ -766,44 +752,6 @@ impl Filters {
                 _ => None,
             })
             .max()
-    }
-
-    /// What the filters admit, as a query can ask it
-    ///
-    /// Every enabled filter says either which faction it wants or which
-    /// systems by name, so all of them together are two lists. That is the
-    /// whole of what a query has to be told, and it is told once however many
-    /// filters there are.
-    ///
-    /// Nothing where they admit everything, which is where none of them is
-    /// turned on. A query narrowed by two empty lists answers with nothing at
-    /// all, where what is meant is the whole sky.
-    pub fn admitted(&self) -> Option<Admitted> {
-        let mut admitted = Admitted::default();
-        let mut asked = false;
-
-        for active in self.asked.iter().filter(|active| active.enabled) {
-            match &active.filter {
-                Filter::Faction { id, .. } => {
-                    asked = true;
-                    admitted.factions.push(*id);
-                }
-                Filter::Route { systems, .. }
-                | Filter::Systems { systems, .. } => {
-                    asked = true;
-                    admitted.systems.extend(systems.iter().copied());
-                }
-                // Nothing a region can be narrowed by. What this admits is
-                // scattered across the galaxy rather than gathered anywhere,
-                // so it is fetched in its own right and not as part of a
-                // place. Asked on its own it leaves the region asked for as it
-                // stands, rather than narrowing it to two empty lists, which
-                // is a question answered with nothing at all.
-                Filter::Recency { .. } => {}
-            }
-        }
-
-        asked.then_some(admitted)
     }
 
     /// Every stop the routes being shown run through, by address
@@ -835,23 +783,6 @@ impl Filters {
             .flatten()
             .collect()
     }
-}
-
-/// What a set of filters admits, said as two lists
-///
-/// Which is as much as the database is told. A faction is a membership to be
-/// looked up and a route or a hand-picked set is its addresses outright, and
-/// a system is admitted by standing in either list.
-///
-/// Part of what a region is asked for, so two regions about the same place
-/// admitting different things are different questions. Hence [`Eq`] and
-/// [`Hash`]: what tells those questions apart is these lists.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub struct Admitted {
-    /// The factions asked for, by id
-    pub factions: Vec<i32>,
-    /// The systems asked for outright, by address
-    pub systems: Vec<i64>,
 }
 
 /// A system no enabled filter admits
@@ -948,7 +879,7 @@ impl Filtering<'_> {
 /// Ask the loaded regions again when systems that are absent must return
 ///
 /// The fetch is unfiltered — the whole region in reach, dimmed or dropped by
-/// the filters afterwards — so the admitted set never drives it. A fetch is
+/// the filters afterwards — so what they admit never drives it. A fetch is
 /// worth issuing only when a system that is off the map has to come back onto
 /// it, and nothing is off the map while the excluded are drawn: above zero
 /// dim every system in reach is spawned, filtered or not, so a filter change
@@ -1149,7 +1080,7 @@ mod tests {
         filters.toggle_all(&[0, 1]);
 
         assert!(!filters.any_enabled());
-        assert_eq!(filters.len(), 2);
+        assert_eq!(filters.iter().count(), 2);
         assert!(filters.admit(&member(1, &[3]), now()));
     }
 
@@ -1197,86 +1128,35 @@ mod tests {
 
         filters.clear(&[0, 1]);
 
-        assert_eq!(filters.len(), 0);
+        assert_eq!(filters.iter().count(), 0);
         assert!(filters.admit(&member(1, &[3]), now()));
     }
 
-    /// What the filters admit is two lists a query can be handed
-    #[test]
-    fn a_faction_filter_admits_by_id() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-
-        let admitted = filters.admitted().expect("something asked for");
-
-        assert_eq!(admitted.factions, vec![7]);
-        assert!(admitted.systems.is_empty());
-    }
-
-    /// A hand-picked set says its systems outright
-    #[test]
-    fn a_gathered_filter_admits_by_address() {
-        let mut filters = Filters::default();
-        filters.add(systems(&[1, 2, 3]));
-
-        let admitted = filters.admitted().expect("something asked for");
-
-        assert_eq!(admitted.systems, vec![1, 2, 3]);
-        assert!(admitted.factions.is_empty());
-    }
-
-    /// Several of them are gathered into the two lists between them
+    /// A filter turned off stops counting, and the sky is whole again
     ///
-    /// Each adds to what is admitted, so the lists are what all of them want
-    /// rather than what they have in common.
+    /// The row is held on to rather than let go of, so what changes is only
+    /// that nothing is being asked, and nothing asked for admits everything.
     #[test]
-    fn several_filters_admit_between_them() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(faction(9));
-        filters.add(systems(&[1, 2]));
-
-        let admitted = filters.admitted().expect("something asked for");
-
-        assert_eq!(admitted.factions, vec![7, 9]);
-        assert_eq!(admitted.systems, vec![1, 2]);
-    }
-
-    /// A filter turned off asks for nothing, and is not asked for
-    #[test]
-    fn a_disabled_filter_admits_nothing_in_particular() {
+    fn a_disabled_filter_asks_for_nothing() {
         let mut filters = Filters::default();
         filters.add(faction(7));
         filters.toggle(0);
 
-        assert_eq!(filters.admitted(), None);
+        assert!(!filters.any_enabled());
+        assert!(filters.admit(&member(1, &[3]), now()));
     }
 
-    /// Nothing held admits the whole sky rather than none of it
+    /// A filter that admits nothing admits nothing, rather than everything
     ///
-    /// A query narrowed by two empty lists comes back with nothing, where
-    /// what is meant is everything, so there is nothing to narrow it by.
+    /// Told apart from nothing being asked by whether a filter is asked at
+    /// all, and not by how much it lets through: a route with no stops is a
+    /// question the user put, and the sky it draws is empty.
     #[test]
-    fn no_filters_admit_everything() {
-        assert_eq!(Filters::default().admitted(), None);
-    }
-
-    /// A filter that admits nothing asks for nothing, and means it
-    ///
-    /// Which is the one case the two empty lists are the right answer: a
-    /// filter is being asked and it admits no system, so a query that comes
-    /// back with nothing is what was asked for. It is told apart from nothing
-    /// being asked by which of the two it is, and not by what the lists hold.
-    ///
-    /// What holds this together is that [`Filters::admit`] says the same. The
-    /// map dims by that and fetches by this, so a filter the two disagreed
-    /// about would be a sky drawn from one answer and fetched from the other.
-    #[test]
-    fn a_filter_that_admits_nothing_narrows_to_nothing() {
+    fn a_filter_that_admits_nothing_admits_nothing() {
         let mut filters = Filters::default();
         filters.add(route(&[]));
 
-        assert_eq!(filters.admitted(), Some(Admitted::default()));
+        assert!(filters.any_enabled());
         assert!(!filters.admit(&member(1, &[7]), now()));
     }
 
@@ -1750,9 +1630,7 @@ mod tests {
 
         let settled = filters.revision();
         let _ = filters.admit(&member(1, &[7]), now());
-        let _ = filters.admitted();
         let _ = filters.span();
-        let _ = filters.len();
         let _ = filters.any_enabled();
 
         assert_eq!(filters.revision(), settled, "reading counted as asking");
@@ -1827,37 +1705,6 @@ mod tests {
         assert_eq!(filters.span(), Some(Duration::seconds(100)));
     }
 
-    /// It narrows no region, what it admits being gathered nowhere
-    ///
-    /// A faction and a route say which systems a region should be asked for. A
-    /// question about time is answered from across the galaxy, so it has
-    /// nothing to add to a question about a place.
-    ///
-    /// Nothing at all rather than two empty lists. The region is asked with
-    /// whatever these hold, and a pair of empty lists asks it for no faction
-    /// and no system, which is a question the database answers with nothing.
-    #[test]
-    fn a_filter_on_time_narrows_no_region() {
-        let mut filters = Filters::default();
-        filters.add(within(100));
-
-        assert!(filters.admitted().is_none(), "the region was narrowed");
-    }
-
-    /// Beside a faction it leaves that faction narrowing the region
-    ///
-    /// The two are asked together: the faction says which systems the region
-    /// is wanted for, and time is asked of what comes back.
-    #[test]
-    fn a_filter_on_time_leaves_a_faction_narrowing() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(within(100));
-
-        let admitted = filters.admitted().expect("the faction asked");
-        assert_eq!(admitted.factions, vec![7]);
-    }
-
     /// Asking again about time replaces the question rather than adding one
     ///
     /// Two of these would draw what the wider of them draws, since the earlier
@@ -1869,7 +1716,11 @@ mod tests {
         filters.ask_within("1 day", Duration::seconds(100));
         filters.ask_within("1 hour", Duration::seconds(50));
 
-        assert_eq!(filters.len(), 1, "the first question was left standing");
+        assert_eq!(
+            filters.iter().count(),
+            1,
+            "the first question was left standing"
+        );
         assert_eq!(filters.span(), Some(Duration::seconds(50)));
     }
 
@@ -1899,7 +1750,7 @@ mod tests {
         filters.ask_nothing_of_time();
 
         assert_eq!(filters.span(), None, "still asking about time");
-        assert_eq!(filters.len(), 1, "the faction went with it");
+        assert_eq!(filters.iter().count(), 1, "the faction went with it");
         assert!(
             filters.admit(&member(1, &[7]), now()),
             "the faction stopped asking"
@@ -1917,7 +1768,7 @@ mod tests {
 
         filters.turn_time_off("Off");
 
-        assert_eq!(filters.len(), 1, "the row went with the question");
+        assert_eq!(filters.iter().count(), 1, "the row went with the question");
         assert_eq!(filters.span(), None, "still asking about time");
         assert!(
             filters.admit(&heard(1, 40), now()),

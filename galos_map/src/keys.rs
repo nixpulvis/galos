@@ -11,7 +11,7 @@
 //!
 //! Nothing answers while a field is being typed into, but for the escape that
 //! puts the field away. A system named SOL is spelled with the same S that pans
-//! the map back, and [`crate::ui::Keyboard`] is what tells the two apart. The
+//! the map back, and `crate::ui::Keyboard` is what tells the two apart. The
 //! one binding on a space asks that resource the wider of its two questions,
 //! egui holding a space to be a click on whatever has the focus.
 //!
@@ -1099,12 +1099,12 @@ mod tests {
 
     /// Whether the search box has been asked for
     fn opening(app: &App) -> bool {
-        app.world().resource::<BarFields>().opening()
+        app.world().resource::<BarFields>().opening
     }
 
     /// Whether the form has been asked to be put away
     fn shutting(app: &App) -> bool {
-        app.world().resource::<BarFields>().shutting()
+        app.world().resource::<BarFields>().shutting
     }
 
     /// `/` asks for the search box

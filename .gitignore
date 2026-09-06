@@ -6,3 +6,8 @@
 galos_db/backups/*
 .galos_index
 .galos_checkpoint*
+# Catalogs are downloaded and handed to `galos-catalog` as a path, not
+# vendored. `bright.csv` is the exception: it is `include_str!`d as the
+# fixture the consistency and comparison tests read, so it stays.
+galos_catalog/data/*
+!galos_catalog/data/bright.csv

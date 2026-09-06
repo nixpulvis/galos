@@ -237,7 +237,7 @@ pub(crate) struct StarSprite {
 ///
 /// The shape [`star_psf`] bakes into the sprite texture — a Moffat with its
 /// wings or a tighter Gaussian; see [`galos_photometry::psf::ProfileKind`].
-/// The map sizes a star by [`super::scale::psf_radius`]'s own law either way,
+/// The map sizes a star by [`super::scale`]'s own `psf_radius` law either way,
 /// so this changes the halo a star wears, not how large it draws.
 /// [`reprofile`] rebakes the texture when it changes.
 #[derive(Resource, Default)]
@@ -917,7 +917,7 @@ pub(crate) fn system_at(
 /// A row already on the map has its [`System`] replaced rather than being
 /// respawned, which [`update`] then acts on.
 ///
-/// The filters are asked here rather than left to [`filter::mark`], so that a
+/// The filters are asked here rather than left to [`super::filter`]'s `mark`, so that a
 /// system arrives already marked and already drawn at the strength it should
 /// be. A mark applied by a command lands at the next sync point, by which
 /// time the star has been drawn once at full strength.

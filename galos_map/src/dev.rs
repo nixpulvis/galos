@@ -62,7 +62,7 @@ pub fn plugin(app: &mut App) {
 /// Whether the diagnostics window is drawn. Off to begin with; the button in
 /// the top-right corner and F3 both open it.
 #[derive(Resource)]
-pub struct ShowDiagnostics(pub bool);
+pub(crate) struct ShowDiagnostics(pub(crate) bool);
 
 impl Default for ShowDiagnostics {
     fn default() -> Self {

@@ -80,7 +80,7 @@ pub fn plugin(app: &mut App) {
 /// the map has fetched it or after it has been despawned.
 #[derive(Component, Clone)]
 #[require(bodies::spawn::Strength)]
-pub struct System {
+pub(crate) struct System {
     address: i64,
     name: String,
     /// Absolute galactic position, in light years
@@ -143,7 +143,7 @@ impl System {
     ///
     /// A [`System`]'s fields are private to this module, and the camera is
     /// not in it. It has to measure from a system to descend into one.
-    pub fn position(&self) -> DVec3 {
+    pub(crate) fn position(&self) -> DVec3 {
         DVec3::from(self.position)
     }
 
@@ -151,7 +151,7 @@ impl System {
     ///
     /// A [`System`]'s fields are private to this module, and a route names
     /// both of its ends in the bar, which is not.
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         &self.name
     }
 
@@ -175,13 +175,13 @@ impl System {
     /// small system visible from a distance.
     ///
     /// [`scale::shell`]: crate::systems::scale
-    pub fn reach(&self) -> f32 {
+    pub(crate) fn reach(&self) -> f32 {
         self.reach.unwrap_or(bodies::STAND_IN)
     }
 
     /// The absolute magnitude the realistic view reads the star's brightness
     /// from, at the default class where the index carried none.
-    pub fn absolute_magnitude(&self) -> f64 {
+    pub(crate) fn absolute_magnitude(&self) -> f64 {
         self.absolute_magnitude
             .map(f64::from)
             .unwrap_or(ClassLight::DEFAULT.absolute_magnitude.0)
@@ -189,7 +189,7 @@ impl System {
 
     /// Which temperature bucket the star's blackbody tint falls in, at the
     /// default class's bucket where the index carried none.
-    pub fn temp_bucket(&self) -> usize {
+    pub(crate) fn temp_bucket(&self) -> usize {
         self.temp_bucket
             .map(usize::from)
             .unwrap_or_else(|| temp_bucket(ClassLight::DEFAULT.temperature.0))
@@ -201,13 +201,13 @@ impl System {
     /// The raw figure the realistic view reads, [`None`] rather than the
     /// default class, so a panel can say what the bake actually assigned and a
     /// too-bright star can be told from a merely unscanned one.
-    pub fn baked_magnitude(&self) -> Option<f32> {
+    pub(crate) fn baked_magnitude(&self) -> Option<f32> {
         self.absolute_magnitude
     }
 
     /// A representative temperature for the star's tint bucket, if one was
     /// baked, kelvin.
-    pub fn baked_temperature(&self) -> Option<f64> {
+    pub(crate) fn baked_temperature(&self) -> Option<f64> {
         self.temp_bucket.map(|bucket| bucket_temperature(bucket as usize))
     }
 }
@@ -233,27 +233,27 @@ pub(crate) mod spawn;
 
 /// A global setting which controls the spyglass around the camera
 #[derive(Resource)]
-pub struct Spyglass {
+pub(crate) struct Spyglass {
     /// Ask the database for what is within the reach
     ///
     /// The two halves of what a spyglass does, this and [`Spyglass::clear`],
     /// and each is worth having without the other. Off, the map draws what it
     /// has and asks for nothing more, which is how to look at a sky that
     /// stops changing under you.
-    pub fetch: bool,
-    pub radius: f32,
+    pub(crate) fetch: bool,
+    pub(crate) radius: f32,
     /// Clear away what the reach does not hold
     ///
     /// On to begin with, that being what looking through a spyglass is. Off,
     /// everything loaded is drawn however far off it lies, which is
     /// everywhere the camera has been rather than anywhere it is looking.
-    pub clear: bool,
+    pub(crate) clear: bool,
     /// Zoom the camera to whatever the reach is set to
     ///
     /// Only meaningful while [`Spyglass::follow_camera`] is off. The two are
     /// the same link read in opposite directions, and the camera cannot both
     /// be told where to stand and be asked where it is standing.
-    pub lock_camera: bool,
+    pub(crate) lock_camera: bool,
     /// Reach as far as the camera can see, rather than as far as it is told
     ///
     /// On to begin with. What the camera is looking at is what the user is
@@ -266,7 +266,7 @@ pub struct Spyglass {
     /// with a circle of stars in the middle of an empty window, and a reach
     /// that follows the view has said it will not do that. The fetch is
     /// throttled and the wheel is where the user says when to stop.
-    pub follow_camera: bool,
+    pub(crate) follow_camera: bool,
 }
 
 impl Spyglass {
@@ -275,7 +275,7 @@ impl Spyglass {
     /// Also the least anything sets it to without being asked. A route
     /// between two neighbours spans a few light years, and a reach drawn in
     /// that far shows the two ends and nothing around them.
-    pub const OPENING: f32 = 10.;
+    pub(crate) const OPENING: f32 = 10.;
 
     /// The shortest reach the rail offers, in light years
     ///
@@ -294,14 +294,14 @@ impl Spyglass {
     /// between them — so the rail reaches everywhere a hand would ask for. A
     /// reach the camera has drawn in under this is a setting like any other:
     /// the rail shows it held to its own least and leaves it alone underneath.
-    pub const FLOOR: f32 = 1e-3;
+    pub(crate) const FLOOR: f32 = 1e-3;
 
     /// The longest, in light years
     ///
     /// The galaxy is 105,700 across, so this reaches the whole of it. Only
     /// ever asked for by hand: everything it takes in is fetched and drawn,
     /// and at this reach that is every system on record.
-    pub const CEILING: f32 = 1.1e5;
+    pub(crate) const CEILING: f32 = 1.1e5;
 
     /// The furthest the map reaches without being asked to
     ///
@@ -314,7 +314,7 @@ impl Spyglass {
     /// Past this a route is drawn as a line with stars about the middle of it
     /// and none out at the ends, which is a poorer picture than the one asked
     /// for and a far better one than a map that has stopped answering.
-    pub const UNASKED: f32 = 200.;
+    pub(crate) const UNASKED: f32 = 200.;
 }
 
 impl Spyglass {
@@ -329,7 +329,7 @@ impl Spyglass {
     /// excluded by a filter is the user saying they are not interested, and
     /// what is drawn for a system they picked out by hand answers only the
     /// first.
-    pub fn reaches(&self, center: DVec3, position: DVec3) -> bool {
+    pub(crate) fn reaches(&self, center: DVec3, position: DVec3) -> bool {
         !self.clear || center.distance(position) <= self.radius as f64
     }
 
@@ -343,7 +343,7 @@ impl Spyglass {
     /// zoom that is going to be written back over on the next frame is a
     /// camera that lurches and returns, so while this holds there is no zoom
     /// at all.
-    pub fn locks_camera(&self) -> bool {
+    pub(crate) fn locks_camera(&self) -> bool {
         self.lock_camera && !self.follow_camera
     }
 }
@@ -359,7 +359,7 @@ impl Spyglass {
 /// In reach rather than loaded. What the spyglass has dragged in from wherever
 /// the camera has been is not what the user is looking at.
 #[derive(Resource, Default, PartialEq, Eq)]
-pub struct InReach {
+pub(crate) struct InReach {
     /// Systems the spyglass reaches
     ///
     /// The sky only where the excluded systems are being fetched to be dimmed.
@@ -368,13 +368,13 @@ pub struct InReach {
     /// was brought in before the filter was asked for and never despawned.
     /// That is a number about where the camera has been rather than about the
     /// sky, and [`crate::ui`] draws this only where it is the sky.
-    pub total: usize,
+    pub(crate) total: usize,
     /// How many of those the filters admit
     ///
     /// Whole however the region was asked for. Narrowing the query asks for
     /// exactly the systems a filter admits, so what is left out of it is what
     /// this was never counting.
-    pub admitted: usize,
+    pub(crate) admitted: usize,
 }
 
 /// Decide which systems are drawn
@@ -397,7 +397,7 @@ pub struct InReach {
 /// Runs over every star every frame, so it writes only where the answer
 /// actually changed. Assigning regardless would mark the whole sky as
 /// changed each frame, and each star drags its name along with it.
-pub fn visibility(
+pub(crate) fn visibility(
     camera: Query<&OrbitCamera>,
     mut systems: Query<(
         &System,
@@ -490,7 +490,7 @@ pub(crate) const EVICT_MARGIN: f64 = 1.5;
 /// Marking a system forgets the surveys that vouched for its region, so a
 /// camera coming back asks for it again rather than finding the region marked
 /// held and empty.
-pub fn evict(
+pub(crate) fn evict(
     camera: Query<&OrbitCamera>,
     systems: Query<(Entity, &System, Has<route::Hop>)>,
     spyglass: Res<Spyglass>,
@@ -566,7 +566,8 @@ pub fn evict(
 
 /// How many systems the evictor may despawn in one frame
 ///
-/// The companion to [`super::spawn::SPAWN_BUDGET`]. A big eviction — a zoom-out
+/// The companion to [`spawn`]'s `SPAWN_BUDGET`. A big eviction — a
+/// zoom-out
 /// pulled a wide region in and the camera has since left it — is spread over
 /// frames so the structural churn a frame does stays bounded.
 const EVICT_BUDGET: usize = 4096;
@@ -576,7 +577,7 @@ const EVICT_BUDGET: usize = 4096;
 /// The batch is detached from the galaxy in one pass and then despawned, which
 /// is what keeps eviction off the quadratic a naive despawn falls into: a child
 /// leaving its parent one at a time rescans and reshifts the parent's whole
-/// child list each time (see [`super::despawn`]), so dropping thousands would
+/// child list each time (see `super::despawn`), so dropping thousands would
 /// cost millions. Replacing the child list with the keepers empties the batch's
 /// links first, so each drop is O(1); a detached system then despawns with no
 /// parent left to unlink from, and anything hung under it goes with it.
@@ -614,25 +615,25 @@ fn drain_evictions(
 
 /// The systems [`evict`] has marked to drop, waiting on the budget.
 #[derive(Resource, Default)]
-pub struct PendingEvictions(HashSet<Entity>);
+pub(crate) struct PendingEvictions(HashSet<Entity>);
 
 impl PendingEvictions {
     /// How many systems are waiting to be dropped, for the diagnostics panel.
-    pub fn queued(&self) -> usize {
+    pub(crate) fn queued(&self) -> usize {
         self.0.len()
     }
 }
 
 /// What the evictor has dropped, for the diagnostics panel to read.
 #[derive(Resource, Default)]
-pub struct Evictions {
+pub(crate) struct Evictions {
     /// How many systems the last pass dropped.
-    pub last: usize,
+    pub(crate) last: usize,
     /// How many have been dropped since the map opened.
-    pub total: u64,
+    pub(crate) total: u64,
 }
 
-pub fn zoom_with_spyglass(
+pub(crate) fn zoom_with_spyglass(
     spyglass: Res<Spyglass>,
     mut camera: Query<&mut OrbitCamera>,
 ) {
@@ -678,7 +679,7 @@ const FOLLOW_MARGIN: u32 = 10;
 /// their way while the camera is still travelling. Reading the radius instead
 /// would move the reach a little every frame of a zoom, and every step of it
 /// is a region to be fetched.
-pub fn reach_with_camera(
+pub(crate) fn reach_with_camera(
     mut spyglass: ResMut<Spyglass>,
     camera: Query<&OrbitCamera>,
     // Only the eye's. Every camera the map draws through carries a
@@ -719,7 +720,7 @@ pub fn reach_with_camera(
 /// The three columns of a [`NameEntry`] widened to the `f64` the map is laid
 /// out in. The names table holds only placed systems, so every entry has an
 /// answer.
-pub fn system_to_vec(entry: &NameEntry) -> DVec3 {
+pub(crate) fn system_to_vec(entry: &NameEntry) -> DVec3 {
     DVec3::new(
         entry.position[0] as f64,
         entry.position[1] as f64,

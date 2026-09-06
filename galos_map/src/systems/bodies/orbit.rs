@@ -301,7 +301,8 @@ const CROSSING: usize = 8;
 /// does the view take over the count.
 ///
 /// A count around the ring rather than a length in the world, which is the other
-/// way round from a route's [`crate::systems::route::DASH`]. A route is a run of
+/// way round from a route's `DASH` (see [`crate::systems::route`]). A route
+/// is a run of
 /// legs of wildly different lengths and a share of one cannot be read at more
 /// than one zoom, so its dashes are held at a distance instead.
 const DASHES: usize = 32;

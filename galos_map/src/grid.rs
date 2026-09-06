@@ -16,7 +16,7 @@
 //!
 //! # What is here and what is not
 //!
-//! [`crate::ruled`] draws the plane itself: its lines, and the numbers
+//! `crate::ruled` draws the plane itself: its lines, and the numbers
 //! painted over and over along them, the whole of it in one shader pass. It
 //! also works out how wide a cell is for a view of a given width, how far
 //! apart to put the numbers, and what each of them is called. None of that
@@ -38,7 +38,7 @@
 //!
 //! One hangs in the galaxy's grid and one inside whatever system the camera
 //! has descended into, because how finely a plane may be ruled follows the
-//! grid it hangs in — see [`ruled::finest`]. The galaxy's cells are `2^53`
+//! grid it hangs in — see `ruled::finest`. The galaxy's cells are `2^53`
 //! metres and bottom out around a light second; a system's are a metre and
 //! bottom out well below anything worth drawing.
 //!
@@ -126,7 +126,7 @@ pub fn plugin(app: &mut App) {
 
 /// Whether the ruled plane is drawn
 #[derive(Resource)]
-pub struct ShowGrid(pub bool);
+pub(crate) struct ShowGrid(pub(crate) bool);
 
 /// Whether the place the camera is looking at is marked at the middle of the
 /// view
@@ -134,7 +134,7 @@ pub struct ShowGrid(pub bool);
 /// The plane's own numbers say where its lines are; this says where the view is,
 /// which is the one of the three a line cannot carry.
 #[derive(Resource)]
-pub struct ShowMiddle(pub bool);
+pub(crate) struct ShowMiddle(pub(crate) bool);
 
 /// How strongly the ruling is drawn, against what the map settles on for it
 ///
@@ -147,7 +147,7 @@ pub struct ShowMiddle(pub bool);
 /// over it. They are one thing seen at once, and a ruler whose lines dimmed
 /// while its numbers did not would read as two.
 #[derive(Resource)]
-pub struct Bright(pub f32);
+pub(crate) struct Bright(pub(crate) f32);
 
 impl Default for Bright {
     /// Half of the brightest it goes
@@ -167,7 +167,7 @@ impl Default for Bright {
 /// one mark wherever the camera goes, and this is one for everything selected,
 /// which is as busy as the selection is.
 #[derive(Resource)]
-pub struct ShowPicked(pub bool);
+pub(crate) struct ShowPicked(pub(crate) bool);
 
 /// How much coarser than a grid can place it a plane is actually ruled
 ///
@@ -300,7 +300,7 @@ fn finest(unit: DistanceUnit, grid: &Grid) -> f64 {
 /// a system. Pinned either way from the bar, for reading a system's distances
 /// in light years or a neighbourhood's in light seconds.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RulerUnit {
+pub(crate) enum RulerUnit {
     #[default]
     Automatic,
     LightYears,

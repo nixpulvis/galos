@@ -264,16 +264,6 @@ impl Contents {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Whether the database has answered about `address`
-    ///
-    /// What the shell asks before it begins to clear: an answer of nothing is
-    /// still an answer, and a system with no bodies on record is one the map
-    /// holds rather than one it has yet to ask after.
-    pub fn holds(&self, address: i64) -> bool {
-        self.of == Some(address)
-            && matches!(self.state, FetchState::Known { .. })
-    }
-
     /// The stars of the system being held
     pub fn stars(&self) -> &[DbStar] {
         match &self.state {
