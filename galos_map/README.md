@@ -23,6 +23,17 @@ The two meet in two places only, which `docs/galaxy.md` names under
 Coordination with the bodies work: the sizing law's context scalar, and the
 photometric scale the local star is lit by.
 
+[`docs/night-sky.md`](./docs/night-sky.md) is how any of it reaches the
+screen. A single float resolves one part in sixteen million of whatever it
+holds, and a star sits `1e17` metres out, so a mark or a name built as a mesh
+where its system actually is tears apart in the `f32` clip transform. So every
+mark and every note — the star field, the names and their leaders, the rings
+around what is pointed at and picked out, and the ruled plane's readouts — is
+projected to a pixel on the processor in `f64` and painted flat. The doc covers
+the precision floor that forces it, the three cameras and the order they draw
+in, the stacking inside the one layer they share, and the two bugs that come of
+answering a question about a projected thing in more than one place.
+
 ## Mouse
 
 | Gesture | What it does |
