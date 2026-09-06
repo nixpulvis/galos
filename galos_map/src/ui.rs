@@ -547,6 +547,14 @@ pub(crate) struct BarFields {
     /// between is picked out on the map, and a range is a fact about a ship
     /// with nothing on the map to point at.
     route_range: Option<String>,
+    /// Whether the map is to choose what order the stops are reached in
+    ///
+    /// Off, a trip is flown in the order the systems were picked, which is
+    /// what a user who picked them in an order meant. On, the order is the
+    /// map's to settle: a set gathered by looking around is a set of
+    /// destinations rather than an itinerary, and the question is then which
+    /// way round is cheapest.
+    tour: bool,
     /// Whether the rest of the form is out below the input
     ///
     /// Turned on when a field takes focus and off when a press lands off the
@@ -2386,6 +2394,35 @@ fn apart(selection: &Selection) -> Option<f64> {
     Some(places.windows(2).map(|leg| leg[0].distance(leg[1])).sum())
 }
 
+/// The stops as the trip is to be flown, named
+///
+/// The order they were picked, or the cheapest order to reach them all in
+/// where that was asked for and a range is in hand to cost a leg with. The
+/// ordering is [`crate::systems::route::tour`]'s; this is only the naming.
+///
+/// Handed back as names rather than as an order, since names are what a trip
+/// is asked for with and what the legs are keyed by.
+fn asked_in_order(
+    stops: &[&str],
+    selection: &Selection,
+    tour: Option<f64>,
+) -> Vec<String> {
+    let Some(range) = tour else {
+        return stops.iter().map(|stop| stop.to_string()).collect();
+    };
+
+    // The same systems `stops_of` named, in the same order, so an index into
+    // one is an index into the other.
+    let places: Vec<DVec3> =
+        selection.systems().map(|system| system.position()).collect();
+
+    crate::systems::route::tour::ordered(&places, range)
+        .into_iter()
+        .filter_map(|at| stops.get(at))
+        .map(|stop| stop.to_string())
+        .collect()
+}
+
 /// What the form says of how far a route would run, before it is asked for
 ///
 /// A pair is so far apart. More are so far in so many legs, the legs being
@@ -2482,6 +2519,13 @@ fn route_section(
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }
 
+    // Whose order the stops are reached in. Only where there is an order to
+    // settle: two stops have one, and three or more picked out are as likely
+    // to be a set of destinations as an itinerary.
+    if stops.as_ref().is_ok_and(|stops| stops.len() > 2) {
+        ui.checkbox(&mut search.tour, "Cheapest order");
+    }
+
     ui.add_space(FIELD_GAP);
     // The two things a route is made of: which systems it runs through, and
     // what it may be flown in. The button is dead until both are in hand,
@@ -2516,7 +2560,11 @@ fn route_section(
         *plot = match jump_range(range) {
             Ok(range) => {
                 searched.write(Search::Route {
-                    stops: stops.iter().map(|stop| stop.to_string()).collect(),
+                    stops: asked_in_order(
+                        &stops,
+                        selection,
+                        search.tour.then_some(range),
+                    ),
                     // Back to text, since a route is fetched under a key
                     // made of what was asked for and a float is no kind of
                     // key.
@@ -6387,6 +6435,37 @@ mod tests {
     fn a_range_of_nothing_or_less_is_refused() {
         assert!(jump_range("0").is_err());
         assert!(jump_range("-5").is_err());
+    }
+
+    /// The stops go out in the order they were picked, unless the map is asked
+    ///
+    /// Which is the whole difference between a trip through stops and a set
+    /// of destinations: the first is an itinerary the user wrote and the
+    /// second is a question about which way round is cheapest.
+    #[test]
+    fn the_stops_go_out_in_the_order_they_were_picked() {
+        let picked = strung_out(&[20., 0., 10., 30.]);
+        let stops: Vec<&str> = stops_of(&picked).expect("stops");
+
+        assert_eq!(
+            asked_in_order(&stops, &picked, None),
+            vec!["Test 0", "Test 1", "Test 2", "Test 3"]
+        );
+    }
+
+    /// And in the cheapest order where it was
+    ///
+    /// The first stays where it was put, a trip having to set out from
+    /// somewhere; the rest are reached whichever way costs the fewest jumps.
+    #[test]
+    fn a_cheapest_order_reaches_them_all_the_short_way() {
+        let picked = strung_out(&[20., 0., 10., 30.]);
+        let stops: Vec<&str> = stops_of(&picked).expect("stops");
+
+        let asked = asked_in_order(&stops, &picked, Some(10.));
+
+        assert_eq!(asked[0], "Test 0");
+        assert_eq!(asked, vec!["Test 0", "Test 3", "Test 2", "Test 1"]);
     }
 
     /// A route runs through the systems picked out on the map

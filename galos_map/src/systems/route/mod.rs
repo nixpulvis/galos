@@ -715,6 +715,7 @@ pub(crate) mod fetch;
 // resident names before the app is up.
 pub mod graph;
 pub(crate) mod spawn;
+pub(crate) mod tour;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]
