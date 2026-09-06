@@ -1141,7 +1141,6 @@ fn admitted(
                 ui,
                 &system.name,
                 trailing,
-                true,
                 ("admitted", index),
             );
             match asked {

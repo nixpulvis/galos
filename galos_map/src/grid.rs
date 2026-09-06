@@ -16,16 +16,23 @@
 //!
 //! # What is here and what is not
 //!
-//! [`crate::ruled`] draws all of it: the lines, the numbers painted along
-//! them, the crosses that mark a place worth locating, the lines dropped to
-//! the plane and the three numbers about each of those places. It also works
-//! out how wide a cell is for a view of a given width, how far apart to put
-//! the numbers, and what each of them is called. None of that names a length.
+//! [`crate::ruled`] draws the plane itself: its lines, and the numbers
+//! painted over and over along them, the whole of it in one shader pass. It
+//! also works out how wide a cell is for a view of a given width, how far
+//! apart to put the numbers, and what each of them is called. None of that
+//! names a length.
 //!
-//! What is here is which unit a space is measured in, where the ruler changes
-//! hands as the camera descends into a system, how loudly the whole of it is
-//! drawn, and what is worth locating. Questions about a galaxy rather than
-//! about a ruler.
+//! Everything standing over the plane is painted here, by `draw_readouts`:
+//! the crosses that mark a place worth locating, the lines dropped to the
+//! plane, and the three numbers about each of those places. Flat on the
+//! screen, projected on the processor in `f64`, because a text mesh out at a
+//! system's galaxy coordinate jitters where a projected point holds steady —
+//! see `draw_readouts` below and `docs/night-sky.md`.
+//!
+//! And here too are the questions about a galaxy rather than about a ruler:
+//! which unit a space is measured in, where the ruler changes hands as the
+//! camera descends into a system, how loudly the whole of it is drawn, and
+//! what is worth locating.
 //!
 //! # Two planes, and what stands between them
 //!
@@ -70,10 +77,7 @@ pub fn plugin(app: &mut App) {
     // name on the map is drawn in: a number on the plane and a number in the
     // bar are then the one typeface.
     app.add_plugins(RuledPlugin {
-        face: ruled::Face {
-            bytes: epaint_default_fonts::HACK_REGULAR,
-            family: "Hack",
-        },
+        face: ruled::Face { bytes: epaint_default_fonts::HACK_REGULAR },
     });
     app.insert_resource(ShowGrid(true));
     app.insert_resource(ShowMiddle(true));
@@ -89,12 +93,10 @@ pub fn plugin(app: &mut App) {
     // In `Present`, which runs after `Camera` has settled where the camera is
     // standing. Everything here is worked out from that and nothing else.
     //
-    // In `ruled::Ruling`, which is what everything the module draws over a
-    // plane runs after: the reading written here is what it all reads.
-    app.add_systems(
-        Update,
-        (rule, mark_out).in_set(MapSet::Present).in_set(ruled::Ruling),
-    );
+    // Nothing else in `Update` orders against it. The one thing that reads
+    // the reading written here is [`draw_readouts`], and that runs in
+    // `EguiPrimaryContextPass`, a schedule later in the same frame.
+    app.add_systems(Update, (rule, mark_out).in_set(MapSet::Present));
     // Flat on the screen, in egui's own pass, under the chrome and over the
     // map — the same layer and the same reason the names and rings are drawn
     // there.
@@ -109,8 +111,9 @@ pub fn plugin(app: &mut App) {
     // the executor the stacking would be whichever painter it happened to
     // reach first, which is why the whole of it is spelled out here.
     //
-    // Before the lettering as well, so the annotation layer is registered
-    // beneath the panes, as [`crate::systems::labels::draw_names`] is.
+    // Before the lettering as well, which is what registers the annotation
+    // layer beneath the panes: the lettering leads the chrome (see
+    // [`crate::ui`]), so before it is before all of that.
     app.add_systems(
         EguiPrimaryContextPass,
         draw_readouts
@@ -403,7 +406,7 @@ const DIMMEST: f32 = 0.3;
 /// still galactic coordinates over them.
 ///
 /// Only the system the map is holding ever has a mark that goes out (see
-/// [`crate::systems::bodies::spawn::fade`]), so a wide neighbour whose own
+/// `fade` in `systems::bodies::spawn`), so a wide neighbour whose own
 /// measure would have its mark nearly gone from four light years off cannot
 /// take the ruler while the camera stands somewhere else.
 ///
@@ -606,17 +609,24 @@ pub(crate) fn draw_readouts(
     camera: Query<(&OrbitCamera, &Camera)>,
     planes: Query<(&Ruler, &Plane, &Reading)>,
     // Picked-out systems, placed against the galaxy plane by their true `f64`
-    // position rather than an f32 grid remainder, which is the whole of the fix.
-    systems: Query<
-        (&System, &InheritedVisibility),
-        (With<Selected>, With<Located>),
-    >,
+    // position rather than an f32 grid remainder, which is the whole of the
+    // fix. Their `Visibility` is the one [`crate::systems::visibility`] wrote
+    // this frame, which is the component
+    // [`crate::systems::selection::ring`] asks as well: one question, one
+    // answer, and the two agree on the frame a system is put away.
+    systems: Query<(&System, &Visibility), (With<Selected>, With<Located>)>,
     // And picked-out bodies, against a system's own plane. Read off the grid
     // holding them, which is near the origin and so already exact.
-    bodies: Query<
-        (Entity, &InheritedVisibility),
-        (With<Body>, With<Selected>, With<Located>),
-    >,
+    //
+    // Asked nothing beyond existing, as [`crate::systems::pointing::hits`]
+    // asks nothing more. A body exists exactly while its system's contents
+    // are on the map, which is the same ground its name and its ring are
+    // granted on; being off the frame is answered by the projection giving
+    // nothing for what the camera cannot see. Gated on anything the render
+    // settles instead, a body picked out on the frame its system's contents
+    // are drawn gets its name, its ring and its clickable area but no
+    // readout, and the numbers arrive a frame after everything else.
+    bodies: Query<Entity, (With<Body>, With<Selected>, With<Located>)>,
     places: Places,
 ) -> Result {
     let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
@@ -627,9 +637,6 @@ pub(crate) fn draw_readouts(
     let painter = ctx.layer_painter(annotations_layer());
     let font = egui::FontId::new(READS, egui::FontFamily::Monospace);
     let hue = Srgba::from(LINE);
-    // How far a readout stands before it has faded into the plane's horizon, in
-    // light years — the same reach the shader fades the plane's own lines over.
-    let reach = orbit.radius as f64 * FADE_BEYOND;
     // The plane hangs through what the camera looks at, so its altitude is the
     // middle's own, in absolute light years.
     let plane_y = orbit.center.y;
@@ -673,6 +680,13 @@ pub(crate) fn draw_readouts(
             continue;
         }
         let unit = reading.unit;
+        // How far a readout stands before it has faded into the plane's
+        // horizon. Read off the plane it is drawn over rather than worked out
+        // again from the zoom, so a dropline and the ruling under it fade on
+        // the one figure and cannot drift apart. [`Plane::reach`] is in
+        // metres, being a distance out through the world; everything here is
+        // in light years, so it is spoken into those once.
+        let reach = plane.reach / space::LIGHT_YEAR;
         // Where this space is measured from, in absolute light years. The
         // middle is said in the plane's unit out from here, so undoing that on
         // the middle recovers it: nought for the galaxy, the star for a system.
@@ -710,18 +724,15 @@ pub(crate) fn draw_readouts(
         // Everything picked out in this plane's space: a line dropped to the
         // plane, the three numbers under its foot, and how far off it went
         // beside the line. Systems out in the galaxy; bodies inside a system.
-        // A thing the caller has hidden is not there to be located, and a line
-        // dropped from where it would have stood is a line about nothing.
+        // A system the map has put away is not there to be located, and a line
+        // dropped from where it would have stood is a line about nothing; a
+        // body is there to be located for as long as it is there at all.
         let located: Vec<DVec3> = if ruler.inside {
-            bodies
-                .iter()
-                .filter(|(_, shown)| shown.get())
-                .filter_map(|(body, _)| places.of(body))
-                .collect()
+            bodies.iter().filter_map(|body| places.of(body)).collect()
         } else {
             systems
                 .iter()
-                .filter(|(_, shown)| shown.get())
+                .filter(|(_, shown)| **shown != Visibility::Hidden)
                 .map(|(system, _)| system.position())
                 .collect()
         };

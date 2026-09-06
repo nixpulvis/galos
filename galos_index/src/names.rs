@@ -31,7 +31,7 @@ use std::path::Path;
 /// The trade is publish cost against read cost: a chunk is the unit a change
 /// rewrites, and the whole table is as many files as it takes. At 64Ki entries
 /// a chunk is about three megabytes and a galaxy is a few dozen files.
-pub const CHUNK: usize = 64 * 1024;
+const CHUNK: usize = 64 * 1024;
 
 /// The names table as the builder holds it: chunked, indexed by address, and
 /// tracking which chunks a publish must write.
@@ -81,16 +81,6 @@ impl NameTable {
     /// How many systems the table names.
     pub fn len(&self) -> usize {
         self.slot.len()
-    }
-
-    /// Whether the table names nothing.
-    pub fn is_empty(&self) -> bool {
-        self.slot.is_empty()
-    }
-
-    /// How many chunks the table stands in.
-    pub fn chunks(&self) -> usize {
-        self.chunks.len()
     }
 
     /// Put `entry` in the table, and say whether anything changed.
@@ -229,12 +219,12 @@ mod tests {
         let entries: Vec<NameEntry> =
             (0..CHUNK as i64 + 7).map(entry).collect();
         let mut table = NameTable::from_entries(entries.clone());
-        assert_eq!(table.chunks(), 2);
+        assert_eq!(table.chunks.len(), 2);
         assert_eq!(table.publish(&dir).unwrap(), 2);
 
         let read = NameTable::read(&dir).unwrap();
         assert_eq!(read.len(), entries.len());
-        assert_eq!(read.chunks(), 2);
+        assert_eq!(read.chunks.len(), 2);
         assert_eq!(read.chunks[0].len(), CHUNK);
         assert_eq!(read.chunks[1].len(), 7);
         assert_eq!(crate::source::read_names(&dir).unwrap(), entries);
@@ -248,7 +238,7 @@ mod tests {
         let dir = scratch("dirty");
         let mut table =
             NameTable::from_entries((0..3 * CHUNK as i64).map(entry).collect());
-        assert_eq!(table.chunks(), 3);
+        assert_eq!(table.chunks.len(), 3);
         table.publish(&dir).unwrap();
 
         // The feed re-reports systems from every chunk, unchanged.
@@ -296,7 +286,7 @@ mod tests {
         assert!(table.remove(CHUNK as i64));
         assert!(table.remove(CHUNK as i64 + 1));
         table.publish(&dir).unwrap();
-        assert_eq!(table.chunks(), 1);
+        assert_eq!(table.chunks.len(), 1);
         assert!(!names_chunk_path(&dir, 1).exists());
         assert_eq!(crate::source::read_names(&dir).unwrap().len(), CHUNK - 1);
 

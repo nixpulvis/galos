@@ -170,11 +170,10 @@ impl System {
     ///
     /// Nothing needs a floor under it. The reach is measured to the far edge
     /// of the furthest thing on record — a lone star's own limb included — so
-    /// the shell drawn at [`scale::MARGIN`] of it always encloses what is
+    /// the shell drawn at `scale::MARGIN` of it always encloses what is
     /// inside, and the mark [`scale::shell`] draws instead is what keeps a
     /// small system visible from a distance.
     ///
-    /// [`scale::MARGIN`]: crate::systems::scale::MARGIN
     /// [`scale::shell`]: crate::systems::scale
     pub fn reach(&self) -> f32 {
         self.reach.unwrap_or(bodies::STAND_IN)
@@ -567,7 +566,7 @@ const EVICT_BUDGET: usize = 4096;
 /// child list each time (see [`super::despawn`]), so dropping thousands would
 /// cost millions. Replacing the child list with the keepers empties the batch's
 /// links first, so each drop is O(1); a detached system then despawns with no
-/// parent left to unlink from, and its shell and labels go with it.
+/// parent left to unlink from, and anything hung under it goes with it.
 fn drain_evictions(
     galaxy: Res<crate::space::Galaxy>,
     children: Query<&Children>,
@@ -669,7 +668,11 @@ const FOLLOW_MARGIN: u32 = 10;
 pub fn reach_with_camera(
     mut spyglass: ResMut<Spyglass>,
     camera: Query<&OrbitCamera>,
-    lens: Query<&Projection>,
+    // Only the eye's. Every camera the map draws through carries a
+    // `Projection`, `Camera3d` requiring one, and three of them are running:
+    // asked bare, the query matches all three and answers nothing. How wide
+    // the viewer sees is this camera's to say.
+    lens: Query<&Projection, With<OrbitCamera>>,
 ) {
     if !spyglass.follow_camera {
         return;
@@ -700,14 +703,15 @@ pub fn reach_with_camera(
 
 /// Where a system named in the resident table sits, in light years
 ///
-/// The names table holds only placed systems, so this is always an answer;
-/// kept as an [`Option`] for the callers that still ask it as a question.
-pub fn system_to_vec(entry: &NameEntry) -> Option<DVec3> {
-    Some(DVec3::new(
+/// The three columns of a [`NameEntry`] widened to the `f64` the map is laid
+/// out in. The names table holds only placed systems, so every entry has an
+/// answer.
+pub fn system_to_vec(entry: &NameEntry) -> DVec3 {
+    DVec3::new(
         entry.position[0] as f64,
         entry.position[1] as f64,
         entry.position[2] as f64,
-    ))
+    )
 }
 
 impl From<&NameEntry> for System {

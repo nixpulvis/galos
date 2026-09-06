@@ -593,7 +593,7 @@ fn unspawned(selected: &[i64], spawned: &HashSet<i64>) -> Vec<i64> {
 /// holds, whatever it looked at in between, and waiting out the poll for it is
 /// the difference between asking every tenth of a second and asking every ten
 /// seconds.
-pub fn spyglass_condition(
+fn spyglass_condition(
     index: &FetchIndex,
     tasks: &ResMut<FetchTasks>,
     now: Instant,

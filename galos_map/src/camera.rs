@@ -55,12 +55,19 @@ pub(crate) const STAR_BLOOM: Bloom = Bloom {
     ..Bloom::NATURAL
 };
 
-/// Match the camera's bloom to the view
+/// Match the scene camera's bloom to the view
 ///
-/// The realistic sky is points the bloom spreads into stars, so it wants the
-/// tight [`STAR_BLOOM`]. The map's shells carry their own no-bloom camera, but a
-/// system drawn from within still wants the natural bloom on its bodies, so that
-/// is restored off the realistic view. Written only when the view moves.
+/// The eye's bloom is what the lit bodies and the orbit lines on the scene's
+/// own layer are drawn through, and that is the whole of what this swaps. The
+/// realistic sky is not among them: it is the flat field on [`FIELD_LAYER`],
+/// drawn by a camera of its own, and `crate::systems::field::tune_field` is
+/// what gives that camera the tight [`STAR_BLOOM`] a field of points wants.
+///
+/// Which leaves the two views asking for different bloom on the same bodies.
+/// The realistic view stands among stars drawn as tight glints and takes the
+/// same for what is in front of them; the map restores [`Bloom::NATURAL`],
+/// where a body is drawn large enough to be the subject rather than one light
+/// among many. Written only when the view moves.
 fn tune_bloom(
     view: Res<crate::systems::scale::View>,
     mut cameras: Query<&mut Bloom, With<OrbitCamera>>,
@@ -612,8 +619,12 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
         //
         // Nothing emissive moves with this. Bevy weighs emission against the
         // exposure by `StandardMaterial::emissive_exposure_weight`, which is
-        // nothing unless it is asked for, so the stars and the shells are
-        // drawn at the strengths they were set at.
+        // nothing unless it is asked for, so what this stops down is only what
+        // a star lights: the bodies on the scene's own layer. The star at the
+        // heart of a descended system and the glow a dim body is given are
+        // emissive, an orbit line's material is unlit, and all of them come out
+        // at the strengths they were set at. The flat star field is a camera
+        // and a layer away and never sees this exposure at all.
         Exposure::SUNLIGHT,
         AmbientLight { color: Color::default(), brightness: 1e3, ..default() },
         // Every other entity is drawn relative to this one.
@@ -655,7 +666,7 @@ pub(crate) const FIELD_LAYER: usize = 5;
 
 /// The order the star field's camera draws at
 ///
-/// Between the scene (0) and the annotations ([`ANNOTATIONS_LAYER`]): over the
+/// Between the scene (0) and the annotations ([`ANNOTATIONS_ORDER`]): over the
 /// galaxy, so a system's mark covers the plane and the bodies rather than
 /// being blended under them, and under the names and the rings, which are
 /// notes on the field rather than part of it.
@@ -665,12 +676,27 @@ pub(crate) const FIELD_LAYER: usize = 5;
 /// camera is gone and this says what it is.
 pub(crate) const FIELD_ORDER: isize = 1;
 
-/// The camera order and render layer the annotations are drawn at
+/// The render layer the annotations are drawn on
 ///
-/// Over the scene (0) and the star field ([`FIELD_ORDER`]). Nothing 3D is
-/// held on this layer — every annotation is painted in screen space by egui —
-/// so the number only stacks this camera's pass last, over the whole map.
+/// Nothing 3D is held on it: every annotation is painted in screen space by
+/// egui, and the camera that holds them rasterises no mesh of its own. So what
+/// this number is worth is only that no other pass shares it — the same worth
+/// [`FIELD_LAYER`] has, and the same reason neither is renumbered down into a
+/// layer the map has given up.
 const ANNOTATIONS_LAYER: usize = 2;
+
+/// The order the annotations' camera draws at
+///
+/// Last of the three: over the scene (0) and the star field ([`FIELD_ORDER`]),
+/// so the names, the rings, and the chrome egui draws above them land over the
+/// whole map rather than under what they annotate. Anything past the field's
+/// order would do; this is the next one up.
+///
+/// An order, not a layer. It reads the same as [`ANNOTATIONS_LAYER`] and says
+/// something else — a place in the stack, against a number nothing else is on
+/// — and the two being one thing is exactly the reading [`FIELD_ORDER`] was
+/// split out to stop.
+const ANNOTATIONS_ORDER: isize = 2;
 
 /// The camera the map's annotations are drawn over the galaxy by
 ///
@@ -680,22 +706,23 @@ const ANNOTATIONS_LAYER: usize = 2;
 /// in the scene, where a star nearer than a name would blend over the top of
 /// it and no depth a name sat at would win, the stars being on both sides of
 /// it. So one camera draws them all: it holds egui's primary context and
-/// stacks last, over the scene and the shells, so its pass — the annotations,
-/// and the chrome egui draws above them — lands over the whole map.
+/// stacks last, over the scene and the star field, so its pass — the
+/// annotations, and the chrome egui draws above them — lands over the whole
+/// map.
 ///
 /// [`Hdr`] to match the target the eye has already written and tonemapped.
 /// [`Tonemapping::None`], so this pass does not run that tonemapped scene
 /// through the filmic curve a second time. No [`Bloom`]: an annotation is not
 /// a light source, and blooming one would spread it over the dark edge that
 /// holds it apart from what is behind it. It clears no colour, so what the
-/// scene and the shells drew stands.
+/// scene and the field drew stands.
 fn annotations() -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
         Tonemapping::None,
         Camera {
-            order: ANNOTATIONS_LAYER as isize,
+            order: ANNOTATIONS_ORDER,
             clear_color: ClearColorConfig::None,
             ..default()
         },
@@ -710,7 +737,12 @@ fn annotations() -> impl Bundle {
 /// curve from wherever the camera has reached.
 pub fn move_camera(
     mut query: Query<&mut OrbitCamera>,
-    lens: Query<&Projection>,
+    // Only the eye's. Three cameras draw the map and every one of them carries
+    // a `Projection`, `Camera3d` requiring one, so a query for a bare
+    // projection matches all three and answers nothing at all. What the framing
+    // below has to know is how wide the viewer sees, and that is this camera's
+    // to say.
+    lens: Query<&Projection, With<OrbitCamera>>,
     mut camera_events: MessageReader<MoveCamera>,
 ) {
     for event in camera_events.read() {
@@ -782,8 +814,9 @@ pub fn orbit_camera(
     };
 
     // Which grid the camera hangs in, worked out once for the zoom floor below
-    // and the cell split at the end. A child of a system's shell is measured
-    // in that system's metre-fine grid; anything else in the galaxy's.
+    // and the cell split at the end. A camera that has descended is a child of
+    // the system it went into, and is measured in that system's metre-fine
+    // grid; anything else in the galaxy's.
     let descended = child_of
         .map(ChildOf::parent)
         .and_then(|parent| inside.get(parent).ok());
@@ -1010,30 +1043,6 @@ pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
 mod tests {
     use super::*;
     use crate::systems::bodies::fetch::{Approach, Approaching};
-
-    /// The map looks through two cameras, and only one of them is the eye
-    ///
-    /// Every system that asks where the viewer stands narrows by
-    /// `OrbitCamera` rather than by `Camera`, so the overlay is invisible to
-    /// them. A bare `With<Camera>` would match both and `single` would fail,
-    /// which takes the names off the map rather than reporting anything.
-    #[test]
-    fn only_the_orbit_camera_answers_for_the_eye() {
-        let source = include_str!("systems/labels.rs");
-        let pointing = include_str!("systems/pointing.rs");
-        let selection = include_str!("systems/selection.rs");
-
-        for (name, text) in [
-            ("labels", source),
-            ("pointing", pointing),
-            ("selection", selection),
-        ] {
-            assert!(
-                !text.contains("With<Camera>"),
-                "{name} asks for a camera without saying which"
-            );
-        }
-    }
 
     /// The annotations draw over the galaxy and the star field
     ///
@@ -1687,6 +1696,59 @@ mod tests {
         let back = stand_back(50., None);
 
         assert!(fits(50., back, DEFAULT_HALF_FOV));
+    }
+
+    /// The eye is asked for the lens even with other cameras carrying one
+    ///
+    /// The three tests above hand [`stand_back`] a lens themselves, which is
+    /// not how a running map comes by one. There the map draws through three
+    /// cameras, `Camera3d` requires a [`Projection`], and a query for a bare
+    /// projection matches all three and answers nothing — quietly, since the
+    /// answer is an [`Option`] and none of it means the default angle. Framing
+    /// then stops asking the window what shape it is, and a route plotted in a
+    /// window taller than it is wide has its ends cut off, which is the whole
+    /// thing those tests are for. So this one goes the long way round: a second
+    /// camera stands beside the eye and the framing is asked for by message.
+    #[test]
+    fn the_eye_answers_for_the_lens_among_other_cameras() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<MoveCamera>();
+        app.add_systems(Update, move_camera);
+
+        let tall = lens(400., 1200.);
+        app.world_mut().spawn((
+            Camera3d::default(),
+            OrbitCamera::default(),
+            lens(400., 1200.),
+        ));
+        // The star field's camera, or the annotations', neither of which
+        // answers for anything the viewer looks through.
+        let other = app.world_mut().spawn(Camera3d::default()).id();
+        assert!(
+            app.world().get::<Projection>(other).is_some(),
+            "a camera with no projection cannot stand in for the field's",
+        );
+
+        app.world_mut()
+            .write_message(MoveCamera { position: None, framing: Some(50.) });
+        app.update();
+
+        // A tolerance, not equality: the same expression evaluated in the test
+        // and inside the system need not come out to the same bit, `tan` and
+        // `atan` being what they are. A lens read from the wrong camera, or
+        // from none, is out by hundreds.
+        let through_the_eye = stand_back(50., Some(&tall));
+        let back = asked(&mut app);
+        assert!(
+            (back - through_the_eye).abs() < 1e-3,
+            "stood back {back}, not the {through_the_eye} the eye's lens asks \
+             for: framed through some other camera's lens, or through none",
+        );
+        assert!(
+            (through_the_eye - stand_back(50., None)).abs() > 1.,
+            "a lens the default angle already agrees with proves nothing",
+        );
     }
 
     /// Twice as much to hold is twice as far to stand

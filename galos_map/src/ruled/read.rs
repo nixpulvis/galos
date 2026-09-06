@@ -32,11 +32,12 @@ pub const EDGE_ON: f32 = 0.25;
 ///
 /// The pitch does not enter. The lines themselves are lost as the plane is
 /// turned edge on, because a ruling at a grazing angle is moire rather than
-/// lines, and [`EDGE_ON`] is where the shader gives up on them. A number is
-/// drawn facing the camera and a dropped line stands across the plane rather
-/// than along it, so neither has that trouble; fading them with the lines would
-/// take the numbers away exactly when the view is too flat to read anything
-/// else off the plane, which is when they are the only thing left worth reading.
+/// lines, and [`EDGE_ON`] is where the shader gives up on them. Nothing that
+/// stands over the plane is drawn in it: a number is painted flat in screen
+/// space and a dropped line runs across the ruling rather than along it, so
+/// neither has that trouble. Fading them with the lines would take the numbers
+/// away exactly when the view is too flat to read anything else off the plane,
+/// which is when they are the only thing left worth reading.
 pub fn faded(from_eye: DVec3, reach: f64) -> f32 {
     let far = from_eye.length();
     if far <= 0. || reach <= 0. {
@@ -60,8 +61,8 @@ pub fn drawn_at(strength: f32, bright: f32) -> f32 {
 /// Where a plane's rulers stand, and what they are said in
 ///
 /// Written by whoever rules the plane, every frame, before anything here is
-/// read. How wide a cell is and how far apart the numbers go are [`super::ladder`]'s
-/// to answer and the caller's to ask; this is where the answers land.
+/// read. How wide a cell is and how far apart the numbers go are `ladder`'s to
+/// answer and the caller's to ask; this is where the answers land.
 ///
 /// Nothing is drawn over a plane whose [`Reading::strength`] has run out. A
 /// number standing over a ruling that has gone is a number about nothing.
@@ -104,7 +105,7 @@ impl Default for Reading {
 /// A line is dropped to the plane from wherever it stands, with the three
 /// numbers the plane can say about it under the foot and how far off the plane
 /// it went beside the line. What is worth pointing out is the caller's to
-/// decide; put this on it and [`crate::grid::draw_readouts`] says where it is.
+/// decide; put this on it and `crate::grid::draw_readouts` says where it is.
 #[derive(Component)]
 pub struct Located;
 

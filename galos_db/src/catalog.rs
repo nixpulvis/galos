@@ -220,9 +220,9 @@ mod tests {
             one("Pleione", 118.0, 136.0),
             one("Sirius", 8.6, 8.6),
         ]));
-        assert!(text.contains("Pleione"), "{text}");
-        assert!(text.contains("2 stars in both"), "{text}");
-        assert!(text.contains("15.3%"), "{text}");
+        assert!(text.contains("Pleione"), "{}", text);
+        assert!(text.contains("2 stars in both"), "{}", text);
+        assert!(text.contains("15.3%"), "{}", text);
     }
 
     /// A mirrored frame is called out rather than left in the matrix for

@@ -219,9 +219,11 @@ impl Contents {
     ///
     /// [`Contents::extent`] is `None` both for a system with nothing in it and
     /// for one whose rows have not landed yet, and those mean opposite things
-    /// to whatever would hold the camera off a system with nothing to descend
-    /// into. This tells the two apart, so a question in flight is not read as
-    /// an empty answer.
+    /// to the zoom floor: `zoom_floor` in [`crate::camera`] holds the camera
+    /// off a system with nothing to descend into, and reads this so a question
+    /// in flight is not taken for an empty answer. Every handover from one
+    /// system to the next passes through here, so reading it the other way
+    /// would nudge the camera on the way in to anywhere.
     pub fn asking(&self) -> bool {
         matches!(self.state, FetchState::Asking)
     }

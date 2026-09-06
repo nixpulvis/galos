@@ -51,12 +51,22 @@ pub fn plugin(app: &mut App) {
         size_bodies.in_set(MapSet::Present).before(super::labels::choose_names),
     );
     // Painted flat in screen space with egui, in the same pass and the same
-    // way [`super::labels::draw_names`] paints the names, and before them so
-    // the ring layer sits beneath the name grounds. A ring drawn as a mesh out
-    // at a system's galaxy coordinate tears in f32; see `docs/night-sky.md`.
+    // way [`super::labels::draw_names`] paints the names. A ring drawn as a
+    // mesh out at a system's galaxy coordinate tears in f32; see
+    // `docs/night-sky.md`.
+    //
+    // Four systems paint into the one layer, and the order they run in is the
+    // order they stack: the ruled plane's readouts, then this ring, then
+    // [`super::selection::ring`], then the names. Before the names so both
+    // rings sit beneath the grounds the names are written on. Before the
+    // selection's ring because a selection is what the user came for and a
+    // hover is only where they happen to be: the two never ring the same
+    // system, but a route stop's mark and a neighbour's ring overlap on
+    // screen at close zoom, and it is the lasting mark that should read
+    // whole.
     app.add_systems(
         EguiPrimaryContextPass,
-        ring.before(super::labels::draw_names),
+        ring.before(super::labels::draw_names).before(super::selection::ring),
     );
     app.add_observer(start_drag);
     app.add_observer(track_drag);
@@ -217,8 +227,12 @@ const BODY_AIR: f32 = BODY_MIN_RADIUS / 2.;
 ///
 /// Pixels, because that is what the mark is specified in and what aiming is
 /// done in: [`INDICATOR_MIN_RADIUS`] is a distance to the hand rather than a
-/// distance in the world. A ring is drawn in the world and so converts this
-/// back at the moment of drawing, which is the only place the two units meet.
+/// distance in the world. The conversion runs one way only: `system_mark`
+/// and `body_mark` take what is drawn out in the world and answer in
+/// pixels, once, and everything downstream of them stays there — the ring is
+/// painted straight into the egui layer at a projected pixel, and the pointer
+/// is tested against a pixel radius. Nothing turns this number back into
+/// metres, which is why there is no second conversion to keep honest.
 ///
 /// Held on the system itself. It once sat on an invisible sphere hung off the
 /// system for a ray to be thrown at, and that sphere had to be a size in
@@ -457,7 +471,7 @@ pub(super) fn point_at(
 /// grown past it, and a mark converted through the depth into the view sat off
 /// its star towards the edges of the frame.
 ///
-/// A shell that is not drawn is not measured: a mark taken from a sphere
+/// A system that is not drawn is not measured: a mark taken from a star
 /// nobody can see would put the whole viewport up as one system's target.
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
@@ -785,7 +799,7 @@ pub fn point_the_cursor(
 /// circle painted at a projected pixel holds its shape at every zoom.
 ///
 /// It goes out with the shell as the camera comes inside the system, as
-/// [`super::selection::ring`] does and for the same reason.
+/// [`super::selection`]'s `ring` does and for the same reason.
 #[allow(clippy::too_many_arguments)]
 pub fn ring(
     mut contexts: EguiContexts,
@@ -795,7 +809,7 @@ pub fn ring(
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (&System, &Strength, &Indicator, Has<Filtered>),
+        (&System, &Visibility, &Strength, &Indicator, Has<Filtered>),
         (With<PointedAt>, Without<Selected>),
     >,
     // Whatever inside a system is pointed at, read off the grid holding it the
@@ -943,7 +957,17 @@ pub fn ring(
 
     // The system the pointer is on, drawn where it lands on screen rather than
     // out at its own coordinate, where a mesh ring would tear.
-    for (system, mark, indicator, filtered) in &pointed_at {
+    for (system, visibility, mark, indicator, filtered) in &pointed_at {
+        // Gated as [`super::selection::ring`] is, and for the reason argued
+        // there: the strength cannot answer whether the star is drawn. The
+        // mark itself cannot outlive the star by more than a frame — [`hits`]
+        // catches nothing hidden — but it reads last frame's visibility, so a
+        // system hidden on the frame it is hovered stays pointed at and would
+        // wear a ring around empty sky.
+        if *visibility == Visibility::Hidden {
+            continue;
+        }
+
         let standing = mark.0;
         if standing <= 0. {
             continue;

@@ -1,7 +1,7 @@
 //! Catalog stars as index systems: the bridge that makes this a peer of the
 //! bake.
 //!
-//! `galos_db/src/index.rs` reads Postgres and hands back
+//! `galos_db/src/index/mod.rs` reads Postgres and hands back
 //! `Vec<galos_index::System>`. This does the same from a catalog file, and the
 //! point of it is that everything downstream — the tree, the walks, the cells,
 //! the client — cannot tell which one it got. A tree of real stars drawn by

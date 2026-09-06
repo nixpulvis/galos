@@ -247,7 +247,7 @@ pub struct StarProfile(pub ProfileKind);
 ///
 /// Named rather than numbered, so that a scheme below says which color it
 /// means. One colour each, and nothing indexes them: [`super::field`] asks
-/// [`Hue::color`] for the three channels it paints a mark with.
+/// `Hue::color` for the three channels it paints a mark with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Hue {
     Green,
@@ -981,8 +981,10 @@ pub fn spawn_systems(
                 // drawn over one is reported as well and `pointing` can
                 // weigh the two.
                 Pickable { should_block_lower: false, is_hoverable: true },
-                // The star is what is shown or hidden; the mesh and any
-                // labels inherit that from it.
+                // Whether the system is drawn at all. Nothing inherits it:
+                // `field::build_field` and the `labels`, `pointing` and
+                // `selection` painters each read the value off the shell in
+                // their own query and skip the ones hidden.
                 Visibility::default(),
                 // A star outside the galaxy's grid is not placed by it,
                 // and would be drawn wherever its bare transform happened

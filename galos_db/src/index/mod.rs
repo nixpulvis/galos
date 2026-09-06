@@ -204,7 +204,7 @@ async fn changed_addresses(
 /// close the gap — which is also the consistency a `--watch` restart tests the
 /// served directory by. The row carries what each side needs and is turned into
 /// both here.
-pub async fn read_galaxy(
+async fn read_galaxy(
     db: &Database,
 ) -> Result<(Vec<System>, Vec<meta::NameEntry>)> {
     let now = db.now().await?.naive_utc();

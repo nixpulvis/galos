@@ -180,9 +180,10 @@ fn diagnostics(
                         "reaches",
                         &loaded.names.reaches.len().to_string(),
                         "Systems with a reach on record — how far each one \
-                         holds anything scanned, which is the size its shell \
-                         is drawn at. A system absent from it has nothing \
-                         scanned in it and is stood in for.",
+                         holds anything scanned, which is what the star field \
+                         sizes the mark it paints for the system from. A \
+                         system absent from it has nothing scanned in it and \
+                         is stood in for.",
                     );
                     pair(
                         ui,
@@ -377,9 +378,11 @@ fn diagnostics(
                                 format!("{:.2} out", away / shell)
                             },
                         ),
-                        "Where the eye stands in the shell drawn around it, \
-                         as a multiple of that shell's own radius. One is its \
-                         surface, so anything under one is a camera inside \
+                        "Where the eye stands against the system's shell, as a \
+                         multiple of that shell's radius. The shell is the rim \
+                         of the disc the star field paints for the system, and \
+                         the map's one boundary for being inside it: one is \
+                         that rim, so anything under one is a camera inside \
                          the system, and that is what the ruler changes hands \
                          across.",
                     );

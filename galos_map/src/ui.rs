@@ -456,7 +456,7 @@ const SELECTION_DOT: egui::Color32 = egui::Color32::from_rgb(
 /// settling, and it is worth roughly a tenth of what the rail is.
 const RADIUS_DRAG: f32 = 0.005;
 
-/// Offer a radius over the whole range it may take
+/// A radius in light years, on a log slider with a box beside it
 ///
 /// One rail, logarithmic, since the range runs over five orders of magnitude
 /// and a linear one would spend nearly all of itself between ten thousand
@@ -467,11 +467,6 @@ const RADIUS_DRAG: f32 = 0.005;
 /// Exactness is the box's business, not the rail's. A pixel near the top of
 /// the rail is worth hundreds of light years however it is scaled, so a number
 /// that has to be exact is typed rather than dragged to.
-///
-/// `ceiling` is as far as this one may reach, which for names is however far
-/// the spyglass reaches. The rail clamps to it, so a radius set wide and then
-/// hemmed in comes back to what is on offer.
-/// A radius in light years, on a log slider with a box beside it
 ///
 /// `ceiling` bounds what can be asked for, and only that. A value already
 /// above it is shown held down to it and left alone underneath, so a ceiling
@@ -1670,7 +1665,7 @@ fn act_on(
             selection.pick(Picked::System(placed), gathering);
         }
         SystemAction::Travel => {
-            *travelled = crate::systems::system_to_vec(system)
+            *travelled = Some(crate::systems::system_to_vec(system))
         }
         SystemAction::Describe => *described = Some(placed),
     }
@@ -1698,10 +1693,9 @@ fn act_on(
 /// when the next name is typed and what was picked out of it stays, so a set
 /// can be built a name at a time.
 ///
-/// A system with no position on record is listed and cannot be picked. Three
-/// quarters of the systems on record are in that state, and knowing one exists
-/// is worth the line it takes; there is simply nothing to select, since what
-/// the map marks is a place.
+/// Every system listed can be picked. The resident table is names and
+/// positions in one, so an entry is a placed system by construction and there
+/// is no line here the camera cannot be sent to.
 ///
 /// Each line carries the info mark the rows in the bar carry, opening what is
 /// known about that system without picking it out. That is how a list of
@@ -1757,8 +1751,8 @@ fn found(
 /// bottom of the viewport answers a question by covering up what it is about.
 ///
 /// `center` is where distances are measured from, and nothing where the camera
-/// has yet to say. Where it is measured from is said in the same slot as why a
-/// system cannot be reached at all, so the column reads down either way.
+/// has yet to say. With nothing to measure from a line carries no distance
+/// rather than one measured from somewhere else.
 ///
 /// `salt` keys one list's lines apart from another's. Within a list they are
 /// keyed by place rather than by which system a line is about, as the rows in
@@ -1786,21 +1780,10 @@ pub(crate) fn system_list<'a>(
     scrolling(ui, height * OFFERED as f32, salt, |ui| {
         for (index, system) in systems.enumerate() {
             let at = crate::systems::system_to_vec(system);
-            // Where it is if it can be reached, and why it cannot if not.
-            let trailing = match (at, center) {
-                (Some(at), Some(center)) => {
-                    Some(format!("{:.1} Ly", center.distance(at)))
-                }
-                (Some(_), None) => None,
-                (None, _) => Some("no position".to_owned()),
-            };
-            let asked = system_line(
-                ui,
-                &system.name,
-                trailing,
-                at.is_some(),
-                (salt, index),
-            );
+            // How far off it is, where there is anywhere to measure from.
+            let trailing =
+                center.map(|center| format!("{:.1} Ly", center.distance(at)));
+            let asked = system_line(ui, &system.name, trailing, (salt, index));
             if let Some(asked) = asked {
                 chose = Some((system, asked));
             }
@@ -3387,11 +3370,6 @@ pub(crate) fn line(
 /// how far off the system is, and in the same slot whatever it says, so the
 /// column reads down.
 ///
-/// `reachable` is whether the system is one the map can place. A line that is
-/// not answers nothing and carries no mark: there is nowhere to send the
-/// camera and nothing for a panel to describe, and `trailing` is where the
-/// line says as much.
-///
 /// `salt` keys the mark apart from the marks on the lines around it. The
 /// caller chooses it, knowing what its own list does between one pass and the
 /// next.
@@ -3399,7 +3377,6 @@ pub(crate) fn system_line(
     ui: &mut Ui,
     name: &str,
     trailing: Option<String>,
-    reachable: bool,
     salt: impl std::hash::Hash,
 ) -> Option<SystemAction> {
     let gap = ui.spacing().item_spacing.x;
@@ -3412,10 +3389,9 @@ pub(crate) fn system_line(
         )
     });
 
-    // A panel is about a system the map can place, so a system with nowhere
-    // to be is not offered one. Nothing is left standing in its place: the
-    // line already says why, in the slot the mark would sit beside.
-    let mark = reachable.then(|| {
+    // Every list the map draws is of systems it can place, so every line
+    // carries the mark that opens a panel on one.
+    let mark = {
         // Laid out in nothing, so the color can be chosen once the pointer
         // has been asked about, which cannot happen until the line has been
         // placed.
@@ -3428,18 +3404,18 @@ pub(crate) fn system_line(
             f32::INFINITY,
             egui::TextStyle::Body,
         )
-    });
+    };
 
-    let reserved = mark.as_ref().map_or(0., |mark| mark.size().x + gap)
+    let reserved = mark.size().x
+        + gap
         + trailing.as_ref().map_or(0., |text| text.size().x + gap);
-    let (rect, answer) =
-        line(ui, egui::RichText::new(name), reserved, reachable);
+    let (rect, answer) = line(ui, egui::RichText::new(name), reserved, true);
     let middle = rect.center().y;
 
     // Asked about after the line, so that it is the one answering where the
     // two overlap. Under it the line would have to work out what it was not
     // being clicked on.
-    let describing = mark.map(|mark| {
+    let describing = {
         let at = egui::Rect::from_min_max(
             egui::pos2(rect.right() - LINE_PADDING - mark.size().x, rect.top()),
             egui::pos2(rect.right() - LINE_PADDING, rect.bottom()),
@@ -3464,16 +3440,13 @@ pub(crate) fn system_line(
             },
         );
         (at, answer.on_hover_cursor(egui::CursorIcon::PointingHand))
-    });
+    };
 
-    // Between the name and the mark, right against whichever of them ends the
-    // line, so the distances line up down the list rather than following the
-    // names.
+    // Between the name and the mark, right against the mark, so the distances
+    // line up down the list rather than following the names.
     if let Some(text) = trailing {
         let size = text.size();
-        let right = describing
-            .as_ref()
-            .map_or(rect.right() - LINE_PADDING, |(at, _)| at.left() - gap);
+        let right = describing.0.left() - gap;
         ui.painter().galley(
             egui::pos2(right - size.x, middle - size.y / 2.),
             text,
@@ -3485,7 +3458,7 @@ pub(crate) fn system_line(
     // as a click and the second as a double, so a line double clicked has
     // already been picked out by the time this is asked, which is what the
     // first click of the pair was for.
-    if describing.is_some_and(|(_, mark)| mark.clicked()) {
+    if describing.1.clicked() {
         Some(SystemAction::Describe)
     } else if answer.double_clicked() {
         Some(SystemAction::Travel)

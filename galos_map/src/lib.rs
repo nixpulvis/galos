@@ -84,12 +84,7 @@ impl Populated {
 
 impl Names {
     /// Build the resident table and its address index from the raw entries,
-    /// with no reach on record for any of them.
-    pub fn new(entries: Vec<NameEntry>) -> Names {
-        Names::reaching(entries, Vec::new())
-    }
-
-    /// The same, with the reaches table beside it.
+    /// with the reaches keyed by address alongside them.
     pub fn reaching(
         entries: Vec<NameEntry>,
         reaches: Vec<galos_index::SystemReach>,
@@ -165,17 +160,6 @@ impl Factions {
         found.truncate(limit);
         found
     }
-}
-
-/// The resident metadata tables a draw joins against, as one system parameter.
-///
-/// Bundled so a system reading both stays under Bevy's parameter limit, and
-/// because they always travel together: naming and colouring a system are the
-/// two halves of turning a bare cell point into something drawn.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct Tables<'w> {
-    pub populated: Res<'w, Populated>,
-    pub names: Res<'w, Names>,
 }
 
 #[cfg(test)]

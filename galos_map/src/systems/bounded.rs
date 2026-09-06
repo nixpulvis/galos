@@ -244,10 +244,10 @@ fn collect(
 /// hangs under it; a route's stops, which are how the way on is found; and
 /// whatever the user has picked out, which they are holding onto by hand.
 /// Dropping a selection here does not merely lose it — the ring and the row go
-/// on naming it, so [`super::fetch::fetch_selected`] builds the star again the
-/// moment [`super::selection::follow_selection`] rewrites the row, and the
-/// walk drops it again on the next frame. A system flickering in and out every
-/// frame is what that came to.
+/// on naming it, so [`super::fetch`]'s `fetch_selected` builds the star again
+/// the moment [`super::selection`]'s `follow_selection` rewrites the row, and
+/// the walk drops it again on the next frame. A system flickering in and out
+/// every frame is what that came to.
 ///
 /// The set is written rather than added to, so a system the walk wants again
 /// is not carried off by an eviction queued for it several frames ago and
@@ -405,7 +405,7 @@ mod tests {
         let system = build_from_point(
             &point,
             &Populated::default(),
-            &Names::new(Vec::new()),
+            &Names::reaching(Vec::new(), Vec::new()),
         );
 
         assert_eq!(system.address, 7);
@@ -494,7 +494,7 @@ mod tests {
         app.init_resource::<crate::systems::selection::Selection>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
-        app.insert_resource(Names::new(Vec::new()));
+        app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.insert_resource(View::Map);
         app.insert_resource(Spyglass {
             fetch: true,

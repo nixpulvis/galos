@@ -142,11 +142,11 @@ const LEADER_GAP: f32 = 0.15;
 
 /// How wide a character is taken to be, as a fraction of the font size
 ///
-/// Whether two names overlap is decided from their rectangles, and the width
-/// a name will draw at is known exactly, in `Text3dDimensionOut`, but only
-/// once the text mesh has been built, and building it is what [`choose_names`]
-/// is deciding whether to do. So the width is reckoned from the letter count
-/// instead.
+/// Whether two names overlap is decided by [`choose_names`], in `Update`,
+/// before any painter has run. The width a name draws at is known exactly
+/// only once [`draw_names`] has laid the words out into a galley, and that is
+/// a schedule later, with every name's room already granted. So the width is
+/// reckoned from the letter count instead.
 ///
 /// Named for the typographic advance, how far the pen moves along after
 /// drawing a glyph. The font is monospaced, so every glyph advances the same
@@ -166,21 +166,12 @@ const ADVANCE: f32 = 0.7;
 /// gaps between its letters are full of them has no shape to recognise. The
 /// ground is what makes the word a figure again.
 ///
-/// Solid, and it has to be. Blended, a ground is ordered against its own
-/// words by which mesh is further off, bevy measuring that to the middle of
-/// each; a ground's middle is half a name to the side of the words it carries,
-/// so the two are apart sideways as well as in depth and the sideways part
-/// swings as the camera turns. The order flips mid-rotation and a dark ground
-/// over white letters greys them out.
-///
-/// Depth cannot settle it, and pushing the ground back to try is what went
-/// wrong before: far enough back to beat the swing is far enough for
-/// perspective to drag it toward the middle of the view, so a name near the
-/// edge of the screen wears its ground low and off to the side. Opaque takes
-/// the question away with no setback at all. Opaque geometry is drawn before
-/// anything blended and writes depth as it goes; the words are blended, test
-/// `GreaterEqual`, and clear a ground at their own depth, so the two are left
-/// in the one plane and the ground never drifts off the words it carries.
+/// Opaque, and it has to be. A blended ground lets the field through at
+/// exactly the strength that made the word unreadable to begin with, and the
+/// counters are the part of a letter that carries its shape. Nothing else is
+/// at stake in the alpha: a ground and its words are two calls into one egui
+/// layer, the rect before the galley (see [`draw_names`]), and order in one
+/// layer is paint order, full stop.
 const GROUND: Srgba = Srgba::new(0.03, 0.03, 0.05, 1.);
 
 /// How far the ground reaches past the words, as a fraction of [`NAME_HEIGHT`]
@@ -398,7 +389,7 @@ type Candidate<'a, T> = (
 
 /// A system whose name has won a place on screen
 ///
-/// Awarded by [`choose_names`] and read by [`respawn`], which hangs a name
+/// Awarded by `choose_names` and read by `respawn`, which hangs a name
 /// token on whatever has one and takes the token from whatever does not. A
 /// name that would not be readable never gets a token at all.
 #[derive(Component)]
@@ -415,7 +406,7 @@ pub struct Label;
 
 /// The words a name token is set to
 ///
-/// What [`choose_names`] won a place for, kept on the token so [`draw_names`]
+/// What `choose_names` won a place for, kept on the token so [`draw_names`]
 /// can paint it and [`super::pointing`] can size the area that catches the
 /// pointer, both from the one string.
 #[derive(Component)]
@@ -478,12 +469,19 @@ pub(crate) fn world_per_pixel(
 
 /// The egui layer the map's own annotations are painted into
 ///
-/// One background layer for the rings, the names, their grounds and the
-/// leaders alike: a single painter list shared by [`draw_names`] and the ring
-/// systems, filled in the order those systems run — the rings first, beneath
-/// the grounds — so nothing about the stacking is left to how egui happens to
-/// order two separate layers. Background, so the whole of it sits under the
-/// chrome and over the map.
+/// One background layer for the readouts, the rings, the names, their grounds
+/// and the leaders alike: a single painter list, filled in the order the
+/// systems writing into it run. There are four of them, and that run order is
+/// the stacking — [`crate::grid::draw_readouts`] first and under everything,
+/// being the ruling the map is read against rather than anything picked out
+/// on it; then [`crate::systems::pointing::ring`], and
+/// [`crate::systems::selection::ring`] over that, a selection being the
+/// standing mark and a hover the passing one; then [`draw_names`] over the
+/// top, so that no ring or readout row crosses the words. All four are pinned
+/// against one another where they are registered, so none of the stacking is
+/// left to how egui happens to order separate layers or to which painter the
+/// executor happens to reach first. Background, so the whole of it sits under
+/// the chrome and over the map.
 pub(crate) fn annotations_layer() -> egui::LayerId {
     egui::LayerId::new(
         egui::Order::Background,
@@ -1503,8 +1501,8 @@ fn nameplate(words: String) -> impl Bundle {
 /// `docs/night-sky.md`); a name projected to a pixel on the CPU and painted
 /// there does not, and comes out crisp at the window's own scale besides.
 ///
-/// The layout is [`choose_names`]' and reaches here through the [`Label`]
-/// tokens [`respawn`] hangs off whatever wins a name: each carries the words to
+/// The layout is `choose_names`' and reaches here through the [`Label`]
+/// tokens `respawn` hangs off whatever wins a name: each carries the words to
 /// set, and its parent says where on screen the name goes and what colour it
 /// comes out. Painted in the background layer, under the chrome and over the
 /// map.

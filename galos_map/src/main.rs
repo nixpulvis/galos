@@ -81,10 +81,13 @@ fn main() {
         ..default()
     });
 
-    // The primary egui context is hosted on a camera of the map's own (see
-    // `camera::ui_camera`) rather than the first one bevy_egui finds, so its
-    // pass stacks at the top of the camera order and draws over the annotation
-    // overlays instead of under them. Off with the automatic one first.
+    // egui's primary context is attached by hand, to the annotations camera
+    // (`camera::annotations`), which draws last of the map's three. egui
+    // renders in the graph of whatever camera holds its context, so from there
+    // the chrome lands over the star field and the annotations rather than
+    // under them; left to itself bevy_egui takes the first camera it finds,
+    // which is the scene's, and drew the chrome under the field. Off with the
+    // automatic one first, so nothing stands a second context up.
     app.world_mut()
         .resource_mut::<EguiGlobalSettings>()
         .auto_create_primary_context = false;

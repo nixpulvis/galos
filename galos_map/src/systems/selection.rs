@@ -59,8 +59,11 @@ pub fn plugin(app: &mut App) {
     );
     // Painted flat in screen space with egui, in the same pass the names are,
     // so the ring holds its shape at galaxy coordinates where a mesh tears.
-    // Before the names so its layer sits beneath their grounds, as the ring
-    // camera sat beneath the grounds' before. See [`super::labels::draw_names`].
+    // Before the names so it sits beneath the grounds they are written on,
+    // and after [`super::pointing::ring`], which is where the order between
+    // the two rings is pinned: where a hover ring and a selection ring
+    // overlap on screen, the selection is the mark that lasts and so the one
+    // drawn whole. See [`super::labels::draw_names`].
     app.add_systems(
         EguiPrimaryContextPass,
         ring.before(super::labels::draw_names),
@@ -384,7 +387,10 @@ pub struct Selected;
 /// has left its system is a row about nowhere.
 ///
 /// Nothing drawn is placed from the selection's own position: the marks say
-/// which entity, and each ring is drawn where that entity's transform puts it.
+/// which entity, and each ring is then painted where that entity answers it
+/// stands. A system answers with [`System::position`], projected to a pixel;
+/// a body with the grid holding it, through [`Places::of`]. Neither reads a
+/// transform.
 fn follow_selection(
     mut selection: ResMut<Selection>,
     marked: Query<(Entity, Ref<System>), With<Selected>>,

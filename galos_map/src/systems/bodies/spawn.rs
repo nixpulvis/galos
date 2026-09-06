@@ -832,18 +832,17 @@ fn draw(
     let standing = systems.get(entity).map_or(DVec3::ZERO, |(_, system)| {
         space::metres(eye - system.position())
     });
-    // The shell has become the grid the camera descends into. As a star it
-    // wore a camera-facing rotation and a pixel scale, written every frame by
-    // `scale::size_photometrically`; as a grid its transform is instead the
-    // sub-grid's own placement, which `big_space` reads to hang the camera and
-    // to work out where the galaxy's sky stands behind it. Left tilted, the
-    // sky would swing off with the camera and stop tracking the orbit. So the
-    // facing is squared away here, once, keeping only the translation that says
-    // where the system sits in the galaxy; `size_photometrically` leaves the
-    // shell alone from now on (it is `Without<Grid>`), so nothing writes it
-    // back until the grid comes off on the way up.
+    // The shell has become the grid the camera descends into. Its transform
+    // stops being a mark's scale, written every frame by `scale`, and is
+    // instead the sub-grid's own placement, which `big_space` reads to hang
+    // the camera, every body in the system, and the galaxy's sky behind them.
+    // Left wearing the last size a mark was drawn at, the whole system inside
+    // would be scaled by it. So it is cleared here, once, keeping only the
+    // translation that says where the system sits in the galaxy; both sizings
+    // are `Without<Grid>` (`scale::size_by_distance` for the map and
+    // `scale::size_photometrically` for the realistic view), so nothing writes
+    // it back until the grid comes off on the way up.
     if let Ok(mut transform) = transforms.get_mut(entity) {
-        transform.rotation = Quat::IDENTITY;
         transform.scale = Vec3::ONE;
     }
     let mut commands = commands.entity(entity);

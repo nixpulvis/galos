@@ -287,11 +287,23 @@ fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
 /// `GlobalTransform` is written after this runs, so neither answers where it
 /// is. Both are in light years, and what is written is a size in metres, so
 /// the two meet here.
-pub fn size_by_distance(
+///
+/// A shell the camera has descended into is skipped, as it is in
+/// [`size_photometrically`]: it wears a [`Grid`] now and its transform is that
+/// sub-grid's placement, which `big_space` reads to hang the camera and every
+/// body in the system. A size written onto it scales all of that rather than a
+/// mark — here it is the system's own extent, so the insides would be blown up
+/// by the width of the shell standing around them — and the size answers
+/// nothing there in any case, the camera being inside the system and drawing
+/// its contents rather than a mark standing in for them.
+pub(crate) fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
     camera: Query<&OrbitCamera>,
-    mut shells: Query<(&mut Transform, &System, &Visibility), With<Shell>>,
+    mut shells: Query<
+        (&mut Transform, &System, &Visibility),
+        (With<Shell>, Without<Grid>),
+    >,
 ) {
     if !shells.is_empty() {
         let Ok(orbit) = camera.single() else { return };
@@ -359,8 +371,17 @@ const SMALLEST_DRAWN: f32 = 1.;
 /// it is a point.
 ///
 /// Measured from the body's own [`GlobalTransform`], which [`big_space`]
-/// writes relative to the camera, as [`super::pointing::size_bodies`] measures
-/// the same body for the same reason.
+/// writes relative to the cell the floating origin stands in. Inside a system
+/// those cells are a metre across, so a float holds that offset exactly, and
+/// this runs in `PostUpdate` after the propagation that wrote it, so the
+/// transform is the frame's own and not the frame before's.
+///
+/// Which is the other way round from [`super::pointing::size_bodies`], and
+/// deliberately. That one sizes the mark a name is packed against during
+/// `Update`, before anything has been propagated, so it has to ask the grid
+/// where a body stands rather than read a transform. What comes out of this
+/// is a scale and a mesh the renderer picks up later in the same `PostUpdate`,
+/// so there is nothing here for the wait to cost.
 pub fn size_inside(
     camera: Query<(&GlobalTransform, &OrbitCamera, &Camera)>,
     roundness: Res<Roundness>,
@@ -426,20 +447,28 @@ const DOT_RADIUS: f32 = 0.6;
 /// and still be aimed at — [`super::pointing`] floors a system's mark at a
 /// size for the hand whatever the field draws.
 ///
-/// What reads it is the field. `super::field::mark_radius` takes the size
-/// back off the shell, halves it, and draws a realistic star only where what
-/// is left is more than half of this, so the sliver is the one thing saying
-/// "this star did not clear the exposure floor" — and that test is the whole
-/// of what keeps the sub-floor sky dark. The map's floor applied here instead
-/// would draw every star under the floor as a point of light.
+/// What reads it is the field. [`super::field::drawn_radius`] takes the size
+/// back off the shell, divides it by what a pixel covers out there, halves it
+/// for this view, and draws a star only where what is left is more than half
+/// of this. So the sliver is the one thing saying "this star did not clear the
+/// exposure floor", and the field drops it rather than flooring it up the way
+/// the map does — the map's floor applied here would draw every star under the
+/// floor as a point of light.
+///
+/// Not zero for the room a float wants, rather than because a zero would light
+/// the sky. It would not: [`psf_radius`] returns exactly zero under the floor,
+/// so a zero sliver leaves the field a `raw` of zero and `0. > 0.` is still
+/// false, and the star is still undrawn. What a nonzero value buys is that the
+/// sentinel comes out of the multiply and divide by `per_pixel` it makes the
+/// trip through as a strictly positive number, instead of the test resting on
+/// an exact zero surviving two float operations.
 ///
 /// A thousandth of a pixel puts it three orders under the smallest star that
 /// draws ([`DOT_RADIUS`]), which is the room the test wants on both sides:
-/// the size reaches the field having round-tripped through a multiply and a
-/// divide by `per_pixel`, and nothing that survives that lands near the
-/// threshold. What it may not be is anything approaching twice
-/// [`DOT_RADIUS`] — at `1.2` the test would begin dropping stars that did
-/// clear the floor.
+/// nothing that survives the round trip lands near the threshold. What it may
+/// not be is anything approaching twice [`DOT_RADIUS`] — a star that cleared
+/// the floor is at least that wide, so at `1.2` the `UNSEEN * 0.5` test would
+/// begin dropping stars that did clear it.
 pub(crate) const UNSEEN: f32 = 1e-3;
 
 /// The visible radius of a star's point spread, in screen pixels
@@ -1029,6 +1058,41 @@ mod tests {
         app.update();
 
         assert!(writes(&app) > settled, "left a shell at the size it was");
+    }
+
+    /// A shell the camera has descended into is left to its grid
+    ///
+    /// Down inside a system the shell wears a [`Grid`], and its transform
+    /// stops being the remainder left over from a galaxy cell: it is that
+    /// sub-grid's own placement, which `big_space` reads to hang the camera
+    /// and every body in the system. A mark size written onto it there scales
+    /// all of that instead of a mark — the map's size is the system's own
+    /// extent, so the insides would be blown up by the width of the shell
+    /// standing around them — and neither view has a mark to draw in any
+    /// case, the camera being inside the thing the mark stood for. Both
+    /// sizings are held to it, so descending is safe under either view.
+    #[test]
+    fn a_descended_shell_is_left_to_its_grid() {
+        let mut app = sky();
+        app.init_resource::<StarExposure>();
+        app.add_systems(Update, (size_by_distance, size_photometrically));
+        // The widest system on record, a fifth of a light year across, so a
+        // size written here would be off by light years rather than by a
+        // rounding.
+        app.world_mut().spawn((
+            reaching(1, 5., 2.1e15),
+            Shell,
+            Transform::default(),
+            Visibility::Visible,
+            crate::space::system_grid(),
+        ));
+        app.update();
+
+        assert_eq!(
+            drawn(&mut app, 1),
+            1.,
+            "wrote a mark size onto a descended system's sub-grid"
+        );
     }
 
     /// A star is sized by the radius its point spread clears, and vanishes at

@@ -139,11 +139,6 @@ impl FsSource {
     pub fn new(dir: impl Into<PathBuf>) -> FsSource {
         FsSource { dir: dir.into() }
     }
-
-    /// The build directory this reads from.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
 }
 
 #[async_trait]

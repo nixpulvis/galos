@@ -11,36 +11,19 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use bevy_rich_text3d::LoadFonts;
 
 /// The face a plane's numbers are painted in
 ///
-/// Handed to [`super::RuledPlugin`] and passed from there to everything that
-/// sets a character, rather than left in the world for them to reach for.
-/// Monospaced; see [`cut_lettering`].
+/// Handed to [`super::RuledPlugin`] and passed from there to
+/// `cut_lettering`, the one thing that reads it, rather than left in the
+/// world for it to be reached for. Monospaced, which is what makes a strip of
+/// equal cells the right shape to cut it into.
 #[derive(Clone)]
 pub struct Face {
     /// The face itself, in any format `ab_glyph` reads
     ///
     /// What the strip painted onto a plane is cut from.
     pub bytes: &'static [u8],
-    /// And what the same face is called, for the text meshes standing over it
-    ///
-    /// A number on a plane and a number over it are then the one typeface.
-    pub family: &'static str,
-}
-
-/// Ask for `face` to be loaded, without taking the list from whoever else asked
-///
-/// The text stack keeps one list of faces to load. Set outright rather than
-/// added to, whichever plugin was added last would decide whether anybody
-/// else's face is there at all, and a face that was never loaded draws as
-/// nothing with nothing said about it.
-pub(super) fn wanted(app: &mut App, face: &'static [u8]) {
-    app.world_mut()
-        .get_resource_or_insert_with(LoadFonts::default)
-        .font_embedded
-        .push(face);
 }
 
 /// How wide and tall a glyph's cell in the lettering strip is, in pixels
@@ -138,26 +121,5 @@ pub(super) fn cut_lettering(
         image.sampler = ImageSampler::linear();
 
         commands.insert_resource(Lettering(images.add(image)));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Two askers both get their face loaded
-    ///
-    /// A caller that draws its own text asks for the same list, and the ruled
-    /// plane's numbers have to be set in something whichever of the two was
-    /// added first.
-    #[test]
-    fn two_askers_both_get_their_face_loaded() {
-        let mut app = App::new();
-
-        wanted(&mut app, &b"one"[..]);
-        wanted(&mut app, &b"two"[..]);
-
-        let fonts = app.world().resource::<LoadFonts>();
-        assert_eq!(fonts.font_embedded, vec![&b"one"[..], &b"two"[..]]);
     }
 }

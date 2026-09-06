@@ -61,9 +61,13 @@ const HOLD_WITHIN: f32 = 7.;
 /// light year out. Asked which system takes up the most, a camera standing on
 /// Sol answers Alpha Centauri.
 ///
-/// What each system is given as is the caller's, so one pass answers both the
-/// address to ask about and whatever else is wanted of the system the camera
-/// is closing on — [`Approaching`] wants its reach.
+/// Generic in what each system is carried as, so the rule that chooses — the
+/// nearest inside [`ASK_WITHIN`], and nothing at all past it — can be
+/// exercised on bare numbers, with none of [`Approach`] stood up to do it.
+/// Production carries one pair: the address to ask about, and the reach and
+/// range [`Approaching`] holds for the zoom floor. Answering both at once is
+/// the tuple's doing rather than the generic's; the generic is what lets the
+/// choosing be read on its own.
 fn worth_holding<T>(systems: impl Iterator<Item = (T, f64)>) -> Option<T> {
     systems
         .filter(|(_, away)| *away <= ASK_WITHIN as f64)
@@ -87,7 +91,7 @@ pub struct Approaching(pub Option<Approach>);
 /// What the camera needs of the system it is closing on
 ///
 /// Both halves are needed together. A floor taken off the reach alone held the
-/// camera off a system it was nowhere near: [`ASK_WITHIN`] is five light years
+/// camera off a system it was nowhere near: `ASK_WITHIN` is five light years
 /// wide, so a wide neighbour became the system the floor was read from while
 /// the camera stood on another, and a fifth of a light year of reach is a floor
 /// twenty-five light years out. How far off it stands is what says whether the
@@ -103,7 +107,7 @@ pub struct Approach {
 impl Approach {
     /// Whether the camera is standing in the system rather than beside it
     ///
-    /// [`crate::camera::STOOD_IN`], which is the same distance for every
+    /// [`crate::camera`]'s `STOOD_IN`, which is the same distance for every
     /// system, so a wide one does not claim the sky its neighbours stand in.
     /// Not how far the system reaches, and not the band its mark fades over:
     /// the floor this answers for is only ever applied to a system with
@@ -126,15 +130,13 @@ impl Approach {
 /// systems from swapping between them every frame.
 ///
 /// Asked only of a system nothing else is nearer than. Being inside one is
-/// *not* enough on its own, however much the fade suggests it: [`WORTH_MARKING`]
-/// is an angle, so a system reaching a fifth of a light year has a mark still
-/// going out sixteen light years away, and holding the rows on that ground
-/// would leave the map unable to descend into a neighbour the camera has been
-/// panned right onto. Whichever system the crosshair is nearest is the one
-/// worth holding; that the handover has to be an even one is
-/// [`crate::grid::rule`]'s to answer, not this.
-///
-/// [`WORTH_MARKING`]: super::spawn::WORTH_MARKING
+/// *not* enough on its own, however much the fade suggests it:
+/// [`super::spawn`]'s `WORTH_MARKING` is an angle, so a system reaching a
+/// fifth of a light year has a mark still going out sixteen light years away,
+/// and holding the rows on that ground would leave the map unable to descend
+/// into a neighbour the camera has been panned right onto. Whichever system
+/// the crosshair is nearest is the one worth holding; that the handover has to
+/// be an even one is for [`crate::grid`]'s `rule` to answer, not this.
 fn holds_still(standing: f32, away: f64) -> bool {
     standing < 1. || away <= HOLD_WITHIN as f64
 }

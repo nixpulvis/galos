@@ -30,7 +30,7 @@ use crate::systems::spawn::{
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
-use bevy::camera::{Exposure, Hdr, ScalingMode};
+use bevy::camera::{Hdr, ScalingMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{Image, ImageSampler};
 use bevy::math::DVec3;
@@ -211,7 +211,6 @@ fn spawn_field(
         Camera3d::default(),
         Hdr,
         Tonemapping::None,
-        Exposure::SUNLIGHT,
         Camera {
             order: FIELD_ORDER,
             clear_color: ClearColorConfig::None,

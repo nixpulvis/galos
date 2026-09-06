@@ -849,13 +849,13 @@ mod tests {
     /// them. It proves the conversion is faithful and the two halves of the
     /// transport agree on the layout and the encoding.
     ///
-    /// The body carried through the full disk round trip has neither a body
-    /// type nor a surface, because [`BodyType`] and [`AtmosphereType`] carry an
-    /// untagged `Unknown(String)` variant, and an untagged variant can only be
-    /// deserialized from a self-describing format, which postcard is not. Those
-    /// two fields serialize but do not read back, which the surfaced body below
-    /// covers as far as this crate can: the write and the conversion, not the
-    /// read, which is [`galos_index`]'s half.
+    /// Both bodies make the full trip, the surfaced one on purpose: its
+    /// [`BodyType`] and its [`AtmosphereType`] are `#[serde(untagged)]` enums
+    /// with an `Unknown(String)` arm, and an untagged variant reads back only
+    /// from a self-describing format. MessagePack is one, which is the reason
+    /// it is the codec — see `galos_index::source::untagged_enums_round_trip`
+    /// — so those two fields are asserted after the read here rather than
+    /// only on the way out.
     #[async_std::test]
     async fn a_systems_bodies_round_trip_through_the_fs_source() {
         use elite_journal::body::{AtmosphereType, BodyType, Composition};
@@ -893,8 +893,8 @@ mod tests {
             orbit: None,
         };
 
-        // A gas giant: no surface and no body type, so nothing here leans on an
-        // untagged enum, and the whole thing reads back.
+        // A gas giant: no surface, having none, and no body type on record,
+        // so this is the empty side of both optional fields.
         let gas_giant = Body {
             system_address: address,
             id: 4,
@@ -946,8 +946,8 @@ mod tests {
         let empty = fs.bodies(address + 1).await.unwrap();
         assert_eq!(empty, meta::SystemBodies::default());
 
-        // A surfaced body converts field-for-field and serializes; only the
-        // read half of the two untagged fields is beyond this crate.
+        // A surfaced body, the one carrying both untagged enums, through the
+        // same trip.
         let surfaced = Body {
             system_address: address,
             id: 3,
@@ -988,9 +988,20 @@ mod tests {
             spin: Spin { period: 1.0, tilt: 23.4 },
             discovery: Discovery { discovered: true, mapped: true },
         };
-        let meta_surfaced = meta_body(surfaced);
-        assert_eq!(meta_surfaced.body_type, Some(BodyType::from("Planet")));
-        let surface = meta_surfaced.surface.as_ref().unwrap();
+        let surfaced_bodies = meta::SystemBodies {
+            bodies: vec![meta_body(surfaced)],
+            ..Default::default()
+        };
+        write_meta(&source::bodies_path(&dir, address + 2), &surfaced_bodies)
+            .unwrap();
+        let read_back = fs.bodies(address + 2).await.unwrap();
+        assert_eq!(read_back, surfaced_bodies);
+
+        // And field by field, so a failure says which one the codec dropped
+        // rather than only that the two structs differ.
+        let body = &read_back.bodies[0];
+        assert_eq!(body.body_type, Some(BodyType::from("Planet")));
+        let surface = body.surface.as_ref().unwrap();
         assert_eq!(surface.atmosphere_type, AtmosphereType::from("Oxygen"));
         assert_eq!(
             surface.composition,
@@ -1001,15 +1012,7 @@ mod tests {
             vec![Material { name: "iron".to_string(), percent: 12.5 }],
         );
         assert_eq!(surface.terraform_state.as_deref(), Some("Terraformable"));
-        assert_eq!(meta_surfaced.parents[0].ty.as_deref(), Some("Null"));
-        let surfaced_bodies = meta::SystemBodies {
-            bodies: vec![meta_surfaced],
-            ..Default::default()
-        };
-        write_meta(&source::bodies_path(&dir, address + 2), &surfaced_bodies)
-            .expect(
-                "a surfaced body serializes even where its read half does not",
-            );
+        assert_eq!(body.parents[0].ty.as_deref(), Some("Null"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
