@@ -58,6 +58,24 @@ fn and(one: Cost, other: Cost) -> Cost {
     (one.0 + other.0, one.1 + other.1)
 }
 
+/// Where a trip is allowed to set out from
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Start {
+    /// The first place picked out
+    ///
+    /// A trip has to set out from somewhere and nothing on the map says where
+    /// the ship is, so the one named first is where it starts. Holding it
+    /// still also means the same set picked again gives the same answer.
+    #[default]
+    First,
+    /// Wherever costs least
+    ///
+    /// For a set gathered with no thought to which is reached first: the trip
+    /// is then a line through all of them with both ends free, and holding
+    /// one end still can only cost jumps.
+    Anywhere,
+}
+
 /// The order to reach every one of `places` in, as indices into it
 ///
 /// The first place stays first. A trip has to set out from somewhere and
@@ -68,7 +86,11 @@ fn and(one: Cost, other: Cost) -> Cost {
 /// Every place exactly once, so the answer is always a permutation of the
 /// input however it was reached. Fewer than three places have only one order
 /// and are handed straight back.
-pub(crate) fn ordered(places: &[DVec3], range: f64) -> Vec<usize> {
+pub(crate) fn ordered(
+    places: &[DVec3],
+    range: f64,
+    start: Start,
+) -> Vec<usize> {
     if places.len() < 3 || range <= 0. {
         return (0..places.len()).collect();
     }
@@ -78,11 +100,39 @@ pub(crate) fn ordered(places: &[DVec3], range: f64) -> Vec<usize> {
         .map(|from| places.iter().map(|to| leg(*from, *to, range)).collect())
         .collect();
 
-    if places.len() <= EXACTLY {
-        exactly(&legs)
-    } else {
-        improved(grown(&legs), &legs)
+    match start {
+        Start::First => settled(&legs, places.len()),
+        // Every place is a candidate to set out from. Standing a place that
+        // costs nothing to leave in front of them turns the free start into a
+        // fixed one, which is the only kind the solve below has: the trip it
+        // finds sets out from whichever real place is cheapest to begin at,
+        // and the nothing-place is dropped off the front of the answer.
+        Start::Anywhere => {
+            let mut anywhere = vec![vec![(0u32, 0f64); places.len() + 1]];
+            for from in &legs {
+                let mut row = vec![(0u32, 0f64)];
+                row.extend(from.iter().copied());
+                anywhere.push(row);
+            }
+
+            settled(&anywhere, places.len())
+                .into_iter()
+                .skip(1)
+                .map(|at| at - 1)
+                .collect()
+        }
     }
+}
+
+/// The best order these legs allow, exactly where that is affordable
+///
+/// `places` is how many destinations there really are, which is what the
+/// budget is about: a free start stands a nothing-place in front of them, so
+/// its table is a doubling larger than a held start's over the same set. The
+/// count rather than `legs.len()` so that both are exact over the same
+/// destinations, and neither quietly turns approximate one sooner.
+fn settled(legs: &[Vec<Cost>], places: usize) -> Vec<usize> {
+    if places <= EXACTLY { exactly(legs) } else { improved(grown(legs), legs) }
 }
 
 /// The cheapest order there is, by Held-Karp
@@ -270,7 +320,7 @@ mod tests {
     fn a_line_of_destinations_is_walked_in_order() {
         let places = along(&[0., 30., 10., 20.]);
 
-        assert_eq!(ordered(&places, 10.), vec![0, 2, 3, 1]);
+        assert_eq!(ordered(&places, 10., Start::First), vec![0, 2, 3, 1]);
     }
 
     /// The first picked stays first
@@ -285,7 +335,7 @@ mod tests {
         let places = along(&[20., 0., 10., 30.]);
         let range = 10.;
 
-        let order = ordered(&places, range);
+        let order = ordered(&places, range, Start::First);
 
         assert_eq!(order[0], 0);
         assert_eq!(order, vec![0, 3, 2, 1]);
@@ -307,10 +357,19 @@ mod tests {
                 })
                 .collect();
 
-            let mut order = ordered(&places, 10.);
-            order.sort();
+            // Both ways of choosing a start: an answer that dropped a
+            // place or said one twice would be a trip to somewhere else,
+            // whichever end it was free to begin at.
+            for start in [Start::First, Start::Anywhere] {
+                let mut order = ordered(&places, 10., start);
+                order.sort();
 
-            assert_eq!(order, (0..count).collect::<Vec<_>>(), "{count} places");
+                assert_eq!(
+                    order,
+                    (0..count).collect::<Vec<_>>(),
+                    "{count} places from {start:?}"
+                );
+            }
         }
     }
 
@@ -329,7 +388,8 @@ mod tests {
         ];
         let range = 8.;
 
-        let mine = costing(&ordered(&places, range), &places, range);
+        let mine =
+            costing(&ordered(&places, range, Start::First), &places, range);
         let best = every(places.len())
             .into_iter()
             .map(|order| costing(&order, &places, range))
@@ -363,17 +423,71 @@ mod tests {
             })
             .collect();
         let started = costing(&grown(&legs), &places, range);
-        let mine = costing(&ordered(&places, range), &places, range);
+        let mine =
+            costing(&ordered(&places, range, Start::First), &places, range);
 
         assert!(mine <= started, "{mine:?} against {started:?}");
+    }
+
+    /// Left to choose, a line is walked end to end
+    ///
+    /// Where the first picked stands in the middle of a line, holding it
+    /// still costs a leg doubling back. Free to begin anywhere, the trip sets
+    /// out from an end and walks the line once.
+    #[test]
+    fn a_free_start_walks_a_line_from_its_end() {
+        let places = along(&[20., 0., 10., 30.]);
+        let range = 10.;
+
+        let held = ordered(&places, range, Start::First);
+        let free = ordered(&places, range, Start::Anywhere);
+
+        assert_eq!(costing(&held, &places, range), (4, 40.));
+        // Either end of the line, the two walks costing the same.
+        assert!(
+            free == vec![1, 2, 0, 3] || free == vec![3, 0, 2, 1],
+            "{free:?}"
+        );
+        assert_eq!(costing(&free, &places, range), (3, 30.));
+    }
+
+    /// And is never dearer than being held to the first
+    ///
+    /// Holding one end of the line still can only cost jumps: whatever order
+    /// the held start settles on is one a free start was free to choose.
+    ///
+    /// Only where both are exact. Past [`EXACTLY`] neither is, and one
+    /// approximation being worse than another says nothing about the choice
+    /// between a held start and a free one.
+    #[test]
+    fn a_free_start_is_never_dearer_than_a_held_one() {
+        for count in 3..=EXACTLY {
+            let places: Vec<DVec3> = (0..count)
+                .map(|at| {
+                    let at = at as f64;
+                    DVec3::new(at * 7. % 23., at * 13. % 17., at * 3. % 11.)
+                })
+                .collect();
+            let range = 6.;
+
+            let held =
+                costing(&ordered(&places, range, Start::First), &places, range);
+            let free = costing(
+                &ordered(&places, range, Start::Anywhere),
+                &places,
+                range,
+            );
+
+            assert!(free <= held, "{count}: {free:?} against {held:?}");
+        }
     }
 
     /// Two of them have one order, and are handed back in it
     #[test]
     fn a_pair_has_nothing_to_order() {
-        assert_eq!(ordered(&along(&[10., 0.]), 10.), vec![0, 1]);
-        assert_eq!(ordered(&along(&[0.]), 10.), vec![0]);
-        assert_eq!(ordered(&[], 10.), Vec::<usize>::new());
+        assert_eq!(ordered(&along(&[10., 0.]), 10., Start::First), vec![0, 1]);
+        assert_eq!(ordered(&along(&[0.]), 10., Start::First), vec![0]);
+        assert_eq!(ordered(&[], 10., Start::First), Vec::<usize>::new());
     }
 
     /// A range that says nothing orders nothing
@@ -385,7 +499,7 @@ mod tests {
     fn a_ship_that_reaches_nowhere_leaves_the_set_alone() {
         let places = along(&[0., 30., 10.]);
 
-        assert_eq!(ordered(&places, 0.), vec![0, 1, 2]);
+        assert_eq!(ordered(&places, 0., Start::First), vec![0, 1, 2]);
     }
 
     /// Jumps decide before distance

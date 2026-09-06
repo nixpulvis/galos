@@ -29,6 +29,7 @@ use crate::systems::labels::ShowBodyNames;
 use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
 use crate::systems::route::graph::Routing;
+use crate::systems::route::tour::Start;
 use crate::systems::route::{Flown, TripFlown};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
@@ -555,6 +556,13 @@ pub(crate) struct BarFields {
     /// destinations rather than an itinerary, and the question is then which
     /// way round is cheapest.
     tour: bool,
+    /// Whether the cheapest order may choose where the trip sets out from
+    ///
+    /// Held as the opting out rather than the option, so that the answer a
+    /// fresh form gives is the one wanted: a trip sets out from the system
+    /// picked first unless it is let go of. What the pane shows is the other
+    /// way round, since what the user is choosing is to hold it.
+    any_start: bool,
     /// Whether the rest of the form is out below the input
     ///
     /// Turned on when a field takes focus and off when a press lands off the
@@ -2410,11 +2418,16 @@ fn apart(selection: &Selection, order: &[usize]) -> Option<f64> {
 ///
 /// One place decides it, so what the form says the trip comes to and what the
 /// trip is actually asked for cannot disagree.
-fn flown_order(selection: &Selection, tour: Option<f64>) -> Vec<usize> {
+fn flown_order(
+    selection: &Selection,
+    tour: Option<(f64, Start)>,
+) -> Vec<usize> {
     let places: Vec<DVec3> =
         selection.systems().map(|system| system.position()).collect();
     match tour {
-        Some(range) => crate::systems::route::tour::ordered(&places, range),
+        Some((range, start)) => {
+            crate::systems::route::tour::ordered(&places, range, start)
+        }
         None => (0..places.len()).collect(),
     }
 }
@@ -2430,7 +2443,7 @@ fn flown_order(selection: &Selection, tour: Option<f64>) -> Vec<usize> {
 fn asked_in_order(
     stops: &[&str],
     selection: &Selection,
-    tour: Option<f64>,
+    tour: Option<(f64, Start)>,
 ) -> Vec<String> {
     // The systems `stops_of` named, in the same order, so an index into one
     // is an index into the other.
@@ -2503,10 +2516,13 @@ fn route_section(
     // How far it runs, which is the one thing about the plot the map can say
     // before it is asked for -- measured along the order it will be flown in,
     // which is what the cheapest-order box below changes.
+    let start = if search.any_start { Start::Anywhere } else { Start::First };
     let tour = search
         .tour
         .then(|| {
-            typed(&search.route_range).and_then(|typed| jump_range(typed).ok())
+            typed(&search.route_range)
+                .and_then(|typed| jump_range(typed).ok())
+                .map(|range| (range, start))
         })
         .flatten();
     if let Ok(stops) = &stops {
@@ -2560,6 +2576,19 @@ fn route_section(
     // to be a set of destinations as an itinerary.
     if stops.as_ref().is_ok_and(|stops| stops.len() > 2) {
         ui.checkbox(&mut search.tour, "Cheapest order");
+        // Only under the box it qualifies. Where the order is the user's own
+        // there is nothing to hold the start against.
+        if search.tour {
+            ui.indent("start", |ui| {
+                let mut from_first = !search.any_start;
+                if ui
+                    .checkbox(&mut from_first, "Start where I picked first")
+                    .changed()
+                {
+                    search.any_start = !from_first;
+                }
+            });
+        }
     }
 
     ui.add_space(FIELD_GAP);
@@ -2599,7 +2628,7 @@ fn route_section(
                     stops: asked_in_order(
                         &stops,
                         selection,
-                        search.tour.then_some(range),
+                        search.tour.then_some((range, start)),
                     ),
                     // Back to text, since a route is fetched under a key
                     // made of what was asked for and a float is no kind of
@@ -4558,7 +4587,8 @@ mod tests {
         let picked = strung_out(&[0., 30., 10., 20.]);
 
         let as_picked = apart(&picked, &flown_order(&picked, None));
-        let cheapest = apart(&picked, &flown_order(&picked, Some(10.)));
+        let cheapest =
+            apart(&picked, &flown_order(&picked, Some((10., Start::First))));
 
         assert_eq!(as_picked, Some(60.));
         assert_eq!(cheapest, Some(30.));
@@ -6533,7 +6563,7 @@ mod tests {
         let picked = strung_out(&[20., 0., 10., 30.]);
         let stops: Vec<&str> = stops_of(&picked).expect("stops");
 
-        let asked = asked_in_order(&stops, &picked, Some(10.));
+        let asked = asked_in_order(&stops, &picked, Some((10., Start::First)));
 
         assert_eq!(asked[0], "Test 0");
         assert_eq!(asked, vec!["Test 0", "Test 3", "Test 2", "Test 1"]);
