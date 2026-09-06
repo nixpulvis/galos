@@ -20,10 +20,17 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();
 
+    // The region fetch is the spyglass source's own, and stands down while the
+    // walk is the one loading systems.
     app.add_systems(
         Update,
         fetch.in_set(MapSet::Fetch).run_if(crate::systems::bounded::spyglass),
     );
+    // What a search asked for is not a region, so neither of these belongs to
+    // either source. A route is walked over the resident jump graph and a
+    // picked-out system is read from the resident names table, and both answer
+    // whichever source is loading the sky around them.
+    app.add_systems(Update, fetch_searched.in_set(MapSet::Fetch));
     app.add_systems(Update, fetch_selected.in_set(MapSet::Fetch));
 }
 
@@ -331,10 +338,14 @@ impl FetchTasks {
     }
 }
 
-/// Spawns tasks to load star systems from the index
+/// Ask for the region the spyglass reaches
+///
+/// The spyglass source's own loader, and nothing else: it stands down whole
+/// while the walk is the one loading systems, so nothing a user asks for
+/// outright may be reached from in here. See [`fetch_searched`], which is what
+/// the route fetch was moved out to.
 pub fn fetch(
     camera_query: Query<&OrbitCamera>,
-    mut search_events: MessageReader<Search>,
     mut tasks: ResMut<FetchTasks>,
     mut spyglass: ResMut<Spyglass>,
     time: Res<Time<Real>>,
@@ -343,7 +354,6 @@ pub fn fetch(
     poll: Res<Poll>,
     index: Res<ResidentIndex>,
     transport: Res<Transport>,
-    jumps: Res<crate::systems::route::graph::Jumps>,
     names: Res<Names>,
     populated: Res<Populated>,
 ) {
@@ -362,7 +372,25 @@ pub fn fetch(
             &populated,
         );
     }
+}
 
+/// Ask for whatever a search named
+///
+/// Ungated, and that is the whole point of it standing apart from [`fetch`]. A
+/// route is walked over the resident jump graph and named out of the resident
+/// names table; it asks the sky for nothing and so belongs to neither source.
+/// Registered on [`fetch`] and gated with it, it went out with the region
+/// fetch the moment the walk became the default, and plotting a route resolved
+/// its two ends and then did nothing at all — no hops, no line, no framing.
+pub fn fetch_searched(
+    mut search_events: MessageReader<Search>,
+    mut tasks: ResMut<FetchTasks>,
+    time: Res<Time<Real>>,
+    mut last_fetched_at: ResMut<LastFetchedAt>,
+    jumps: Res<crate::systems::route::graph::Jumps>,
+    names: Res<Names>,
+    populated: Res<Populated>,
+) {
     for event in search_events.read() {
         match event {
             // A search finds and picks out nothing, so there is nothing
@@ -408,11 +436,13 @@ const FETCH_LEAST: f32 = 1.;
 // verified as the only source. It loads a full-density sphere, which is what
 // explodes on zoom-out; the walk clamped to the reach (see
 // `systems::bounded::reach`) draws the same near view and stays bounded far.
-// When it goes, so do: `FetchIndex::Region` and its `spyglass_condition`,
-// `galos_index::Index::region` (this is its only caller), the `LodFetch`
-// toggle with the `enabled`/`spyglass` run-condition split and the `switch`
-// clear (bounded.rs), and the spyglass `evict` gated on `bounded::spyglass`
-// (mod.rs). See the sibling TODO(bounded) markers.
+// When it goes, so do: [`fetch`], which is now this and nothing else,
+// `FetchIndex::Region` and its `spyglass_condition`, `galos_index::Index::region`
+// (this is its only caller), the `LodFetch` toggle with the `enabled`/`spyglass`
+// run-condition split and the `switch` clear (bounded.rs), and the spyglass
+// `evict` gated on `bounded::spyglass` (mod.rs). [`fetch_searched`] and
+// [`fetch_selected`] stay: neither asks about a region and neither is gated.
+// See the sibling TODO(bounded) markers.
 fn fetch_spyglass(
     camera_query: &Query<&OrbitCamera>,
     tasks: &mut ResMut<FetchTasks>,
@@ -670,6 +700,72 @@ pub(crate) mod tests {
             Some(admitted),
             None,
         )
+    }
+
+    /// A route is walked whichever source is loading the sky
+    ///
+    /// The route fetch used to be registered on [`fetch`] and so gated with
+    /// the spyglass region read. [`crate::systems::bounded::LodFetch`] is on
+    /// by default, which stands that system down, so plotting a route
+    /// resolved its two ends and then asked for nothing at all: no hops, no
+    /// line, no framing. Wired as the map really wires it, with the walk as
+    /// the source, so the gate cannot come back without this failing.
+    #[test]
+    fn a_route_is_walked_under_the_walk() {
+        use galos_index::NameEntry;
+        let entries = vec![
+            NameEntry {
+                address: 1,
+                name: "Start".into(),
+                position: [0., 0., 0.],
+            },
+            NameEntry {
+                address: 2,
+                name: "End".into(),
+                position: [5., 0., 0.],
+            },
+        ];
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::time::TimePlugin,
+        ));
+        app.add_message::<Search>();
+        app.init_resource::<Selection>();
+        app.init_resource::<crate::systems::bounded::LodFetch>();
+        app.insert_resource(crate::systems::route::graph::Jumps(
+            std::sync::Arc::new(crate::systems::route::graph::JumpGraph::new(
+                &entries,
+            )),
+        ));
+        app.insert_resource(Names::reaching(entries, Vec::new()));
+        app.insert_resource(Populated::default());
+        // The map's own wiring, so a run condition put back on the route
+        // fetch fails here rather than in the app.
+        app.add_plugins(plugin);
+
+        assert!(
+            app.world().resource::<crate::systems::bounded::LodFetch>().0,
+            "the walk is meant to be the default source"
+        );
+        app.world_mut().write_message(Search::Route {
+            start: "Start".into(),
+            end: "End".into(),
+            range: "10".into(),
+        });
+        app.update();
+
+        let mut tasks = app.world_mut().resource_mut::<FetchTasks>();
+        let (_, (task, _)) = tasks
+            .fetched
+            .iter_mut()
+            .find(|(index, _)| matches!(index, FetchIndex::Route(..)))
+            .expect("a route was never asked for");
+        let (hops, _) = bevy::tasks::block_on(task);
+
+        let walked: Vec<i64> = hops.iter().map(|hop| hop.address).collect();
+        assert_eq!(walked, vec![1, 2], "the walk found no way across");
     }
 
     /// The map holding a star for each of `addresses`
