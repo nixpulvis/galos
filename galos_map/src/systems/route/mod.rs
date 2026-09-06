@@ -14,7 +14,7 @@ use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
-    app.init_resource::<SelectedRoute>();
+    app.init_resource::<SelectedFilter>();
     app.init_resource::<graph::Routing>();
     // After the fetch it answers has been drawn, and before the camera is
     // pointed, since where it asks the camera to go is what `move_camera`
@@ -337,7 +337,7 @@ fn reaching<'a>(
 /// moved, which drags its name and its material along behind it.
 fn hops(
     filters: Res<Filters>,
-    selected: Res<SelectedRoute>,
+    selected: Res<SelectedFilter>,
     contents: Res<crate::systems::bodies::Contents>,
     holding: Res<HeldSystem>,
     marks: Query<&Strength>,
@@ -494,7 +494,7 @@ fn plotted(
     mut plotted: MessageReader<PlottedRoute>,
     trip: Res<Trip>,
     mut filters: ResMut<Filters>,
-    mut selected: ResMut<SelectedRoute>,
+    mut selected: ResMut<SelectedFilter>,
 ) {
     for route in plotted.read() {
         // A route just asked for is the one being looked at, so whichever was
@@ -613,7 +613,7 @@ fn asked(filters: &Filters, route: &Filter) -> Option<bool> {
 /// An override rather than the answer itself. What it stands in front of is
 /// the last route plotted, and [`active`] puts the two together.
 #[derive(Resource, Default)]
-pub(crate) struct SelectedRoute(pub(crate) Option<Filter>);
+pub(crate) struct SelectedFilter(pub(crate) Option<Filter>);
 
 /// Which route is the one being worked with
 ///
@@ -687,7 +687,7 @@ pub(crate) fn strength(is_active: bool) -> f32 {
 /// standing for that system fades on, and the two go together.
 fn emphasise(
     filters: Res<Filters>,
-    selected: Res<SelectedRoute>,
+    selected: Res<SelectedFilter>,
     holding: Res<HeldSystem>,
     marks: Query<&Strength>,
     lines: Query<(&Route, &MeshMaterial3d<StandardMaterial>)>,
@@ -1132,7 +1132,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_message::<PlottedRoute>();
         app.init_resource::<Filters>();
-        app.init_resource::<SelectedRoute>();
+        app.init_resource::<SelectedFilter>();
         app.insert_resource(Trip(
             stops.iter().map(|stop| stop.to_string()).collect(),
         ));
@@ -1173,7 +1173,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_message::<PlottedRoute>();
         app.init_resource::<Filters>();
-        app.init_resource::<SelectedRoute>();
+        app.init_resource::<SelectedFilter>();
         app.insert_resource(Trip(vec!["SOL".to_owned(), "LAVE".to_owned()]));
         app.add_systems(Update, plotted);
 
@@ -1449,7 +1449,7 @@ mod tests {
             lock_camera: false,
             follow_camera: false,
         });
-        app.insert_resource(SelectedRoute(Some(asking(&[1, 2]))));
+        app.insert_resource(SelectedFilter(Some(asking(&[1, 2]))));
         app.init_resource::<Trip>();
         app.add_systems(Update, plotted);
 
@@ -1460,7 +1460,7 @@ mod tests {
         });
         app.update();
 
-        assert!(app.world().resource::<SelectedRoute>().0.is_none());
+        assert!(app.world().resource::<SelectedFilter>().0.is_none());
     }
 
     /// The active route is drawn at full strength and the rest behind it

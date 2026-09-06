@@ -493,7 +493,7 @@ fn panels(
     names: Res<FactionNames>,
     mut selection: ResMut<Selection>,
     mut filters: ResMut<Filters>,
-    mut selected: ResMut<crate::systems::route::SelectedRoute>,
+    mut selected: ResMut<crate::systems::route::SelectedFilter>,
     mut clock: ResMut<crate::systems::bodies::Clock>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
@@ -632,13 +632,12 @@ fn panels(
     if let Some(filter) = wanted {
         filters.add(filter);
     }
-    // Pressing a route's panel is how the user says which of several drawn
-    // routes they mean, and the map draws that one in front of the rest.
-    // Only a route: the other filters have no line to put forward, and a
-    // press on one of their panels says nothing about which route is which.
-    if let Some(filter) = chosen
-        && filter.is_route()
-    {
+    // Pressing a filter's panel is how the user says which of the ones on
+    // screen they mean, as clicking its row in the bar is. Every kind can be
+    // said; only a route reads that it was, `route::active` weighing what is
+    // picked out against the routes being shown, so a faction picked out
+    // leaves the routes as they were.
+    if let Some(filter) = chosen {
         selected.0 = Some(filter);
     }
 

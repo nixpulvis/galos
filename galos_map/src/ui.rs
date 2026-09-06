@@ -30,7 +30,7 @@ use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
 use crate::systems::route::graph::Routing;
 use crate::systems::route::tour::Start;
-use crate::systems::route::{Flown, TripFlown};
+use crate::systems::route::{Flown, SelectedFilter, TripFlown};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
 use crate::systems::spawn::{
@@ -684,6 +684,18 @@ pub(crate) struct FilterBar<'w, 's> {
     /// Where the control over time stands
     watch: ResMut<'w, Watch>,
     standstill: ResMut<'w, Standstill>,
+    /// Which filter the user is working with, which a click on a row says
+    ///
+    /// Only a route does anything with it today; the rest are picked out and
+    /// nothing yet reads that they were.
+    chosen: ResMut<'w, SelectedFilter>,
+    /// What a filter's systems are, for framing them
+    ///
+    /// The two tables `Filter::systems` answers from. Read here rather than
+    /// worked out in the bar, a row asking to see a filter whole being a
+    /// question about where its systems are and not about the row.
+    populated: Res<'w, crate::Populated>,
+    names: Res<'w, crate::Names>,
 }
 
 pub(crate) fn chrome(
@@ -1286,6 +1298,10 @@ fn main_bar(
     filter: &mut FilterBar,
     flown: Option<Flown>,
 ) -> f32 {
+    // What the filter rows were asked, carried out of the closure they are
+    // drawn in: acting on either inside it would want the bar's own state
+    // while egui still holds it.
+    let mut row_ask = RowAsk::default();
     let style = ctx.global_style();
     let mut frame =
         egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
@@ -1434,7 +1450,7 @@ fn main_bar(
                         }
                         None => filter.active.bypass_change_detection(),
                     };
-                    applied(ui, rows, panels, &mut place);
+                    row_ask = applied(ui, rows, panels, &mut place);
                     // Two numbers only where there is a sky behind what is
                     // picked out and the user can see it: something has to be
                     // excluded, and what is excluded has to be drawn.
@@ -1502,6 +1518,38 @@ fn main_bar(
         search.expanded = false;
         ctx.memory_mut(|memory| memory.stop_text_input());
     }
+
+    // Which filter is being worked with. Every kind can be picked out, and
+    // only a route reads that it was: `route::active` weighs what is picked
+    // against the routes being shown, so a faction picked out leaves the
+    // routes as they were rather than standing in front of them.
+    if let Some(chosen) = row_ask.chosen {
+        filter.chosen.0 = Some(chosen);
+    }
+    // And where the camera goes to see one whole. Every system the filter
+    // admits, not only the ones the map has dragged in, since where a faction
+    // is, is most of what is being asked.
+    //
+    // Nothing where the filter admits nowhere: a span names no systems of its
+    // own, and a faction with nothing on record is a frame over nothing,
+    // which is a camera pulled in to a metre.
+    if let Some(framed) = row_ask.framed {
+        let places: Vec<DVec3> = framed
+            .systems(&filter.populated, &filter.names)
+            .iter()
+            .map(|system| system.position())
+            .collect();
+        if let Some((middle, extent)) =
+            crate::systems::route::spawn::framing(&places)
+            && extent > 0.
+        {
+            camera.write(MoveCamera {
+                position: Some(middle),
+                framing: Some(extent),
+            });
+        }
+    }
+
     middle
 }
 
@@ -2686,9 +2734,10 @@ fn applied(
     filters: &mut Filters,
     panels: &mut Panels,
     place: &mut usize,
-) {
+) -> RowAsk {
+    let mut ask = RowAsk::default();
     if filters.is_empty() {
-        return;
+        return ask;
     }
 
     // Settled after the sections are drawn, since the rows are drawn from the
@@ -2726,6 +2775,7 @@ fn applied(
             &mut toggling,
             &mut removing,
             &mut opening,
+            &mut ask,
         );
     }
 
@@ -2743,6 +2793,74 @@ fn applied(
         Some((FilterAction::LetGo, rows)) => filters.clear(&rows),
         None => {}
     }
+
+    ask
+}
+
+/// What one press on a filter's row meant
+///
+/// Five things can be pressed in the space of a row, and a press lands on
+/// exactly one of them. Kept apart from the drawing because the order is the
+/// whole of it: [`asked_of_row`] is where that order is written down and the
+/// only place it can be got wrong.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RowGesture {
+    /// Take the filter away for good
+    LetGo,
+    /// Open the panel describing it
+    Describe,
+    /// Turn it off, or back on
+    Toggle,
+    /// Send the camera to see the whole of what it admits
+    Frame,
+    /// Say it is the one being worked with
+    Select,
+}
+
+/// Which of them a press on a row was
+///
+/// The mark first, then the switch, then the double. Egui answers the first
+/// click of a pair as a click and the second as a double, so a row double
+/// clicked has already been asked about as a click by the time this is
+/// reached: the double has to beat the click or framing a filter would pick
+/// it out on the way, which is the same order the selection rows are read in.
+///
+/// The switch beats the row for the plainer reason that it stands inside it.
+/// A press on the dot is a press on the row as well, and it means the dot.
+fn asked_of_row(
+    close: bool,
+    info: bool,
+    switch: bool,
+    double: bool,
+    click: bool,
+) -> Option<RowGesture> {
+    if close {
+        Some(RowGesture::LetGo)
+    } else if info {
+        Some(RowGesture::Describe)
+    } else if switch {
+        Some(RowGesture::Toggle)
+    } else if double {
+        Some(RowGesture::Frame)
+    } else if click {
+        Some(RowGesture::Select)
+    } else {
+        None
+    }
+}
+
+/// What a press on a filter's row asked of it, beyond what the row settles
+///
+/// The two that reach past the filters themselves: which one the user means,
+/// and where they want the camera. Handed back rather than acted on here, as
+/// the selection rows hand back what they were asked, since neither is the
+/// row's own business to carry out.
+#[derive(Default)]
+struct RowAsk {
+    /// The filter a click picked out as the one being worked with
+    chosen: Option<Filter>,
+    /// The filter a double click asked to see the whole of
+    framed: Option<Filter>,
 }
 
 /// Which group of the bar's filter rows a filter stands in
@@ -2812,6 +2930,7 @@ impl Section {
 /// Split out from [`applied`] because the sections draw the same row and only
 /// the count above them differs.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn section_rows(
     ui: &mut Ui,
     filters: &Filters,
@@ -2820,6 +2939,7 @@ fn section_rows(
     toggling: &mut Option<usize>,
     removing: &mut Option<usize>,
     opening: &mut Option<Filter>,
+    ask: &mut RowAsk,
 ) {
     let gap = ui.spacing().item_spacing.x;
 
@@ -2932,13 +3052,38 @@ fn section_rows(
 
         let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
 
-        if close.clicked() {
-            *removing = Some(index);
-        } else if info.is_some_and(|info| info.clicked()) {
-            *opening = Some(active.filter.clone());
-        } else if row.clicked() {
-            *toggling = Some(index);
+        // The dot is the switch. It is already the answer to whether the
+        // filter is being asked -- filled while it is, hollow while it is not
+        // -- so the thing that says so is the thing that changes it, and the
+        // row is left for what the row is about.
+        //
+        // Interacted after the row was laid out, so it stands in front and
+        // takes the press the row would otherwise have.
+        let switch = ui.interact(
+            egui::Rect::from_center_size(dot, egui::Vec2::splat(DOT * 2.)),
+            ui.id().with((of, "dot")),
+            egui::Sense::click(),
+        );
+
+        match asked_of_row(
+            close.clicked(),
+            info.is_some_and(|info| info.clicked()),
+            switch.clicked(),
+            row.double_clicked(),
+            row.clicked(),
+        ) {
+            Some(RowGesture::LetGo) => *removing = Some(index),
+            Some(RowGesture::Describe) => {
+                *opening = Some(active.filter.clone())
+            }
+            Some(RowGesture::Toggle) => *toggling = Some(index),
+            Some(RowGesture::Frame) => ask.framed = Some(active.filter.clone()),
+            Some(RowGesture::Select) => {
+                ask.chosen = Some(active.filter.clone())
+            }
+            None => {}
         }
+        switch.on_hover_cursor(egui::CursorIcon::PointingHand);
         row.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 }
@@ -5333,10 +5478,14 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(Filter::Faction { id: 1, name: "Empire".into() });
         let mut panels = Panels::default();
-        let alone = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let alone = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         filters.add(Filter::Faction { id: 2, name: "Federation".into() });
-        let both = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let both = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         assert!(
             !alone.iter().any(|line| line.contains("filters")),
@@ -5368,7 +5517,9 @@ mod tests {
         filters.add(a_route(&[1, 2, 3]));
         let mut panels = Panels::default();
 
-        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let said = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         assert!(said.contains(&"2 filters".to_owned()), "{said:?}");
         assert!(said.contains(&"2 routes".to_owned()), "{said:?}");
@@ -5385,7 +5536,9 @@ mod tests {
         filters.add(a_route(&[1, 2]));
         let mut panels = Panels::default();
 
-        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let said = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         assert!(!said.iter().any(|line| line.contains("route")), "{said:?}");
     }
@@ -5401,7 +5554,9 @@ mod tests {
         filters.add(a_route(&[1, 2, 3]));
         let mut panels = Panels::default();
 
-        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let said = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         assert!(said.contains(&"2 routes".to_owned()), "{said:?}");
         assert!(!said.iter().any(|line| line.contains("filters")), "{said:?}");
@@ -5418,7 +5573,9 @@ mod tests {
         filters.add(Filter::Faction { id: 1, name: "Empire".into() });
         let mut panels = Panels::default();
 
-        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let said = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         let faction = said.iter().position(|line| line == "Empire");
         let route = said.iter().position(|line| line.contains(ARROW));
@@ -5467,6 +5624,45 @@ mod tests {
     /// for its two ends, so its row would otherwise say nothing about the one
     /// thing it was plotted to find out. A faction's name is all its row has
     /// to say, and a set says how many it holds in its own name already.
+    /// What a press on a row means depends on where in it it landed
+    ///
+    /// Five things share the space of a row and a press lands on one of them.
+    /// The order is the whole of the rule, and two pairs are why it is
+    /// written down rather than left to a chain of ifs nobody re-reads.
+    #[test]
+    fn a_press_on_a_row_means_the_one_thing_it_landed_on() {
+        assert_eq!(asked_of_row(false, false, false, false, false), None);
+
+        // The dot stands inside the row, so a press on it is a press on the
+        // row as well -- and it means the dot. Otherwise turning a filter off
+        // would pick it out on the way.
+        assert_eq!(
+            asked_of_row(false, false, true, false, true),
+            Some(RowGesture::Toggle)
+        );
+        // Egui answers the first click of a pair as a click, so a double
+        // arrives with a click beside it. The double has to win, or framing a
+        // filter would pick it out first.
+        assert_eq!(
+            asked_of_row(false, false, false, true, true),
+            Some(RowGesture::Frame)
+        );
+        // The marks at the end beat all of it: they are what was pressed.
+        assert_eq!(
+            asked_of_row(true, false, true, true, true),
+            Some(RowGesture::LetGo)
+        );
+        assert_eq!(
+            asked_of_row(false, true, true, true, true),
+            Some(RowGesture::Describe)
+        );
+        // And a plain click on the name means the filter itself.
+        assert_eq!(
+            asked_of_row(false, false, false, false, true),
+            Some(RowGesture::Select)
+        );
+    }
+
     #[test]
     fn a_route_row_says_how_many_jumps_it_is() {
         let mut filters = Filters::default();
@@ -5477,7 +5673,9 @@ mod tests {
         });
         let mut panels = Panels::default();
 
-        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let said = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         assert!(said.contains(&"4 hops".to_owned()), "{said:?}");
     }
@@ -5531,7 +5729,9 @@ mod tests {
         });
         let mut panels = Panels::default();
 
-        let said = words(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let said = words(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         assert!(said.contains(&"1 hop".to_owned()), "{said:?}");
     }
@@ -5926,8 +6126,9 @@ mod tests {
         });
         let mut panels = Panels::default();
 
-        let said =
-            complaints(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        let said = complaints(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
 
         assert!(said.is_empty(), "{said:?}");
     }
@@ -6184,7 +6385,9 @@ mod tests {
         filters.toggle(1);
         let mut panels = Panels::default();
 
-        painted(|ui| applied(ui, &mut filters, &mut panels, &mut 0));
+        painted(|ui| {
+            applied(ui, &mut filters, &mut panels, &mut 0);
+        });
     }
 
     /// What `contents` painted with the pointer resting at `at`
