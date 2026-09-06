@@ -14,7 +14,7 @@
 //! read back by name.
 //!
 //! The tree is here; the metadata that rides beside it — the populated table,
-//! the names table, the factions and the body files — is [`metadata`], which is
+//! the names table, the factions and the body files — is `metadata`, which is
 //! also where a watch's incremental publishing of it lives.
 
 use crate::{Database, Result};
@@ -274,7 +274,7 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 /// applying it twice is idempotent.
 ///
 /// The metadata beside the cells is kept current the same pass the cells are,
-/// and the same way: [`Metadata`] holds the three tables open, a pass patches in
+/// and the same way: `Metadata` holds the three tables open, a pass patches in
 /// the systems that changed, and only what that moved is written — the names
 /// chunks the arrivals landed in, the populated table when a political column
 /// really did change, the factions when a new one is named, and a body file per
@@ -286,7 +286,7 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 /// memory rather than a fresh read of the whole database and a rewrite of every
 /// file. A missing, unreadable, or stale checkpoint falls back to a full build.
 /// The checkpoint rides outside `dir`, is never served, and is written after the
-/// initial build and every [`CHECKPOINT_EVERY`] thereafter — not every pass,
+/// initial build and every `CHECKPOINT_EVERY` thereafter — not every pass,
 /// which would cost more than the publishing does.
 pub async fn watch(
     db: &Database,
