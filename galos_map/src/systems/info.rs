@@ -670,7 +670,7 @@ fn described(
         ui,
         |ui| {
             let [x, y, z] = system.position;
-            field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
+            copied(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
             // What the realistic view sizes a star by: the magnitude the bake
             // assigned, how bright it looks from where the camera stands, and
             // its tint bucket. Unknown for a system built from a name lookup
@@ -724,9 +724,17 @@ fn described(
     // stand open at once and each one is about the system named in its title
     // bar.
     ui.add_space(MARGIN);
-    if ui.button("Center Camera").clicked() {
-        *centered = Some(DVec3::from(system.position));
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Center Camera").clicked() {
+            *centered = Some(DVec3::from(system.position));
+        }
+        // The name is what the user carries out of here: into the game's own
+        // map, a message to somebody, a spreadsheet. Nothing on the panel is
+        // otherwise selectable, and a name retyped is a name misspelled.
+        if ui.button("Copy Name").clicked() {
+            ui.ctx().copy_text(system.name.clone());
+        }
+    });
 }
 
 /// Metres in a solar radius
@@ -1192,6 +1200,19 @@ fn admitted(
         });
     }
 
+    // The list as text, for wherever it is wanted next. A route is flown in
+    // the game with a hand on the keyboard, and a faction's holdings are read
+    // against a spreadsheet, and neither is done off a window that cannot be
+    // selected from. In the order the list is drawn in, and saying what each
+    // line says, so what is copied is what is read.
+    if ui
+        .button(if filter.ordered() { "Copy Route" } else { "Copy List" })
+        .clicked()
+    {
+        ui.ctx().copy_text(as_text(&order));
+    }
+    ui.add_space(MARGIN);
+
     // Named for the filter it lists, since a panel stands per filter and two
     // of them open at once are two lists, each scrolled to its own place.
     crate::ui::scrolling(ui, line * LISTED as f32, filter, |ui| {
@@ -1309,6 +1330,42 @@ fn field(ui: &mut Ui, name: &str, value: String) {
     ui.label(egui::RichText::new(name).strong());
     ui.label(value);
     ui.end_row();
+}
+
+/// One named thing worth taking away, copied by clicking on it
+///
+/// A position is typed into other tools to the last decimal, and one read off
+/// a panel and retyped is a digit out somewhere. The value is the control
+/// rather than a button beside it, so a panel of fields reads as it did and
+/// the one row that answers a click says so when the pointer rests on it.
+fn copied(ui: &mut Ui, name: &str, value: String) {
+    ui.label(egui::RichText::new(name).strong());
+    let shown = ui
+        .add(egui::Label::new(value.clone()).sense(egui::Sense::click()))
+        .on_hover_text("Click to copy")
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if shown.clicked() {
+        ui.ctx().copy_text(value);
+    }
+    ui.end_row();
+}
+
+/// A list of systems as text, one to a line, as the panel draws them
+///
+/// Each line is the name and, where the list gives one, the distance the
+/// panel's line ends in: the jump that reaches a system on a route, and how
+/// far off it is from the camera otherwise. Set apart by a tab, so what is
+/// pasted into a spreadsheet lands in two columns and what is pasted anywhere
+/// else still reads as one line about one system.
+fn as_text(order: &[(&System, Option<f64>)]) -> String {
+    order
+        .iter()
+        .map(|(system, away)| match away {
+            Some(away) => format!("{}\t{away:.2} Ly", system.name),
+            None => system.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// How far a field written under a header sits in from the ones above it
@@ -2384,6 +2441,55 @@ mod tests {
     /// A faction filter, by id, called after it
     fn faction(id: i32) -> Filter {
         Filter::Faction { id, name: format!("Faction {id}") }
+    }
+
+    /// The list copied is the list drawn, a system to a line
+    ///
+    /// With the distance each line ends in, where it ends in one, set off by
+    /// a tab so a paste lands in two columns. The first system of a route is
+    /// reached by no jump, and its line says nothing after the name.
+    #[test]
+    fn the_list_is_copied_as_it_is_drawn() {
+        let (sol, wolf) = (
+            crate::systems::tests::named(1, "SOL"),
+            crate::systems::tests::named(2, "WOLF 359"),
+        );
+        let order = [(&sol, None), (&wolf, Some(7.78))];
+
+        assert_eq!(as_text(&order), "SOL\nWOLF 359\t7.78 Ly");
+    }
+
+    /// What a filter's panel offers to copy is named for what the list is
+    ///
+    /// A route is a way to fly and a faction's holdings are a set of places,
+    /// and the button that hands either to the clipboard should say which it
+    /// is handing over.
+    #[test]
+    fn a_route_offers_its_route_and_a_set_offers_its_list() {
+        let held = [crate::systems::tests::named(1, "SOL")];
+
+        let route = listing(&plotted_for("SOL -> BARNARD", "10"), &held);
+        assert!(route.contains(&"Copy Route".to_owned()), "{route:?}");
+        assert!(!route.contains(&"Copy List".to_owned()), "{route:?}");
+
+        let holdings = listing(&faction(7), &held);
+        assert!(holdings.contains(&"Copy List".to_owned()), "{holdings:?}");
+        assert!(!holdings.contains(&"Copy Route".to_owned()), "{holdings:?}");
+    }
+
+    /// What a filter's list paints, line by line
+    fn listing(filter: &Filter, systems: &[System]) -> Vec<String> {
+        words(|ui| {
+            admitted(
+                ui,
+                filter,
+                Some(systems),
+                None,
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        })
     }
 
     /// A filter already being read about is not opened twice
