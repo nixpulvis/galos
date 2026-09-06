@@ -79,6 +79,11 @@ impl NameTable {
     }
 
     /// How many systems the table names.
+    ///
+    /// No `is_empty` beside it. There was one, and nothing ever called it; a
+    /// table with no names in it is not a case any caller asks about, since
+    /// what they want to know is how far the publish has to write.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.slot.len()
     }

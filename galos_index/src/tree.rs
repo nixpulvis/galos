@@ -225,6 +225,11 @@ impl Tree {
     }
 
     /// How many systems the tree holds.
+    ///
+    /// No `is_empty` beside it. There was one, and nothing ever called it: a
+    /// tree is asked its size for a report or a consistency check, and an
+    /// empty one answers those with a zero like any other number.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.records.len()
     }
