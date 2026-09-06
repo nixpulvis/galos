@@ -27,7 +27,7 @@ use crate::systems::aggregate::Planned;
 use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::fetch::{FetchTasks, RawSystem};
 use crate::systems::scale::View;
-use crate::systems::spawn::{PendingSpawns, build_system};
+use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
 use crate::{Names, Populated, ResidentIndex, Transport};
 use bevy::math::DVec3;
@@ -262,6 +262,7 @@ fn reconcile(
     spyglass: Res<Spyglass>,
     view_mode: Res<View>,
     selection: Res<crate::systems::selection::Selection>,
+    filters: Res<crate::systems::filter::Filters>,
     systems: Query<(Entity, &System, Has<crate::systems::route::Hop>)>,
     mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
@@ -285,6 +286,10 @@ fn reconcile(
     let existing: HashSet<i64> =
         systems.iter().map(|(_, system, _)| system.address).collect();
     let picked: HashSet<i64> = selection.addresses().into_iter().collect();
+    // Every stop of every route being shown. A line is only a line if it has
+    // both ends of each leg to draw between, so these are wanted whatever the
+    // walk resolves and wherever the bubble ends. See [`Filters::routed`].
+    let routed = filters.routed();
 
     // The resolvable prefix of every resident cell: the systems close enough to
     // separate. Build only the ones not already drawn; note every one wanted.
@@ -314,6 +319,29 @@ fn reconcile(
                     false,
                     now,
                 );
+            }
+        }
+    }
+
+    // The route's own stops, which no cell prefix answers for. They lie
+    // wherever the route goes rather than near the camera, so from far enough
+    // out to see the whole of a route most of them fall outside every prefix
+    // and outside the bubble both, and the walk would never build them.
+    //
+    // Wanted, which is the one thing said here: it is what builds the stops
+    // the map has not got and, below, what keeps the ones it has. Read out of
+    // the resident names table, as a searched system is, and pinned so the
+    // queue does not weigh them against the reach and forget them unread.
+    //
+    // Being on the map is not being in view. A stop the spyglass does not
+    // reach is hidden by [`crate::systems::visibility`] and the line is cut
+    // back to it by [`crate::systems::route::trim`]; what this settles is
+    // that the stop is there to be reached at all.
+    for &address in &routed {
+        wanted.insert(address);
+        if !existing.contains(&address) {
+            if let Some(system) = system_at(address, &populated, &names) {
+                pending.push(system, true, now);
             }
         }
     }
@@ -492,6 +520,7 @@ mod tests {
         app.init_resource::<ResidentCells>();
         app.init_resource::<HeldSystem>();
         app.init_resource::<crate::systems::selection::Selection>();
+        app.init_resource::<crate::systems::filter::Filters>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
@@ -562,6 +591,61 @@ mod tests {
         app.update();
 
         assert_eq!(dropping(&mut app), vec![2], "the walk dropped a stop");
+    }
+
+    /// And every stop of a route it is showing, not only the two adjacent ones
+    ///
+    /// Reported as a route drawn in pieces: the line ran in dashes, whole
+    /// stretches of it missing. A route's stops lie wherever the route goes
+    /// rather than near the camera, so from far enough out to see the whole
+    /// of it most of them fall outside every cell's resolvable prefix. The
+    /// walk never built them, and [`super::super::route::trim`] cuts the line
+    /// at a stop the map does not hold exactly as it cuts one the spyglass
+    /// has put away. [`Hop`] was all that was spared, and that marks two
+    /// stops — the one behind and the one ahead — so the rest of the line
+    /// went.
+    ///
+    /// Two halves to it: a stop already on the map is not dropped, and one
+    /// the walk never built is asked for.
+    #[test]
+    fn the_walk_holds_every_stop_of_a_route() {
+        use crate::systems::filter::{Filter, Filters};
+        use crate::systems::tests::system;
+        use galos_index::NameEntry;
+
+        let mut app = walking();
+        app.insert_resource(Names::reaching(
+            (1..=3)
+                .map(|address| NameEntry {
+                    address,
+                    name: format!("Stop {address}"),
+                    position: [address as f32 * 10., 0., 0.],
+                })
+                .collect(),
+            Vec::new(),
+        ));
+        app.world_mut().resource_mut::<Filters>().add(Filter::Route {
+            label: "Stop 1 to Stop 3".into(),
+            systems: vec![1, 2, 3],
+            range: "10".into(),
+        });
+        // The first stop already drawn, the other two never built, and a
+        // system that is on no route at all.
+        app.world_mut().spawn(system(1));
+        app.world_mut().spawn(system(4));
+
+        app.update();
+
+        assert_eq!(
+            dropping(&mut app),
+            vec![4],
+            "the walk dropped a stop the line has to reach"
+        );
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            2,
+            "the stops the walk never built were never asked for"
+        );
     }
 
     /// An eviction is re-decided every frame, not left standing

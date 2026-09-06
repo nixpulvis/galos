@@ -805,6 +805,36 @@ impl Filters {
 
         asked.then_some(admitted)
     }
+
+    /// Every stop the routes being shown run through, by address
+    ///
+    /// A route is drawn as a line from one stop to the next, so a stop the
+    /// map has let go of is not a fainter line but a gap in it — and the
+    /// further out the camera stands, the more of the route falls where the
+    /// level of detail would draw nothing. So the stops are held on the map
+    /// for as long as the line is, however coarsely the sky around them is
+    /// drawn. Whether one is *seen* is still the spyglass's to say, in
+    /// [`crate::systems::visibility`]; this only says it is there to see.
+    ///
+    /// Only the routes being shown. A row turned off draws no line, so its
+    /// stops are nothing to hold the map open for.
+    ///
+    /// Routes only. A faction or a hand-picked set is a set of systems the
+    /// map happens to admit, with no line running between them and so
+    /// nothing that a missing one would break.
+    pub fn routed(&self) -> std::collections::HashSet<i64> {
+        self.asked
+            .iter()
+            .filter(|active| active.enabled)
+            .filter_map(|active| match &active.filter {
+                Filter::Route { systems, .. } => Some(systems.iter().copied()),
+                Filter::Faction { .. }
+                | Filter::Systems { .. }
+                | Filter::Recency { .. } => None,
+            })
+            .flatten()
+            .collect()
+    }
 }
 
 /// What a set of filters admits, said as two lists

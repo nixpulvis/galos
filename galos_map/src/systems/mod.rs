@@ -471,12 +471,18 @@ pub(crate) const EVICT_MARGIN: f64 = 1.5;
 /// Two grounds mark a system: the spyglass no longer reaches it (only while it
 /// clears), or a filter excludes it and the dim is zero — which says draw
 /// nothing for what is excluded rather than draw it faintly, so it is taken off
-/// the map exactly as the out-of-reach ones are. A route's stops, a picked-out
-/// system, and the system the camera is standing in are kept on either ground:
-/// the first is how the way on is found, the second the user is holding onto by
-/// hand, and the last carries the floating origin while the camera is inside
-/// it. Everything else the galaxy holds — the route lines among them — is kept
-/// by never being marked.
+/// the map exactly as the out-of-reach ones are. Every stop of every route
+/// being shown, a picked-out system, and the system the camera is standing in
+/// are kept on either ground: the first so the line has both ends of each leg
+/// to draw between, the second the user is holding onto by hand, and the last
+/// carries the floating origin while the camera is inside it. Everything else
+/// the galaxy holds — the route lines among them — is kept by never being
+/// marked.
+///
+/// A stop kept here is kept on the map, not held in view: whether it is seen
+/// is [`visibility`]'s to say, and outside the spyglass it says no. What this
+/// prevents is the line losing the stop altogether and being drawn in
+/// pieces.
 ///
 /// Marking a system forgets the surveys that vouched for its region, so a
 /// camera coming back asks for it again rather than finding the region marked
@@ -504,17 +510,21 @@ pub fn evict(
     let keep = spyglass.radius as f64 * EVICT_MARGIN;
     let now = Utc::now();
     let held: HashSet<i64> = selection.addresses().into_iter().collect();
+    let routed = filters.routed();
     let inside = holding.of();
 
     let evicted: HashSet<Entity> = systems
         .iter()
         .filter(|(entity, system, hop)| {
-            // A route's stops, a picked-out system, and the one the camera is
-            // standing in are kept whatever the reach or the filters — the last
-            // because the floating origin hangs off it while zoomed in, so
-            // dropping it would take the camera down with it and leave the map
-            // with no origin to draw from.
-            if *hop || held.contains(&system.address) || Some(*entity) == inside
+            // Every stop of every route being shown, a picked-out system, and
+            // the one the camera is standing in are kept whatever the reach or
+            // the filters — the last because the floating origin hangs off it
+            // while zoomed in, so dropping it would take the camera down with
+            // it and leave the map with no origin to draw from.
+            if *hop
+                || routed.contains(&system.address)
+                || held.contains(&system.address)
+                || Some(*entity) == inside
             {
                 return false;
             }
@@ -866,6 +876,18 @@ pub(crate) mod tests {
                 ChildOf(galaxy),
             ))
             .id();
+        // A stop of a route being shown, far past the margin and wearing no
+        // `Hop`: only the stop behind and the stop ahead wear one, so a route
+        // spared by that alone lost every stop between them and was drawn in
+        // pieces.
+        let stop = spawn(&mut app, placed(6, DVec3::new(80., 0., 0.)));
+        app.world_mut().resource_mut::<filter::Filters>().add(
+            filter::Filter::Route {
+                label: "6 to 6".into(),
+                systems: vec![6],
+                range: "10".into(),
+            },
+        );
 
         app.update();
 
@@ -874,6 +896,7 @@ pub(crate) mod tests {
         assert!(alive(band), "dropped a system inside the margin");
         assert!(alive(held), "dropped a picked-out system");
         assert!(alive(hop), "dropped a route's stop");
+        assert!(alive(stop), "dropped a stop of a route being shown");
         assert!(alive(line), "dropped a non-system the galaxy held");
         assert!(!alive(far), "kept a system past the margin");
         let surveys = &app.world().resource::<FetchTasks>().surveyed;
