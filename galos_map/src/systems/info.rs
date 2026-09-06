@@ -24,7 +24,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use elite_journal::body::{Discovery, Orbit, Spin};
+use elite_journal::body::{Composition, Discovery, Material, Orbit, Spin};
 use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
 use galos_photometry::{Distance, Magnitude};
 use std::collections::HashMap;
@@ -872,6 +872,73 @@ fn standing(ui: &mut Ui, surface: &Option<Surface>) {
     );
     under(ui, "Volcanism", named(&surface.volcanism));
     under(ui, "Terraforming", named(&surface.terraform_state));
+    if let Some(crust) = &surface.composition {
+        under(ui, "Composition", made_of(crust));
+    }
+    prospected(ui, &surface.materials);
+}
+
+/// What a crust is made of, as the scan divides it
+///
+/// Three fractions summing to one, said in hundredths and richest first,
+/// which is the order the body is described in rather than the order the scan
+/// happens to write. A part the scan found none of is left out: a rocky body
+/// is rock and metal, and a line saying it is nought parts ice says nothing.
+fn made_of(crust: &Composition) -> String {
+    let mut parts =
+        [("rock", crust.rock), ("metal", crust.metal), ("ice", crust.ice)];
+    // `total_cmp` rather than `partial_cmp`: a fraction the scan left as NaN
+    // still sorts somewhere rather than panicking the sort.
+    parts.sort_by(|one, other| other.1.total_cmp(&one.1));
+    let said: Vec<String> = parts
+        .iter()
+        .filter(|(_, share)| *share > 0.)
+        .map(|(part, share)| format!("{:.0}% {part}", share * 100.))
+        .collect();
+    if said.is_empty() { UNKNOWN.into() } else { said.join(", ") }
+}
+
+/// The raw materials a surface can be prospected for, one to a row
+///
+/// Richest first, since what is asked of a body is what it has most of.
+/// Nothing at all where the scan listed none: a header over no rows is a
+/// header over nothing.
+fn prospected(ui: &mut Ui, materials: &[Material]) {
+    if materials.is_empty() {
+        return;
+    }
+
+    ui.label(egui::RichText::new("Materials").strong());
+    ui.end_row();
+    for (name, share) in richest(materials) {
+        under(ui, &name, format!("{share:.1}%"));
+    }
+}
+
+/// The materials of a surface, named as they are read, richest first
+///
+/// Split from [`prospected`] because the order and the spelling are what
+/// there is to get wrong, and neither needs a `Ui` to be asked about.
+fn richest(materials: &[Material]) -> Vec<(String, f64)> {
+    let mut sorted: Vec<(String, f64)> = materials
+        .iter()
+        .map(|material| (capitalised(&material.name), material.percent))
+        .collect();
+    sorted.sort_by(|one, other| other.1.total_cmp(&one.1));
+    sorted
+}
+
+/// `word` with its first letter upper case
+///
+/// The journal spells a material `iron`, and a panel writes names as names.
+/// A letter at a time, since a letter's upper case may be more than one
+/// letter and the rest of the word is left exactly as it was read.
+fn capitalised(word: &str) -> String {
+    let mut letters = word.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => String::new(),
+    }
 }
 
 /// How a thing turns on its own axis
@@ -1300,7 +1367,7 @@ mod tests {
     use chrono::DateTime;
     use elite_journal::Allegiance;
     use elite_journal::body::{
-        Discovery as JournalDiscovery, Orbit as JournalOrbit,
+        AtmosphereType, Discovery as JournalDiscovery, Orbit as JournalOrbit,
         Spin as JournalSpin,
     };
     use elite_journal::system::Economy;
@@ -1525,6 +1592,80 @@ mod tests {
         assert!(said.contains(&"Surface".to_owned()), "{said:?}");
         assert!(said.contains(&"None".to_owned()), "{said:?}");
         assert!(!said.contains(&"Landable".to_owned()), "{said:?}");
+    }
+
+    /// A material the scan found `percent` of
+    fn material(name: &str, percent: f64) -> Material {
+        Material { name: name.to_owned(), percent }
+    }
+
+    /// A crust is said by its parts, richest first, leaving out what is not
+    /// there
+    ///
+    /// The scan reports three fractions summing to one, and a rocky body
+    /// reports no ice at all. A line saying it is nought parts ice says
+    /// nothing, and the order the scan writes them in is not the order a body
+    /// is described in.
+    #[test]
+    fn a_crust_is_said_richest_first_without_what_is_not_there() {
+        let rocky = Composition { ice: 0., rock: 0.911156, metal: 0.088844 };
+        let icy = Composition { ice: 0.7, rock: 0.2, metal: 0.1 };
+
+        assert_eq!(made_of(&rocky), "91% rock, 9% metal");
+        assert_eq!(made_of(&icy), "70% ice, 20% rock, 10% metal");
+    }
+
+    /// Materials are listed richest first, named as names
+    ///
+    /// What is asked of a body is what it has most of, and the journal spells
+    /// a material `iron` where a panel writes Iron.
+    #[test]
+    fn materials_are_listed_richest_first() {
+        let found = [
+            material("nickel", 15.2),
+            material("iron", 20.1),
+            material("carbon", 12.8),
+        ];
+
+        assert_eq!(
+            richest(&found),
+            vec![
+                ("Iron".to_owned(), 20.1),
+                ("Nickel".to_owned(), 15.2),
+                ("Carbon".to_owned(), 12.8),
+            ]
+        );
+    }
+
+    /// A surface the scan listed no materials for has no Materials section
+    ///
+    /// A header over no rows is a header over nothing. The surface's own rows
+    /// still draw, so this is the header being withheld rather than the
+    /// section failing to reach the panel at all.
+    #[test]
+    fn a_surface_with_nothing_scanned_lists_no_materials() {
+        let said = words(|ui| {
+            egui::Grid::new("surface").num_columns(2).show(ui, |ui| {
+                standing(ui, &Some(bare()));
+            });
+        });
+
+        assert!(said.contains(&"Landable".to_owned()), "{said:?}");
+        assert!(!said.contains(&"Materials".to_owned()), "{said:?}");
+    }
+
+    /// A surface a scan reached but found no materials on
+    fn bare() -> Surface {
+        Surface {
+            atmosphere_type: AtmosphereType::None,
+            pressure: 0.,
+            composition: None,
+            landable: true,
+            atmosphere: None,
+            volcanism: None,
+            terraform_state: None,
+            materials: vec![],
+        }
     }
 
     /// A body's turn and its orbit are read in days
