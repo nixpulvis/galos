@@ -1,5 +1,7 @@
+use crate::Names;
 use crate::camera::{FRAMING_MARGIN, MoveCamera};
 use crate::schedule::MapSet;
+use crate::search::Search;
 use crate::systems::Spyglass;
 use crate::systems::System;
 use crate::systems::bodies::spawn::{HeldSystem, Strength};
@@ -24,6 +26,9 @@ pub fn plugin(app: &mut App) {
             .in_set(MapSet::Populate)
             .after(super::spawn::spawn),
     );
+    // Where the trip is asked for rather than where its legs land, which is
+    // the whole point of it: see `frame_trip`.
+    app.add_systems(Update, frame_trip.in_set(MapSet::Fetch));
     // Once the lines and the filters have settled, so what is drawn faintly
     // this frame answers what is being asked this frame.
     app.add_systems(
@@ -284,14 +289,10 @@ pub(crate) struct Route(pub(crate) Filter);
 /// system that draws stars.
 #[derive(Message, Debug)]
 pub(crate) struct PlottedRoute {
-    /// The two ends, as the database spells them
+    /// Its two ends, as the database spells them
     pub(crate) label: String,
     /// Every system it runs through, by address, in the order travelled
     pub(crate) systems: Vec<i64>,
-    /// The middle of what it spans
-    pub(crate) middle: DVec3,
-    /// How far it reaches from there, in light years
-    pub(crate) extent: f32,
     /// How far the ship it was plotted for reaches in one jump, in light years
     ///
     /// Carried along rather than worked out from the legs. The longest jump a
@@ -316,20 +317,74 @@ impl PlottedRoute {
     }
 }
 
-/// Show a route that has just been plotted
+/// Look at the whole trip, and reach far enough to hold it
 ///
-/// Three things at once, all of them the same thought: look at the whole of
-/// it, reach far enough to hold the whole of it, and pick the whole of it
-/// out from everything else.
+/// Written where the trip is asked for rather than where its legs land. A
+/// trip is several routes and they land one at a time, so a camera pointed by
+/// each of them in turn is a camera flung from leg to leg and left framing
+/// whichever answered last. The trip is one thing to look at, and this is the
+/// one place that knows the whole of it.
 ///
-/// The spyglass is set rather than left alone because a route is usually
+/// It needs no route to say so. Where the stops stand is already on record,
+/// so the trip can be framed the moment it is asked for rather than when the
+/// last leg comes back — which is also the better moment, the camera moving
+/// as the button is pressed rather than seconds later.
+///
+/// The spyglass is set rather than left alone because a trip is usually
 /// longer than whatever the user was looking at when they asked for it, and a
 /// route drawn as a line running out through the edge of an unchanged
 /// spyglass is a route with no systems on it.
-fn plotted(
-    mut plotted: MessageReader<PlottedRoute>,
+fn frame_trip(
+    mut asked: MessageReader<Search>,
+    names: Res<Names>,
     mut camera: MessageWriter<MoveCamera>,
     mut spyglass: ResMut<Spyglass>,
+) {
+    for ask in asked.read() {
+        let Search::Route { stops, .. } = ask else { continue };
+        // Whatever is on record. A stop the names table does not know is a
+        // leg that will come back with nothing, and the form is already
+        // saying so; the trip is still framed over the stops that are real.
+        let places: Vec<DVec3> = stops
+            .iter()
+            .filter_map(|stop| names.address(stop))
+            .filter_map(|address| names.get(address))
+            .map(super::system_to_vec)
+            .collect();
+        let Some((middle, extent)) = super::route::spawn::framing(&places)
+        else {
+            continue;
+        };
+
+        camera.write(MoveCamera {
+            position: Some(middle),
+            framing: Some(extent),
+        });
+
+        // Measured from the middle, which is where the camera is going, so
+        // what the spyglass holds is what the camera is about to see. The
+        // same room around it that the camera is stood back to leave, since a
+        // reach set to the trip's own extent puts the far stops exactly on
+        // the rim of it: the extent is the distance to the furthest of them,
+        // and whether that counts as reaching them comes down to which way an
+        // `f32` rounded.
+        //
+        // Held inside what the map will reach unasked. Everything the
+        // spyglass takes in is fetched and spawned, and a trip long enough
+        // would otherwise set a reach nobody asked the size of.
+        spyglass.radius = (extent * FRAMING_MARGIN)
+            .clamp(Spyglass::OPENING, Spyglass::UNASKED);
+    }
+}
+
+/// Take up a leg that has just been plotted
+///
+/// One row and one line per leg, so a trip through five systems leaves four
+/// of each: each leg is a route the user can close, turn off, or pick out on
+/// its own. Where the camera goes is the trip's business rather than any one
+/// leg's; see [`frame_trip`].
+fn plotted(
+    mut plotted: MessageReader<PlottedRoute>,
     mut filters: ResMut<Filters>,
     mut selected: ResMut<SelectedRoute>,
 ) {
@@ -340,25 +395,6 @@ fn plotted(
         if selected.0.is_some() {
             selected.0 = None;
         }
-
-        camera.write(MoveCamera {
-            position: Some(route.middle),
-            framing: Some(route.extent),
-        });
-
-        // Measured from the middle, which is where the camera is going, so
-        // what the spyglass holds is what the camera is about to see. The
-        // same room around it that the camera is stood back to leave, since a
-        // reach set to the route's own extent puts the two ends exactly on
-        // the rim of it: the extent is the distance to the furthest of them,
-        // and whether that counts as reaching them comes down to which way an
-        // `f32` rounded.
-        //
-        // Held inside what the map will reach unasked. Everything the
-        // spyglass takes in is fetched and spawned, and a route long enough
-        // would otherwise set a reach nobody asked the size of.
-        spyglass.radius = (route.extent * FRAMING_MARGIN)
-            .clamp(Spyglass::OPENING, Spyglass::UNASKED);
 
         // Beside whatever is already plotted rather than in place of it. Each
         // route keeps its own line and its own row, so plotting a second is
@@ -861,12 +897,31 @@ mod tests {
         app.world().get::<Visibility>(line) == Some(&Visibility::Visible)
     }
 
-    /// The spyglass a route centered on `middle` and reaching `extent` leaves
-    fn spyglass_for(middle: DVec3, extent: f32) -> Spyglass {
+    /// The spyglass a trip through `places` leaves, and where it looked
+    ///
+    /// Driven the way the map drives it: the stops go on record, the trip is
+    /// asked for by name, and [`frame_trip`] answers. Nothing is routed --
+    /// where the stops stand is all the framing needs.
+    fn framed(places: &[DVec3]) -> (Spyglass, Vec<Option<f32>>) {
+        use galos_index::NameEntry;
+
+        let entries: Vec<NameEntry> = places
+            .iter()
+            .enumerate()
+            .map(|(at, place)| NameEntry {
+                address: at as i64 + 1,
+                name: format!("S{at}"),
+                position: [place.x as f32, place.y as f32, place.z as f32],
+            })
+            .collect();
+        let stops: Vec<String> =
+            (0..places.len()).map(|at| format!("S{at}")).collect();
+
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_message::<PlottedRoute>();
+        app.add_message::<Search>();
         app.add_message::<MoveCamera>();
+        app.insert_resource(Names::reaching(entries, Vec::new()));
         app.insert_resource(Spyglass {
             fetch: true,
             radius: Spyglass::OPENING,
@@ -874,32 +929,56 @@ mod tests {
             lock_camera: false,
             follow_camera: false,
         });
-        app.init_resource::<Filters>();
-        app.init_resource::<SelectedRoute>();
-        app.add_systems(Update, plotted);
+        app.add_systems(Update, frame_trip);
 
-        app.world_mut().write_message(PlottedRoute {
-            label: "A -> B".to_owned(),
-            systems: vec![1, 2],
-            middle,
-            extent,
-            range: "10".to_owned(),
-        });
+        app.world_mut()
+            .write_message(Search::Route { stops, range: "10".to_owned() });
         app.update();
 
         let held = app.world().resource::<Spyglass>();
-        Spyglass {
+        let spyglass = Spyglass {
             fetch: held.fetch,
             radius: held.radius,
             clear: held.clear,
             lock_camera: held.lock_camera,
             follow_camera: held.follow_camera,
-        }
+        };
+        let mut moves = app.world_mut().resource_mut::<Messages<MoveCamera>>();
+        let framings = moves.drain().map(|asked| asked.framing).collect();
+        (spyglass, framings)
     }
 
-    /// What reach a route of `extent` light years pulls the spyglass out to
+    /// The spyglass a trip through `places` leaves
+    fn spyglass_for(places: &[DVec3]) -> Spyglass {
+        framed(places).0
+    }
+
+    /// What reach a trip of `extent` light years pulls the spyglass out to
+    ///
+    /// Two stops either side of the middle, so the extent is the distance to
+    /// each of them.
     fn reach_for(extent: f32) -> f32 {
-        spyglass_for(DVec3::ZERO, extent).radius
+        spyglass_for(&[
+            DVec3::new(-(extent as f64), 0., 0.),
+            DVec3::new(extent as f64, 0., 0.),
+        ])
+        .radius
+    }
+
+    /// A trip is looked at whole, once, however many legs it has
+    ///
+    /// The legs land one at a time, so a camera pointed by each of them would
+    /// be flung from leg to leg and left framing whichever answered last.
+    #[test]
+    fn a_trip_is_framed_once_over_the_whole_of_it() {
+        let places =
+            [DVec3::ZERO, DVec3::new(10., 0., 0.), DVec3::new(20., 0., 0.)];
+
+        let (_, framings) = framed(&places);
+
+        // The far stops stand ten light years off the middle one, which is
+        // where the camera goes.
+        assert_eq!(framings, vec![Some(10.)]);
     }
 
     /// A route reaches past its own ends rather than up to them
@@ -927,7 +1006,7 @@ mod tests {
             "these coordinates no longer round the way the test is about",
         );
 
-        let spyglass = spyglass_for(middle, extent);
+        let spyglass = spyglass_for(&places);
 
         for place in places {
             assert!(spyglass.reaches(middle, place), "{place} is out of reach");
@@ -1146,8 +1225,6 @@ mod tests {
         app.world_mut().write_message(PlottedRoute {
             label: "C -> D".to_owned(),
             systems: vec![8, 9],
-            middle: DVec3::ZERO,
-            extent: 10.,
             range: "10".to_owned(),
         });
         app.update();

@@ -10,7 +10,7 @@ use crate::systems::{
     fetch::RawSystem,
     filter::{Filtered, Filtering, Filters},
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
-    route::spawn::{framing, spawn_route},
+    route::spawn::spawn_route,
     route::{self, PlottedRoute, Route},
     selection::{Picked, PickedBody, Selection},
 };
@@ -648,8 +648,7 @@ pub fn spawn(
 /// What a route that has landed amounts to, if it amounts to a route
 ///
 /// Nothing where fewer than two systems came back, a line between one system
-/// being no line, and nothing where none of them has a position on record and
-/// there is nowhere to put it.
+/// being no line.
 ///
 /// `range` comes off the key the leg was fetched under, that being where what
 /// the user asked for is still written down. The rows that came back say which
@@ -664,17 +663,11 @@ fn plotted_route(systems: &[System], range: &str) -> Option<PlottedRoute> {
         return None;
     }
 
-    let places: Vec<_> =
-        systems.iter().map(|system| system.position()).collect();
-    let (middle, extent) = framing(&places)?;
-
     Some(PlottedRoute {
         label: format!("{}{ARROW}{}", first.name(), last.name()),
         // In the order they are travelled, which is the order the route came
         // back in and the order its panel lists.
         systems: systems.iter().map(|system| system.address).collect(),
-        middle,
-        extent,
         range: range.to_owned(),
     })
 }
