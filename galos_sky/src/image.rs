@@ -155,7 +155,8 @@ impl Image {
         }
         let i = ((y as usize) * (self.width as usize) + x as usize) * 3;
         for c in 0..3 {
-            out[i + c] = (color[c].clamp(0.0, 1.0) * EIGHT_BIT_MAX).round() as u8;
+            out[i + c] =
+                (color[c].clamp(0.0, 1.0) * EIGHT_BIT_MAX).round() as u8;
         }
     }
 

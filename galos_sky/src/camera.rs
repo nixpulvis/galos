@@ -50,7 +50,8 @@ use crate::image::{Image, Mark, Segment};
 use galos_catalog::Star;
 use galos_catalog::asterism::Figures;
 use galos_photometry::psf::{
-    AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Layer, ProfileKind, Psf,
+    AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Layer, ProfileKind,
+    Psf,
 };
 use galos_photometry::{Distance, Magnitude, Temperature};
 use std::collections::HashMap;
@@ -225,11 +226,7 @@ impl Camera {
         let up = [0.0, 0.0, 1.0];
         let parallel =
             cross(self.forward, up).iter().all(|c| c.abs() < PARALLEL_EPSILON);
-        self.up = if parallel {
-            [0.0, 1.0, 0.0]
-        } else {
-            up
-        };
+        self.up = if parallel { [0.0, 1.0, 0.0] } else { up };
         self
     }
 

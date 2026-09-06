@@ -15,8 +15,8 @@
 //! The connection is read from `DATABASE_URL` like every other tool.
 
 use clap::{Parser, Subcommand};
-use galos_db::{catalog, index, Database};
 use galos_catalog::hyg;
+use galos_db::{catalog, index, Database};
 use std::io::{stderr, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -73,7 +73,8 @@ fn main() -> galos_db::Result<()> {
 async fn run(command: Command) -> galos_db::Result<()> {
     match command {
         Command::Catalog { file } => {
-            let handle = std::fs::File::open(&file).map_err(galos_db::Error::from)?;
+            let handle =
+                std::fs::File::open(&file).map_err(galos_db::Error::from)?;
             let read = hyg::read(handle).map_err(|e| {
                 galos_db::Error::from(std::io::Error::other(e.to_string()))
             })?;

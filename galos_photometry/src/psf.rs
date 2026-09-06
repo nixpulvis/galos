@@ -455,7 +455,10 @@ impl Psf {
         if total <= 0.0 {
             return 0.0;
         }
-        self.layers.iter().map(|l| l.profile.peak(l.weight / total * energy)).sum()
+        self.layers
+            .iter()
+            .map(|l| l.profile.peak(l.weight / total * energy))
+            .sum()
     }
 
     /// The value `distance` from the centre of a star carrying `energy`: the
@@ -653,10 +656,16 @@ mod tests {
     /// A kind round-trips through its kernel, and names itself for a menu.
     #[test]
     fn a_kernel_reports_its_kind() {
-        assert_eq!(Kernel::moffat(2.0, STELLAR_BETA).kind(), ProfileKind::Moffat);
+        assert_eq!(
+            Kernel::moffat(2.0, STELLAR_BETA).kind(),
+            ProfileKind::Moffat
+        );
         assert_eq!(Kernel::gaussian(2.0).kind(), ProfileKind::Gaussian);
         assert_eq!(ProfileKind::default(), ProfileKind::Moffat);
-        assert_eq!(ProfileKind::ALL, [ProfileKind::Moffat, ProfileKind::Gaussian]);
+        assert_eq!(
+            ProfileKind::ALL,
+            [ProfileKind::Moffat, ProfileKind::Gaussian]
+        );
         assert_eq!(ProfileKind::Gaussian.name(), "Gaussian");
     }
 
@@ -725,7 +734,10 @@ mod tests {
             stack.radius(faint, FLOOR).unwrap(),
             core.radius(faint, FLOOR).unwrap(),
         );
-        assert!((sf - cf).abs() < 1.0, "a faint star is unchanged: {sf} vs {cf}");
+        assert!(
+            (sf - cf).abs() < 1.0,
+            "a faint star is unchanged: {sf} vs {cf}"
+        );
     }
 
     /// A stack is still linear in energy, so it stays separable: the value at a

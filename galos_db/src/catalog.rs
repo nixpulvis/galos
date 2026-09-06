@@ -40,7 +40,7 @@
 //! so the narrow key is the right one until something needs more.
 
 use crate::{Database, Result};
-use galos_catalog::compare::{Comparison, Reference, compare};
+use galos_catalog::compare::{compare, Comparison, Reference};
 use galos_catalog::Star;
 use sqlx::Row;
 
@@ -54,10 +54,8 @@ pub async fn compare_to_catalog(
     db: &Database,
     catalog: &[Star],
 ) -> Result<Comparison> {
-    let names: Vec<String> = catalog
-        .iter()
-        .filter_map(|s| s.name.clone())
-        .collect();
+    let names: Vec<String> =
+        catalog.iter().filter_map(|s| s.name.clone()).collect();
 
     let rows = sqlx::query(
         "SELECT name, \
@@ -192,7 +190,11 @@ mod tests {
         Comparison { matches, unmatched: vec![], frame: None }
     }
 
-    fn one(name: &str, catalog: f64, reference: f64) -> galos_catalog::compare::Match {
+    fn one(
+        name: &str,
+        catalog: f64,
+        reference: f64,
+    ) -> galos_catalog::compare::Match {
         galos_catalog::compare::Match {
             name: name.into(),
             catalog_distance: catalog,

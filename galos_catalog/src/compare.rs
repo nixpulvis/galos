@@ -46,8 +46,8 @@
 //! disagreement with the other dataset. Position against position; the noise
 //! floor is then the other dataset's alone.
 
-use crate::frame::rotate;
 use crate::Star;
+use crate::frame::rotate;
 
 /// The fewest matched stars a rotation can be fitted from.
 ///
