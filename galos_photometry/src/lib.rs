@@ -66,6 +66,12 @@ pub const PARSECS_PER_LY: f64 = 1.0 / LY_PER_PARSEC;
 /// [`Distance::parsecs`] — folds that conversion into one place and keeps a
 /// light-year figure from being read as a parsec one at the call that would
 /// most quietly go wrong.
+///
+/// The parsec side is the definitional one. The distance modulus is anchored at
+/// ten parsecs — a star seen from there looks exactly its absolute magnitude —
+/// so the scale this crate orders the galaxy by is fixed in parsecs, and
+/// anything written to pin what a magnitude means has to say ten parsecs to say
+/// it at all. The light-year side is where the map lives.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub struct Distance(f64);
 
@@ -114,9 +120,6 @@ impl Magnitude {
     /// black hole, whose temperature is zero — and the floor any darkened scan
     /// lands on.
     pub const DARK: Magnitude = Magnitude(40.0);
-
-    /// The Sun's absolute visual magnitude, the zero the sequence is hung from.
-    pub const SOLAR_ABSOLUTE: Magnitude = Magnitude(4.83);
 
     /// The relative flux of this magnitude, with magnitude zero as one unit.
     ///
@@ -409,15 +412,6 @@ impl Temperature {
 /// and the brightness is the flux's to set.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Color(pub [f32; 3]);
-
-impl Color {
-    /// The Rec. 709 luminance of this tint. A blackbody colour is normalized to
-    /// unit luminance, so this is one for anything [`Temperature::color`]
-    /// returns; it is the measure that normalization is held to.
-    pub fn luminance(self) -> Luminance {
-        Luminance::of([self.0[0] as f64, self.0[1] as f64, self.0[2] as f64])
-    }
-}
 
 impl std::ops::Index<usize> for Color {
     type Output = f32;
@@ -748,7 +742,8 @@ mod tests {
         for t in [1000.0, 3000.0, 5772.0, 10000.0, 30000.0] {
             let c = Temperature(t).color();
             assert!(c.0.iter().all(|&ch| ch >= 0.0));
-            let luminance = c.luminance().0;
+            let luminance =
+                Luminance::of([c[0] as f64, c[1] as f64, c[2] as f64]).0;
             assert!(
                 (luminance - 1.0).abs() < 1e-4,
                 "at {t} K luminance is {luminance}"
@@ -803,14 +798,18 @@ mod tests {
         }
     }
 
-    /// A G star is Sun-like, which is the one anchor a reader can check by eye.
+    /// A G star runs at the Sun's heat and shines at its brightness, which is
+    /// the one row of the table a reader can check by eye.
+    ///
+    /// Both halves, because the table carries a temperature and a magnitude
+    /// per class and either could be wrong on its own. 4.83 is the Sun's
+    /// absolute visual magnitude; a G row a magnitude off it would draw every
+    /// unclassified G star at the wrong brightness for its distance.
     #[test]
     fn a_g_star_is_sun_like() {
         let g = ClassLight::of("G");
-        assert!(
-            (g.absolute_magnitude.0 - Magnitude::SOLAR_ABSOLUTE.0).abs() < 1.0
-        );
         assert!((g.temperature.0 - Temperature::SOLAR.0).abs() < 500.0);
+        assert!((g.absolute_magnitude.0 - 4.83).abs() < 1.0);
     }
 
     /// Class is read case- and space-insensitively, as the feeds spell it
@@ -869,12 +868,15 @@ mod tests {
     }
 
     /// The Sun loses nothing crossing into the visible: the V band is where its
-    /// light already is, so its visual magnitude is its bolometric one.
+    /// light already is, so its visual magnitude is its bolometric one. Written
+    /// at the Sun's absolute visual magnitude, 4.83, so the two sides read as
+    /// the star rather than as an arbitrary zero.
     #[test]
     fn the_sun_keeps_its_magnitude_in_the_visible() {
+        let solar_absolute = Magnitude(4.83);
         assert!(close(
-            Magnitude::SOLAR_ABSOLUTE.visual(Temperature::SOLAR).0,
-            Magnitude::SOLAR_ABSOLUTE.0,
+            solar_absolute.visual(Temperature::SOLAR).0,
+            solar_absolute.0,
         ));
     }
 

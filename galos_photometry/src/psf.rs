@@ -317,11 +317,6 @@ impl Kernel {
     pub fn gaussian(sigma: f64) -> Kernel {
         Gaussian::new(sigma).into()
     }
-
-    /// Which kind this is, the data-less tag for a menu or a label.
-    pub fn kind(&self) -> ProfileKind {
-        self.into()
-    }
 }
 
 impl ProfileKind {
@@ -422,12 +417,6 @@ impl Psf {
     pub fn with_layer(mut self, layer: Layer) -> Psf {
         self.layers.push(layer);
         self
-    }
-
-    /// The layers this PSF is built from, base first. Their weights are
-    /// relative; divide by their sum for each one's share.
-    pub fn layers(&self) -> &[Layer] {
-        &self.layers
     }
 
     /// The sum the relative weights are read against.
@@ -653,14 +642,11 @@ mod tests {
         assert!(g.shape(5.0) > 0.0 && m.shape(5.0) > 0.0);
     }
 
-    /// A kind round-trips through its kernel, and names itself for a menu.
+    /// The selector a caller presents before any width is known: every profile
+    /// the crate ships, the default — the Moffat — first, each naming itself
+    /// for a label or a command line.
     #[test]
-    fn a_kernel_reports_its_kind() {
-        assert_eq!(
-            Kernel::moffat(2.0, STELLAR_BETA).kind(),
-            ProfileKind::Moffat
-        );
-        assert_eq!(Kernel::gaussian(2.0).kind(), ProfileKind::Gaussian);
+    fn the_profile_selector_leads_with_the_default() {
         assert_eq!(ProfileKind::default(), ProfileKind::Moffat);
         assert_eq!(
             ProfileKind::ALL,
@@ -751,20 +737,5 @@ mod tests {
             let expected = psf.peak(10.0) * psf.shape(d);
             assert!((psf.at(10.0, d) - expected).abs() < 1e-9, "at {d}");
         }
-    }
-
-    /// Weights are relative shares: the base stays one whatever is layered on,
-    /// and a layer's fraction of the light is its weight over their sum — so a
-    /// `0.05` aureole behind a base of one carries `0.05 / 1.05` of the flux.
-    #[test]
-    fn weights_are_relative_shares() {
-        let psf = Psf::new(ProfileKind::Moffat, 4.0)
-            .with_layer(Layer::new(Kernel::moffat(16.0, AUREOLE_BETA), 0.05));
-        assert_eq!(psf.layers()[0].weight, 1.0, "the base is untouched");
-        assert_eq!(psf.layers()[1].weight, 0.05);
-        // The halo's share of the energy is its weight over the total.
-        let share = psf.layers()[1].weight
-            / psf.layers().iter().map(|l| l.weight).sum::<f64>();
-        assert!((share - 0.05 / 1.05).abs() < 1e-12);
     }
 }

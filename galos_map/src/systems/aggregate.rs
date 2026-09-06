@@ -8,9 +8,15 @@
 //!
 //! This is the plan alone. Nothing draws from it yet: [`super::spawn`] will
 //! come to fetch by [`Planned`]'s marks rather than by the spyglass region, so
-//! a wide view stops spawning an entity per system, and the splat rendering
-//! will draw [`Planned`]'s splats as the glow behind them. Both read the one
+//! a wide view stops spawning an entity per system, and the glow rendering
+//! will draw [`Planned`]'s splats as the field behind them. Both read the one
 //! walk so the two can never disagree about which cells are which.
+//!
+//! A cell's splat carried a drawable description here for a while — where the
+//! glow sits, how far it spreads, its flux-weighted tint — written every plan
+//! and read by nobody, the renderer it was for never having been written. It
+//! is in the history rather than in the build; see galaxy.md for the design
+//! it belongs to.
 //!
 //! Read off the resident aggregates, so it costs no fetch and no server, and
 //! only when the view moves.
@@ -21,9 +27,7 @@ use crate::schedule::MapSet;
 use crate::systems::scale::View;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::aggregate::bucket_temperature;
-use galos_index::{Aggregate, Cell, Mode, Needed, View as Viewpoint};
-use galos_photometry::Temperature;
+use galos_index::{Mode, Needed, View as Viewpoint};
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
@@ -34,12 +38,6 @@ pub fn plugin(app: &mut App) {
     // After the camera has settled where it stands this frame, and read for the
     // same reason everything in `Present` is: the plan follows the eye.
     app.add_systems(Update, plan.in_set(MapSet::Present));
-    app.init_resource::<Splats>();
-    // After the plan it reads: the splats it describes are the cells the walk
-    // would draw as a glow field, kept resident for that field's renderer.
-    // Nothing draws them yet — the billboard first pass was removed because
-    // its discrete blobs popped and would not blend; see galaxy.md.
-    app.add_systems(Update, describe.in_set(MapSet::Present).after(plan));
 }
 
 /// What the walk asks the view for: the cells to draw as marks and as splats
@@ -121,101 +119,6 @@ fn viewpoint(
     }
 }
 
-/// A cell's aggregate as one drawable glow: where it sits, how far it spreads,
-/// its colour, and how much light it carries
-///
-/// The colour is the flux-weighted blackbody tint of the cell's temperature
-/// buckets, so a warm bulge and blue arms come out without a temperature per
-/// star; the flux is the intensity the glow is drawn at, which bloom turns
-/// into apparent size. Positions and the spread are in light years.
-pub struct Splat {
-    /// The flux-weighted centre of the cell, light years.
-    pub at: DVec3,
-    /// The flux-weighted RMS radius, the Gaussian footprint, light years.
-    pub spread: f64,
-    /// The flux-weighted blackbody tint, chroma with a channel near one; the
-    /// flux carries brightness, not this.
-    pub color: LinearRgba,
-    /// The total linear flux over the cell's subtree.
-    pub flux: f64,
-    /// The share of the cell's weight this draw lays down, `0.0..=1.0`: the
-    /// walk's cross-level fade, so a splat mid-split contributes less and its
-    /// children make up the rest without the field brightening.
-    pub blend: f64,
-}
-
-/// The splats the walk asked for, described from the resident aggregates
-///
-/// Nothing draws them yet: this is the drawable form the glow rendering will
-/// read, kept apart so the description can be tested without a renderer.
-#[derive(Resource, Default)]
-pub struct Splats(pub Vec<Splat>);
-
-/// One cell as a splat, or [`None`] where it carries no light to draw.
-pub fn splat(cell: &Cell) -> Option<Splat> {
-    splat_of(&cell.aggregate, cell.id.bounds().center())
-}
-
-/// A splat from an aggregate, sitting at `centre` where it holds no
-/// light-weighted one of its own
-///
-/// Split from [`splat`] so the colour and the weighting can be checked without
-/// a cell to build one from.
-fn splat_of(aggregate: &Aggregate, centre: [f64; 3]) -> Option<Splat> {
-    let flux = aggregate.total_flux();
-    if flux <= 0.0 {
-        return None;
-    }
-    let at = aggregate.luminosity_centroid().unwrap_or(centre);
-    // The tint is the flux-weighted mean of each bucket's blackbody colour, so
-    // a cell of mostly cool stars comes out red and a hot few carry their blue
-    // in proportion to the light they add.
-    let mut rgb = [0.0f64; 3];
-    for (bucket, &f) in aggregate.flux().iter().enumerate() {
-        if f <= 0.0 {
-            continue;
-        }
-        let tint = Temperature(bucket_temperature(bucket)).color();
-        for (channel, &weight) in rgb.iter_mut().zip(tint.0.iter()) {
-            *channel += f * weight as f64;
-        }
-    }
-    Some(Splat {
-        at: DVec3::new(at[0], at[1], at[2]),
-        spread: aggregate.luminosity_spread(),
-        color: LinearRgba::rgb(
-            (rgb[0] / flux) as f32,
-            (rgb[1] / flux) as f32,
-            (rgb[2] / flux) as f32,
-        ),
-        flux,
-        blend: 1.0,
-    })
-}
-
-/// Describe the cells the walk marked for splatting, when the plan changes
-///
-/// One splat per cell, off the resident aggregate, so it costs no fetch, and
-/// only on a new plan: a still view splats the same cells the same way.
-fn describe(
-    index: Res<ResidentIndex>,
-    planned: Res<Planned>,
-    mut splats: ResMut<Splats>,
-) {
-    if !planned.is_changed() {
-        return;
-    }
-    splats.0.clear();
-    for sr in &planned.0.splats {
-        if let Some(cell) = index.0.get(sr.id) {
-            if let Some(mut described) = splat(cell) {
-                described.blend = sr.blend;
-                splats.0.push(described);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,34 +156,5 @@ mod tests {
         // A quarter turn about Y sends -Z to -X, and leaves Y up.
         assert!((view.forward[0] + 1.).abs() < 1e-6, "not facing -X");
         assert!((view.up[1] - 1.).abs() < 1e-6, "up did not stay Y");
-    }
-
-    /// A cell of one sun-like star splats where it sits, in a warm tint
-    #[test]
-    fn a_star_splats_where_it_sits() {
-        let sun = Aggregate::of_system([10., 0., -5.], 4.83, 5772.0, 0);
-        let splat = splat_of(&sun, [0., 0., 0.]).expect("a star has light");
-
-        assert_eq!(splat.at, DVec3::new(10., 0., -5.), "not at the star");
-        assert!(splat.flux > 0.0);
-        assert_eq!(splat.spread, 0.0, "one point has no spread");
-        assert!(splat.color.red >= splat.color.blue, "the sun came out blue");
-    }
-
-    /// An empty aggregate has nothing to splat
-    #[test]
-    fn no_light_no_splat() {
-        assert!(splat_of(&Aggregate::ZERO, [1., 2., 3.]).is_none());
-    }
-
-    /// The glow sits at the light, not the middle: a bright star pulls the
-    /// splat's centre toward it
-    #[test]
-    fn the_splat_follows_the_light() {
-        let bright = Aggregate::of_system([100., 0., 0.], 0.0, 6000.0, 0);
-        let dim = Aggregate::of_system([-100., 0., 0.], 10.0, 4000.0, 0);
-        let splat = splat_of(&bright.merge(dim), [0., 0., 0.]).unwrap();
-
-        assert!(splat.at.x > 50.0, "the centre ignored the bright star");
     }
 }

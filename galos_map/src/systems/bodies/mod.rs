@@ -481,15 +481,6 @@ impl Contents {
         }
         orbits
     }
-
-    /// Where the thing with `id` stands, in metres from the system's middle
-    ///
-    /// For one answer. Anything placing the whole system at once should build
-    /// the [`Orbits`] once and ask it, rather than calling this per body.
-    pub fn place(&self, id: i16, since: f64) -> DVec3 {
-        let orbits = self.orbits();
-        orbits.place(id, since) - self.middle(&orbits, since)
-    }
 }
 
 /// The orbit a body was recorded on
@@ -704,6 +695,16 @@ mod tests {
         }
     }
 
+    /// Where the thing with `id` stands, in metres from the system's middle
+    ///
+    /// The sum `spawn::draw` writes into a transform: the walk up the chain,
+    /// measured from the arrival star rather than from the point the system's
+    /// stars go round.
+    fn place(contents: &Contents, id: i16, since: f64) -> DVec3 {
+        let orbits = contents.orbits();
+        orbits.place(id, since) - contents.middle(&orbits, since)
+    }
+
     /// The middle of a system is the star it arrives at
     ///
     /// Not the point its stars go round, which in a wide binary is ten billion
@@ -714,11 +715,11 @@ mod tests {
     fn the_middle_of_a_system_is_the_star_it_arrives_at() {
         let contents = binary(true);
 
-        assert_eq!(contents.place(1, 0.), DVec3::ZERO);
+        assert_eq!(place(&contents, 1, 0.), DVec3::ZERO);
         // Every orbit here is a circle read at the same angle, so the two
         // stars lie the same way and stand their orbits apart. Both have moved
         // in by the arrival star's own orbit, which is the whole of this.
-        let far = contents.place(2, 0.).length();
+        let far = place(&contents, 2, 0.).length();
         assert!(
             (far - 1e13).abs() < 1e13 * 1e-6,
             "the far star stood {far}m off, not the 1e13 between them"
@@ -744,7 +745,7 @@ mod tests {
     #[test]
     fn a_body_under_a_barycenter_stands_out_where_it_belongs() {
         // Every orbit is a circle read at the same angle, so they stack up.
-        let out = binary(true).place(11, 0.).length();
+        let out = place(&binary(true), 11, 0.).length();
         let wanted = 1e11 + 1e9;
 
         assert!(
@@ -762,7 +763,7 @@ mod tests {
     /// the space between them.
     #[test]
     fn a_body_under_a_missing_barycenter_loses_its_way() {
-        let out = binary(false).place(11, 0.).length();
+        let out = place(&binary(false), 11, 0.).length();
 
         assert!(
             (out - 1e13).abs() < 1e13 * 1e-3,
@@ -973,7 +974,7 @@ mod tests {
         let reaches = contents.extent().expect("a binary reaches somewhere");
 
         for id in [1, 2, 11] {
-            let out = contents.place(id, 0.).length();
+            let out = place(&contents, id, 0.).length();
             assert!(
                 out <= reaches as f64,
                 "{id} stood {out}m out, past a {reaches}m extent"

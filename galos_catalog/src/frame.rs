@@ -36,11 +36,6 @@ pub fn rotate(matrix: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [row(&matrix[0]), row(&matrix[1]), row(&matrix[2])]
 }
 
-/// A position or direction in equatorial coordinates, seen in galactic ones.
-pub fn equatorial_to_galactic(v: [f64; 3]) -> [f64; 3] {
-    rotate(&EQUATORIAL_TO_GALACTIC, v)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,7 +50,7 @@ mod tests {
     #[test]
     fn the_rotation_preserves_distance() {
         for v in [[1.0, 0.0, 0.0], [3.0, -4.0, 12.0], [0.1, 0.2, 0.3]] {
-            let turned = equatorial_to_galactic(v);
+            let turned = rotate(&EQUATORIAL_TO_GALACTIC, v);
             assert!((norm(turned) - norm(v)).abs() < 1e-9);
         }
     }
@@ -69,7 +64,7 @@ mod tests {
         let dec = -(29.0 + 0.0 / 60.0 + 28.1 / 3600.0f64).to_radians();
         let equatorial =
             [dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin()];
-        let g = equatorial_to_galactic(equatorial);
+        let g = rotate(&EQUATORIAL_TO_GALACTIC, equatorial);
         assert!(g[0] > 0.9999, "x should be ~1, got {g:?}");
         assert!(g[1].abs() < 0.001 && g[2].abs() < 0.001, "{g:?}");
     }
@@ -81,7 +76,7 @@ mod tests {
         let dec = (27.0 + 7.0 / 60.0 + 42.0 / 3600.0f64).to_radians();
         let equatorial =
             [dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin()];
-        let g = equatorial_to_galactic(equatorial);
+        let g = rotate(&EQUATORIAL_TO_GALACTIC, equatorial);
         assert!(g[2] > 0.9999, "z should be ~1, got {g:?}");
     }
 }

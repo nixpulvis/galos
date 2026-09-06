@@ -112,15 +112,6 @@ impl Image {
         self.to_srgb8_over(&[], &[])
     }
 
-    /// The tone-mapped image with rings drawn over it.
-    ///
-    /// The marks are written into the eight-bit output after the tone curve, so
-    /// nothing about them reaches the linear buffer and
-    /// [`total_energy`](Self::total_energy) is unchanged.
-    pub fn to_srgb8_with(&self, marks: &[Mark]) -> Vec<u8> {
-        self.to_srgb8_over(marks, &[])
-    }
-
     /// The tone-mapped image with figure lines and rings drawn over it.
     ///
     /// Both are chrome — written into the eight-bit output after the tone curve,
@@ -266,15 +257,6 @@ impl Image {
         self.write_png_over(path, &[], &[])
     }
 
-    /// Write the tone-mapped image to a PNG with rings drawn over it.
-    pub fn write_png_with(
-        &self,
-        path: impl AsRef<Path>,
-        marks: &[Mark],
-    ) -> io::Result<()> {
-        self.write_png_over(path, marks, &[])
-    }
-
     /// Write the tone-mapped image to a PNG with figure lines and rings over it.
     pub fn write_png_over(
         &self,
@@ -336,12 +318,6 @@ pub const MARK_COLOR: [f32; 3] = [0.0, 1.0, 0.35];
 /// impossibility green enjoys.
 pub const HOLE_COLOR: [f32; 3] = [1.0, 0.0, 0.85];
 
-/// The lowest a blackbody's green channel goes, as a fraction of its peak.
-///
-/// Reached below about 1500 K, where the fit clamps, and rising from there. It
-/// is the margin [`HOLE_COLOR`] leans on.
-pub const MIN_BLACKBODY_GREEN: f32 = 0.17;
-
 impl Mark {
     /// A ring of the default colour.
     pub fn new(x: f64, y: f64, radius: f64) -> Mark {
@@ -396,12 +372,6 @@ impl Segment {
     pub fn with_gaps(mut self, gap0: f64, gap1: f64) -> Segment {
         self.gap0 = gap0;
         self.gap1 = gap1;
-        self
-    }
-
-    /// The same line in another colour.
-    pub fn colored(mut self, color: [f32; 3]) -> Segment {
-        self.color = color;
         self
     }
 }
@@ -534,7 +504,7 @@ mod tests {
         image.add(16, 16, [1.0, 1.0, 1.0]);
         let before = image.total_energy();
         let marks = [Mark::new(16.5, 16.5, 6.0), Mark::new(4.0, 4.0, 3.0)];
-        let annotated = image.to_srgb8_with(&marks);
+        let annotated = image.to_srgb8_over(&marks, &[]);
         assert_eq!(image.total_energy(), before);
         assert_ne!(annotated, image.to_srgb8(), "the ring should be visible");
     }
@@ -544,7 +514,7 @@ mod tests {
     #[test]
     fn a_ring_surrounds_rather_than_covers() {
         let image = Image::new(41, 41);
-        let out = image.to_srgb8_with(&[Mark::new(20.5, 20.5, 8.0)]);
+        let out = image.to_srgb8_over(&[Mark::new(20.5, 20.5, 8.0)], &[]);
         let at = |x: usize, y: usize| {
             let i = (y * 41 + x) * 3;
             [out[i], out[i + 1], out[i + 2]]
@@ -558,11 +528,12 @@ mod tests {
     #[test]
     fn a_ring_off_the_edge_is_clipped() {
         let image = Image::new(16, 16);
-        let out = image.to_srgb8_with(&[
+        let marks = [
             Mark::new(0.0, 0.0, 5.0),
             Mark::new(15.0, 15.0, 9.0),
             Mark::new(-40.0, 8.0, 3.0),
-        ]);
+        ];
+        let out = image.to_srgb8_over(&marks, &[]);
         assert_eq!(out.len(), 16 * 16 * 3);
     }
 
@@ -587,16 +558,20 @@ mod tests {
     /// near zero. Magenta's green is nothing, which is far under the floor.
     #[test]
     fn no_blackbody_comes_near_the_hole_colour() {
+        // The floor a blackbody's green holds to, a shade under the 0.176 of
+        // peak the hole colour's own doc names. Reached below about 1500 K,
+        // where the fit clamps, and rising from there.
+        const MIN_GREEN: f32 = 0.17;
         for t in (500..60000).step_by(25) {
             let c = galos_photometry::Temperature(t as f64).color();
             assert!(
-                c[1] >= MIN_BLACKBODY_GREEN,
+                c[1] >= MIN_GREEN,
                 "at {t} K green fell to {}, under the floor the hole colour \
                  leans on",
                 c[1]
             );
         }
-        assert!(HOLE_COLOR[1] < MIN_BLACKBODY_GREEN);
+        assert!(HOLE_COLOR[1] < MIN_GREEN);
     }
 
     /// A figure line draws between its endpoints and touches the pixels along

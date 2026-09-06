@@ -84,7 +84,10 @@ pub struct Aggregate {
     light: Moments,
     /// Position moments weighted by count, for the count-weighted centroid and extent.
     mass: Moments,
-    /// Counts per age bucket, for the Recency filter.
+    /// Counts per age bucket, a column of the record so a Recency span can be
+    /// answered by prefix sum off the aggregates alone. Every build writes it
+    /// and nothing reads it back yet: the Recency filter asks per system, off
+    /// `updated_at`. It stays because dropping it changes the record width.
     aged: [u64; AGE_BUCKETS],
 }
 
@@ -217,11 +220,6 @@ impl Aggregate {
     /// The count-weighted extent of a cell: the RMS radius by count.
     pub fn count_extent(&self) -> f64 {
         self.mass.rms_radius()
-    }
-
-    /// Counts per age bucket, which a prefix sum turns into any Recency span.
-    pub fn aged(&self) -> &[u64; AGE_BUCKETS] {
-        &self.aged
     }
 }
 
@@ -484,7 +482,7 @@ mod tests {
             rest.luminosity_centroid().unwrap()
         ));
         assert!(close(residual.count_extent(), rest.count_extent()));
-        assert_eq!(residual.aged(), rest.aged());
+        assert_eq!(residual.aged, rest.aged);
     }
 
     /// The empty aggregate changes nothing it merges with.

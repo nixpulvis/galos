@@ -224,21 +224,9 @@ impl Tree {
         self.insert(system);
     }
 
-    /// Drop a system the feed reports gone.
-    pub fn remove_system(&mut self, id: u64) {
-        if self.records.contains_key(&id) {
-            self.remove(id);
-        }
-    }
-
     /// How many systems the tree holds.
     pub fn len(&self) -> usize {
         self.records.len()
-    }
-
-    /// Whether the tree holds no systems.
-    pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
     }
 
     /// The inputs this tree was built from, reconstructed from its records: the
@@ -1343,7 +1331,7 @@ mod tests {
         assert_equivalent(&tree.to_snapshot(), &rebuilt.to_snapshot());
     }
 
-    /// After every edit (insert, move, or remove) the live tree still equals a
+    /// After every edit (an insert or a move) the live tree still equals a
     /// fresh build over the same systems. This is the whole contract: correct in
     /// place, not merely correct once. A small cap makes splits and collapses
     /// common so the structural moves are exercised, not just the cascade.
@@ -1377,7 +1365,7 @@ mod tests {
         );
 
         for step in 0..2500u64 {
-            let what = match rng.below(3) {
+            let what = match rng.below(2) {
                 0 => {
                     let s = input(next_id, &mut rng);
                     present.insert(next_id, s);
@@ -1385,7 +1373,7 @@ mod tests {
                     tree.apply(&[s]);
                     "insert"
                 }
-                1 if !present.is_empty() => {
+                _ if !present.is_empty() => {
                     let ids: Vec<u64> = present.keys().copied().collect();
                     let id = ids[rng.below(ids.len() as u64) as usize];
                     let mut s = input(id, &mut rng);
@@ -1393,13 +1381,6 @@ mod tests {
                     present.insert(id, s);
                     tree.apply(&[s]);
                     "move"
-                }
-                _ if !present.is_empty() => {
-                    let ids: Vec<u64> = present.keys().copied().collect();
-                    let id = ids[rng.below(ids.len() as u64) as usize];
-                    present.remove(&id);
-                    tree.remove_system(id);
-                    "remove"
                 }
                 _ => continue,
             };
@@ -1549,13 +1530,14 @@ mod tests {
         let mut tree = Tree::build(&seed, &params);
         tree.write(&dir).unwrap();
 
-        // Some churn, then an incremental publish.
+        // Some churn, then an incremental publish: new systems, and one moved
+        // to a fresh position.
         let mut edits = Vec::new();
         for id in 501..=560 {
             edits.push(input(id, &mut rng));
         }
+        edits.push(input(3, &mut rng));
         tree.apply(&edits);
-        tree.remove_system(3);
         tree.publish(&dir).unwrap();
 
         // The directory now holds exactly the current tree.

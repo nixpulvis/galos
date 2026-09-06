@@ -168,7 +168,7 @@ fn pan(
     if orbit.travel.take().is_some() {
         orbit.target_center = orbit.center;
     }
-    let rate = PAN_PER_SECOND * orbit.pan_sensitivity * orbit.radius;
+    let rate = PAN_PER_SECOND * orbit.radius;
     orbit.target_center += (*way * rate * time.delta_secs()).as_dvec3();
 }
 
@@ -214,7 +214,7 @@ fn swing(
         return;
     }
 
-    let rate = ORBIT_PER_SECOND * orbit.orbit_sensitivity * time.delta_secs();
+    let rate = ORBIT_PER_SECOND * time.delta_secs();
     orbit.target_yaw += round * rate;
     orbit.target_pitch =
         (orbit.target_pitch + over * rate).clamp(-PITCH_LIMIT, PITCH_LIMIT);
@@ -255,8 +255,7 @@ fn zoom(
 
     // The target rather than the radius itself, so that a key and the wheel
     // move the same thing at the same rate and the two cannot fight.
-    let folds =
-        asked * ZOOM_PER_SECOND * orbit.zoom_sensitivity * time.delta_secs();
+    let folds = asked * ZOOM_PER_SECOND * time.delta_secs();
     orbit.target_radius =
         (orbit.target_radius * folds.exp()).clamp(MIN_RADIUS, MAX_RADIUS);
 }

@@ -99,7 +99,7 @@ pub(crate) const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 /// under it. A third off in both shows the plane as a plane.
 const OPENS_AT: f32 = FRAC_PI_2 / 3.;
 
-/// Radians of orbit per pixel of pointer travel, at unit sensitivity
+/// Radians of orbit per pixel of pointer travel
 const ORBIT_RATE: f32 = 5e-3;
 
 /// Fraction of the orbit radius panned per pixel of pointer travel
@@ -108,7 +108,7 @@ const ORBIT_RATE: f32 = 5e-3;
 /// map moves under the pointer at about the same rate at every zoom.
 const PAN_RATE: f32 = 2e-3;
 
-/// E-folds of zoom per line of scroll, at unit sensitivity
+/// E-folds of zoom per line of scroll
 ///
 /// Zoom is multiplicative because the map spans nine orders of magnitude. A
 /// fixed step would cross the whole bubble near the surface of a star and
@@ -555,9 +555,6 @@ pub struct OrbitCamera {
     pub orbit_smoothness: f32,
     pub pan_smoothness: f32,
     pub zoom_smoothness: f32,
-    pub orbit_sensitivity: f32,
-    pub pan_sensitivity: f32,
-    pub zoom_sensitivity: f32,
 }
 
 impl Default for OrbitCamera {
@@ -579,9 +576,6 @@ impl Default for OrbitCamera {
             orbit_smoothness: 0.1,
             pan_smoothness: 0.02,
             zoom_smoothness: 0.1,
-            orbit_sensitivity: 1.,
-            pan_sensitivity: 1.,
-            zoom_sensitivity: 1.,
         }
     }
 }
@@ -855,14 +849,14 @@ pub fn orbit_camera(
     // it rather than to what the pointer is over from one frame to the next.
     if gesture.dragging_map() {
         if gesture.pressed(MouseButton::Left) {
-            let rate = ORBIT_RATE * orbit.orbit_sensitivity;
-            orbit.target_yaw -= motion.delta.x * rate;
-            orbit.target_pitch = (orbit.target_pitch - motion.delta.y * rate)
+            orbit.target_yaw -= motion.delta.x * ORBIT_RATE;
+            orbit.target_pitch = (orbit.target_pitch
+                - motion.delta.y * ORBIT_RATE)
                 .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         }
 
         if gesture.pressed(MouseButton::Right) {
-            let rate = PAN_RATE * orbit.pan_sensitivity * orbit.radius;
+            let rate = PAN_RATE * orbit.radius;
             let across = orbit.rotation * Vec3::X * -motion.delta.x * rate;
             let up = orbit.rotation * Vec3::Y * motion.delta.y * rate;
             // Dragging cancels a move in progress and takes the target from
@@ -905,7 +899,7 @@ pub fn orbit_camera(
     // wide neighbour — would otherwise rewrite the zoom the user set, and
     // leave it rewritten once the floor had gone again.
     if lines != 0. && !over_ui.0 && !spyglass.locks_camera() {
-        let zoom = -lines * ZOOM_RATE * orbit.zoom_sensitivity;
+        let zoom = -lines * ZOOM_RATE;
         orbit.target_radius = (orbit.target_radius * zoom.exp())
             .clamp(MIN_RADIUS, MAX_RADIUS)
             .max(floor);

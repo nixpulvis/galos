@@ -57,12 +57,6 @@ impl Moments {
         Moments { weight: w, mean: p, m2: 0.0 }
     }
 
-    /// The total weight of the set: its count under count weighting, its flux
-    /// under luminosity weighting.
-    pub fn weight(&self) -> f64 {
-        self.weight
-    }
-
     /// The weighted mean position, or [`None`] where there is no weight to take
     /// a mean of.
     pub fn centroid(&self) -> Option<[f64; 3]> {
@@ -189,7 +183,7 @@ mod tests {
         let m = Moments::point(1.0, [3.0, -4.0, 12.0]);
         assert!(close3(m.centroid().unwrap(), [3.0, -4.0, 12.0]));
         assert_eq!(m.rms_radius(), 0.0);
-        assert!(close(m.weight(), 1.0));
+        assert!(close(m.weight, 1.0));
     }
 
     /// A faint point sixty thousand light years out still has exactly zero
@@ -215,7 +209,7 @@ mod tests {
             .merge(Moments::point(1.0, [2.0, 0.0, 0.0]));
         assert!(close3(m.centroid().unwrap(), [1.0, 0.0, 0.0]));
         assert!(close(m.rms_radius(), 1.0));
-        assert!(close(m.weight(), 2.0));
+        assert!(close(m.weight, 2.0));
     }
 
     /// Weight pulls the centroid: three parts at the origin against one part

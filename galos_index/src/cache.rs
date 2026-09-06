@@ -6,23 +6,14 @@
 //! resident and no longer needed. Each is one set operation
 //! against a [`Needed`], and they are the whole of the client's fetch loop.
 //!
-//! A cell arrives faint and brightens in, rather than appearing, so an arriving
-//! payload does not pop against a still sky. Each resident cell carries a
-//! presence that ramps from zero to one over a couple of hundred milliseconds,
-//! which is multiplied into flux; at the visibility floor a payload
-//! lands at, that fade is close to physically honest.
-//!
 //! The residual a cell splats over its drawn slice, and the field it resolves
-//! into, are the next step's work; this holds the payload, the ramp, and the
-//! bookkeeping the loop turns on.
+//! into, are the next step's work; this holds the payload and the bookkeeping
+//! the loop turns on.
 
 use crate::aggregate::temp_bucket;
 use crate::geometry::CellId;
 use crate::walk::Needed;
 use std::collections::{HashMap, HashSet};
-
-/// How long a payload takes to ramp fully in, in seconds.
-pub const PRESENCE_RAMP: f32 = 0.2;
 
 /// One system as the payload carries it: its id, its exact position, and the
 /// two photometric bytes.
@@ -61,12 +52,10 @@ impl Point {
     }
 }
 
-/// A cell whose payload has loaded: its systems and how far it has ramped in.
+/// A cell whose payload has loaded, and the systems it holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResidentCell {
     pub points: Box<[Point]>,
-    /// Zero to one, multiplied into flux so the cell fades in rather than pops.
-    pub presence: f32,
 }
 
 /// The payloads the client holds, keyed by cell.
@@ -79,17 +68,10 @@ pub struct Resident {
 }
 
 impl Resident {
-    /// A cell's payload arrives, starting its presence ramp at zero.
+    /// A cell's payload arrives, replacing anything held for that cell.
     pub fn insert(&mut self, id: CellId, points: Vec<Point>) {
-        self.cells.insert(
-            id,
-            ResidentCell { points: points.into_boxed_slice(), presence: 0.0 },
-        );
-    }
-
-    /// The payload held for a cell, if any.
-    pub fn get(&self, id: CellId) -> Option<&ResidentCell> {
-        self.cells.get(&id)
+        self.cells
+            .insert(id, ResidentCell { points: points.into_boxed_slice() });
     }
 
     /// Whether a cell's payload is held.
@@ -102,33 +84,10 @@ impl Resident {
         self.cells.remove(&id)
     }
 
-    /// How many payloads are held.
-    pub fn len(&self) -> usize {
-        self.cells.len()
-    }
-
     /// Every resident cell and its payload, for a draw that reads the whole set
     /// to decide how much of each to show.
     pub fn iter(&self) -> impl Iterator<Item = (CellId, &ResidentCell)> {
         self.cells.iter().map(|(&id, cell)| (id, cell))
-    }
-
-    /// Whether nothing is held.
-    pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
-    }
-
-    /// Advance every ramp by `dt` seconds, toward a full presence of one.
-    pub fn advance(&mut self, dt: f32) {
-        let step = dt / PRESENCE_RAMP;
-        for cell in self.cells.values_mut() {
-            cell.presence = (cell.presence + step).min(1.0);
-        }
-    }
-
-    /// The needed marks whose payloads are resident, ready to draw.
-    pub fn drawable(&self, needed: &Needed) -> Vec<CellId> {
-        needed.marks.iter().copied().filter(|&id| self.contains(id)).collect()
     }
 
     /// What the loader fetches: the needed marks not yet resident.
@@ -174,31 +133,20 @@ mod tests {
         assert!(!cache.contains(id));
         cache.insert(id, vec![point(1), point(2)]);
         assert!(cache.contains(id));
-        assert_eq!(cache.get(id).unwrap().points.len(), 2);
-        assert_eq!(cache.len(), 1);
+        let (held, cell) = cache.iter().next().unwrap();
+        assert_eq!(held, id);
+        assert_eq!(cell.points.len(), 2);
+        assert_eq!(cache.iter().count(), 1);
         assert_eq!(cache.remove(id).unwrap().points.len(), 2);
-        assert!(cache.is_empty());
+        assert!(!cache.contains(id));
+        assert_eq!(cache.iter().count(), 0);
     }
 
-    /// A payload arrives at zero presence and ramps to full over the ramp time,
-    /// then holds there.
+    /// The set arithmetic splits the marks cleanly: what is fetched is needed
+    /// and absent, what is evicted is resident and unneeded, and what is left
+    /// over — needed and resident — is what the draw reads off `iter`.
     #[test]
-    fn presence_ramps_in_and_clamps() {
-        let mut cache = Resident::default();
-        let id = at(3, 1);
-        cache.insert(id, vec![point(1)]);
-        assert_eq!(cache.get(id).unwrap().presence, 0.0);
-        cache.advance(PRESENCE_RAMP / 2.0);
-        assert!((cache.get(id).unwrap().presence - 0.5).abs() < 1e-6);
-        cache.advance(PRESENCE_RAMP);
-        assert_eq!(cache.get(id).unwrap().presence, 1.0);
-    }
-
-    /// The three consumers split the world cleanly: what is drawn is needed and
-    /// resident, what is fetched is needed and absent, what is evicted is
-    /// resident and unneeded.
-    #[test]
-    fn the_three_consumers_partition_the_marks() {
+    fn the_fetch_and_evict_sets_split_the_marks() {
         let (a, b, c) = (at(4, 0), at(4, 1), at(4, 2));
         let mut cache = Resident::default();
         cache.insert(a, vec![point(1)]); // needed and resident
@@ -207,7 +155,6 @@ mod tests {
         let needed =
             Needed { mode: Mode::Shell, marks: vec![a, b], splats: vec![] };
 
-        assert_eq!(ids(cache.drawable(&needed)), ids(vec![a]));
         assert_eq!(ids(cache.missing(&needed)), ids(vec![b]));
         assert_eq!(ids(cache.stale(&needed)), ids(vec![c]));
     }

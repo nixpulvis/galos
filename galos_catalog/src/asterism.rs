@@ -1,11 +1,12 @@
 //! Constellation figures: the lines a constellation is drawn with.
 //!
-//! A [`Constellation`] is the sky's agreed
-//! *region*; an asterism is the *figure* traced across it — the stick figure a
-//! person recognises, the Plough in Ursa Major or the belt-and-shoulders of
-//! Orion. Unlike the region, the figure is a drawing convention rather than a
-//! measurement: there is no single official set of lines, and different atlases
-//! join the stars differently. So it is data, not a table baked into the code.
+//! A [`Constellation`](crate::constellation::Constellation) is the sky's
+//! agreed *region*; an asterism is the *figure* traced across it — the stick
+//! figure a person recognises, the Plough in Ursa Major or the
+//! belt-and-shoulders of Orion. Unlike the region, the figure is a drawing
+//! convention rather than a measurement: there is no single official set of
+//! lines, and different atlases join the stars differently. So it is data, not
+//! a table baked into the code.
 //!
 //! # The seam a renderer draws against
 //!
@@ -31,7 +32,6 @@
 //! ```
 
 use crate::Star;
-use crate::constellation::{self, Constellation};
 use std::collections::HashMap;
 use std::io::{self, BufRead};
 
@@ -56,18 +56,11 @@ pub trait Figures {
 /// simply goes undrawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asterism {
-    /// The IAU abbreviation the figure is for, as [`constellation`] spells it.
+    /// The IAU abbreviation the figure is for, as
+    /// [`crate::constellation`] spells it.
     pub abbreviation: String,
     /// The lines, each a pair of Hipparcos numbers to join.
     pub segments: Vec<[u32; 2]>,
-}
-
-impl Asterism {
-    /// The constellation this figure traces, where its abbreviation is one of
-    /// the IAU's; [`None`] for a token the table does not know.
-    pub fn constellation(&self) -> Option<&'static Constellation> {
-        constellation::from_abbreviation(&self.abbreviation)
-    }
 }
 
 /// A slice of Hipparcos-keyed figures is a [`Figures`] provider: it resolves
@@ -185,13 +178,6 @@ mod tests {
         assert_eq!(figures.len(), 1);
         assert_eq!(figures[0].abbreviation, "UMa");
         assert_eq!(figures[0].segments, vec![[1, 2], [2, 3], [3, 4]]);
-    }
-
-    /// A figure names the constellation it traces, through the IAU table.
-    #[test]
-    fn a_figure_names_its_constellation() {
-        let figures = parse("Ori 1 100 200".as_bytes()).unwrap();
-        assert_eq!(figures[0].constellation().map(|c| c.name), Some("Orion"));
     }
 
     /// Blank lines and `#` comments are skipped, so a file may be annotated.

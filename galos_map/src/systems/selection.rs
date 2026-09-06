@@ -722,7 +722,6 @@ mod tests {
             address,
             name: format!("Test {address} {id}"),
             id,
-            class: String::new(),
             radius: 1e6,
             ancestors: 0,
             primary: false,

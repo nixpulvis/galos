@@ -63,11 +63,6 @@ impl Aabb {
         ]
     }
 
-    /// Whether a point lies within the box, edges included.
-    pub fn contains(&self, p: [f64; 3]) -> bool {
-        (0..3).all(|i| p[i] >= self.min[i] && p[i] <= self.max[i])
-    }
-
     /// The distance from a point to the nearest point of the box, zero inside.
     ///
     /// This is the `d_min` the photometric walk needs: measured to the nearest
@@ -271,12 +266,14 @@ mod tests {
         assert!(close(ROOT_MIN_LY[0], -65536.0));
         assert!(close(ROOT_MIN_LY[1], 900.0 - 65536.0));
         assert!(close(ROOT_MIN_LY[2], 24400.0 - 65536.0));
-        // The root holds its own centre and Sol at the origin.
-        assert!(CellId::ROOT.bounds().contains(ROOT_CENTER_LY));
-        assert!(CellId::ROOT.bounds().contains([0.0, 0.0, 0.0]));
+        // The root holds its own centre and Sol at the origin: a point inside
+        // the box is zero distance from it.
+        assert!(close(CellId::ROOT.bounds().distance_to(ROOT_CENTER_LY), 0.0));
+        assert!(close(CellId::ROOT.bounds().distance_to([0.0, 0.0, 0.0]), 0.0));
     }
 
-    /// A point lands in a cell that contains it, at every level.
+    /// A point lands in a cell that holds it, at every level: inside the cell's
+    /// box is zero distance from it.
     #[test]
     fn a_point_lands_in_a_cell_that_holds_it() {
         for p in [
@@ -286,8 +283,9 @@ mod tests {
         ] {
             for level in [0, 5, 13, 17] {
                 let cell = CellId::of_point(p, level);
-                assert!(
-                    cell.bounds().contains(p),
+                assert_eq!(
+                    cell.bounds().distance_to(p),
+                    0.0,
                     "level {level} cell {cell:?} does not hold {p:?}"
                 );
             }

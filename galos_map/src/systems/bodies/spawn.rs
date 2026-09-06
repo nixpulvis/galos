@@ -410,8 +410,6 @@ pub struct Body {
     pub name: String,
     /// Which of the system's numbering it is
     pub id: i16,
-    /// What kind of thing it is, as the journal spells it
-    pub class: String,
     /// How far across it is, in metres
     pub radius: f32,
     /// How many ancestors the scan named it under
@@ -984,7 +982,6 @@ fn drawn_star(
             address: star.system_address,
             name: star.name.clone(),
             id: star.id,
-            class: star.star_class.clone(),
             radius: star.radius,
             ancestors: star.parents.len() as u8,
             primary,
@@ -1039,7 +1036,6 @@ fn drawn_body(
             address: body.system_address,
             name: body.name.clone(),
             id: body.id,
-            class: body.planet_class.clone(),
             radius: body.radius,
             ancestors: body.parents.len() as u8,
             primary: false,
@@ -1534,7 +1530,6 @@ mod tests {
                 address: 1,
                 name: String::new(),
                 id: 1,
-                class: String::new(),
                 radius: 1e6,
                 ancestors: 0,
                 primary: false,
@@ -1602,7 +1597,6 @@ mod tests {
                     address: 1,
                     name: String::new(),
                     id: 1,
-                    class: String::new(),
                     radius: 1e6,
                     ancestors: 1,
                     primary: false,

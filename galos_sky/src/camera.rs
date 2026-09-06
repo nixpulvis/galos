@@ -230,13 +230,6 @@ impl Camera {
         self
     }
 
-    /// Point the camera along a direction rather than at a place.
-    pub fn looking_along(self, direction: [f64; 3]) -> Camera {
-        let from = self.position;
-        let at = add(from, direction);
-        self.looking_from(from, at)
-    }
-
     /// Set the vertical field of view, in degrees.
     pub fn with_fov_degrees(mut self, degrees: f64) -> Camera {
         self.fov_y = degrees.clamp(0.001, 179.0).to_radians();
@@ -330,14 +323,6 @@ impl Camera {
         psf
     }
 
-    /// Set the roll explicitly, by an up direction.
-    pub fn with_up(mut self, up: [f64; 3]) -> Camera {
-        if let Some(up) = normalize(up) {
-            self.up = up;
-        }
-        self
-    }
-
     /// Where a point in space lands on the image, and how far away it is.
     ///
     /// [`None`] when it falls behind the camera. A point outside the frame
@@ -419,15 +404,6 @@ impl Camera {
             && mark.y + mark.radius >= 0.0
             && mark.x - mark.radius < self.width as f64
             && mark.y - mark.radius < self.height as f64
-    }
-
-    /// Rings for every one of a set of points that is in frame.
-    pub fn marks(
-        &self,
-        points: impl IntoIterator<Item = [f64; 3]>,
-        radius: f64,
-    ) -> Vec<Mark> {
-        points.into_iter().filter_map(|p| self.mark(p, radius)).collect()
     }
 
     /// The line between two points, if both are in front of the camera.
@@ -636,10 +612,6 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -735,7 +707,8 @@ mod tests {
     /// A star behind the eye is not drawn in front of it.
     #[test]
     fn what_is_behind_is_not_projected() {
-        let camera = Camera::new(64, 64).looking_along([1.0, 0.0, 0.0]);
+        let camera =
+            Camera::new(64, 64).looking_from([0.0; 3], [1.0, 0.0, 0.0]);
         assert_eq!(camera.project([-10.0, 0.0, 0.0]), None);
     }
 
@@ -743,7 +716,8 @@ mod tests {
     /// as the field closes, which is what a field of view means.
     #[test]
     fn a_narrower_field_pushes_stars_outward() {
-        let camera = Camera::new(800, 800).looking_along([1.0, 0.0, 0.0]);
+        let camera =
+            Camera::new(800, 800).looking_from([0.0; 3], [1.0, 0.0, 0.0]);
         let off_axis = [10.0, 1.0, 0.0];
         let wide = camera.clone().with_fov_degrees(90.0);
         let narrow = camera.with_fov_degrees(30.0);
@@ -768,8 +742,9 @@ mod tests {
 
     /// Looking straight up the default up vector still gives a valid frame.
     #[test]
-    fn looking_along_the_up_axis_still_has_a_roll() {
-        let camera = Camera::new(32, 32).looking_along([0.0, 0.0, 1.0]);
+    fn looking_up_the_up_axis_still_has_a_roll() {
+        let camera =
+            Camera::new(32, 32).looking_from([0.0; 3], [0.0, 0.0, 1.0]);
         let star = [0.0, 0.1, 10.0];
         let projected = camera.project(star);
         assert!(
@@ -985,14 +960,12 @@ mod tests {
         assert_eq!(mark.radius, 9.0);
     }
 
-    /// Nothing behind the camera is ringed, and a set of points comes back as
-    /// only those in front of it.
+    /// Nothing behind the camera is ringed.
     #[test]
-    fn marks_skip_what_is_behind() {
-        let camera = Camera::new(64, 64).looking_along([1.0, 0.0, 0.0]);
+    fn a_mark_behind_the_camera_is_none() {
+        let camera =
+            Camera::new(64, 64).looking_from([0.0; 3], [1.0, 0.0, 0.0]);
         assert_eq!(camera.mark([-5.0, 0.0, 0.0], 4.0), None);
-        let marks = camera.marks([[10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]], 4.0);
-        assert_eq!(marks.len(), 1);
     }
 
     /// A bearing rings where the star is, seen from where the bearing was
@@ -1028,7 +1001,7 @@ mod tests {
     #[test]
     fn framing_is_a_narrower_question_than_being_in_front() {
         let camera = Camera::new(100, 100)
-            .looking_along([1.0, 0.0, 0.0])
+            .looking_from([0.0; 3], [1.0, 0.0, 0.0])
             .with_fov_degrees(60.0);
         // Far off to the side but still ahead: projects, does not frame.
         let aside = camera.mark([1.0, 8.0, 0.0], 5.0).expect("in front");
@@ -1072,7 +1045,7 @@ mod tests {
     #[test]
     fn a_figure_line_needs_both_ends_in_front() {
         let camera = Camera::new(100, 100)
-            .looking_along([1.0, 0.0, 0.0])
+            .looking_from([0.0; 3], [1.0, 0.0, 0.0])
             .with_fov_degrees(60.0);
         assert!(
             camera.segment([10.0, 0.0, 0.0], [10.0, 1.0, 0.0]).is_some(),
