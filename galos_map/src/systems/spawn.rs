@@ -568,26 +568,27 @@ pub fn spawn(
             if let Some(at) = at {
                 answered.push((index.clone(), at));
             }
-            if let FetchIndex::Route(start, end, range) = index {
+            if let FetchIndex::Route(stops, range) = index {
                 // A route is a line between systems, so one system is
-                // no route. Coming back with nothing is how the
-                // database says it could not get from one end to the
-                // other in jumps that long, and nothing drawn is the
-                // same nothing as a route still being worked out.
+                // no route. Coming back short of its last stop is how
+                // the router says it could not fly one of the legs in
+                // jumps that long, and the hops it did fly say which.
+                // Nothing drawn is the same nothing as a route still
+                // being worked out.
                 //
                 // Only ever an answer to a route still being waited on.
                 // A name that resolved to nothing is already said, and
                 // said more exactly than this could: the route was
-                // fetched anyway, and it comes back empty for the same
+                // fetched anyway, and it comes back short for the same
                 // reason, so without this the better answer is talked
                 // over a moment after it arrives.
+                let stopped = short_of(&new_systems, stops);
                 if *plot == Plot::Working {
-                    *plot = if new_systems.len() < 2 {
-                        Plot::Failed(format!(
-                            "No route from {start} to {end} at {range} Ly"
-                        ))
-                    } else {
-                        Plot::Nothing
+                    *plot = match stopped {
+                        Some((from, to)) => Plot::Failed(format!(
+                            "No route from {from} to {to} at {range} Ly"
+                        )),
+                        None => Plot::Nothing,
                     };
                 }
 
@@ -596,7 +597,15 @@ pub fn spawn(
                 // systems are in hand, so it is the one place that can say
                 // what they are. The systems arrive built, so the line is
                 // drawn straight from them before they join the spawn queue.
-                if let Some(landed) = plotted_route(&new_systems, range) {
+                //
+                // Only a route that reached its last stop. One that stopped
+                // short is the legs the user did not ask for on their own,
+                // and a line drawn part way is a line saying the route runs
+                // somewhere it does not.
+                if stopped.is_none()
+                    && let Some(landed) =
+                        plotted_route(&new_systems, stops, range)
+                {
                     spawn_route(
                         &landed.filter(),
                         &new_systems,
@@ -643,17 +652,62 @@ pub fn spawn(
     }
 }
 
+/// The leg of a route through `stops` that `hops` stopped short at, if it did
+///
+/// The hops are the legs flown, joined end to end, so how far along the stops
+/// they got is read by walking the stops in order and taking each as reached
+/// where a hop lands on it. A route that reached its last stop stopped short
+/// nowhere. One that did not stopped at the leg out of the last stop it did
+/// reach, which is what a user who asked for the whole of it wants told: not
+/// that there is no route, but which two of their systems there is none
+/// between.
+///
+/// Matched without regard to case, as the names table matches a name: what
+/// the user typed is whatever case they typed it in, and the rows carry the
+/// map's own spelling.
+///
+/// Where nothing at all came back, the first leg is the one that failed. A
+/// route of fewer than two stops has no leg to have stopped short at, and the
+/// form never asks for one.
+fn short_of<'a>(
+    hops: &[System],
+    stops: &'a [String],
+) -> Option<(&'a str, &'a str)> {
+    let mut reached = 0;
+    for hop in hops {
+        if reached < stops.len()
+            && hop.name().eq_ignore_ascii_case(&stops[reached])
+        {
+            reached += 1;
+        }
+    }
+    if reached == stops.len() && hops.len() >= 2 {
+        return None;
+    }
+
+    // The leg out of the last stop reached. Where none was, the first leg.
+    let at = reached.saturating_sub(1);
+    Some((stops.get(at)?.as_str(), stops.get(at + 1)?.as_str()))
+}
+
 /// What a route that has landed amounts to, if it amounts to a route
 ///
 /// Nothing where fewer than two systems came back, a line between one system
 /// being no line, and nothing where none of them has a position on record and
 /// there is nowhere to put it.
 ///
-/// `range` comes off the key the route was fetched under, that being where
-/// what the user asked for is still written down. The rows that came back say
-/// which systems the ship passes through and nothing about how far it reaches.
-fn plotted_route(systems: &[System], range: &str) -> Option<PlottedRoute> {
-    let (first, last) = (systems.first()?, systems.last()?);
+/// `stops` and `range` come off the key the route was fetched under, that
+/// being where what the user asked for is still written down. The rows that
+/// came back say which systems the ship passes through and nothing about how
+/// far it reaches, and the route is named for its stops rather than for every
+/// system it passes through: a route is called after where it was asked to
+/// go. Each is spelled as the rows spell it, the user's own spelling being
+/// whatever case they typed.
+fn plotted_route(
+    systems: &[System],
+    stops: &[String],
+    range: &str,
+) -> Option<PlottedRoute> {
     if systems.len() < 2 {
         return None;
     }
@@ -662,8 +716,19 @@ fn plotted_route(systems: &[System], range: &str) -> Option<PlottedRoute> {
         systems.iter().map(|system| system.position()).collect();
     let (middle, extent) = framing(&places)?;
 
+    let label = stops
+        .iter()
+        .map(|stop| {
+            systems
+                .iter()
+                .find(|system| system.name().eq_ignore_ascii_case(stop))
+                .map_or(stop.as_str(), |system| system.name())
+        })
+        .collect::<Vec<_>>()
+        .join(crate::ui::ARROW);
+
     Some(PlottedRoute {
-        label: format!("{} -> {}", first.name(), last.name()),
+        label,
         // In the order they are travelled, which is the order the route came
         // back in and the order its panel lists.
         systems: systems.iter().map(|system| system.address).collect(),
@@ -1164,6 +1229,86 @@ mod tests {
         let mut system = system(address);
         system.position = [x, 0., 0.];
         system
+    }
+
+    /// A system named `name` at `address`
+    fn called(address: i64, name: &str) -> System {
+        let mut system = system(address);
+        system.name = name.to_owned();
+        system
+    }
+
+    /// The stops of a route, as the form would spell them
+    fn stops(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// A route that reached its last stop stopped short nowhere
+    ///
+    /// However it was spelled when asked for: the stops are matched to the
+    /// hops as the names table matches them, without regard to case.
+    #[test]
+    fn a_route_that_reached_its_last_stop_is_whole() {
+        let hops =
+            [called(1, "SOL"), called(2, "WOLF 359"), called(3, "BARNARD")];
+
+        assert_eq!(short_of(&hops, &stops(&["SOL", "BARNARD"])), None);
+        assert_eq!(
+            short_of(&hops, &stops(&["sol", "wolf 359", "barnard"])),
+            None
+        );
+    }
+
+    /// A route that stopped short names the leg it stopped at
+    ///
+    /// The one out of the last stop it reached, which is where the hops end.
+    /// The legs before it were flown, and are not what there was no route
+    /// for -- which is the whole difference between this and saying there is
+    /// no route from the first stop to the last.
+    #[test]
+    fn a_route_that_stopped_short_names_the_leg() {
+        let hops = [called(1, "SOL"), called(2, "WOLF 359")];
+
+        assert_eq!(
+            short_of(&hops, &stops(&["SOL", "WOLF 359", "BARNARD", "SIRIUS"])),
+            Some(("WOLF 359", "BARNARD"))
+        );
+    }
+
+    /// Nothing come back is the first leg having failed
+    #[test]
+    fn a_route_of_nothing_stopped_at_its_first_leg() {
+        assert_eq!(
+            short_of(&[], &stops(&["SOL", "BARNARD"])),
+            Some(("SOL", "BARNARD"))
+        );
+        assert_eq!(
+            short_of(&[called(1, "SOL")], &stops(&["SOL", "BARNARD"])),
+            Some(("SOL", "BARNARD"))
+        );
+    }
+
+    /// A route is named for its stops, spelled as the rows spell them
+    ///
+    /// Every stop and only the stops, whatever the ship passed through on the
+    /// way: a route is called after where it was asked to go. The user's own
+    /// spelling is whatever case they typed, and the rows are what the map
+    /// knows the systems as.
+    #[test]
+    fn a_route_is_named_for_its_stops() {
+        let hops = [
+            called(1, "SOL"),
+            called(2, "WOLF 359"),
+            called(3, "BARNARD"),
+            called(4, "SIRIUS"),
+        ];
+
+        let landed =
+            plotted_route(&hops, &stops(&["sol", "barnard", "SIRIUS"]), "10")
+                .unwrap();
+
+        assert_eq!(landed.label, "SOL -> BARNARD -> SIRIUS");
+        assert_eq!(landed.systems, vec![1, 2, 3, 4]);
     }
 
     /// A system queued twice waits as one entry

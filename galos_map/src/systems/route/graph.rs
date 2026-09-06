@@ -202,6 +202,42 @@ impl JumpGraph {
         Some(path.into_iter().map(|i| self.points[i]).collect())
     }
 
+    /// A route through `stops` in order, at a ship's jump `range`, as the
+    /// hops it passes through
+    ///
+    /// Each leg is plotted on its own, from one stop to the next, and the
+    /// legs are joined end to end: the stop a leg lands on is the stop the
+    /// next sets out from, and is written down once. So the hops read as one
+    /// route in the order flown, and a stop in the middle stands in the list
+    /// once as any other system does.
+    ///
+    /// As far as it gets. A leg that cannot be flown ends the route at the
+    /// stop it would have set out from, and what is handed back is the hops
+    /// through every leg before it, so that whoever reads the route can say
+    /// which leg it stopped short at. Nothing at all where the first leg is
+    /// the one that fails, or where there is no leg to fly.
+    ///
+    /// `how` is settled once for the whole route rather than per leg: the
+    /// legs are one route to the user, and a route flown one way in its first
+    /// half and another in its second is a route nobody asked for.
+    pub(crate) fn route_through(
+        &self,
+        stops: &[i64],
+        range: f64,
+        how: Routing,
+    ) -> Vec<(i64, [f64; 3])> {
+        let mut hops: Vec<(i64, [f64; 3])> = Vec::new();
+        for leg in stops.windows(2) {
+            let Some(flown) = self.route(leg[0], leg[1], range, how) else {
+                break;
+            };
+            // The stop this leg sets out from is the one the last landed on.
+            let landed = usize::from(!hops.is_empty());
+            hops.extend(flown.into_iter().skip(landed));
+        }
+        hops
+    }
+
     /// Fewest jumps, taking the neighbour that gets nearest the goal first
     ///
     /// Distance is not in the cost at all, so nothing here decides between two
@@ -282,6 +318,80 @@ mod tests {
     /// How far a route runs, following its legs.
     fn run(path: &[(i64, [f64; 3])]) -> f64 {
         path.windows(2).map(|w| dist2(w[0].1, w[1].1).sqrt()).sum()
+    }
+
+    /// Systems strung out along a line, one every `step` light years
+    fn strung(count: i64, step: f32) -> JumpGraph {
+        let entries: Vec<NameEntry> =
+            (0..count).map(|i| at(i, [i as f32 * step, 0., 0.])).collect();
+        JumpGraph::new(&entries)
+    }
+
+    /// The addresses a route runs through, in order
+    fn addresses(hops: &[(i64, [f64; 3])]) -> Vec<i64> {
+        hops.iter().map(|(address, _)| *address).collect()
+    }
+
+    /// A route through several stops is flown leg by leg, in order
+    ///
+    /// Out and back again, which a route between two ends can never be: the
+    /// middle stop is flown to and then set out from, and stands in the list
+    /// once each time it is passed through.
+    #[test]
+    fn a_route_through_stops_is_flown_in_order() {
+        let graph = strung(5, 10.);
+
+        for how in BOTH {
+            let hops = graph.route_through(&[0, 4, 2], 10., how);
+
+            assert_eq!(addresses(&hops), vec![0, 1, 2, 3, 4, 3, 2], "{how:?}");
+        }
+    }
+
+    /// The stop a leg lands on is written down once
+    ///
+    /// It is where the next leg sets out from, and a route that named it
+    /// twice running would count a jump from a system to itself.
+    #[test]
+    fn a_stop_between_two_legs_is_not_said_twice() {
+        let graph = strung(3, 10.);
+
+        for how in BOTH {
+            let hops = graph.route_through(&[0, 1, 2], 10., how);
+
+            assert_eq!(addresses(&hops), vec![0, 1, 2], "{how:?}");
+        }
+    }
+
+    /// A leg that cannot be flown ends the route where it would have begun
+    ///
+    /// The legs before it are handed back whole, so that whoever reads the
+    /// route can say which leg stopped it. Here the second leg asks for a
+    /// system out past what a ship this short can reach.
+    #[test]
+    fn a_route_stops_short_at_the_leg_it_cannot_fly() {
+        let mut entries: Vec<NameEntry> =
+            (0..3).map(|i| at(i, [i as f32 * 10., 0., 0.])).collect();
+        entries.push(at(9, [100., 0., 0.]));
+        let graph = JumpGraph::new(&entries);
+
+        for how in BOTH {
+            let hops = graph.route_through(&[0, 2, 9], 10., how);
+
+            assert_eq!(addresses(&hops), vec![0, 1, 2], "{how:?}");
+        }
+    }
+
+    /// A first leg that cannot be flown is no route at all
+    #[test]
+    fn a_route_whose_first_leg_fails_is_nothing() {
+        let graph = strung(3, 10.);
+
+        for how in BOTH {
+            assert!(graph.route_through(&[0, 2], 5., how).is_empty());
+            assert!(graph.route_through(&[0], 10., how).is_empty());
+            assert!(graph.route_through(&[], 10., how).is_empty());
+        }
     }
 
     /// Both settings, since every claim below holds of both.

@@ -2067,12 +2067,12 @@ const SELECTED: usize = 5;
 /// of the addresses, so letting go of the rings and the rows afterwards
 /// leaves those systems picked out, which is most of what the filter is for.
 ///
-/// Answers whether a route between them was asked for. Only two of them can be
-/// routed between, so only two of them carry the control, and it appears the
-/// moment the second is picked. That is what there is to find: a set gathered
-/// out on the map says here what can be done with it, rather than leaving the
-/// user to guess that the form dropping out of the search box has a section
-/// about the systems they have already picked.
+/// Answers whether a route through them was asked for. A route wants two of
+/// them at the least, so the control appears the moment the second is picked
+/// and stays as more are gathered. That is what there is to find: a set
+/// gathered out on the map says here what can be done with it, rather than
+/// leaving the user to guess that the form dropping out of the search box has
+/// a section about the systems they have already picked.
 ///
 /// It reaches the form rather than plotting, since a route still wants a jump
 /// range and there is nowhere here to say one.
@@ -2109,7 +2109,7 @@ fn whole_selection(
                 systems: selection.addresses(),
             });
         }
-        if ends_of(selection).is_ok() {
+        if stops_of(selection).is_ok() {
             routing = ui.button("Route").clicked();
         }
         if let Some((middle, extent)) = spanned(selection)
@@ -2182,17 +2182,29 @@ const CUT: &str = "..";
 /// An odd character over goes to the name that leads, that being the one read
 /// first, and the two ends are otherwise given exactly as much as each other.
 ///
+/// A route through more stops than two is cut to its two ends first: the stops
+/// between go as one, marked as cut, before either end gives up a character.
+/// Where it starts and where it ends is what a route is called after, and the
+/// row already says how many jumps lie between.
+///
 /// Counted in characters, which is a width now that everything is lettered in
 /// one.
 pub(crate) fn shortened(label: &str, room: usize) -> String {
-    let Some((start, end)) = label.split_once(ARROW) else {
+    let Some((start, rest)) = label.split_once(ARROW) else {
         return label.to_owned();
     };
     if label.chars().count() <= room {
         return label.to_owned();
     }
 
-    let names = room.saturating_sub(ARROW.chars().count());
+    // The far end, and what stands between the two ends once the stops
+    // between have been cut out: the one arrow, or an arrow either side of
+    // the mark that says something was.
+    let (end, between) = match rest.rsplit_once(ARROW) {
+        Some((_, end)) => (end, format!("{ARROW}{CUT}{ARROW}")),
+        None => (rest, ARROW.to_owned()),
+    };
+    let names = room.saturating_sub(between.chars().count());
     // An end cut below a character and the mark saying it was cut is an end
     // that says nothing, and two of those either side of an arrow say only
     // that a route runs between two systems. Where it comes to that, what
@@ -2211,7 +2223,7 @@ pub(crate) fn shortened(label: &str, room: usize) -> String {
         (names - half, half)
     };
 
-    format!("{}{ARROW}{}", clipped(start, start_gets), clipped(end, end_gets))
+    format!("{}{between}{}", clipped(start, start_gets), clipped(end, end_gets))
 }
 
 /// Say `name` in `room` characters
@@ -2299,7 +2311,7 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
     }
 }
 
-/// The two systems a route runs between, or why it has no pair to run between
+/// The systems a route runs through, or why it has nowhere to run
 ///
 /// What is picked out on the map, in the order it was picked, rather than
 /// names typed into fields of the form. Picking a system out is already how
@@ -2307,46 +2319,58 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
 /// the filter built from it, so a route with fields of its own would be
 /// asking twice about systems the map is holding for them.
 ///
-/// Two of them. A longer set is a route running through every system in it,
-/// leg by leg, and that is a different plot from this one rather than this one
-/// done several times.
-// TODO: Plot through the whole selection, leg by leg in the order it was
-// picked, instead of refusing every set but the pair.
-fn ends_of(selection: &Selection) -> Result<(&str, &str), &'static str> {
+/// Two of them at the least. A longer set is a route through every system in
+/// it, leg by leg in the order it was picked: the first is where the flying
+/// starts, and each after it is where the next leg is plotted to.
+fn stops_of(selection: &Selection) -> Result<Vec<&str>, &'static str> {
     // The systems alone. A route runs between places, and a body picked out
-    // beside them is a thing inside one rather than an end to plot to.
-    let mut systems = selection.systems();
-    match (systems.next(), systems.next(), systems.count()) {
-        (Some(start), Some(end), 0) => Ok((start.name(), end.name())),
-        (None, _, _) => Err("Pick out two systems to plot between"),
-        (Some(_), None, _) => Err("Pick out a second system to plot to"),
-        _ => Err("A route runs between two systems for now"),
+    // beside them is a thing inside one rather than a stop to plot to.
+    let stops: Vec<&str> =
+        selection.systems().map(|system| system.name()).collect();
+    match stops.len() {
+        0 => Err("Pick out two systems to plot between"),
+        1 => Err("Pick out a second system to plot to"),
+        _ => Ok(stops),
     }
 }
 
-/// How far apart the two systems a route would run between are
+/// How far a route through the systems picked out would run at the least
 ///
-/// In a straight line, which is as short as a route between them could be and
-/// is knowable before one is asked for. What comes back is longer: a route is
-/// flown in jumps, and each of them lands on a system rather than on a point
-/// along the line.
+/// In straight lines from each to the next, which is as short as a route
+/// through them could be and is knowable before one is asked for. What comes
+/// back is longer: a route is flown in jumps, and each of them lands on a
+/// system rather than on a point along the line.
 ///
-/// Only over a pair, since a pair is what [`ends_of`] answers with. A distance
-/// standing under a line saying there is no route to plot yet would be
-/// answering a question the form has just said it cannot take.
+/// Only over a set a route could run through, which is what [`stops_of`]
+/// answers with. A distance standing under a line saying there is no route to
+/// plot yet would be answering a question the form has just said it cannot
+/// take.
 fn apart(selection: &Selection) -> Option<f64> {
-    // The two the route runs between, which are the two systems picked out.
-    let places: Vec<_> = selection.systems().collect();
-    let [start, end] = places[..] else { return None };
+    let places: Vec<_> =
+        selection.systems().map(|system| system.position()).collect();
+    if places.len() < 2 {
+        return None;
+    }
 
-    Some(start.position().distance(end.position()))
+    Some(places.windows(2).map(|leg| leg[0].distance(leg[1])).sum())
+}
+
+/// What the form says of how far a route would run, before it is asked for
+///
+/// A pair is so far apart. More are so far in so many legs, the legs being
+/// what a longer set is flown in and what the figure is the sum of.
+fn apart_said(away: f64, stops: usize) -> String {
+    match stops.checked_sub(1) {
+        Some(legs) if legs > 1 => format!("{away:.1} Ly over {legs} legs"),
+        _ => format!("{away:.1} Ly apart"),
+    }
 }
 
 /// Ask what a route may be flown in, and say where it would run
 ///
 /// Answers whether its field has just taken focus. Which systems a route runs
-/// between is what is picked out on the map, which [`ends_of`] settles, so the
-/// only thing left to ask is the jump range.
+/// through is what is picked out on the map, which [`stops_of`] settles, so
+/// the only thing left to ask is the jump range.
 ///
 /// How it is getting on is said between the field and the button, where
 /// what it is about is on either side of it. The note under the search input
@@ -2373,20 +2397,20 @@ fn route_section(
     // Which two systems it runs between. Said rather than asked for, since
     // what answers it is a gesture out on the map, and a form with nothing on
     // it about the ends is a form that plots between systems it never names.
-    let ends = ends_of(selection);
-    match ends {
-        Ok((start, end)) => ui.label(format!("{start} -> {end}")),
+    let stops = stops_of(selection);
+    match &stops {
+        Ok(stops) => ui.label(stops.join(ARROW)),
         // Weakly. Nothing has gone wrong: the user is part way through
         // asking, and a form in red before it has been filled in is a form
         // scolding whoever fills it in.
-        Err(why) => ui.label(egui::RichText::new(why).weak()),
+        Err(why) => ui.label(egui::RichText::new(*why).weak()),
     };
-    // And how far apart they are, which is the one thing about the plot the
-    // map can say before it is asked for. Under the names rather than at the
-    // end of them, since two long names and a number on one line wrap into a
+    // And how far they run, which is the one thing about the plot the map can
+    // say before it is asked for. Under the names rather than at the end of
+    // them, since two long names and a number on one line wrap into a
     // paragraph in a bar this wide.
-    if let Some(away) = apart(selection) {
-        ui.label(egui::RichText::new(format!("{away:.1} Ly apart")).weak());
+    if let (Some(away), Ok(stops)) = (apart(selection), &stops) {
+        ui.label(egui::RichText::new(apart_said(away, stops.len())).weak());
     }
     ui.add_space(FIELD_GAP);
 
@@ -2428,10 +2452,10 @@ fn route_section(
     }
 
     ui.add_space(FIELD_GAP);
-    // The two things a route is made of: which systems it runs between, and
+    // The two things a route is made of: which systems it runs through, and
     // what it may be flown in. The button is dead until both are in hand,
-    // since a plot missing one of them is nothing to ask the database about.
-    let asked = ends.ok().zip(typed(&search.route_range));
+    // since a plot missing one of them is nothing to ask the router about.
+    let asked = stops.ok().zip(typed(&search.route_range));
     // Egui lays a button's contents out as atoms, and a custom atom is a
     // slot of a given size that hands its rect back to be painted into. So
     // the spinner takes a place in the row beside the label rather than
@@ -2456,13 +2480,12 @@ fn route_section(
     }
 
     if (button.response.clicked() || submitted)
-        && let Some(((start, end), range)) = asked
+        && let Some((stops, range)) = asked
     {
         *plot = match jump_range(range) {
             Ok(range) => {
                 searched.write(Search::Route {
-                    start: start.to_owned(),
-                    end: end.to_owned(),
+                    stops: stops.iter().map(|stop| stop.to_string()).collect(),
                     // Back to text, since a route is fetched under a key
                     // made of what was asked for and a float is no kind of
                     // key.
@@ -4134,7 +4157,7 @@ mod tests {
         selection.toggle(body(3, "SOL 3", 0.));
 
         assert_eq!(selection.addresses(), vec![address_of("SOL")]);
-        assert!(ends_of(&selection).is_err());
+        assert!(stops_of(&selection).is_err());
     }
 
     /// The rows each answer for themselves, whatever they hold
@@ -4242,18 +4265,19 @@ mod tests {
         assert!(!said.contains(&"Filter".to_owned()), "{said:?}");
     }
 
-    /// Any other number is not, there being no route it could ask for
+    /// One alone is not, there being no route it could ask for
     ///
     /// A control that leads to a form refusing what it just asked for is
     /// worse than no control: it says the map can do something it cannot.
+    /// More than two is a route through all of them, and is offered one.
     #[test]
     fn a_set_that_cannot_be_routed_is_offered_no_route() {
         let alone = selection_said(&["SOL"]);
         let several = selection_said(&["SOL", "BARNARD", "WOLF 359"]);
 
         assert!(!alone.contains(&"Route".to_owned()), "{alone:?}");
-        assert!(!several.contains(&"Route".to_owned()), "{several:?}");
-        // The rest of the line stands, so it is the route alone that goes.
+        assert!(several.contains(&"Route".to_owned()), "{several:?}");
+        // The rest of the line stands either way.
         assert!(several.contains(&"Filter".to_owned()), "{several:?}");
     }
 
@@ -4300,25 +4324,39 @@ mod tests {
         selection
     }
 
-    /// The two ends of a route are said to be as far apart as they are
+    /// A route is said to run as far as its legs come to
     ///
     /// The one thing about the plot that can be said before it is asked for,
-    /// and what says whether a ship could make the trip at all.
+    /// and what says whether a ship could make the trip at all. Over a pair
+    /// that is how far apart they stand; over more it is the legs summed, in
+    /// the order they were picked, which is the order they are flown.
     #[test]
-    fn two_systems_are_as_far_apart_as_they_stand() {
+    fn a_route_runs_as_far_as_its_legs_come_to() {
         assert_eq!(apart(&strung_out(&[3., 15.])), Some(12.));
+        assert_eq!(apart(&strung_out(&[3., 15., 20.])), Some(17.));
+        // Out and back: the legs are what is summed, not the span.
+        assert_eq!(apart(&strung_out(&[0., 10., 4.])), Some(16.));
     }
 
-    /// Any other number is not measured at all
+    /// A set with no leg to fly is not measured at all
     ///
-    /// One is not a pair, and more than two is a route the form refuses. A
-    /// distance under a line saying so would answer a question the form has
-    /// just said it cannot take.
+    /// A distance under a line saying there is no route to plot yet would
+    /// answer a question the form has just said it cannot take.
     #[test]
     fn a_set_that_cannot_be_routed_is_not_measured() {
         assert_eq!(apart(&strung_out(&[])), None);
         assert_eq!(apart(&strung_out(&[3.])), None);
-        assert_eq!(apart(&strung_out(&[3., 15., 20.])), None);
+    }
+
+    /// And how it is said turns on whether there is more than one leg
+    ///
+    /// A pair is so far apart. More is so far over so many legs, since the
+    /// figure is no longer a gap between two things but a distance flown.
+    #[test]
+    fn a_longer_route_is_said_in_legs() {
+        assert_eq!(apart_said(12., 2), "12.0 Ly apart");
+        assert_eq!(apart_said(17., 3), "17.0 Ly over 2 legs");
+        assert_eq!(apart_said(4., 0), "4.0 Ly apart");
     }
 
     /// The selection rows each answer for themselves
@@ -5735,6 +5773,33 @@ mod tests {
         assert_eq!(said.chars().count(), 18);
     }
 
+    /// A route through several stops is cut to its two ends
+    ///
+    /// The stops between go as one, marked as cut, before either end gives up
+    /// a character: where a route starts and where it ends is what it is
+    /// called after, and the row already says how many jumps lie between.
+    #[test]
+    fn a_route_through_several_is_cut_to_its_ends() {
+        let three = shortened("SOL -> WOLF 359 -> BARNARD", 20);
+
+        assert_eq!(three, "SOL -> .. -> BARNARD");
+        assert_eq!(three.chars().count(), 20);
+    }
+
+    /// And its ends are cut only once there is no middle left to cut
+    ///
+    /// A route whose ends alone will not fit is cut as a pair of ends is,
+    /// evenly, with the mark between saying the stops went first. Ten of the
+    /// twenty two characters go to what stands between the ends, so the ends
+    /// have six each.
+    #[test]
+    fn a_long_route_through_several_gives_up_its_ends_last() {
+        let said = shortened("SIGMA DRACONIS -> LAVE -> MINISTRY", 22);
+
+        assert_eq!(said, "SIGM.. -> .. -> MINI..");
+        assert_eq!(said.chars().count(), 22);
+    }
+
     /// Two ends of the same length are cut to the same length
     ///
     /// Neither end is worth more than the other, so what one is given the
@@ -6238,12 +6303,12 @@ mod tests {
         assert!(jump_range("-5").is_err());
     }
 
-    /// A route runs between the two systems picked out on the map
+    /// A route runs through the systems picked out on the map
     #[test]
     fn a_route_runs_between_what_is_picked_out() {
         assert_eq!(
-            ends_of(&holding(&["SOL", "SOLATI"])),
-            Ok(("SOL", "SOLATI"))
+            stops_of(&holding(&["SOL", "SOLATI"])),
+            Ok(vec!["SOL", "SOLATI"])
         );
     }
 
@@ -6254,52 +6319,49 @@ mod tests {
     #[test]
     fn the_first_picked_is_where_a_route_starts() {
         assert_eq!(
-            ends_of(&holding(&["SOLATI", "SOL"])),
-            Ok(("SOLATI", "SOL"))
+            stops_of(&holding(&["SOLATI", "SOL"])),
+            Ok(vec!["SOLATI", "SOL"])
         );
     }
 
     /// With nothing picked out there are no ends to run between
     #[test]
     fn a_route_with_nothing_picked_out_has_no_ends() {
-        assert!(ends_of(&Selection::default()).is_err());
+        assert!(stops_of(&Selection::default()).is_err());
     }
 
     /// Nor with one, which is an end and no route
     #[test]
     fn a_route_out_of_one_system_is_refused() {
-        assert!(ends_of(&holding(&["SOL"])).is_err());
+        assert!(stops_of(&holding(&["SOL"])).is_err());
     }
 
-    /// A longer set is a route through all of it, which is not the plot on
-    /// offer
+    /// A longer set is a route through the whole of it, in the order picked
     ///
-    /// Refused rather than answered with the first two. Plotting between two
-    /// of several picked out would draw a line the user did not ask for and
-    /// say nothing about the rest.
+    /// Every one of them is a stop rather than the first two being ends and
+    /// the rest going unsaid: a set gathered out on the map is flown in the
+    /// order it was gathered.
     #[test]
-    fn a_route_out_of_a_longer_set_is_refused() {
-        assert!(ends_of(&holding(&["SOL", "SOLATI", "SOLLARO"])).is_err());
+    fn a_longer_set_is_a_route_through_all_of_it() {
+        assert_eq!(
+            stops_of(&holding(&["SOL", "SOLATI", "SOLLARO"])),
+            Ok(vec!["SOL", "SOLATI", "SOLLARO"])
+        );
     }
 
-    /// Each of those says something of its own
+    /// Each reason to refuse says something of its own
     ///
-    /// They are read out of the one line, so two of them saying the same
-    /// thing would be a form that answers having picked nothing, having picked
-    /// one, and having picked too many all alike.
+    /// They are read out of the one line, so a form that answered having
+    /// picked nothing and having picked one alike would leave the user with
+    /// no way to tell what it is still waiting for.
     #[test]
     fn the_reasons_are_told_apart() {
-        let (none, one, several) = (
-            Selection::default(),
-            holding(&["SOL"]),
-            holding(&["SOL", "SOLATI", "SOLLARO"]),
-        );
-        let said = [ends_of(&none), ends_of(&one), ends_of(&several)];
+        let (nothing, single) = (Selection::default(), holding(&["SOL"]));
+        let none = stops_of(&nothing);
+        let one = stops_of(&single);
 
-        for (at, one) in said.iter().enumerate() {
-            for other in &said[at + 1..] {
-                assert_ne!(one, other);
-            }
-        }
+        assert!(none.is_err(), "{none:?}");
+        assert!(one.is_err(), "{one:?}");
+        assert_ne!(none, one);
     }
 }

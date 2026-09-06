@@ -133,7 +133,11 @@ pub enum FetchIndex {
     /// stood. A span holds still until the user moves the control.
     Region(IVec3, i32, Option<Span>),
     // View<Frustum>,
-    Route(String, String, String),
+    /// A route through named systems, in the order flown, at a jump range
+    ///
+    /// The range as it was typed, since it is part of what tells one route
+    /// from another and a float is no kind of key.
+    Route(Vec<String>, String),
     /// Named systems, by address
     ///
     /// What the map is asked for a row at a time rather than by where it is:
@@ -254,8 +258,8 @@ impl fmt::Debug for FetchIndex {
                 }
                 write!(f, ">")
             }
-            Route(start, end, range) => {
-                write!(f, "<{}-{}>{}>", start, end, range)
+            Route(stops, range) => {
+                write!(f, "<{}>{}>", stops.join("-"), range)
             }
             Systems(addresses) => write!(f, "<{} named>", addresses.len()),
         }
@@ -408,10 +412,9 @@ pub fn fetch_searched(
             // here to fetch yet. Whatever the user picks out of what it
             // found is asked for by `fetch_selected`.
             Search::System { .. } => {}
-            Search::Route { start, end, range } => {
+            Search::Route { stops, range } => {
                 fetch_route(
-                    start.into(),
-                    end.into(),
+                    stops.clone(),
                     range.into(),
                     &mut tasks,
                     &time,
@@ -755,11 +758,10 @@ pub(crate) mod tests {
         app
     }
 
-    /// Ask for a route between the two systems [`plotting`] holds
+    /// Ask for a route through the systems [`plotting`] holds
     fn plot(app: &mut App) {
         app.world_mut().write_message(Search::Route {
-            start: "Start".into(),
-            end: "End".into(),
+            stops: vec!["Start".into(), "End".into()],
             range: "10".into(),
         });
         app.update();
@@ -1032,7 +1034,8 @@ pub(crate) mod tests {
     /// map asking again for most of what it already holds.
     #[test]
     fn a_route_under_way_does_not_hold_the_spyglass_up() {
-        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
+        let route =
+            FetchIndex::Route(vec!["A".into(), "B".into()], "10".into());
 
         assert!(!region_asked([route].iter()));
     }
@@ -1112,7 +1115,8 @@ pub(crate) mod tests {
     /// A route is never a refresh of anything, nor refreshed by one
     #[test]
     fn a_route_is_always_a_new_question() {
-        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
+        let route =
+            FetchIndex::Route(vec!["A".into(), "B".into()], "10".into());
         assert!(!route.refreshes(&region(0, 10)));
         assert!(!region(0, 10).refreshes(&route));
         assert!(!route.refreshes(&route));

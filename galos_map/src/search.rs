@@ -97,8 +97,19 @@ pub(crate) enum Plot {
 /// by [`crate::systems::filter::Lookup`] instead.
 #[derive(Message, Debug)]
 pub(crate) enum Search {
-    System { name: String },
-    Route { start: String, end: String, range: String },
+    System {
+        name: String,
+    },
+    /// A route through `stops`, in the order they are flown
+    ///
+    /// Two of them at the least, a route being a line between places. More is
+    /// a route flown leg by leg, each leg plotted on its own and the lot
+    /// joined end to end, so that a set gathered out on the map is flown in
+    /// the order it was gathered.
+    Route {
+        stops: Vec<String>,
+        range: String,
+    },
 }
 
 /// The row for a named system a route may run to, or why it may not
@@ -237,8 +248,8 @@ fn located(plot: &mut Plot, trouble: Option<String>) {
 /// searches, since a search that picked something out would let go of
 /// everything gathered before it. The camera is left where it is for the same
 /// reason, and the map has a control of its own for going there.
-/// - On [`Search::Route`] both ends are resolved, and which of them could
-/// not be is what the form is told.
+/// - On [`Search::Route`] every stop is resolved, and the first of them that
+/// could not be is what the form is told.
 ///
 /// Every one of them is asked of the database off the main thread and read
 /// back here when it lands, so that a search the database takes its time over
@@ -275,15 +286,14 @@ fn searched(
                     pool.spawn(async move { found }),
                 );
             }
-            // A route needs both ends. Say which one is the problem rather
+            // A route needs every stop. Say which one is the problem rather
             // than drawing nothing and leaving the user to guess.
-            Search::Route { start, end, .. } => {
-                // The one nearer the start of the form, and only it: an end
-                // looked up after the one before it turned out to be wrong is a
-                // lookup whose answer nothing reads.
-                let trouble = locate(&names, start)
-                    .err()
-                    .or_else(|| locate(&names, end).err());
+            Search::Route { stops, .. } => {
+                // The first in the order flown, and only it: a stop looked up
+                // after the one before it turned out to be wrong is a lookup
+                // whose answer nothing reads.
+                let trouble =
+                    stops.iter().find_map(|stop| locate(&names, stop).err());
                 locating.ask((), now, pool.spawn(async move { trouble }));
             }
         };
