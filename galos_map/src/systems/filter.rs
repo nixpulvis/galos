@@ -10,29 +10,30 @@
 //! mean either faction heard from within it. Counted alongside the factions it
 //! would put the whole of the last hour onto a map asked for two factions.
 //!
-//! This is a layer over the map rather than a mode. The spyglass goes on
-//! fetching by region, the camera stays where it is, and nothing is
-//! despawned.
+//! This is a layer over the map rather than a mode: the spyglass goes on
+//! fetching by region and the camera stays where it is. Whether it despawns
+//! depends on the dim below.
 //!
 //! [`DimTo`] says how faintly what none of them admits is drawn, and answers
 //! for the whole of it. Above zero the excluded systems are wanted on screen,
 //! so they are fetched to be dimmed: what was never asked for cannot be drawn
 //! faintly, and a faction read against the space around it is the thing being
-//! drawn. At zero they are not drawn at all, which is the other thing a filter
-//! is asked for: this kind of system and none of the rest.
+//! drawn. At zero they are not loaded at all — never spawned, and evicted if
+//! already on the map — which is the other thing a filter is asked for: this
+//! kind of system and none of the rest.
 
-use crate::Db;
 use crate::schedule::MapSet;
 use crate::search::Pending;
 use crate::systems::System;
+use crate::systems::fetch::FetchTasks;
 use crate::systems::fetch::Poll;
+use crate::systems::spawn::system_at;
+use crate::{Factions, Names, Populated};
+use bevy::ecs::system::SystemParam;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
-use bevy::tasks::AsyncComputeTaskPool;
 use chrono::{DateTime, Duration, Utc};
-use galos_db::Database;
-use galos_db::factions::Faction as DbFaction;
-use galos_db::systems::System as DbSystem;
+use galos_index::meta::Faction as DbFaction;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
@@ -52,6 +53,14 @@ pub fn plugin(app: &mut App) {
     app.add_systems(
         Update,
         mark.in_set(MapSet::Populate).after(super::spawn::spawn),
+    );
+    // The dim and the filters decide which systems belong on the map at all, so
+    // a change to either asks the loaded regions again to catch up.
+    app.add_systems(
+        Update,
+        refetch_on_filter_change
+            .in_set(MapSet::Fetch)
+            .before(super::fetch::fetch),
     );
 }
 
@@ -301,13 +310,21 @@ impl Filter {
     /// Here rather than beside the panel that draws it, so that a kind of
     /// filter is one arm of each of these rather than something to be traced
     /// through the modules that happen to use it.
-    pub async fn systems(&self, db: &Database) -> Vec<DbSystem> {
+    pub fn systems(&self, populated: &Populated, names: &Names) -> Vec<System> {
         match self {
-            Filter::Faction { name, .. } => {
-                DbSystem::fetch_faction(db, name).await.unwrap_or_default()
-            }
+            Filter::Faction { id, .. } => populated
+                .0
+                .values()
+                .filter(|system| system.factions.contains(id))
+                .filter_map(|system| {
+                    system_at(system.address, populated, names)
+                })
+                .collect(),
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
-                DbSystem::fetch_many(db, systems).await.unwrap_or_default()
+                systems
+                    .iter()
+                    .filter_map(|&address| system_at(address, populated, names))
+                    .collect()
             }
             // Nothing describes a span, so nothing asks this of one. See
             // [`Self::worth_describing`].
@@ -379,11 +396,6 @@ impl FactionResults {
         self.0.iter()
     }
 
-    /// Whether anything was found
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Stop offering whatever was found
     pub fn clear(&mut self) {
         self.0.clear();
@@ -403,37 +415,21 @@ impl FactionResults {
 /// chooses, exactly as a search for a system is answered.
 fn resolve(
     mut lookups: MessageReader<Lookup>,
-    mut resolving: ResMut<Resolving>,
     mut results: ResMut<FactionResults>,
     mut note: ResMut<LookupNote>,
-    time: Res<Time<Real>>,
-    db: Res<Db>,
+    factions: Res<Factions>,
 ) {
-    let now = time.last_update().unwrap_or(time.startup());
-    let pool = AsyncComputeTaskPool::get();
-
     for lookup in lookups.read() {
         let Lookup::Faction { name } = lookup;
-        let db = db.0.clone();
-        let asked = name.clone();
-        resolving.ask(
-            name.clone(),
-            now,
-            pool.spawn(async move {
-                DbFaction::search_by_name(&db, &asked, FACTIONS)
-                    .await
-                    .unwrap_or_default()
-            }),
-        );
-    }
-
-    if let Some((name, found)) = resolving.answered(now) {
-        results.0 = found;
-        *note = if results.is_empty() {
+        // The whole galaxy's factions are resident, so a name is matched at
+        // once rather than asked of a database off the main thread.
+        let found = factions.search(name, FACTIONS as usize);
+        *note = if found.is_empty() {
             LookupNote::Failed(format!("No faction named {name}"))
         } else {
             LookupNote::Nothing
         };
+        results.0 = found;
     }
 }
 
@@ -621,11 +617,6 @@ impl Filters {
         }
     }
 
-    /// How many filters are being held, turned on or not
-    pub fn len(&self) -> usize {
-        self.asked.len()
-    }
-
     /// Whether none is held at all, which is a map showing the whole sky
     pub fn is_empty(&self) -> bool {
         self.asked.is_empty()
@@ -743,10 +734,6 @@ impl Filters {
 
     /// How far back an enabled filter on time looks, where one is asked
     ///
-    /// Read apart from [`Self::admitted`] because what it admits is nowhere in
-    /// particular, so it is fetched in its own right rather than as part of a
-    /// question about a region.
-    ///
     /// The span rather than the moment it reaches back to. A moment is a
     /// different value every time it is worked out, so a region carrying one
     /// would be somewhere new every frame; the span moves only when the user
@@ -767,60 +754,35 @@ impl Filters {
             .max()
     }
 
-    /// What the filters admit, as a query can ask it
+    /// Every stop the routes being shown run through, by address
     ///
-    /// Every enabled filter says either which faction it wants or which
-    /// systems by name, so all of them together are two lists. That is the
-    /// whole of what a query has to be told, and it is told once however many
-    /// filters there are.
+    /// A route is drawn as a line from one stop to the next, so a stop the
+    /// map has let go of is not a fainter line but a gap in it — and the
+    /// further out the camera stands, the more of the route falls where the
+    /// level of detail would draw nothing. So the stops are held on the map
+    /// for as long as the line is, however coarsely the sky around them is
+    /// drawn. Whether one is *seen* is still the spyglass's to say, in
+    /// [`crate::systems::visibility`]; this only says it is there to see.
     ///
-    /// Nothing where they admit everything, which is where none of them is
-    /// turned on. A query narrowed by two empty lists answers with nothing at
-    /// all, where what is meant is the whole sky.
-    pub fn admitted(&self) -> Option<Admitted> {
-        let mut admitted = Admitted::default();
-        let mut asked = false;
-
-        for active in self.asked.iter().filter(|active| active.enabled) {
-            match &active.filter {
-                Filter::Faction { id, .. } => {
-                    asked = true;
-                    admitted.factions.push(*id);
-                }
-                Filter::Route { systems, .. }
-                | Filter::Systems { systems, .. } => {
-                    asked = true;
-                    admitted.systems.extend(systems.iter().copied());
-                }
-                // Nothing a region can be narrowed by. What this admits is
-                // scattered across the galaxy rather than gathered anywhere,
-                // so it is fetched in its own right and not as part of a
-                // place. Asked on its own it leaves the region asked for as it
-                // stands, rather than narrowing it to two empty lists, which
-                // is a question answered with nothing at all.
-                Filter::Recency { .. } => {}
-            }
-        }
-
-        asked.then_some(admitted)
+    /// Only the routes being shown. A row turned off draws no line, so its
+    /// stops are nothing to hold the map open for.
+    ///
+    /// Routes only. A faction or a hand-picked set is a set of systems the
+    /// map happens to admit, with no line running between them and so
+    /// nothing that a missing one would break.
+    pub fn routed(&self) -> std::collections::HashSet<i64> {
+        self.asked
+            .iter()
+            .filter(|active| active.enabled)
+            .filter_map(|active| match &active.filter {
+                Filter::Route { systems, .. } => Some(systems.iter().copied()),
+                Filter::Faction { .. }
+                | Filter::Systems { .. }
+                | Filter::Recency { .. } => None,
+            })
+            .flatten()
+            .collect()
     }
-}
-
-/// What a set of filters admits, said as two lists
-///
-/// Which is as much as the database is told. A faction is a membership to be
-/// looked up and a route or a hand-picked set is its addresses outright, and
-/// a system is admitted by standing in either list.
-///
-/// Part of what a region is asked for, so two regions about the same place
-/// admitting different things are different questions. Hence [`Eq`] and
-/// [`Hash`]: what tells those questions apart is these lists.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub struct Admitted {
-    /// The factions asked for, by id
-    pub factions: Vec<i32>,
-    /// The systems asked for outright, by address
-    pub systems: Vec<i64>,
 }
 
 /// A system no enabled filter admits
@@ -835,12 +797,14 @@ pub struct Filtered;
 /// How opaque a system no filter admits is drawn
 ///
 /// A fraction of the alpha it would be drawn at unfiltered, so one is
-/// untouched and zero is not drawn at all. Reads as what it does: dim to a
+/// untouched and below one it is dimmed. Reads as what it does: dim to a
 /// fifth, dim to nothing.
 ///
-/// Zero is not merely invisible. A star faded to nothing is still a star
-/// being drawn, and still one the pointer can land on, so zero hides it
-/// outright, which takes its name, its ring and its hit box with it.
+/// Zero is not merely invisible. A star drawn at no opacity is still loaded —
+/// spawned, its transform walked every frame, its pointer target waiting — so
+/// zero goes further and takes it off the map: [`super::spawn`] never loads
+/// what no filter admits, and [`super::evict`] drops what already stands, name,
+/// ring and hit box with it.
 #[derive(Resource)]
 pub struct DimTo(pub f32);
 
@@ -859,21 +823,106 @@ impl DimTo {
     /// into something else.
     ///
     /// For what is painted straight rather than through a material: the two
-    /// rings are gizmos, and a gizmo takes its color at the call.
+    /// rings are painted flat in screen space with egui, taking their colour
+    /// at the call rather than reading it off a shell's fading handle.
     pub fn as_drawn(&self, color: Srgba, filtered: bool) -> Srgba {
         if filtered {
-            Srgba { alpha: color.alpha * self.0, ..color }
+            Srgba { alpha: color.alpha * self.opacity(), ..color }
         } else {
             color
         }
     }
+
+    /// The opacity an excluded system is actually drawn at, `0..=1`
+    ///
+    /// Faintness is not linear: the eye reads brightness by ratio, so equal
+    /// steps of a linear slider are not equal steps of what is seen, and either
+    /// end of the curve goes to waste — a low gamma bunches the useful range
+    /// into the first few percent, a high one leaves the bottom third too faint
+    /// to see at all.
+    ///
+    /// So the slider is mapped logarithmically between a floor and full: equal
+    /// steps are equal *ratios* of opacity, the way a sound fader is spaced in
+    /// decibels, which spreads the control evenly from end to end. The floor is
+    /// [`DIM_FLOOR`], the faintest that still reads as present, so no part of
+    /// the travel above zero lands on an opacity too low to see.
+    ///
+    /// Zero stays zero — the load-and-evict decisions keyed on the slider
+    /// ([`Filtering::excluded_are_drawn`], [`super::spawn`], [`super::evict`])
+    /// read a dropped system off either the position or the opacity — and just
+    /// above zero steps to the floor, which is "off" giving way to "barely
+    /// there", exactly what the bottom of the control should mean.
+    pub fn opacity(&self) -> f32 {
+        if self.0 <= 0. { 0. } else { DIM_FLOOR.powf(1. - self.0) }
+    }
 }
 
-/// How faint an excluded system is to begin with
+/// The two things that decide how a system is drawn against the filters: which
+/// are asked, and how faintly what they exclude is shown.
 ///
-/// Faint enough to read as background rather than as something picked out,
-/// and bright enough to still be read: the point of dimming rather than
-/// hiding is that the space around a faction stays legible.
+/// Bundled so a draw reads both without spending two of Bevy's system-parameter
+/// slots, [`super::spawn::spawn`] being at the limit.
+#[derive(SystemParam)]
+pub struct Filtering<'w> {
+    pub filters: Res<'w, Filters>,
+    pub dim: Res<'w, DimTo>,
+}
+
+impl Filtering<'_> {
+    /// Whether what the filters exclude is still drawn, faintly, rather than
+    /// dropped from the map altogether.
+    pub fn excluded_are_drawn(&self) -> bool {
+        self.dim.0 > 0.
+    }
+}
+
+/// Ask the loaded regions again when systems that are absent must return
+///
+/// The fetch is unfiltered — the whole region in reach, dimmed or dropped by
+/// the filters afterwards — so what they admit never drives it. A fetch is
+/// worth issuing only when a system that is off the map has to come back onto
+/// it, and nothing is off the map while the excluded are drawn: above zero
+/// dim every system in reach is spawned, filtered or not, so a filter change
+/// there only re-marks what already stands and asks for nothing.
+///
+/// Below zero the excluded are dropped ([`super::spawn`] never spawns them and
+/// [`super::evict`] drops what stands), so two moves bring absent systems
+/// back and must refetch: the dim coming up through zero, which wants them all
+/// again, and a filter relaxed while at zero, which readmits some. A move
+/// within the visible range changes only how faint the excluded are drawn, so
+/// it asks for nothing.
+fn refetch_on_filter_change(
+    filters: Res<Filters>,
+    dim: Res<DimTo>,
+    mut tasks: ResMut<FetchTasks>,
+    mut were_drawn: Local<Option<bool>>,
+) {
+    let drawn = dim.0 > 0.;
+    let came_back = *were_drawn == Some(false) && drawn;
+    *were_drawn = Some(drawn);
+    // A filter change matters only where the excluded are absent — at zero
+    // dim. Above it they are on the map already, so the change is `mark`'s to
+    // carry and no fetch follows.
+    if came_back || (filters.is_changed() && !drawn) {
+        tasks.surveyed.clear();
+    }
+}
+
+/// The faintest opacity an excluded system is drawn at short of not at all
+///
+/// Where the logarithmic slider bottoms out just above zero, so its whole
+/// travel lands on opacities that can be seen. Below this a star reads as
+/// absent, and absent is what zero itself means: the system dropped rather than
+/// dimmed. A thirtieth, a shade under the visibility measured against the map.
+const DIM_FLOOR: f32 = 0.03;
+
+/// How faint an excluded system is to begin with, as a slider position
+///
+/// Faint enough to read as background rather than as something picked out, and
+/// bright enough to still be read: the point of dimming rather than hiding is
+/// that the space around a faction stays legible. A quarter of the slider,
+/// which on the logarithmic scale is about a fourteenth opacity — the range
+/// that reads right.
 const DEFAULT_DIM: f32 = 0.25;
 
 /// Keep the mark on whichever systems the filters exclude
@@ -1031,7 +1080,7 @@ mod tests {
         filters.toggle_all(&[0, 1]);
 
         assert!(!filters.any_enabled());
-        assert_eq!(filters.len(), 2);
+        assert_eq!(filters.iter().count(), 2);
         assert!(filters.admit(&member(1, &[3]), now()));
     }
 
@@ -1079,86 +1128,35 @@ mod tests {
 
         filters.clear(&[0, 1]);
 
-        assert_eq!(filters.len(), 0);
+        assert_eq!(filters.iter().count(), 0);
         assert!(filters.admit(&member(1, &[3]), now()));
     }
 
-    /// What the filters admit is two lists a query can be handed
-    #[test]
-    fn a_faction_filter_admits_by_id() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-
-        let admitted = filters.admitted().expect("something asked for");
-
-        assert_eq!(admitted.factions, vec![7]);
-        assert!(admitted.systems.is_empty());
-    }
-
-    /// A hand-picked set says its systems outright
-    #[test]
-    fn a_gathered_filter_admits_by_address() {
-        let mut filters = Filters::default();
-        filters.add(systems(&[1, 2, 3]));
-
-        let admitted = filters.admitted().expect("something asked for");
-
-        assert_eq!(admitted.systems, vec![1, 2, 3]);
-        assert!(admitted.factions.is_empty());
-    }
-
-    /// Several of them are gathered into the two lists between them
+    /// A filter turned off stops counting, and the sky is whole again
     ///
-    /// Each adds to what is admitted, so the lists are what all of them want
-    /// rather than what they have in common.
+    /// The row is held on to rather than let go of, so what changes is only
+    /// that nothing is being asked, and nothing asked for admits everything.
     #[test]
-    fn several_filters_admit_between_them() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(faction(9));
-        filters.add(systems(&[1, 2]));
-
-        let admitted = filters.admitted().expect("something asked for");
-
-        assert_eq!(admitted.factions, vec![7, 9]);
-        assert_eq!(admitted.systems, vec![1, 2]);
-    }
-
-    /// A filter turned off asks for nothing, and is not asked for
-    #[test]
-    fn a_disabled_filter_admits_nothing_in_particular() {
+    fn a_disabled_filter_asks_for_nothing() {
         let mut filters = Filters::default();
         filters.add(faction(7));
         filters.toggle(0);
 
-        assert_eq!(filters.admitted(), None);
+        assert!(!filters.any_enabled());
+        assert!(filters.admit(&member(1, &[3]), now()));
     }
 
-    /// Nothing held admits the whole sky rather than none of it
+    /// A filter that admits nothing admits nothing, rather than everything
     ///
-    /// A query narrowed by two empty lists comes back with nothing, where
-    /// what is meant is everything, so there is nothing to narrow it by.
+    /// Told apart from nothing being asked by whether a filter is asked at
+    /// all, and not by how much it lets through: a route with no stops is a
+    /// question the user put, and the sky it draws is empty.
     #[test]
-    fn no_filters_admit_everything() {
-        assert_eq!(Filters::default().admitted(), None);
-    }
-
-    /// A filter that admits nothing asks for nothing, and means it
-    ///
-    /// Which is the one case the two empty lists are the right answer: a
-    /// filter is being asked and it admits no system, so a query that comes
-    /// back with nothing is what was asked for. It is told apart from nothing
-    /// being asked by which of the two it is, and not by what the lists hold.
-    ///
-    /// What holds this together is that [`Filters::admit`] says the same. The
-    /// map dims by that and fetches by this, so a filter the two disagreed
-    /// about would be a sky drawn from one answer and fetched from the other.
-    #[test]
-    fn a_filter_that_admits_nothing_narrows_to_nothing() {
+    fn a_filter_that_admits_nothing_admits_nothing() {
         let mut filters = Filters::default();
         filters.add(route(&[]));
 
-        assert_eq!(filters.admitted(), Some(Admitted::default()));
+        assert!(filters.any_enabled());
         assert!(!filters.admit(&member(1, &[7]), now()));
     }
 
@@ -1404,6 +1402,94 @@ mod tests {
         app
     }
 
+    /// A world with the filters, the dim, and the refetch that watches both.
+    /// Stepped once so the first run's clear, on the filters being newly
+    /// added, is behind it.
+    fn refetching() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Filters>();
+        app.init_resource::<DimTo>();
+        app.init_resource::<FetchTasks>();
+        app.add_systems(Update, refetch_on_filter_change);
+        app.update();
+        app
+    }
+
+    /// A region the map thinks it holds, so a clear is something to see.
+    fn hold_a_region(app: &mut App) {
+        let (asked, at) = crate::systems::fetch::tests::surveyed_at(0, 100, 0);
+        app.world_mut().resource_mut::<FetchTasks>().surveyed(asked, at);
+    }
+
+    fn holds_a_survey(app: &App) -> bool {
+        !app.world().resource::<FetchTasks>().surveyed.is_empty()
+    }
+
+    /// Nudging the opacity within its visible range asks for nothing
+    ///
+    /// The bug this guards: 0.30 does not round-trip through the slider, so it
+    /// used to clear the surveys every frame and refetch without end.
+    #[test]
+    fn a_dim_within_range_does_not_refetch() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.25;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<DimTo>().0 = 0.30;
+        app.update();
+
+        assert!(holds_a_survey(&app), "a dim nudge cleared the surveys");
+    }
+
+    /// Bringing the dim back up through zero asks the dropped systems back
+    #[test]
+    fn coming_back_up_through_zero_refetches() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<DimTo>().0 = 0.30;
+        app.update();
+
+        assert!(
+            !holds_a_survey(&app),
+            "coming back up from zero held the surveys"
+        );
+    }
+
+    /// A filter changing while the excluded are drawn asks for nothing: they
+    /// are already on the map, and the change is only a re-mark
+    #[test]
+    fn a_filter_change_while_drawn_does_not_refetch() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.25;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.update();
+
+        assert!(holds_a_survey(&app), "a filter change at opacity refetched");
+    }
+
+    /// A filter changing at zero dim asks the regions again, since what it
+    /// readmits there was dropped rather than dimmed
+    #[test]
+    fn a_filter_change_at_zero_refetches() {
+        let mut app = refetching();
+        app.world_mut().resource_mut::<DimTo>().0 = 0.;
+        app.update();
+        hold_a_region(&mut app);
+
+        app.world_mut().resource_mut::<Filters>().add(faction(7));
+        app.update();
+
+        assert!(!holds_a_survey(&app), "a filter change at zero held surveys");
+    }
+
     /// The mark lands on what the filters exclude
     #[test]
     fn the_mark_lands_on_what_is_excluded() {
@@ -1544,9 +1630,7 @@ mod tests {
 
         let settled = filters.revision();
         let _ = filters.admit(&member(1, &[7]), now());
-        let _ = filters.admitted();
         let _ = filters.span();
-        let _ = filters.len();
         let _ = filters.any_enabled();
 
         assert_eq!(filters.revision(), settled, "reading counted as asking");
@@ -1621,37 +1705,6 @@ mod tests {
         assert_eq!(filters.span(), Some(Duration::seconds(100)));
     }
 
-    /// It narrows no region, what it admits being gathered nowhere
-    ///
-    /// A faction and a route say which systems a region should be asked for. A
-    /// question about time is answered from across the galaxy, so it has
-    /// nothing to add to a question about a place.
-    ///
-    /// Nothing at all rather than two empty lists. The region is asked with
-    /// whatever these hold, and a pair of empty lists asks it for no faction
-    /// and no system, which is a question the database answers with nothing.
-    #[test]
-    fn a_filter_on_time_narrows_no_region() {
-        let mut filters = Filters::default();
-        filters.add(within(100));
-
-        assert!(filters.admitted().is_none(), "the region was narrowed");
-    }
-
-    /// Beside a faction it leaves that faction narrowing the region
-    ///
-    /// The two are asked together: the faction says which systems the region
-    /// is wanted for, and time is asked of what comes back.
-    #[test]
-    fn a_filter_on_time_leaves_a_faction_narrowing() {
-        let mut filters = Filters::default();
-        filters.add(faction(7));
-        filters.add(within(100));
-
-        let admitted = filters.admitted().expect("the faction asked");
-        assert_eq!(admitted.factions, vec![7]);
-    }
-
     /// Asking again about time replaces the question rather than adding one
     ///
     /// Two of these would draw what the wider of them draws, since the earlier
@@ -1663,7 +1716,11 @@ mod tests {
         filters.ask_within("1 day", Duration::seconds(100));
         filters.ask_within("1 hour", Duration::seconds(50));
 
-        assert_eq!(filters.len(), 1, "the first question was left standing");
+        assert_eq!(
+            filters.iter().count(),
+            1,
+            "the first question was left standing"
+        );
         assert_eq!(filters.span(), Some(Duration::seconds(50)));
     }
 
@@ -1693,7 +1750,7 @@ mod tests {
         filters.ask_nothing_of_time();
 
         assert_eq!(filters.span(), None, "still asking about time");
-        assert_eq!(filters.len(), 1, "the faction went with it");
+        assert_eq!(filters.iter().count(), 1, "the faction went with it");
         assert!(
             filters.admit(&member(1, &[7]), now()),
             "the faction stopped asking"
@@ -1711,7 +1768,7 @@ mod tests {
 
         filters.turn_time_off("Off");
 
-        assert_eq!(filters.len(), 1, "the row went with the question");
+        assert_eq!(filters.iter().count(), 1, "the row went with the question");
         assert_eq!(filters.span(), None, "still asking about time");
         assert!(
             filters.admit(&heard(1, 40), now()),

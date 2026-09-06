@@ -48,14 +48,12 @@ use crate::systems::pointing::Indicator;
 use crate::systems::roundness::Roundness;
 use crate::systems::route::{LineList, LineStrip};
 use crate::systems::selection::Selection;
-use bevy::camera::visibility::ViewVisibility;
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
-use galos_db::bodies::Body as DbBody;
-use galos_db::stars::Star as DbStar;
+use galos_index::meta::{Body as DbBody, Star as DbStar};
 use std::collections::HashSet;
 use std::f64::consts::PI;
 
@@ -154,7 +152,7 @@ fn show_orbits(
 /// How large a system has to look before its own extent counts for its size,
 /// in radians
 ///
-/// The bottom of the ladder, and [`crate::systems::scale::shell`] is what
+/// The bottom of the ladder, and [`crate::systems::scale`]'s `shell` is what
 /// reads it. Below this a system is drawn as a mark and nothing else, however
 /// wide it is: a system reaching a fifth of a light year is drawn at its own
 /// size from four hundred light years off otherwise, a ball among its
@@ -231,6 +229,14 @@ impl HeldSystem {
     }
 }
 
+#[cfg(test)]
+impl HeldSystem {
+    /// The map standing in `entity`, for tests that put the camera in a system.
+    pub(crate) fn holding(entity: Entity) -> HeldSystem {
+        HeldSystem(Some(entity))
+    }
+}
+
 /// How strongly the mark standing for a system is drawn, from one to nothing
 ///
 /// What is drawn, which follows what the distance asks at a bounded rate
@@ -274,7 +280,7 @@ fn fade(
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     holding: Res<HeldSystem>,
-    mut systems: Query<(Entity, &System, &ViewVisibility, &mut Strength)>,
+    mut systems: Query<(Entity, &System, &Visibility, &mut Strength)>,
 ) {
     let Ok(eye) = camera.single().map(|camera| camera.eye) else { return };
     let drawing = holding.of();
@@ -282,9 +288,11 @@ fn fade(
 
     for (entity, system, visible, mut standing) in &mut systems {
         // Off the frame a mark is not drawn, so how far out it has gone is not
-        // stepped. The one system being closed on is always on the frame, so
-        // the fade that matters is never the one skipped.
-        if !visible.get() {
+        // stepped — except the one system being closed on, whose fade the plane
+        // handover rides (see [`crate::grid`]). It is stepped even when a filter
+        // has hidden it, or the plane ruled inside it would never give way back
+        // to the galaxy on the way up.
+        if *visible == Visibility::Hidden && Some(entity) != drawing {
             continue;
         }
         // Only the one system whose insides the map is holding may give way to
@@ -401,8 +409,6 @@ pub struct Body {
     pub name: String,
     /// Which of the system's numbering it is
     pub id: i16,
-    /// What kind of thing it is, as the journal spells it
-    pub class: String,
     /// How far across it is, in metres
     pub radius: f32,
     /// How many ancestors the scan named it under
@@ -668,6 +674,7 @@ fn draw(
     map: Res<crate::space::Map>,
     systems: Query<(Entity, &System)>,
     inside: Query<Entity, With<Inside>>,
+    mut selection: ResMut<Selection>,
     contents: Res<Contents>,
     clock: Res<Clock>,
     roundness: Res<Roundness>,
@@ -677,7 +684,6 @@ fn draw(
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnContents>,
     mut holding: ResMut<HeldSystem>,
-    mut selection: ResMut<Selection>,
     mut commands: Commands,
 ) {
     let Ok((eye_entity, eye, across)) =
@@ -721,6 +727,15 @@ fn draw(
         holding.0 = apparent.map(|(_, entity, _)| entity);
     }
 
+    // Nothing here waits on the mark standing for what is drawn. The plane
+    // ruled inside a system does change hands on that fade (see
+    // [`crate::grid`]), but holding the contents up until it finishes is a
+    // hold with no bound worth having: [`WORTH_MARKING`] is an angle, so a
+    // system reaching a fifth of a light year is still fading sixteen light
+    // years off, and the map would refuse to descend into a neighbour the
+    // camera had been panned right onto. The evenness of the handover is
+    // [`crate::grid::rule`]'s to keep, and it keeps it in time rather than in
+    // distance.
     let wanted = match (drawn.0, apparent) {
         _ if holding_over => return,
         // Nothing held, or too small to bother with.
@@ -749,10 +764,11 @@ fn draw(
         _ => return,
     };
 
-    // Which system's contents were drawn before this frame, so a genuine
-    // descent into a new one can be told from redrawing the one already
-    // inside. Read before the take below empties it.
-    let descended_into = drawn.0.map(|(shown, _)| shown);
+    // Which system's contents were on the map before this frame, read before
+    // the take below empties it, so a descent into one and an ascent out of
+    // it can each be told and the selection moved to match.
+    let previously = drawn.0.map(|(shown, _)| shown);
+
     // The camera first, then the contents, then the grid they were all
     // placed in: a `CellCoord` under an entity that is no longer a grid has
     // nothing to be measured against.
@@ -768,14 +784,39 @@ fn draw(
         }
     }
 
-    let Some((address, entity)) = wanted else { return };
+    let Some((address, entity)) = wanted else {
+        // Ascended out of the system entirely. A selection made on anything
+        // inside it — the arrival star it descended onto, or a body picked out
+        // since — falls back onto the system, collapsed to one mark, so it
+        // survives the trip out rather than being let go with the bodies; see
+        // [`Selection::rebind_bodies_to_system`].
+        if let Some(shown) = previously {
+            if let Some((_, system)) =
+                systems.iter().find(|(_, s)| s.address == shown)
+            {
+                selection.rebind_bodies_to_system(shown, system);
+            }
+        }
+        return;
+    };
 
-    // Standing inside it now, the selection that brought the camera here has
-    // done its job: its ring would circle the whole view and its row would
-    // name where the user already is. Let go of it, but only on the way in, so
-    // a redraw of the system already held leaves an unrelated selection alone.
-    if descended_into != Some(address) {
-        selection.deselect_system(address);
+    // A fresh descent into `address`, not a redraw of the one already shown:
+    // a selection resting on the system moves onto the star it arrives at, so
+    // it carries into the subgrid; see [`Selection::rebind_system_to_body`].
+    if previously != Some(address) {
+        if let Some(id) = contents.primary() {
+            if let (Some(star), Ok((_, system))) = (
+                contents.stars().iter().find(|s| s.id == id),
+                systems.get(entity),
+            ) {
+                selection.rebind_system_to_body(
+                    address,
+                    id,
+                    &star.name,
+                    system.position(),
+                );
+            }
+        }
     }
 
     let grid = space::system_grid();
@@ -926,7 +967,6 @@ fn drawn_star(
             address: star.system_address,
             name: star.name.clone(),
             id: star.id,
-            class: star.star_class.clone(),
             radius: star.radius,
             ancestors: star.parents.len() as u8,
             primary,
@@ -981,7 +1021,6 @@ fn drawn_body(
             address: body.system_address,
             name: body.name.clone(),
             id: body.id,
-            class: body.planet_class.clone(),
             radius: body.radius,
             ancestors: body.parents.len() as u8,
             primary: false,
@@ -1014,7 +1053,7 @@ fn drawn_body(
 /// back as.
 ///
 /// `bare` for a ring with nothing standing anywhere on it, which is drawn in
-/// dashes. See [`DASHES`].
+/// dashes. See `DASHES`.
 #[allow(clippy::too_many_arguments)]
 fn drawn_orbit(
     id: i16,
@@ -1274,6 +1313,7 @@ fn wind(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::spawn::Shell;
 
     /// A ring laid to a view a hundred thousandth of it across
     fn laid_at(at: f64) -> Spacing {
@@ -1476,7 +1516,6 @@ mod tests {
                 address: 1,
                 name: String::new(),
                 id: 1,
-                class: String::new(),
                 radius: 1e6,
                 ancestors: 0,
                 primary: false,
@@ -1544,7 +1583,6 @@ mod tests {
                     address: 1,
                     name: String::new(),
                     id: 1,
-                    class: String::new(),
                     radius: 1e6,
                     ancestors: 1,
                     primary: false,
@@ -1647,7 +1685,7 @@ mod tests {
             .world_mut()
             .spawn((
                 crate::systems::tests::reaching(1, 0., 1.5e12),
-                ViewVisibility::VISIBLE,
+                Visibility::Visible,
             ))
             .id();
         // Held, since a mark only goes out where the map is drawing what it
@@ -2033,5 +2071,108 @@ mod tests {
         assert_eq!(standing(WORTH_MARKING), 1.);
         assert!(standing(WORTH_MARKING * 1.001) < 1.);
         assert!(standing(WORTH_HIDING * 0.999) > 0.);
+    }
+
+    /// A world already standing inside system 1, with the poll since moved on
+    ///
+    /// What panning away from a wide system leaves behind: its contents and
+    /// grid are on the map, the mark standing for it is `mark` of the way back,
+    /// and [`super::fetch::choose`] has handed [`Contents`] to a neighbour the
+    /// crosshair has come nearer to. System 1 reaches a fifth of a light year,
+    /// as Alpha Centauri does; system 2 reaches nothing much, as most do.
+    fn panned_away(mark: f32) -> App {
+        use super::super::{Clock, Contents, FetchState};
+        use crate::systems::tests::reaching;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<Clock>();
+        app.init_resource::<Selection>();
+        app.init_resource::<HeldSystem>();
+        app.insert_resource(DrawnContents(Some((1, 0))));
+        // The rows are about system 2 now, which is the whole of what the pan
+        // did. One body, so the extent is known and the rows count as answered.
+        app.insert_resource(Contents {
+            of: Some(2),
+            revision: 0,
+            state: FetchState::Known {
+                stars: vec![],
+                bodies: vec![super::super::tests::body(1e11)],
+                centers: vec![],
+            },
+        });
+        app.add_plugins(crate::systems::roundness::plugin);
+        app.add_systems(Startup, init_materials);
+        app.add_systems(Update, draw);
+
+        let map = app.world_mut().spawn_empty().id();
+        app.insert_resource(crate::space::Map(map));
+        app.world_mut().spawn((
+            OrbitCamera { eye: DVec3::ZERO, ..default() },
+            ChildOf(map),
+        ));
+
+        // A fifth of a light year, and the eye far enough off that the mark
+        // standing for it is part way out but the system is no longer worth
+        // keeping drawn on its own size.
+        let wide = (0.2 * space::LIGHT_YEAR) as f32;
+        let away =
+            f64::from(wide) / space::LIGHT_YEAR / (WORTH_KEEPING * 0.5) as f64;
+        app.world_mut().spawn((
+            reaching(1, away, wide),
+            Shell,
+            Transform::default(),
+            Strength(mark),
+            space::system_grid(),
+        ));
+        app.world_mut().spawn((
+            reaching(2, 1., crate::systems::bodies::STAND_IN),
+            Shell,
+            Transform::default(),
+            Strength(1.),
+        ));
+        app
+    }
+
+    /// Whether the system the map drew still carries its own grid
+    fn subgridded(app: &mut App) -> bool {
+        let mut systems = app.world_mut().query::<(&System, &Grid)>();
+        systems.iter(app.world()).any(|(system, _)| system.address == 1)
+    }
+
+    /// What is drawn is let go of as soon as the rows move on
+    ///
+    /// The reported trouble, in the shape it actually took: zoomed into Alpha
+    /// Centauri's sub-grid and panned over to Sol, the map went on holding
+    /// Alpha Centauri and never descended into Sol — Sol could only be zoomed
+    /// into as a shell. Its cause was a hold put here on the mark of what is
+    /// drawn, and [`WORTH_MARKING`] is an angle: a system reaching a fifth of a
+    /// light year still reads as part way out sixteen light years off, so the
+    /// hold had no bound worth having.
+    ///
+    /// Nothing waits on the mark here. That the ruler changes hands evenly is
+    /// [`crate::grid::rule`]'s to keep, and it keeps it in time.
+    #[test]
+    fn what_is_drawn_is_let_go_of_when_the_rows_move_on() {
+        // The mark part way out, which is what a wide system reads as from
+        // light years off and what the old hold caught on.
+        let mut app = panned_away(0.3);
+        app.update();
+
+        assert!(
+            !subgridded(&mut app),
+            "held the grid of a system the rows had already left"
+        );
+    }
+
+    /// And likewise once its mark is whole again
+    #[test]
+    fn what_is_drawn_is_let_go_of_once_its_mark_is_whole() {
+        let mut app = panned_away(1.);
+        app.update();
+
+        assert!(!subgridded(&mut app), "the grid stayed on");
     }
 }

@@ -5,14 +5,24 @@ use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<Despawn>();
+    app.add_message::<ReloadCells>();
     app.add_systems(
         Update,
         despawn.in_set(MapSet::Populate).after(super::spawn::spawn),
+    );
+    // Alongside `despawn`, and after the spawn it undoes, as that is.
+    app.add_systems(
+        Update,
+        reload_cells.in_set(MapSet::Populate).after(super::spawn::spawn),
     );
 }
 
 #[derive(Message)]
 pub struct Despawn;
+
+/// A debug message: re-read the cell index and draw the map from it afresh
+#[derive(Message)]
+pub struct ReloadCells;
 
 /// Take the whole map off at once
 ///
@@ -43,6 +53,8 @@ pub fn despawn(
     galaxy: Res<Galaxy>,
     camera: Query<Entity, With<OrbitCamera>>,
     mut tasks: ResMut<crate::systems::fetch::FetchTasks>,
+    mut spawns: ResMut<crate::systems::spawn::PendingSpawns>,
+    mut evictions: ResMut<crate::systems::PendingEvictions>,
     mut events: MessageReader<Despawn>,
 ) {
     if events.read().count() == 0 {
@@ -51,12 +63,83 @@ pub fn despawn(
 
     tasks.surveyed.clear();
 
+    // The two queues systems arrive and leave the map by, emptied so nothing
+    // queued before the clear lands after it. An eviction left waiting on the
+    // budget names a system this despawn is about to take with the galaxy, and
+    // draining it once the slot has been reused would despawn whatever spawned
+    // into it. A spawn left waiting would draw a system the clear just removed.
+    *spawns = default();
+    *evictions = default();
+
     // Up out of whatever it was standing in first. A camera that has descended
     // into a system is a child of it, and the system is about to go.
     if let Ok(eye) = camera.single() {
         commands.entity(eye).insert(ChildOf(map.0));
     }
 
+    commands.entity(galaxy.0).despawn();
+    let fresh = commands.spawn((crate::space::galaxy(), ChildOf(map.0))).id();
+    commands.insert_resource(Galaxy(fresh));
+}
+
+/// Re-read the cell index and clear the map to draw from it afresh
+///
+/// A debug escape hatch from the rule that cells never change between builds:
+/// run the builder again over the same directory and this picks the new cells
+/// up live, rather than the map holding the index it read at startup until it
+/// is restarted.
+///
+/// Cells only. The metadata sidecars — populated, names, factions — are read
+/// once at startup and left as they were.
+//
+// TODO: A "Reload metadata" that re-reads populated, names and factions and
+// swaps them in, for when those change too. `names` alone is 84 MB, so it
+// wants an off-thread load rather than the inline read the index gets here.
+//
+// TODO(auth): Once cells are served rather than read off disk, forcing a
+// rebuild is a privileged call. This stays the client-side revalidation half
+// of it, and the button that sends it wants gating behind whatever says the
+// user may.
+fn reload_cells(
+    mut events: MessageReader<ReloadCells>,
+    transport: Res<crate::Transport>,
+    map: Res<Map>,
+    galaxy: Res<Galaxy>,
+    camera: Query<Entity, With<OrbitCamera>>,
+    mut tasks: ResMut<crate::systems::fetch::FetchTasks>,
+    mut spawns: ResMut<crate::systems::spawn::PendingSpawns>,
+    mut evictions: ResMut<crate::systems::PendingEvictions>,
+    mut commands: Commands,
+) {
+    if events.read().count() == 0 {
+        return;
+    }
+
+    // The aggregate index the walks plan on, read again off the transport.
+    // About 520 KB, so read inline rather than on a task: the button is a
+    // debug one and a hitch on a press costs nothing.
+    match bevy::tasks::block_on(transport.0.index()) {
+        Ok(index) => commands.insert_resource(crate::ResidentIndex(index)),
+        Err(error) => {
+            error!("could not reload the cell index: {error}");
+            return;
+        }
+    }
+
+    // Forget everything held from the old cells so the fetch asks for the new
+    // ones: the surveys that say a region is held, the reads in flight over
+    // the old files, and the two queues systems arrive and leave the map by.
+    tasks.surveyed.clear();
+    tasks.fetched.clear();
+    *spawns = default();
+    *evictions = default();
+
+    // And clear the map, as `despawn` does, so nothing built from the old
+    // cells is left standing: up out of whatever the camera descended into
+    // first, then the galaxy replaced whole.
+    if let Ok(eye) = camera.single() {
+        commands.entity(eye).insert(ChildOf(map.0));
+    }
     commands.entity(galaxy.0).despawn();
     let fresh = commands.spawn((crate::space::galaxy(), ChildOf(map.0))).id();
     commands.insert_resource(Galaxy(fresh));
@@ -74,6 +157,8 @@ mod tests {
         app.add_message::<Despawn>();
         app.add_systems(Update, despawn);
         app.init_resource::<crate::systems::fetch::FetchTasks>();
+        app.init_resource::<crate::systems::spawn::PendingSpawns>();
+        app.init_resource::<crate::systems::PendingEvictions>();
 
         let map = app.world_mut().spawn_empty().id();
         let galaxy = app.world_mut().spawn(ChildOf(map)).id();
@@ -215,6 +300,46 @@ mod tests {
             parent(&app, eye),
             Some(map(&app)),
             "the camera did not come up into the map"
+        );
+    }
+
+    /// A clear empties the queues systems arrive and leave the map by
+    ///
+    /// An eviction left waiting on the budget names a system the clear takes
+    /// with the galaxy. Draining it afterwards, once a fresh spawn had reused
+    /// the slot, despawned whatever now stood there — the "entity is invalid,
+    /// its index now has a later generation" warning. So the queues go with
+    /// the systems they name.
+    #[test]
+    fn a_clear_empties_the_pending_queues() {
+        use crate::systems::PendingEvictions;
+        use crate::systems::spawn::PendingSpawns;
+        use std::time::Instant;
+
+        let mut app = sky(3);
+        let doomed = app
+            .world_mut()
+            .query_filtered::<Entity, With<System>>()
+            .iter(app.world())
+            .next()
+            .expect("a system to mark for eviction");
+        app.world_mut().resource_mut::<PendingEvictions>().0.insert(doomed);
+        app.world_mut().resource_mut::<PendingSpawns>().push(
+            system(9),
+            false,
+            Instant::now(),
+        );
+
+        clear(&mut app);
+
+        assert!(
+            app.world().resource::<PendingEvictions>().0.is_empty(),
+            "a clear left an eviction queued for a system it despawned"
+        );
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            0,
+            "a clear left a spawn queued from before it"
         );
     }
 }

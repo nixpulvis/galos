@@ -16,22 +16,29 @@
 //!
 //! # What is here and what is not
 //!
-//! [`crate::ruled`] draws all of it: the lines, the numbers painted along
-//! them, the crosses that mark a place worth locating, the lines dropped to
-//! the plane and the three numbers about each of those places. It also works
-//! out how wide a cell is for a view of a given width, how far apart to put
-//! the numbers, and what each of them is called. None of that names a length.
+//! `crate::ruled` draws the plane itself: its lines, and the numbers
+//! painted over and over along them, the whole of it in one shader pass. It
+//! also works out how wide a cell is for a view of a given width, how far
+//! apart to put the numbers, and what each of them is called. None of that
+//! names a length.
 //!
-//! What is here is which unit a space is measured in, where the ruler changes
-//! hands as the camera descends into a system, how loudly the whole of it is
-//! drawn, and what is worth locating. Questions about a galaxy rather than
-//! about a ruler.
+//! Everything standing over the plane is painted here, by `draw_readouts`:
+//! the crosses that mark a place worth locating, the lines dropped to the
+//! plane, and the three numbers about each of those places. Flat on the
+//! screen, projected on the processor in `f64`, because a text mesh out at a
+//! system's galaxy coordinate jitters where a projected point holds steady —
+//! see `draw_readouts` below and `docs/night-sky.md`.
+//!
+//! And here too are the questions about a galaxy rather than about a ruler:
+//! which unit a space is measured in, where the ruler changes hands as the
+//! camera descends into a system, how loudly the whole of it is drawn, and
+//! what is worth locating.
 //!
 //! # Two planes, and what stands between them
 //!
 //! One hangs in the galaxy's grid and one inside whatever system the camera
 //! has descended into, because how finely a plane may be ruled follows the
-//! grid it hangs in — see [`ruled::finest`]. The galaxy's cells are `2^53`
+//! grid it hangs in — see `ruled::finest`. The galaxy's cells are `2^53`
 //! metres and bottom out around a light second; a system's are a metre and
 //! bottom out well below anything worth drawing.
 //!
@@ -52,15 +59,17 @@ use crate::camera::OrbitCamera;
 use crate::ruled::{
     self, Decade, DistanceUnit, EDGE_ON, FIGURES_ACROSS, Family, INK, Located,
     NUMBERED, Number, Numbered, Painted, Plane, Reading, RuledPlugin, drawn_at,
-    numbering, ruling, snapped_to, ticked,
+    faded, numbering, off_plane, ruling, snapped_to, ticked, told,
 };
 use crate::schedule::MapSet;
 use crate::space::{self, Map};
 use crate::systems::System;
-use crate::systems::bodies::spawn::{Body, Strength};
+use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
+use crate::systems::labels::{annotations_layer, color32, screen_offset};
 use crate::systems::selection::Selected;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use big_space::prelude::*;
 
 pub fn plugin(app: &mut App) {
@@ -68,10 +77,7 @@ pub fn plugin(app: &mut App) {
     // name on the map is drawn in: a number on the plane and a number in the
     // bar are then the one typeface.
     app.add_plugins(RuledPlugin {
-        face: ruled::Face {
-            bytes: epaint_default_fonts::HACK_REGULAR,
-            family: "Hack",
-        },
+        face: ruled::Face { bytes: epaint_default_fonts::HACK_REGULAR },
     });
     app.insert_resource(ShowGrid(true));
     app.insert_resource(ShowMiddle(true));
@@ -79,6 +85,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<Bright>();
     app.init_resource::<RulerUnit>();
     app.init_resource::<RuledSystem>();
+    app.init_resource::<Handover>();
     // After the map itself, which is what the galaxy's planes hang from. The
     // resource naming it is inserted through a command, so it is not there to
     // be read until the schedule that queued it has ended.
@@ -86,17 +93,40 @@ pub fn plugin(app: &mut App) {
     // In `Present`, which runs after `Camera` has settled where the camera is
     // standing. Everything here is worked out from that and nothing else.
     //
-    // In `ruled::Ruling`, which is what everything the module draws over a
-    // plane runs after: the reading written here is what it all reads.
+    // Nothing else in `Update` orders against it. The one thing that reads
+    // the reading written here is [`draw_readouts`], and that runs in
+    // `EguiPrimaryContextPass`, a schedule later in the same frame.
+    app.add_systems(Update, (rule, mark_out).in_set(MapSet::Present));
+    // Flat on the screen, in egui's own pass, under the chrome and over the
+    // map — the same layer and the same reason the names and rings are drawn
+    // there.
+    //
+    // First of the four painters writing into that one shared layer
+    // ([`crate::systems::labels::annotations_layer`]), where paint order is
+    // stacking order and so run order is what decides which mark ends up on
+    // top. The readouts are the plane's own ruling, the substrate the map is
+    // read against rather than anything picked out on it, so they go under
+    // the marks and under the names: a dropline or a readout row painted
+    // over a name's ground would cross the words the map is read by. Left to
+    // the executor the stacking would be whichever painter it happened to
+    // reach first, which is why the whole of it is spelled out here.
+    //
+    // Before the lettering as well, which is what registers the annotation
+    // layer beneath the panes: the lettering leads the chrome (see
+    // [`crate::ui`]), so before it is before all of that.
     app.add_systems(
-        Update,
-        (rule, mark_out).in_set(MapSet::Present).in_set(ruled::Ruling),
+        EguiPrimaryContextPass,
+        draw_readouts
+            .before(crate::systems::pointing::ring)
+            .before(crate::systems::selection::ring)
+            .before(crate::systems::labels::draw_names)
+            .before(crate::ui::lettering),
     );
 }
 
 /// Whether the ruled plane is drawn
 #[derive(Resource)]
-pub struct ShowGrid(pub bool);
+pub(crate) struct ShowGrid(pub(crate) bool);
 
 /// Whether the place the camera is looking at is marked at the middle of the
 /// view
@@ -104,7 +134,7 @@ pub struct ShowGrid(pub bool);
 /// The plane's own numbers say where its lines are; this says where the view is,
 /// which is the one of the three a line cannot carry.
 #[derive(Resource)]
-pub struct ShowMiddle(pub bool);
+pub(crate) struct ShowMiddle(pub(crate) bool);
 
 /// How strongly the ruling is drawn, against what the map settles on for it
 ///
@@ -117,7 +147,7 @@ pub struct ShowMiddle(pub bool);
 /// over it. They are one thing seen at once, and a ruler whose lines dimmed
 /// while its numbers did not would read as two.
 #[derive(Resource)]
-pub struct Bright(pub f32);
+pub(crate) struct Bright(pub(crate) f32);
 
 impl Default for Bright {
     /// Half of the brightest it goes
@@ -137,7 +167,7 @@ impl Default for Bright {
 /// one mark wherever the camera goes, and this is one for everything selected,
 /// which is as busy as the selection is.
 #[derive(Resource)]
-pub struct ShowPicked(pub bool);
+pub(crate) struct ShowPicked(pub(crate) bool);
 
 /// How much coarser than a grid can place it a plane is actually ruled
 ///
@@ -170,6 +200,45 @@ const FADE_BEYOND: f64 = 6.;
 /// than as more of the sky. Every star on the map is warmer than this.
 const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
 
+/// How tall a readout's numbers are drawn, in logical pixels
+///
+/// A touch under the names ([`crate::systems::labels::NAME_HEIGHT`]) and the
+/// chrome's smallest lettering, so a coordinate sits nearer the size of the
+/// numbers painted along the grid it is read against rather than standing over
+/// them.
+const READS: f32 = 10.5;
+
+/// How far below a mark its three numbers hang, in pixels
+///
+/// Below rather than above, so the number is read against clear screen rather
+/// than into the mark it is about.
+const LIFT: f32 = 32.;
+
+/// How far beside a dropped line its offset stands, in pixels
+const ASIDE: f32 = 6.;
+
+/// How long each arm of a cross marking a place is, in pixels
+const CROSS: f32 = 6.;
+
+/// How wide a dropped line is painted, in logical pixels
+///
+/// Bolder than a hairline so it reads as one of the plane's ruling lines rather
+/// than a scratch. Painted flat, so it holds that weight at every zoom.
+const LINE_STROKE: f32 = 2.;
+
+/// And how wide a cross marking a place is
+const MARK_STROKE: f32 = 1.5;
+
+/// How near a dropped line's numbers may come to the middle's before they give
+/// way, in pixels
+///
+/// A row is three numbers with a power, a unit and two commas — some forty
+/// characters of a [`READS`] tall monospaced face centred on its place, running
+/// about ninety five either side and half a line above and below. Two rows
+/// nearer than that are written through each other and neither can be read, and
+/// of the pair the middle is the one kept.
+const CROWDS: Vec2 = Vec2::new(96., 10.);
+
 /// Everything one of the map's planes is written through
 ///
 /// Where it hangs, how it is ruled, what its crossings are called, what can be
@@ -192,9 +261,9 @@ type PlaneParts = (
 /// written onto the one plane the two share an origin and an altitude by
 /// construction rather than by two placements agreeing.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-struct Ruler {
+pub(crate) struct Ruler {
     /// Ruled in a system's own grid rather than in the galaxy's
-    inside: bool,
+    pub(crate) inside: bool,
 }
 
 /// Which system the planes ruled in light seconds are hanging in
@@ -231,7 +300,7 @@ fn finest(unit: DistanceUnit, grid: &Grid) -> f64 {
 /// a system. Pinned either way from the bar, for reading a system's distances
 /// in light years or a neighbourhood's in light seconds.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RulerUnit {
+pub(crate) enum RulerUnit {
     #[default]
     Automatic,
     LightYears,
@@ -272,18 +341,129 @@ fn unit_for(own: DistanceUnit, asked: RulerUnit) -> DistanceUnit {
 /// How much of the galaxy's ruling is drawn, and how much of a system's, as
 /// the map hands one to the other
 ///
-/// Disjoint. The one is spent before the other begins, so that two rulings
-/// which share no cell size are never on screen together, and between them is
-/// a moment with nothing ruled at all.
+/// Never both. The two share no cell size — a light year is `3.15576e7` light
+/// seconds, so nothing in one lattice falls on anything in the other — and two
+/// of them on screen together is two rulings that disagree, with two sets of
+/// numbers written over each other.
 ///
-/// `standing` is how much of a mark the held system is left standing at, which
-/// is what the map fades its contents in against. Following it means the ruler
-/// changes hands on the same figure the sky does.
+/// Never nothing either. What changes hands is the *contrast* rather than
+/// which of them is there: over [`CUTOVER`] either side of the middle the
+/// ruling that has the sky dims toward [`DIMMEST`], and the other picks up
+/// from there. So the swap happens where a ruling is faint enough that
+/// swapping it does not read as one, and the sky is never bare.
+///
+/// Three ways round this were tried against the map. Spending the whole band
+/// on a disjoint fade left the sky ruled at a fraction of nothing for several
+/// light years of panning out of a wide system — reported as the grid
+/// disappearing. Spending a twentieth of it left the two rulings swapping in a
+/// blink — reported as no fade at all. Crossfading them complementary put both
+/// lattices and both readouts on the sky at once — reported, fairly, as worse
+/// than either.
+///
+/// `standing` is how much of the mark standing for the system is left: whole
+/// for the galaxy's ruling, nothing for the system's. The middle is where it
+/// changes hands, and the tie goes to the galaxy, so there is no `standing` at
+/// which both are drawn.
 fn handover(standing: f32) -> (f32, f32) {
-    (
-        ((standing - 0.5) * 2.).clamp(0., 1.),
-        ((0.5 - standing) * 2.).clamp(0., 1.),
-    )
+    let through = ((standing - 0.5).abs() / CUTOVER).clamp(0., 1.);
+    let strength = DIMMEST + (1. - DIMMEST) * through;
+
+    if standing >= 0.5 { (strength, 0.) } else { (0., strength) }
+}
+
+/// How much of the handover either side of the middle is spent dimming
+///
+/// A tenth, so the ruling comes down to [`DIMMEST`] over a fifth of the band
+/// and stands whole over the rest of the one it is the right ruling for. The
+/// band is the mark's, which is an angle: a fifth of it is about a light year
+/// and three quarters of panning for the widest system on record, and some
+/// eighty astronomical units for one with nothing on record. Both are about a
+/// second of moving at the pace the thing is looked at.
+const CUTOVER: f32 = 0.1;
+
+/// How faint a ruling is where it changes hands
+///
+/// The one figure the swap is hidden behind. Low enough that a lattice
+/// replaced by another lattice at this strength reads as the ruling changing
+/// rather than as the sky flicking over — the lines are a suggestion here, not
+/// a grid to read a number off — and high enough that the sky is never bare,
+/// which is what a fade to nothing and back looked like.
+const DIMMEST: f32 = 0.3;
+
+/// How much of the galaxy's ruling the map wants, from one to nothing
+///
+/// `standing` is how much of the mark standing for the system is left
+/// ([`Strength`]) and `carried` how much of a ruling the galaxy's own ladder
+/// can lay at this zoom ([`rulable`]).
+///
+/// The mark decides it. A mark stands for a system while the system is too
+/// small to be drawn as itself and gives way as it is: it is gone exactly
+/// where the thing it stood in for has taken over the sky, and that is where
+/// the sky becomes the system's to rule. Measured with the diagnostics panel
+/// open, the old boundary — a fixed sphere the width of the narrowest
+/// system's own shell — left Alpha Centauri reading `mark 0.00 left` beside
+/// `ruler 1.00 out`: the mark wholly given way to nineteen drawn bodies, and
+/// still galactic coordinates over them.
+///
+/// Only the system the map is holding ever has a mark that goes out (see
+/// `fade` in `systems::bodies::spawn`), so a wide neighbour whose own
+/// measure would have its mark nearly gone from four light years off cannot
+/// take the ruler while the camera stands somewhere else.
+///
+/// Held back, while the camera is inside the system, by what the galaxy can
+/// actually draw: where its ladder is under its floor there is nothing to hand
+/// back to, so the system keeps the sky however whole its mark has become.
+///
+/// `stood_in` is what bounds that, and it has to. A camera panning outward at
+/// close zoom leaves the galaxy's ladder under its floor the whole way, so the
+/// clamp held the sky at the system's ruling however far the camera went —
+/// numbers in light seconds about a point light years behind it, and no way
+/// back short of zooming out. Inside the system its plane is the better of the
+/// two whatever the galaxy can manage; outside it, it is not a plane the
+/// camera is anywhere near, and the mark alone decides. See [`rule`].
+fn wants_ruling(standing: f32, carried: f32, stood_in: bool) -> f32 {
+    let wants = standing.clamp(0., 1.);
+
+    if stood_in { wants.min(carried) } else { wants }
+}
+
+/// How long the ruler takes to change hands at the least, in seconds
+///
+/// The mark goes out over a band of distance, so a camera crossing that band
+/// at a pace fades at that pace and needs nothing here. What this is for is a
+/// camera that does not cross it at all: a search
+/// flown to lands the eye inside a system in one frame, and the grid a plane
+/// is ruled in comes and goes with the rows, so the share can still be asked
+/// to step. Eased, a step becomes a fade of this long however it was arrived
+/// at.
+///
+/// The same half second the mark standing for a system is bounded to
+/// ([`crate::systems::bodies::spawn::GOES_OUT_IN`]), so where the two are both
+/// moving they move together.
+const HANDS_OVER_IN: f32 = 0.5;
+
+/// How much of the way the ruler has changed hands
+///
+/// Eased toward what [`wants_ruling`] asks by [`rule`], at [`HANDS_OVER_IN`].
+/// Whole is the galaxy's ruling, as a map with no system descended into is.
+///
+/// Read by [`crate::dev`], which says what the ruler is doing.
+#[derive(Resource)]
+pub(crate) struct Handover(pub(crate) f32);
+
+impl Default for Handover {
+    fn default() -> Self {
+        Handover(1.)
+    }
+}
+
+/// The share, a step nearer what is asked of it
+///
+/// Bounded, so however far the answer has jumped — or gone away with the
+/// system it was about, leaving the galaxy's ruling asked for outright — the
+/// ruler changes hands at a pace rather than at once.
+fn handed_over(standing: f32, asked: f32, step: f32) -> f32 {
+    standing + (asked - standing).clamp(-step, step)
 }
 
 /// Create the two planes ruled in light years
@@ -336,9 +516,6 @@ struct Placement<'a> {
     step: f64,
     /// How much of this space is on screen, in [`Placement::unit`]
     across: f64,
-    /// Where the camera is, in [`Placement::unit`] and measured from whatever
-    /// the space is measured from
-    eye: DVec3,
     /// How far its ruling reaches before it has faded out, in metres
     reach: f64,
     /// How much of this space's ruling is drawn, as the descent hands the map
@@ -356,7 +533,6 @@ impl Placement<'_> {
     fn reading(&self, middle: bool, bright: f32) -> Reading {
         Reading {
             at: self.at,
-            eye: self.eye,
             step: self.step,
             unit: self.unit,
             strength: self.showing(),
@@ -394,14 +570,213 @@ fn mark_out(
     let wanted = showing.0 && picked_out.0;
     if wanted {
         for entity in &fresh {
-            commands.entity(entity).insert(Located);
+            // `try_` because the evictor may despawn a marked system between
+            // this query and the command landing: the mark is then moot, not
+            // an error worth a warning per frame.
+            commands.entity(entity).try_insert(Located);
         }
     }
     for entity in &marked {
         if !wanted || picked.get(entity).is_err() {
-            commands.entity(entity).remove::<Located>();
+            commands.entity(entity).try_remove::<Located>();
         }
     }
+}
+
+/// Paint the numbers standing over the planes, flat on the screen
+///
+/// The place the camera is looking at, and each thing picked out: the three
+/// numbers the plane says about it, a cross where it meets the plane, and — for
+/// a thing off the plane — a line dropped to it with how far off it went beside
+/// it.
+///
+/// Painted in screen space, projected on the processor in `f64`, rather than
+/// drawn as text meshes out at a system's galaxy coordinate. A mesh there is
+/// transformed by an f32 clip transform that resolves only to the grid's cell
+/// over `2^24` — some light seconds — so it jitters by many pixels as the
+/// floating origin recenters, once the camera is zoomed inside that step and
+/// before it has descended onto a system's own metre grid. A single point
+/// projected in `f64` from the camera and the thing's true position is steady
+/// to well under a pixel at any zoom. The same reason the names, rings and
+/// leaders are drawn flat; see [`crate::systems::labels::draw_names`] and
+/// `docs/night-sky.md`.
+///
+/// What it gives up by leaving the scene is being tonemapped with the plane and
+/// hidden behind whatever galaxy stands in front of it. A readout is chrome
+/// laid over the map, the same as a name, and reads as one.
+pub(crate) fn draw_readouts(
+    mut contexts: EguiContexts,
+    camera: Query<(&OrbitCamera, &Camera)>,
+    planes: Query<(&Ruler, &Plane, &Reading)>,
+    // Picked-out systems, placed against the galaxy plane by their true `f64`
+    // position rather than an f32 grid remainder, which is the whole of the
+    // fix. Their `Visibility` is the one [`crate::systems::visibility`] wrote
+    // this frame, which is the component
+    // [`crate::systems::selection::ring`] asks as well: one question, one
+    // answer, and the two agree on the frame a system is put away.
+    systems: Query<(&System, &Visibility), (With<Selected>, With<Located>)>,
+    // And picked-out bodies, against a system's own plane. Read off the grid
+    // holding them, which is near the origin and so already exact.
+    //
+    // Asked nothing beyond existing, as [`crate::systems::pointing::hits`]
+    // asks nothing more. A body exists exactly while its system's contents
+    // are on the map, which is the same ground its name and its ring are
+    // granted on; being off the frame is answered by the projection giving
+    // nothing for what the camera cannot see. Gated on anything the render
+    // settles instead, a body picked out on the frame its system's contents
+    // are drawn gets its name, its ring and its clickable area but no
+    // readout, and the numbers arrive a frame after everything else.
+    bodies: Query<Entity, (With<Body>, With<Selected>, With<Located>)>,
+    places: Places,
+) -> Result {
+    let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
+    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
+    let cot = camera.clip_from_view().y_axis.y;
+
+    let ctx = contexts.ctx_mut()?;
+    let painter = ctx.layer_painter(annotations_layer());
+    let font = egui::FontId::new(READS, egui::FontFamily::Monospace);
+    let hue = Srgba::from(LINE);
+    // The plane hangs through what the camera looks at, so its altitude is the
+    // middle's own, in absolute light years.
+    let plane_y = orbit.center.y;
+
+    let project =
+        |place: DVec3| screen_offset(orbit, cot, viewport, place - orbit.eye);
+    let seg = |a: Vec2, b: Vec2, width: f32, color: egui::Color32| {
+        painter.line_segment(
+            [egui::pos2(a.x, a.y), egui::pos2(b.x, b.y)],
+            egui::Stroke::new(width, color),
+        );
+    };
+    // A cross laid in the plane along its own axes, so it lies on the grid and
+    // foreshortens with it rather than floating flat over the view. Its arms are
+    // sized in the world to draw about [`CROSS`] pixels at the depth the place
+    // lies at — measured into the view, not along the plane's own normal, or a
+    // plane seen face on would size its cross to nothing.
+    let cross = |at: DVec3, facing: Quat, color: egui::Color32| {
+        let ahead =
+            (at - orbit.eye).dot((orbit.rotation * Vec3::NEG_Z).as_dvec3());
+        if ahead <= 0. {
+            return;
+        }
+        let per_pixel = 2. * ahead / (cot as f64 * viewport.y as f64);
+        let arm = CROSS as f64 * per_pixel;
+        for axis in [Vec3::X, Vec3::Z] {
+            let along = (facing * axis).as_dvec3() * arm;
+            if let (Some(a), Some(b)) =
+                (project(at - along), project(at + along))
+            {
+                seg(a, b, MARK_STROKE, color);
+            }
+        }
+    };
+    let row = |at: Vec2, align, said: String, color: egui::Color32| {
+        painter.text(egui::pos2(at.x, at.y), align, said, font.clone(), color);
+    };
+
+    for (ruler, plane, reading) in &planes {
+        if reading.strength <= 0. {
+            continue;
+        }
+        let unit = reading.unit;
+        // How far a readout stands before it has faded into the plane's
+        // horizon. Read off the plane it is drawn over rather than worked out
+        // again from the zoom, so a dropline and the ruling under it fade on
+        // the one figure and cannot drift apart. [`Plane::reach`] is in
+        // metres, being a distance out through the world; everything here is
+        // in light years, so it is spoken into those once.
+        let reach = plane.reach / space::LIGHT_YEAR;
+        // Where this space is measured from, in absolute light years. The
+        // middle is said in the plane's unit out from here, so undoing that on
+        // the middle recovers it: nought for the galaxy, the star for a system.
+        let from =
+            orbit.center - reading.at * (unit.metres / space::LIGHT_YEAR);
+
+        // What a mark or a number `base` strong is drawn in, faded by how far
+        // toward the plane's horizon its place lies.
+        let inked = |place: DVec3, base: f32| {
+            drawn_at(base * faded(place - orbit.eye, reach), reading.bright)
+                * reading.strength
+        };
+        let tint = |place: DVec3, base: f32| {
+            color32(hue.with_alpha(inked(place, base).clamp(0., 1.)))
+        };
+        // A number stands over the lines to be read outright, so it is drawn
+        // half again the ink the plane paints its own numbers in.
+        let lettered = |place: DVec3, base: f32| {
+            color32(hue.with_alpha((inked(place, base) * 1.5).clamp(0., 1.)))
+        };
+
+        // The middle of the view: the three numbers of the place looked at,
+        // marked and hung below. Kept for the crowding test below either way.
+        let middle = reading.middle.then(|| project(orbit.center)).flatten();
+        if let Some(at) = middle {
+            cross(orbit.center, plane.facing, tint(orbit.center, INK));
+            row(
+                at + Vec2::new(0., LIFT),
+                egui::Align2::CENTER_CENTER,
+                format!("{} {}", told(reading.at, reading.step), unit.mark),
+                lettered(orbit.center, INK),
+            );
+        }
+
+        // Everything picked out in this plane's space: a line dropped to the
+        // plane, the three numbers under its foot, and how far off it went
+        // beside the line. Systems out in the galaxy; bodies inside a system.
+        // A system the map has put away is not there to be located, and a line
+        // dropped from where it would have stood is a line about nothing; a
+        // body is there to be located for as long as it is there at all.
+        let located: Vec<DVec3> = if ruler.inside {
+            bodies.iter().filter_map(|body| places.of(body)).collect()
+        } else {
+            systems
+                .iter()
+                .filter(|(_, shown)| **shown != Visibility::Hidden)
+                .map(|(system, _)| system.position())
+                .collect()
+        };
+        for place in located {
+            let foot_at = DVec3::new(place.x, plane_y, place.z);
+            let (Some(top), Some(foot)) = (project(place), project(foot_at))
+            else {
+                continue;
+            };
+            // The line, kept clearly visible as the connector to what is picked
+            // out, and a cross where it meets the plane.
+            seg(top, foot, LINE_STROKE, tint(foot_at, INK));
+            cross(foot_at, plane.facing, tint(foot_at, INK));
+
+            // Its three numbers under the foot, and how far off the plane it
+            // stands beside the line — unless they would be written through the
+            // middle's, of which the middle is the one kept.
+            let below = foot + Vec2::new(0., LIFT);
+            let crowds =
+                middle.is_some_and(|m| (below - m).abs().cmplt(CROWDS).all());
+            if !crowds {
+                let at_unit = (place - from) * space::LIGHT_YEAR / unit.metres;
+                row(
+                    below,
+                    egui::Align2::CENTER_CENTER,
+                    format!("{} {}", told(at_unit, reading.step), unit.mark),
+                    lettered(foot_at, INK),
+                );
+                if let Some(said) =
+                    off_plane(at_unit.y - reading.at.y, reading.step, unit)
+                {
+                    let mid = (top + foot) / 2. + Vec2::new(ASIDE, 0.);
+                    row(
+                        mid,
+                        egui::Align2::LEFT_CENTER,
+                        said,
+                        lettered(place, INK),
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Work out how to rule one space
@@ -454,13 +829,27 @@ fn placed<'a>(
         crossing,
         across,
         step,
-        eye: spoken(orbit.eye),
         // In metres, being a distance out through the world rather than a
         // distance across the plane. Past the far side of the view, so that
         // what fades is the horizon rather than what is looked at.
         reach: orbit.radius as f64 * space::LIGHT_YEAR * FADE_BEYOND,
         share,
     }
+}
+
+/// How much of a ruling `unit` can lay in `grid` with `across` light years of
+/// it on screen, from one to nothing
+///
+/// A ladder has a floor: a plane cannot be ruled finer than the grid holding
+/// it can place it (see [`finest`]), and below that the ruling fades out
+/// rather than going on swimming. So the galaxy's own grid, whose cells are
+/// light years, has nothing to rule with once the view is a few astronomical
+/// units across — the zoom the camera reaches inside a system, where only the
+/// system's own metre-fine grid can carry a ruling.
+///
+/// Which is what bounds the handover: see [`rule`].
+fn rulable(unit: DistanceUnit, grid: &Grid, across: f64) -> f32 {
+    ruling(across * space::LIGHT_YEAR / unit.metres, finest(unit, grid)).drawn
 }
 
 /// Rule the planes, place them under the camera, and say what they are called
@@ -472,16 +861,25 @@ fn rule(
     showing: Res<ShowGrid>,
     bright: Res<Bright>,
     cameras: Query<(&OrbitCamera, Option<&Projection>)>,
-    // The system the camera has descended into, if it has. It is the one
+    // The system the map is standing in, if there is one. It is the one
     // carrying a grid of its own, which it does only while its contents are
     // drawn. Its cells are a metre, which is what lets a plane be ruled in
-    // light seconds at all.
-    inside: Query<(Entity, &System, &Grid), Without<BigSpace>>,
-    marks: Query<&Strength>,
+    // light seconds at all, and its `Strength` — how much of the mark
+    // standing for it is left — is what the two planes change hands on.
+    inside: Query<(Entity, &System, &Grid, &Strength), Without<BigSpace>>,
+    // Which of those the map is holding, which is the only one whose mark is
+    // still being stepped: [`crate::systems::bodies::spawn::fade`] leaves
+    // every other mark where it stands, so a system the camera has left
+    // behind keeps whatever share it had at the moment it was let go of —
+    // nothing, in the case of one the camera was inside — and would hold the
+    // ruler on a plane nobody is standing in.
+    holding: Res<HeldSystem>,
     outside: Query<&Grid, With<BigSpace>>,
     mut planes: Query<PlaneParts>,
     asked: Res<RulerUnit>,
     middle: Res<ShowMiddle>,
+    time: Res<Time<Real>>,
+    mut changing: ResMut<Handover>,
     mut descended: ResMut<RuledSystem>,
     mut commands: Commands,
 ) {
@@ -489,12 +887,20 @@ fn rule(
     // Made and unmade here rather than placed, since a plane is placed by the
     // grid on its parent and there is no way to change that but to be a child
     // of something else.
-    let wanted = inside.iter().next().map(|(entity, _, _)| entity);
+    let wanted = inside
+        .iter()
+        .find(|(entity, ..)| Some(*entity) == holding.of())
+        .map(|(entity, ..)| entity);
     let settling = descended.0 != wanted;
     if settling {
         for (entity, plane, ..) in &planes {
             if plane.inside {
-                commands.entity(entity).despawn();
+                // Tried rather than told. A plane ruled inside a system is a
+                // child of it, so the frame the spyglass sweeps that system
+                // away takes the plane with it, and this would be the second
+                // despawn of an entity whose index has since been handed out
+                // again.
+                commands.entity(entity).try_despawn();
             }
         }
         if let Some(parent) = wanted {
@@ -521,17 +927,57 @@ fn rule(
         None => (0., None),
     };
 
-    // The one is spent before the other begins, so that two ladders which
-    // share no cell size are never on screen together. They change hands as
-    // the mark standing for the held system goes out, on the very figure that
-    // fade is drawn from.
+    // How much of the mark standing for the system is left is what the two
+    // planes change hands on: as the mark gives way to the system drawn in its
+    // place the galaxy plane gives way to the one ruled in the system's own
+    // grid, and as the mark comes back so does the galaxy's. The mark and the
+    // ruler are one thing happening — a mark is the system stood in for, and a
+    // sky ruled about the system is the system stood in — which is what
+    // [`crate::systems::bodies::spawn::fade`] says the fade is for.
     //
-    // Whichever mark is furthest out, rather than the one over the system
-    // whose plane is up. Only the system being drawn ever goes out, so the two
-    // are the same but for the moment the map changes hands: there the one
-    // just let go of carries the ruler back as its mark comes in, rather than
-    // the sky changing hands twice.
-    let standing = marks.iter().map(|mark| mark.0).fold(1., f32::min);
+    // Only the one system the map is holding ever has a mark that goes out
+    // (see [`crate::systems::bodies::spawn::fade`]), so a wide neighbour whose
+    // own measure would have its mark nearly gone from four light years away
+    // cannot take the ruler while the camera stands somewhere else.
+    //
+    // Whole where there is no system to be inside of, which is a map out among
+    // the stars — and also the frame the poll hands the rows to a nearer
+    // system and the grid goes with them. That last can be a step, so the
+    // share is eased rather than taken; see [`HANDS_OVER_IN`].
+    //
+    // And held back, while the camera is inside the system, by what the galaxy
+    // can rule at this zoom. Its ladder has a floor — a plane ruled finer than
+    // the galaxy grid can place it swims, so below that it fades out (see
+    // [`rulable`]) — and the camera reaches zooms inside a system that are far
+    // under it. Handing over there rules the sky in nothing at all: the
+    // system's plane is switched off by the share and the galaxy's has no
+    // lines to draw. So inside the system the handover goes no further than
+    // the galaxy's own ladder can carry it, and a camera zooming out keeps the
+    // ruling that can be drawn until the zoom can carry the other.
+    //
+    // Only inside. Panning outward at close zoom leaves that ladder under its
+    // floor the whole way, and the clamp then held the sky at the system's
+    // ruling however far the camera went. See [`wants_ruling`].
+    let carried = outside.single().ok().map_or(0., |grid| {
+        rulable(unit_for(LIGHT_YEARS, *asked), grid, across)
+    });
+    let wants = wanted
+        .and_then(|entity| inside.get(entity).ok())
+        .map(|(_, system, _, standing)| {
+            let away = orbit.map_or(f32::INFINITY, |orbit| {
+                space::metres(orbit.eye - system.position()).length() as f32
+            });
+            let stood_in =
+                away <= crate::systems::scale::drawn_shell(system.reach());
+
+            wants_ruling(standing.0, carried, stood_in)
+        })
+        .unwrap_or(1.);
+    let step = time.delta_secs() / HANDS_OVER_IN;
+    let standing = handed_over(changing.0, wants, step);
+    if changing.0 != standing {
+        changing.0 = standing;
+    }
     let (out_there, down_here) = handover(standing);
 
     let galaxy = lit
@@ -550,11 +996,11 @@ fn rule(
             )
         });
     let within = lit
-        .then(|| inside.iter().next())
+        .then(|| wanted.and_then(|entity| inside.get(entity).ok()))
         .flatten()
         .zip(orbit)
         .filter(|_| down_here > 0.)
-        .map(|((_, system, grid), orbit)| {
+        .map(|((_, system, grid, _), orbit)| {
             placed(
                 unit_for(LIGHT_SECONDS, *asked),
                 grid,
@@ -590,7 +1036,12 @@ fn rule(
             reading.strength = 0.;
             continue;
         };
-        visible.set_if_neq(Visibility::Inherited);
+        // Said outright rather than inherited. A plane ruled inside a system
+        // is a child of that system so its grid places it, and nothing more:
+        // left to inherit, the ruling went dark whenever the spyglass stopped
+        // reaching the star it hangs from, which is a pan away from a system
+        // the camera is still standing near.
+        visible.set_if_neq(Visibility::Visible);
         // What the ruling comes to, for everything drawn over it to read. Only
         // ever one plane at a time carries one worth anything, the handover
         // having no overlap in it.
@@ -665,74 +1116,233 @@ mod tests {
     use super::*;
     use crate::ruled::ladder::tests::zooms;
     use crate::systems::bodies::STAND_IN;
-    use crate::systems::bodies::spawn::standing_for;
 
-    /// The two spaces are never ruled at the same time
+    /// Only one of the two spaces is ever ruled, and one of them always is
     ///
-    /// A light year is `3.15576e7` light seconds, so the two ladders share no
-    /// cell size at any zoom and two rulings at once are two rulings that
-    /// disagree. The handover is disjoint rather than a crossfade, which is
-    /// what this says and the only thing that makes it so.
+    /// Both halves reported, from three tries at the same crossing. The two
+    /// ladders share no cell size at any zoom, so two rulings at once are two
+    /// rulings that disagree with two sets of numbers over each other — and a
+    /// handover that fades one out before the other comes in leaves the sky
+    /// bare in the middle. What changes hands is the contrast: whichever has
+    /// the sky dims toward [`DIMMEST`] and the other picks up from there.
     #[test]
-    fn only_one_space_is_ever_ruled() {
+    fn one_space_is_ruled_and_only_one() {
         for step in 0..=200 {
             let through = step as f32 / 200.;
             let (out, down) = handover(through);
+
             assert!(
                 out == 0. || down == 0.,
                 "{through} of the way out drew the galaxy at {out} \
                  and a system at {down}"
             );
+            assert!(
+                out.max(down) >= DIMMEST,
+                "{through} of the way out left the sky ruled at \
+                 {}",
+                out.max(down)
+            );
         }
     }
 
-    /// And between them the sky is unruled, which is the price of that
+    /// And the swap happens where the ruling is faint, not where it is whole
+    ///
+    /// Which is the whole of how a lattice is replaced by one that shares no
+    /// line with it without the sky reading as flicking over. Whole a cutover
+    /// out on either side, [`DIMMEST`] at the middle, and one way about all
+    /// the way.
     #[test]
-    fn the_handover_passes_through_nothing() {
-        assert_eq!(handover(0.5), (0., 0.));
-        // Either side of it, one of them has the sky.
-        assert_eq!(handover(1.).0, 1.);
-        assert_eq!(handover(0.).1, 1.);
+    fn the_ruler_changes_hands_at_its_faintest() {
+        assert_eq!(handover(1.), (1., 0.));
+        assert_eq!(handover(0.), (0., 1.));
+        // A hair inside the cutover, the arithmetic of `0.5 - CUTOVER` not
+        // landing on it exactly in a float.
+        let whole = 0.5 + CUTOVER * 1.01;
+        assert_eq!(handover(whole), (1., 0.), "the galaxy came short");
+        assert_eq!(handover(1. - whole), (0., 1.), "the system came short");
+
+        // Either side of the middle, both at their faintest and one of them
+        // dark: the swap costs the difference between `DIMMEST` and nothing.
+        assert_eq!(handover(0.5), (DIMMEST, 0.));
+        let (out, down) = handover(0.5 - f32::EPSILON);
+        assert_eq!(out, 0., "both were drawn a hair under the middle");
+        assert!(
+            (down - DIMMEST).abs() < 1e-4,
+            "the swap was at {down} rather than at {DIMMEST}"
+        );
+
+        assert!(
+            DIMMEST > 0. && DIMMEST < 0.5,
+            "{DIMMEST} is not a faint ruling"
+        );
+        assert!(
+            CUTOVER <= 0.25,
+            "the dimming takes {CUTOVER} of the band either side, which is \
+             most of it"
+        );
+
+        // Whichever has the sky only ever brightens away from the middle, so
+        // a camera crossing at a pace sees one ruling give way to the other
+        // rather than the two trading.
+        for step in 0..100 {
+            let nearer = 0.5 + step as f32 / 400.;
+            let further = 0.5 + (step + 1) as f32 / 400.;
+            assert!(
+                handover(further).0 >= handover(nearer).0,
+                "the galaxy dimmed on its way out at {further}"
+            );
+            assert!(
+                handover(1. - further).1 >= handover(1. - nearer).1,
+                "the system dimmed on its way in at {further}"
+            );
+        }
     }
 
-    /// The ruler changes hands as the mark standing for a system goes out
+    /// A system the camera has panned away from does not keep the ruler
     ///
-    /// The two are read off the one figure, so the sky and the ruler under it
-    /// say the same thing at the same moment: the mark gives way to the system
-    /// it stood for, and light years give way to light seconds.
+    /// The other half of the same report: the grid did not come back. Panning
+    /// outward at close zoom leaves the galaxy's ladder under its floor the
+    /// whole way, so the clamp that keeps a system's ruling where the galaxy
+    /// has none held the sky at that system's plane however far the camera
+    /// went — light seconds counted about a point light years behind it, with
+    /// no way back short of zooming out. The clamp holds only while the camera
+    /// is inside the system it belongs to.
+    #[test]
+    fn a_system_panned_away_from_does_not_keep_a_ruling() {
+        // The galaxy can rule nothing at this zoom, and the mark standing for
+        // the system has come whole back.
+        assert_eq!(
+            wants_ruling(1., 0., true),
+            0.,
+            "the system gave up a ruling the galaxy could not take"
+        );
+        assert_eq!(
+            wants_ruling(1., 0., false),
+            1.,
+            "a system the camera had left behind kept the ruler"
+        );
+        // And inside it the mark still decides, the clamp only ever holding
+        // the galaxy off.
+        assert_eq!(wants_ruling(0., 1., true), 0.);
+        assert_eq!(wants_ruling(1., 1., true), 1.);
+    }
+
+    /// The ruler changes hands as the mark standing for the system goes out
+    ///
+    /// The reported trouble, measured with the diagnostics panel open: inside
+    /// Alpha Centauri, nineteen of its bodies drawn, the panel read `mark 0.00
+    /// left` beside `ruler 1.00 out` — the mark wholly given way to the system
+    /// drawn in its place, and galactic coordinates still written over it.
+    ///
+    /// The share was a fixed sphere about a thousand astronomical units wide,
+    /// which is `STAND_IN / WORTH_DRAWING`: where the *narrowest* system's
+    /// insides are drawn. Every wider system therefore kept the galaxy's
+    /// ruling well inside itself, Alpha Centauri for another two and a half
+    /// decades of zoom. A mark is an angle scaled by how far the system
+    /// reaches, so read off the mark the two agree for every system however
+    /// wide it is.
     #[test]
     fn the_ruler_changes_hands_as_the_mark_goes_out() {
-        // A system of the middling sort, at the origin.
-        let system = crate::systems::tests::reaching(1, 0., STAND_IN);
-        let from = |ly: f64| standing_for(&system, DVec3::new(ly, 0., 0.));
+        use crate::systems::bodies::spawn::{
+            WORTH_HIDING, WORTH_KEEPING, standing_for,
+        };
 
-        // Out where the mark is whole, and in where it has gone.
-        assert_eq!(handover(from(0.02)), (1., 0.));
-        assert_eq!(handover(from(0.001)), (0., 1.));
-        // And through the middle of the fade, next to nothing of either.
-        let (out, down) = handover(from(0.00507));
-        assert!(
-            out < 0.01 && down < 0.01,
-            "the middle of the fade drew the galaxy at {out} \
-             and a system at {down}"
+        // A fifth of a light year, and a system with nothing on record: the
+        // widest and the narrowest the map draws.
+        for reach in [2.1e15_f32, STAND_IN] {
+            let system = crate::systems::tests::reaching(1, 0., reach);
+            // The eye stood off where the system subtends `seen` radians.
+            let at = |seen: f32| {
+                let away = f64::from(reach / seen) / space::LIGHT_YEAR;
+                let eye = system.position() + DVec3::new(away, 0., 0.);
+                let away =
+                    space::metres(eye - system.position()).length() as f32;
+                let stood_in =
+                    away <= crate::systems::scale::drawn_shell(reach);
+                handover(wants_ruling(standing_for(&system, eye), 1., stood_in))
+            };
+
+            // Under the band the mark fades over, so the mark stands whole and
+            // the galaxy has the whole sky.
+            assert_eq!(
+                at(WORTH_KEEPING),
+                (1., 0.),
+                "a system reaching {reach} m took the sky while its mark \
+                 still stood whole"
+            );
+            // And past the far end of it, where there is no mark left: the
+            // reported case, `mark 0.00 left` with the ruler still out.
+            assert_eq!(
+                at(WORTH_HIDING * 2.),
+                (0., 1.),
+                "a system reaching {reach} m left the galaxy's ruling over \
+                 its own drawn bodies"
+            );
+        }
+    }
+
+    /// And the ruler is not handed over past what the galaxy can rule
+    ///
+    /// The reported trouble with the mark alone: panning out of a system at
+    /// close zoom takes the mark back while the galaxy's own ladder is below
+    /// its floor, so the system's plane would be switched off by the share and
+    /// the galaxy's would have no lines to draw — the grid vanishing outright
+    /// rather than changing hands. The handover goes no further than the
+    /// galaxy's ladder can carry it, so what is drawn is always something.
+    #[test]
+    fn the_ruler_is_not_handed_over_past_what_the_galaxy_can_rule() {
+        let grid = crate::space::galaxy_grid();
+        let au = 1.495978707e11 / space::LIGHT_YEAR;
+
+        // A view a few astronomical units across, which is the zoom the camera
+        // reaches among a system's planets.
+        let close = 3. * au;
+        assert_eq!(
+            rulable(LIGHT_YEARS, &grid, close),
+            0.,
+            "the galaxy ruled a view {close} light years across"
+        );
+        assert_eq!(
+            wants_ruling(1., rulable(LIGHT_YEARS, &grid, close), true),
+            0.,
+            "a mark standing whole handed the ruler back anyway"
+        );
+
+        // And a view a hundredth of a light year across, which it can rule, so
+        // there the mark is left to decide.
+        let far = rulable(LIGHT_YEARS, &grid, 1e-2);
+        assert!(far > 0.);
+        assert_eq!(
+            wants_ruling(1., far, true),
+            1.,
+            "the mark was not left to it"
         );
     }
 
-    /// A wider system hands the ruler over from further off
+    /// And it changes hands at a pace even where it is asked for at once
     ///
-    /// Which is what makes it a question about the system rather than about
-    /// the camera, and the whole of what the shell drawn around a system is
-    /// worth to a ruler. Alpha Centauri reaches a fifth of a light year, so
-    /// its mark is gone and its plane has the sky from light years out; its
-    /// neighbours keep theirs until a hundredth of one.
+    /// The mark goes out over a band of distance, so a camera moving through
+    /// that band fades as it moves. What this is for is the camera that does
+    /// not move through it: a search flown to, or the frame the rows pass to a
+    /// nearer system and the grid goes with them, where the share can still be
+    /// asked to step.
     #[test]
-    fn a_wider_system_hands_the_ruler_over_from_further_off() {
-        let wide = crate::systems::tests::reaching(1, 0., 2.1e15);
-        let ordinary = crate::systems::tests::reaching(2, 0., STAND_IN);
-        let eye = DVec3::new(2., 0., 0.);
+    fn the_ruler_changes_hands_at_a_pace() {
+        let frames = 60.;
+        let step = (1. / frames) / HANDS_OVER_IN;
+        let after = handed_over(0., 1., step);
 
-        assert_eq!(handover(standing_for(&wide, eye)), (0., 1.));
-        assert_eq!(handover(standing_for(&ordinary, eye)), (1., 0.));
+        assert!(
+            handover(after).0 <= 0.,
+            "the galaxy's ruling arrived in one frame, at {after}"
+        );
+
+        // And it gets the whole way there, inside the time it is given.
+        let mut share = after;
+        for _ in 0..(frames * HANDS_OVER_IN) as usize {
+            share = handed_over(share, 1., step);
+        }
+        assert_eq!(share, 1., "the handover never finished");
     }
 
     /// Below the floor the ladder stops rather than going on
@@ -928,6 +1538,8 @@ mod tests {
         app.insert_resource(ShowMiddle(true));
         app.init_resource::<Bright>();
         app.init_resource::<RuledSystem>();
+        app.init_resource::<Handover>();
+        app.init_resource::<HeldSystem>();
 
         let map = app
             .world_mut()
@@ -989,7 +1601,7 @@ mod tests {
         let mut app = looking(100.);
 
         let (visible, cell, _) = ruled(&mut app);
-        assert_eq!(visible, Visibility::Inherited, "the plane was not drawn");
+        assert_eq!(visible, Visibility::Visible, "the plane was not drawn");
         // A hundred light years back takes in about thirty eight of them, so
         // the ladder lands on cells of one.
         assert!((cell - 1.).abs() < 1e-6, "ruled cells of {cell} light years");

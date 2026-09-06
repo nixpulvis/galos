@@ -9,6 +9,31 @@ DATABASE_URL postgresql://postgres@10.0.1.32/galos_development \
 cargo run --release
 ```
 
+## Documentation
+
+[`docs/galaxy.md`](./docs/galaxy.md) is the far field — everything outside the
+system the camera stands in. One spatial hierarchy over every system and
+everything reading it: the map's level of detail, the night sky's discrete
+stars, and the glow behind both. It is also the client's on-disk format, which
+is what lets the map draw the galaxy without a database.
+
+The near field — a system's own stars and planets at real geometry, and
+reaching them — is the code under [`src/systems/bodies`](./src/systems/bodies).
+The two meet in two places only, which `docs/galaxy.md` names under
+Coordination with the bodies work: the sizing law's context scalar, and the
+photometric scale the local star is lit by.
+
+[`docs/night-sky.md`](./docs/night-sky.md) is how any of it reaches the
+screen. A single float resolves one part in sixteen million of whatever it
+holds, and a star sits `1e17` metres out, so a mark or a name built as a mesh
+where its system actually is tears apart in the `f32` clip transform. So every
+mark and every note — the star field, the names and their leaders, the rings
+around what is pointed at and picked out, and the ruled plane's readouts — is
+projected to a pixel on the processor in `f64` and painted flat. The doc covers
+the precision floor that forces it, the three cameras and the order they draw
+in, the stacking inside the one layer they share, and the two bugs that come of
+answering a question about a projected thing in more than one place.
+
 ## Mouse
 
 | Gesture | What it does |

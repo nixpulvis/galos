@@ -29,19 +29,21 @@
 //! a typed name away.
 //!
 //! What the map knows about the selected system beyond its name is written
-//! out by [`super::info`], which the user asks for separately.
+//! out by [`mod@super::info`], which the user asks for separately.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::bodies::spawn::{Body, HeldSystem, Strength};
+use crate::systems::System;
+use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
+use crate::systems::labels::{color32, screen_position};
 use crate::systems::pointing::{
-    DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_POINTS,
+    DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_STROKE,
 };
-use crate::systems::{Spyglass, System};
 use crate::ui::Gesture;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Selection>();
@@ -55,9 +57,17 @@ pub fn plugin(app: &mut App) {
             .in_set(MapSet::Present)
             .after(super::pointing::point_at),
     );
-    // Reads where a star ended up rather than deciding it, so it waits for
-    // the transforms to be worked out, as `pointing::ring` does.
-    app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
+    // Painted flat in screen space with egui, in the same pass the names are,
+    // so the ring holds its shape at galaxy coordinates where a mesh tears.
+    // Before the names so it sits beneath the grounds they are written on,
+    // and after [`super::pointing::ring`], which is where the order between
+    // the two rings is pinned: where a hover ring and a selection ring
+    // overlap on screen, the selection is the mark that lasts and so the one
+    // drawn whole. See [`super::labels::draw_names`].
+    app.add_systems(
+        EguiPrimaryContextPass,
+        ring.before(super::labels::draw_names),
+    );
 }
 
 /// The color everything about the selection is drawn in
@@ -221,16 +231,52 @@ impl Selection {
         self.0.clear();
     }
 
-    /// Let go of the system at `address`, holding everything else
+    /// Move a selection resting on the system at `address` onto its body `id`
     ///
     /// What descending into a system does to the selection that brought the
-    /// camera there. Once it is standing inside, the ring is a ring around the
-    /// view and the row names where the user already is, so the system lets go
-    /// of itself. Bodies picked out inside it are left alone: they are what
-    /// there is to look at now.
-    pub fn deselect_system(&mut self, address: i64) {
-        self.0.retain(|picked| {
-            !matches!(picked, Picked::System(system) if system.address == address)
+    /// camera there: the ring and row that named the system from outside come
+    /// to name the star it arrives at, so the selection carries across the
+    /// grid's edge rather than being lost at it. Its place in the set is kept,
+    /// so a gathered selection holds its order.
+    pub fn rebind_system_to_body(
+        &mut self,
+        address: i64,
+        id: i16,
+        name: &str,
+        at: DVec3,
+    ) {
+        for picked in &mut self.0 {
+            if matches!(picked, Picked::System(s) if s.address == address) {
+                *picked = Picked::Body(PickedBody::new(address, id, name, at));
+            }
+        }
+    }
+
+    /// Move a selection resting on any body of the system at `address` back
+    /// onto the system, collapsed to one
+    ///
+    /// The other half of [`Selection::rebind_system_to_body`]: ascending out
+    /// carries a selection made on anything inside it — the arrival star it
+    /// descended onto, or a planet picked out since — back onto the system, so
+    /// it survives the trip out rather than being let go with the bodies.
+    /// Several bodies of the one system collapse to a single mark on it, in
+    /// the place of the first; a system already picked out takes none.
+    pub fn rebind_bodies_to_system(&mut self, address: i64, system: &System) {
+        let mut placed = self
+            .0
+            .iter()
+            .any(|p| matches!(p, Picked::System(s) if s.address == address));
+        self.0.retain_mut(|picked| match picked {
+            Picked::Body(b) if b.address == address => {
+                if placed {
+                    false
+                } else {
+                    placed = true;
+                    *picked = Picked::System(system.clone());
+                    true
+                }
+            }
+            _ => true,
         });
     }
 
@@ -244,23 +290,6 @@ impl Selection {
     /// The thing in the `index`th place
     pub fn get(&self, index: usize) -> Option<&Picked> {
         self.0.get(index)
-    }
-
-    /// The system in the `index`th place, where that is what stands there
-    ///
-    /// A whole row, for whoever can read one. A [`System`]'s fields are
-    /// private to [`super`], so the bar reaches what it draws through
-    /// [`Picked`] and uses this only to hand the row on to a panel.
-    pub fn system(&self, index: usize) -> Option<&System> {
-        match self.0.get(index)? {
-            Picked::System(system) => Some(system),
-            Picked::Body(_) => None,
-        }
-    }
-
-    /// What the thing in the `index`th place is called
-    pub fn name(&self, index: usize) -> Option<&str> {
-        self.0.get(index).map(Picked::name)
     }
 
     /// How many are picked out
@@ -341,7 +370,10 @@ pub struct Selected;
 /// has left its system is a row about nowhere.
 ///
 /// Nothing drawn is placed from the selection's own position: the marks say
-/// which entity, and each ring is drawn where that entity's transform puts it.
+/// which entity, and each ring is then painted where that entity answers it
+/// stands. A system answers with [`System::position`], projected to a pixel;
+/// a body with the grid holding it, through [`Places::of`]. Neither reads a
+/// transform.
 fn follow_selection(
     mut selection: ResMut<Selection>,
     marked: Query<(Entity, Ref<System>), With<Selected>>,
@@ -445,7 +477,8 @@ fn follow_selection(
 ///
 /// Read off the mark rather than asked of the filters again. A span's near
 /// edge moves with the clock, so asking here would answer a moment later than
-/// [`crate::systems::filter::mark`] last cut, and a system would be let go of
+/// [`crate::systems::filter`]'s `mark` last cut, and a system would be let go
+/// of
 /// seconds before the star it named stopped being drawn. One decision, made
 /// where the mark is made, and both the sky and the selection follow it.
 ///
@@ -518,8 +551,8 @@ fn clear_when_nothing_is_clicked(
 /// Drawn from the same target [`super::pointing::ring`] measures, so the two
 /// rings are the same size and a selection sits exactly where a point did.
 ///
-/// A system the spyglass has hidden is skipped, since a ring around a star
-/// that is not drawn is a ring around nothing.
+/// A system the map is not drawing is skipped, since a ring around a star that
+/// is not drawn is a ring around nothing — the strength below is what says so.
 ///
 /// A ring dims with the star it is drawn around. A selection the filters
 /// exclude stays selected, and a full strength ring around a faint star would
@@ -533,97 +566,98 @@ fn clear_when_nothing_is_clicked(
 /// stands around. Everything the map draws for a system as a whole is a mark
 /// standing in for something too small to see, and a ring left around a system
 /// the camera is standing inside is a ring around the view.
-fn ring(
-    mut gizmos: Gizmos,
+pub(crate) fn ring(
+    mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
-    spyglass: Res<Spyglass>,
     holding: Res<HeldSystem>,
     selected: Query<
         (
             &System,
             &Strength,
-            &GlobalTransform,
             &Indicator,
+            &Visibility,
             Has<Filtered>,
             Has<crate::systems::route::Hop>,
         ),
         With<Selected>,
     >,
-    // Whatever inside a system is picked out, which carries neither a filter
-    // nor a galactic position of its own.
-    inside: Query<(&GlobalTransform, &Indicator), (With<Body>, With<Selected>)>,
-    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
+    // Whatever inside a system is picked out, read off the grid holding it the
+    // way its name is, so it carries neither a filter nor a galactic position
+    // of its own.
+    inside: Query<(Entity, &Indicator), (With<Body>, With<Selected>)>,
+    places: Places,
     dim: Res<DimTo>,
-) {
-    let Ok((orbit, camera)) = camera.single() else { return };
-    let Some(viewport) = camera.logical_viewport_size() else { return };
+) -> Result {
+    let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
+    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    if let Ok(eye) = eye_at.single() {
-        for (at, indicator) in &inside {
-            let offset = (at.translation() - eye.translation()).as_dvec3();
-            let radius = super::pointing::drawn_radius_of(
-                orbit,
-                cot_half_fov,
-                viewport,
-                offset,
-                indicator.0,
-            );
+    // A selected system is ringed where it lands on screen rather than out at
+    // its own ~1e17 m coordinate, where a ring drawn as a mesh tears in the f32
+    // clip transform (see `docs/night-sky.md`). Painted flat with egui, in the
+    // same pass and the same way [`super::labels::draw_names`] paints the names
+    // and their leaders, so the mark and the name it belongs to are one thing.
+    let ctx = contexts.ctx_mut()?;
+    let painter = ctx.layer_painter(super::labels::annotations_layer());
+    let stroke = |color: Srgba| egui::Stroke::new(RING_STROKE, color32(color));
 
-            gizmos
-                .circle(
-                    Isometry3d::new(at.translation(), orbit.rotation),
-                    radius,
-                    SELECTION,
-                )
-                .resolution(RING_POINTS);
-        }
+    // Whatever inside a system is picked out, read off the grid holding it, as
+    // its name is, so it is placed against the view it is drawn into.
+    for (entity, indicator) in &inside {
+        let Some(place) = places.of(entity) else { continue };
+        let Some(at) = screen_position(orbit, cot_half_fov, viewport, place)
+        else {
+            continue;
+        };
+        painter.circle_stroke(
+            egui::pos2(at.x, at.y),
+            indicator.0,
+            stroke(SELECTION),
+        );
     }
 
-    for (system, mark, at, indicator, filtered, hop) in &selected {
-        // A stop a route reaches is ringed by [`super::pointing::ring`],
-        // in this same color, while the map is holding a system. Everything
-        // drawn for a stop then is drawn where the camera can see it rather
-        // than where the stop is, and a ring drawn here would be out at the
-        // stop's true distance with the rest of the mark a jump nearer.
+    for (system, mark, indicator, visibility, filtered, hop) in &selected {
+        // A stop a route reaches is ringed by [`super::pointing::ring`], in
+        // this same color, while the map is holding a system. Everything drawn
+        // for a stop then is drawn together there.
         if hop && holding.of().is_some() {
             continue;
         }
 
-        // Reach rather than whether the star is drawn. The two part company
-        // where the filters draw what they exclude at nothing, and this ring
-        // answers the wrong one of them: the spyglass says where the user is
-        // looking, and a ring outside it is a ring off the edge of that. What
-        // the filters say is about the sky rather than about the handful of
-        // systems the user picked out by hand.
-        let position = DVec3::from(system.position);
-        if !spyglass.reaches(orbit.center, position) {
+        // A selection outlives the spyglass hiding its star — it is held
+        // through a zoom out and back — but its ring must not: a ring painted
+        // around a star the spyglass has taken off the map is a mark around
+        // empty sky. Gated as the name is in [`super::labels::choose_names`],
+        // so the ring, the name and the star agree on when a selection shows.
+        // The strength cannot answer this on its own: it stays whole for a
+        // system held out of reach, the fade being for the mark going out as
+        // the camera comes inside the system, not for the spyglass hiding it.
+        if *visibility == Visibility::Hidden {
             continue;
         }
+
         let standing = mark.0;
         if standing <= 0. {
             continue;
         }
 
-        // The mark is held in pixels, and a gizmo is drawn in the world, so
-        // this is where the two meet. Through the same conversion the
-        // pointing ring uses, so the two circles are the same circle.
-        let radius = super::pointing::drawn_radius(
+        let Some(at) = screen_position(
             orbit,
             cot_half_fov,
             viewport,
-            position,
-            indicator.0,
-        );
+            DVec3::from(system.position),
+        ) else {
+            continue;
+        };
 
-        gizmos
-            .circle(
-                Isometry3d::new(at.translation(), orbit.rotation),
-                radius,
-                going(ringed(&dim, filtered), standing),
-            )
-            .resolution(RING_POINTS);
+        painter.circle_stroke(
+            egui::pos2(at.x, at.y),
+            indicator.0,
+            stroke(going(ringed(&dim, filtered), standing)),
+        );
     }
+
+    Ok(())
 }
 
 /// `color` with `standing` of it left
@@ -672,7 +706,6 @@ mod tests {
             address,
             name: format!("Test {address} {id}"),
             id,
-            class: String::new(),
             radius: 1e6,
             ancestors: 0,
             primary: false,
@@ -741,7 +774,7 @@ mod tests {
 
         let selection = app.world().resource::<Selection>();
         assert_eq!(selection.len(), 1, "the body outlived what it named");
-        assert_eq!(selection.name(0), Some("Test 1"));
+        assert_eq!(selection.get(0).map(Picked::name), Some("Test 1"));
     }
 
     /// And a system with nothing on the map is kept
@@ -756,38 +789,48 @@ mod tests {
         assert_eq!(app.world().resource::<Selection>().len(), 1);
     }
 
-    /// Descending into a system lets go of that system
+    /// A selection carries from a system onto its star and back, keeping place
     ///
-    /// The selection that flew the camera in circled a star out in the sky.
-    /// Standing inside it, that ring would circle the whole view, so the
-    /// system lets go of itself as the camera arrives.
+    /// Descending into a system moves the selection onto the star it arrives
+    /// at, so a ring made at galaxy scale is not lost at the subgrid's edge;
+    /// ascending moves it back. The round trip leaves the rest of the set as
+    /// it found it.
     #[test]
-    fn descending_into_a_system_lets_go_of_it() {
-        let mut selection = Selection::default();
-        selection.set(picked(1));
-
-        selection.deselect_system(1);
-
-        assert!(selection.is_empty());
-    }
-
-    /// And leaves the rest of the selection picked out
-    ///
-    /// Only the system the camera descended into is let go of. Another
-    /// system gathered alongside it, and any body picked out inside the one
-    /// being entered, are what there is left to work with.
-    #[test]
-    fn descending_holds_the_rest_of_the_selection() {
+    fn a_selection_moves_between_a_system_and_its_star() {
         let mut selection = Selection::default();
         selection.set(picked(1));
         selection.toggle(picked(2));
-        selection.toggle(picked_body(1, 3));
 
-        selection.deselect_system(1);
+        selection.rebind_system_to_body(1, 3, "Star", DVec3::ZERO);
+        assert_eq!(selection.get(0).map(Picked::address), Some(1));
+        assert_eq!(selection.get(0).and_then(Picked::id), Some(3));
+        // The other selection and the order are left alone.
+        assert_eq!(selection.get(1).map(Picked::address), Some(2));
+        assert_eq!(selection.get(1).and_then(Picked::id), None);
+
+        selection.rebind_bodies_to_system(1, &system(1));
+        assert_eq!(selection.get(0).map(Picked::address), Some(1));
+        assert_eq!(selection.get(0).and_then(Picked::id), None);
+    }
+
+    /// Zooming out of a system folds every body picked inside it back onto it
+    ///
+    /// Whatever was selected inside — the arrival star, a planet, several at
+    /// once — comes back as one mark on the system, so the selection is not
+    /// lost with the bodies and does not multiply into a mark per body.
+    #[test]
+    fn zooming_out_folds_a_systems_bodies_onto_it() {
+        let mut selection = Selection::default();
+        selection.set(picked_body(1, 3));
+        selection.toggle(picked_body(1, 5));
+        selection.toggle(picked(2));
+
+        selection.rebind_bodies_to_system(1, &system(1));
 
         assert_eq!(selection.len(), 2);
-        assert!(selection.systems().any(|system| system.address == 2));
-        assert_eq!(selection.get(1).map(Picked::id), Some(Some(3)));
+        assert_eq!(selection.get(0).map(Picked::address), Some(1));
+        assert_eq!(selection.get(0).and_then(Picked::id), None);
+        assert_eq!(selection.get(1).map(Picked::address), Some(2));
     }
 
     /// A world holding a selection and the click that may let go of it
@@ -1103,8 +1146,8 @@ mod tests {
 
         let selection = app.world().resource::<Selection>();
         assert_eq!(selection.addresses(), vec![1, 2]);
-        assert_eq!(selection.system(0).unwrap().population, 0);
-        assert_eq!(selection.system(1).unwrap().population, 900);
+        assert_eq!(selection.systems().nth(0).unwrap().population, 0);
+        assert_eq!(selection.systems().nth(1).unwrap().population, 900);
     }
 
     /// A system selected before it is on the map is marked when it arrives
@@ -1313,7 +1356,7 @@ mod tests {
 
     /// What the selection holds for the population
     fn population_shown(app: &App) -> u64 {
-        app.world().resource::<Selection>().system(0).unwrap().population
+        app.world().resource::<Selection>().systems().next().unwrap().population
     }
 
     /// The selection says where what is picked out is

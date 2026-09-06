@@ -10,11 +10,10 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
-use super::system_to_vec;
-
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
     app.init_resource::<SelectedRoute>();
+    app.init_resource::<graph::Routing>();
     // After the fetch it answers has been drawn, and before the camera is
     // pointed, since where it asks the camera to go is what `move_camera`
     // then works out.
@@ -54,7 +53,7 @@ pub fn plugin(app: &mut App) {
 /// there is then no entity to read a position off, and the line still has to
 /// know where the leg was going.
 #[derive(Component)]
-pub struct Path {
+pub(crate) struct Path {
     /// Each stop, by address, and where it sits in the line's own space
     stops: Vec<(i64, Vec3)>,
     /// Which of them were on the map when the line was last cut
@@ -63,7 +62,7 @@ pub struct Path {
 
 impl Path {
     /// A path through `stops`, with nothing yet known about what is drawn
-    pub fn new(stops: Vec<(i64, Vec3)>) -> Path {
+    pub(crate) fn new(stops: Vec<(i64, Vec3)>) -> Path {
         let shown = vec![true; stops.len()];
         Path { stops, shown }
     }
@@ -138,7 +137,7 @@ fn trim(
 /// The white a route's line is drawn in, and at full strength where the line
 /// is faint: the line crosses systems that are meant to go on being seen, and
 /// this is a mark around one of them.
-pub const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
+pub(crate) const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
 
 /// A stop a route reaches from the system the camera is standing in
 ///
@@ -147,7 +146,7 @@ pub const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
 /// by the time the camera is inside one of them, so what is left to say where
 /// the route goes is the systems it goes to and from.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Hop {
+pub(crate) enum Hop {
     /// Where the route came from
     Last,
     /// Where it goes next
@@ -275,7 +274,7 @@ fn hops(
 /// route are one value in three places rather than three things to keep in
 /// step.
 #[derive(Component)]
-pub struct Route(pub Filter);
+pub(crate) struct Route(pub(crate) Filter);
 
 /// A route that has landed and been drawn
 ///
@@ -284,22 +283,22 @@ pub struct Route(pub Filter);
 /// route does to the map is in one place rather than threaded through the
 /// system that draws stars.
 #[derive(Message, Debug)]
-pub struct PlottedRoute {
+pub(crate) struct PlottedRoute {
     /// The two ends, as the database spells them
-    pub label: String,
+    pub(crate) label: String,
     /// Every system it runs through, by address, in the order travelled
-    pub systems: Vec<i64>,
+    pub(crate) systems: Vec<i64>,
     /// The middle of what it spans
-    pub middle: DVec3,
+    pub(crate) middle: DVec3,
     /// How far it reaches from there, in light years
-    pub extent: f32,
+    pub(crate) extent: f32,
     /// How far the ship it was plotted for reaches in one jump, in light years
     ///
     /// Carried along rather than worked out from the legs. The longest jump a
     /// route happens to take is not what was asked for: a route plotted for a
     /// ship reaching 20 may never need more than 12, and it is what the user
     /// asked that tells two plots between the same ends apart.
-    pub range: String,
+    pub(crate) range: String,
 }
 
 impl PlottedRoute {
@@ -308,7 +307,7 @@ impl PlottedRoute {
     /// Built in one place and read in two: the row in the bar is this filter,
     /// and so is the mark the drawn line carries. They have to be the same
     /// value or closing the row would leave a line nothing can find.
-    pub fn filter(&self) -> Filter {
+    pub(crate) fn filter(&self) -> Filter {
         Filter::Route {
             label: self.label.clone(),
             systems: self.systems.clone(),
@@ -427,7 +426,7 @@ fn asked(filters: &Filters, route: &Filter) -> Option<bool> {
 /// An override rather than the answer itself. What it stands in front of is
 /// the last route plotted, and [`active`] puts the two together.
 #[derive(Resource, Default)]
-pub struct SelectedRoute(pub Option<Filter>);
+pub(crate) struct SelectedRoute(pub(crate) Option<Filter>);
 
 /// Which route is the one being worked with
 ///
@@ -480,7 +479,7 @@ fn shown(filters: &Filters) -> impl Iterator<Item = &Filter> {
 const BEHIND: f32 = 0.4;
 
 /// What a route line is drawn at, given whether it is the active one
-pub fn strength(is_active: bool) -> f32 {
+pub(crate) fn strength(is_active: bool) -> f32 {
     if is_active { 1. } else { BEHIND }
 }
 
@@ -524,8 +523,11 @@ fn emphasise(
     }
 }
 
-pub mod fetch;
-pub mod spawn;
+pub(crate) mod fetch;
+// The one module the binary names: it builds the jump graph from the
+// resident names before the app is up.
+pub mod graph;
+pub(crate) mod spawn;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]

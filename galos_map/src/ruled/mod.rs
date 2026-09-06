@@ -5,7 +5,7 @@
 //! what stands in front of it occludes it, and one draw call however much of
 //! the plane is on screen.
 //!
-//! # Why not [`bevy::dev_tools::infinite_grid`]
+//! # Why not bevy's own infinite-grid dev tool
 //!
 //! That one rules by `fract` of the absolute position, in metres, in `f32`.
 //! Two things follow. A position far from the origin has no fractional part
@@ -48,7 +48,7 @@ pub(crate) mod read;
 // how far apart its figures stand, which is the module's own affair: a caller
 // asks for a plane rather than for the pixels between two numbers.
 pub use cut::Face;
-pub use label::{DistanceUnit, off_plane, power, ticked, told};
+pub use label::{DistanceUnit, off_plane, ticked, told};
 pub use ladder::{Decade, FIGURES_ACROSS, numbering, ruling, snapped_to};
 pub use read::{EDGE_ON, Located, Reading, drawn_at, faded};
 
@@ -88,7 +88,6 @@ use bevy::render::view::{
 };
 use bevy::render::{Extract, Render, RenderApp, RenderSystems};
 use bevy::shader::Shader;
-use bevy_rich_text3d::Text3dPlugin;
 use big_space::prelude::*;
 
 /// How many spacings a plane may be ruled at once
@@ -176,11 +175,6 @@ impl Number {
         number
     }
 
-    /// How many characters it takes
-    pub fn letters(&self) -> i32 {
-        self.letters as i32
-    }
-
     /// Packed as the shader reads it
     ///
     /// Six characters to a word at five bits apiece, which is what seventeen
@@ -252,7 +246,6 @@ pub fn finest(grid: &Grid) -> f64 {
 #[reflect(Component, Default)]
 #[require(
     read::Reading,
-    read::Plumbs,
     Plane,
     Numbered,
     Transform,
@@ -320,10 +313,10 @@ pub struct Plane {
     /// Where the camera stands from the ruling's origin, in cells, on the
     /// plane's own axes
     ///
-    /// Written by [`place`] every frame and read by nothing else. Held on the
-    /// component rather than worked out in the render world so that crossing
-    /// the grid hierarchy, which is where the precision lives, happens once
-    /// and in one place.
+    /// Written by [`place`] every frame and by nothing else, and read back out
+    /// of here by `PlaneUniform::of`. Held on the component rather than
+    /// worked out in the render world so that crossing the grid hierarchy,
+    /// which is where the precision lives, happens once and in one place.
     pub eye: Vec3,
     /// Which way the plane's own axes lie in the world it is drawn in
     ///
@@ -506,24 +499,6 @@ fn place(
     }
 }
 
-/// Where something placed by `grid` stands, from the cell the floating origin
-/// is in
-///
-/// The frame everything drawn is measured in. Exact: the cell difference is an
-/// `i64` count and the remainders are the positions the world holds, so nothing
-/// is lost that was ever there. What `Grid::global_transform` works out and
-/// then spends on an `f32` on its last line.
-///
-/// Which is what lets a thing in one grid be located against a plane in
-/// another: both are crossed into this frame in `f64` and subtracted there.
-pub fn seen(grid: &Grid, cell: &CellCoord, transform: &Transform) -> DVec3 {
-    let origin = grid.local_floating_origin();
-    origin.grid_transform().transform_point3(
-        grid.cell_to_float(&(*cell - origin.cell()))
-            + transform.translation.as_dvec3(),
-    )
-}
-
 /// Round `value` onto the nearest multiple of `step`
 fn round_to(value: f64, step: f64) -> f64 {
     if step > 0. && step.is_finite() {
@@ -585,31 +560,18 @@ impl PlaneUniform {
     }
 }
 
-/// When a plane is told where it stands
-///
-/// A caller that has to answer [`Plane::crossing_at`] runs after this, which
-/// is where the ruling's origin and the lettering's turn are settled.
-#[derive(SystemSet, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Placing;
-
-/// And when a caller says what its planes are ruled in
-///
-/// Everything drawn over a plane reads its [`Reading`], so whatever writes one
-/// belongs in here. In `Update`, which is early enough for the text meshes to
-/// be built and placed in the same frame.
-#[derive(SystemSet, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Ruling;
-
 /// Everything it takes to draw a [`Ruled`] plane
 ///
 /// A struct rather than the bare function the rest of this crate adds, because
 /// the pipeline is built in [`Plugin::finish`] rather than [`Plugin::build`],
 /// and a function has no `finish`.
 pub struct RuledPlugin {
-    /// The face a plane's numbers are painted in, and what it is called
+    /// The face a plane's numbers are painted in
     ///
-    /// Monospaced. The strip painted onto a plane is cut from it at startup,
-    /// see [`cut`], and the numbers standing over the plane are set in it.
+    /// Monospaced. Read once at startup, by `cut::cut_lettering` and by
+    /// nothing else, to cut the strip of glyphs the shader paints onto the
+    /// plane. The readouts drawn flat over the map alongside it are egui's own
+    /// monospace and never see this.
     pub face: Face,
 }
 
@@ -617,42 +579,11 @@ impl Plugin for RuledPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "ruled.wgsl");
         app.register_type::<Ruled>().register_type::<Plane>();
-        // The face reaches everything that sets a character by being handed
-        // to it, so nothing here reads a font out of the world. What the world
-        // does have to carry is the text stack itself, which is a plugin and a
-        // list of faces to load rather than something that can be passed.
-        //
-        // Only if it is not already there. A caller that draws its own text in
-        // the same face has added it, and a plugin added twice is a panic.
-        if !app.is_plugin_added::<Text3dPlugin>() {
-            app.add_plugins(Text3dPlugin {
-                load_system_fonts: false,
-                ..default()
-            });
-        }
-        cut::wanted(app, self.face.bytes);
-        app.init_resource::<read::Readouts>();
-        // Left at its defaults, which is the scene's own layer, drawn among
-        // the galaxy rather than over it.
-        app.init_gizmo_group::<read::RulerMarks>();
         app.add_systems(Startup, cut::cut_lettering(self.face.clone()));
-        // The text standing over a plane is built into meshes in `PostUpdate`
-        // before the transforms are propagated, so where it stands has to be
-        // settled before then. A transform written after it is a readout a
-        // frame behind the plane it stands on.
-        app.add_systems(
-            Update,
-            (read::locate, read::readouts(self.face.clone()), read::marks)
-                .chain()
-                .after(Ruling),
-        );
         // After the transforms, which is where `big_space` settles where each
         // grid thinks the floating origin is. Read any earlier and a plane is
         // ruled from where the camera stood last frame.
-        app.add_systems(
-            PostUpdate,
-            place.in_set(Placing).after(TransformSystems::Propagate),
-        );
+        app.add_systems(PostUpdate, place.after(TransformSystems::Propagate));
     }
 
     // The pipeline wants the render world's `FullscreenShader` and
@@ -972,10 +903,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_plugins(BigSpaceMinimalPlugins);
-        app.add_systems(
-            PostUpdate,
-            place.in_set(Placing).after(TransformSystems::Propagate),
-        );
+        app.add_systems(PostUpdate, place.after(TransformSystems::Propagate));
 
         let mut grids = vec![
             app.world_mut()
@@ -1149,12 +1077,12 @@ mod tests {
     #[test]
     fn a_number_is_the_places_of_its_letters() {
         let number = Number::say("-1.5e3");
-        assert_eq!(number.letters(), 6);
+        assert_eq!(number.letters, 6);
         // Minus, one, point, five, e, three, in `LETTERS` order.
         assert_eq!(number.codes[..6], [10, 1, 12, 5, 13, 3]);
         // And nothing outside the alphabet is taken.
-        assert_eq!(Number::say("1 2").letters(), 2);
-        assert_eq!(Number::say("").letters(), 0);
+        assert_eq!(Number::say("1 2").letters, 2);
+        assert_eq!(Number::say("").letters, 0);
     }
 
     /// And packed six characters to a word, with the count in the fourth

@@ -1,101 +1,53 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
-use crate::systems::filter::{DimTo, Filtered};
+use crate::systems::filter::Filtered;
 use crate::systems::pointing::{INDICATOR, Indicator, PointedAt};
+use crate::systems::scale::View;
 use crate::systems::selection::{SELECTION, Selected};
-use crate::systems::spawn::ShowNames;
+use crate::systems::spawn::{ShowNames, StarExposure};
 use crate::systems::{Spyglass, System};
-use bevy::camera::visibility::RenderLayers;
-use bevy::camera::visibility::VisibilitySystems;
 use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_rich_text3d::{
-    LoadFonts, Text3d, Text3dPlugin, Text3dSegment, Text3dStyling, TextAnchor,
-    TextAtlas,
-};
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use galos_photometry::{Distance, Magnitude};
 use std::ops::RangeInclusive;
 
 pub(crate) fn plugin(app: &mut App) {
-    // Only if it is not already there, and appended rather than set. The
-    // ruled plane sets its own numbers in the same face and asks for it the
-    // same way, and whichever of the two is added first should not decide
-    // whether the other's face is loaded.
-    if !app.is_plugin_added::<Text3dPlugin>() {
-        app.add_plugins(Text3dPlugin { load_system_fonts: false, ..default() });
-    }
-    app.world_mut()
-        .get_resource_or_insert_with(LoadFonts::default)
-        .font_embedded
-        .push(epaint_default_fonts::HACK_REGULAR);
     app.insert_resource(NameRadius {
         follow_spyglass: false,
         radius: DEFAULT_NAME_RADIUS,
     });
+    app.insert_resource(NameLimit(8.0));
     app.insert_resource(ShowBodyNames(true));
-    app.add_systems(Startup, init_materials);
-    app.add_systems(Update, redim.in_set(MapSet::Present));
+    // Chosen and realised: [`choose_names`] decides which names are drawn and
+    // [`respawn`] hangs a token off each, carrying the words. Both in
+    // `Update`, before the screen-space paint.
     app.add_systems(
         Update,
-        tint_marked_names
-            .in_set(MapSet::Present)
-            .after(super::pointing::point_at)
-            // A name is spawned in the color of a system at rest, so one
-            // that appears because its system has just been marked out
-            // draws untinted for a frame unless the tint follows the spawn.
-            // This wants the name that exists rather than the one asked for
-            // last frame.
-            .after(respawn),
-    );
-    // `face_camera` and the sizing systems both write a `Transform`, on
-    // different entities, so the scheduler cannot run them together whatever
-    // is said here. Ordering them costs nothing and fixes which goes first.
-    app.add_systems(
-        Update,
-        (choose_names, respawn, back_names, face_camera)
+        (choose_names, respawn)
             .chain()
             .in_set(MapSet::Present)
-            // Both read which system is pointed at, which is decided this
-            // frame rather than last.
+            // Both read which system is pointed at, decided this frame.
             .after(super::pointing::point_at)
             // A selected system is named whether or not it is within reach,
             // but only while it is drawn, and that is decided here.
             .after(super::visibility)
             .after(super::scale::size_by_distance)
-            .after(super::scale::size_uniformly)
+            .after(super::scale::size_photometrically)
             // A name stands off the mark drawn around what it names, so it
             // wants the mark settled this frame rather than last.
             .after(super::pointing::size_indicators),
     );
-    // `leaders` reads where a label ended up rather than deciding it, and
-    // neither of the two answers it needs exists during `Update`. A label's
-    // `GlobalTransform` is computed from the local one in `PostUpdate`, and
-    // its `ViewVisibility` is not settled until everything has had a chance
-    // to hide it. Reading either any earlier draws last frame's line.
+    // The names are painted flat, in egui's own pass, from the tokens
+    // [`respawn`] put up. Before the chrome so the label layer is registered
+    // first and sits beneath the panes rather than over them.
     app.add_systems(
-        PostUpdate,
-        leaders
-            .after(TransformSystems::Propagate)
-            .after(VisibilitySystems::MarkNewlyHiddenEntitiesInvisible),
+        EguiPrimaryContextPass,
+        draw_names.before(crate::ui::chrome),
     );
 }
-
-/// World size of a run of text at unit scale
-///
-/// The line box a text mesh is built at, which whoever places it scales down
-/// to the height they want it drawn at.
-pub(crate) const SIZE: f32 = 64.;
-
-/// Depth floor for the label size, in metres
-///
-/// Size is proportional to depth, so a system level with the camera would
-/// draw at nothing and one just behind it at a negative size, which is
-/// mirrored. Anything this close is inside the near plane regardless.
-///
-/// A metre. What it guards against is the sign, not any particular distance,
-/// and the camera cannot be pulled nearer than this to what it looks at.
-pub(crate) const MIN_DEPTH: f32 = 1.;
 
 /// How far a name is drawn from what the camera looks at, to begin with
 ///
@@ -112,7 +64,7 @@ const DEFAULT_NAME_RADIUS: f32 = 20.;
 /// The line box, which for a single line of text is the size the font is
 /// set at. The one number that decides how large a name is; everything else
 /// follows from the viewport and where the camera is.
-pub(super) const NAME_HEIGHT: f32 = 12.;
+pub(crate) const NAME_HEIGHT: f32 = 12.;
 
 /// How far from what the camera looks at a system may be and still be named
 ///
@@ -150,6 +102,18 @@ impl NameRadius {
     }
 }
 
+/// The faintest a star may look and still be named, in the realistic view
+///
+/// Apparent magnitude, the astronomer's backwards scale: a smaller number is a
+/// brighter star, so turning this down names fewer of them, the brightest
+/// first. The realistic view's answer to [`NameRadius`] — where the map view
+/// holds names to a reach about the center, the sky holds them to a brightness,
+/// since that is what a name is worth there. A star still has to be drawn to be
+/// named, so past the exposure's floor this only takes names away from what is
+/// drawn; it never adds any.
+#[derive(Resource)]
+pub struct NameLimit(pub f32);
+
 /// Whether the things inside a system are named
 ///
 /// On to begin with, unlike the systems' own names. A system's name is one of
@@ -165,14 +129,6 @@ pub(super) const GAP: f32 = 0.75;
 /// How far a label sits above its star, in text heights
 const RISE: f32 = 1.0;
 
-/// The family name inside [`epaint_default_fonts::HACK_REGULAR`], used to
-/// select it in [`Text3dStyling`]
-///
-/// The same face egui draws the chrome in, so a name on the map and the same
-/// name in the bar are the one typeface. Monospaced, which is what [`ADVANCE`]
-/// rests on.
-pub(crate) const FONT: &str = "Hack";
-
 /// Color of the line joining a star to its name
 ///
 /// Dimmer than the text so it reads as a connector rather than as content.
@@ -186,14 +142,14 @@ const LEADER_GAP: f32 = 0.15;
 
 /// How wide a character is taken to be, as a fraction of the font size
 ///
-/// Whether two names overlap is decided from their rectangles, and the width
-/// a name will draw at is known exactly, in `Text3dDimensionOut`, but only
-/// once the text mesh has been built, and building it is what [`choose_names`]
-/// is deciding whether to do. So the width is reckoned from the letter count
-/// instead.
+/// Whether two names overlap is decided by [`choose_names`], in `Update`,
+/// before any painter has run. The width a name draws at is known exactly
+/// only once [`draw_names`] has laid the words out into a galley, and that is
+/// a schedule later, with every name's room already granted. So the width is
+/// reckoned from the letter count instead.
 ///
 /// Named for the typographic advance, how far the pen moves along after
-/// drawing a glyph. [`FONT`] is monospaced, so every glyph advances the same
+/// drawing a glyph. The font is monospaced, so every glyph advances the same
 /// and a name of `n` letters is exactly `n` of these across, whichever letters
 /// they are. That is also why the names may be drawn in capitals for nothing:
 /// a `W` takes the room an `i` does.
@@ -204,35 +160,18 @@ const LEADER_GAP: f32 = 0.15;
 /// being prevented.
 const ADVANCE: f32 = 0.7;
 
-/// What [`FONT`] actually sets a character at, as a fraction of the size
-///
-/// The set width, where [`ADVANCE`] is the room a name is granted. The two
-/// differ on purpose and the difference is which way each errs: room granted
-/// short overlaps two names, so [`ADVANCE`] rounds up; a ground drawn long
-/// runs on past the word it carries, so this rounds to the truth.
-const SET_WIDTH: f32 = 1233. / 2048.;
-
 /// The dark ground a name is set on
 ///
 /// A name is read over a field of stars, and a word whose counters and the
 /// gaps between its letters are full of them has no shape to recognise. The
 /// ground is what makes the word a figure again.
 ///
-/// Solid, and it has to be. Blended, a ground is ordered against its own
-/// words by which mesh is further off, bevy measuring that to the middle of
-/// each; a ground's middle is half a name to the side of the words it carries,
-/// so the two are apart sideways as well as in depth and the sideways part
-/// swings as the camera turns. The order flips mid-rotation and a dark ground
-/// over white letters greys them out.
-///
-/// Depth cannot settle it, and pushing the ground back to try is what went
-/// wrong before: far enough back to beat the swing is far enough for
-/// perspective to drag it toward the middle of the view, so a name near the
-/// edge of the screen wears its ground low and off to the side. Opaque takes
-/// the question away with no setback at all. Opaque geometry is drawn before
-/// anything blended and writes depth as it goes; the words are blended, test
-/// `GreaterEqual`, and clear a ground at their own depth, so the two are left
-/// in the one plane and the ground never drifts off the words it carries.
+/// Opaque, and it has to be. A blended ground lets the field through at
+/// exactly the strength that made the word unreadable to begin with, and the
+/// counters are the part of a letter that carries its shape. Nothing else is
+/// at stake in the alpha: a ground and its words are two calls into one egui
+/// layer, the rect before the galley (see [`draw_names`]), and order in one
+/// layer is paint order, full stop.
 const GROUND: Srgba = Srgba::new(0.03, 0.03, 0.05, 1.);
 
 /// How far the ground reaches past the words, as a fraction of [`NAME_HEIGHT`]
@@ -323,20 +262,27 @@ const SELECTED_WEIGHT: f32 = 1000.;
 
 /// Whether a system is asked for a name at all
 ///
-/// Two ways to be passed over, two to be asked for regardless, and one that
-/// settles it whatever the other four say.
+/// Two ways to be passed over, one to be asked for over the softer of them,
+/// and one that settles it whatever the rest say.
 ///
 /// A name is read or it is not; there is no faint reading of one. So a system
 /// the filters exclude gives its name up rather than keeping it dimly: a sky
 /// of faint names over dim stars has nothing legible in it, and what the
-/// filters admit is what the user asked to be able to read. The toggle says
-/// the same thing about every system at once.
+/// filters admit is what the user asked to be able to read.
 ///
-/// Being marked out beats both. Pointing at a system or picking it out is
-/// asking for it by name, which is the one thing a name is for, and neither
-/// the toggle nor a filter has any business refusing it.
+/// A filter refuses outright, marked out or not. It is the one answer that
+/// cannot be overridden by pointing at the star, because a name awarded to
+/// an excluded system is a name that has to be drawn dimly to say it is
+/// excluded — and a dim name is the thing there is no such thing as. What
+/// that came to on screen was a name faded to nothing over its own ground,
+/// which reads as an empty box hanging off a star. Better not to lay one out.
 ///
-/// `stands` beats being marked out. It is whether the map is still standing a
+/// The names toggle is the softer refusal, and yields: it says the same thing
+/// about every system at once rather than about this one, so pointing at a
+/// system or picking it out is still asking for it by name, and the toggle
+/// has no business refusing that.
+///
+/// `stands` beats all of it. It is whether the map is still standing a
 /// mark in for the system, and the name is part of that mark: once the camera
 /// is inside, what is drawn there is the system itself, and the things in it
 /// carry their own names. A name left hanging over them would be the label of
@@ -354,7 +300,41 @@ fn worth_naming(
     pointed_at: bool,
     selected: bool,
 ) -> bool {
-    stands && (pointed_at || selected || (shown && !filtered))
+    stands && !filtered && (pointed_at || selected || shown)
+}
+
+/// Where a system stands relative to what its view names by
+///
+/// The map view and the realistic view cut the sky on different questions, so
+/// each hands [`worth_placing`] its own.
+enum Placement {
+    /// Map view: within a reach about the center, in light years
+    Reach { from_center: f32, reach: f32 },
+    /// Realistic view: bright enough to be drawn — apparent magnitude below
+    /// the exposure's `floor` — and no fainter than the naming `limit`
+    Bright { apparent: f32, floor: f32, limit: f32 },
+}
+
+/// Whether a system is near or bright enough to lay a name out for, absent a
+/// mark asking for it outright
+///
+/// Where the two views part. The map view holds names to a neighborhood about
+/// the center, since there every star is the same size and nearness is the
+/// whole of the ordering. The realistic view holds them to a brightness: a
+/// star has to be drawn — apparent magnitude below the exposure floor — to
+/// have a mark to name at all, and no fainter than [`NameLimit`], the dial
+/// that turns the sky's names down the way [`NameRadius`] turns the map's
+/// down. A bright star deep along the line of sight is named where a fixed
+/// reach would have dropped it; a faint one is left out however near it sits.
+/// What is resident is already bounded by the spyglass, so this is not the
+/// whole sky.
+fn worth_placing(placement: Placement) -> bool {
+    match placement {
+        Placement::Reach { from_center, reach } => from_center <= reach,
+        Placement::Bright { apparent, floor, limit } => {
+            apparent < floor && apparent <= limit
+        }
+    }
 }
 
 /// How strongly standing in front of the middle argues for a name
@@ -376,6 +356,29 @@ const NEARER_WEIGHT: f32 = 1.;
 /// a system exactly, so this only has to forgive one that is merely near it.
 const CENTER_REACH: f32 = 2.;
 
+/// How much a magnitude of brightness above the drawn floor is worth to a
+/// system's name in the realistic view
+///
+/// There a star is drawn at a size of `PSF_GROWTH·ln(energy)` (see
+/// [`super::scale`]), and `ln(energy)` is, up to a constant, the margin by
+/// which the star's apparent magnitude clears the exposure's floor. Weighing a
+/// name by that margin climbs the same ladder its star's size does, which is
+/// the prominence the note on the system weight foresaw a name should follow.
+/// Scaled so the drawn range leads the field and capped at [`CENTER_WEIGHT`],
+/// so a system's name keeps to the band it occupies when position alone
+/// decides it: below a body's ([`INSIDE_WEIGHT`]) and below what is pointed at
+/// or picked out ([`POINTED_WEIGHT`]).
+const BRIGHT_NAME_WEIGHT: f32 = 20.;
+
+/// How much of the map view's nearness ordering the realistic view keeps
+///
+/// Brightness leads there; nearness to the middle stays on at this fraction of
+/// its strength, ordering stars of a like brightness without overriding a
+/// brighter one. Small enough that the whole of it cannot make up a magnitude
+/// of [`BRIGHT_NAME_WEIGHT`], so the order is brightness first and position
+/// second.
+const SECONDARY_NEARNESS: f32 = 0.05;
+
 /// One thing in the running for a name, as [`choose_names`] weighs it
 ///
 /// Spelled out once. Both of the questions it answers are asked of the same
@@ -391,53 +394,30 @@ type Candidate<'a, T> = (
     Has<crate::systems::route::Hop>,
 );
 
-/// What [`respawn`] needs of a system that has won a name
-///
-/// Whether it already carries the plate, and whether the name has a jump to
-/// say as well as a system.
-type Plated = (
-    Entity,
-    &'static System,
-    Option<&'static Children>,
-    Has<crate::systems::route::Hop>,
-);
-
-/// Whatever a name is hung off, as [`leaders`] reads it
-///
-/// Where it is, and the three ways of being marked out that leave a line with
-/// nothing to say. What it is drawn at is read from where it is: a system is
-/// its own shell and carries the shell's size, and a body carries its own.
-type Anchor = (
-    &'static GlobalTransform,
-    Has<PointedAt>,
-    Has<Selected>,
-    Has<crate::systems::route::Hop>,
-);
-
 /// A system whose name has won a place on screen
 ///
-/// Awarded by [`choose_names`] and read by [`respawn`], which spawns a label
-/// for a system that has one and takes the label away from a system that
-/// does not. A name that would not be readable never gets a mesh built for
-/// it at all.
+/// Awarded by `choose_names` and read by `respawn`, which hangs a name
+/// token on whatever has one and takes the token from whatever does not. A
+/// name that would not be readable never gets a token at all.
 #[derive(Component)]
 pub struct Named;
 
-/// A marker for system name labels
+/// A name token: the pointer handle and word-carrier for one drawn name
+///
+/// Hung off whatever it names. It renders nothing itself — [`draw_names`]
+/// paints the words in screen space — and exists so the pointer can be caught
+/// over a name and the words kept between the frame a name is chosen and the
+/// frame it is drawn.
 #[derive(Component)]
 pub struct Label;
 
-/// The quad a name is set on, hung under the [`Label`] it carries
+/// The words a name token is set to
 ///
-/// A child rather than part of the plate, since the words are a text mesh the
-/// crate rebuilds whenever they change and this is one rectangle that only
-/// ever moves and resizes.
+/// What `choose_names` won a place for, kept on the token so [`draw_names`]
+/// can paint it and [`super::pointing`] can size the area that catches the
+/// pointer, both from the one string.
 #[derive(Component)]
-struct Ground;
-
-/// The one quad every [`Ground`] is drawn from, a unit square in its own XY
-#[derive(Resource)]
-pub(crate) struct GroundMesh(Handle<Mesh>);
+pub struct PlateText(pub String);
 
 /// How far in front of the camera a point is, in metres
 ///
@@ -494,6 +474,28 @@ pub(crate) fn world_per_pixel(
     2. * depth / (cot_half_fov * viewport_height)
 }
 
+/// The egui layer the map's own annotations are painted into
+///
+/// One background layer for the readouts, the rings, the names, their grounds
+/// and the leaders alike: a single painter list, filled in the order the
+/// systems writing into it run. There are four of them, and that run order is
+/// the stacking — [`crate::grid::draw_readouts`] first and under everything,
+/// being the ruling the map is read against rather than anything picked out
+/// on it; then [`crate::systems::pointing::ring`], and
+/// [`crate::systems::selection::ring`] over that, a selection being the
+/// standing mark and a hover the passing one; then [`draw_names`] over the
+/// top, so that no ring or readout row crosses the words. All four are pinned
+/// against one another where they are registered, so none of the stacking is
+/// left to how egui happens to order separate layers or to which painter the
+/// executor happens to reach first. Background, so the whole of it sits under
+/// the chrome and over the map.
+pub(crate) fn annotations_layer() -> egui::LayerId {
+    egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("map-annotations"),
+    )
+}
+
 /// Where a point lands on screen, in logical pixels from the top left
 ///
 /// [`None`] for anything level with the camera or behind it, which has no
@@ -538,66 +540,26 @@ pub(crate) fn screen_offset(
     Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
 }
 
-/// What a name may be drawn in
+/// What the realistic view weighs a name by, beyond where it stands
 ///
-/// A material per color rather than one recolored per name, because the
-/// color lives on a shared asset: changing it would repaint every name at
-/// once. Swapping which handle a label points at repaints only that one.
-///
-/// Two sets of the same three: full strength, and whatever [`DimTo`] asks for
-/// a name whose system the filters exclude. The dim set is recolored in
-/// place when that moves, which is the case where repainting every name at
-/// once is exactly what is wanted.
-#[derive(Resource)]
-pub struct LabelMaterials {
-    bright: [Handle<StandardMaterial>; 3],
-    dim: [Handle<StandardMaterial>; 3],
-    /// One for every name. A ground takes no tint, being what the tint is
-    /// read against.
-    ground: Handle<StandardMaterial>,
-}
-
-/// Which color a name is drawn in, given what its system is
-///
-/// Named rather than numbered, for the reason [`super::spawn::Hue`] is: the
-/// two sets are laid out in [`Tint::ALL`] order and indexed by the tint.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Tint {
-    Resting,
-    PointedAt,
-    Selected,
-}
-
-impl Tint {
-    /// Every tint, in the order the sets hold them
-    const ALL: [Tint; 3] = [Tint::Resting, Tint::PointedAt, Tint::Selected];
-
-    /// What a name of this tint comes out
-    ///
-    /// A name comes out the color of the ring drawn around its star, so that
-    /// a system marked out is one thing in two places rather than two answers
-    /// that have to be matched up.
-    const fn color(self) -> Srgba {
-        match self {
-            Tint::Resting => Srgba::WHITE,
-            Tint::PointedAt => INDICATOR,
-            Tint::Selected => SELECTION,
-        }
-    }
-}
-
-impl LabelMaterials {
-    /// The handle for `tint`, at the strength `dimmed` asks for
-    fn get(&self, tint: Tint, dimmed: bool) -> &Handle<StandardMaterial> {
-        let set = if dimmed { &self.dim } else { &self.bright };
-        &set[tint as usize]
-    }
+/// Whether that view is drawn at all, and the floor its stars are measured
+/// from, which together say how bright each system looks and so — through
+/// [`BRIGHT_NAME_WEIGHT`] — how much its brightness is worth to its name.
+/// Bundled so [`choose_names`] stays within Bevy's system parameter limit.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct Sky<'w> {
+    view: Res<'w, View>,
+    exposure: Res<'w, StarExposure>,
+    limit: Res<'w, NameLimit>,
 }
 
 /// Decide which systems get to show their name
 ///
-/// Held to whichever is nearer of [`NameRadius`] and the spyglass, since a
-/// system the spyglass has hidden has nothing to put a name against.
+/// In the map view, held to whichever is nearer of [`NameRadius`] and the
+/// spyglass, since a system the spyglass has hidden has nothing to put a name
+/// against. In the realistic view the cut is brightness instead: any star
+/// drawn — one that clears the exposure's floor — may be named wherever it
+/// stands, since there brightness is what a name is worth (see [`name_score`]).
 ///
 /// Every name inside that reach drawn at once is unreadable: the dev
 /// database holds a couple of thousand systems within a hundred light years
@@ -608,7 +570,7 @@ impl LabelMaterials {
 /// systems light years apart share a pixel when the camera is far enough
 /// away, and two a stone's throw apart fill the screen when it is close.
 ///
-/// Nearest and most populous win, and the rest are dropped where they would
+/// The best win — nearest in the map view, brightest in the realistic one —
 /// overlap something already kept. Greedy rather than optimal: the best
 /// arrangement of a few hundred overlapping rectangles is not worth solving
 /// each frame, and taking them in order of what the viewer most wants to see
@@ -622,8 +584,9 @@ pub(crate) fn choose_names(
     show_body_names: Res<ShowBodyNames>,
     systems: Query<Candidate<'_, &'static System>>,
     bodies: Query<(Entity, &Body, &Indicator)>,
-    // Where a body stands, read the same way [`face_camera`] reads it. Which
-    // names are drawn is decided by packing their boxes, and where each one
+    // Where a body stands, read off the same `Places` that `draw_names`
+    // paints it by. Which names are drawn is decided by packing their boxes,
+    // and where each one
     // lands is decided there; taken from two different answers about where a
     // body is, the packing settles a screen the names are then drawn onto
     // somewhere else, and through a zoom the two are a quarter of the way
@@ -635,11 +598,14 @@ pub(crate) fn choose_names(
     selection: Query<(), With<Selected>>,
     holding: Res<HeldSystem>,
     time: Res<Time<Real>>,
+    sky: Sky,
     mut layout: Local<Layout>,
 ) {
     let clear = |commands: &mut Commands| {
         for entity in &named {
-            commands.entity(entity).remove::<Named>();
+            // The system may have been evicted this frame, so drop the marker
+            // gracefully rather than panicking on a despawned entity.
+            commands.entity(entity).try_remove::<Named>();
         }
     };
     // What is named already, which is worth something to it: the packing runs
@@ -741,9 +707,32 @@ pub(crate) fn choose_names(
 
         let position = DVec3::from(system.position);
         let from_center = (position - orbit.center).length() as f32;
-        // Further out than names were asked to reach, and not one of the
-        // two the map is marking out.
-        if !pointed_at && !selected && !hop && from_center > reach {
+
+        // In the realistic view a star's brightness is what sizes it, so it
+        // both admits the name and, through `name_score`, leads it. Read the
+        // apparent magnitude and the exposure's floor the same way
+        // `size_photometrically` reads them; nothing in the map view, where
+        // every star is drawn the same size.
+        let floor = sky.exposure.zero_point() as f32;
+        let apparent = matches!(*sky.view, View::Realistic).then(|| {
+            Magnitude(system.absolute_magnitude())
+                .apparent(Distance::light_years(orbit.eye.distance(position)))
+                .0 as f32
+        });
+        // The margin above the floor is what the weight reads; `None` leaves
+        // the map view scored on position alone. See `name_score`.
+        let brightness = apparent.map(|a| (floor - a).max(0.));
+
+        // Worth laying out at all, absent a mark asking for it outright: within
+        // the reach in the map view, bright enough to draw and inside the
+        // naming limit in the realistic one. See `worth_placing`.
+        let placement = match apparent {
+            Some(apparent) => {
+                Placement::Bright { apparent, floor, limit: sky.limit.0 }
+            }
+            None => Placement::Reach { from_center, reach },
+        };
+        if !pointed_at && !selected && !hop && !worth_placing(placement) {
             return None;
         }
         let at = screen_position(orbit, cot_half_fov, viewport, position)?;
@@ -767,7 +756,7 @@ pub(crate) fn choose_names(
         }
 
         let score = name_score(
-            LabelWeight::System { from_center, ahead },
+            LabelWeight::System { from_center, ahead, brightness },
             pointed_at,
             selected,
             already.contains(&entity),
@@ -844,12 +833,15 @@ pub(crate) fn choose_names(
     // anything watching for one.
     for entity in &named {
         if !winners.contains(&entity) {
-            commands.entity(entity).remove::<Named>();
+            commands.entity(entity).try_remove::<Named>();
         }
     }
     for entity in winners {
         if !named.contains(entity) {
-            commands.entity(entity).insert(Named);
+            // A winner picked from this frame's query may already be gone by the
+            // time the command runs, if eviction despawned it; try_insert lets
+            // that pass rather than crashing choose_names.
+            commands.entity(entity).try_insert(Named);
         }
     }
 }
@@ -1107,13 +1099,14 @@ fn looks(radius: f32, per_pixel: f32) -> f32 {
 /// is on, so a distance measured from there is near enough the same for all
 /// of them and separates nothing.
 ///
-/// Nothing about how notable a system is enters here. What makes one worth
-/// picking out of a crowd is what makes its star draw larger, and that is
-/// [`super::scale`]'s to decide: it is population today and a setting the
-/// viewer turns off by default. A name that argued from population while
-/// every star was drawn the same size was answering a question nobody had
-/// asked. Should prominence earn a name, it should be the same prominence
-/// that earns a star its size, so that both follow whatever that becomes.
+/// In the map view nothing about how notable a system is enters here: every
+/// star is drawn the same size unless population scaling is turned on, so a
+/// name argued from prominence would answer a question the picture never
+/// asked. The realistic view is where that prominence is real — a star's size
+/// there *is* its brightness (see [`super::scale::size_photometrically`]) — so
+/// brightness earns the name too, carried in on [`LabelWeight::System`] and
+/// weighed by [`BRIGHT_NAME_WEIGHT`]. Both follow the one prominence, as the
+/// note here long promised they should.
 /// What a name's weight is worked out from
 ///
 /// The two are weighed on different things because they are seen in different
@@ -1126,9 +1119,12 @@ fn looks(radius: f32, per_pixel: f32) -> f32 {
 /// marks and how the terms are added up, cannot be changed for one and left
 /// behind for the other.
 enum LabelWeight {
-    /// A system in the sky, by where it stands relative to the middle of the
-    /// view: light years off it, and light years in front of it
-    System { from_center: f32, ahead: f32 },
+    /// A system in the sky. Where it stands relative to the middle of the
+    /// view — light years off it, and light years in front of it — and, in the
+    /// realistic view, how far its apparent magnitude clears the drawn floor,
+    /// which is what sizes its star and so leads its name. Nothing in the map
+    /// view, where every star is the same size and position alone orders them.
+    System { from_center: f32, ahead: f32, brightness: Option<f32> },
     /// A body inside the system the camera is in, by what it is: how far
     /// under the arrival star it orbits, whether it is a star, whether it is
     /// the one the system arrives at, and how large it looks
@@ -1150,10 +1146,30 @@ fn name_score(
     held: bool,
 ) -> f32 {
     let standing = match weight {
-        LabelWeight::System { from_center, ahead } => {
+        LabelWeight::System { from_center, ahead, brightness } => {
             let centered =
                 CENTER_WEIGHT / (1. + (from_center / CENTER_REACH).powi(2));
-            centered - from_center + NEARER_WEIGHT * ahead
+            let nearness = centered - from_center + NEARER_WEIGHT * ahead;
+            match brightness {
+                // The realistic view sizes a star by how far it clears the
+                // limiting magnitude, so that margin leads its name; nearness
+                // to the middle is a secondary that orders stars of a like
+                // brightness. Both are bounded — the brightness to
+                // [`CENTER_WEIGHT`], the nearness to a magnitude's worth
+                // ([`BRIGHT_NAME_WEIGHT`]) — so brightness always leads and the
+                // whole stays inside the band a body ([`INSIDE_WEIGHT`]) and a
+                // mark ([`POINTED_WEIGHT`]) sit above, even in a wide view where
+                // `from_center` runs to thousands of light years and unbounded
+                // would sink a bright far star below a dim near one.
+                Some(margin) => {
+                    let bright =
+                        (BRIGHT_NAME_WEIGHT * margin).min(CENTER_WEIGHT);
+                    let near = (SECONDARY_NEARNESS * nearness)
+                        .clamp(-BRIGHT_NAME_WEIGHT, BRIGHT_NAME_WEIGHT);
+                    bright + near
+                }
+                None => nearness,
+            }
         }
         LabelWeight::Body { under, star, primary, apparent } => {
             // A rank apiece for the depths, and one over them all for the
@@ -1262,7 +1278,7 @@ fn smoothed(t: f32) -> f32 {
 
 /// The same rectangle, for whoever knows how wide a name is without holding it
 ///
-/// A name's width is its letter count, [`FONT`] being monospaced, so what the
+/// A name's width is its letter count, the font being monospaced, so what the
 /// layout is measuring is a number and not any particular words. The sky is
 /// laid out every frame and setting the words to count them is a heap
 /// allocation per system per frame, thrown away as soon as it is measured.
@@ -1271,7 +1287,7 @@ pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
     let width = letters as f32 * ADVANCE * size;
     let margin = size * CROWDING;
 
-    // `face_camera` puts a name up and to the right of what it names by this
+    // `draw_names` puts a name up and to the right of what it names by this
     // same standoff and these same multiples of its height.
     let left = at.x + clear + size * GAP;
     let middle = at.y - size * RISE;
@@ -1284,67 +1300,63 @@ pub(super) fn name_rect_of(at: Vec2, letters: usize, clear: f32) -> Rect {
     )
 }
 
-/// Give a label to every system that has won a name, and take it from the
+/// Give a name token to everything that has won a name, and take it from the
 /// rest
 ///
-/// [`choose_names`] decides; this only carries the decision out. A system
-/// without a [`Named`] has no label, which is what keeps the mesh cost to
-/// the names actually drawn, and means nothing has to be hidden after the
-/// fact.
+/// [`choose_names`] decides; this only carries the decision out. A `Named`
+/// system or body gets a [`Label`] token hung off it carrying the words to
+/// set, which [`draw_names`] paints and [`super::pointing`] catches the
+/// pointer over. A thing without a `Named` has none, which keeps the work to
+/// the names actually drawn.
 ///
-/// A name already up is set again where the words have moved on. What a
-/// system's plate says is not its name alone: a stop carries the jump to it,
-/// and a system becomes a stop and stops being one without ever losing the
-/// name it holds. Left alone, a plate would go on saying whatever was true the
-/// frame it was spawned.
+/// The words are set again where they have moved on. What a system's plate
+/// says is not its name alone: a stop carries the jump to it, and a system
+/// becomes a stop and stops being one without ever losing the name it holds.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn respawn(
     mut commands: Commands,
-    named: Query<Plated, With<Named>>,
-    // Where the jump to a stop is measured from, which is the system the
-    // camera is standing in. Asked of every system rather than only the ones
-    // without names, so that the answer is the same one [`choose_names`]
-    // granted room for on the frame the camera arrives and the system it is
-    // arriving in has not yet let go of its own name.
+    named: Query<
+        (Entity, &System, Option<&Children>, Has<crate::systems::route::Hop>),
+        With<Named>,
+    >,
+    // Where the jump to a stop is measured from, the system the camera stands
+    // in. Asked of every system so the answer matches the one [`choose_names`]
+    // granted room for on the frame the camera arrives, before the system it
+    // arrives in has let go of its own name.
     standing_in: Query<&System>,
     holding: Res<HeldSystem>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     // Whatever lost its name since this last ran, rather than everything that
-    // does not have one. Nearly every name is the same name it was last frame,
-    // and asking the other way round is a walk of the whole sky, and of every
-    // child hung under it, to find the handful with a plate to take down.
+    // does not have one. Nearly every name is the name it was last frame, and
+    // asking the other way round walks the whole sky to find the handful to
+    // take a token from.
     mut unnamed: RemovedComponents<Named>,
     children_of: Query<&Children>,
-    labels: Query<Entity, With<Label>>,
-    // The words on a plate already up, which only a system's ever change.
-    mut plates: Query<&mut Text3d, With<Label>>,
-    materials: Res<LabelMaterials>,
-    mesh: Res<GroundMesh>,
+    tokens: Query<Entity, With<Label>>,
+    // The words on a token already up, which only a system's ever change.
+    mut words: Query<&mut PlateText, With<Label>>,
 ) {
     for entity in unnamed.read() {
         // Nothing where the thing itself has gone, which is the other way a
-        // name is lost. Its children went with it, plate and all.
+        // name is lost. Its token went with it.
         let Ok(children) = children_of.get(entity) else { continue };
         for child in children.iter() {
-            if let Ok(label) = labels.get(child) {
-                commands.entity(label).despawn();
+            if tokens.contains(child) {
+                commands.entity(child).despawn();
             }
         }
     }
 
-    // The same nameplate, hung off whatever it names.
+    // The same token, hung off whatever it names.
     for (entity, body, children) in &named_bodies {
-        let labelled = children
-            .is_some_and(|c| c.iter().any(|child| labels.contains(child)));
-        if labelled {
-            continue;
-        }
-
-        let label = commands
-            .spawn(nameplate(body.name.to_uppercase(), &materials))
-            .id();
-        commands.entity(label).with_child(ground(&materials, &mesh));
-        commands.entity(entity).add_child(label);
+        set_name(
+            &mut commands,
+            &mut words,
+            &tokens,
+            entity,
+            children,
+            body.name.to_uppercase(),
+        );
     }
 
     // Where a jump is measured from. Nothing where the map is holding no
@@ -1355,59 +1367,45 @@ pub(crate) fn respawn(
         .map(|held| held.position());
 
     for (entity, system, children, hop) in &named {
-        let wanted = plate_for(system, hop, from);
-
-        let plate = children
-            .into_iter()
-            .flat_map(|children| children.iter())
-            .find(|child| labels.contains(*child));
-
-        // Written only where the words moved. Setting a plate again rebuilds
-        // its mesh, and this runs over every name every frame.
-        if let Some(plate) = plate {
-            if let Ok(mut words) = plates.get_mut(plate)
-                && said(&words) != Some(wanted.as_str())
-            {
-                *words = Text3d::new(wanted);
-            }
-            continue;
-        }
-
-        let label = commands.spawn(nameplate(wanted, &materials)).id();
-        commands.entity(label).with_child(ground(&materials, &mesh));
-
-        commands.entity(entity).add_child(label);
+        set_name(
+            &mut commands,
+            &mut words,
+            &tokens,
+            entity,
+            children,
+            plate_for(system, hop, from),
+        );
     }
 }
 
-/// Size each ground to the words its plate is set to
+/// Hang a name token off `entity`, or set the words on the one already there
 ///
-/// Read off the words rather than worked out again from the system, since a
-/// stop's plate carries the jump to it and a ground has to cover whatever is
-/// actually drawn. The plate's own origin is the left edge of the words,
-/// vertically centered, and [`face_camera`] scales the whole plate, so this
-/// works in the units [`SIZE`] is written in and never in pixels.
-///
-/// In the one plane as the words, `z` and all. An opaque ground drawn ahead
-/// of them and cleared at their own depth wants no setback, and a setback is
-/// a parallax: the plate faces the camera, so a ground pushed along the view
-/// swings off its words toward the middle of the screen as the view turns.
-fn back_names(
-    plates: Query<&Text3d, With<Label>>,
-    mut grounds: Query<(&mut Transform, &ChildOf), With<Ground>>,
+/// Written only where the words moved, so a token is not touched on the frames
+/// its name says the same thing.
+fn set_name(
+    commands: &mut Commands,
+    words: &mut Query<&mut PlateText, With<Label>>,
+    tokens: &Query<Entity, With<Label>>,
+    entity: Entity,
+    children: Option<&Children>,
+    wanted: String,
 ) {
-    for (mut ground, child_of) in &mut grounds {
-        let Ok(words) = plates.get(child_of.parent()) else { continue };
-        let letters = said(words).map_or(0, |it| it.chars().count());
-        let width = letters as f32 * SET_WIDTH * SIZE;
-        let pad = SIZE * GROUND_PAD;
+    let token = children
+        .into_iter()
+        .flat_map(|children| children.iter())
+        .find(|child| tokens.contains(*child));
 
-        ground.set_if_neq(Transform {
-            translation: Vec3::new(width / 2., 0., 0.),
-            rotation: Quat::IDENTITY,
-            scale: Vec3::new(width + pad * 2., SIZE + pad * 2., 1.),
-        });
+    if let Some(token) = token {
+        if let Ok(mut plate) = words.get_mut(token)
+            && plate.0 != wanted
+        {
+            plate.0 = wanted;
+        }
+        return;
     }
+
+    let token = commands.spawn(nameplate(wanted)).id();
+    commands.entity(entity).add_child(token);
 }
 
 /// What the plate for `system` says, `stop` being whether a route reaches it
@@ -1476,366 +1474,205 @@ fn plate_words(name: &str, jump: Option<f64>) -> String {
     }
 }
 
-/// What a plate says, if it says anything this wrote
+/// A name token hung off whatever it names
 ///
-/// A plate is one run of text, [`nameplate`] having set it that way, and
-/// anything else is not a plate this put up.
-pub(super) fn said(words: &Text3d) -> Option<&str> {
-    match words.segments.as_slice() {
-        [(Text3dSegment::String(said), _)] => Some(said),
-        _ => None,
-    }
-}
-
-/// The name of a thing, drawn beside it
-///
-/// One plate for a system and for a body alike: what differs is only what it
-/// is hung off and what decided it was worth drawing.
-///
-/// Given the words to set rather than making them. Names are put in capitals,
-/// as everything else the map says out loud is, and the font being monospaced
-/// that costs no width. A unit standing beside one is not a name and is spelt
-/// the way a unit is spelt, so whoever knows which is which says so.
-fn nameplate(name: String, materials: &LabelMaterials) -> impl Bundle {
+/// A bare handle rather than a plate of meshes: the words are painted in
+/// screen space by [`draw_names`], and this only holds them, catches the
+/// pointer over the name, and keeps the thing in the hierarchy for the paint
+/// to find. One token for a system and for a body alike, differing only in
+/// what hangs it and what decided it was worth drawing.
+fn nameplate(words: String) -> impl Bundle {
     (
         Label,
-        // Over the galaxy rather than in it, which is the whole reason a name
-        // is legible over a thick field at all.
-        RenderLayers::layer(crate::camera::Overlay::Names.layer()),
-        Text3d::new(name),
-        Text3dStyling {
-            size: SIZE,
-            font: FONT.into(),
-            color: Srgba::WHITE,
-            // The anchor says where the text sits relative to the entity,
-            // not which edge of the text lands on it. CENTER_RIGHT puts the
-            // name to the right of what it names rather than straddling it,
-            // leaving room for the gap below.
-            anchor: TextAnchor::CENTER_RIGHT,
-            ..default()
-        },
-        Mesh3d::default(),
-        // Whatever the thing is; `tint_marked_names` runs after this and
-        // settles it before the name is drawn.
-        MeshMaterial3d(materials.get(Tint::Resting, false).clone()),
-        // Placed by `face_camera` before the first draw.
-        Transform::default(),
+        PlateText(words),
         // What catches the pointer over a name. The area is worked out on
-        // screen by `super::pointing`, from the same rectangle
-        // `choose_names` laid this name out in, so a name catches over
-        // exactly the room it was granted rather than over the quads its
-        // glyphs happen to occupy.
+        // screen by [`super::pointing`], from the same rectangle
+        // [`choose_names`] laid this name out in, so a name catches over
+        // exactly the room it was granted.
         Pickable::default(),
+        // No mesh hangs off a token; it draws nothing itself. Hidden keeps it
+        // out of every render pass while leaving it in the hierarchy for the
+        // pointer to be caught over and for [`draw_names`] to reach its parent.
+        Transform::default(),
+        Visibility::Hidden,
     )
 }
 
-/// Turn each label to the camera and place it beside its system
+/// Paint every drawn name flat on the screen
 ///
-/// A label is a child of the system it names, which carries neither a size
-/// nor a rotation of its own, so everything written here is what the label
-/// is drawn with. That a system is never rotated is what lets the camera's
-/// rotation be written straight into a slot that is read as local.
-pub fn face_camera(
+/// The names, their grounds and the lines joining them to what they name are
+/// annotation, not light, and are drawn in screen space with egui rather than
+/// as meshes out at the galaxy coordinates their systems sit at. A glyph mesh
+/// transformed by `view_proj · model` in f32 at a system's ~1e17 m sits torn
+/// apart on hardware that keeps fewer bits through the multiply (see
+/// `docs/night-sky.md`); a name projected to a pixel on the CPU and painted
+/// there does not, and comes out crisp at the window's own scale besides.
+///
+/// The layout is `choose_names`' and reaches here through the [`Label`]
+/// tokens `respawn` hangs off whatever wins a name: each carries the words to
+/// set, and its parent says where on screen the name goes and what colour it
+/// comes out. Painted in the background layer, under the chrome and over the
+/// map.
+pub fn draw_names(
+    mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
-    systems: Query<(&System, &Transform, &Indicator), Without<Label>>,
-    // A body's own scale, which is what propagation multiplies its label's by
-    // and so what the label has to be divided by. The local one rather than
-    // the `GlobalTransform` beside it: propagation runs before
-    // `super::scale::size_inside`, which is where a body's scale is decided,
-    // so the global standing here is a scale behind the local.
+    tokens: Query<(&PlateText, &ChildOf), With<Label>>,
+    // The marks that colour a name and where its system stands. Spelled
+    // `Without<Label>` so the scheduler can prove the token query disjoint
+    // from these; a token is neither a system nor a body.
     //
-    // The filters are spelled out, here and on the labels below, so the
-    // scheduler can prove the three queries disjoint. A label is neither a
-    // system nor a body, and nothing is both of those.
-    bodies: Query<(&Transform, &Indicator), (With<Body>, Without<Label>)>,
-    // Where a body stands, out of the grid holding it rather than out of the
-    // transform `big_space` writes. That transform is written during
-    // `PostUpdate`, so read here it is a frame old, and a zoom covers near a
-    // quarter of the distance it has left every frame: every name inside a
-    // system would be sized against a distance the camera had already left,
-    // and would only be right once the camera stopped.
-    places: Places,
-    mut labels: Query<
-        (&mut Transform, &ChildOf),
-        (With<Label>, Without<System>, Without<Body>),
+    // No `Filtered` among them: an excluded system is never laid out a name
+    // at all, so a token's parent is admitted by construction. See
+    // [`worth_naming`].
+    systems: Query<
+        (
+            &System,
+            &Indicator,
+            Has<PointedAt>,
+            Has<Selected>,
+            Has<crate::systems::route::Hop>,
+        ),
+        Without<Label>,
     >,
-) {
-    let Ok((orbit, camera)) = camera.single() else { return };
-    let Some(viewport) = camera.logical_viewport_size() else { return };
+    bodies: Query<
+        (&Indicator, Has<PointedAt>, Has<Selected>),
+        (With<Body>, Without<Label>),
+    >,
+    places: Places,
+) -> Result {
+    let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
+    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (mut label, child_of) in &mut labels {
-        let Ok((system, shell, indicator)) = systems.get(child_of.parent())
-        else {
-            // A name hung off something inside a system.
-            let body = child_of.parent();
-            let Ok((own_size, indicator)) = bodies.get(body) else { continue };
-            let Some(place) = places.of(body) else { continue };
+    let ctx = contexts.ctx_mut()?;
+    // Under the chrome, which draws in the same order, and over the map, which
+    // every egui layer is drawn over. Ordered before the chrome in the
+    // schedule so its layer is registered first and sits beneath the panes.
+    let painter = ctx.layer_painter(annotations_layer());
+    // The one face the chrome is set in as well, so a name on the map and the
+    // same name in the bar are the one typeface. Egui's default monospace is
+    // Hack, which is the face the chrome is set in.
+    let font = egui::FontId::new(NAME_HEIGHT, egui::FontFamily::Monospace);
 
-            // Measured to where the body stands in the galaxy, as a system's
-            // name is measured to where its system stands. Both are read off
-            // what `Update` has already settled, so a name is sized by the
-            // view it is about to be drawn into rather than by the last one.
-            let into_view = depth(orbit, place).max(MIN_DEPTH);
-            let world_per_pixel =
-                world_per_pixel(cot_half_fov, viewport.y, into_view);
+    for (words, child_of) in &tokens {
+        let thing = child_of.parent();
+        // Where the thing stands on screen, how large its mark is, what colour
+        // its name comes out, and whether a line is drawn to it. A system is
+        // out in the sky; a body is read off the grid holding it, the way
+        // [`choose_names`] reads it, so the name is placed against the view it
+        // is about to be drawn into.
+        let (at, clear, tint, leader) =
+            if let Ok((system, indicator, pointed, selected, hop)) =
+                systems.get(thing)
+            {
+                let Some(at) = screen_position(
+                    orbit,
+                    cot_half_fov,
+                    viewport,
+                    DVec3::from(system.position),
+                ) else {
+                    continue;
+                };
+                (
+                    at,
+                    indicator.0,
+                    marked_tint(pointed, selected),
+                    !(pointed || selected || hop),
+                )
+            } else if let Ok((indicator, pointed, selected)) = bodies.get(thing)
+            {
+                let Some(place) = places.of(thing) else { continue };
+                let Some(at) =
+                    screen_position(orbit, cot_half_fov, viewport, place)
+                else {
+                    continue;
+                };
+                (
+                    at,
+                    indicator.0,
+                    marked_tint(pointed, selected),
+                    !(pointed || selected),
+                )
+            } else {
+                continue;
+            };
 
-            let height = NAME_HEIGHT * world_per_pixel;
-            // Clear of the body itself rather than a fixed step from its
-            // middle. A body is drawn at the size it is, so a name set the
-            // gap a system's name is set at would sit inside anything larger
-            // than a speck. Measured from the mark, which is the outline the
-            // pointer is tested against, so the name stands off exactly what
-            // is drawn.
-            let clear = indicator.0 * world_per_pixel;
-            let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
-                + orbit.rotation * Vec3::Y * (height * RISE);
+        // The name sits up and to the right of what it names, clear of the
+        // mark drawn around it, by the same figures [`name_rect_of`] lays it
+        // out with. Its origin is the left edge of the words, vertically
+        // centred.
+        let left = at.x + clear + NAME_HEIGHT * GAP;
+        let middle = at.y - NAME_HEIGHT * RISE;
 
-            // Divided out, the plate being drawn at the body's own scale
-            // otherwise, and a body's scale being its radius in metres.
-            let own = own_size.scale.x.max(1e-6);
-            label.set_if_neq(Transform {
-                translation: offset / own,
-                rotation: orbit.rotation,
-                scale: Vec3::splat(height / SIZE / own),
-            });
-            continue;
-        };
+        let color = color32(tint);
+        let galley =
+            painter.layout_no_wrap(words.0.clone(), font.clone(), color);
+        let origin = egui::pos2(left, middle - galley.size().y / 2.);
 
-        // Measured to the system, not to the label's offset within it, so
-        // that every name on screen is sized against the same view.
-        let into_view =
-            depth(orbit, DVec3::from(system.position)).max(MIN_DEPTH);
-        let world_per_pixel =
-            world_per_pixel(cot_half_fov, viewport.y, into_view);
-
-        // The line box is exactly `SIZE` tall, so this is the height the
-        // name draws at, in pixels, whatever the camera is doing.
-        let height = NAME_HEIGHT * world_per_pixel;
-        let scale = height / SIZE;
-
-        // Clear of the mark drawn around the system, as a body's name is
-        // clear of the body. Up close that mark is a ring tens of pixels wide
-        // with the shell inside it, and a name set a fixed step from the
-        // middle would be drawn over both.
-        let clear = indicator.0 * world_per_pixel;
-
-        // Offset along the camera's own axes, so the label keeps sitting up
-        // and to the right on screen however the view is orbited. All three
-        // are pixel measurements taken into the world, so they are fixed
-        // pixel gaps.
-        let offset = orbit.rotation * Vec3::X * (clear + height * GAP)
-            + orbit.rotation * Vec3::Y * (height * RISE);
-
-        // Only where it moved, as everything the camera decides the size of
-        // is. A plate carries a mesh, so a transform written regardless hands
-        // every name on screen back to the renderer every frame.
-        // Divided by the shell's own scale, the label being a child of the
-        // system the shell now shares an entity with, and that scale being the
-        // mark drawn far larger than a metre. The body path above does the
-        // same with a body's own scale.
-        let own = shell.scale.x.max(1e-6);
-        label.set_if_neq(Transform {
-            translation: offset / own,
-            rotation: orbit.rotation,
-            scale: Vec3::splat(scale / own),
-        });
-    }
-}
-
-/// Join each thing to its name with a line
-///
-/// The name sits off to one side, which is ambiguous once things are close
-/// together. Drawn as a gizmo rather than a mesh because both ends move
-/// every frame the camera does, and there is nothing to keep between frames.
-///
-/// A line only exists where its name is drawn. Names are hidden by the
-/// spyglass, by the names toggle, and by facing away from the camera, and a
-/// line answering to anything less than the drawn text outlives one of them.
-///
-/// A system's name and a body's are the same name drawn the same way, so both
-/// get one. What differs is only what the line has to begin clear of.
-pub fn leaders(
-    mut gizmos: Gizmos,
-    labels: Query<(&GlobalTransform, &ViewVisibility, &ChildOf), With<Label>>,
-    named: Query<Anchor, Or<(With<System>, With<Body>)>>,
-) {
-    for (label, drawn, child_of) in &labels {
-        if !drawn.get() {
-            continue;
-        }
-        let Ok((at, pointed_at, selected, hop)) = named.get(child_of.parent())
-        else {
-            continue;
-        };
-
-        // A ring around a system says which one a name belongs to better
-        // than a line to it does, and leaves nothing for the line to say.
-        // Either ring answers, and a name the color of the ring it belongs
-        // to has already said which star it came from.
-        //
-        // A stop a route reaches is ringed as well, and carries the mark
-        // saying which way it lies between the ring and the name, which joins
-        // the two of them more plainly than a line drawn under it could.
-        if pointed_at || selected || hop {
-            continue;
-        }
-
-        // What the line has to begin clear of is whatever is drawn where the
-        // name points, which is the anchor's own scale: a system is its own
-        // shell and carries the size it is drawn at, and a body carries its
-        // own. Either way the line begins at the edge of what it points to.
-        let edge = at.scale().x;
-
-        // The label's origin is the left edge of the text, so the line runs
-        // from the thing straight to where the name begins.
-        let from = at.translation();
-        let to = label.translation();
-        let length = from.distance(to);
-        let Some(direction) = (to - from).try_normalize() else { continue };
-
-        // Measured out from the ring rather than from the center, so that
-        // the air before the line matches the air after it.
-        let gap = length * LEADER_GAP;
-        let start = edge + gap;
-        let end = length - gap;
-        if start >= end {
-            continue;
-        }
-
-        gizmos.line(
-            from + direction * start,
-            from + direction * end,
-            LEADER_COLOR,
+        // The dark ground the name is read against, sized to the words it
+        // carries and drawn first so the letters land on it. Opaque, so the
+        // field of stars a name is read over does not fill its counters.
+        let pad = NAME_HEIGHT * GROUND_PAD;
+        painter.rect_filled(
+            egui::Rect::from_min_size(origin, galley.size()).expand(pad),
+            0.,
+            color32(GROUND),
         );
+        painter.galley(origin, galley, color);
+
+        // The line joining the thing to its name, begun clear of the mark and
+        // stopped short of the words, with the same air at each end. A name
+        // marked out is ringed instead and needs no line.
+        if leader {
+            let to = Vec2::new(left, middle);
+            let length = at.distance(to);
+            if let Some(direction) = (to - at).try_normalize() {
+                let gap = length * LEADER_GAP;
+                let start = clear + gap;
+                let end = length - gap;
+                if start < end {
+                    let a = at + direction * start;
+                    let b = at + direction * end;
+                    painter.line_segment(
+                        [egui::pos2(a.x, a.y), egui::pos2(b.x, b.y)],
+                        egui::Stroke::new(1.0_f32, color32(LEADER_COLOR)),
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// What colour a name comes out for the marks on it
+///
+/// A name is drawn the colour of the ring around its star, so a system marked
+/// out is one thing in two places. Selection wins over pointing where both
+/// apply, as it does for the ring: the pointer will move on, and the selection
+/// is what was asked for.
+fn marked_tint(pointed_at: bool, selected: bool) -> Srgba {
+    if selected {
+        SELECTION
+    } else if pointed_at {
+        INDICATOR
+    } else {
+        Srgba::WHITE
     }
 }
 
-pub fn init_materials(
-    mut assets: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    dim: Res<DimTo>,
-    mut commands: Commands,
-) {
-    let mut label = |tint: Srgba| assets.add(name_material(tint));
-
-    commands.insert_resource(LabelMaterials {
-        bright: Tint::ALL.map(|tint| label(tint.color())),
-        dim: Tint::ALL.map(|tint| label(faded(tint.color(), dim.0))),
-        // No atlas on this one. A ground is a flat rectangle and the glyph
-        // texture is what makes the letters letters.
-        ground: assets.add(StandardMaterial {
-            base_color: GROUND.into(),
-            alpha_mode: AlphaMode::Opaque,
-            unlit: true,
-            ..default()
-        }),
-    });
-    commands.insert_resource(GroundMesh(meshes.add(Rectangle::new(1., 1.))));
-}
-
-/// The ground for one name, sized by [`back_names`] once it knows the words
-fn ground(materials: &LabelMaterials, mesh: &GroundMesh) -> impl Bundle {
-    (
-        Ground,
-        RenderLayers::layer(crate::camera::Overlay::Grounds.layer()),
-        Mesh3d(mesh.0.clone()),
-        MeshMaterial3d(materials.ground.clone()),
-        Transform::default(),
+/// An sRGB colour as egui knows it
+///
+/// [`Srgba`] channels are already gamma-encoded, the space [`egui::Color32`]
+/// holds, so they cross straight over; the alpha is not premultiplied on
+/// either side.
+pub(crate) fn color32(color: Srgba) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(
+        (color.red * 255.) as u8,
+        (color.green * 255.) as u8,
+        (color.blue * 255.) as u8,
+        (color.alpha * 255.) as u8,
     )
-}
-
-/// How a name is painted in `tint`
-///
-/// The glyphs are drawn white and unlit, so a material's base color
-/// multiplies straight through them and is what a name comes out.
-fn name_material(tint: Srgba) -> StandardMaterial {
-    StandardMaterial {
-        base_color: tint.into(),
-        base_color_texture: Some(TextAtlas::DEFAULT_IMAGE.clone()),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    }
-}
-
-/// `tint` at `strength` of full
-///
-/// The color is left alone and the alpha carries it, since a name dimmed by
-/// darkening would go black against the sky and read as a hole rather than as
-/// something standing further back.
-fn faded(tint: Srgba, strength: f32) -> Srgba {
-    Srgba { alpha: tint.alpha * strength, ..tint }
-}
-
-/// Repaint the dimmed tints when the slider moves
-///
-/// The handles stay as they are, so no name has to be told which material it
-/// is pointing at.
-fn redim(
-    dim: Res<DimTo>,
-    materials: Res<LabelMaterials>,
-    mut assets: ResMut<Assets<StandardMaterial>>,
-) {
-    if !dim.is_changed() {
-        return;
-    }
-
-    for (handle, tint) in materials.dim.iter().zip(Tint::ALL) {
-        if let Some(mut material) = assets.get_mut(handle) {
-            *material = name_material(faded(tint.color(), dim.0));
-        }
-    }
-}
-
-/// Tint a name for what its system is
-///
-/// Keyed on the system rather than on the name, so that pointing at a star
-/// lights its name as well, and both go out together.
-///
-/// Selection wins over pointing where both apply, as it does for the ring:
-/// the pointer will move on, and the selection is what was asked for.
-///
-/// A name dims with the system it belongs to, marked out or not. One rule
-/// with no exceptions, and a name that stayed bright over a dimmed star would
-/// read as the filter having let go of it.
-pub fn tint_marked_names(
-    systems: Query<
-        (Has<PointedAt>, Has<Selected>, Has<Filtered>),
-        With<System>,
-    >,
-    // What is inside a system answers the same two marks. No filter: a
-    // filter is a question asked of systems, and nothing asks it of a body.
-    bodies: Query<(Has<PointedAt>, Has<Selected>), With<Body>>,
-    materials: Res<LabelMaterials>,
-    mut names: Query<
-        (&ChildOf, &mut MeshMaterial3d<StandardMaterial>),
-        With<Label>,
-    >,
-) {
-    for (child_of, mut material) in &mut names {
-        let marked = systems.get(child_of.parent()).ok().or_else(|| {
-            bodies
-                .get(child_of.parent())
-                .ok()
-                .map(|(pointed_at, selected)| (pointed_at, selected, false))
-        });
-        let Some((pointed_at, selected, filtered)) = marked else {
-            continue;
-        };
-        let tint = if selected {
-            Tint::Selected
-        } else if pointed_at {
-            Tint::PointedAt
-        } else {
-            Tint::Resting
-        };
-
-        let wanted = materials.get(tint, filtered);
-        if material.0 != *wanted {
-            material.0 = wanted.clone();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1847,21 +1684,6 @@ mod tests {
     fn only_a_stop_says_how_far_off_it_is() {
         assert_eq!(plate_words("lung", Some(6.74)), "LUNG 6.7 Ly");
         assert_eq!(plate_words("lung", None), "LUNG");
-    }
-
-    /// A plate says back what it was set to
-    ///
-    /// Which is what tells a plate whose words have moved on from one that is
-    /// still saying the right thing, and what the room a name is granted and
-    /// the area it is caught over are measured from.
-    #[test]
-    fn a_plate_says_back_what_it_was_set_to() {
-        let resting = plate_words("lung", None);
-        let stop = plate_words("lung", Some(6.74));
-
-        assert_eq!(said(&Text3d::new(&resting)), Some(resting.as_str()));
-        assert_eq!(said(&Text3d::new(&stop)), Some(stop.as_str()));
-        assert_ne!(said(&Text3d::new(&resting)), Some(stop.as_str()));
     }
 
     /// A plate is measured at the width it will be set at
@@ -1973,19 +1795,27 @@ mod tests {
         assert!(!worth_naming(STANDS, true, true, false, false));
     }
 
-    /// And keeps it while it is pointed at or picked out
+    /// And does not get it back for being pointed at or picked out
     ///
-    /// Either is asking for the system by name, which is the one thing a
-    /// name is for.
+    /// Reported as an empty box hanging off an excluded star: the name was
+    /// awarded for being marked out and then faded to nothing for being
+    /// excluded, while the ground it is read against stayed opaque. There is
+    /// no dim reading of a name, so the answer is not to lay one out.
     #[test]
-    fn a_marked_system_is_named_through_a_filter() {
-        assert!(worth_naming(STANDS, true, true, true, false));
-        assert!(worth_naming(STANDS, true, true, false, true));
+    fn a_filtered_system_is_not_named_even_when_marked_out() {
+        assert!(!worth_naming(STANDS, true, true, true, false));
+        assert!(!worth_naming(STANDS, true, true, false, true));
+        // Nor with the toggle off as well, which refuses it twice over.
+        assert!(!worth_naming(STANDS, false, true, true, false));
+        assert!(!worth_naming(STANDS, false, true, false, true));
     }
 
-    /// The names toggle bars one the same way, and yields the same way
+    /// The names toggle bars one, and yields where a filter does not
+    ///
+    /// The toggle says the same thing about every system at once rather than
+    /// about this one, so asking for a system by name overrides it.
     #[test]
-    fn the_names_toggle_bars_and_yields_as_a_filter_does() {
+    fn the_names_toggle_yields_to_being_marked_out() {
         assert!(!worth_naming(STANDS, false, false, false, false));
         assert!(worth_naming(STANDS, false, false, true, false));
         assert!(worth_naming(STANDS, false, false, false, true));
@@ -1996,13 +1826,6 @@ mod tests {
     fn an_admitted_system_follows_the_toggle() {
         assert!(worth_naming(STANDS, true, false, false, false));
         assert!(!worth_naming(STANDS, false, false, false, false));
-    }
-
-    /// Marked out beats both at once
-    #[test]
-    fn a_marked_system_is_named_with_everything_against_it() {
-        assert!(worth_naming(STANDS, false, true, true, false));
-        assert!(worth_naming(STANDS, false, true, false, true));
     }
 
     /// A system the camera has come inside is not named at all
@@ -2437,6 +2260,16 @@ mod tests {
         );
     }
 
+    /// A system weight from where it stands, in the map view — no brightness
+    fn placed(from_center: f32, ahead: f32) -> LabelWeight {
+        LabelWeight::System { from_center, ahead, brightness: None }
+    }
+
+    /// And in the realistic view, `margin` magnitudes above the drawn floor
+    fn lit(from_center: f32, ahead: f32, margin: f32) -> LabelWeight {
+        LabelWeight::System { from_center, ahead, brightness: Some(margin) }
+    }
+
     /// Of two systems along one line of sight, the near one is named first
     ///
     /// A name is drawn over whatever stands behind it, so naming the far one
@@ -2446,18 +2279,8 @@ mod tests {
     #[test]
     fn a_system_in_front_is_named_before_one_behind() {
         let away = 20.;
-        let front = name_score(
-            LabelWeight::System { from_center: away, ahead: away },
-            false,
-            false,
-            false,
-        );
-        let back = name_score(
-            LabelWeight::System { from_center: away, ahead: -away },
-            false,
-            false,
-            false,
-        );
+        let front = name_score(placed(away, away), false, false, false);
+        let back = name_score(placed(away, -away), false, false, false);
 
         assert!(front > back, "{front} was no better than {back}");
     }
@@ -2472,18 +2295,8 @@ mod tests {
         let away = 20.;
         let bonus = CENTER_WEIGHT / (1. + (away / CENTER_REACH).powi(2));
 
-        let at = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
-            false,
-            false,
-            false,
-        );
-        let front = name_score(
-            LabelWeight::System { from_center: away, ahead: away },
-            false,
-            false,
-            false,
-        );
+        let at = name_score(placed(0., 0.), false, false, false);
+        let front = name_score(placed(away, away), false, false, false);
 
         assert!(
             (front - (at - CENTER_WEIGHT + bonus)).abs() < 1e-3,
@@ -2499,18 +2312,10 @@ mod tests {
     /// something a viewer can predict rather than a ranking to be read.
     #[test]
     fn nearer_systems_are_always_offered_a_name_first() {
-        let mut nearer = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
-            false,
-            false,
-            false,
-        );
+        let mut nearer = name_score(placed(0., 0.), false, false, false);
         for step in 1..=1000 {
             let further = name_score(
-                LabelWeight::System {
-                    from_center: step as f32 * DEFAULT_NAME_RADIUS / 1000.,
-                    ahead: 0.,
-                },
+                placed(step as f32 * DEFAULT_NAME_RADIUS / 1000., 0.),
                 false,
                 false,
                 false,
@@ -2523,6 +2328,92 @@ mod tests {
             );
             nearer = further;
         }
+    }
+
+    /// The realistic view names the brighter of two systems first
+    ///
+    /// There a star's size is its brightness, so the name follows it: two
+    /// systems the same distance off the middle are told apart by how far each
+    /// clears the drawn floor, brighter first.
+    #[test]
+    fn a_brighter_system_is_named_first_in_the_realistic_view() {
+        let score = |w| name_score(w, false, false, false);
+
+        let bright = score(lit(5., 0., 8.));
+        let faint = score(lit(5., 0., 2.));
+
+        assert!(bright > faint, "{bright} was no better than {faint}");
+    }
+
+    /// Stars of a like brightness are still ordered by nearness to the middle
+    ///
+    /// Brightness leads, but does not settle it alone: where two clear the
+    /// floor by the same margin, the nearer the center is named first.
+    #[test]
+    fn a_like_brightness_falls_back_on_nearness() {
+        let score = |w| name_score(w, false, false, false);
+
+        let near = score(lit(0., 0., 5.));
+        let far = score(lit(DEFAULT_NAME_RADIUS, 0., 5.));
+
+        assert!(near > far, "{near} was no better than {far}");
+    }
+
+    /// Brightness leads position: a bright star off the middle outranks a
+    /// faint one at it
+    ///
+    /// What naming primarily by magnitude means. In the map view the central
+    /// system always wins; in the realistic view a far brighter star takes the
+    /// name first, and only a like brightness falls back on nearness.
+    #[test]
+    fn brightness_leads_position_in_the_realistic_view() {
+        let score = |w| name_score(w, false, false, false);
+
+        let bright_edge = score(lit(DEFAULT_NAME_RADIUS, 0., 10.));
+        let faint_center = score(lit(0., 0., 0.));
+
+        assert!(
+            bright_edge > faint_center,
+            "{bright_edge} against {faint_center}"
+        );
+    }
+
+    /// Brightness leads even in a wide view, where nearness would run away
+    ///
+    /// With the spyglass wide, `from_center` reaches thousands of light years,
+    /// and unbounded the nearness term would sink a bright far star below a dim
+    /// near one. Bounded to a magnitude's worth, brightness keeps the lead.
+    #[test]
+    fn brightness_leads_even_in_a_wide_view() {
+        let score = |w| name_score(w, false, false, false);
+
+        let bright_far = score(lit(5000., -5000., 8.));
+        let dim_near = score(lit(0., 0., 1.));
+
+        assert!(bright_far > dim_near, "{bright_far} against {dim_near}");
+    }
+
+    /// However bright, a system's name keeps below a body's and below a mark
+    ///
+    /// The realistic weight is capped to the band the map view's uses, so the
+    /// orderings the rest of the module rests on hold: a body drawn inside the
+    /// held system, and anything pointed at or picked out, still come first.
+    #[test]
+    fn a_bright_system_keeps_to_its_band() {
+        let bright = name_score(lit(0., 0., 1e3), false, false, false);
+
+        assert!(bright < INSIDE_WEIGHT, "{bright} reached a body's band");
+        assert!(bright < POINTED_WEIGHT, "{bright} reached a point's");
+    }
+
+    /// Pointing still settles a name against the brightest star in the sky
+    #[test]
+    fn pointing_outranks_the_brightest_system() {
+        let pointed =
+            name_score(lit(DEFAULT_NAME_RADIUS, 0., 0.), true, false, false);
+        let bright = name_score(lit(0., 0., 1e3), false, false, false);
+
+        assert!(pointed > bright, "{pointed} against {bright}");
     }
 
     /// A spyglass of a given reach, clearing unless said otherwise
@@ -2569,6 +2460,49 @@ mod tests {
         assert_eq!(asked.reach(&spyglass(30., false)), 200.);
     }
 
+    /// The map view lays a name out within the reach and no further
+    ///
+    /// Where every star is the same size, nearness is the whole of it, so a
+    /// system past the reach about the center is dropped before it is scored.
+    #[test]
+    fn the_map_view_places_names_within_the_reach() {
+        let reach = |from_center| {
+            worth_placing(Placement::Reach { from_center, reach: 20. })
+        };
+        assert!(reach(10.));
+        assert!(!reach(30.));
+    }
+
+    /// The realistic view lays out any star bright enough to be drawn, however
+    /// far off the center it stands
+    ///
+    /// Brightness earns the place there, not a reach: a bright star deep along
+    /// the line of sight — Dubhe past Merak — is laid out where the map view
+    /// would have dropped it, and a star too faint to clear the floor is left
+    /// out.
+    #[test]
+    fn the_realistic_view_places_by_brightness_not_reach() {
+        let drawn = |apparent| {
+            worth_placing(Placement::Bright { apparent, floor: 8., limit: 12. })
+        };
+        assert!(drawn(2.));
+        assert!(!drawn(8.));
+    }
+
+    /// The naming limit turns the sky's names down from the faint end
+    ///
+    /// What the dial is for: a star still drawn but fainter than the limit is
+    /// left unnamed, the brighter ones kept, the way turning Name Radius down
+    /// keeps the near systems and drops the far.
+    #[test]
+    fn the_name_limit_drops_the_faint() {
+        let named = |apparent| {
+            worth_placing(Placement::Bright { apparent, floor: 10., limit: 5. })
+        };
+        assert!(named(3.));
+        assert!(!named(7.));
+    }
+
     /// What the pointer is on takes the top of the order
     ///
     /// The best score is kept before anything has been placed, so the name
@@ -2578,20 +2512,11 @@ mod tests {
     #[test]
     fn what_is_pointed_at_outranks_what_is_centered() {
         // Pointed at, and as far out as a name is ever drawn.
-        let pointed = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
-            true,
-            false,
-            false,
-        );
+        let pointed =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), true, false, false);
 
         // The system at the center, which is otherwise the best there is.
-        let centered = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
-            false,
-            false,
-            false,
-        );
+        let centered = name_score(placed(0., 0.), false, false, false);
 
         assert!(
             pointed > centered,
@@ -2607,18 +2532,9 @@ mod tests {
     /// the point on the center, so nothing but the two claims decides it.
     #[test]
     fn what_is_selected_outranks_what_is_pointed_at() {
-        let selected = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
-            false,
-            true,
-            false,
-        );
-        let pointed = name_score(
-            LabelWeight::System { from_center: 0., ahead: 0. },
-            true,
-            false,
-            false,
-        );
+        let selected =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), false, true, false);
+        let pointed = name_score(placed(0., 0.), true, false, false);
 
         assert!(
             selected > pointed,
@@ -2633,18 +2549,10 @@ mod tests {
     /// of the selection either way.
     #[test]
     fn pointing_at_a_selection_leaves_it_where_it_is() {
-        let both = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
-            true,
-            true,
-            false,
-        );
-        let selected = name_score(
-            LabelWeight::System { from_center: DEFAULT_NAME_RADIUS, ahead: 0. },
-            false,
-            true,
-            false,
-        );
+        let both =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), true, true, false);
+        let selected =
+            name_score(placed(DEFAULT_NAME_RADIUS, 0.), false, true, false);
 
         assert_eq!(both, selected);
     }
@@ -2735,18 +2643,14 @@ mod tests {
         );
     }
 
-    /// A world holding the colors a plate is set in, and nothing else
+    /// A minimal world for the name tokens, holding no system
     ///
     /// Nothing is being flown into, so no system is the one the map is holding
-    /// and no plate says a jump.
+    /// and no token says a jump.
     fn plated() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Assets<StandardMaterial>>();
-        app.init_resource::<Assets<Mesh>>();
-        app.init_resource::<DimTo>();
         app.init_resource::<HeldSystem>();
-        app.add_systems(Startup, init_materials);
         app
     }
 
@@ -2858,291 +2762,6 @@ mod tests {
         app.update();
 
         assert_eq!(up(&mut app), 0, "the plate outlived its system");
-    }
-
-    /// A ground lies in the plane of the words it backs
-    ///
-    /// The plate faces the camera, so depth is the one axis a ground and its
-    /// words can be pulled apart on, and under perspective that pull is a
-    /// parallax: a ground set back is dragged toward the middle of the view,
-    /// the more so the further from center the name sits, until a name near
-    /// the edge wears its ground low and off to the side. Opaque and coplanar,
-    /// the ground clears in the depth test at the words' own depth and stays
-    /// under them wherever on screen the name is drawn. It is still padded out
-    /// past the words in its own plane.
-    #[test]
-    fn a_ground_lies_in_the_plane_of_its_words() {
-        let mut app = plated();
-        app.add_systems(Update, (respawn, back_names).chain());
-        winner(&mut app);
-
-        // Two frames: the first spawns the ground by command, the second
-        // sizes it once the spawn has landed.
-        app.update();
-        app.update();
-
-        let mut grounds =
-            app.world_mut().query_filtered::<&Transform, With<Ground>>();
-        let ground = grounds.iter(app.world()).next().expect("a ground");
-
-        assert_eq!(
-            ground.translation.z, 0.,
-            "the ground was set back off the plane of its words"
-        );
-        assert!(
-            ground.scale.y > SIZE,
-            "the ground was not padded past its words"
-        );
-    }
-
-    /// How many names were placed
-    #[derive(Resource, Default)]
-    struct Placings(usize);
-
-    fn count_placings(
-        mut placings: ResMut<Placings>,
-        labels: Query<(), (Changed<Transform>, With<Label>)>,
-    ) {
-        placings.0 += labels.iter().count();
-    }
-
-    /// A world holding a camera and a system wearing a name
-    fn facing() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Placings>();
-        app.add_systems(Update, (face_camera, count_placings).chain());
-        app.world_mut().spawn((
-            OrbitCamera {
-                eye: DVec3::ZERO,
-                rotation: Quat::IDENTITY,
-                ..default()
-            },
-            crate::systems::tests::seeing(),
-            GlobalTransform::default(),
-        ));
-
-        // Down the axis the camera looks along, a name being sized by how far
-        // into the view its system lies rather than by how far off it is.
-        let mut standing = crate::systems::tests::system(1);
-        standing.position = [0., 0., -5.];
-        // No mark to stand off, the gap a name is given being enough on its
-        // own to place one.
-        let system = app
-            .world_mut()
-            .spawn((standing, Transform::default(), Indicator::default()))
-            .id();
-        let label = app.world_mut().spawn((Label, Transform::default())).id();
-        app.world_mut().entity_mut(system).add_child(label);
-        app
-    }
-
-    /// How many names have been placed so far
-    fn placings(app: &App) -> usize {
-        app.world().resource::<Placings>().0
-    }
-
-    /// A world holding a camera and a body wearing a name
-    ///
-    /// The body carries a `Transform` and a `GlobalTransform` that disagree
-    /// about its scale, which is what a frame of the real map looks like:
-    /// [`crate::systems::scale::size_inside`] writes the local one after
-    /// propagation has already read it, so the global standing in a frame is
-    /// the local of the frame before.
-    fn bodied(local: f32, propagated: f32) -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Placings>();
-        app.add_systems(Update, (face_camera, count_placings).chain());
-        app.world_mut().spawn((
-            OrbitCamera {
-                eye: DVec3::ZERO,
-                rotation: Quat::IDENTITY,
-                ..default()
-            },
-            crate::systems::tests::seeing(),
-            GlobalTransform::default(),
-        ));
-
-        // No [`System`], which is what sends a name down the branch that reads
-        // a body rather than the one that reads the system it hangs off.
-        let body = app
-            .world_mut()
-            .spawn((
-                Transform::from_scale(Vec3::splat(local)),
-                GlobalTransform::from(
-                    Transform::from_translation(Vec3::new(0., 0., -1e9))
-                        .with_scale(Vec3::splat(propagated)),
-                ),
-                Indicator::default(),
-            ))
-            .id();
-        let label = app.world_mut().spawn((Label, Transform::default())).id();
-        app.world_mut().entity_mut(body).add_child(label);
-        app
-    }
-
-    /// The scale of the name hung off the one body in the world
-    fn plate_scale(app: &mut App) -> f32 {
-        let mut labels =
-            app.world_mut().query_filtered::<&Transform, With<Label>>();
-        labels.iter(app.world()).next().expect("a name").scale.x
-    }
-
-    /// A world holding a camera and a system with one body inside it
-    ///
-    /// The body sits `out` metres from its system along the axis the camera
-    /// looks down, and carries a `GlobalTransform` saying it is somewhere
-    /// else. That disagreement is what a frame of the real map looks like:
-    /// `big_space` writes the global during `PostUpdate`, so the one standing
-    /// in `Update` says where the body was rather than where it is.
-    fn inside_a_system(out: f64, global: f32) -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Placings>();
-        app.add_systems(Update, (face_camera, count_placings).chain());
-        app.world_mut().spawn((
-            OrbitCamera {
-                eye: DVec3::ZERO,
-                rotation: Quat::IDENTITY,
-                ..default()
-            },
-            crate::systems::tests::seeing(),
-            GlobalTransform::default(),
-        ));
-
-        // Down the axis the camera looks along, five light years off.
-        let mut standing = crate::systems::tests::system(1);
-        standing.position = [0., 0., -5.];
-        let grid = crate::space::system_grid();
-        let (cell, offset) = grid.translation_to_grid(DVec3::new(0., 0., -out));
-        let system = app
-            .world_mut()
-            .spawn((
-                standing,
-                crate::space::system_grid(),
-                Indicator::default(),
-            ))
-            .id();
-
-        let body = app
-            .world_mut()
-            .spawn((
-                crate::systems::bodies::spawn::Body {
-                    address: 1,
-                    name: "Test 1".into(),
-                    id: 1,
-                    class: String::new(),
-                    radius: 1e6,
-                    ancestors: 0,
-                    primary: true,
-                    star: true,
-                },
-                cell,
-                Transform::from_translation(offset),
-                GlobalTransform::from(Transform::from_translation(Vec3::new(
-                    0., 0., global,
-                ))),
-                Indicator::default(),
-            ))
-            .id();
-        app.world_mut().entity_mut(system).add_child(body);
-
-        let label = app.world_mut().spawn((Label, Transform::default())).id();
-        app.world_mut().entity_mut(body).add_child(label);
-        app
-    }
-
-    /// A body's name is sized by where the body stands, not by where it stood
-    ///
-    /// The name is measured to the body out in the galaxy, read from the grid
-    /// holding it, as a system's name is measured to its system. Read off the
-    /// `GlobalTransform` instead it is a frame behind, and a zoom covers near
-    /// a quarter of the distance it has left every frame, so through one every
-    /// name inside a system is sized against a view the camera has left.
-    #[test]
-    fn a_bodys_name_is_sized_by_where_the_body_stands() {
-        // Two worlds alike but for the stale transform, which is the only
-        // thing a name may not be sized by.
-        let mut here = inside_a_system(1e12, -1e6);
-        let mut elsewhere = inside_a_system(1e12, -1e9);
-        here.update();
-        elsewhere.update();
-
-        assert_eq!(
-            plate_scale(&mut here),
-            plate_scale(&mut elsewhere),
-            "a name was sized by the transform `big_space` left behind"
-        );
-    }
-
-    /// A body's name is divided by the scale that will be applied to it
-    ///
-    /// A name is a child of what it names, so what propagation multiplies its
-    /// scale by is the body's own `Transform`. Divided by the
-    /// `GlobalTransform` instead the two are a propagation apart, and the name
-    /// is drawn at the ratio between them.
-    ///
-    /// Read as the size the name comes to once the body's scale is put back:
-    /// whatever the body is drawn at, a name is the same height on screen, and
-    /// that is the whole of what the division is for.
-    #[test]
-    fn a_bodys_name_is_divided_by_the_scale_it_will_be_multiplied_by() {
-        // A body whose drawn size moved between the two, which is every body
-        // under a pixel across through a zoom.
-        let mut app = bodied(2., 3.);
-        app.update();
-
-        let drawn = plate_scale(&mut app) * 2.;
-
-        // And the same body with the two agreeing, which is what a camera
-        // holding still leaves behind.
-        let mut still = bodied(2., 2.);
-        still.update();
-        let held = plate_scale(&mut still) * 2.;
-
-        assert_eq!(
-            drawn, held,
-            "a name was sized against a scale the body had already left"
-        );
-    }
-
-    /// A frame that moves nothing leaves a name where it stands
-    ///
-    /// A plate carries a mesh, so a transform written regardless hands every
-    /// name on screen back to the renderer every frame.
-    #[test]
-    fn a_resting_frame_leaves_a_name_where_it_stands() {
-        let mut app = facing();
-
-        // The name arriving is a change of its own, and the frame after it is
-        // the first that could be said to be resting.
-        app.update();
-        app.update();
-        let settled = placings(&app);
-
-        app.update();
-        assert_eq!(placings(&app), settled, "placed a name that had not moved");
-    }
-
-    /// And a camera that has moved still turns it
-    ///
-    /// Which is the whole of what this does: a name is offset along the
-    /// camera's own axes and sized by how far into the view it lies, so both
-    /// answers move the moment the camera does.
-    #[test]
-    fn a_name_is_placed_again_when_the_camera_moves() {
-        let mut app = facing();
-        app.update();
-        app.update();
-        let settled = placings(&app);
-
-        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
-        cameras.single_mut(app.world_mut()).unwrap().eye =
-            DVec3::new(0., 0., -2.);
-        app.update();
-
-        assert!(placings(&app) > settled, "left a name where it was standing");
     }
 
     /// A 1080p screen, which is what the figures in the plan are quoted at

@@ -27,7 +27,7 @@
 //! grid's transform onto another drops any scale between them, so a nested
 //! grid may say how large its cells are but never what a number means.
 //!
-//! So [`LIGHT_YEAR`] stands at the one place the two meet: where a position
+//! So `LIGHT_YEAR` stands at the one place the two meet: where a position
 //! becomes a cell.
 use crate::systems::Spyglass;
 use bevy::math::DVec3;
@@ -44,14 +44,14 @@ pub fn plugin(app: &mut App) {
 /// Exact: a light year is defined as a year of Julian days at the defined
 /// speed of light, so this is a whole number of metres rather than a measured
 /// one.
-pub const LIGHT_YEAR: f64 = 9.4607304725808e15;
+pub(crate) const LIGHT_YEAR: f64 = 9.4607304725808e15;
 
 /// Where `position` light years from the galactic centre falls, in metres
 ///
 /// The one conversion in the map, and the only place a light year is spoken
 /// to the grid. Everything above it says light years; everything below says
 /// metres.
-pub fn metres(position: DVec3) -> DVec3 {
+pub(crate) fn metres(position: DVec3) -> DVec3 {
     position * LIGHT_YEAR
 }
 
@@ -60,14 +60,14 @@ pub fn metres(position: DVec3) -> DVec3 {
 /// Exact, the speed of light being defined. What distances inside a system are
 /// said in: a light year is the whole of one and a body sits light seconds or
 /// light hours out.
-pub const LIGHT_SECOND: f64 = 2.99792458e8;
+pub(crate) const LIGHT_SECOND: f64 = 2.99792458e8;
 
 /// How many light seconds `distance` light years comes to
 ///
 /// Thirty one and a half million of them to the year. What the bar says a
 /// distance inside a system in, having measured it in the light years
 /// everything else on the map is measured in.
-pub fn light_seconds(distance: f64) -> f64 {
+pub(crate) fn light_seconds(distance: f64) -> f64 {
     distance * LIGHT_YEAR / LIGHT_SECOND
 }
 
@@ -76,7 +76,7 @@ pub fn light_seconds(distance: f64) -> f64 {
 /// [`metres`] the other way round. Everything inside a system is placed in the
 /// metres it is drawn in, measured from the middle of that system, so this is
 /// how something found there says where in the galaxy it stands.
-pub fn light_years(position: DVec3) -> DVec3 {
+pub(crate) fn light_years(position: DVec3) -> DVec3 {
     position / LIGHT_YEAR
 }
 
@@ -120,7 +120,7 @@ const SWITCHING_THRESHOLD: f32 = 0.1;
 /// hangs off the galaxy, so that clearing the map is the galaxy being replaced
 /// and the camera is not touched by it.
 #[derive(Resource)]
-pub struct Map(pub Entity);
+pub(crate) struct Map(pub(crate) Entity);
 
 /// The grid every star is placed in
 ///
@@ -131,13 +131,13 @@ pub struct Map(pub Entity);
 /// Replaced outright when the map is cleared, so nothing may hold this entity
 /// across a frame. Read it from the resource each time.
 #[derive(Resource)]
-pub struct Galaxy(pub Entity);
+pub(crate) struct Galaxy(pub(crate) Entity);
 
 /// The grid the stars are laid out in
 ///
 /// Handed to whoever spawns a galaxy, which is [`spawn_map`] at startup and
 /// [`crate::systems::despawn`] every time the map is cleared after that.
-pub fn galaxy_grid() -> Grid {
+pub(crate) fn galaxy_grid() -> Grid {
     Grid::new(GALAXY_CELL_EDGE, SWITCHING_THRESHOLD)
 }
 
@@ -147,7 +147,7 @@ pub fn galaxy_grid() -> Grid {
 /// grid on the parent it actually hangs from. `Visibility` because what hangs
 /// off it carries one, and bevy warns for every child whose visibility has
 /// nowhere to propagate from.
-pub fn galaxy() -> impl Bundle {
+pub(crate) fn galaxy() -> impl Bundle {
     (
         Visibility::default(),
         Transform::default(),
@@ -166,7 +166,7 @@ pub fn galaxy() -> impl Bundle {
 /// is for precision rather than for skipping any — so one per system on the map
 /// would be tens of thousands of them at a wide spyglass, and one at a time is
 /// none.
-pub fn system_grid() -> Grid {
+pub(crate) fn system_grid() -> Grid {
     Grid::new(SYSTEM_CELL_EDGE, SWITCHING_THRESHOLD)
 }
 

@@ -58,10 +58,12 @@ pub fn rung(across: f64) -> (f64, f32) {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Decade {
     /// The finer plane's cell, in whatever unit it was asked in
+    ///
+    /// The coarser plane's cell is a decade above it and is not carried here:
+    /// the rows [`Decade::rows`] hands out are spaced in fine cells, so a
+    /// second cell size would be one more number saying what this one says.
     pub fine: f64,
     pub fine_strength: f32,
-    /// The coarser plane's cell, a decade above [`Decade::fine`]
-    pub coarse: f64,
     pub coarse_strength: f32,
     /// How much of this ruling is drawn at all
     ///
@@ -82,7 +84,7 @@ impl Decade {
     /// row, drawn at both strengths laid over each other. Which is what the
     /// two planes did by being blended over each other, and is now arithmetic.
     ///
-    /// Widest first, [`ruled`] drawing each row into what the wider ones have
+    /// Widest first, `ruled` drawing each row into what the wider ones have
     /// left so that a line two rows fall on is drawn once.
     pub fn rows(&self, handed: f32) -> [Family; FAMILIES] {
         let over = |a: f32, b: f32| a + b - a * b;
@@ -136,7 +138,6 @@ pub fn ruling(across: f64, finest: f64) -> Decade {
         // Held at the floor there is no decade left to cross to, so the fine
         // plane is simply what is drawn.
         fine_strength: if held { showing } else { (1. - through) * showing },
-        coarse: fine * 10.,
         coarse_strength: if held { 0. } else { through * showing },
     }
 }
@@ -242,19 +243,15 @@ pub(crate) mod tests {
         })
     }
 
-    /// The fine plane's cell is always a decade, and the coarse one the decade
-    /// above it
+    /// The plane is always ruled in an exact decade
+    ///
+    /// Which is what lets the coarser plane's lines fall on the finer one's
+    /// tenths. A cell of 3.2 has no decade above it whose lines land on its
+    /// tenths, and the crossfade then has nothing to hand over to.
     #[test]
-    fn the_two_planes_are_a_decade_apart() {
+    fn the_plane_is_ruled_in_a_decade() {
         for across in zooms() {
             let ruled = ruling(across, 0.);
-            let decades = (ruled.coarse / ruled.fine).log10();
-            assert!(
-                (decades - 1.).abs() < 1e-9,
-                "{across} ruled {} and {}, {decades} decades apart",
-                ruled.fine,
-                ruled.coarse
-            );
             let exponent = ruled.fine.log10();
             assert!(
                 (exponent - exponent.round()).abs() < 1e-9,
@@ -279,7 +276,7 @@ pub(crate) mod tests {
             let cell = if ruled.fine_strength >= ruled.coarse_strength {
                 ruled.fine
             } else {
-                ruled.coarse
+                ruled.fine * 10.
             };
             let cells = across / cell;
             assert!(
@@ -319,9 +316,9 @@ pub(crate) mod tests {
             let over = ruling(turn * (1. + 1e-9), 0.);
 
             assert!(
-                (under.coarse - over.fine).abs() < over.fine * 1e-6,
+                (under.fine * 10. - over.fine).abs() < over.fine * 1e-6,
                 "at {turn} the coarse plane ruled {} and the fine one {}",
-                under.coarse,
+                under.fine * 10.,
                 over.fine
             );
             assert!(

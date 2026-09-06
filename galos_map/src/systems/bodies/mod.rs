@@ -12,15 +12,16 @@
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_db::barycenters::Barycenter as DbBarycenter;
-use galos_db::bodies::Body as DbBody;
-use galos_db::stars::Star as DbStar;
+use galos_index::meta::{
+    Barycenter as DbBarycenter, Body as DbBody, Star as DbStar,
+};
 use orbit::{Orbit, Orbits};
 use std::collections::HashSet;
 
-pub mod fetch;
-pub mod orbit;
-pub mod spawn;
+// Held in: the map reaches a system's insides through `bodies::plugin`.
+pub(crate) mod fetch;
+pub(crate) mod orbit;
+pub(crate) mod spawn;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Contents>();
@@ -215,6 +216,19 @@ impl Contents {
         self.of
     }
 
+    /// Whether the answer about it is still on its way
+    ///
+    /// [`Contents::extent`] is `None` both for a system with nothing in it and
+    /// for one whose rows have not landed yet, and those mean opposite things
+    /// to the zoom floor: `zoom_floor` in [`crate::camera`] holds the camera
+    /// off a system with nothing to descend into, and reads this so a question
+    /// in flight is not taken for an empty answer. Every handover from one
+    /// system to the next passes through here, so reading it the other way
+    /// would nudge the camera on the way in to anywhere.
+    pub fn asking(&self) -> bool {
+        matches!(self.state, FetchState::Asking)
+    }
+
     /// Which answer about this system is being held
     ///
     /// Nothing to read into the number itself. It stands still while the
@@ -248,16 +262,6 @@ impl Contents {
 
         self.state = FetchState::Known { stars, bodies, centers };
         self.revision = self.revision.wrapping_add(1);
-    }
-
-    /// Whether the database has answered about `address`
-    ///
-    /// What the shell asks before it begins to clear: an answer of nothing is
-    /// still an answer, and a system with no bodies on record is one the map
-    /// holds rather than one it has yet to ask after.
-    pub fn holds(&self, address: i64) -> bool {
-        self.of == Some(address)
-            && matches!(self.state, FetchState::Known { .. })
     }
 
     /// The stars of the system being held
@@ -468,15 +472,6 @@ impl Contents {
         }
         orbits
     }
-
-    /// Where the thing with `id` stands, in metres from the system's middle
-    ///
-    /// For one answer. Anything placing the whole system at once should build
-    /// the [`Orbits`] once and ask it, rather than calling this per body.
-    pub fn place(&self, id: i16, since: f64) -> DVec3 {
-        let orbits = self.orbits();
-        orbits.place(id, since) - self.middle(&orbits, since)
-    }
 }
 
 /// The orbit a body was recorded on
@@ -571,7 +566,7 @@ mod tests {
         Discovery as JournalDiscovery, Orbit as JournalOrbit,
         Spin as JournalSpin,
     };
-    use galos_db::bodies::Parent;
+    use galos_index::meta::Parent;
 
     /// A body `a` metres out on a circle, with no size of its own
     ///
@@ -691,6 +686,16 @@ mod tests {
         }
     }
 
+    /// Where the thing with `id` stands, in metres from the system's middle
+    ///
+    /// The sum `spawn::draw` writes into a transform: the walk up the chain,
+    /// measured from the arrival star rather than from the point the system's
+    /// stars go round.
+    fn place(contents: &Contents, id: i16, since: f64) -> DVec3 {
+        let orbits = contents.orbits();
+        orbits.place(id, since) - contents.middle(&orbits, since)
+    }
+
     /// The middle of a system is the star it arrives at
     ///
     /// Not the point its stars go round, which in a wide binary is ten billion
@@ -701,11 +706,11 @@ mod tests {
     fn the_middle_of_a_system_is_the_star_it_arrives_at() {
         let contents = binary(true);
 
-        assert_eq!(contents.place(1, 0.), DVec3::ZERO);
+        assert_eq!(place(&contents, 1, 0.), DVec3::ZERO);
         // Every orbit here is a circle read at the same angle, so the two
         // stars lie the same way and stand their orbits apart. Both have moved
         // in by the arrival star's own orbit, which is the whole of this.
-        let far = contents.place(2, 0.).length();
+        let far = place(&contents, 2, 0.).length();
         assert!(
             (far - 1e13).abs() < 1e13 * 1e-6,
             "the far star stood {far}m off, not the 1e13 between them"
@@ -731,7 +736,7 @@ mod tests {
     #[test]
     fn a_body_under_a_barycenter_stands_out_where_it_belongs() {
         // Every orbit is a circle read at the same angle, so they stack up.
-        let out = binary(true).place(11, 0.).length();
+        let out = place(&binary(true), 11, 0.).length();
         let wanted = 1e11 + 1e9;
 
         assert!(
@@ -749,7 +754,7 @@ mod tests {
     /// the space between them.
     #[test]
     fn a_body_under_a_missing_barycenter_loses_its_way() {
-        let out = binary(false).place(11, 0.).length();
+        let out = place(&binary(false), 11, 0.).length();
 
         assert!(
             (out - 1e13).abs() < 1e13 * 1e-3,
@@ -960,7 +965,7 @@ mod tests {
         let reaches = contents.extent().expect("a binary reaches somewhere");
 
         for id in [1, 2, 11] {
-            let out = contents.place(id, 0.).length();
+            let out = place(&contents, id, 0.).length();
             assert!(
                 out <= reaches as f64,
                 "{id} stood {out}m out, past a {reaches}m extent"

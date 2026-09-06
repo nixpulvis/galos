@@ -53,7 +53,7 @@ pub const RESOLVES: f64 = 10.;
 /// Asked of the larger of the number and the step it is written to. A ruler
 /// counting by tenths never says anything finer than a tenth, so a coordinate a
 /// hair below the origin is a nought on it rather than a billionth.
-pub fn power(value: f64) -> i32 {
+pub(super) fn power(value: f64) -> i32 {
     if value == 0. || !value.is_finite() {
         return 0;
     }

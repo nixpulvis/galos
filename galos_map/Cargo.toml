@@ -14,7 +14,6 @@ async-std = "*"
 bevy = "0.19"
 bevy-inspector-egui = { version = "0.37", optional = true }
 bevy_egui = "0.40"
-bevy_rich_text3d = "0.7"
 # The face egui draws the chrome in, taken from the crate egui itself takes it
 # from rather than copied into `assets`. A name on the map and the same name in
 # the bar are then the one typeface, and stay so when egui moves.
@@ -32,7 +31,9 @@ big_space = { git = "https://github.com/aevyrie/big_space", branch = "bevy-0.19"
 ] }
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
-galos_db = { path = "../galos_db" }
+galos_index = { path = "../galos_index", default-features = false }
+galos_photometry = { path = "../galos_photometry" }
+pathfinding = "4"
 
 [dev-dependencies]
 log = "0.4"

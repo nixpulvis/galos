@@ -301,7 +301,8 @@ const CROSSING: usize = 8;
 /// does the view take over the count.
 ///
 /// A count around the ring rather than a length in the world, which is the other
-/// way round from a route's [`crate::systems::route::DASH`]. A route is a run of
+/// way round from a route's `DASH` (see [`crate::systems::route`]). A route
+/// is a run of
 /// legs of wildly different lengths and a share of one cannot be read at more
 /// than one zoom, so its dashes are held at a distance instead.
 const DASHES: usize = 32;
@@ -503,9 +504,10 @@ impl Orbits {
     /// parent, so a moon lands beside its planet rather than beside the star.
     ///
     /// Where the walk ends is the point the system's stars go round, which is
-    /// the arrival star itself only where there is one of them.
-    /// [`super::Contents::place`] measures from the arrival star either way,
-    /// that being where the map puts the middle of a system.
+    /// the arrival star itself only where there is one of them. The map wants
+    /// the arrival star either way, that being where it puts the middle of a
+    /// system, so what draws a system subtracts [`super::Contents`]'s middle
+    /// from this and every one of them lands short of it.
     ///
     /// A parent that is not on record ends the walk, and what is left is
     /// measured from the system's centre. An honest shortcut: the body is put

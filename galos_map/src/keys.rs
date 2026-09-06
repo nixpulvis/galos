@@ -11,7 +11,7 @@
 //!
 //! Nothing answers while a field is being typed into, but for the escape that
 //! puts the field away. A system named SOL is spelled with the same S that pans
-//! the map back, and [`crate::ui::Keyboard`] is what tells the two apart. The
+//! the map back, and `crate::ui::Keyboard` is what tells the two apart. The
 //! one binding on a space asks that resource the wider of its two questions,
 //! egui holding a space to be a click on whatever has the focus.
 //!
@@ -168,7 +168,7 @@ fn pan(
     if orbit.travel.take().is_some() {
         orbit.target_center = orbit.center;
     }
-    let rate = PAN_PER_SECOND * orbit.pan_sensitivity * orbit.radius;
+    let rate = PAN_PER_SECOND * orbit.radius;
     orbit.target_center += (*way * rate * time.delta_secs()).as_dvec3();
 }
 
@@ -214,7 +214,7 @@ fn swing(
         return;
     }
 
-    let rate = ORBIT_PER_SECOND * orbit.orbit_sensitivity * time.delta_secs();
+    let rate = ORBIT_PER_SECOND * time.delta_secs();
     orbit.target_yaw += round * rate;
     orbit.target_pitch =
         (orbit.target_pitch + over * rate).clamp(-PITCH_LIMIT, PITCH_LIMIT);
@@ -255,8 +255,7 @@ fn zoom(
 
     // The target rather than the radius itself, so that a key and the wheel
     // move the same thing at the same rate and the two cannot fight.
-    let folds =
-        asked * ZOOM_PER_SECOND * orbit.zoom_sensitivity * time.delta_secs();
+    let folds = asked * ZOOM_PER_SECOND * time.delta_secs();
     orbit.target_radius =
         (orbit.target_radius * folds.exp()).clamp(MIN_RADIUS, MAX_RADIUS);
 }
@@ -1100,12 +1099,12 @@ mod tests {
 
     /// Whether the search box has been asked for
     fn opening(app: &App) -> bool {
-        app.world().resource::<BarFields>().opening()
+        app.world().resource::<BarFields>().opening
     }
 
     /// Whether the form has been asked to be put away
     fn shutting(app: &App) -> bool {
-        app.world().resource::<BarFields>().shutting()
+        app.world().resource::<BarFields>().shutting
     }
 
     /// `/` asks for the search box

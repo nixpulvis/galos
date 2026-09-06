@@ -1,4 +1,6 @@
 use crate::schedule::MapSet;
+use crate::systems::bodies::Contents;
+use crate::systems::bodies::spawn::{Body, Inside};
 use crate::systems::{Spyglass, System};
 use crate::ui::{Gesture, PointerOverUi};
 use bevy::camera::visibility::RenderLayers;
@@ -11,27 +13,11 @@ use bevy::math::DVec3;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use bevy_egui::PrimaryEguiContext;
 use big_space::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
 pub fn plugin(app: &mut App) {
-    // Rings, leaders and the ruler's marks are annotation, the same as a
-    // name, so they belong over the galaxy with the names rather than in it.
-    // Left in the scene they are drawn before the overlay and a ground laid
-    // over them takes them off the map, which is worst for the ring around
-    // whatever is picked out: the one mark that should never be covered.
-    //
-    // In front of the grounds as well as on their layer. A ring is drawn
-    // around a star and a ground beside it, at depths that are near enough
-    // to trade places as the camera turns, so the order wants settling
-    // outright rather than by arithmetic.
-    app.insert_gizmo_config(
-        DefaultGizmoConfigGroup,
-        GizmoConfig {
-            render_layers: RenderLayers::layer(Overlay::Rings.layer()),
-            ..default()
-        },
-    );
     app.add_message::<MoveCamera>();
     app.add_systems(Update, move_camera.in_set(MapSet::Camera));
     // Reads what `move_camera` and the spyglass asked for, and is the only
@@ -45,6 +31,57 @@ pub fn plugin(app: &mut App) {
         Update,
         focus_lens.in_set(MapSet::Camera).after(orbit_camera),
     );
+    // Reads the view and retunes the camera's bloom when it changes; off the
+    // camera's own ordering, since it writes the bloom rather than the pose.
+    app.add_systems(Update, tune_bloom);
+}
+
+/// The bloom the realistic sky draws its stars through
+///
+/// [`Bloom::NATURAL`] with the low-frequency boost off, so a bright star reads
+/// as a tight glint rather than a wide disc. The boost is what smears a bright
+/// source across the coarse mips; a point star wants only the base scatter, and
+/// bloom over a field of points is what turns a star's brightness into its
+/// apparent size (galaxy.md) without a bright one swallowing the sky. Tuned by
+/// eye from Sol.
+pub(crate) const STAR_BLOOM: Bloom = Bloom {
+    // A whisper, down from NATURAL's 0.15. The star's size is its point-spread
+    // core (`scale::psf_radius`, bounded as the log of brightness); bloom on top
+    // of that only added a halo that scaled with emissive, which is what let a
+    // bright star swell into a blob. Kept just enough to gloss the brightest.
+    intensity: 0.02,
+    low_frequency_boost: 0.0,
+    low_frequency_boost_curvature: 0.0,
+    ..Bloom::NATURAL
+};
+
+/// Match the scene camera's bloom to the view
+///
+/// The eye's bloom is what the lit bodies and the orbit lines on the scene's
+/// own layer are drawn through, and that is the whole of what this swaps. The
+/// realistic sky is not among them: it is the flat field on [`FIELD_LAYER`],
+/// drawn by a camera of its own, and `crate::systems::field::tune_field` is
+/// what gives that camera the tight [`STAR_BLOOM`] a field of points wants.
+///
+/// Which leaves the two views asking for different bloom on the same bodies.
+/// The realistic view stands among stars drawn as tight glints and takes the
+/// same for what is in front of them; the map restores [`Bloom::NATURAL`],
+/// where a body is drawn large enough to be the subject rather than one light
+/// among many. Written only when the view moves.
+fn tune_bloom(
+    view: Res<crate::systems::scale::View>,
+    mut cameras: Query<&mut Bloom, With<OrbitCamera>>,
+) {
+    if !view.is_changed() {
+        return;
+    }
+    let Ok(mut bloom) = cameras.single_mut() else {
+        return;
+    };
+    *bloom = match *view {
+        crate::systems::scale::View::Map => Bloom::NATURAL,
+        crate::systems::scale::View::Realistic => STAR_BLOOM,
+    };
 }
 
 /// How far the camera may be pitched from the horizontal
@@ -62,7 +99,7 @@ pub(crate) const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 /// under it. A third off in both shows the plane as a plane.
 const OPENS_AT: f32 = FRAC_PI_2 / 3.;
 
-/// Radians of orbit per pixel of pointer travel, at unit sensitivity
+/// Radians of orbit per pixel of pointer travel
 const ORBIT_RATE: f32 = 5e-3;
 
 /// Fraction of the orbit radius panned per pixel of pointer travel
@@ -71,7 +108,7 @@ const ORBIT_RATE: f32 = 5e-3;
 /// map moves under the pointer at about the same rate at every zoom.
 const PAN_RATE: f32 = 2e-3;
 
-/// E-folds of zoom per line of scroll, at unit sensitivity
+/// E-folds of zoom per line of scroll
 ///
 /// Zoom is multiplicative because the map spans nine orders of magnitude. A
 /// fixed step would cross the whole bubble near the surface of a star and
@@ -100,6 +137,66 @@ const PIXELS_PER_LINE: f32 = 16.;
 /// it: an Earth seen from there is four hundredths of a degree across.
 pub(crate) const MIN_RADIUS: f32 = (1. / crate::space::LIGHT_YEAR) as f32;
 pub(crate) const MAX_RADIUS: f32 = 1e6;
+
+/// How near the camera may be pulled to a system it cannot descend into, in
+/// light years, where the system reaches `reach` metres
+///
+/// Everything inside a system is drawn on that system's own metre-fine grid,
+/// which the camera descends onto once the system is near and its contents are
+/// in hand (see [`crate::systems::bodies::spawn`]'s `draw`). A system with
+/// nothing recorded in it never gains that grid, so it stays a mark out on the
+/// galaxy grid — and up close that mark is not a crisp dot. It is drawn at the
+/// system's own extent, which [`crate::systems::scale`]'s `shell` swells from a
+/// mark into a whole ball once it subtends more than
+/// [`crate::systems::bodies::spawn::WORTH_SIZING`]. For a real system that is
+/// the moment the map descends into it and draws its bodies instead; a bare one
+/// has nothing to descend into, so left to zoom it would fill the view with a
+/// blurry sphere the camera cannot get past, its bloomed edge spreading across
+/// the screen.
+///
+/// So the camera is held where the mark has just filled out: the system's reach
+/// over [`crate::systems::bodies::spawn::WORTH_KEEPING`], the angle at which
+/// the swell completes and the mark stops growing.
+///
+/// Off the system's own reach rather than off
+/// [`crate::systems::bodies::STAND_IN`], which is only the floor under a reach.
+/// A fixed distance is the wrong shape for an angular question, and it showed:
+/// held at `STAND_IN / WORTH_KEEPING` for everything, a system reaching a fifth
+/// of a light year stopped the camera with its mark ten radians across — a ball
+/// filling the sky — while one with nothing on record was still a speck at the
+/// same remove, so the camera seemed to come right in and find nothing. One
+/// looked like a wall and the other like a hole, from one rule. Taken off the
+/// reach, every bare system stops with its mark the same size.
+///
+/// This holds only a system with nothing to descend into. One the map could
+/// descend into is loaded well before it is reached and let through by
+/// [`zoom_floor`] on that account, so the floor never keeps a system the map
+/// could draw from being drawn.
+fn subgridless_floor(reach: f32) -> f32 {
+    reach
+        / (crate::systems::bodies::spawn::WORTH_KEEPING
+            * crate::space::LIGHT_YEAR as f32)
+}
+
+/// How near what the camera looks at has to be to a system for it to count as
+/// standing in it, in metres
+///
+/// One sphere, the same about every system. A system's contents are drawn once
+/// it subtends [`crate::systems::bodies::spawn::WORTH_DRAWING`] and every
+/// system reaches at least [`crate::systems::bodies::STAND_IN`], so this is
+/// exactly the nearest the camera can be to the narrowest system without its
+/// insides being drawn: about a thousand astronomical units.
+///
+/// A fixed distance where the ruled plane changes hands on the mark's own fade
+/// (see [`crate::grid`]), and the difference is not an oversight. The fade is
+/// an angle scaled by how far the system reaches, so it begins seventeen light
+/// years out for a system reaching a fifth of one — and a floor is only ever
+/// applied to a system with *nothing* to descend into, whose mark therefore
+/// never fades at all. Read the fade here and a wide neighbour would hold the
+/// camera off from four light years away, which is the trouble
+/// [`crate::systems::bodies::fetch::Approach::stood_in`] exists to answer.
+pub(crate) const STOOD_IN: f32 = crate::systems::bodies::STAND_IN
+    / crate::systems::bodies::spawn::WORTH_DRAWING;
 
 /// How near the near plane sits, as a fraction of the orbit radius
 ///
@@ -188,7 +285,7 @@ const TRAVEL_BRAKING: f32 = 10392.;
 /// Set by [`move_camera`] and cleared on arrival. `from` and `to` are
 /// absolute galactic positions in light years. `elapsed` counts up to
 /// `duration`, and the ratio of the two drives [`travelled`].
-pub struct Travel {
+pub(crate) struct Travel {
     from: DVec3,
     to: DVec3,
     elapsed: f32,
@@ -254,8 +351,20 @@ fn snap(value: f64, target: f64) -> f64 {
 }
 
 /// Move `fraction` of the way from `value` to `target`, landing on it
+///
+/// Snapped in f32 rather than through [`snap`]: [`SNAP_TOLERANCE`] is an f64
+/// figure far finer than an f32 can resolve, so a radius or an angle
+/// approaching its target would stall about an ulp short and never reach it.
+/// The camera would then read as forever easing and rewrite its transform
+/// every frame for [`big_space`] to chase, however still the view. Within an
+/// ulp or so of the target is the target.
 fn eased(value: f32, target: f32, fraction: f32) -> f32 {
-    snap(value.lerp(target, fraction) as f64, target as f64) as f32
+    let stepped = value.lerp(target, fraction);
+    if (target - stepped).abs() <= f32::EPSILON * target.abs().max(1.) {
+        target
+    } else {
+        stepped
+    }
 }
 
 /// As [`eased`], for a position that needs the precision of an `f64`
@@ -274,8 +383,8 @@ fn eased_position(value: DVec3, target: DVec3, fraction: f64) -> DVec3 {
 /// galactic rim apart any closer than a few thousand light seconds, which is
 /// most of the way across a star system.
 #[derive(Message, Debug)]
-pub struct MoveCamera {
-    pub position: Option<DVec3>,
+pub(crate) struct MoveCamera {
+    pub(crate) position: Option<DVec3>,
     /// How much to take in around it, in light years
     ///
     /// What is asked for is the thing to be seen, not how far back to stand
@@ -284,7 +393,7 @@ pub struct MoveCamera {
     ///
     /// Nothing leaves the zoom where the user left it, which is what a move
     /// that only says where to look should do.
-    pub framing: Option<f32>,
+    pub(crate) framing: Option<f32>,
 }
 
 /// The half angle a camera sees across when nothing says otherwise
@@ -347,6 +456,61 @@ pub(crate) fn framed(radius: f32, projection: Option<&Projection>) -> f32 {
     radius * half.sin()
 }
 
+/// The nearest the camera may stand to what it looks at, in light years
+///
+/// [`MIN_RADIUS`] is a floor of last resort; what should stop the camera is
+/// the thing it is looking at. Two things do, here:
+///
+/// - Down among a system's bodies, `nearest_body_view` is how far the nearest
+///   one has to be stood back to keep its whole disc in view (see
+///   [`stand_back`]); the zoom stops there rather than flying into its surface
+///   and filling the screen with it.
+/// - Out on the galaxy grid with nothing to descend into, the mark is held at
+///   [`subgridless_floor`] of the system's own reach, where the mark has just
+///   filled out. A system the map could descend into is loaded well before it
+///   is reached, so `descendable` is true for it and it is let through to the
+///   fine grid the descent puts it on.
+///
+/// Both of the other two answers are `MIN_RADIUS`, and both are cases of the
+/// same mistake — holding the camera off something that is not what it is
+/// looking at:
+///
+/// - `awaited` says the rows are still on their way
+///   ([`crate::systems::bodies::Contents::asking`]). An answer that has not
+///   arrived is not an empty one, and "bare" is the guess that moves the
+///   camera, so it is not the guess made. Every handover from one system to
+///   the next passes through this state.
+/// - A system the camera is beside rather than standing in
+///   ([`crate::systems::bodies::fetch::Approach::stood_in`]). Nothing about a
+///   mark off to one side is a reason to push the camera away from what it is
+///   looking at, and the widest systems reach far enough that this pushed it a
+///   long way: Alpha Centauri's floor is some twenty-five light years out, and
+///   it stood as the system being closed on from anywhere within five of Sol.
+///
+/// `closing` is the system the camera is closing on
+/// ([`crate::systems::bodies::fetch::Approaching`]). Nothing where the camera
+/// is out of reach of every system, which is a camera with nothing to be held
+/// off by: the floor falls back to the least reach the map draws, so it is the
+/// same figure it always was for a system with nothing on record.
+fn zoom_floor(
+    nearest_body_view: Option<f32>,
+    descendable: bool,
+    awaited: bool,
+    closing: Option<crate::systems::bodies::fetch::Approach>,
+) -> f32 {
+    match nearest_body_view {
+        Some(view) => view,
+        None if descendable || awaited => MIN_RADIUS,
+        None => match closing {
+            Some(closing) if closing.stood_in() => {
+                subgridless_floor(closing.reach)
+            }
+            Some(_) => MIN_RADIUS,
+            None => subgridless_floor(crate::systems::bodies::STAND_IN),
+        },
+    }
+}
+
 /// A camera that orbits a point in the galaxy
 ///
 /// Replaces `bevy_panorbit_camera`, which cannot be used here for two
@@ -360,40 +524,37 @@ pub(crate) fn framed(radius: f32, projection: Option<&Projection>) -> f32 {
 /// what the controls actually manipulate. The cell and transform are
 /// computed from those once per frame, so nothing is ever fought over.
 #[derive(Component)]
-pub struct OrbitCamera {
+pub(crate) struct OrbitCamera {
     /// Absolute galactic position the camera looks at, in light years
-    pub center: DVec3,
+    pub(crate) center: DVec3,
     /// Where the center is heading, which it approaches smoothly
-    pub target_center: DVec3,
+    pub(crate) target_center: DVec3,
     /// The move under way, if there is one
     ///
     /// While set, the center follows [`travelled`] between the move's two
     /// ends. Panning clears it.
-    pub travel: Option<Travel>,
+    pub(crate) travel: Option<Travel>,
     /// Absolute galactic position of the camera itself, in light years
     ///
     /// Derived from the center and the orbit, and published here because
     /// distances to stars are wanted by half the map. Reading it avoids
     /// having to undo the cell split to ask where the camera is.
-    pub eye: DVec3,
+    pub(crate) eye: DVec3,
     /// Which way the camera faces, for anything that wants to line up with it
-    pub rotation: Quat,
-    pub radius: f32,
-    pub target_radius: f32,
-    pub yaw: f32,
-    pub target_yaw: f32,
-    pub pitch: f32,
-    pub target_pitch: f32,
+    pub(crate) rotation: Quat,
+    pub(crate) radius: f32,
+    pub(crate) target_radius: f32,
+    pub(crate) yaw: f32,
+    pub(crate) target_yaw: f32,
+    pub(crate) pitch: f32,
+    pub(crate) target_pitch: f32,
     /// Fraction of the distance to a target left after one second
     ///
     /// Zero arrives at once, one never converges. Each control carries its
     /// own so they can settle at different speeds.
-    pub orbit_smoothness: f32,
-    pub pan_smoothness: f32,
-    pub zoom_smoothness: f32,
-    pub orbit_sensitivity: f32,
-    pub pan_sensitivity: f32,
-    pub zoom_sensitivity: f32,
+    pub(crate) orbit_smoothness: f32,
+    pub(crate) pan_smoothness: f32,
+    pub(crate) zoom_smoothness: f32,
 }
 
 impl Default for OrbitCamera {
@@ -415,10 +576,23 @@ impl Default for OrbitCamera {
             orbit_smoothness: 0.1,
             pan_smoothness: 0.02,
             zoom_smoothness: 0.1,
-            orbit_sensitivity: 1.,
-            pan_sensitivity: 1.,
-            zoom_sensitivity: 1.,
         }
+    }
+}
+
+impl OrbitCamera {
+    /// Whether the camera has arrived: no move under way and every control at
+    /// its target, so the eye and the reach hold still frame to frame.
+    ///
+    /// What the diagnostics panel reads to tell a view standing still from one
+    /// still easing into place, since the evictor is meant to go quiet only
+    /// once the camera stops moving.
+    pub(crate) fn is_settled(&self) -> bool {
+        self.travel.is_none()
+            && self.center == self.target_center
+            && self.radius == self.target_radius
+            && self.yaw == self.target_yaw
+            && self.pitch == self.target_pitch
     }
 }
 
@@ -426,7 +600,7 @@ impl Default for OrbitCamera {
 ///
 /// Handed to [`crate::space`] to spawn, because a camera that is not a child
 /// of the galaxy grid is not positioned by it.
-pub fn camera(spyglass: &Spyglass) -> impl Bundle {
+pub(crate) fn camera(spyglass: &Spyglass) -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
@@ -439,8 +613,12 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
         //
         // Nothing emissive moves with this. Bevy weighs emission against the
         // exposure by `StandardMaterial::emissive_exposure_weight`, which is
-        // nothing unless it is asked for, so the stars and the shells are
-        // drawn at the strengths they were set at.
+        // nothing unless it is asked for, so what this stops down is only what
+        // a star lights: the bodies on the scene's own layer. The star at the
+        // heart of a descended system and the glow a dim body is given are
+        // emissive, an orbit line's material is unlit, and all of them come out
+        // at the strengths they were set at. The flat star field is a camera
+        // and a layer away and never sees this exposure at all.
         Exposure::SUNLIGHT,
         AmbientLight { color: Color::default(), brightness: 1e3, ..default() },
         // Every other entity is drawn relative to this one.
@@ -451,148 +629,98 @@ pub fn camera(spyglass: &Spyglass) -> impl Bundle {
             ..default()
         },
         Bloom::NATURAL,
-        // Drawn over the galaxy rather than in it, and in this order: the
-        // rings over the stars they mark, the grounds over the rings, and the
-        // names over their grounds.
-        children![
-            shells_view(),
-            over(Overlay::Rings),
-            over(Overlay::Grounds),
-            over(Overlay::Names),
-        ],
+        // Drawn over the galaxy rather than in it: the annotations are painted
+        // flat in screen space by egui, not placed in the scene where a star
+        // nearer than a name would blend over the top of it.
+        //
+        // The annotations camera carries egui's primary context. egui renders
+        // in the graph of the camera that holds its context, so on this camera
+        // — the last one drawn, HDR and clearing nothing like the scene — its
+        // pass lands over the whole map, the chrome over the annotations. Left
+        // on the scene camera bevy_egui picks by default it drew under the
+        // star field. See `main`, which turns that default off.
+        children![(annotations(), PrimaryEguiContext)],
     )
 }
 
-/// The render layer the system shells are drawn on
+/// The render layer the flat star field is drawn on
 ///
-/// One of its own, below the annotations. Layer zero is the scene the eye
-/// blooms, every body and plane; the shells are drawn over it by a camera of
-/// their own that does not, so a wide field of them is opaque and the nearest
-/// covers the rest rather than every one being blended and bloomed over its
-/// neighbours. The bodies are left to carry the glow.
-pub const SHELLS_LAYER: usize = 1;
+/// Its own, drawn by [`crate::systems::field`]'s camera at the world origin,
+/// so nothing that camera rasterises carries a galaxy-scale coordinate. Off
+/// the scene's layer as well as out of its pass: a mark is emitted at the
+/// colour it is meant to reach the screen as, where the eye's bloom and its
+/// filmic curve are the scene's own and would spread it and wash it towards
+/// white.
+///
+/// Numbered past the layers the map has drawn on and given up — the shells
+/// (1), and the two annotation overlays (3 and 4) that flat egui painting
+/// replaced — rather than renumbered down into one of them. What a layer
+/// number is worth is that nothing else is on it.
+pub(crate) const FIELD_LAYER: usize = 5;
 
-/// A camera drawing the system shells, over the galaxy and without bloom
+/// The order the star field's camera draws at
 ///
-/// The shells stand in for systems too far to resolve, and from a wide view
-/// they pile many deep in a pixel. On a depth buffer of their own the nearest
-/// is the only one shaded, which is what a field of them costs the least, and
-/// there is nothing to sort. Drawn after the eye has bloomed the scene, as
-/// the [`Overlay`] cameras are, so the shells themselves do not bloom.
+/// Between the scene (0) and the annotations ([`ANNOTATIONS_ORDER`]): over the
+/// galaxy, so a system's mark covers the plane and the bodies rather than
+/// being blended under them, and under the names and the rings, which are
+/// notes on the field rather than part of it.
 ///
-/// A child of the camera it shadows, so the pose and the cell come down the
-/// hierarchy. [`Exposure::SUNLIGHT`] to match the eye, against the same stop.
-///
-/// [`Tonemapping::None`], where the eye takes the filmic curve `Camera3d`
-/// hands every camera. `None` does not tonemap the shells; it draws no pass
-/// at all, and since the [`Overlay`] cameras stacked over it draw none either,
-/// nothing runs the shells through a curve. So the emission reaches the
-/// screen as the colour it was set, where the eye's curve would have read it
-/// as a bright to fit into the display and washed it towards white. A shell
-/// stands in for a colour and has to keep it; the eye keeps the curve for the
-/// scene alone, where the desaturation of a real bright is the wanted look.
-/// See [`crate::systems::spawn`] for the strength it is emitted at.
-fn shells_view() -> impl Bundle {
-    (
-        Camera3d::default(),
-        Hdr,
-        // The colour it was set, past the filmic curve the eye takes; see
-        // above.
-        Tonemapping::None,
-        Exposure::SUNLIGHT,
-        Camera {
-            order: SHELLS_LAYER as isize,
-            clear_color: ClearColorConfig::None,
-            ..default()
-        },
-        RenderLayers::layer(SHELLS_LAYER),
-    )
-}
+/// An order, not a layer. The field once drew at the order the shells' camera
+/// had, which read as though the two numbers were one thing; the shells'
+/// camera is gone and this says what it is.
+pub(crate) const FIELD_ORDER: isize = 1;
 
-/// The annotation drawn over the galaxy, in the order it stacks
+/// The render layer the annotations are drawn on
 ///
-/// A name, the ring it belongs to and the ground behind it are notes on the
-/// map, not scenery, so each is drawn over the galaxy by a camera of its own
-/// rather than placed in it. Left in the scene they are subject to it: a star
-/// nearer than a name is blended over the top of it, and no depth a name is
-/// placed at wins, the stars being on both sides of it.
-///
-/// The declaration order is the drawing order, low to high, over the scene on
-/// layer zero. Each variant's [`layer`](Overlay::layer) and its camera order
-/// are read straight off that order, so the two cannot drift apart and adding
-/// one is a variant in the right place here rather than a column of numbers to
-/// renumber by hand.
-///
-/// A camera apiece, and not one overlay with the depth sorted out, because
-/// depth cannot sort it. A ring is drawn around a star and a ground beside it,
-/// and the words are blended over an opaque ground at the one depth a plate
-/// facing the camera puts them both at. On a shared depth buffer those ties
-/// fall whichever way the reversed-`z` projection rounded each to: the right
-/// way up close, the wrong way far off where the projection has spent its
-/// precision, so a ring trades places with a ground as the camera turns and a
-/// ground punches holes through its own letters at distance. A buffer apiece
-/// takes the question away. Nothing is tested against anything on another
-/// layer, so the stack is settled by camera order alone, which is the only
-/// thing that has held: `depth_bias` is a hint the sort takes rather than a
-/// rule it obeys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Overlay {
-    /// The rings, the leaders joining a name to what it names, and the ruler's
-    /// marks, over the stars they annotate
-    Rings,
-    /// The dark grounds the names are read against, over the rings
-    Grounds,
-    /// The words, over their grounds
-    Names,
-}
+/// Nothing 3D is held on it: every annotation is painted in screen space by
+/// egui, and the camera that holds them rasterises no mesh of its own. So what
+/// this number is worth is only that no other pass shares it — the same worth
+/// [`FIELD_LAYER`] has, and the same reason neither is renumbered down into a
+/// layer the map has given up.
+const ANNOTATIONS_LAYER: usize = 2;
 
-impl Overlay {
-    /// The render layer it is drawn on, and the order its camera stacks at
-    ///
-    /// One number for both. Layer zero is the scene, every body and plane,
-    /// drawn by the eye at order zero; layer one is the shells, drawn over it
-    /// without bloom; and the overlays follow. So these begin at two and each
-    /// overlay's camera stacks at the layer it draws. Taken from the
-    /// declaration order, so no two share a place, higher draws later and so
-    /// on top, and none of it is picked by hand.
-    pub fn layer(self) -> usize {
-        self as usize + 2
-    }
-}
+/// The order the annotations' camera draws at
+///
+/// Last of the three: over the scene (0) and the star field ([`FIELD_ORDER`]),
+/// so the names, the rings, and the chrome egui draws above them land over the
+/// whole map rather than under what they annotate. Anything past the field's
+/// order would do; this is the next one up.
+///
+/// An order, not a layer. It reads the same as [`ANNOTATIONS_LAYER`] and says
+/// something else — a place in the stack, against a number nothing else is on
+/// — and the two being one thing is exactly the reading [`FIELD_ORDER`] was
+/// split out to stop.
+const ANNOTATIONS_ORDER: isize = 2;
 
-/// A camera over the galaxy, drawing one [`Overlay`] and nothing else
+/// The camera the map's annotations are drawn over the galaxy by
 ///
-/// One camera per [`Overlay`] is what keeps them from sharing a depth buffer:
-/// each clears its own, so what it draws resolves against its own layer and
-/// nothing else, and each keeps its color, so what was drawn before it stands.
-/// The [`order`](Camera::order) taken from the overlay is the whole of what
-/// decides which covers which.
+/// The names, the rings around what is marked out, the grounds the names are
+/// read against and the leaders joining the two are notes on the map, not
+/// scenery. They are painted flat in screen space by egui rather than placed
+/// in the scene, where a star nearer than a name would blend over the top of
+/// it and no depth a name sat at would win, the stars being on both sides of
+/// it. So one camera draws them all: it holds egui's primary context and
+/// stacks last, over the scene and the star field, so its pass — the
+/// annotations, and the chrome egui draws above them — lands over the whole
+/// map.
 ///
-/// None of them carries [`Bloom`]. A name is not a light source, and blooming
-/// one spreads it over the dark edge that is supposed to hold it apart from
-/// whatever is behind it.
-///
-/// [`Tonemapping::None`] on every one of them, so the eye is the only camera
-/// that tonemaps. All of these draw into the one buffer the eye has already
-/// tonemapped, and each is a pass over the whole of it, so a filmic curve
-/// here would run the scene through the curve again once per overlay and,
-/// worse, catch the opaque shells beneath and wash their colour towards
-/// white. Left at [`None`] each overlay lays its own display-referred colour
-/// down and touches nothing already drawn. See [`shells_view`].
-///
-/// A child of the camera it shadows, so the pose and the cell it is measured
-/// from come down the hierarchy and there is no second copy to keep in step.
-fn over(overlay: Overlay) -> impl Bundle {
+/// [`Hdr`] to match the target the eye has already written and tonemapped.
+/// [`Tonemapping::None`], so this pass does not run that tonemapped scene
+/// through the filmic curve a second time. No [`Bloom`]: an annotation is not
+/// a light source, and blooming one would spread it over the dark edge that
+/// holds it apart from what is behind it. It clears no colour, so what the
+/// scene and the field drew stands.
+fn annotations() -> impl Bundle {
     (
         Camera3d::default(),
         Hdr,
         Tonemapping::None,
         Camera {
-            order: overlay.layer() as isize,
+            order: ANNOTATIONS_ORDER,
             clear_color: ClearColorConfig::None,
             ..default()
         },
-        RenderLayers::layer(overlay.layer()),
+        RenderLayers::layer(ANNOTATIONS_LAYER),
     )
 }
 
@@ -601,9 +729,14 @@ fn over(overlay: Overlay) -> impl Bundle {
 /// Sets up a [`Travel`] from the camera's current center to the requested
 /// position. A message arriving mid-move replaces it, starting a fresh
 /// curve from wherever the camera has reached.
-pub fn move_camera(
+pub(crate) fn move_camera(
     mut query: Query<&mut OrbitCamera>,
-    lens: Query<&Projection>,
+    // Only the eye's. Three cameras draw the map and every one of them carries
+    // a `Projection`, `Camera3d` requiring one, so a query for a bare
+    // projection matches all three and answers nothing at all. What the framing
+    // below has to know is how wide the viewer sees, and that is this camera's
+    // to say.
+    lens: Query<&Projection, With<OrbitCamera>>,
     mut camera_events: MessageReader<MoveCamera>,
 ) {
     for event in camera_events.read() {
@@ -635,7 +768,7 @@ pub fn move_camera(
 /// The orbit is worked out in absolute light years and only split into a
 /// cell and a remainder at the very end, so the arithmetic never has to know
 /// about grids and the camera never lands between two cells.
-pub fn orbit_camera(
+pub(crate) fn orbit_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     over_ui: Res<PointerOverUi>,
@@ -645,20 +778,70 @@ pub fn orbit_camera(
     grids: Query<&Grid, With<BigSpace>>,
     // The grid of whatever the camera has descended into, if it has.
     inside: Query<(&Grid, &System), Without<BigSpace>>,
-    mut cameras: Query<(
-        &mut OrbitCamera,
-        &mut CellCoord,
-        &mut Transform,
-        Option<&ChildOf>,
-    )>,
+    // The bodies drawn inside that system, whose surfaces are what the zoom
+    // stops short of once the camera is down among them.
+    bodies: Query<(&Body, &CellCoord, &Transform), With<Inside>>,
+    // Split from the bodies by `Without<Inside>` so the two may read the same
+    // transforms without a conflict, the camera never being a body.
+    mut cameras: Query<
+        (
+            &mut OrbitCamera,
+            &mut CellCoord,
+            &mut Transform,
+            Option<&ChildOf>,
+            Option<&Projection>,
+        ),
+        Without<Inside>,
+    >,
     windows: Query<&Window, With<PrimaryWindow>>,
+    // A system with contents loaded nearby, about to be descended into, and
+    // how far the one being closed on reaches. `Option` so the camera's own
+    // tests need not stand either up.
+    contents: Option<Res<Contents>>,
+    approaching: Option<Res<crate::systems::bodies::fetch::Approaching>>,
 ) {
     let Ok(grid) = grids.single() else { return };
-    let Ok((mut orbit, mut cell, mut transform, child_of)) =
+    let Ok((mut orbit, mut cell, mut transform, child_of, projection)) =
         cameras.single_mut()
     else {
         return;
     };
+
+    // Which grid the camera hangs in, worked out once for the zoom floor below
+    // and the cell split at the end. A camera that has descended is a child of
+    // the system it went into, and is measured in that system's metre-fine
+    // grid; anything else in the galaxy's.
+    let descended = child_of
+        .map(ChildOf::parent)
+        .and_then(|parent| inside.get(parent).ok());
+
+    // Down among a system's bodies the near end of the zoom is the nearest
+    // body framed — stood back far enough to keep its whole disc in view, the
+    // same framing the camera uses over everything else (see [`stand_back`]).
+    // Nearer than that fills the screen with the body's surface and reads as
+    // flying into it. Taken from where the camera stands now, a frame stale
+    // and none the worse for it through a zoom that eases.
+    let nearest_body_view = descended.and_then(|(grid, system)| {
+        bodies
+            .iter()
+            .map(|(body, cell, at)| {
+                let metres = cell.as_dvec3(grid) + at.translation.as_dvec3();
+                let place =
+                    system.position() + crate::space::light_years(metres);
+                (place.distance(orbit.center), body.radius)
+            })
+            .min_by(|(one, _), (other, _)| one.total_cmp(other))
+            .map(|(_, radius)| {
+                stand_back(
+                    (radius as f64 / crate::space::LIGHT_YEAR) as f32,
+                    projection,
+                )
+            })
+    });
+    let descendable = contents.as_deref().and_then(Contents::extent).is_some();
+    let awaited = contents.as_deref().is_some_and(Contents::asking);
+    let closing = approaching.as_deref().and_then(|it| it.0);
+    let floor = zoom_floor(nearest_body_view, descendable, awaited, closing);
 
     // A drag that started on a slider is the user talking to the settings
     // window, not to the map behind it, and goes on being that wherever the
@@ -666,14 +849,14 @@ pub fn orbit_camera(
     // it rather than to what the pointer is over from one frame to the next.
     if gesture.dragging_map() {
         if gesture.pressed(MouseButton::Left) {
-            let rate = ORBIT_RATE * orbit.orbit_sensitivity;
-            orbit.target_yaw -= motion.delta.x * rate;
-            orbit.target_pitch = (orbit.target_pitch - motion.delta.y * rate)
+            orbit.target_yaw -= motion.delta.x * ORBIT_RATE;
+            orbit.target_pitch = (orbit.target_pitch
+                - motion.delta.y * ORBIT_RATE)
                 .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         }
 
         if gesture.pressed(MouseButton::Right) {
-            let rate = PAN_RATE * orbit.pan_sensitivity * orbit.radius;
+            let rate = PAN_RATE * orbit.radius;
             let across = orbit.rotation * Vec3::X * -motion.delta.x * rate;
             let up = orbit.rotation * Vec3::Y * motion.delta.y * rate;
             // Dragging cancels a move in progress and takes the target from
@@ -708,10 +891,18 @@ pub fn orbit_camera(
     // it for a frame, until `zoom_with_spyglass` writes the reach back over
     // it, which reads as a zoom that keeps snapping back. The reach is what to
     // move, and the radius on the settings pane is where it is moved.
+    //
+    // The floor is spent here, on the wheel, and below on where the camera
+    // actually stands. It is never written to the target between gestures: a
+    // floor that appears while the camera is standing still — the map handing
+    // the rows from one system to the next, or the crosshair drifting toward a
+    // wide neighbour — would otherwise rewrite the zoom the user set, and
+    // leave it rewritten once the floor had gone again.
     if lines != 0. && !over_ui.0 && !spyglass.locks_camera() {
-        let zoom = -lines * ZOOM_RATE * orbit.zoom_sensitivity;
-        orbit.target_radius =
-            (orbit.target_radius * zoom.exp()).clamp(MIN_RADIUS, MAX_RADIUS);
+        let zoom = -lines * ZOOM_RATE;
+        orbit.target_radius = (orbit.target_radius * zoom.exp())
+            .clamp(MIN_RADIUS, MAX_RADIUS)
+            .max(floor);
     }
 
     // Approach whatever was asked for, rather than jumping to it. A search
@@ -751,7 +942,8 @@ pub fn orbit_camera(
         orbit.radius,
         orbit.target_radius,
         approach(orbit.zoom_smoothness, dt),
-    );
+    )
+    .max(floor);
 
     let turn = approach(orbit.orbit_smoothness, dt);
     let yaw = eased(orbit.yaw, orbit.target_yaw, turn);
@@ -779,17 +971,21 @@ pub fn orbit_camera(
     // of kilometres. That is far finer than anything the galaxy draws and far
     // coarser than anything a system does, which is the whole reason for
     // going down.
-    let descended = child_of
-        .map(|child_of| child_of.parent())
-        .and_then(|parent| inside.get(parent).ok());
     let (eye_cell, eye_translation) = match descended {
         Some((grid, system)) => grid
             .translation_to_grid(crate::space::metres(eye - system.position())),
         None => grid.translation_to_grid(crate::space::metres(eye)),
     };
     cell.set_if_neq(eye_cell);
-    transform.translation = eye_translation;
-    transform.rotation = rotation;
+    // Only where it moved. The camera holds the [`FloatingOrigin`], so writing
+    // its transform is what tells [`big_space`] to recompute every resident
+    // entity's position against the new eye. A still camera lands the same
+    // transform it already had, and assigning it regardless forces that whole
+    // walk every idle frame; guarded, an unmoving view costs nothing.
+    let mut placed = *transform;
+    placed.translation = eye_translation;
+    placed.rotation = rotation;
+    transform.set_if_neq(placed);
 }
 
 /// Hold the near plane a fixed fraction of the way to what is being looked at
@@ -812,7 +1008,7 @@ pub fn orbit_camera(
 /// consults it when its normal is something other than straight back from the
 /// camera, and by default it is not. Giving it one would turn on the oblique
 /// clipping meant for portals and mirrors.
-pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
+pub(crate) fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
     let Ok((orbit, mut projection)) = cameras.single_mut() else { return };
     // The radius is a distance the map talks in and the planes are distances
     // it draws in, so this is one of the two places a light year is spoken to
@@ -840,81 +1036,54 @@ pub fn focus_lens(mut cameras: Query<(&OrbitCamera, &mut Projection)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::bodies::fetch::{Approach, Approaching};
 
-    /// The map looks through two cameras, and only one of them is the eye
+    /// The annotations draw over the galaxy and the star field
     ///
-    /// Every system that asks where the viewer stands narrows by
-    /// `OrbitCamera` rather than by `Camera`, so the overlay is invisible to
-    /// them. A bare `With<Camera>` would match both and `single` would fail,
-    /// which takes the names off the map rather than reporting anything.
+    /// One camera paints every annotation in screen space with egui, and which
+    /// covers which is its `order` alone: it has to stack last, over the scene
+    /// and the field, so the names, the rings and the chrome above them land
+    /// over the whole map rather than under what they annotate.
     #[test]
-    fn only_the_orbit_camera_answers_for_the_eye() {
-        let source = include_str!("systems/labels.rs");
-        let pointing = include_str!("systems/pointing.rs");
-        let selection = include_str!("systems/selection.rs");
+    fn the_annotations_draw_over_the_galaxy() {
+        use bevy::core_pipeline::tonemapping::Tonemapping;
 
-        for (name, text) in [
-            ("labels", source),
-            ("pointing", pointing),
-            ("selection", selection),
-        ] {
-            assert!(
-                !text.contains("With<Camera>"),
-                "{name} asks for a camera without saying which"
-            );
-        }
-    }
-
-    /// The rings draw over the galaxy, the grounds over the rings, and the
-    /// names over the grounds
-    ///
-    /// Which covers which is decided by `order` alone, so it is the one thing
-    /// worth holding: get it backwards and a name is drawn under its own
-    /// ground, or a ground under the ring of whatever it names.
-    #[test]
-    fn the_annotation_layers_stack_from_the_galaxy_up() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
 
-        let stacked = |app: &mut App, overlay: Overlay| {
-            let id = app.world_mut().spawn(over(overlay)).id();
-            let over = app.world().entity(id);
-            let camera = over.get::<Camera>().expect("a camera");
+        let id = app.world_mut().spawn(annotations()).id();
+        let over = app.world().entity(id);
+        let camera = over.get::<Camera>().expect("a camera");
 
-            assert!(
-                matches!(camera.clear_color, ClearColorConfig::None),
-                "wiped what was drawn before it"
-            );
-            assert_eq!(
-                over.get::<RenderLayers>(),
-                Some(&RenderLayers::layer(overlay.layer())),
-                "not held to its own layer"
-            );
-            assert!(over.get::<Bloom>().is_none(), "annotation is not a light");
-            assert_eq!(
-                over.get::<bevy::core_pipeline::tonemapping::Tonemapping>(),
-                Some(&bevy::core_pipeline::tonemapping::Tonemapping::None),
-                "the eye is not the only camera that tonemaps",
-            );
-            camera.order
-        };
-
-        let rings = stacked(&mut app, Overlay::Rings);
-        let grounds = stacked(&mut app, Overlay::Grounds);
-        let names = stacked(&mut app, Overlay::Names);
-
-        assert!(rings > 0, "the rings were drawn under the galaxy");
-        assert!(grounds > rings, "the grounds were drawn under the rings");
-        assert!(names > grounds, "the names were drawn under their grounds");
+        assert!(
+            matches!(camera.clear_color, ClearColorConfig::None),
+            "wiped what was drawn before it"
+        );
+        assert_eq!(
+            over.get::<RenderLayers>(),
+            Some(&RenderLayers::layer(ANNOTATIONS_LAYER)),
+            "not held to the annotations' own layer"
+        );
+        assert!(over.get::<Bloom>().is_none(), "annotation is not a light");
+        assert_eq!(
+            over.get::<Tonemapping>(),
+            Some(&Tonemapping::None),
+            "the eye is not the only camera that tonemaps",
+        );
+        assert!(
+            camera.order > FIELD_ORDER,
+            "the annotations were drawn under the star field",
+        );
     }
 
     /// An explicit tonemapping on a camera wins over the one `Camera3d`
     /// registers as a required default
     ///
     /// `bevy_core_pipeline` registers `Tonemapping` as a required component of
-    /// `Camera3d`, defaulting to the filmic curve. The shells camera sets its
-    /// own, and this is the whole of why that takes: a required component is a
-    /// default for what a bundle leaves out, not an override of what it sets.
+    /// `Camera3d`, defaulting to the filmic curve. The star field's camera and
+    /// the annotations' both set their own, and this is the whole of why that
+    /// takes: a required component is a default for what a bundle leaves out,
+    /// not an override of what it sets.
     #[test]
     fn a_camera_may_set_its_own_tonemapping() {
         use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -940,47 +1109,6 @@ mod tests {
         );
     }
 
-    /// The shells camera draws its own layer, over the scene, without the
-    /// bloom or the filmic curve the eye carries
-    ///
-    /// The shell is opaque and stands in for a colour, so it must reach the
-    /// screen as that colour: no bloom to spread it, and no curve to wash it
-    /// towards white. Its order stacks it over the scene and under the
-    /// annotations, and it keeps its own depth buffer by clearing none of the
-    /// colour drawn before it.
-    #[test]
-    fn the_shells_draw_over_the_scene_untouched() {
-        use bevy::core_pipeline::tonemapping::Tonemapping;
-
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.register_required_components::<Camera3d, Tonemapping>();
-
-        let id = app.world_mut().spawn(shells_view()).id();
-        let view = app.world().entity(id);
-        let camera = view.get::<Camera>().expect("a camera");
-
-        assert_eq!(
-            view.get::<RenderLayers>(),
-            Some(&RenderLayers::layer(SHELLS_LAYER)),
-            "not held to the shells' own layer",
-        );
-        assert_eq!(
-            view.get::<Tonemapping>(),
-            Some(&Tonemapping::None),
-            "the shells were handed the eye's filmic curve",
-        );
-        assert!(view.get::<Bloom>().is_none(), "a shell is not a light");
-        assert!(
-            matches!(camera.clear_color, ClearColorConfig::None),
-            "wiped what was drawn before it",
-        );
-        assert!(camera.order > 0, "the shells were drawn under the scene",);
-        assert!(
-            (camera.order as usize) < Overlay::Rings.layer(),
-            "the shells were drawn over the annotations",
-        );
-    }
     use crate::systems::pointing::PRIMARY;
     use crate::ui::PressOwner;
     use bevy::input::mouse::AccumulatedMouseScroll;
@@ -1020,6 +1148,15 @@ mod tests {
             .single(app.world())
             .unwrap()
             .target_radius
+    }
+
+    /// How far back the camera is standing
+    fn stands(app: &mut App) -> f32 {
+        app.world_mut()
+            .query::<&OrbitCamera>()
+            .single(app.world())
+            .unwrap()
+            .radius
     }
 
     /// A spyglass reaching ten light years, set however the test wants
@@ -1144,6 +1281,162 @@ mod tests {
         app.update();
 
         assert!(asked(&mut app) > 100., "stayed at {}", asked(&mut app));
+    }
+
+    /// Descended among the bodies, the zoom stops with the nearest body framed
+    ///
+    /// A body is stood back far enough to keep its whole disc in view — the
+    /// same framing the camera uses over everything else — not a hair off its
+    /// surface, which would fill the screen with it and read as flying in.
+    #[test]
+    fn a_body_stops_the_zoom_framed() {
+        let earth = 6.371e6_f32;
+        let surface = (earth as f64 / crate::space::LIGHT_YEAR) as f32;
+        let framed = stand_back(surface, None);
+
+        // Well outside the surface, not hugging it: the whole body stays seen.
+        assert!(framed > surface * 2., "the body would overfill the view");
+        assert_eq!(zoom_floor(Some(framed), true, false, None), framed);
+    }
+
+    /// A system with contents loaded is left to descend
+    ///
+    /// Nothing is drawn in it yet, but the answer is in hand and the descent
+    /// is about to carry the camera onto the metre-fine grid before the
+    /// galaxy grid tears, so the floor stands aside.
+    #[test]
+    fn a_loaded_system_lets_the_camera_in() {
+        assert_eq!(zoom_floor(None, true, false, None), MIN_RADIUS);
+    }
+
+    /// A system with nothing to descend into holds the camera off
+    ///
+    /// Its mark would swell from a dot into a blurry ball as the camera came
+    /// in, with no descent to take over, so the zoom is stopped short of that.
+    #[test]
+    fn a_bare_system_holds_the_camera_off() {
+        let least = subgridless_floor(crate::systems::bodies::STAND_IN);
+
+        assert!(least > MIN_RADIUS, "the floor is no floor");
+        assert_eq!(zoom_floor(None, false, false, None), least);
+    }
+
+    /// And every bare system stops with its mark the same size
+    ///
+    /// The reported trouble. The floor was a fixed distance off
+    /// [`crate::systems::bodies::STAND_IN`] while what it guards against is an
+    /// angle: with the body rows gone, a system reaching a fifth of a light
+    /// year stopped the camera with its mark ten radians across, filling the
+    /// sky, while one with nothing on record was still a speck at the same
+    /// remove — so the camera seemed to come right in and find nothing there.
+    /// One rule, two pictures. Off each system's own reach they agree.
+    #[test]
+    fn every_bare_system_stops_with_its_mark_the_same_size() {
+        // A fifth of a light year, and a system with nothing on record.
+        for reach in [2.1e15_f32, crate::systems::bodies::STAND_IN] {
+            let closing = Approach { reach, away: 0. };
+            let floor = zoom_floor(None, false, false, Some(closing));
+            let away = floor as f64 * crate::space::LIGHT_YEAR;
+            let seen = f64::from(reach) / away;
+
+            // The mark has just filled out, wherever that leaves the camera.
+            assert!(
+                seen > crate::systems::bodies::spawn::WORTH_SIZING as f64,
+                "a system reaching {reach} m stopped with its mark at \
+                 {seen} rad, before the swell begins"
+            );
+            assert!(
+                seen <= crate::systems::bodies::spawn::WORTH_KEEPING as f64
+                    + 1e-9,
+                "a system reaching {reach} m stopped with its mark at \
+                 {seen} rad, past where it fills out"
+            );
+        }
+    }
+
+    /// A wide neighbour does not hold the camera off what it is looking at
+    ///
+    /// Reported: zoomed a little way into Sol, panning across toward Alpha
+    /// Centauri jumped the zoom out. [`Approaching`] names whichever system is
+    /// nearest what the camera looks at within five light years, so Alpha
+    /// Centauri became the system the floor was read from while the camera
+    /// still stood on Sol — and a fifth of a light year of reach is a floor
+    /// some twenty-five light years out.
+    #[test]
+    fn a_neighbour_does_not_hold_the_camera_off() {
+        let alpha_centauri = Approach { reach: 2.1e15, away: 4.4 };
+
+        assert!(!alpha_centauri.stood_in(), "four light years off is inside");
+        assert_eq!(
+            zoom_floor(None, false, false, Some(alpha_centauri)),
+            MIN_RADIUS
+        );
+    }
+
+    /// A question still in flight is not an empty answer
+    ///
+    /// Every handover from one system to the next passes through it, and a
+    /// floor taken on the strength of it moves the camera on nothing more than
+    /// the map not having heard back yet.
+    #[test]
+    fn a_system_being_asked_about_does_not_hold_the_camera_off() {
+        let stood_on =
+            Approach { reach: crate::systems::bodies::STAND_IN, away: 0. };
+
+        assert!(stood_on.stood_in(), "the camera is not standing in it");
+        assert_eq!(zoom_floor(None, false, true, Some(stood_on)), MIN_RADIUS);
+    }
+
+    /// Panning toward a neighbour leaves the zoom where the user set it
+    ///
+    /// The same trouble through [`orbit_camera`], which is where it was seen:
+    /// a camera zoomed in on one system, Alpha Centauri four light years off
+    /// the crosshair, nothing in hand about it. The floor was written onto the
+    /// target every frame, so a neighbour's mark did not merely stop the zoom,
+    /// it moved it — and left it moved once the crosshair had gone on past.
+    #[test]
+    fn a_neighbour_does_not_move_the_zoom() {
+        let back = 1e-3;
+        let mut app = scrolled(back, spyglass(false, false));
+        app.insert_resource(AccumulatedMouseScroll::default());
+        app.insert_resource(Approaching(Some(Approach {
+            reach: 2.1e15,
+            away: 4.4,
+        })));
+
+        for _ in 0..60 {
+            app.update();
+        }
+
+        assert_eq!(
+            asked(&mut app),
+            back,
+            "the zoom the user set was rewritten"
+        );
+        assert_eq!(stands(&mut app), back, "the camera was pushed out");
+    }
+
+    /// And a scroll cannot drive through that floor
+    ///
+    /// The whole of the reported trouble: pulling hard into a system with no
+    /// sub-grid shredded its mark on the galaxy grid. Now the zoom comes to
+    /// rest at the floor however long the wheel is turned.
+    #[test]
+    fn a_subgridless_system_stops_the_zoom_short() {
+        let mut app = scrolled(1e-2, spyglass(false, false));
+        app.insert_resource(AccumulatedMouseScroll {
+            unit: MouseScrollUnit::Line,
+            delta: Vec2::new(0., 1.),
+        });
+
+        for _ in 0..200 {
+            app.update();
+        }
+
+        assert_eq!(
+            asked(&mut app),
+            subgridless_floor(crate::systems::bodies::STAND_IN)
+        );
     }
 
     /// Where [`approach`] lands after `steps` frames of `dt` seconds each
@@ -1397,6 +1690,59 @@ mod tests {
         let back = stand_back(50., None);
 
         assert!(fits(50., back, DEFAULT_HALF_FOV));
+    }
+
+    /// The eye is asked for the lens even with other cameras carrying one
+    ///
+    /// The three tests above hand [`stand_back`] a lens themselves, which is
+    /// not how a running map comes by one. There the map draws through three
+    /// cameras, `Camera3d` requires a [`Projection`], and a query for a bare
+    /// projection matches all three and answers nothing — quietly, since the
+    /// answer is an [`Option`] and none of it means the default angle. Framing
+    /// then stops asking the window what shape it is, and a route plotted in a
+    /// window taller than it is wide has its ends cut off, which is the whole
+    /// thing those tests are for. So this one goes the long way round: a second
+    /// camera stands beside the eye and the framing is asked for by message.
+    #[test]
+    fn the_eye_answers_for_the_lens_among_other_cameras() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<MoveCamera>();
+        app.add_systems(Update, move_camera);
+
+        let tall = lens(400., 1200.);
+        app.world_mut().spawn((
+            Camera3d::default(),
+            OrbitCamera::default(),
+            lens(400., 1200.),
+        ));
+        // The star field's camera, or the annotations', neither of which
+        // answers for anything the viewer looks through.
+        let other = app.world_mut().spawn(Camera3d::default()).id();
+        assert!(
+            app.world().get::<Projection>(other).is_some(),
+            "a camera with no projection cannot stand in for the field's",
+        );
+
+        app.world_mut()
+            .write_message(MoveCamera { position: None, framing: Some(50.) });
+        app.update();
+
+        // A tolerance, not equality: the same expression evaluated in the test
+        // and inside the system need not come out to the same bit, `tan` and
+        // `atan` being what they are. A lens read from the wrong camera, or
+        // from none, is out by hundreds.
+        let through_the_eye = stand_back(50., Some(&tall));
+        let back = asked(&mut app);
+        assert!(
+            (back - through_the_eye).abs() < 1e-3,
+            "stood back {back}, not the {through_the_eye} the eye's lens asks \
+             for: framed through some other camera's lens, or through none",
+        );
+        assert!(
+            (through_the_eye - stand_back(50., None)).abs() > 1.,
+            "a lens the default angle already agrees with proves nothing",
+        );
     }
 
     /// Twice as much to hold is twice as far to stand

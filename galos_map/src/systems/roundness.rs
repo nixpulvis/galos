@@ -2,8 +2,12 @@
 //!
 //! Everything round on the map is drawn from one of a handful of spheres, and
 //! which one is asked afresh every frame from how large the thing is on
-//! screen. A system's mark seen from across the galaxy and a planet filling
-//! the view are the two ends of the same question, so one ladder answers both.
+//! screen. What is round is what a descended system holds: the star at the
+//! middle and every body going round it, from a moon held at a pixel to a gas
+//! giant filling the view. Nothing in the sky above is drawn from these — a
+//! system's mark and the stars behind it are flat quads painted in screen
+//! space (see `docs/night-sky.md`) — so one ladder answers for the inside of a
+//! system and for nothing else.
 
 use bevy::prelude::*;
 
@@ -23,14 +27,16 @@ pub fn plugin(app: &mut App) {
 /// So each rung holds four times the faces of the one below it and serves four
 /// times the size, and the figures are where the rung below passes about a
 /// quarter of a pixel out. The bottom is a bare icosahedron, which is all a
-/// half pixel dot has ever needed, and the top is a body filling a tall screen.
+/// body held down at a pixel needs, and the top is a body filling a tall
+/// screen.
 ///
 /// TODO(#72): What the bottom rung is worth is a question about area rather
 /// than about outline. An icosahedron's mean projected area is a quarter of
 /// its surface, a little over three quarters of the disc it stands in, so a
-/// dot held at [`crate::systems::scale`]'s pixel floor is drawn an eighth
-/// narrower than it asked to be. That area also swings a tenth with which way
-/// it is seen, which a dot of a few pixels shows as a flicker of its own.
+/// body held at [`crate::systems::scale`]'s `SMALLEST_DRAWN` is drawn an
+/// eighth narrower than it asked to be. That area also swings a tenth with
+/// which way it is seen, which a body of a few pixels shows as a flicker of
+/// its own.
 const LADDER: [(u32, f32); 7] =
     [(0, 0.), (1, 2.), (3, 8.), (7, 32.), (15, 128.), (31, 512.), (63, 2048.)];
 

@@ -11,13 +11,13 @@ use crate::systems::System;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
-    Label, depth, depth_of, name_rect, screen_offset, screen_position,
-    world_per_pixel,
+    Label, PlateText, color32, depth, name_rect, screen_offset,
+    screen_position, world_per_pixel,
 };
+use crate::systems::scale::{Drawn, View};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
 use bevy::camera::RenderTarget;
-use bevy::camera::visibility::ViewVisibility;
 use bevy::ecs::entity::EntityHashMap;
 use bevy::math::DVec3;
 use bevy::picking::backend::{HitData, PointerHits};
@@ -25,7 +25,7 @@ use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerId, PointerLocation, PointerMap};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
-use bevy_rich_text3d::Text3d;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn plugin(app: &mut App) {
     app.add_systems(
@@ -33,11 +33,7 @@ pub fn plugin(app: &mut App) {
         (point_at, size_indicators, point_the_cursor)
             .in_set(MapSet::Present)
             .after(super::scale::size_by_distance)
-            .after(super::scale::size_uniformly)
-            // A mark is taken from the shell that is drawn this frame rather
-            // than the one that was drawn last, as it is taken from the size
-            // settled this frame.
-            .after(super::spawn::shells),
+            .after(super::scale::size_photometrically),
     );
     // Answers where the pointer is before anything asks, which is what a
     // picking backend is and where bevy expects one to run.
@@ -54,9 +50,24 @@ pub fn plugin(app: &mut App) {
         Update,
         size_bodies.in_set(MapSet::Present).before(super::labels::choose_names),
     );
-    // The ring is drawn where a body ended up rather than deciding it, so it
-    // waits for the transforms to be worked out, as `labels::leaders` does.
-    app.add_systems(PostUpdate, ring.after(TransformSystems::Propagate));
+    // Painted flat in screen space with egui, in the same pass and the same
+    // way [`super::labels::draw_names`] paints the names. A ring drawn as a
+    // mesh out at a system's galaxy coordinate tears in f32; see
+    // `docs/night-sky.md`.
+    //
+    // Four systems paint into the one layer, and the order they run in is the
+    // order they stack: the ruled plane's readouts, then this ring, then
+    // [`super::selection::ring`], then the names. Before the names so both
+    // rings sit beneath the grounds the names are written on. Before the
+    // selection's ring because a selection is what the user came for and a
+    // hover is only where they happen to be: the two never ring the same
+    // system, but a route stop's mark and a neighbour's ring overlap on
+    // screen at close zoom, and it is the lasting mark that should read
+    // whole.
+    app.add_systems(
+        EguiPrimaryContextPass,
+        ring.before(super::labels::draw_names).before(super::selection::ring),
+    );
     app.add_observer(start_drag);
     app.add_observer(track_drag);
 }
@@ -68,11 +79,20 @@ pub fn plugin(app: &mut App) {
 /// happen to have all changed at once.
 pub const INDICATOR: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
 
-/// How much wider than its star a system's indicator is drawn
+/// How much air a system's mark leaves around its star, as a radius in pixels
 ///
-/// Far enough out to read as something around the star rather than as part
-/// of it.
-const INDICATOR_MARGIN: f32 = 1.5;
+/// A gap on the glass rather than a multiple of the star, which is the whole
+/// of what keeps a ring a ring. A multiple reads well while a mark is a
+/// handful of pixels and turns into a halo once one is not: a prominent
+/// system's mark runs to `scale`'s `POP_MAX` times its `NEAREST` share of the
+/// sky, tens of pixels across, and half again of that is a hoop with the star
+/// loose inside it.
+///
+/// Held instead at a fixed few pixels, so the ring hugs whatever is drawn at
+/// every size and there is no ceiling to impose: what bounds it is the bound
+/// already on the mark. Near enough what the old multiple came to at the size
+/// the floor takes over, so the sky at large is ringed as it was.
+const INDICATOR_AIR: f32 = 4.;
 
 /// The smallest an indicator may be, as a radius in logical pixels
 ///
@@ -161,16 +181,13 @@ const STUB_EDGE: f32 = 40.;
 /// the corner of it.
 const STUB_LENGTH: f32 = 60.;
 
-/// How many line segments a ring is drawn with
+/// How wide a ring's stroke is painted, in logical pixels
 ///
-/// Bevy draws a gizmo circle with thirty two unless it is told otherwise,
-/// which is a ring visibly cornered by the time one is a few hundred pixels
-/// across, and a mark around a body is exactly that once the body is worth
-/// looking at. At this it is off by a hundredth of a pixel there.
-///
-/// Rings are drawn one per thing marked out and a handful of things are ever
-/// marked out at once, so the count is nothing beside the orbits.
-pub(super) const RING_POINTS: u32 = 256;
+/// A hair bolder than the leader lines [`super::labels::draw_names`] paints at
+/// one pixel, so a ring reads as the mark it is rather than as another leader.
+/// Painted flat in screen space, so this is pixels on the glass and holds its
+/// weight at every zoom.
+pub(crate) const RING_STROKE: f32 = 1.5;
 
 /// How much air a body's mark leaves around it, as a fraction of the body
 ///
@@ -183,10 +200,11 @@ pub(super) const RING_POINTS: u32 = 256;
 /// planet a hundred and sixty pixels wide. A tenth is a few pixels where a
 /// body is small enough for a few pixels to show and grows with it from there.
 ///
-/// Gentler than [`INDICATOR_MARGIN`], which is what a system's shell is given.
-/// A shell is a handful of pixels across and half again of it is still a
-/// handful; a planet filling the view would be ringed off the edge of the
-/// screen.
+/// Where a system's mark leaves a flat [`INDICATOR_AIR`] instead. A body's own
+/// size is what it is marked by, and a planet filling the view would be ringed
+/// off the edge of the screen by a fraction as generous as a tenth if the
+/// fraction were all there was; a shell is a mark in the first place and never
+/// grows past the bound on marks.
 const BODY_MARGIN: f32 = 0.1;
 
 /// The least air it leaves, as a radius in pixels
@@ -209,8 +227,12 @@ const BODY_AIR: f32 = BODY_MIN_RADIUS / 2.;
 ///
 /// Pixels, because that is what the mark is specified in and what aiming is
 /// done in: [`INDICATOR_MIN_RADIUS`] is a distance to the hand rather than a
-/// distance in the world. A ring is drawn in the world and so converts this
-/// back at the moment of drawing, which is the only place the two units meet.
+/// distance in the world. The conversion runs one way only: `system_mark`
+/// and `body_mark` take what is drawn out in the world and answer in
+/// pixels, once, and everything downstream of them stays there — the ring is
+/// painted straight into the egui layer at a projected pixel, and the pointer
+/// is tested against a pixel radius. Nothing turns this number back into
+/// metres, which is why there is no second conversion to keep honest.
 ///
 /// Held on the system itself. It once sat on an invisible sphere hung off the
 /// system for a ray to be thrown at, and that sphere had to be a size in
@@ -350,7 +372,7 @@ pub(super) fn point_at(
     ]);
     if holding && dragged.iter().any(|far| far.0 > DRAG_THRESHOLD) {
         for system in &pointed_at {
-            commands.entity(system).remove::<PointedAt>();
+            commands.entity(system).try_remove::<PointedAt>();
         }
         return;
     }
@@ -424,13 +446,15 @@ pub(super) fn point_at(
             // rather than starting over every frame.
             already = true;
         } else {
-            commands.entity(system).remove::<PointedAt>();
+            commands.entity(system).try_remove::<PointedAt>();
         }
     }
     if let Some(system) = wanted
         && !already
     {
-        commands.entity(system).insert(PointedAt::reached(time.elapsed_secs()));
+        commands
+            .entity(system)
+            .try_insert(PointedAt::reached(time.elapsed_secs()));
     }
 }
 
@@ -440,18 +464,20 @@ pub(super) fn point_at(
 /// what answers the pointer, so the mark and the area that catches cannot
 /// come apart.
 ///
-/// A shell is drawn in metres and holds a size that changes with the camera,
-/// so it is measured into pixels here and the larger of that and the floor
-/// wins. Where the shell is too small to aim at, which is nearly everywhere,
-/// the floor is the whole of the answer.
+/// Taken from the pixels [`super::field`] paints the star at rather than
+/// worked out again from the shell, and measured out along the line to the
+/// system as the field measures it. Read a second way the two came apart: a
+/// ring held to a ceiling of its own was drawn inside a mark the field had
+/// grown past it, and a mark converted through the depth into the view sat off
+/// its star towards the edges of the frame.
 ///
-/// A shell that is not drawn is not measured. [`super::shells`] takes one away
-/// once the camera is inside the system, and a mark taken from a sphere
+/// A system that is not drawn is not measured: a mark taken from a star
 /// nobody can see would put the whole viewport up as one system's target.
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
+    view: Res<View>,
     mut systems: Query<
-        (&System, &Transform, &ViewVisibility, &Strength, &mut Indicator),
+        (&System, &Drawn, &Visibility, &Strength, &mut Indicator),
         With<Shell>,
     >,
 ) {
@@ -459,35 +485,58 @@ pub fn size_indicators(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    for (system, shell, view, mark, mut indicator) in &mut systems {
+    for (system, shell, shown, mark, mut indicator) in &mut systems {
         // Off the frame the mark cannot be aimed at, so the pixels it would
         // take are not worked out; held at the floor so a hidden or off-screen
         // system is no easier to hit than an absent one. A hidden system reads
         // as off the frame here, its inherited visibility being what culling
         // asks first.
-        if !view.get() {
+        if *shown == Visibility::Hidden {
             if indicator.0 != INDICATOR_MIN_RADIUS {
                 indicator.0 = INDICATOR_MIN_RADIUS;
             }
             continue;
         }
 
-        let drawn = if mark.0 > 0. { shell.scale.x } else { 0. };
+        let drawn = if mark.0 > 0. { shell.0 } else { 0. };
 
         // A metre, which is as near as the camera may be pulled to anything.
-        // What the floor is for is the sign rather than the distance.
-        let into_view = depth(orbit, DVec3::from(system.position)).max(1.);
-        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
-        let shell = drawn * INDICATOR_MARGIN / per_pixel;
-
+        // What the floor is for is the sign rather than the distance. Along the
+        // line to the system, which is what the field sizes by.
+        let away =
+            crate::space::metres(orbit.eye - DVec3::from(system.position))
+                .length() as f32;
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
         // Only where it moved, as everything asked of every system every frame
         // is. Nothing watches a mark for changes today, and writing one
         // regardless is how that stops being safe without anyone meaning it to.
-        let wanted = shell.max(INDICATOR_MIN_RADIUS);
+        let wanted = system_mark(&view, drawn, per_pixel);
         if indicator.0 != wanted {
             indicator.0 = wanted;
         }
     }
+}
+
+/// How large a system's mark is, where its shell is `drawn` metres across and a
+/// pixel covers `per_pixel`
+///
+/// The pixels the field paints the star at ([`super::field::drawn_radius`]) and
+/// [`INDICATOR_AIR`] of air around them, floored at [`INDICATOR_MIN_RADIUS`]
+/// where the star is too small to aim at — which is nearly everywhere, and is
+/// where the floor is the whole of the answer.
+///
+/// No ceiling. A gap in pixels holds the ring to the star at every size, so
+/// there is nothing left for one to guard against: a mark cannot run away
+/// without the star running away with it, and what bounds the star bounds
+/// both. A ceiling here is what drew the ring inside the mark.
+///
+/// A star the field draws none of — a sliver under the eye's floor in the
+/// realistic view — is still marked at the floor. It may be named, picked out
+/// or a route's stop, and each of those has to be aimed at.
+fn system_mark(view: &View, drawn: f32, per_pixel: f32) -> f32 {
+    let star = super::field::drawn_radius(view, drawn, per_pixel).unwrap_or(0.);
+
+    (star + INDICATOR_AIR).max(INDICATOR_MIN_RADIUS)
 }
 
 /// Work out how large each body's mark is, in pixels
@@ -542,63 +591,17 @@ fn body_mark(radius: f32, per_pixel: f32) -> f32 {
     (drawn + air).max(BODY_MIN_RADIUS)
 }
 
-/// How wide a mark of `radius` pixels is out where its system stands
+/// The most systems the picker reports under one pointer at once
 ///
-/// A ring is world geometry, so what is held in pixels is spoken back into
-/// metres at the moment of drawing. The one place the two meet, and both
-/// rings go through it, so neither can disagree with what is caught.
-pub(super) fn drawn_radius(
-    orbit: &OrbitCamera,
-    cot_half_fov: f32,
-    viewport: Vec2,
-    position: DVec3,
-    radius: f32,
-) -> f32 {
-    let offset = crate::space::metres(position - orbit.eye);
-    drawn_radius_of(orbit, cot_half_fov, viewport, offset, radius)
-}
-
-/// How wide a mark of `radius` pixels is, `offset` metres from the eye
-///
-/// What [`drawn_radius`] is written on, and what anything already holding its
-/// own place relative to the camera asks: everything inside a system does.
-pub(super) fn drawn_radius_of(
-    orbit: &OrbitCamera,
-    cot_half_fov: f32,
-    viewport: Vec2,
-    offset: DVec3,
-    radius: f32,
-) -> f32 {
-    // A metre, which is as near as the camera may be pulled to anything.
-    let into_view = depth_of(orbit, offset).max(1.);
-    radius * world_per_pixel(cot_half_fov, viewport.y, into_view)
-}
-
-/// Where a mark drawn on the view is laid, as a depth in metres
-///
-/// A mark on the view is a thing in pixels, and a gizmo is world geometry, so
-/// it is drawn in a plane square to the camera and its sizes are spoken into
-/// metres out there. Which plane does not show: a ring of `n * pixel` metres at
-/// any depth is `n` pixels across, the two cancelling. What the plane has to be
-/// is in front of the camera, clear of the near plane, and nearer than anything
-/// that could be drawn over it.
-///
-/// So it is carried by the camera, at [`OVERLAY_FRACTION`] of how far back it
-/// is standing. A plane taken from something out in the world instead cannot
-/// promise any of the three: whatever it is taken from swings behind the camera
-/// as the camera comes in on something else, and the whole mark goes with it.
-pub(super) fn overlay_plane(radius: f32) -> f32 {
-    (radius as f64 * crate::space::LIGHT_YEAR) as f32 * OVERLAY_FRACTION
-}
-
-/// How far in front of the camera that plane sits, as a fraction of the zoom
-///
-/// A fraction for the reason [`crate::camera::NEAR_FRACTION`] is one: the map
-/// spans seventeen orders of magnitude of zoom and no fixed distance serves
-/// both ends of it. A hundredth is two orders inside whatever the camera is
-/// looking at, which nothing in a system is drawn across, and two orders past
-/// the near plane, which the camera holds at a ten-thousandth.
-const OVERLAY_FRACTION: f32 = 1e-2;
+/// A pointer over a crowded sky can fall within the mark radius of thousands
+/// of overlapping systems, the same crowding the labels thin themselves
+/// against, here on the marks. Putting every one through the hover pipeline
+/// each frame is what a zoomed-out view over the galactic core otherwise
+/// stalls on, and only the nearest can be pointed at — a mark under a mark is
+/// settled by depth. So the picker keeps that many and no more, enough for
+/// [`point_at`] to settle its precedence and past what any hand could aim
+/// between. The rest are a system you would have to fly in to tell apart.
+const MAX_HITS: usize = 256;
 
 /// Say what the pointer is over, measured on screen
 ///
@@ -627,25 +630,14 @@ const OVERLAY_FRACTION: f32 = 1e-2;
 fn hits(
     pointers: Query<(&PointerId, &PointerLocation)>,
     window: Query<Entity, With<PrimaryWindow>>,
-    cameras: Query<(
-        Entity,
-        &Camera,
-        &RenderTarget,
-        &OrbitCamera,
-        &GlobalTransform,
-    )>,
-    systems: Query<(Entity, &System, &Indicator, &ViewVisibility)>,
-    bodies: Query<(
-        Entity,
-        &Body,
-        &GlobalTransform,
-        &Indicator,
-        &ViewVisibility,
-    )>,
-    labels: Query<(Entity, &ChildOf, &Text3d), With<Label>>,
+    cameras: Query<(Entity, &Camera, &RenderTarget, &OrbitCamera)>,
+    systems: Query<(Entity, &System, &Indicator, &Visibility)>,
+    bodies: Query<(Entity, &Indicator), With<Body>>,
+    places: Places,
+    labels: Query<(Entity, &ChildOf, &PlateText), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
 ) {
-    let Ok((eye, camera, target, orbit, eye_at)) = cameras.single() else {
+    let Ok((eye, camera, target, orbit)) = cameras.single() else {
         return;
     };
     let Some(viewport) = camera.logical_viewport_size() else { return };
@@ -673,7 +665,7 @@ fn hits(
     // as its name, and that is a good part of the width again.
     let mut named = EntityHashMap::default();
     for (label, child_of, words) in &labels {
-        named.insert(child_of.parent(), (label, super::labels::said(words)));
+        named.insert(child_of.parent(), (label, words.0.as_str()));
     }
 
     for (pointer, at) in &pointers {
@@ -688,7 +680,7 @@ fn hits(
             // What is not drawn is not there to be pointed at. The spyglass
             // hides a system by writing its visibility, and one hidden is one
             // the user has said they are not looking at.
-            if !drawn.get() {
+            if *drawn == Visibility::Hidden {
                 continue;
             }
             let position = DVec3::from(system.position);
@@ -706,39 +698,39 @@ fn hits(
             // from touching. So the areas that catch cannot overlap either,
             // and a name is clickable over exactly the room it was granted.
             if let Some((label, said)) = named.get(&entity)
-                && name_rect(
-                    on_screen,
-                    said.unwrap_or(&system.name),
-                    indicator.0,
-                )
-                .contains(at)
+                && name_rect(on_screen, said, indicator.0).contains(at)
             {
                 picks.push((*label, hit));
             }
         }
 
-        // Everything inside a system, measured from the camera rather than
-        // from the galaxy. A body is drawn at its own size, so its mark is
-        // its own outline, and one drawn over another is settled by which is
-        // nearer, exactly as two overlapping spheres would be.
-        for (entity, body, body_at, indicator, drawn) in &bodies {
-            if !drawn.get() {
-                continue;
-            }
-            let offset =
-                (body_at.translation() - eye_at.translation()).as_dvec3();
+        // Everything inside a system. A body is drawn at its own size, so its
+        // mark is its own outline, and one drawn over another is settled by
+        // which is nearer, exactly as two overlapping spheres would be.
+        //
+        // Where it stands is read off the grid holding it, exactly as
+        // [`super::labels::draw_names`] and the two rings read it. Taken from
+        // the `GlobalTransform` instead, as this did, a body is caught a frame
+        // behind where its name is drawn — and a body spawned this frame has
+        // no global transform yet at all, so its name was drawn on it while
+        // the pointer was still being tested against the origin. That is a
+        // name up and nothing to click.
+        //
+        // Nor is a body gated on its `ViewVisibility` any more. That is
+        // settled by the render, a frame later than the name is chosen, so a
+        // body only just drawn was named before it could be caught. What a
+        // body's existence means is that its system's contents are on the map,
+        // which is the same thing its name is granted on; being off the frame
+        // is answered below, by the projection giving nothing for anything the
+        // camera cannot see.
+        for (entity, indicator) in &bodies {
+            let Some(place) = places.of(entity) else { continue };
             let Some(on_screen) =
-                screen_offset(orbit, cot_half_fov, viewport, offset)
+                screen_position(orbit, cot_half_fov, viewport, place)
             else {
                 continue;
             };
-            let hit = HitData {
-                camera: eye,
-                depth: depth_of(orbit, offset),
-                position: None,
-                normal: None,
-                extra: None,
-            };
+            let hit = caught(eye, place);
             if on_screen.distance(at) <= indicator.0 {
                 picks.push((entity, hit.clone()));
             }
@@ -746,13 +738,20 @@ fn hits(
             // differs between the two is only where the thing being named
             // ended up, which is answered before a name is asked about.
             if let Some((label, said)) = named.get(&entity)
-                && name_rect(on_screen, said.unwrap_or(&body.name), indicator.0)
-                    .contains(at)
+                && name_rect(on_screen, said, indicator.0).contains(at)
             {
                 picks.push((*label, hit));
             }
         }
 
+        // Report only the nearest few, so a pointer resting on the dense core
+        // does not put a crowd of overlapping sub-pixel marks through the
+        // hover pipeline every frame. The nearest is the one pointed at; the
+        // rest behind it change nothing but the cost.
+        if picks.len() > MAX_HITS {
+            picks.sort_by(|(_, a), (_, b)| a.depth.total_cmp(&b.depth));
+            picks.truncate(MAX_HITS);
+        }
         hits.write(PointerHits::new(*pointer, picks, camera.order as f32));
     }
 }
@@ -793,72 +792,69 @@ pub fn point_the_cursor(
 
 /// Ring the system the pointer is over
 ///
-/// Drawn as a gizmo rather than a mesh because it lasts exactly as long as
-/// the pointer rests there and follows the camera while it does.
-///
-/// Turned to face the camera, so it reads as a ring around the star rather
-/// than as a hoop the star is sitting inside.
+/// Painted flat in screen space with egui, in the same pass and the same way
+/// [`super::labels::draw_names`] paints the names and the leaders that join a
+/// name to what it names. A ring drawn as a mesh out at a system's ~1e17 m
+/// coordinate tears in the f32 clip transform (see `docs/night-sky.md`); a
+/// circle painted at a projected pixel holds its shape at every zoom.
 ///
 /// It goes out with the shell as the camera comes inside the system, as
-/// [`super::selection::ring`] does and for the same reason.
+/// [`super::selection`]'s `ring` does and for the same reason.
 #[allow(clippy::too_many_arguments)]
 pub fn ring(
-    mut gizmos: Gizmos,
+    mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
     holding: Res<HeldSystem>,
     // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.
     pointed_at: Query<
-        (&GlobalTransform, &System, &Strength, &Indicator, Has<Filtered>),
+        (&System, &Visibility, &Strength, &Indicator, Has<Filtered>),
         (With<PointedAt>, Without<Selected>),
     >,
-    // Whatever inside a system is pointed at, which carries no filter and no
-    // galactic position of its own.
+    // Whatever inside a system is pointed at, read off the grid holding it the
+    // way its name is, so it carries no filter and no galactic position of its
+    // own.
     inside: Query<
-        (&GlobalTransform, &Indicator),
+        (Entity, &Indicator),
         (With<Body>, With<PointedAt>, Without<Selected>),
     >,
     // The stops the routes reach from here. Ringed whether or not anything
     // is pointing at them, that being the whole of what the mark is for, and
     // whatever the filters say, as they are drawn regardless of those too.
     hops: Query<(
-        &GlobalTransform,
+        &System,
         &Strength,
         &Indicator,
         &crate::systems::route::Hop,
         Has<Selected>,
     )>,
-    eye_at: Query<&GlobalTransform, With<OrbitCamera>>,
+    places: Places,
     dim: Res<DimTo>,
-) {
-    let Ok((orbit, camera)) = camera.single() else { return };
-    let Some(viewport) = camera.logical_viewport_size() else { return };
+) -> Result {
+    let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
+    let Some(viewport) = camera.logical_viewport_size() else { return Ok(()) };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    // Everything about a stop is drawn where the camera can see it rather than
-    // where the stop actually is. A stop is a jump away, and standing inside a
-    // system the camera is measuring in metres: a ring out at its true distance
-    // is past the far plane, and a line between here and there reads as depth
-    // rather than as a mark. So the stop is projected to the screen and drawn
-    // back into the plane [`overlay_plane`] names, which the camera carries
-    // with it.
-    //
-    // Only while the map is holding a system, which is what a stop is reached
-    // from and what [`super::selection::ring`] stands back for.
-    if holding.of().is_some()
-        && let Ok(eye) = eye_at.single()
-    {
-        let right = orbit.rotation * Vec3::X;
-        let up = orbit.rotation * Vec3::Y;
-        let ahead = orbit.rotation * Vec3::NEG_Z;
-        let depth = overlay_plane(orbit.radius);
-        let pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
-        let middle = eye.translation() + ahead * depth;
-        // A point `at` pixels from the middle of the screen, drawn out there.
-        let placed = |at: Vec2| middle + (right * at.x - up * at.y) * pixel;
+    // The camera's own axes, for turning which way a stop lies into which way
+    // its stub runs across the view.
+    let right = orbit.rotation * Vec3::X;
+    let up = orbit.rotation * Vec3::Y;
 
-        for (at, mark, indicator, hop, picked) in &hops {
+    let ctx = contexts.ctx_mut()?;
+    let painter = ctx.layer_painter(super::labels::annotations_layer());
+    let stroke = |color: Srgba| egui::Stroke::new(RING_STROKE, color32(color));
+    // A point given in pixels from the middle of the screen, laid out in screen
+    // space. A stop's marks are placed about the middle, where the leader they
+    // stand in for runs from.
+    let middle = viewport * 0.5;
+    let placed = |at: Vec2| egui::pos2(middle.x + at.x, middle.y + at.y);
+
+    // The stops the routes reach from here, while the map is holding a system,
+    // which is what a stop is reached from and what [`super::selection::ring`]
+    // stands back for.
+    if holding.of().is_some() {
+        for (system, mark, indicator, hop, picked) in &hops {
             let standing = mark.0;
             if standing <= 0. {
                 continue;
@@ -873,15 +869,10 @@ pub fn ring(
             };
             let color = super::selection::going(hue, standing);
 
-            let there = (at.translation() - eye.translation()).as_dvec3();
-            let landed = super::labels::screen_offset(
-                orbit,
-                cot_half_fov,
-                viewport,
-                there,
-            )
-            .map(|at| at - viewport * 0.5)
-            .filter(|at| at.abs().cmple(viewport * 0.5).all());
+            let there = DVec3::from(system.position) - orbit.eye;
+            let landed = screen_offset(orbit, cot_half_fov, viewport, there)
+                .map(|at| at - middle)
+                .filter(|at| at.abs().cmple(middle).all());
 
             // Where the mark saying which way this stop lies goes, which each
             // of the two ways of drawing a stop settles for itself.
@@ -891,21 +882,8 @@ pub fn ring(
                 // found it is a line pointing at a thing already in sight.
                 // Which of the two stops this is belongs on the ring itself.
                 Some(place) => {
-                    // Drawn here whether or not the stop is picked out, in
-                    // whichever color `hue` settled on. A stop is drawn where
-                    // the camera can see it rather than where it is, and
-                    // [`super::selection::ring`] draws where a thing is: a
-                    // selection ringed out at its true distance is a ring
-                    // nobody sees. So this rings every stop and the selection
-                    // leaves stops alone.
                     let ringed = indicator.0.max(INDICATOR_MIN_RADIUS);
-                    gizmos
-                        .circle(
-                            Isometry3d::new(placed(place), orbit.rotation),
-                            ringed * pixel,
-                            color,
-                        )
-                        .resolution(RING_POINTS);
+                    painter.circle_stroke(placed(place), ringed, stroke(color));
 
                     // Under the name and starting where it starts. The name is
                     // laid out from the mark by these same two figures, so they
@@ -932,17 +910,18 @@ pub fn ring(
                         continue;
                     };
 
-                    let half = viewport * 0.5;
-                    let edge = (half.x / across.x.abs())
-                        .min(half.y / across.y.abs())
+                    let edge = (middle.x / across.x.abs())
+                        .min(middle.y / across.y.abs())
                         - STUB_EDGE;
 
-                    gizmos.line(
-                        placed(across * (edge - STUB_LENGTH)),
-                        placed(across * edge),
+                    painter.line_segment(
+                        [
+                            placed(across * (edge - STUB_LENGTH)),
+                            placed(across * edge),
+                        ],
                         // Fainter than the mark it leads to. It is there to be
                         // glanced along rather than read.
-                        color.with_alpha(color.alpha() * STUB_FADE),
+                        stroke(color.with_alpha(color.alpha() * STUB_FADE)),
                     );
 
                     // At the inner end, which is the end that is looked at:
@@ -953,60 +932,65 @@ pub fn ring(
 
             // The same mark either way, so it is drawn in one place.
             for rule in triangle(hop, icon) {
-                gizmos.line(placed(rule[0]), placed(rule[1]), color);
+                painter.line_segment(
+                    [placed(rule[0]), placed(rule[1])],
+                    stroke(color),
+                );
             }
         }
     }
 
-    // Whatever inside a system is pointed at, which is drawn where it stands
-    // and needs none of the above: it is in here with the camera.
-    if let Ok(eye) = eye_at.single() {
-        for (at, indicator) in &inside {
-            let offset = (at.translation() - eye.translation()).as_dvec3();
-            let radius = drawn_radius_of(
-                orbit,
-                cot_half_fov,
-                viewport,
-                offset,
-                indicator.0,
-            );
-
-            gizmos
-                .circle(
-                    Isometry3d::new(at.translation(), orbit.rotation),
-                    radius,
-                    INDICATOR,
-                )
-                .resolution(RING_POINTS);
-        }
+    // Whatever inside a system is pointed at, read off the grid holding it, as
+    // its name is, so it is placed against the view it is drawn into.
+    for (entity, indicator) in &inside {
+        let Some(place) = places.of(entity) else { continue };
+        let Some(at) = screen_position(orbit, cot_half_fov, viewport, place)
+        else {
+            continue;
+        };
+        painter.circle_stroke(
+            egui::pos2(at.x, at.y),
+            indicator.0,
+            stroke(INDICATOR),
+        );
     }
 
-    for (at, system, mark, indicator, filtered) in &pointed_at {
+    // The system the pointer is on, drawn where it lands on screen rather than
+    // out at its own coordinate, where a mesh ring would tear.
+    for (system, visibility, mark, indicator, filtered) in &pointed_at {
+        // Gated as [`super::selection::ring`] is, and for the reason argued
+        // there: the strength cannot answer whether the star is drawn. The
+        // mark itself cannot outlive the star by more than a frame — [`hits`]
+        // catches nothing hidden — but it reads last frame's visibility, so a
+        // system hidden on the frame it is hovered stays pointed at and would
+        // wear a ring around empty sky.
+        if *visibility == Visibility::Hidden {
+            continue;
+        }
+
         let standing = mark.0;
         if standing <= 0. {
             continue;
         }
-        // Drawn at what the pointer is tested against, so the ring is the
-        // outline of the very area that catches.
-        let radius = drawn_radius(
+        let Some(at) = screen_position(
             orbit,
             cot_half_fov,
             viewport,
             DVec3::from(system.position),
+        ) else {
+            continue;
+        };
+        painter.circle_stroke(
+            egui::pos2(at.x, at.y),
             indicator.0,
+            stroke(super::selection::going(
+                dim.as_drawn(INDICATOR, filtered),
+                standing,
+            )),
         );
-
-        gizmos
-            .circle(
-                Isometry3d::new(at.translation(), orbit.rotation),
-                radius,
-                super::selection::going(
-                    dim.as_drawn(INDICATOR, filtered),
-                    standing,
-                ),
-            )
-            .resolution(RING_POINTS);
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1141,113 +1125,6 @@ mod tests {
         1. / (PerspectiveProjection::default().fov / 2.).tan()
     }
 
-    /// A mark is the same size to the hand however far off its system is
-    ///
-    /// The whole reason it is held in pixels. Nine pixels at the near end of
-    /// the map and nine at the far end, where the two ends are fourteen
-    /// orders of magnitude apart.
-    #[test]
-    fn a_mark_is_the_same_size_to_the_hand_at_every_zoom() {
-        let camera = looking();
-        let viewport = Vec2::new(1280., 720.);
-        let mark = INDICATOR_MIN_RADIUS;
-
-        // A metre off, and the width of the galaxy off.
-        for away in [1f64, 1e6, 1e12, 1e18, 1e21] {
-            let position = DVec3::new(0., 0., -away);
-            let drawn =
-                drawn_radius(&camera, cot_half_fov(), viewport, position, mark);
-            // Back into pixels, the way the ring's size is arrived at.
-            let per_pixel = world_per_pixel(
-                cot_half_fov(),
-                viewport.y,
-                depth(&camera, position).max(1.),
-            );
-
-            assert!(
-                (drawn / per_pixel - mark).abs() < mark * 1e-3,
-                "a {mark} pixel mark {away}m off came back {} pixels",
-                drawn / per_pixel
-            );
-        }
-    }
-
-    /// A mark stays a number at the far end of the map
-    ///
-    /// What the ray this replaced could not do. Aiming at a system meant
-    /// inverting a transform scaled to metres and multiplying three of its
-    /// lengths together, and at these distances all of that overflows a
-    /// float and comes back as an infinity or as nothing at all.
-    #[test]
-    fn a_mark_across_the_galaxy_is_still_a_number() {
-        let camera = looking();
-        let viewport = Vec2::new(1280., 720.);
-
-        // A hundred thousand light years, in the metres the map is drawn in.
-        let across = DVec3::new(0., 0., -9.46e20);
-        let drawn = drawn_radius(
-            &camera,
-            cot_half_fov(),
-            viewport,
-            across,
-            INDICATOR_MIN_RADIUS,
-        );
-
-        assert!(drawn.is_finite(), "the mark came back {drawn}");
-        assert!(drawn > 0., "the mark collapsed to {drawn}");
-    }
-
-    /// Every zoom the camera may be at, from a metre to past the galaxy
-    const ZOOMS: [f32; 6] = [
-        crate::camera::MIN_RADIUS,
-        1e-9,
-        1e-6,
-        1.,
-        1e3,
-        crate::camera::MAX_RADIUS,
-    ];
-
-    /// How far back the camera is standing at `radius`, in metres
-    fn standing_off(radius: f32) -> f32 {
-        (radius as f64 * crate::space::LIGHT_YEAR) as f32
-    }
-
-    /// The plane a mark on the view is laid in is clear of the near plane
-    ///
-    /// Anything nearer than the near plane is clipped away, and this is what a
-    /// plane taken from something out in the world cannot promise: the star a
-    /// stop is a jump from swings behind the camera as the camera comes in on
-    /// a planet, and every mark for that stop goes with it.
-    #[test]
-    fn the_plane_marks_are_laid_in_clears_the_near_plane() {
-        for radius in ZOOMS {
-            let near = standing_off(radius) * crate::camera::NEAR_FRACTION;
-            let plane = overlay_plane(radius);
-
-            assert!(
-                plane > near,
-                "at a radius of {radius} the plane sat at {plane} and the near plane at {near}"
-            );
-        }
-    }
-
-    /// And short of whatever is being looked at
-    ///
-    /// A gizmo is depth tested like anything else, so a mark laid out at what
-    /// the camera is looking at is a mark that thing is drawn over.
-    #[test]
-    fn the_plane_marks_are_laid_in_is_nearer_than_what_is_looked_at() {
-        for radius in ZOOMS {
-            let looked_at = standing_off(radius);
-            let plane = overlay_plane(radius);
-
-            assert!(
-                plane < looked_at,
-                "at a radius of {radius} the plane sat at {plane} and what is looked at at {looked_at}"
-            );
-        }
-    }
-
     /// A system dead ahead lands in the middle of the screen
     ///
     /// Which is what the pointer is measured against, so a mark that is not
@@ -1376,6 +1253,43 @@ mod tests {
         assert!(BODY_MIN_RADIUS < INDICATOR_MIN_RADIUS);
     }
 
+    /// A system's ring stands outside the mark the field draws, at every size
+    ///
+    /// The reported trouble, both ways round. A ring held to a ceiling of its
+    /// own was drawn *inside* a prominent system's mark — a blue circle sunk
+    /// in a yellow disc — and a ring taken as a multiple of the mark instead
+    /// wore a hoop around it. So the gap is [`INDICATOR_AIR`] pixels wherever
+    /// the star is large enough to show, and the floor takes over where it is
+    /// not.
+    #[test]
+    fn a_system_ring_stands_outside_the_mark_it_rings() {
+        // A dot, a mark the floor still covers, and marks past it: the
+        // prominent system's tens of pixels, and one far past anything the
+        // bounds on a mark allow.
+        for drawn in [0., 1e-3, 1., 5.5, 8., 34., 1e3] {
+            for view in [View::Map, View::Realistic] {
+                let star = super::super::field::drawn_radius(&view, drawn, 1.)
+                    .unwrap_or(0.);
+                let ring = system_mark(&view, drawn, 1.);
+
+                assert!(
+                    ring > star,
+                    "a {star} px mark wore a {ring} px ring in {view:?}"
+                );
+                assert!(
+                    ring >= INDICATOR_MIN_RADIUS,
+                    "a {ring} px ring is under the floor in {view:?}"
+                );
+                // And no further out than the air, so it never reads as a halo
+                // however large the mark grows.
+                assert!(
+                    ring - star <= INDICATOR_AIR.max(INDICATOR_MIN_RADIUS),
+                    "a {star} px mark wore a {ring} px ring in {view:?}"
+                );
+            }
+        }
+    }
+
     /// A world holding one system and one body, both under the pointer
     ///
     /// The body deeper than the system, so that anything preferring the
@@ -1395,7 +1309,6 @@ mod tests {
                     address: 1,
                     name: String::new(),
                     id: 1,
-                    class: String::new(),
                     radius: 1e6,
                     ancestors: 0,
                     primary: false,
@@ -1428,7 +1341,6 @@ mod tests {
             address: 1,
             name: String::new(),
             id,
-            class: String::new(),
             radius: 1e6,
             ancestors,
             primary: false,
@@ -1648,15 +1560,16 @@ mod tests {
 
     /// A world holding a camera and a system with a shell drawn around it
     ///
-    /// The shell is a tenth of a light year across, which is far wider than
-    /// one is really drawn. Anything smaller marks at [`INDICATOR_MIN_RADIUS`]
-    /// from five light years off, and a floor is the same number wherever the
-    /// camera stands, so a shell that reaches over it is what leaves the mark
-    /// with anything to say.
+    /// The shell is sized so its mark lifts clear of [`INDICATOR_MIN_RADIUS`]
+    /// once the camera has come in, and sits at the floor when it stands off.
+    /// A mark pinned at the floor says nothing about where the camera is, so a
+    /// shell that lifts off it as the camera nears is what leaves the mark with
+    /// anything to say.
     fn sized() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Marks>();
+        app.insert_resource(View::Map);
         app.add_systems(Update, (size_indicators, count_marks).chain());
         app.world_mut().spawn((looking(), crate::systems::tests::seeing()));
 
@@ -1664,14 +1577,14 @@ mod tests {
         // far into the view its system lies rather than by how far off it is.
         let mut standing = crate::systems::tests::system(1);
         standing.position = [0., 0., -5.];
-        let wide = (0.1 * crate::space::LIGHT_YEAR) as f32;
+        let wide = (0.034 * crate::space::LIGHT_YEAR) as f32;
         app.world_mut().spawn((
             standing,
             Shell,
             Indicator::default(),
-            Transform::from_scale(Vec3::splat(wide)),
+            Drawn(wide),
             Strength::default(),
-            ViewVisibility::VISIBLE,
+            Visibility::Visible,
         ));
         app
     }

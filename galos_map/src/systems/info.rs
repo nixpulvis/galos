@@ -11,7 +11,6 @@
 //! selection does: a system flown away from is despawned, and a panel opened
 //! for it has no reason to go with it.
 
-use crate::Db;
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
@@ -20,16 +19,14 @@ use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::{Picked, Selection};
 use crate::ui::MARGIN;
 use crate::ui::SystemAction;
+use crate::{Factions, Names, Populated};
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy::tasks::futures_lite::future;
 use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use elite_journal::body::{Discovery, Orbit, Spin};
-use galos_db::bodies::{Body as DbBody, Surface};
-use galos_db::factions::Faction as DbFaction;
-use galos_db::stars::Star as DbStar;
-use galos_db::systems::Economies;
+use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
+use galos_photometry::{Distance, Magnitude};
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -355,7 +352,7 @@ impl FactionNames {
 fn name_factions(
     mut names: ResMut<FactionNames>,
     panels: Res<Panels>,
-    db: Res<Db>,
+    factions: Res<Factions>,
 ) {
     let wanted: Vec<i32> = panels
         .open
@@ -376,19 +373,13 @@ fn name_factions(
         return;
     }
 
-    future::block_on(async {
-        match DbFaction::fetch_many(&db.0, &wanted).await {
-            Ok(factions) => {
-                for faction in factions {
-                    names.0.insert(faction.id, faction.name);
-                }
-            }
-            // Nothing to be done about it, and nothing to say to the user
-            // about a name they did not ask for. The panel says the faction
-            // is there and leaves it unnamed.
-            Err(why) => debug!("could not name factions: {why}"),
+    // From the resident faction table, which the whole galaxy's names are held
+    // in, so a panel names its factions without a fetch.
+    for id in wanted {
+        if let Some(name) = factions.name(id) {
+            names.0.insert(id, name.to_string());
         }
-    });
+    }
 }
 
 /// Keep each panel on whatever the map last heard about its system
@@ -435,7 +426,11 @@ fn refresh(
 /// largest faction on record, which stands in 314 systems, so opening one of
 /// those panels drops a couple of frames. Worth moving onto a task if it comes
 /// to be done often, and not worth the machinery while it is a click.
-fn fill_filters(mut panels: ResMut<Panels>, db: Res<Db>) {
+fn fill_filters(
+    mut panels: ResMut<Panels>,
+    populated: Res<Populated>,
+    names: Res<Names>,
+) {
     let unfilled: Vec<Filter> = panels
         .open
         .iter()
@@ -446,7 +441,7 @@ fn fill_filters(mut panels: ResMut<Panels>, db: Res<Db>) {
         .collect();
 
     for filter in unfilled {
-        let found = future::block_on(async { fetch(&db.0, &filter).await });
+        let found = fetch(&populated, &names, &filter);
         for panel in &mut panels.open {
             if let Subject::Filter { filter: shown, systems } =
                 &mut panel.subject
@@ -469,11 +464,10 @@ fn fill_filters(mut panels: ResMut<Panels>, db: Res<Db>) {
 ///
 /// Which systems those are is the filter's own business. This is only what a
 /// panel can do with them.
-async fn fetch(db: &galos_db::Database, filter: &Filter) -> Vec<System> {
-    let rows = filter.systems(db).await;
-
-    let mut found: Vec<System> =
-        rows.iter().filter_map(|row| System::try_from(row).ok()).collect();
+fn fetch(populated: &Populated, names: &Names, filter: &Filter) -> Vec<System> {
+    // Already drawable, since the filter builds them from the resident tables
+    // and drops any the names table cannot place.
+    let mut found: Vec<System> = filter.systems(populated, names);
 
     // In the filter's own order where it has one, which for a route is the
     // order it is travelled. Where it has none, by name: what comes back is
@@ -511,6 +505,9 @@ fn panels(
     // Where the camera is looking, which is the distance the spyglass and
     // the selection's own row are measured in.
     let center = orbit.single().map(|camera| camera.center).ok();
+    // Where the eye stands, for a system's apparent magnitude — how bright it
+    // looks from here, the figure the realistic view sizes a star by.
+    let eye = orbit.single().map(|camera| camera.eye).ok();
     // The top right corner, clear of the settings pane and the bar, which
     // stand against the left edge and the top of it. The corner itself, since
     // a panel is placed by its own right hand top rather than by its left: a
@@ -563,9 +560,14 @@ fn panels(
         let window = window.show(ctx, |ui| {
             spread(ui);
             match &panel.subject {
-                Subject::System(system) => {
-                    described(ui, system, &names, &mut centered, &mut wanted)
-                }
+                Subject::System(system) => described(
+                    ui,
+                    system,
+                    &names,
+                    eye,
+                    &mut centered,
+                    &mut wanted,
+                ),
                 Subject::Star(star) => mark_if_wound(&mut clock, |clock| {
                     star_described(ui, star, clock)
                 }),
@@ -660,6 +662,7 @@ fn described(
     ui: &mut Ui,
     system: &System,
     names: &FactionNames,
+    eye: Option<DVec3>,
     centered: &mut Option<DVec3>,
     wanted: &mut Option<Filter>,
 ) {
@@ -668,6 +671,34 @@ fn described(
         |ui| {
             let [x, y, z] = system.position;
             field(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
+            // What the realistic view sizes a star by: the magnitude the bake
+            // assigned, how bright it looks from where the camera stands, and
+            // its tint bucket. Unknown for a system built from a name lookup
+            // rather than a payload point.
+            field(
+                ui,
+                "Abs. magnitude",
+                match system.baked_magnitude() {
+                    Some(m) => format!("{m:.1}"),
+                    None => UNKNOWN.into(),
+                },
+            );
+            if let (Some(m), Some(eye)) = (system.baked_magnitude(), eye) {
+                let away = eye.distance(DVec3::from(system.position));
+                field(
+                    ui,
+                    "App. magnitude",
+                    format!(
+                        "{:.1}",
+                        Magnitude(m as f64)
+                            .apparent(Distance::light_years(away))
+                            .0
+                    ),
+                );
+            }
+            if let Some(t) = system.baked_temperature() {
+                field(ui, "Temperature", format!("{t:.0} K"));
+            }
             // Two rows rather than one, because the two counts are reported
             // separately: the all-found tally and a nav beacon give the bodies
             // alone, and only the honk ever counts the belts and rings. Either
@@ -1110,7 +1141,6 @@ fn admitted(
                 ui,
                 &system.name,
                 trailing,
-                true,
                 ("admitted", index),
             );
             match asked {
@@ -1347,7 +1377,7 @@ mod tests {
     /// What a system's own panel reads as, line by line
     fn panel(system: &System) -> Vec<String> {
         words(|ui| {
-            described(ui, system, &known(&[]), &mut None, &mut None);
+            described(ui, system, &known(&[]), None, &mut None, &mut None);
         })
     }
 
