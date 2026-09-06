@@ -1,11 +1,12 @@
 //! Golden images: a picture checked in, and the same picture drawn again.
 //!
-//! The cheapest rung of the ladder in `docs/sky.md`, and the only one that
-//! needs nothing but this crate. A deterministic CPU render of a known sky is
-//! compared against a PNG on disk, so any change to the projection, the
-//! point-spread function, the exposure law, the blackbody colour or the tone
-//! curve shows up as a picture that no longer matches — including changes made
-//! in `galos_photometry`, which is most of what is being guarded here.
+//! The cheapest check on the whole render path, and the only one that needs
+//! nothing but this crate: no GPU, no dataset to fetch, nobody looking at the
+//! screen. A deterministic CPU render of a known sky is compared against a
+//! PNG on disk, so any change to the projection, the point-spread function,
+//! the exposure law, the blackbody colour or the tone curve shows up as a
+//! picture that no longer matches — including changes made in
+//! `galos_photometry`, which is most of what is being guarded here.
 //!
 //! The subject is the Big Dipper, because a golden image whose subject is
 //! recognisable is one a person can also judge by eye when it fails. Seven

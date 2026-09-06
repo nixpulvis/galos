@@ -32,8 +32,9 @@ use std::collections::HashMap;
 
 /// The mark limit, in pixels: the smallest a splat draws as more than a point.
 /// A cell whose contents' own spread projects to less than this is one circle;
-/// past it the circle splits, the "One circle, splitting" law of galaxy.md.
-/// Two pixels on a 1080-line window, the figure that section's ladder turns on.
+/// past it that circle splits into its children, so a region is always drawn
+/// by the deepest level whose marks still separate. Two pixels on a 1080-line
+/// window, and the figure every level handoff in the walk turns on.
 pub const SPLIT_PX: f64 = 2.0;
 
 /// The top of the split's cross-fade band, an octave above [`SPLIT_PX`]. Across
@@ -54,8 +55,8 @@ pub const MARK_SEPARATION_PX: f64 = 6.7;
 /// two of them read apart far closer than two map marks do — [`MARK_SEPARATION_PX`]
 /// is the mark's, this is the point spread's. The realistic view resolves a
 /// cell's systems down to this, which is why a cluster stays a field of stars
-/// where the map would collapse it to one mark. See galaxy.md: the limit is the
-/// PSF in Real mode, the smallest stable mark in map mode.
+/// where the map would collapse it to one mark: the limit is the point spread
+/// in [`Mode::Real`] and the smallest stable mark in [`Mode::Shell`].
 pub const STAR_SEPARATION_PX: f64 = 2.0;
 
 /// A cell wider than this on screen is refined for the glow; narrower, it

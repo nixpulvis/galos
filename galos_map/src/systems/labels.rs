@@ -1504,9 +1504,9 @@ fn nameplate(words: String) -> impl Bundle {
 /// annotation, not light, and are drawn in screen space with egui rather than
 /// as meshes out at the galaxy coordinates their systems sit at. A glyph mesh
 /// transformed by `view_proj · model` in f32 at a system's ~1e17 m sits torn
-/// apart on hardware that keeps fewer bits through the multiply (see
-/// `docs/night-sky.md`); a name projected to a pixel on the CPU and painted
-/// there does not, and comes out crisp at the window's own scale besides.
+/// apart on hardware that keeps fewer bits through the multiply; a name
+/// projected to a pixel on the CPU and painted there does not, and comes out
+/// crisp at the window's own scale besides.
 ///
 /// The layout is `choose_names`' and reaches here through the [`Label`]
 /// tokens `respawn` hangs off whatever wins a name: each carries the words to

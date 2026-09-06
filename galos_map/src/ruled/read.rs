@@ -9,8 +9,8 @@
 //! thing picked out — along with the crosses that mark those places and the
 //! lines dropped to the plane, are painted flat in screen space by
 //! [`crate::grid::draw_readouts`]. Projected on the processor in `f64` from the
-//! camera and each thing's true position, they hold steady where a text mesh out
-//! at a system's galaxy coordinate jitters; see there and `docs/night-sky.md`.
+//! camera and each thing's true position, they hold steady where a text mesh
+//! out at a system's galaxy coordinate jitters; see there.
 use super::DistanceUnit;
 use bevy::math::DVec3;
 use bevy::prelude::*;

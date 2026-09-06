@@ -52,8 +52,8 @@ pub fn plugin(app: &mut App) {
     );
     // Painted flat in screen space with egui, in the same pass and the same
     // way [`super::labels::draw_names`] paints the names. A ring drawn as a
-    // mesh out at a system's galaxy coordinate tears in f32; see
-    // `docs/night-sky.md`.
+    // mesh out at a system's galaxy coordinate tears in the f32 clip
+    // transform.
     //
     // Four systems paint into the one layer, and the order they run in is the
     // order they stack: the ruled plane's readouts, then this ring, then
@@ -795,8 +795,8 @@ pub fn point_the_cursor(
 /// Painted flat in screen space with egui, in the same pass and the same way
 /// [`super::labels::draw_names`] paints the names and the leaders that join a
 /// name to what it names. A ring drawn as a mesh out at a system's ~1e17 m
-/// coordinate tears in the f32 clip transform (see `docs/night-sky.md`); a
-/// circle painted at a projected pixel holds its shape at every zoom.
+/// coordinate tears in the f32 clip transform; a circle painted at a projected
+/// pixel holds its shape at every zoom.
 ///
 /// It goes out with the shell as the camera comes inside the system, as
 /// [`super::selection`]'s `ring` does and for the same reason.

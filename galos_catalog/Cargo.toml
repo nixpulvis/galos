@@ -30,11 +30,11 @@ clap = { version = "4", features = ["derive"], optional = true }
 default = ["cli", "index"]
 # The `System` bridge and the tree build. On by default so the one corner of
 # the workspace nothing calls is at least a corner the workspace compiles: the
-# command that would read a catalog into an index directory is not written yet
-# (see `galos_sky/docs/sky.md`), and left off by default the bridge would be
-# the only code here that no check ever looks at. A consumer that only wants to
-# read a catalog still drops it with `default-features = false`, which is what
-# `galos_sky` does, and then neither the index nor its serde stack is pulled.
+# command that would read a catalog into an index directory is not written
+# yet, and left off by default the bridge would be the only code here that no
+# check ever looks at. A consumer that only wants to read a catalog still
+# drops it with `default-features = false`, which is what `galos_sky` does,
+# and then neither the index nor its serde stack is pulled.
 index = ["dep:galos_index"]
 # The `galos-catalog` command, on by default so `cargo run -p galos_catalog`
 # just works. A library consumer — `galos_sky`, `galos_db` — drops it with

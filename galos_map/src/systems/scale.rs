@@ -69,7 +69,8 @@ pub enum View {
     // The photometric sky: every system drawn as the star it is, sized to a
     // point and emitted at its flux so the eye's bloom spreads it into the disc
     // a sky reads a star as. The far aggregate glow behind the resolved stars —
-    // the Milky Way — is not drawn yet; see galaxy.md.
+    // the Milky Way — is not drawn yet; `super::aggregate::Planned` carries
+    // the splats it will be drawn from.
     Realistic,
 }
 
@@ -447,21 +448,24 @@ pub fn size_inside(
 /// A star is a point; what reaches the screen is the instrument's point spread,
 /// the same shape ([`super::spawn::star_psf`]) for every star. A brighter star
 /// is not drawn wider — it clears more of that one fixed shape above the eye's
-/// floor. That cleared radius grows with the *logarithm* of brightness
-/// (galaxy.md), the law the eye reads by and the one that never runs away: each
-/// doubling of flux adds a fixed step, so even the sky's most luminous stars
-/// stay a bounded glint with no cap to impose. Tuned against a long exposure of
-/// a real sky.
+/// floor. That cleared radius grows with the *logarithm* of brightness, the
+/// law the eye reads by and the one that never runs away: each doubling of
+/// flux adds a fixed step, so even the sky's most luminous stars stay a
+/// bounded glint with no cap to impose. Tuned against a long exposure of a
+/// real sky.
 const PSF_GROWTH: f64 = 0.45;
 
 /// The smallest a drawn star may be, as a radius in screen pixels
 ///
 /// A star that clears the floor is drawn at least this large so it lands as a
-/// stable dot rather than a sub-pixel speck that flickers as the camera moves
-/// (galaxy.md's "smallest mark that draws stably"). Most of the sky sits here —
-/// a field of tiny dots — with only the brighter stars grown past it by their
-/// point spread. Not a cap: the floor is the pixel grid, and brightness above
-/// it still grows the star.
+/// stable dot rather than a sub-pixel speck that flickers as the camera moves:
+/// under a pixel, the share of one a dot covers changes with where it falls
+/// on the grid, so it twinkles from the camera's motion alone. The smallest
+/// mark that draws stably is the display's to set rather than the sky's, which
+/// is why the floor is a radius in pixels. Most of the sky sits here — a field
+/// of tiny dots — with only the brighter stars grown past it by their point
+/// spread. Not a cap: the floor is the pixel grid, and brightness above it
+/// still grows the star.
 const DOT_RADIUS: f32 = 0.6;
 
 /// The size a star below the flux floor shrinks to, as a fraction of a pixel
@@ -515,8 +519,13 @@ pub(crate) const UNSEEN: f32 = 1e-3;
 // a custom billboard material that evaluates the Moffat per fragment at a fixed
 // core width, integrated over each pixel's footprint so a star crossing a pixel
 // boundary does not shimmer, its above-floor radius falling out of the profile
-// itself. See galaxy.md "The instrument" and roadmap item 7 "Real mode". DO NOT
-// FORGET THIS.
+// itself. The shape is the instrument's — one profile for every star, and only
+// the exposure between them — so stretching a baked texture to each star's
+// radius makes the core width a per-star number instead: a bright star is
+// drawn through a wider instrument rather than through more of the same one,
+// and the light its mark lays down follows its drawn area rather than its
+// flux. It reads well enough on screen to pass for finished, which is how it
+// gets left. DO NOT FORGET THIS.
 fn psf_radius(energy: f64) -> f32 {
     if energy <= 1. {
         return 0.;

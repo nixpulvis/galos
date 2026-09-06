@@ -42,8 +42,8 @@ pub fn plugin(app: &mut App) {
 /// as a tight glint rather than a wide disc. The boost is what smears a bright
 /// source across the coarse mips; a point star wants only the base scatter, and
 /// bloom over a field of points is what turns a star's brightness into its
-/// apparent size (galaxy.md) without a bright one swallowing the sky. Tuned by
-/// eye from Sol.
+/// apparent size without a bright one swallowing the sky. Tuned by eye from
+/// Sol.
 pub(crate) const STAR_BLOOM: Bloom = Bloom {
     // A whisper, down from NATURAL's 0.15. The star's size is its point-spread
     // core (`scale::psf_radius`, bounded as the log of brightness); bloom on top

@@ -594,9 +594,9 @@ pub(crate) fn ring(
 
     // A selected system is ringed where it lands on screen rather than out at
     // its own ~1e17 m coordinate, where a ring drawn as a mesh tears in the f32
-    // clip transform (see `docs/night-sky.md`). Painted flat with egui, in the
-    // same pass and the same way [`super::labels::draw_names`] paints the names
-    // and their leaders, so the mark and the name it belongs to are one thing.
+    // clip transform. Painted flat with egui, in the same pass and the same way
+    // [`super::labels::draw_names`] paints the names and their leaders, so the
+    // mark and the name it belongs to are one thing.
     let ctx = contexts.ctx_mut()?;
     let painter = ctx.layer_painter(super::labels::annotations_layer());
     let stroke = |color: Srgba| egui::Stroke::new(RING_STROKE, color32(color));

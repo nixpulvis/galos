@@ -11,3 +11,16 @@ galos_db/backups/*
 # fixture the consistency and comparison tests read, so it stays.
 galos_catalog/data/*
 !galos_catalog/data/bright.csv
+
+# Working notes and design write-ups kept beside the code but out of the
+# repository. Listed rather than left merely untracked because a wide
+# `git add` has swept them in before.
+/CLEANUP.md
+/CONTINUE.md
+/sky.png
+galos_map/IDEAS.md
+galos_map/docs/galaxy.md
+galos_map/docs/night-sky.md
+galos_sky/docs/sky.md
+galos_sky/figures.fab
+galos_catalog/docs/name_mapping.md

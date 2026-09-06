@@ -15,8 +15,8 @@
 //! A cell's splat carried a drawable description here for a while — where the
 //! glow sits, how far it spreads, its flux-weighted tint — written every plan
 //! and read by nobody, the renderer it was for never having been written. It
-//! is in the history rather than in the build; see galaxy.md for the design
-//! it belongs to.
+//! is in the history rather than in the build, to be worked out again against
+//! the renderer that will read it.
 //!
 //! Read off the resident aggregates, so it costs no fetch and no server, and
 //! only when the view moves.

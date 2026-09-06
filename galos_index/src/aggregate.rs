@@ -93,11 +93,11 @@ pub struct Aggregate {
     /// nothing: a bucket counts systems, the buckets of one cell sum to its
     /// `count`, and the root's count is the galaxy's — 129 million against the
     /// four billion a `u32` holds, so there are five doublings of headroom
-    /// over every system on record. `galaxy.md` budgets these at sixteen bytes
-    /// by storing each bucket as a `u16` share of `count` instead; measured
-    /// over a real build that rounds the smallest buckets away to nothing, and
-    /// the smallest bucket is the recently-changed one the axis exists to
-    /// show. Exact at twice the width is the better trade.
+    /// over every system on record. Eight buckets at four bytes is thirty-two
+    /// bytes a cell. Halving that again by storing each bucket as a `u16`
+    /// share of `count` rounds the smallest buckets away to nothing over a
+    /// real build, and the smallest bucket is the recently-changed one the
+    /// axis exists to show. Exact at twice the width is the better trade.
     aged: [u32; AGE_BUCKETS],
 }
 

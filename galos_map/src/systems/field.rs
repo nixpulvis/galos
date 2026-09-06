@@ -3,13 +3,13 @@
 //! A system's mark cannot be a mesh at the system's true coordinate: at a
 //! galaxy's scale the f32 clip transform `view_proj · model` tears it apart,
 //! and which triangles survive turns with the camera, so the field blinks and
-//! swims (see `docs/night-sky.md`). So it is not drawn there. Every visible
-//! system is projected to a pixel on the CPU in f64 — the stable anchor the
-//! names are already placed by — and a screen-aligned quad is built at that
-//! pixel into one mesh, drawn by a camera sitting at the world origin. Nothing
-//! that camera rasterises carries a galaxy-scale coordinate, so there is no
-//! precision left to lose: the field is exact and still at every zoom, pitch,
-//! and turn, and it is one draw call however many stars there are.
+//! swims. So it is not drawn there. Every visible system is projected to a
+//! pixel on the CPU in f64 — the stable anchor the names are already placed
+//! by — and a screen-aligned quad is built at that pixel into one mesh, drawn
+//! by a camera sitting at the world origin. Nothing that camera rasterises
+//! carries a galaxy-scale coordinate, so there is no precision left to lose:
+//! the field is exact and still at every zoom, pitch, and turn, and it is one
+//! draw call however many stars there are.
 //!
 //! The [`Shell`] entities stay on the galaxy grid, where the map addresses
 //! them for picking, filtering, and flying in, and they carry no mesh,

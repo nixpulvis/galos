@@ -27,7 +27,7 @@
 //! plane, and the three numbers about each of those places. Flat on the
 //! screen, projected on the processor in `f64`, because a text mesh out at a
 //! system's galaxy coordinate jitters where a projected point holds steady —
-//! see `draw_readouts` below and `docs/night-sky.md`.
+//! see `draw_readouts` below.
 //!
 //! And here too are the questions about a galaxy rather than about a ruler:
 //! which unit a space is measured in, where the ruler changes hands as the
@@ -598,8 +598,7 @@ fn mark_out(
 /// before it has descended onto a system's own metre grid. A single point
 /// projected in `f64` from the camera and the thing's true position is steady
 /// to well under a pixel at any zoom. The same reason the names, rings and
-/// leaders are drawn flat; see [`crate::systems::labels::draw_names`] and
-/// `docs/night-sky.md`.
+/// leaders are drawn flat; see [`crate::systems::labels::draw_names`].
 ///
 /// What it gives up by leaving the scene is being tonemapped with the plane and
 /// hidden behind whatever galaxy stands in front of it. A readout is chrome

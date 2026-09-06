@@ -6,8 +6,8 @@
 //! middle and every body going round it, from a moon held at a pixel to a gas
 //! giant filling the view. Nothing in the sky above is drawn from these — a
 //! system's mark and the stars behind it are flat quads painted in screen
-//! space (see `docs/night-sky.md`) — so one ladder answers for the inside of a
-//! system and for nothing else.
+//! space — so one ladder answers for the inside of a system and for nothing
+//! else.
 
 use bevy::prelude::*;
 
