@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                body_count,\n                non_body_count,\n                updated_at,\n                updated_by\n            FROM systems\n            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)\n              AND (\n                ($10::float8 IS NOT NULL\n                 AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $10))\n                OR NOT EXISTS (\n                  SELECT 1\n                  FROM unnest($5::float8[], $6::float8[], $7::float8[],\n                              $8::float8[], $9::timestamp[])\n                      AS surveyed(x, y, z, range, at)\n                  WHERE ST_3DDWithin(\n                          ST_MakePoint(surveyed.x, surveyed.y, surveyed.z),\n                          position, surveyed.range)\n                    AND systems.updated_at <= surveyed.at\n                )\n              )\n            ",
+  "query": "\n            SELECT\n                address,\n                name,\n                position AS \"position!: Option<wkb::Decode<Coordinate>>\",\n                population,\n                security as \"security: Security\",\n                government as \"government: Government\",\n                allegiance as \"allegiance: Allegiance\",\n                primary_economy as \"primary_economy: Economy\",\n                secondary_economy as \"secondary_economy: Economy\",\n                body_count,\n                non_body_count,\n                updated_at,\n                updated_by\n            FROM systems\n            WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)\n              AND NOT EXISTS (\n                SELECT 1\n                FROM unnest($5::float8[], $6::float8[], $7::float8[],\n                            $8::float8[], $9::timestamp[])\n                    AS surveyed(x, y, z, range, at)\n                WHERE ST_3DDWithin(\n                        ST_MakePoint(surveyed.x, surveyed.y, surveyed.z),\n                        position, surveyed.range)\n                  AND systems.updated_at <= surveyed.at\n              )\n            ",
   "describe": {
     "columns": [
       {
@@ -179,8 +179,7 @@
         "Float8Array",
         "Float8Array",
         "Float8Array",
-        "TimestampArray",
-        "Float8"
+        "TimestampArray"
       ]
     },
     "nullable": [
@@ -199,5 +198,5 @@
       false
     ]
   },
-  "hash": "ee98cb0212078fac8c7b0458c873f41130328e17f68b0319084d1cda08d3f6a8"
+  "hash": "02011122b079b8ad411745f2f2b7246754e40dfeb167c98cd12c2f838d830132"
 }

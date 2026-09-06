@@ -476,8 +476,25 @@ async fn write_bodies(
 /// How far each system reaches from its arrival star, in metres: the far edge
 /// of the furthest thing on record, over bodies, stars and the points a close
 /// pair goes round. All of them for a full build, or those of `addresses` for a
-/// watch pass. One grouped query rather than one per system, the same shape
-/// [`crate::systems`] reads a drawn region's reaches with.
+/// watch pass. One grouped query rather than one per system, and the only place
+/// the reach is worked out at all: the map reads it out of the published table
+/// rather than asking the database how big a system is.
+///
+/// The far edge is the furthest the thing ever gets, not where it was found:
+/// how far from arrival the scan put it or the far end of its orbit, whichever
+/// is greater, with its own radius on top. A scan records where a thing stood
+/// on the day, so the orbit is what says how far it ever carries, and the
+/// recorded distance is what says how far its parent stands from the middle.
+///
+/// The points a close pair goes round count as well. Nothing stands at one, but
+/// the pair rides its ellipse, and a pair scanned near periapsis says nothing
+/// about how far that ellipse reaches.
+///
+/// Eccentricity is held short of one. What is recorded is a scan rather than a
+/// solution, and a parabola read literally reaches forever.
+///
+/// The `299792458` is the metres in a light second, the distances from arrival
+/// being recorded in those and everything else in metres.
 ///
 /// A system with nothing scanned in it comes back with no row at all, which is
 /// what leaves it out of the table: the map reads an absent reach as a system

@@ -28,16 +28,6 @@ fn spread(surveyed: &[Survey]) -> Spread {
     spread
 }
 
-/// Whether `at` stands within `range` light years of `center`
-///
-/// Compared as squares. The distance itself is never reported, so a square
-/// root would be paid for on every system in a region and read by nobody.
-fn within(at: &Coordinate, center: [f64; 3], range: f64) -> bool {
-    let away = [at.x - center[0], at.y - center[1], at.z - center[2]];
-
-    away.iter().map(|d| d * d).sum::<f64>() <= range * range
-}
-
 impl System {
     pub async fn fetch(db: &Database, address: i64) -> Result<Self, Error> {
         let row = sqlx::query!(
@@ -68,10 +58,8 @@ impl System {
         )
         .fetch_one(&db.pool)
         .await?;
-        let reaching = Self::reaches(db, &[row.address]).await?;
 
         Ok(System {
-            reach: reaching.get(&row.address).copied(),
             address: row.address,
             name: row.name,
             position: row
@@ -126,10 +114,8 @@ impl System {
         )
         .fetch_one(&db.pool)
         .await?;
-        let reaching = Self::reaches(db, &[row.address]).await?;
 
         Ok(System {
-            reach: reaching.get(&row.address).copied(),
             address: row.address,
             name: row.name,
             position: row
@@ -185,13 +171,9 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
-        let mut reaching = Self::reaches(db, &found).await?;
-
         Ok(rows
             .into_iter()
             .map(|row| System {
-                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -299,13 +281,9 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
-        let mut reaching = Self::reaches(db, &found).await?;
-
         Ok(rows
             .into_iter()
             .map(|row| System {
-                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -365,13 +343,9 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
-        let mut reaching = Self::reaches(db, &found).await?;
-
         Ok(rows
             .into_iter()
             .map(|row| System {
-                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -431,13 +405,9 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
-        let mut reaching = Self::reaches(db, &found).await?;
-
         Ok(rows
             .into_iter()
             .map(|row| System {
-                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -502,23 +472,6 @@ impl System {
     /// filter excludes, and the region is what says how much sky is being
     /// asked about.
     ///
-    /// `sizing` is how far from `center` a system's reach is worth knowing, in
-    /// light years. Beyond it the systems still come back, and come back
-    /// without a reach: the caller draws those at whatever it draws a system
-    /// it cannot size, which past that distance is what they are drawn at
-    /// anyway. [`None`] asks about all of them, which is what a caller that is
-    /// not drawing a sky wants.
-    ///
-    /// It narrows the work rather than the answer, and it narrows the
-    /// expensive half. What a system holds lives in three tables and is
-    /// several rows deep in each, where the systems themselves are one row
-    /// apiece; a region wide enough to be worth drawing holds far more systems
-    /// than are near enough for their own size to show.
-    ///
-    /// Left to [`Self::fetch_many`] where a filter is admitting, that being a
-    /// question about the handful of systems a filter named rather than about
-    /// a region, and already the narrow one.
-    ///
     /// `surveyed` is what the caller already holds, as [`Survey`]s, and what
     /// it holds is left out of the answer. A system is left out where any one
     /// of them reaches it and it has not changed since that one was taken, so
@@ -538,22 +491,12 @@ impl System {
     /// here. What came of one is the part of a region a filter admitted, and
     /// leaving a whole region out on the strength of it drops every system the
     /// filter turned away.
-    ///
-    /// Nothing within `sizing` of `center` is left out, whatever the surveys
-    /// say. They answer for how far a system reaches only where they reached
-    /// it from inside that same distance, so a system surveyed from further
-    /// off came back without one; left out on the strength of that survey it
-    /// would go on being drawn as a system of no known size for as long as it
-    /// sat still, however near the caller came to it. The sky that near is a
-    /// couple of thousand systems at the crowded end, which is what reading it
-    /// again every time costs.
     pub async fn fetch_in_range_of_point(
         db: &Database,
         range: f64,
         center: [f64; 3],
         admitting: Option<(&[i32], &[i64])>,
         since: Option<DateTime<Utc>>,
-        sizing: Option<f64>,
         surveyed: &[Survey],
     ) -> Result<Vec<Self>, Error> {
         let admitted = match (admitting, since) {
@@ -613,19 +556,15 @@ impl System {
                 updated_by
             FROM systems
             WHERE ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $1)
-              AND (
-                ($10::float8 IS NOT NULL
-                 AND ST_3DDWithin(ST_MakePoint($2, $3, $4), position, $10))
-                OR NOT EXISTS (
-                  SELECT 1
-                  FROM unnest($5::float8[], $6::float8[], $7::float8[],
-                              $8::float8[], $9::timestamp[])
-                      AS surveyed(x, y, z, range, at)
-                  WHERE ST_3DDWithin(
-                          ST_MakePoint(surveyed.x, surveyed.y, surveyed.z),
-                          position, surveyed.range)
-                    AND systems.updated_at <= surveyed.at
-                )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM unnest($5::float8[], $6::float8[], $7::float8[],
+                            $8::float8[], $9::timestamp[])
+                    AS surveyed(x, y, z, range, at)
+                WHERE ST_3DDWithin(
+                        ST_MakePoint(surveyed.x, surveyed.y, surveyed.z),
+                        position, surveyed.range)
+                  AND systems.updated_at <= surveyed.at
               )
             "#,
             range,
@@ -637,7 +576,6 @@ impl System {
             &zs,
             &ranges,
             &ats,
-            sizing,
         )
         .fetch_all(&mut *asking)
         .await?;
@@ -645,27 +583,10 @@ impl System {
 
         let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
         let mut present = Self::system_factions(db, &found).await?;
-        let mut reaching = match sizing {
-            Some(sizing) => {
-                let near: Vec<i64> = rows
-                    .iter()
-                    .filter(|row| {
-                        row.position
-                            .as_ref()
-                            .and_then(|position| position.geometry.as_ref())
-                            .is_some_and(|at| within(at, center, sizing))
-                    })
-                    .map(|row| row.address)
-                    .collect();
-                Self::reaches(db, &near).await?
-            }
-            None => Self::reaches(db, &found).await?,
-        };
 
         Ok(rows
             .into_iter()
             .map(|row| System {
-                reach: reaching.remove(&row.address),
                 factions: present.remove(&row.address).unwrap_or_default(),
                 body_count: row.body_count,
                 non_body_count: row.non_body_count,
@@ -852,71 +773,6 @@ impl System {
         Ok(present)
     }
 
-    /// How far each of `addresses` reaches from its arrival star, in metres
-    ///
-    /// The furthest thing on record, measured to the far side of what is drawn
-    /// for it: how far from arrival the scan put it or the far end of its
-    /// orbit, whichever is greater, with its own radius on top. A scan records
-    /// where a thing stood on the day, so the orbit is what says how far it
-    /// ever gets, and the recorded distance is what says how far its parent
-    /// stands from the middle.
-    ///
-    /// The points a close pair goes round count as well. Nothing stands at
-    /// one, but the pair rides its ellipse, and a pair scanned near periapsis
-    /// says nothing about how far that ellipse reaches.
-    ///
-    /// Eccentricity is held short of one. What is recorded is a scan rather
-    /// than a solution, and a parabola read literally reaches forever.
-    ///
-    /// The `299792458` is the metres in a light second, the distances from
-    /// arrival being recorded in those and everything else in metres.
-    ///
-    /// Systems with nothing on record are simply absent, which is what the
-    /// caller reads as not knowing.
-    async fn reaches(
-        db: &Database,
-        addresses: &[i64],
-    ) -> Result<HashMap<i64, f32>, Error> {
-        let rows = sqlx::query!(
-            r#"
-            SELECT system_address AS "address!",
-                   MAX(GREATEST(away, apoapsis) + radius) AS "reach!"
-            FROM (
-                SELECT system_address,
-                       (COALESCE(distance_from_arrival, 0) * 299792458)::real
-                           AS away,
-                       (semi_major_axis
-                           * (1 + LEAST(eccentricity, 0.99)))::real AS apoapsis,
-                       radius
-                FROM bodies
-                WHERE system_address = ANY($1)
-              UNION ALL
-                SELECT system_address,
-                       (distance_from_arrival_ls * 299792458)::real,
-                       (COALESCE(semi_major_axis, 0)
-                           * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real,
-                       radius
-                FROM stars
-                WHERE system_address = ANY($1)
-              UNION ALL
-                SELECT system_address,
-                       0::real,
-                       (COALESCE(semi_major_axis, 0)
-                           * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real,
-                       0::real
-                FROM barycenters
-                WHERE system_address = ANY($1)
-            ) reaching
-            GROUP BY system_address
-            "#,
-            addresses,
-        )
-        .fetch_all(&db.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(|row| (row.address, row.reach)).collect())
-    }
-
     /// The systems at any of `addresses`
     ///
     /// One query for a set of them, since what asks is holding a list it
@@ -957,13 +813,9 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
-        let mut reaching = Self::reaches(db, &found).await?;
-
         Ok(rows
             .into_iter()
             .map(|row| System {
-                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
@@ -1021,13 +873,9 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        let found: Vec<i64> = rows.iter().map(|row| row.address).collect();
-        let mut reaching = Self::reaches(db, &found).await?;
-
         Ok(rows
             .into_iter()
             .map(|row| System {
-                reach: reaching.remove(&row.address),
                 address: row.address,
                 name: row.name,
                 position: row
