@@ -1070,6 +1070,11 @@ pub(crate) fn chrome(
         if filter.dim.0 == 0. {
             ui.label(egui::RichText::new("Not loaded").weak());
         }
+
+        // Last, and folded away: a reference rather than a control, read once
+        // and then reached for only to check one key.
+        heading(ui, "Keys", true);
+        ui.collapsing("Bindings", keys_reference);
     });
 
     // The bar next, in the room the gear is not standing in, and the gear
@@ -3197,6 +3202,44 @@ fn faction_list<'a>(
     chose
 }
 
+/// Every key the map answers, and what each does
+///
+/// The same table the README carries, kept here so that the map says it too:
+/// a binding nobody can find from inside the map is a binding for whoever
+/// wrote it. Held to the README's table by
+/// `the_pane_and_the_readme_list_the_same_keys`, so the two cannot drift.
+///
+/// Each is a key struck on its own, but for the one that opens the search,
+/// which is what [`crate::keys`] promises and the README says.
+const BINDINGS: [(&str, &str); 12] = [
+    ("W A S D", "Pan along the ruled plane"),
+    ("Q E", "Pan down and up through it"),
+    ("Z X", "Swing the camera round what it looks at"),
+    ("C V", "Lower and raise it over the plane"),
+    ("F R", "Zoom in and out"),
+    ("Space", "Fly to what is picked out, one at a time"),
+    ("H", "Go home: Sol, from where the map opened"),
+    ("L", "Show or hide the labels"),
+    ("O", "Show or hide the orbit lines"),
+    ("G", "Show or hide the grid"),
+    ("/ or Shift-S", "Put the caret in the search box"),
+    ("Esc", "Put the search form away"),
+];
+
+/// Say what the keys do, in the settings pane
+///
+/// Two columns, the key set as a heading is and what it does in the ordinary
+/// text of the pane, so the column of keys is what the eye runs down.
+fn keys_reference(ui: &mut Ui) {
+    egui::Grid::new("keys-reference").num_columns(2).show(ui, |ui| {
+        for (key, does) in BINDINGS {
+            ui.label(egui::RichText::new(key).strong());
+            ui.label(egui::RichText::new(does).weak());
+            ui.end_row();
+        }
+    });
+}
+
 /// Open a section, in the form or in the settings pane
 ///
 /// The rule is the break between one section and the next, and needs no
@@ -4279,6 +4322,40 @@ mod tests {
         assert!(several.contains(&"Route".to_owned()), "{several:?}");
         // The rest of the line stands either way.
         assert!(several.contains(&"Filter".to_owned()), "{several:?}");
+    }
+
+    /// The keys the pane lists are the keys the README lists
+    ///
+    /// One table said in two places, and this is what keeps the two saying
+    /// the same thing: a key added to one and not the other fails here.
+    #[test]
+    fn the_pane_and_the_readme_list_the_same_keys() {
+        let readme = include_str!("../README.md");
+        let rows: Vec<&str> =
+            readme.lines().filter(|line| line.starts_with("| `")).collect();
+
+        assert_eq!(rows.len(), BINDINGS.len(), "{rows:?}");
+        for ((key, _), row) in BINDINGS.iter().zip(rows) {
+            // The README sets each key in its own backticks, `W` `A` `S` `D`
+            // for the four that pan, where the pane says them in a run.
+            let plain = row
+                .trim_start_matches("| ")
+                .split(" | ")
+                .next()
+                .unwrap_or_default()
+                .replace('`', "");
+            assert_eq!(*key, plain, "{row}");
+        }
+    }
+
+    /// And the pane draws every one of them
+    #[test]
+    fn the_pane_says_what_the_keys_do() {
+        let said = words(keys_reference);
+
+        assert!(said.contains(&"H".to_owned()), "{said:?}");
+        assert!(said.contains(&"Space".to_owned()), "{said:?}");
+        assert_eq!(said.len(), BINDINGS.len() * 2);
     }
 
     /// A set that spans somewhere is offered a frame over the whole of it
