@@ -14,7 +14,7 @@ use crate::systems::labels::{
     Label, PlateText, color32, depth, name_rect, screen_offset,
     screen_position, world_per_pixel,
 };
-use crate::systems::scale::View;
+use crate::systems::scale::{Drawn, View};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
 use bevy::camera::RenderTarget;
@@ -477,7 +477,7 @@ pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
     view: Res<View>,
     mut systems: Query<
-        (&System, &Transform, &Visibility, &Strength, &mut Indicator),
+        (&System, &Drawn, &Visibility, &Strength, &mut Indicator),
         With<Shell>,
     >,
 ) {
@@ -498,7 +498,7 @@ pub fn size_indicators(
             continue;
         }
 
-        let drawn = if mark.0 > 0. { shell.scale.x } else { 0. };
+        let drawn = if mark.0 > 0. { shell.0 } else { 0. };
 
         // A metre, which is as near as the camera may be pulled to anything.
         // What the floor is for is the sign rather than the distance. Along the
@@ -1582,7 +1582,7 @@ mod tests {
             standing,
             Shell,
             Indicator::default(),
-            Transform::from_scale(Vec3::splat(wide)),
+            Drawn(wide),
             Strength::default(),
             Visibility::Visible,
         ));

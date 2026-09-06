@@ -319,6 +319,7 @@ pub struct ShowNames(pub bool);
 /// Not a star. A system is a place, a star is a thing in it, and there may be
 /// several; those are read from the `stars` table and drawn within this.
 #[derive(Component)]
+#[require(super::scale::Drawn)]
 pub struct Shell;
 
 /// Pick out whatever was clicked

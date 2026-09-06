@@ -23,7 +23,7 @@ use crate::systems::System;
 use crate::systems::bodies::spawn::Strength;
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{screen_position, world_per_pixel};
-use crate::systems::scale::{UNSEEN, View};
+use crate::systems::scale::{Drawn, UNSEEN, View};
 use crate::systems::spawn::{
     ColorBy, Shell, StarExposure, StarSprite, hue, mag_step,
     photometric_emissive,
@@ -266,7 +266,7 @@ fn tune_field(
 fn build_field(
     camera: Query<(&OrbitCamera, &Camera)>,
     shells: Query<
-        (&System, &Transform, &Visibility, &Strength, Has<Filtered>),
+        (&System, &Drawn, &Visibility, &Strength, Has<Filtered>),
         With<Shell>,
     >,
     view: Res<View>,
@@ -302,7 +302,7 @@ fn build_field(
         // The pixel radius the view's sizing system settled, read back off the
         // world size it left on the shell, then floored or dropped by the
         // view; see [`drawn_radius`].
-        let Some(radius) = drawn_radius(&view, drawn.scale.x, per_pixel) else {
+        let Some(radius) = drawn_radius(&view, drawn.0, per_pixel) else {
             continue;
         };
 

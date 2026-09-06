@@ -23,7 +23,6 @@ use super::roundness::Roundness;
 use super::spawn::{Shell, StarExposure};
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use big_space::prelude::Grid;
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
@@ -205,6 +204,27 @@ const NEAREST: f32 = 4e-3;
 /// is redundant, and neither is the whole answer.
 const ANGULAR: f32 = 4e-4;
 
+/// How wide the mark standing for a system is drawn, in metres
+///
+/// Written by whichever of [`size_by_distance`] and [`size_photometrically`]
+/// the drawn view belongs to, and read by [`super::field`], which divides it
+/// back out to pixels and paints there, and by
+/// [`super::pointing::size_indicators`], which rings it and catches the
+/// pointer over it.
+///
+/// Its own component rather than the shell's `Transform.scale`, which is
+/// where it used to live. That worked only for as long as nothing else wanted
+/// the transform, and something does: a system the camera descends into gains
+/// a `Grid`, and from then on its transform is that sub-grid's placement,
+/// which `big_space` reads to hang the camera and every body in the system.
+/// One field, two meanings, and the two collided exactly where the mark
+/// matters most — a size written there scaled the whole system by the width
+/// of the shell around it, and a sizing system taught to stand down instead
+/// left the mark frozen at a metre, so a shell snapped to a dot on the way in
+/// rather than swelling and going out. Held apart, neither has to give way.
+#[derive(Component, Default, Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Drawn(pub(crate) f32);
+
 /// How much larger than its system a shell is drawn
 ///
 /// Enough that the outermost orbit sits inside rather than on the surface.
@@ -300,22 +320,16 @@ fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
 /// is. Both are in light years, and what is written is a size in metres, so
 /// the two meet here.
 ///
-/// A shell the camera has descended into is skipped, as it is in
-/// [`size_photometrically`]: it wears a [`Grid`] now and its transform is that
-/// sub-grid's placement, which `big_space` reads to hang the camera and every
-/// body in the system. A size written onto it scales all of that rather than a
-/// mark — here it is the system's own extent, so the insides would be blown up
-/// by the width of the shell standing around them — and the size answers
-/// nothing there in any case, the camera being inside the system and drawing
-/// its contents rather than a mark standing in for them.
+/// Written onto the shell's own [`Drawn`] rather than its transform, so a
+/// descended system — which wears a `Grid` and whose transform is that
+/// sub-grid's placement — is sized like any other. The mark has to go on
+/// being sized there of all places: giving way to the system's contents is
+/// exactly what it does as the camera comes inside one.
 pub(crate) fn size_by_distance(
     scale_population: Res<ScalePopulation>,
     stats: Res<SystemsStats>,
     camera: Query<&OrbitCamera>,
-    mut shells: Query<
-        (&mut Transform, &System, &Visibility),
-        (With<Shell>, Without<Grid>),
-    >,
+    mut shells: Query<(&mut Drawn, &System, &Visibility), With<Shell>>,
 ) {
     if !shells.is_empty() {
         let Ok(orbit) = camera.single() else { return };
@@ -324,8 +338,8 @@ pub(crate) fn size_by_distance(
         // TODO(#46): We should still change rgba color/emmisivity as needed.
         for (mut drawn, system, visible) in shells.iter_mut() {
             // Out of the spyglass is not drawn, so the size it would draw at
-            // is not worked out. Its scale is left where it last stood, which
-            // is close enough for the frame it comes back on.
+            // is not worked out. It is left where it last stood, which is
+            // close enough for the frame it comes back on.
             if *visible == Visibility::Hidden {
                 continue;
             }
@@ -339,12 +353,11 @@ pub(crate) fn size_by_distance(
             };
 
             let size = shell(extent, away, prominence);
-            // Only where it moved, as `size_inside` is. A scale assigned
-            // regardless marks every shell in the sky changed every frame, and
-            // both the transform propagation and the mesh extraction that read
-            // it are gated on that mark.
-            if drawn.scale.x != size {
-                drawn.scale = Vec3::splat(size);
+            // Only where it moved, as `size_inside` is: what reads it is
+            // gated on the change, and every shell in the sky marked changed
+            // every frame is every one of them re-read.
+            if drawn.0 != size {
+                drawn.0 = size;
             }
         }
     }
@@ -521,19 +534,14 @@ fn psf_radius(energy: f64) -> f32 {
 /// to the [`UNSEEN`] sliver and drawn by nobody. What is written is a world
 /// size, which [`super::field`] takes back to pixels and paints the glint at.
 ///
-/// A shell the camera has descended into is skipped: it wears a [`Grid`] now
-/// and its transform is that sub-grid's placement, read by `big_space`. A
-/// pixel-sized scale written onto it would shrink the whole system hanging in
-/// that grid by the same amount, and the size answers nothing there in any
-/// case — the camera is inside the system, drawing its contents rather than a
-/// mark standing in for them.
+/// Written onto the shell's own [`Drawn`], as [`size_by_distance`] is, so a
+/// descended system is sized like any other: its transform belongs to the
+/// sub-grid `big_space` hangs the system in and has nothing to do with how
+/// wide the mark standing for it is drawn.
 pub(crate) fn size_photometrically(
     camera: Query<(&OrbitCamera, &Camera)>,
     exposure: Res<StarExposure>,
-    mut shells: Query<
-        (&mut Transform, &System, &Visibility),
-        (With<Shell>, Without<Grid>),
-    >,
+    mut shells: Query<(&mut Drawn, &System, &Visibility), With<Shell>>,
 ) {
     let Ok((orbit, camera)) = camera.single() else {
         return;
@@ -561,8 +569,8 @@ pub(crate) fn size_photometrically(
         // bare sphere gave.
         // Floored to a sliver of a pixel rather than nothing; see [`UNSEEN`].
         let size = (2. * radius * per_pixel).max(per_pixel * UNSEEN);
-        if drawn.scale.x != size {
-            drawn.scale = Vec3::splat(size);
+        if drawn.0 != size {
+            drawn.0 = size;
         }
     }
 }
@@ -984,7 +992,7 @@ mod tests {
 
     fn count_writes(
         mut writes: ResMut<Writes>,
-        shells: Query<(), (Changed<Transform>, With<Shell>)>,
+        shells: Query<(), (Changed<Drawn>, With<Shell>)>,
     ) {
         writes.0 += shells.iter().count();
     }
@@ -1015,8 +1023,21 @@ mod tests {
         ));
     }
 
-    /// How large the shell around the system at `address` was drawn
+    /// How large the mark around the system at `address` was drawn
     fn drawn(app: &mut App, address: i64) -> f32 {
+        let mut shells =
+            app.world_mut().query_filtered::<(&Drawn, &System), With<Shell>>();
+        shells
+            .iter(app.world())
+            .find(|(_, system)| system.address == address)
+            .expect("a shell for that system")
+            .0
+            .0
+    }
+
+    /// And what its transform stands at, which is the grid's business and not
+    /// the mark's
+    fn placement(app: &mut App, address: i64) -> Vec3 {
         let mut shells = app
             .world_mut()
             .query_filtered::<(&Transform, &System), With<Shell>>();
@@ -1026,7 +1047,6 @@ mod tests {
             .expect("a shell for that system")
             .0
             .scale
-            .x
     }
 
     /// What has been written to a shell so far
@@ -1036,10 +1056,10 @@ mod tests {
 
     /// A frame that moves nothing leaves a shell's size alone
     ///
-    /// Both the transform propagation and the mesh extraction that read a
-    /// shell's size look only at what changed since the last frame. Assigning
-    /// it regardless hands them every star in the sky every frame, whether or
-    /// not the camera has moved.
+    /// The field's mesh build and the pointer's indicator sizing both read a
+    /// shell's size, and both look only at what changed since the last frame.
+    /// Assigning it regardless hands them every star in the sky every frame,
+    /// whether or not the camera has moved.
     #[test]
     fn a_resting_frame_leaves_a_shell_alone() {
         let mut app = sky();
@@ -1079,25 +1099,64 @@ mod tests {
         assert!(writes(&app) > settled, "left a shell at the size it was");
     }
 
-    /// A shell the camera has descended into is left to its grid
+    /// A descended shell's transform is left to its grid
     ///
-    /// Down inside a system the shell wears a [`Grid`], and its transform
-    /// stops being the remainder left over from a galaxy cell: it is that
-    /// sub-grid's own placement, which `big_space` reads to hang the camera
-    /// and every body in the system. A mark size written onto it there scales
-    /// all of that instead of a mark — the map's size is the system's own
-    /// extent, so the insides would be blown up by the width of the shell
-    /// standing around them — and neither view has a mark to draw in any
-    /// case, the camera being inside the thing the mark stood for. Both
-    /// sizings are held to it, so descending is safe under either view.
+    /// Down inside a system the shell wears a `Grid`, and its transform stops
+    /// being the remainder left over from a galaxy cell: it is that sub-grid's
+    /// own placement, which `big_space` reads to hang the camera and every
+    /// body in the system. A mark size written there scales all of that
+    /// instead of a mark — the map's size is the system's own extent, so the
+    /// insides would be blown up by the width of the shell around them.
+    ///
+    /// Nothing writes it now, the mark having a [`Drawn`] of its own, so this
+    /// holds by construction rather than by either sizing standing down. It
+    /// is kept because the collision is easy to re-introduce: the transform is
+    /// right there on the same entity.
     #[test]
-    fn a_descended_shell_is_left_to_its_grid() {
+    fn a_descended_shells_transform_is_left_to_its_grid() {
+        let mut app = descended();
+        app.update();
+
+        assert_eq!(
+            placement(&mut app, 1),
+            Vec3::ONE,
+            "wrote a mark size onto a descended system's sub-grid"
+        );
+    }
+
+    /// And its mark is still sized, which is how it goes out
+    ///
+    /// The reported trouble. Giving way to the system's contents is the one
+    /// thing a mark does as the camera comes inside one, so a descended shell
+    /// is the last place sizing may stand down: held at whatever it was, the
+    /// mark stopped swelling and fading and snapped to the pixel floor
+    /// instead — a shell that went out in one frame rather than over half a
+    /// second.
+    ///
+    /// Both views, since each has a sizing of its own and either may be the
+    /// drawn one on the way in.
+    #[test]
+    fn a_descended_shell_is_still_sized() {
+        let mut app = descended();
+        app.update();
+
+        let extent = 2.1e15;
+        assert_eq!(
+            drawn(&mut app, 1),
+            extent * MARGIN,
+            "a descended system's mark was left unsized"
+        );
+    }
+
+    /// A world with the camera inside the widest system on record
+    ///
+    /// A fifth of a light year across, so a size written to the wrong place
+    /// is off by light years rather than by a rounding. Both sizings run, and
+    /// the shell wears the sub-grid the descent gives it.
+    fn descended() -> App {
         let mut app = sky();
         app.init_resource::<StarExposure>();
         app.add_systems(Update, (size_by_distance, size_photometrically));
-        // The widest system on record, a fifth of a light year across, so a
-        // size written here would be off by light years rather than by a
-        // rounding.
         app.world_mut().spawn((
             reaching(1, 5., 2.1e15),
             Shell,
@@ -1105,13 +1164,7 @@ mod tests {
             Visibility::Visible,
             crate::space::system_grid(),
         ));
-        app.update();
-
-        assert_eq!(
-            drawn(&mut app, 1),
-            1.,
-            "wrote a mark size onto a descended system's sub-grid"
-        );
+        app
     }
 
     /// A star is sized by the radius its point spread clears, and vanishes at

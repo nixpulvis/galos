@@ -48,7 +48,6 @@ use crate::systems::pointing::Indicator;
 use crate::systems::roundness::Roundness;
 use crate::systems::route::{LineList, LineStrip};
 use crate::systems::selection::Selection;
-use crate::systems::spawn::Shell;
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
@@ -674,7 +673,6 @@ fn draw(
     camera: Query<(Entity, &OrbitCamera, Option<&Projection>)>,
     map: Res<crate::space::Map>,
     systems: Query<(Entity, &System)>,
-    mut transforms: Query<&mut Transform, With<Shell>>,
     inside: Query<Entity, With<Inside>>,
     mut selection: ResMut<Selection>,
     contents: Res<Contents>,
@@ -830,19 +828,6 @@ fn draw(
     let standing = systems.get(entity).map_or(DVec3::ZERO, |(_, system)| {
         space::metres(eye - system.position())
     });
-    // The shell has become the grid the camera descends into. Its transform
-    // stops being a mark's scale, written every frame by `scale`, and is
-    // instead the sub-grid's own placement, which `big_space` reads to hang
-    // the camera, every body in the system, and the galaxy's sky behind them.
-    // Left wearing the last size a mark was drawn at, the whole system inside
-    // would be scaled by it. So it is cleared here, once, keeping only the
-    // translation that says where the system sits in the galaxy; both sizings
-    // are `Without<Grid>` (`scale::size_by_distance` for the map and
-    // `scale::size_photometrically` for the realistic view), so nothing writes
-    // it back until the grid comes off on the way up.
-    if let Ok(mut transform) = transforms.get_mut(entity) {
-        transform.scale = Vec3::ONE;
-    }
     let mut commands = commands.entity(entity);
     commands.insert(grid.clone());
     // Down into the system with them.
@@ -1328,6 +1313,7 @@ fn wind(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::spawn::Shell;
 
     /// A ring laid to a view a hundred thousandth of it across
     fn laid_at(at: f64) -> Spacing {
