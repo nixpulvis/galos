@@ -565,12 +565,16 @@ pub(crate) struct BarFields {
     any_start: bool,
     /// Whether the rest of the form is out below the input
     ///
-    /// Turned on when a field takes focus and off when a press lands off the
-    /// form, both of which [`main_bar`] settles at the end of a frame from
-    /// what it has just drawn. So this is one frame behind, which is as
-    /// close as an immediate mode UI gets: a field cannot report that it has
-    /// been clicked until it has been drawn, and whether to draw it is the
-    /// question being asked.
+    /// Turned on when a field takes focus, which [`main_bar`] settles at the
+    /// end of a frame from what it has just drawn. So this is one frame
+    /// behind, which is as close as an immediate mode UI gets: a field cannot
+    /// report that it has been clicked until it has been drawn, and whether
+    /// to draw it is the question being asked.
+    ///
+    /// Off again only on an escape. A press on the map does not put the form
+    /// away: what a route runs through is gathered by picking systems out,
+    /// and a form that shut itself the moment the user reached for one of its
+    /// own answers would be in the way of its own question.
     expanded: bool,
     /// Whether the search box has been asked for and not yet given the caret
     ///
@@ -1098,7 +1102,7 @@ pub(crate) fn chrome(
     // The bar next, in the room the gear is not standing in, and the gear
     // last: it stands level with the search box, which is not known until the
     // bar has drawn it.
-    let (shut, middle) = main_bar(
+    let middle = main_bar(
         ctx,
         edge + MARGIN + GEAR_ROOM,
         // Whether the search box's answer is late enough to say so. Settled
@@ -1130,10 +1134,10 @@ pub(crate) fn chrome(
     keyboard.focused = ctx.egui_wants_keyboard_input();
 
     // Whose the press is, now that the UI has drawn and knows what it wanted
-    // of it. A press spent shutting the form counts as the UI's even where it
-    // landed on the sky, that being what shutting a form by pressing off it
-    // means.
-    press.settle(&buttons, over_ui.0 || shut);
+    // of it: whether it landed on the UI, and nothing else. A press off the
+    // form is the map's even while the form is open, the form having no claim
+    // on a gesture aimed past it.
+    press.settle(&buttons, over_ui.0);
 
     if filter.active.revision() != asked_at {
         filter.active.set_changed();
@@ -1261,8 +1265,9 @@ fn gear(ctx: &Context, left: f32, middle: f32, open: &mut bool) {
 /// The note is not part of what drops down. It answers the name in the input,
 /// and is worth reading whether or not the rest is out.
 ///
-/// Answers whether a press was spent shutting the form, and where the search
-/// box came out, that being the height the gear is hung at.
+/// Answers where the search box came out, that being the height the gear is
+/// hung at. Nothing about the press: one that lands off the bar is the map's,
+/// whether or not the form is open.
 fn main_bar(
     ctx: &Context,
     left: f32,
@@ -1280,7 +1285,7 @@ fn main_bar(
     how: &mut Routing,
     filter: &mut FilterBar,
     flown: Option<Flown>,
-) -> (bool, f32) {
+) -> f32 {
     let style = ctx.global_style();
     let mut frame =
         egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
@@ -1326,7 +1331,7 @@ fn main_bar(
                         response.request_focus();
                         taken = true;
                     }
-                    // Carried out so the press that shuts the form can let go
+                    // Carried out so a press landing off the bar can let go
                     // of it. See [`let_go_of`].
                     let box_id = response.id;
                     // Where the gear stands, the two of them being one row.
@@ -1463,29 +1468,25 @@ fn main_bar(
     let over = ctx
         .pointer_latest_pos()
         .is_some_and(|at| bar.response.rect.contains(at));
-    let dismissed = !over && ctx.input(|i| i.pointer.any_pressed());
-    // Only a press that actually shut something is spent, or every press off
-    // the bar would be one the map is not free to answer.
-    //
-    // And only a press of the button the map answers. Any button shuts the
-    // form, but the map weighs the primary alone, so a spend charged against
-    // some other button is one it never comes to collect: it would sit there
-    // and be taken out of the next primary click instead.
-    let shut = search.expanded
-        && dismissed
-        && ctx
-            .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
-    // Three moments, and nothing else: a field in the form takes focus, a
-    // press lands off the form, or an escape asks for it to be put away.
-    // Moments rather than states, so that none of them can undo another.
-    // Asking whether a field holds focus would open the form again the very
-    // next frame.
+    // A press that landed anywhere but on the bar. Never spent: the map is
+    // free to answer every one of them, which is what lets a user pick
+    // systems out with the form still open. What a route runs through is
+    // gathered on the map, and the form is where the range is typed and
+    // where the trip is asked for, so a press that answered one by closing
+    // the other would be the form standing in the way of its own question.
+    let off_the_bar = !over && ctx.input(|i| i.pointer.any_pressed());
+    // Two moments, and nothing else: a field in the form takes focus, or an
+    // escape asks for it to be put away. Moments rather than states, so that
+    // neither can undo the other. Asking whether a field holds focus would
+    // open the form again the very next frame.
     let (took_focus, middle, box_id) = bar.inner;
     if took_focus {
         search.expanded = true;
     }
-    if dismissed {
-        search.expanded = false;
+    // The caret goes even though the form stays. A press on the map means the
+    // map, and a box left holding the caret takes the keys the map pans and
+    // flies with.
+    if off_the_bar {
         let_go_of(ctx, box_id);
     }
     // An escape lets go of whichever field held the caret, where a press lets
@@ -1501,7 +1502,7 @@ fn main_bar(
         search.expanded = false;
         ctx.memory_mut(|memory| memory.stop_text_input());
     }
-    (shut, middle)
+    middle
 }
 
 /// Let go of the box, the press that shut the form having not been a click
@@ -2582,7 +2583,7 @@ fn route_section(
             ui.indent("start", |ui| {
                 let mut from_first = !search.any_start;
                 if ui
-                    .checkbox(&mut from_first, "Start where I picked first")
+                    .checkbox(&mut from_first, "Start w/ First Selected System")
                     .changed()
                 {
                     search.any_start = !from_first;
@@ -6347,17 +6348,17 @@ mod tests {
         ]
     }
 
-    /// A press that shuts the form takes the focus off the box above it
+    /// A press landing off the form takes the focus off the box above it
     ///
-    /// The form is shut by a press and egui lets the focus go on a click, so a
-    /// gesture that drifts between the two parts them: the box is left holding
-    /// the focus the form opens on, and the next click on it opens nothing.
-    /// Over a map dragged to turn it, most clicks drift.
+    /// Egui lets the focus go on a click, so a gesture that drifts between
+    /// the two parts them: the box is left holding the focus the form opens
+    /// on, and the next click on it opens nothing. Over a map dragged to turn
+    /// it, most clicks drift.
     ///
     /// The drag is what makes this worth a test. Driven as a click it passes
     /// against the unfixed code, egui having let go of the focus itself.
     #[test]
-    fn a_press_that_shuts_the_form_lets_go_of_the_box() {
+    fn a_press_off_the_form_lets_go_of_the_box() {
         let ctx = crate::tests::context();
         let mut value: Option<String> = None;
 
@@ -6393,8 +6394,8 @@ mod tests {
             "egui let the focus go by itself, so nothing here is needed",
         );
 
-        // Which is the press the form is shut by, so it is where the box is
-        // let go of.
+        // Which is the press the map answers, so it is where the box is let
+        // go of: the caret would otherwise take the keys the map pans with.
         let_go_of(&ctx, box_id);
         draw(egui::RawInput::default(), &mut value);
 
