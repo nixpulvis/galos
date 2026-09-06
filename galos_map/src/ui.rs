@@ -28,6 +28,7 @@ use crate::systems::info::lasting;
 use crate::systems::labels::ShowBodyNames;
 use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
+use crate::systems::route::graph::Routing;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
 use crate::systems::spawn::{
@@ -1091,6 +1092,7 @@ pub(crate) fn chrome(
         orbit.single().map(|camera| camera.center).ok(),
         &mut panels,
         &mut bar.plot,
+        &mut bar.how,
         &mut filter,
     );
     gear(ctx, edge, middle, &mut open.0);
@@ -1251,6 +1253,7 @@ fn main_bar(
     center: Option<DVec3>,
     panels: &mut Panels,
     plot: &mut Plot,
+    how: &mut Routing,
     filter: &mut FilterBar,
 ) -> (bool, f32) {
     let style = ctx.global_style();
@@ -1425,7 +1428,7 @@ fn main_bar(
                     if search.expanded {
                         taken |= filter_section(ui, filter);
                         taken |= route_section(
-                            ui, search, selection, searched, plot, routing,
+                            ui, search, selection, searched, plot, how, routing,
                         );
                     }
 
@@ -1514,6 +1517,8 @@ pub(crate) struct SearchBar<'w> {
     pending: Res<'w, Searching>,
     /// How the route last asked for is getting on
     plot: ResMut<'w, Plot>,
+    /// Which of the fewest-jumps routes to ask for
+    how: ResMut<'w, Routing>,
 }
 
 /// The search box, and the mark that empties it
@@ -2321,6 +2326,7 @@ fn route_section(
     selection: &Selection,
     searched: &mut MessageWriter<Search>,
     plot: &mut Plot,
+    how: &mut Routing,
     asked_for: bool,
 ) -> bool {
     heading(ui, "Route", true);
@@ -2357,6 +2363,15 @@ fn route_section(
     // Return in the range asks for the route, as pressing the button does. It
     // is the one thing a route waits on, and a form with one thing left to do
     // should not have to be reached for.
+    // Which of the equally-short routes to come back with. Both settings are
+    // the fewest jumps; this is whether the map may spend a minute proving the
+    // shortest of them or should take the one that heads most directly at the
+    // goal. See `Routing` for what the difference measured out at.
+    let mut proven = *how == Routing::Shortest;
+    if ui.checkbox(&mut proven, "Shortest").changed() {
+        *how = if proven { Routing::Shortest } else { Routing::Direct };
+    }
+
     let submitted = entered(&range, ui);
     // What came back of the last route asked for answers the field as it was
     // then, so it goes as soon as it is not. Work still under way is not an

@@ -1,5 +1,5 @@
 use crate::systems::fetch::{FetchIndex, FetchTasks, RawSystem};
-use crate::systems::route::graph::Jumps;
+use crate::systems::route::graph::{Jumps, Routing};
 use crate::systems::spawn::build_system;
 use crate::{Names, Populated};
 use bevy::prelude::*;
@@ -19,6 +19,7 @@ pub fn fetch_route(
     tasks: &mut ResMut<FetchTasks>,
     time: &Res<Time<Real>>,
     jumps: &Res<Jumps>,
+    how: Routing,
     names: &Res<Names>,
     populated: &Res<Populated>,
 ) {
@@ -48,7 +49,7 @@ pub fn fetch_route(
     let task = pool.spawn(async move {
         let systems = match (ends, range) {
             (Some((start, end)), Some(range)) => graph
-                .route(start, end, range)
+                .route(start, end, range, how)
                 .map(|hops| {
                     hops.into_iter()
                         .map(|(address, position)| {

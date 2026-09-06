@@ -13,6 +13,7 @@ use bevy::prelude::*;
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
     app.init_resource::<SelectedRoute>();
+    app.init_resource::<graph::Routing>();
     // After the fetch it answers has been drawn, and before the camera is
     // pointed, since where it asks the camera to go is what `move_camera`
     // then works out.

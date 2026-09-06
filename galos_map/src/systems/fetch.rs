@@ -398,6 +398,7 @@ pub fn fetch_searched(
     mut tasks: ResMut<FetchTasks>,
     time: Res<Time<Real>>,
     jumps: Res<crate::systems::route::graph::Jumps>,
+    routing: Res<crate::systems::route::graph::Routing>,
     names: Res<Names>,
     populated: Res<Populated>,
 ) {
@@ -415,6 +416,7 @@ pub fn fetch_searched(
                     &mut tasks,
                     &time,
                     &jumps,
+                    *routing,
                     &names,
                     &populated,
                 );
@@ -726,6 +728,7 @@ pub(crate) mod tests {
         app.add_message::<Search>();
         app.init_resource::<Selection>();
         app.init_resource::<crate::systems::bounded::LodFetch>();
+        app.init_resource::<crate::systems::route::graph::Routing>();
         app.insert_resource(crate::systems::route::graph::Jumps(
             std::sync::Arc::new(crate::systems::route::graph::JumpGraph::new(
                 &entries,
