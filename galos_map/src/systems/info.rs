@@ -499,6 +499,25 @@ fn fetch(populated: &Populated, names: &Names, filter: &Filter) -> Vec<System> {
     found
 }
 
+/// What a gesture over a filter's panel asked of the filter
+///
+/// The panel reads as the filter's own row in the bar does, through the same
+/// [`crate::ui::asked_of_row`]: a click says it is the one being worked with,
+/// a double says to see the whole of what it admits. A panel offers neither a
+/// switch nor the marks a row carries, so it says so by passing `false`.
+///
+/// Nothing until the button comes up. The press that reaches a panel is not
+/// yet a gesture: what it lands on inside decides what it meant, and a leg's
+/// name says the leg rather than the trip it is part of. Asked while the
+/// button was still down, the panel answered first and was corrected on the
+/// release, and the selection flickered through the wrong route on the way.
+fn asked_of_panel(
+    doubled: bool,
+    clicked: bool,
+) -> Option<crate::ui::RowGesture> {
+    crate::ui::asked_of_row(false, false, false, doubled, clicked)
+}
+
 /// Tell the user what is known about the systems they have opened
 ///
 /// Written here rather than alongside the rest of the UI because a
@@ -554,11 +573,24 @@ fn panels(
     let mut picked = None;
     let mut opening = None;
     let mut wanted = None;
-    // Which panel the user pressed, if they pressed one. Asked once for the
-    // whole pass, since a press is one press however many windows are drawn.
-    let pressed = ctx.input(|input| input.pointer.any_pressed());
+    // What the pointer did over whichever panel it was over, asked once for
+    // the whole pass: a click is one click however many windows are drawn.
+    //
+    // Read on the click rather than on the press, as every row in the bar and
+    // every line in these panels is read. A press writes while the button is
+    // still down, and what a press means is not settled until it is let go
+    // of: a press landing on a leg's name inside a trip's panel would say the
+    // whole trip was being worked with, and the leg would only say otherwise
+    // when the button came up.
+    let (clicked, doubled) = ctx.input(|input| {
+        (
+            input.pointer.button_clicked(egui::PointerButton::Primary),
+            input.pointer.button_double_clicked(egui::PointerButton::Primary),
+        )
+    });
     let mut chosen = None;
     let mut worked = None;
+    let mut whole = None;
     for panel in &mut panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
@@ -611,16 +643,42 @@ fn panels(
             if window.inner.is_some() {
                 tallest = tallest.max(window.response.rect.height());
             }
-            // A press landing on a panel is how the user says which of them
-            // they are working with, and egui has already settled which
-            // window that press reached: `contains_pointer` answers for the
-            // one on top, so a panel under another does not take a press
-            // meant for it.
-            if pressed
-                && window.response.contains_pointer()
-                && let Subject::Filter { filter, .. } = &panel.subject
+            // A panel about a filter reads as the filter's own row does: a
+            // click says it is the one being worked with, a double says to
+            // see the whole of what it admits. Through [`crate::ui::asked_of_row`]
+            // so the order is the one written down there.
+            //
+            // Egui has already settled which window the pointer is over:
+            // `contains_pointer` answers for the one on top, so a panel under
+            // another does not take a click meant for it.
+            if window.response.contains_pointer()
+                && let Subject::Filter { filter, systems, .. } = &panel.subject
             {
-                chosen = Some(filter.clone());
+                match asked_of_panel(doubled, clicked) {
+                    // The systems the panel is already listing, which is
+                    // every one the filter admits rather than only those the
+                    // map has dragged in.
+                    Some(crate::ui::RowGesture::Frame) => {
+                        let places: Vec<DVec3> = systems
+                            .iter()
+                            .flatten()
+                            .map(|system| DVec3::from(system.position))
+                            .collect();
+                        if let Some((middle, extent)) =
+                            crate::systems::route::spawn::framing(&places)
+                            && extent > 0.
+                        {
+                            whole = Some(MoveCamera {
+                                position: Some(middle),
+                                framing: Some(extent),
+                            });
+                        }
+                    }
+                    Some(crate::ui::RowGesture::Select) => {
+                        chosen = Some(filter.clone())
+                    }
+                    _ => {}
+                }
             }
         }
         if !showing {
@@ -628,7 +686,11 @@ fn panels(
         }
     }
 
-    if let Some(move_) = moved {
+    // What a line or a leg inside the panel asked for beats what the panel
+    // itself asked, for the reason the dot inside a row beats the row: the
+    // one further in is the one the pointer was actually on. A double click
+    // on a system's line means that system, not the whole list it stands in.
+    if let Some(move_) = moved.or(whole) {
         camera.write(move_);
     }
     // Picking a system out of a list says which one is meant, as clicking a
@@ -2851,6 +2913,30 @@ mod tests {
             walk(&shape.shape, &mut found);
         }
         found
+    }
+
+    /// A panel is read on the click, not on the press that began it
+    ///
+    /// Measured off a real egui pass: with the button down `any_pressed` is
+    /// true and `button_clicked` is false, and on the release they swap. Read
+    /// off the press, a panel answered while the button was still down --
+    /// saying the whole trip was being worked with -- and the leg's name
+    /// corrected it when the button came up, so the selection flickered
+    /// through whatever route was last plotted on the way.
+    ///
+    /// The double is the case that has to arrive with the click beside it, as
+    /// it does on every row: egui counts the second release as both.
+    #[test]
+    fn a_panel_is_read_on_the_click_not_the_press() {
+        assert_eq!(asked_of_panel(false, false), None);
+        assert_eq!(
+            asked_of_panel(false, true),
+            Some(crate::ui::RowGesture::Select)
+        );
+        assert_eq!(
+            asked_of_panel(true, true),
+            Some(crate::ui::RowGesture::Frame)
+        );
     }
 
     /// A leg in a trip's panel is reached the way its row in the bar is
