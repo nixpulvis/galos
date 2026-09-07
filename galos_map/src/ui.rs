@@ -1892,10 +1892,11 @@ pub(crate) fn system_list<'a>(
 /// It is also what says a search worked. A search that resolves picks its
 /// system out, and that shows up here.
 ///
-/// The line is the control that sends the camera to what is picked out.
-/// Clicking the answer to go to what it names beats a button saying so in
-/// words, and the dot in the ring's own color says which mark out on the
-/// map is about to be flown to.
+/// The line is also the control that sends the camera to what is picked out:
+/// double clicking the answer to go to what it names beats a button saying so
+/// in words, and the dot in the ring's own color says which mark out on the
+/// map it is about. The same press flies to a star on the map and frames a
+/// filter's systems, so a row reads the way the thing it stands for does.
 ///
 /// Measured from where the camera is looking rather than from the camera
 /// itself, since that is the distance the spyglass and the fetch are
@@ -2055,12 +2056,14 @@ fn selected(
 
             let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
 
-            if close.clicked() {
-                chose = Some((index, SelectionAction::LetGo));
-            } else if info.is_some_and(|info| info.clicked()) {
-                chose = Some((index, SelectionAction::Describe));
-            } else if row.clicked() {
-                chose = Some((index, SelectionAction::Travel));
+            let asked = asked_of_selection(
+                close.clicked(),
+                info.is_some_and(|info| info.clicked()),
+                row.double_clicked(),
+                row.clicked(),
+            );
+            if let Some(asked) = asked {
+                chose = Some((index, asked));
             }
             row.on_hover_cursor(egui::CursorIcon::PointingHand);
         }
@@ -2127,13 +2130,46 @@ fn selected(
 ///
 /// Said by index, several rows standing at once and each being about one of
 /// them.
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SelectionAction {
-    /// Send the camera to it, as the one row always did
+    /// Send the camera to it, as double clicking its star does
     Travel,
     /// Open the panel describing it
     Describe,
     /// Let go of this one, and hold the rest
     LetGo,
+}
+
+/// What a press on one selected system's row asked of it
+///
+/// The same reading [`asked_of_row`] gives a filter's row, which is where the
+/// order is written down: the mark, then the button, then the double, then
+/// the click. A row here has no switch inside it -- what it stands for is
+/// picked out by standing there at all -- so it is the one place a row can be
+/// pressed that this leaves out.
+///
+/// The camera is what a double asks for, as a double on the star itself asks,
+/// rather than what a single click asks as it used to. A row about one system
+/// has the whole of that system in view already, so the gesture that frames a
+/// filter is a flight to this one.
+///
+/// A single click asks for nothing. On a filter's row it says which of several
+/// is the one being worked with; here there is nothing for it to say, the row
+/// standing for something already picked out. Left as a gesture with no
+/// answer rather than given the camera back, so that the same press means the
+/// same thing wherever in the bar it lands.
+fn asked_of_selection(
+    close: bool,
+    info: bool,
+    double: bool,
+    click: bool,
+) -> Option<SelectionAction> {
+    match asked_of_row(close, info, false, double, click) {
+        Some(RowGesture::LetGo) => Some(SelectionAction::LetGo),
+        Some(RowGesture::Describe) => Some(SelectionAction::Describe),
+        Some(RowGesture::Frame) => Some(SelectionAction::Travel),
+        Some(RowGesture::Toggle | RowGesture::Select) | None => None,
+    }
 }
 
 /// How many selected systems the bar shows before the rows start scrolling
@@ -5939,6 +5975,34 @@ mod tests {
         assert_eq!(asked(true, false, false), Some(FilterAction::LetGo));
         // A press on the name alone, which used to turn them all off.
         assert_eq!(asked(false, false, false), None);
+    }
+
+    /// A selected system is flown to by a double click, not a single one
+    ///
+    /// The same press that frames a filter, said of the one system the row
+    /// stands for. Every case here carries the click as well: the buttons sit
+    /// inside the row and egui answers the first click of a pair as a click,
+    /// so a press that means anything else arrives with one beside it and has
+    /// to beat it.
+    #[test]
+    fn a_selected_system_is_flown_to_by_a_double_click() {
+        assert_eq!(
+            asked_of_selection(false, false, true, true),
+            Some(SelectionAction::Travel)
+        );
+        assert_eq!(
+            asked_of_selection(true, false, false, true),
+            Some(SelectionAction::LetGo)
+        );
+        assert_eq!(
+            asked_of_selection(false, true, false, true),
+            Some(SelectionAction::Describe)
+        );
+
+        // A click on the name alone, which used to fly the camera there. The
+        // row already stands for something picked out, so it asks nothing.
+        assert_eq!(asked_of_selection(false, false, false, true), None);
+        assert_eq!(asked_of_selection(false, false, false, false), None);
     }
 
     /// What a press on a row means depends on where in it it landed

@@ -49,6 +49,12 @@ order they draw in [`src/camera.rs`](./src/camera.rs).
 | Click on empty sky | Let go of everything picked out |
 | Double click | Fly to what was clicked |
 
+The bar's rows read the same way as the sky they name. A double click on the
+row for a selected system flies to it, as a double click on its star does, and
+a double click on a filter's row frames everything that filter admits. A single
+click on a row says which of several is the one being worked with, and asks
+nothing on a row about something already picked out.
+
 A drag belongs to whatever the press landed on for as long as it lasts, so one
 started on a slider goes on talking to the slider wherever the pointer wanders.
 
