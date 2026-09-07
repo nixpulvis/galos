@@ -499,23 +499,25 @@ fn fetch(populated: &Populated, names: &Names, filter: &Filter) -> Vec<System> {
     found
 }
 
-/// What a gesture over a filter's panel asked of the filter
+/// What a click over a filter's panel asked of the filter
 ///
 /// The panel reads as the filter's own row in the bar does, through the same
-/// [`crate::ui::asked_of_row`]: a click says it is the one being worked with,
-/// a double says to see the whole of what it admits. A panel offers neither a
-/// switch nor the marks a row carries, so it says so by passing `false`.
+/// [`crate::ui::asked_of_row`]: a click says it is the one being worked with.
+/// A panel offers none of the rest a row does -- no switch, no marks -- and
+/// says so by passing `false`.
+///
+/// The double among them, which frames a row's systems, is one a window
+/// cannot be given: egui rolls a panel up into its title bar on a double
+/// click there, so a panel framed that way would fold shut on the way. The
+/// button inside it asks instead.
 ///
 /// Nothing until the button comes up. The press that reaches a panel is not
 /// yet a gesture: what it lands on inside decides what it meant, and a leg's
 /// name says the leg rather than the trip it is part of. Asked while the
 /// button was still down, the panel answered first and was corrected on the
 /// release, and the selection flickered through the wrong route on the way.
-fn asked_of_panel(
-    doubled: bool,
-    clicked: bool,
-) -> Option<crate::ui::RowGesture> {
-    crate::ui::asked_of_row(false, false, false, doubled, clicked)
+fn asked_of_panel(clicked: bool) -> Option<crate::ui::RowGesture> {
+    crate::ui::asked_of_row(false, false, false, false, clicked)
 }
 
 /// Tell the user what is known about the systems they have opened
@@ -573,8 +575,9 @@ fn panels(
     let mut picked = None;
     let mut opening = None;
     let mut wanted = None;
-    // What the pointer did over whichever panel it was over, asked once for
-    // the whole pass: a click is one click however many windows are drawn.
+    // Whether the pointer was clicked over whichever panel it was over,
+    // asked once for the whole pass: a click is one click however many
+    // windows are drawn.
     //
     // Read on the click rather than on the press, as every row in the bar and
     // every line in these panels is read. A press writes while the button is
@@ -582,15 +585,11 @@ fn panels(
     // of: a press landing on a leg's name inside a trip's panel would say the
     // whole trip was being worked with, and the leg would only say otherwise
     // when the button came up.
-    let (clicked, doubled) = ctx.input(|input| {
-        (
-            input.pointer.button_clicked(egui::PointerButton::Primary),
-            input.pointer.button_double_clicked(egui::PointerButton::Primary),
-        )
+    let clicked = ctx.input(|input| {
+        input.pointer.button_clicked(egui::PointerButton::Primary)
     });
     let mut chosen = None;
     let mut worked = None;
-    let mut whole = None;
     for panel in &mut panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
@@ -652,33 +651,11 @@ fn panels(
             // `contains_pointer` answers for the one on top, so a panel under
             // another does not take a click meant for it.
             if window.response.contains_pointer()
-                && let Subject::Filter { filter, systems, .. } = &panel.subject
+                && let Subject::Filter { filter, .. } = &panel.subject
+                && asked_of_panel(clicked)
+                    == Some(crate::ui::RowGesture::Select)
             {
-                match asked_of_panel(doubled, clicked) {
-                    // The systems the panel is already listing, which is
-                    // every one the filter admits rather than only those the
-                    // map has dragged in.
-                    Some(crate::ui::RowGesture::Frame) => {
-                        let places: Vec<DVec3> = systems
-                            .iter()
-                            .flatten()
-                            .map(|system| DVec3::from(system.position))
-                            .collect();
-                        if let Some((middle, extent)) =
-                            crate::systems::route::spawn::framing(&places)
-                            && extent > 0.
-                        {
-                            whole = Some(MoveCamera {
-                                position: Some(middle),
-                                framing: Some(extent),
-                            });
-                        }
-                    }
-                    Some(crate::ui::RowGesture::Select) => {
-                        chosen = Some(filter.clone())
-                    }
-                    _ => {}
-                }
+                chosen = Some(filter.clone());
             }
         }
         if !showing {
@@ -686,11 +663,7 @@ fn panels(
         }
     }
 
-    // What a line or a leg inside the panel asked for beats what the panel
-    // itself asked, for the reason the dot inside a row beats the row: the
-    // one further in is the one the pointer was actually on. A double click
-    // on a system's line means that system, not the whole list it stands in.
-    if let Some(move_) = moved.or(whole) {
+    if let Some(move_) = moved {
         camera.write(move_);
     }
     // Picking a system out of a list says which one is meant, as clicking a
@@ -1307,12 +1280,38 @@ fn admitted(
     // against a spreadsheet, and neither is done off a window that cannot be
     // selected from. In the order the list is drawn in, and saying what each
     // line says, so what is copied is what is read.
-    if ui
-        .button(if filter.ordered() { "Copy Route" } else { "Copy List" })
-        .clicked()
-    {
-        ui.ctx().copy_text(as_text(&order, legs));
-    }
+    ui.horizontal(|ui| {
+        if ui
+            .button(if filter.ordered() { "Copy Route" } else { "Copy List" })
+            .clicked()
+        {
+            ui.ctx().copy_text(as_text(&order, legs));
+        }
+
+        // Where the camera has to stand to see the whole of what the panel
+        // lists, off the systems it is listing. Said as a button because the
+        // gesture that asks it of a row cannot be asked of a window: a double
+        // click on a panel's title rolls it up into its title bar, egui's
+        // own reading of it, so a panel framed that way would fold shut on
+        // the way.
+        let framing =
+            if filter.ordered() { "Frame Route" } else { "Frame List" };
+        if ui.button(framing).clicked() {
+            let places: Vec<DVec3> = order
+                .iter()
+                .map(|(system, _)| DVec3::from(system.position))
+                .collect();
+            if let Some((middle, extent)) =
+                crate::systems::route::spawn::framing(&places)
+                && extent > 0.
+            {
+                *moved = Some(MoveCamera {
+                    position: Some(middle),
+                    framing: Some(extent),
+                });
+            }
+        }
+    });
     ui.add_space(MARGIN);
 
     // Named for the filter it lists, since a panel stands per filter and two
@@ -2924,19 +2923,89 @@ mod tests {
     /// corrected it when the button came up, so the selection flickered
     /// through whatever route was last plotted on the way.
     ///
-    /// The double is the case that has to arrive with the click beside it, as
-    /// it does on every row: egui counts the second release as both.
+    /// A double is still a click, and says the same thing: egui counts the
+    /// second release as both, and what it does to a panel beyond that is
+    /// roll it up into its title bar, which is egui's own reading of it.
     #[test]
     fn a_panel_is_read_on_the_click_not_the_press() {
-        assert_eq!(asked_of_panel(false, false), None);
-        assert_eq!(
-            asked_of_panel(false, true),
-            Some(crate::ui::RowGesture::Select)
+        assert_eq!(asked_of_panel(false), None);
+        assert_eq!(asked_of_panel(true), Some(crate::ui::RowGesture::Select));
+    }
+
+    /// A route's panel offers to frame it, since its title cannot be doubled
+    ///
+    /// The gesture that frames a filter's row is spoken for on a window:
+    /// egui rolls a panel up into its title bar on a double click there. So
+    /// the panel says it in words, beside the button that copies the same
+    /// list, and asks the camera for the whole of what it lists.
+    ///
+    /// Driven at the position the button was painted at, the whole point
+    /// being that there is something there to press.
+    #[test]
+    fn a_routes_panel_frames_it_by_a_button() {
+        let route = Filter::Route {
+            label: "SOL -> DISO".to_owned(),
+            systems: vec![1, 2, 3],
+            range: "10".to_owned(),
+            trip: None,
+        };
+        let held = [
+            placed(1, [0., 0., 0.]),
+            placed(2, [5., 0., 0.]),
+            placed(3, [26., 0., 0.]),
+        ];
+
+        let ctx = context();
+        let pass = |input: egui::RawInput, moved: &mut Option<MoveCamera>| {
+            placed_text(&ctx, input, |ui| {
+                admitted(
+                    ui,
+                    &route,
+                    &[],
+                    Some(&held),
+                    Some(DVec3::ZERO),
+                    &mut None,
+                    &mut None,
+                    moved,
+                    &mut None,
+                );
+            })
+        };
+
+        // Twice, the first pass being where the button is placed.
+        pass(egui::RawInput::default(), &mut None);
+        let text = pass(egui::RawInput::default(), &mut None);
+        let at = text
+            .iter()
+            .find(|(said, _)| said == "Frame Route")
+            .expect("a button to frame the route")
+            .1
+            .center();
+
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let mut moved = None;
+        pass(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    button(true),
+                    button(false),
+                ],
+                ..Default::default()
+            },
+            &mut moved,
         );
-        assert_eq!(
-            asked_of_panel(true, true),
-            Some(crate::ui::RowGesture::Frame)
-        );
+
+        // The middle of what it spans and the reach to the far end of it, as
+        // the camera is stood back from a row's systems.
+        let moved = moved.expect("the camera was asked to frame the route");
+        assert_eq!(moved.position, Some(DVec3::new(13., 0., 0.)));
+        assert_eq!(moved.framing, Some(13.));
     }
 
     /// A leg in a trip's panel is reached the way its row in the bar is
