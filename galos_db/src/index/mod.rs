@@ -33,6 +33,83 @@ use tracing::{debug, info};
 mod metadata;
 pub use metadata::MetaReport;
 
+/// Which of the index's parts a build writes
+///
+/// A full build writes all of them and is what a fresh directory wants. One
+/// part alone is what a change to how a part is derived wants: the reach
+/// table moved to [`galos_index::inside`]'s arithmetic and every published
+/// reach was a table stale by that much, with nothing wrong with the cell
+/// tree, the names or the factions beside it. Rebuilding those to fix this
+/// one is a hundred megabytes of rewriting to say nothing new, and a watch
+/// only ever patches the systems the feed reports, so a stale table converges
+/// on whatever is being scanned and never on the rest.
+///
+/// The parts are what a directory holds rather than how it is derived, so
+/// each names a file or a set of them: the cell tree and its payloads, the
+/// names chunks, `populated.bin`, `reaches.bin`, `factions.bin`, and the
+/// per-system body files. What each costs to derive differs wildly — the
+/// cells and the names come out of one read of every positioned system, the
+/// reaches and the body files out of one read of every scanned thing — and
+/// asking for one part reads only what that part needs.
+///
+/// A part left out is left exactly as it stands in the directory. Nothing
+/// here removes a file, so a partial build cannot leave the index short of
+/// one: the worst it can do is leave one older than the rest, which is what
+/// it was asked for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Parts {
+    pub cells: bool,
+    pub names: bool,
+    pub populated: bool,
+    pub reaches: bool,
+    pub factions: bool,
+    pub bodies: bool,
+}
+
+impl Parts {
+    /// Every part, which is what a build with nothing named writes
+    pub const ALL: Parts = Parts {
+        cells: true,
+        names: true,
+        populated: true,
+        reaches: true,
+        factions: true,
+        bodies: true,
+    };
+
+    /// No part at all, to name them onto
+    pub const NONE: Parts = Parts {
+        cells: false,
+        names: false,
+        populated: false,
+        reaches: false,
+        factions: false,
+        bodies: false,
+    };
+
+    /// Whether anything at all was asked for
+    pub fn any(&self) -> bool {
+        *self != Parts::NONE
+    }
+
+    /// Whether a read of every positioned system is wanted
+    ///
+    /// The one read the cell tree and the names table both come out of, and
+    /// the expensive half of a full build. Skipped outright where neither is
+    /// being written.
+    fn wants_galaxy(&self) -> bool {
+        self.cells || self.names
+    }
+
+    /// Whether a read of every scanned thing is wanted
+    ///
+    /// The rows the body files are written from and the reaches are measured
+    /// over, which is one read for both.
+    fn wants_bodies(&self) -> bool {
+        self.reaches || self.bodies
+    }
+}
+
 /// How long a watch goes between resume points, at most.
 ///
 /// A checkpoint is every system at full precision, a hundred megabytes and
@@ -226,15 +303,35 @@ async fn read_galaxy(
     Ok((inputs, names))
 }
 
-/// Build the index from the database and write it to `dir`, then the metadata
-/// sidecars beside it: the cell tree the map draws from and the records a click
-/// reads, written into one directory so a single transport serves both.
-pub async fn build_to_dir(db: &Database, dir: &Path) -> Result<BuildReport> {
-    let (inputs, names) = read_galaxy(db).await?;
-    let built = Snapshot::build(&inputs, &BuildParams::default());
-    built.write(dir)?;
-    let (_, meta) = Metadata::build(db, dir, names).await?;
-    Ok(BuildReport::of(inputs.len(), &built, meta))
+/// Build the parts of the index `parts` names and write them to `dir`: the cell
+/// tree the map draws from and the records a click reads, in one directory so a
+/// single transport serves both.
+///
+/// [`Parts::ALL`] is a full build and what a fresh directory wants. Anything
+/// narrower reads only what those parts need and leaves every other file in the
+/// directory exactly as it stands.
+pub async fn build_to_dir(
+    db: &Database,
+    dir: &Path,
+    parts: Parts,
+) -> Result<BuildReport> {
+    // The one read the cell tree and the names table both come out of, and the
+    // whole of what a build asking for neither can skip.
+    let galaxy =
+        if parts.wants_galaxy() { Some(read_galaxy(db).await?) } else { None };
+
+    let cells = galaxy
+        .as_ref()
+        .filter(|_| parts.cells)
+        .map(|(inputs, _)| {
+            let built = Snapshot::build(inputs, &BuildParams::default());
+            built.write(dir).map(|()| TreeReport::of(inputs.len(), &built))
+        })
+        .transpose()?;
+
+    let names = galaxy.map(|(_, names)| names);
+    let meta = metadata::write_parts(db, dir, names, parts).await?;
+    Ok(BuildReport { cells, meta })
 }
 
 /// The systems of `addresses` as build input.
@@ -402,21 +499,19 @@ fn resume(
     Some((tree, meta, checkpoint.cursor))
 }
 
-/// A summary of a build, for the binary to print and check.
+/// What a build of the cell tree came to, for the binary to print and check.
 #[derive(Copy, Clone, Debug)]
-pub struct BuildReport {
+pub struct TreeReport {
     pub systems: usize,
     pub points: usize,
     pub cells: usize,
     pub leaves: usize,
     pub deepest_level: u8,
     pub max_leaf_points: usize,
-    /// The metadata sidecars written beside the tree.
-    pub meta: MetaReport,
 }
 
-impl BuildReport {
-    fn of(systems: usize, built: &Snapshot, meta: MetaReport) -> BuildReport {
+impl TreeReport {
+    fn of(systems: usize, built: &Snapshot) -> TreeReport {
         let leaves = built.index.cells().filter(|c| c.is_leaf()).count();
         let deepest_level =
             built.index.cells().map(|c| c.id.level).max().unwrap_or(0);
@@ -427,31 +522,28 @@ impl BuildReport {
             .map(|c| built.payload(c.id).len())
             .max()
             .unwrap_or(0);
-        BuildReport {
+        TreeReport {
             systems,
             points: built.point_count(),
             cells: built.index.len(),
             leaves,
             deepest_level,
             max_leaf_points,
-            meta,
         }
     }
 
     /// Whether every system landed in exactly one cell: the partition holds.
-    pub fn is_consistent(&self) -> bool {
+    fn is_consistent(&self) -> bool {
         self.points == self.systems
     }
 }
 
-impl fmt::Display for BuildReport {
+impl fmt::Display for TreeReport {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
             "{} systems -> {} cells ({} leaves, {} internal), \
-             deepest level {}, largest leaf {} systems, {} placed{}; \
-             metadata: {} populated, {} names, {} reaches, {} factions, \
-             {} body files",
+             deepest level {}, largest leaf {} systems, {} placed{}",
             self.systems,
             self.cells,
             self.leaves,
@@ -460,12 +552,42 @@ impl fmt::Display for BuildReport {
             self.max_leaf_points,
             self.points,
             if self.is_consistent() { "" } else { " (MISMATCH)" },
-            self.meta.populated,
-            self.meta.names,
-            self.meta.reaches,
-            self.meta.factions,
-            self.meta.body_files,
         )
+    }
+}
+
+/// A summary of a build, for the binary to print and check.
+///
+/// Each part is what this build wrote rather than what stands in the
+/// directory, so a part it was not asked for says so instead of reading as a
+/// count of nothing. A build that wrote no cells has nothing to say about the
+/// partition either.
+#[derive(Copy, Clone, Debug)]
+pub struct BuildReport {
+    /// The cell tree, where this build wrote one.
+    pub cells: Option<TreeReport>,
+    /// The metadata sidecars written beside the tree.
+    pub meta: MetaReport,
+}
+
+impl BuildReport {
+    /// Whether every system landed in exactly one cell: the partition holds.
+    ///
+    /// True where no tree was written, there being no partition this build
+    /// could have got wrong.
+    pub fn is_consistent(&self) -> bool {
+        self.cells.is_none_or(|cells| cells.is_consistent())
+    }
+}
+
+/// What was written, part by part, with the parts left alone named as kept.
+impl fmt::Display for BuildReport {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.cells {
+            Some(cells) => write!(f, "{cells}")?,
+            None => write!(f, "cells kept")?,
+        }
+        write!(f, "; metadata: {}", self.meta)
     }
 }
 

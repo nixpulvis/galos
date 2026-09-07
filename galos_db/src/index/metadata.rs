@@ -26,6 +26,7 @@
 
 use crate::barycenters::Barycenter;
 use crate::bodies::{composition, Body, Parent, Surface};
+use crate::index::Parts;
 use crate::stars::Star;
 use crate::{orbit, Database, Result};
 use elite_journal::body::{Discovery, Material, Orbit, Spin};
@@ -68,16 +69,39 @@ const POPULATED_SELECT: &str = "SELECT address, name, \
 /// after the publish and what the build tool prints as proof each was written.
 /// `name_chunks` and `body_files` are what the publish actually touched, which
 /// is the whole point of a watch pass: a few files, not the galaxy.
-#[derive(Copy, Clone, Debug)]
+///
+/// Nothing where the publish was not asked for that part — see
+/// [`super::Parts`] — so a part left alone reads as left alone rather than as
+/// a count of nothing.
+#[derive(Copy, Clone, Debug, Default)]
 pub struct MetaReport {
-    pub populated: usize,
-    pub names: usize,
-    pub factions: usize,
+    pub populated: Option<usize>,
+    pub names: Option<usize>,
+    pub factions: Option<usize>,
     /// How many systems have a reach on record, which is every scanned one.
-    pub reaches: usize,
-    pub body_files: usize,
+    pub reaches: Option<usize>,
+    pub body_files: Option<usize>,
     /// How many of the names table's chunks were written.
     pub name_chunks: usize,
+}
+
+/// What was written, table by table, with the tables left alone named as kept.
+impl std::fmt::Display for MetaReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let said = |what: &str, count: Option<usize>| match count {
+            Some(count) => format!("{count} {what}"),
+            None => format!("{what} kept"),
+        };
+        write!(
+            f,
+            "{}, {}, {}, {}, {}",
+            said("populated", self.populated),
+            said("names", self.names),
+            said("reaches", self.reaches),
+            said("factions", self.factions),
+            said("body files", self.body_files),
+        )
+    }
 }
 
 /// The four metadata tables, held open across a watch.
@@ -254,6 +278,11 @@ impl Metadata {
     /// Write the dirty names chunks, whichever whole tables changed, and the
     /// body files of `grouped` — every system's for a full build, the changed
     /// ones' for a watch pass.
+    ///
+    /// A watch always has the four tables in hand, so what it writes is
+    /// decided by what moved rather than by what was asked for. A build that
+    /// wants one part alone holds none of them and goes through
+    /// [`write_parts`] instead.
     fn publish(
         &mut self,
         dir: &Path,
@@ -274,14 +303,69 @@ impl Metadata {
             write_meta(&source::factions_path(dir), &self.factions)?;
         }
         Ok(MetaReport {
-            populated: self.populated.len(),
-            names: self.names.len(),
-            factions: self.factions.len(),
-            reaches: self.reaches.len(),
-            body_files: write_bodies(dir, grouped, bodies_for)?,
+            populated: Some(self.populated.len()),
+            names: Some(self.names.len()),
+            factions: Some(self.factions.len()),
+            reaches: Some(self.reaches.len()),
+            body_files: Some(write_bodies(dir, grouped, bodies_for)?),
             name_chunks,
         })
     }
+}
+
+/// Derive and write the metadata parts `parts` names, and nothing else.
+///
+/// What a build asking for one part goes through, where a watch goes through
+/// [`Metadata::publish`]. The difference is what is in hand: a watch holds the
+/// tables and writes whichever moved, and this holds nothing, so each part it
+/// was asked for is read fresh and each part it was not is never read at all.
+/// The reaches and the body files share one read of every scanned thing, which
+/// is the expensive half of a build and the half neither of them can skip.
+///
+/// `names` is the other half of the read the cell tree comes out of, and is
+/// [`None`] exactly where the names table was not asked for.
+pub(super) async fn write_parts(
+    db: &Database,
+    dir: &Path,
+    names: Option<Vec<meta::NameEntry>>,
+    parts: Parts,
+) -> Result<MetaReport> {
+    let mut report = MetaReport::default();
+
+    if parts.names {
+        let entries = names.expect("the names read for the names table");
+        let mut table = NameTable::from_entries(entries);
+        report.name_chunks = table.publish(dir)?;
+        report.names = Some(table.len());
+    }
+
+    if parts.populated {
+        let populated: HashMap<i64, meta::PopulatedSystem> =
+            populated_of(db, None)
+                .await?
+                .into_iter()
+                .map(|system| (system.address, system))
+                .collect();
+        report.populated = Some(write_populated(dir, &populated)?);
+    }
+
+    if parts.wants_bodies() {
+        let grouped = bodies_of(db, None).await?;
+        if parts.reaches {
+            report.reaches = Some(write_reaches(dir, &reaches_of(&grouped))?);
+        }
+        if parts.bodies {
+            report.body_files = Some(write_bodies(dir, &grouped, None)?);
+        }
+    }
+
+    if parts.factions {
+        let factions = factions_above(db, 0).await?;
+        write_meta(&source::factions_path(dir), &factions)?;
+        report.factions = Some(factions.len());
+    }
+
+    Ok(report)
 }
 
 /// The name and place of each of `addresses` that has one.
