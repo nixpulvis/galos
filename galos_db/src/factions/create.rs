@@ -50,7 +50,16 @@ impl SystemFaction {
                 happiness = $5,
                 government = $6,
                 allegiance = $7,
-                updated_at = $8
+                updated_at = $8,
+                -- `updated_at` says when the thing happened out in the galaxy,
+                -- `received_at` says when the report reached us, and only the
+                -- second is any use to something following the feed. Set for
+                -- every report the gate below takes, even one whose figures are
+                -- identical to what is already there, so a report that changes
+                -- nothing else still says it arrived. Said in UTC rather than
+                -- left to the session's zone, because what reads it keeps its
+                -- cursor in UTC and the two have to be the one clock.
+                received_at = clock_timestamp() AT TIME ZONE 'utc'
             WHERE system_factions.updated_at < $8
             RETURNING
                 system_address,

@@ -102,7 +102,15 @@ impl Star {
                 -- The earliest claim on record wins, and `LEAST` ignores a
                 -- null, so a scan that says nothing about discovery leaves
                 -- what is there alone.
-                discovered_at = LEAST(stars.discovered_at, $28)
+                discovered_at = LEAST(stars.discovered_at, $28),
+                -- `updated_at` says when the thing happened out in the galaxy,
+                -- `received_at` says when the scan reached us, and only the
+                -- second is any use to something following the feed.
+                -- Unconditional, so a scan that changes nothing else still
+                -- says it arrived. Said in UTC rather than left to the
+                -- session's zone, because what reads it keeps its cursor in
+                -- UTC and the two have to be the one clock.
+                received_at = clock_timestamp() AT TIME ZONE 'utc'
             RETURNING *
             ",
             system_address,

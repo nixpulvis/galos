@@ -142,6 +142,11 @@
         "ordinal": 27,
         "name": "discovered_at",
         "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 28,
+        "name": "received_at",
+        "type_info": "Timestamp"
       }
     ],
     "parameters": {
@@ -176,6 +181,7 @@
       true,
       false,
       false,
+      true,
       true,
       true,
       true

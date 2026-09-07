@@ -120,6 +120,18 @@ impl Parts {
 /// throttled checkpoint is a minute of the feed read a second time.
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
 
+/// How far back a pass looks past its own cursor.
+///
+/// A row's `received_at` is stamped inside the transaction that writes it and
+/// the cursor is read outside any of them, so a report can carry a stamp older
+/// than a cursor taken before it committed and be behind the cursor by the time
+/// it can be seen. A pass looks back far enough to cover that. Re-reading a
+/// system is free: every patch is rebuilt from the current row rather than
+/// edited in place, so applying one twice lands exactly where applying it once
+/// did. The overlap is measured from each pass's own cursor and the cursor
+/// still moves to the clock the pass read, so it does not compound.
+const CURSOR_OVERLAP: Duration = Duration::from_secs(2);
+
 /// The edges between the eight Recency buckets, in days since a system was last
 /// written. Updated today lands in bucket 0, untouched for a decade in bucket 7.
 const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
@@ -241,30 +253,43 @@ fn input_from_row(
     Ok(system_input(address, [x, y, z], class.as_deref(), system_stars, bucket))
 }
 
-/// The addresses of systems changed since `since`: those whose own row moved,
-/// whose stars did, since a scan re-magnitudes a system without touching its
-/// row, and those whose factions did, since a faction is reported for a system
-/// beside its row rather than in it.
+/// The addresses of systems reported since `since`: those whose own row
+/// arrived, those whose stars did, since a scan re-magnitudes a system without
+/// touching its row, and those whose factions did, since a faction is reported
+/// for a system beside its row rather than in it.
 ///
 /// A body scan is followed through the system row the sync writes beside it
 /// rather than through `bodies` itself: that table is two million rows with no
-/// index on `updated_at`, and every scan message names the system it is in, so
-/// the row moves with the scan. Where the sync refuses such a write for being
-/// older than the row it would replace, that system's metadata converges on the
-/// next thing that touches it, every patch being rebuilt from the current row
-/// rather than edited in place.
+/// index on when a report arrived, and every scan message names the system it
+/// is in, so the row is written with the scan.
+///
+/// The column read is `received_at` and not `updated_at`, which is the trap
+/// this walked into. `updated_at` is the timestamp off the journal entry, the
+/// time the event describes out in the galaxy, and `systems.updated_at` is
+/// merged with `GREATEST` so that a late message cannot move it backwards. The
+/// cursor is the database's own clock, read when a pass looks. Comparing those
+/// two compares an event's time against the time somebody happened to look, so
+/// a report carrying an event timestamp behind the previous pass's cursor was
+/// never asked for: a star scanned seconds before a pass, a system row already
+/// carried forward by a later message, an entire journal import of timestamps
+/// years old. `received_at` is stamped by the upsert as the report is written,
+/// so this compares one clock against itself.
+///
+/// Rows that arrived before that column existed hold `NULL` and are not in the
+/// result. They are the dataset as it stood, which a full build publishes and a
+/// watch has no reason to publish again.
 async fn changed_addresses(
     db: &Database,
     since: chrono::NaiveDateTime,
 ) -> Result<Vec<i64>> {
     let rows = sqlx::query(
         "SELECT address FROM systems \
-         WHERE updated_at > $1 AND position IS NOT NULL \
+         WHERE received_at > $1 AND position IS NOT NULL \
          UNION \
-         SELECT DISTINCT system_address FROM stars WHERE updated_at > $1 \
+         SELECT DISTINCT system_address FROM stars WHERE received_at > $1 \
          UNION \
          SELECT DISTINCT system_address FROM system_factions \
-         WHERE updated_at > $1",
+         WHERE received_at > $1",
     )
     .bind(since)
     .fetch_all(&db.pool)
@@ -367,8 +392,10 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 /// every `interval` reads those changed since the previous pass, moves each in
 /// the live [`Tree`] (a handful of cells apiece, not a rebuild), and writes only
 /// the cells that changed. The clock is read before each query, so a write
-/// racing the query is asked for again next pass rather than missed, and
-/// applying it twice is idempotent.
+/// racing the query is asked for again next pass rather than missed, and each
+/// pass reads back a further [`CURSOR_OVERLAP`] to catch a write that committed
+/// after the cursor was taken. Applying one twice is idempotent, so the overlap
+/// costs a little work and no correctness.
 ///
 /// The metadata beside the cells is kept current the same pass the cells are,
 /// and the same way: `Metadata` holds the three tables open, a pass patches in
@@ -430,7 +457,7 @@ pub async fn watch(
     let mut checkpointed = Instant::now();
     loop {
         let now = db.now().await?.naive_utc();
-        let touched = changed_addresses(db, since).await?;
+        let touched = changed_addresses(db, since - CURSOR_OVERLAP).await?;
         if touched.is_empty() {
             debug!(since = %since, "polled, no changes");
         } else {
@@ -595,6 +622,13 @@ impl fmt::Display for BuildReport {
 mod tests {
     use super::*;
 
+    /// The address the write below owns, which nothing else here writes
+    ///
+    /// Well outside anything the game hands out and outside the block
+    /// `tests/write_path.rs` keeps for itself, so the two files can run at the
+    /// same time against one database.
+    const WATCHED: i64 = 900_001_000;
+
     /// Scanned stars sum to one magnitude and take the brightest's tint.
     #[test]
     fn scanned_stars_combine_and_take_the_brightest_tint() {
@@ -637,5 +671,75 @@ mod tests {
         assert_eq!(age_bucket(6), 1);
         assert_eq!(age_bucket(7), 2);
         assert_eq!(age_bucket(10_000), 7);
+    }
+
+    /// A report whose event timestamp is a year old still reads as newly
+    /// arrived
+    ///
+    /// This is the bug the `received_at` column exists for, and it fails
+    /// without it: the row's `updated_at` is the timestamp off the entry, a
+    /// year in the past, so it is never greater than a cursor taken today and
+    /// the pass that should have published the system never asked for it. A
+    /// journal import is exactly this, hours or years of entries at once, and a
+    /// live scan is the same thing by a few seconds. `received_at` is stamped
+    /// by the upsert as the report is written, so the age of what the report
+    /// describes has nothing to do with whether a watch sees it arrive.
+    ///
+    /// This needs a database of its own, named by `TEST_DATABASE_URL`, for the
+    /// reason `tests/write_path.rs` sets out: the database being filled from
+    /// EDDN is one `cargo test` must not be able to reach. It stands down when
+    /// nothing says where to write, so CI passes with no database at all.
+    #[async_std::test]
+    async fn an_old_event_timestamp_still_reads_as_newly_arrived() {
+        dotenv::dotenv().ok();
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("no TEST_DATABASE_URL: standing down");
+            return;
+        };
+        let db = Database::from_url(&url)
+            .await
+            .expect("TEST_DATABASE_URL should connect");
+
+        // Nothing else writes this address, so the row can be dropped and the
+        // write below is the only thing that could put it back.
+        for statement in [
+            "DELETE FROM stars WHERE system_address = $1",
+            "DELETE FROM system_factions WHERE system_address = $1",
+            "DELETE FROM systems WHERE address = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(WATCHED)
+                .execute(&db.pool)
+                .await
+                .expect("the address should be clearable");
+        }
+
+        // The cursor a watch would be holding: the database's clock, read
+        // before anything is written.
+        let before = db.now().await.expect("the clock should read").naive_utc();
+
+        // What a journal import looks like, and what a late message looks like
+        // with the numbers made obvious.
+        let happened = chrono::Utc::now() - chrono::TimeDelta::days(365);
+        let system = elite_journal::system::System {
+            pos: Some(elite_journal::system::Coordinate {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }),
+            ..elite_journal::system::System::new(WATCHED, "TEST WATCHED SYSTEM")
+        };
+        crate::systems::System::from_journal(&db, happened, "test", &system)
+            .await
+            .expect("the system should write");
+
+        let touched = changed_addresses(&db, before)
+            .await
+            .expect("the changed addresses should read");
+        assert!(
+            touched.contains(&WATCHED),
+            "a system reported now is changed since a cursor taken before it, \
+             whatever the age of the event it reports",
+        );
     }
 }

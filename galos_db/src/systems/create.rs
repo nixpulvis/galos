@@ -81,7 +81,15 @@ impl System {
                     ELSE COALESCE(systems.secondary_economy, $10) END,
                 updated_at = GREATEST(systems.updated_at, $11),
                 updated_by = CASE WHEN $11 >= systems.updated_at
-                    THEN $12 ELSE systems.updated_by END
+                    THEN $12 ELSE systems.updated_by END,
+                -- `updated_at` says when the thing happened out in the galaxy,
+                -- `received_at` says when the report reached us, and only the
+                -- second is any use to something following the feed.
+                -- Unconditional, so a report that changes nothing else still
+                -- says it arrived. Said in UTC rather than left to the
+                -- session's zone, because what reads it keeps its cursor in
+                -- UTC and the two have to be the one clock.
+                received_at = clock_timestamp() AT TIME ZONE 'utc'
             "#,
             address as i64,
             name,
@@ -224,7 +232,8 @@ impl System {
                     ELSE COALESCE(systems.secondary_economy, $9) END,
                 updated_at = GREATEST(systems.updated_at, $10),
                 updated_by = CASE WHEN $10 >= systems.updated_at
-                    THEN $11 ELSE systems.updated_by END
+                    THEN $11 ELSE systems.updated_by END,
+                received_at = clock_timestamp() AT TIME ZONE 'utc'
             "#,
             system.address as i64,
             system.name,
@@ -316,7 +325,8 @@ impl System {
                         COALESCE($4, systems.non_body_count),
                     updated_at = GREATEST(systems.updated_at, $5),
                     updated_by = CASE WHEN $5 >= systems.updated_at
-                        THEN $6 ELSE systems.updated_by END
+                        THEN $6 ELSE systems.updated_by END,
+                    received_at = clock_timestamp() AT TIME ZONE 'utc'
                 WHERE address = $1
                 "#,
                 address,
@@ -360,7 +370,8 @@ impl System {
                     COALESCE($5, systems.non_body_count),
                 updated_at = GREATEST(systems.updated_at, $6),
                 updated_by = CASE WHEN $6 >= systems.updated_at
-                    THEN $7 ELSE systems.updated_by END
+                    THEN $7 ELSE systems.updated_by END,
+                received_at = clock_timestamp() AT TIME ZONE 'utc'
             "#,
             address,
             name,
