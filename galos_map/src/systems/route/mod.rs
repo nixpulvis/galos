@@ -28,7 +28,6 @@ pub fn plugin(app: &mut App) {
     );
     // Where the trip is asked for rather than where its legs land, which is
     // the whole point of it: see `frame_trip`.
-    app.init_resource::<Trip>();
     app.init_resource::<Flying>();
     app.add_systems(Update, frame_trip.in_set(MapSet::Fetch));
     // After the lines have been cut back to what is on the map, so the legs
@@ -99,13 +98,6 @@ impl Path {
         })
     }
 }
-
-/// The stops the map is showing a trip through, in the order flown
-///
-/// What was last asked for, kept because a trip is several routes and nothing
-/// else says which of the routes held are one trip.
-#[derive(Resource, Default)]
-pub(crate) struct Trip(pub(crate) Vec<String>);
 
 /// What every trip on the map comes to, flown, by the trip's own name
 ///
@@ -418,14 +410,11 @@ impl PlottedRoute {
 fn frame_trip(
     mut asked: MessageReader<Search>,
     names: Res<Names>,
-    mut trip: ResMut<Trip>,
     mut camera: MessageWriter<MoveCamera>,
     mut spyglass: ResMut<Spyglass>,
 ) {
     for ask in asked.read() {
         let Search::Route { stops, .. } = ask else { continue };
-        // Which routes held are one trip, for whatever adds it up later.
-        trip.0 = stops.clone();
         // Whatever is on record. A stop the names table does not know is a
         // leg that will come back with nothing, and the form is already
         // saying so; the trip is still framed over the stops that are real.
@@ -469,7 +458,6 @@ fn frame_trip(
 /// leg's; see [`frame_trip`].
 fn plotted(
     mut plotted: MessageReader<PlottedRoute>,
-    trip: Res<Trip>,
     mut filters: ResMut<Filters>,
     mut selected: ResMut<SelectedFilter>,
 ) {
@@ -490,7 +478,7 @@ fn plotted(
         // at once and land as each finishes, which is an order nobody chose:
         // a trip picked out SOL, LAVE, DISO reads as its three rows, and they
         // have to be those three in that order or the trip is a set again.
-        let at = placed_at(&route.label, &trip.0, &filters);
+        let at = placed_at(&route.filter(), &filters);
         filters.insert(at, route.filter());
     }
 }
@@ -502,34 +490,44 @@ fn plotted(
 /// route from some earlier trip -- is left where it is: the trip orders its
 /// own legs and says nothing about anyone else's.
 ///
-/// The end of the list for a route that is no leg of this trip, which is what
-/// [`Filters::add`] would have done with it.
-fn placed_at(label: &str, stops: &[String], filters: &Filters) -> usize {
-    let Some(leg) = leg_of(label, stops) else {
-        return filters.iter().count();
-    };
+/// The end of the list for a route belonging to no trip, which is what
+/// [`Filters::add`] would have done with it: a route asked for on its own has
+/// nothing to be in order with.
+///
+/// Read off the route itself. A leg carries the trip it belongs to, and a
+/// trip is named for its stops, so the stops and which leg this is are both
+/// in hand without anything else being asked.
+fn placed_at(leg: &Filter, filters: &Filters) -> usize {
+    let last = filters.iter().count();
+    let Some((trip, at)) = leg_of(leg) else { return last };
 
     filters
         .iter()
-        .position(|entry| match &entry.filter {
-            Filter::Route { label, .. } => {
-                leg_of(label, stops).is_some_and(|held| held > leg)
-            }
-            _ => false,
+        .position(|entry| {
+            leg_of(&entry.filter)
+                .is_some_and(|(held, after)| held == trip && after > at)
         })
-        .unwrap_or(filters.iter().count())
+        .unwrap_or(last)
 }
 
-/// Which leg of a trip through `stops` a route named `label` is, if it is one
+/// Which trip a route is a leg of, and which leg of it it is
 ///
-/// Matched on the pair it runs between, spelled either way: the trip holds
-/// what the user typed and a line is named as the rows name it.
-fn leg_of(label: &str, stops: &[String]) -> Option<usize> {
-    let (start, end) = label.split_once(crate::ui::ARROW)?;
+/// A trip is named for its stops joined by [`crate::ui::ARROW`] and a leg for
+/// its two ends the same way, so which leg it is, is where its own pair falls
+/// among them. Spelled either way: the trip holds what the user typed and a
+/// line is named as the rows name it.
+///
+/// Nothing for a route belonging to no trip, and nothing for one whose ends
+/// are not a pair of its trip's stops.
+fn leg_of(leg: &Filter) -> Option<(&str, usize)> {
+    let trip = leg.trip()?;
+    let (start, end) = leg.name().split_once(crate::ui::ARROW)?;
+    let stops: Vec<&str> = trip.split(crate::ui::ARROW).collect();
+    let at = stops.windows(2).position(|pair| {
+        start.eq_ignore_ascii_case(pair[0]) && end.eq_ignore_ascii_case(pair[1])
+    })?;
 
-    stops.windows(2).position(|leg| {
-        start.eq_ignore_ascii_case(&leg[0]) && end.eq_ignore_ascii_case(&leg[1])
-    })
+    Some((trip, at))
 }
 
 /// Keep each line answering to the row that names it
@@ -1053,7 +1051,6 @@ mod tests {
         app.add_message::<Search>();
         app.add_message::<MoveCamera>();
         app.insert_resource(Names::reaching(entries, Vec::new()));
-        app.init_resource::<Trip>();
         app.insert_resource(Spyglass {
             fetch: true,
             radius: Spyglass::OPENING,
@@ -1112,10 +1109,8 @@ mod tests {
         app.add_message::<PlottedRoute>();
         app.init_resource::<Filters>();
         app.init_resource::<SelectedFilter>();
-        app.insert_resource(Trip(
-            stops.iter().map(|stop| stop.to_string()).collect(),
-        ));
         app.add_systems(Update, plotted);
+        let trip = stops.join(crate::ui::ARROW);
 
         // Backwards, which is as good an order as any other: what decides it
         // is which walk finished first.
@@ -1129,7 +1124,7 @@ mod tests {
                 ),
                 systems: vec![leg as i64],
                 range: "10".to_owned(),
-                trip: None,
+                trip: Some(trip.clone()),
             });
             app.update();
         }
@@ -1154,15 +1149,19 @@ mod tests {
         app.add_message::<PlottedRoute>();
         app.init_resource::<Filters>();
         app.init_resource::<SelectedFilter>();
-        app.insert_resource(Trip(vec!["SOL".to_owned(), "LAVE".to_owned()]));
         app.add_systems(Update, plotted);
 
-        for label in ["SOL -> LAVE", "WOLF 359 -> SIRIUS"] {
+        // The first is a leg of a trip and the second is a route of its own,
+        // which is what a trip has nothing to say about.
+        for (label, trip) in [
+            ("SOL -> LAVE", Some("SOL -> LAVE -> DISO".to_owned())),
+            ("WOLF 359 -> SIRIUS", None),
+        ] {
             app.world_mut().write_message(PlottedRoute {
                 label: label.to_owned(),
                 systems: vec![1],
                 range: "10".to_owned(),
-                trip: None,
+                trip,
             });
             app.update();
         }
@@ -1431,7 +1430,6 @@ mod tests {
             follow_camera: false,
         });
         app.insert_resource(SelectedFilter(Some(asking(&[1, 2]))));
-        app.init_resource::<Trip>();
         app.add_systems(Update, plotted);
 
         app.world_mut().write_message(PlottedRoute {

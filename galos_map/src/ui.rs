@@ -2972,7 +2972,13 @@ impl Section {
     /// separately, by whoever has the legs to add up.
     fn said(&self, count: usize) -> String {
         match self {
-            Section::Filters => format!("{count} filters"),
+            Section::Filters => {
+                if count == 1 {
+                    "1 filter".to_owned()
+                } else {
+                    format!("{count} filters")
+                }
+            }
             Section::Trip(trip) => trip.clone(),
             Section::Routes => {
                 if count == 1 {
