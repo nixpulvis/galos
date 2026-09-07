@@ -1245,7 +1245,7 @@ fn admitted(
         .button(if filter.ordered() { "Copy Route" } else { "Copy List" })
         .clicked()
     {
-        ui.ctx().copy_text(as_text(&order));
+        ui.ctx().copy_text(as_text(&order, legs));
     }
     ui.add_space(MARGIN);
 
@@ -1281,33 +1281,30 @@ fn admitted(
                 }
             };
 
-        if legs.is_empty() {
-            for (at, (system, away)) in order.into_iter().enumerate() {
-                line_of(ui, at, system, away);
-            }
-            return;
-        }
-
-        // A trip, listed leg by leg. One run of forty systems says nothing
+        // A trip is listed leg by leg. One run of forty systems says nothing
         // about which of them the user asked for, so each leg is named and
         // its stops drawn in under it -- the same reading the bar's rows
         // give, in the panel that is about the whole of it.
+        //
+        // The grouping is `by_leg`'s, which is also what the copying reads,
+        // so what is drawn and what is taken away are the one list.
         let mut at = 0;
-        for leg in legs {
-            let Filter::Route { systems: hops, .. } = leg else { continue };
-            // The stop a leg lands on is the stop the next sets out from and
-            // stands in the joined list once, so every leg after the first
-            // begins on the one before's last.
-            let takes = hops.len().saturating_sub(usize::from(at > 0));
-            let Some(stops) = order.get(at..at + takes) else { break };
-
-            ui.label(egui::RichText::new(leg.name()).strong());
-            ui.indent(("leg", leg.name()), |ui| {
+        for (named, stops) in by_leg(&order, legs) {
+            if let Some(named) = named {
+                ui.label(egui::RichText::new(named).strong());
+            }
+            let mut rows = |ui: &mut Ui| {
                 for (step, (system, away)) in stops.iter().enumerate() {
                     line_of(ui, at + step, system, *away);
                 }
-            });
-            at += takes;
+            };
+            match named {
+                Some(named) => {
+                    ui.indent(("leg", named), |ui| rows(ui));
+                }
+                None => rows(ui),
+            }
+            at += stops.len();
         }
     });
 }
@@ -1427,6 +1424,39 @@ fn flying(legs: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
     })
 }
 
+/// How a trip's list breaks into its legs
+///
+/// Each leg's name and the stops that fall under it, in the order flown. One
+/// group named for nothing where there are no legs, which is every filter but
+/// a trip: a list that is not a trip's is one list.
+///
+/// The stop a leg lands on is the stop the next sets out from and stands in
+/// the joined list once, so every leg after the first begins on the one
+/// before's last.
+///
+/// Here rather than in the drawing because the copying wants it too, and a
+/// list drawn in one grouping and copied in another would be two answers to
+/// the one question.
+fn by_leg<'a, 'l>(
+    order: &'a [(&'a System, Option<f64>)],
+    legs: &'l [Filter],
+) -> Vec<(Option<&'l str>, &'a [(&'a System, Option<f64>)])> {
+    if legs.is_empty() {
+        return vec![(None, order)];
+    }
+
+    let mut groups = Vec::with_capacity(legs.len());
+    let mut at = 0;
+    for leg in legs {
+        let Filter::Route { systems: hops, .. } = leg else { continue };
+        let takes = hops.len().saturating_sub(usize::from(at > 0));
+        let Some(stops) = order.get(at..at + takes) else { break };
+        groups.push((Some(leg.name()), stops));
+        at += takes;
+    }
+    groups
+}
+
 /// A list of systems as text, one to a line, as the panel draws them
 ///
 /// Each line is the name and, where the list gives one, the distance the
@@ -1434,15 +1464,27 @@ fn flying(legs: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
 /// far off it is from the camera otherwise. Set apart by a tab, so what is
 /// pasted into a spreadsheet lands in two columns and what is pasted anywhere
 /// else still reads as one line about one system.
-fn as_text(order: &[(&System, Option<f64>)]) -> String {
-    order
-        .iter()
-        .map(|(system, away)| match away {
-            Some(away) => format!("{}\t{away:.2} Ly", system.name),
-            None => system.name.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+fn as_text(order: &[(&System, Option<f64>)], legs: &[Filter]) -> String {
+    let mut said: Vec<String> = Vec::new();
+    for (named, stops) in by_leg(order, legs) {
+        // A trip's legs are named and their stops drawn in under them, so the
+        // text says the same. Two spaces rather than a tab, the tab already
+        // standing between a name and the distance after it.
+        let indent = if named.is_some() { "  " } else { "" };
+        if let Some(named) = named {
+            said.push(named.to_owned());
+        }
+        for (system, away) in stops {
+            said.push(match away {
+                Some(away) => {
+                    format!("{indent}{}\t{away:.2} Ly", system.name)
+                }
+                None => format!("{indent}{}", system.name),
+            });
+        }
+    }
+
+    said.join("\n")
 }
 
 /// How far a field written under a header sits in from the ones above it
@@ -2639,7 +2681,7 @@ mod tests {
         );
         let order = [(&sol, None), (&wolf, Some(7.78))];
 
-        assert_eq!(as_text(&order), "SOL\nWOLF 359\t7.78 Ly");
+        assert_eq!(as_text(&order, &[]), "SOL\nWOLF 359\t7.78 Ly");
     }
 
     /// What a filter's panel offers to copy is named for what the list is
