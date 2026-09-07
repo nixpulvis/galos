@@ -9,7 +9,7 @@ use crate::systems::filter::{Filter, Filters};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
-use bevy::platform::collections::{HashMap, HashSet};
+use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
@@ -28,14 +28,7 @@ pub fn plugin(app: &mut App) {
     );
     // Where the trip is asked for rather than where its legs land, which is
     // the whole point of it: see `frame_trip`.
-    app.init_resource::<Flying>();
     app.add_systems(Update, frame_trip.in_set(MapSet::Fetch));
-    // After the lines have been cut back to what is on the map, so the legs
-    // it adds up are the legs that are drawn.
-    app.add_systems(
-        Update,
-        tally_trips.in_set(MapSet::Present).after(follow_filters),
-    );
     // Once the lines and the filters have settled, so what is drawn faintly
     // this frame answers what is being asked this frame.
     app.add_systems(
@@ -82,69 +75,6 @@ impl Path {
     /// The line as it stands, whole
     pub(super) fn whole(&self) -> Vec<Vec3> {
         self.stops.iter().map(|(_, at)| *at).collect()
-    }
-
-    /// How far the whole leg is flown, and its longest single jump, in light
-    /// years
-    ///
-    /// Off the line's own points, which are the hops the router came back
-    /// with. The points are metres from the line's midpoint, that being what
-    /// a vertex is measured in; light years are what the map states.
-    fn flown(&self) -> (f64, f64) {
-        self.stops.windows(2).fold((0., 0.), |(total, longest), jump| {
-            let far = (jump[1].1 - jump[0].1).as_dvec3().length()
-                / crate::space::LIGHT_YEAR;
-            (total + far, longest.max(far))
-        })
-    }
-}
-
-/// What every trip on the map comes to, flown, by the trip's own name
-///
-/// Read by the row the bar stands over a trip's legs. A table rather than one
-/// answer, several trips being plotted at once and each row wanting its own.
-#[derive(Resource, Default)]
-pub(crate) struct Flying(pub(crate) HashMap<String, Flown>);
-
-/// A trip added up over the legs that have landed
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Flown {
-    /// How many of its legs are drawn
-    pub(crate) legs: usize,
-    /// How far the whole of it is flown, in light years
-    pub(crate) total: f64,
-    /// The longest single jump in any of its legs, in light years
-    ///
-    /// The one figure that says whether the ship as it stands can fly the
-    /// trip: the worst of the legs decides, and each leg's own panel says
-    /// only its own.
-    pub(crate) longest: f64,
-}
-
-/// Add each trip up over its legs
-///
-/// Off the lines themselves, so a leg counts once it is drawn and stops
-/// counting when its row is closed. A leg says which trip it belongs to, so
-/// nothing here needs to know what was asked for: a trip is whatever legs
-/// name it.
-///
-/// Counted afresh each frame rather than when a leg lands. Legs land one at a
-/// time and a line closed takes its leg back out, and a total that stood
-/// after the leg it was measured from had gone would be a figure about
-/// nothing.
-fn tally_trips(lines: Query<(&Route, &Path)>, mut flying: ResMut<Flying>) {
-    let mut flown: HashMap<String, Flown> = HashMap::default();
-    for (route, path) in lines.iter() {
-        let Some(trip) = route.0.trip() else { continue };
-        let (total, longest) = path.flown();
-        let so_far = flown.entry(trip.to_owned()).or_default();
-        so_far.legs += 1;
-        so_far.total += total;
-        so_far.longest = so_far.longest.max(longest);
-    }
-
-    if flying.0 != flown {
-        flying.0 = flown;
     }
 }
 

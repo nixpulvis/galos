@@ -28,9 +28,9 @@ use crate::systems::info::lasting;
 use crate::systems::labels::ShowBodyNames;
 use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
+use crate::systems::route::SelectedFilter;
 use crate::systems::route::graph::Routing;
 use crate::systems::route::tour::Start;
-use crate::systems::route::{Flying, SelectedFilter};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
 use crate::systems::spawn::{
@@ -689,8 +689,6 @@ pub(crate) struct FilterBar<'w, 's> {
     /// Only a route does anything with it today; the rest are picked out and
     /// nothing yet reads that they were.
     chosen: ResMut<'w, SelectedFilter>,
-    /// What each trip on the map comes to, flown, for the row over its legs
-    flying: Res<'w, Flying>,
     /// What a filter's systems are, for framing them
     ///
     /// The two tables `Filter::systems` answers from. Read here rather than
@@ -1448,8 +1446,7 @@ fn main_bar(
                         }
                         None => filter.active.bypass_change_detection(),
                     };
-                    row_ask =
-                        applied(ui, rows, &filter.flying, panels, &mut place);
+                    row_ask = applied(ui, rows, panels, &mut place);
                     // Two numbers only where there is a sky behind what is
                     // picked out and the user can see it: something has to be
                     // excluded, and what is excluded has to be drawn.
@@ -1527,8 +1524,8 @@ fn main_bar(
     }
     // A panel about the whole trip, which reads as a route's panel because
     // that is what a trip is: one line through every stop, in order.
-    if let Some(described) = row_ask.described {
-        panels.open_filter(described);
+    if let Some((whole, legs)) = row_ask.described {
+        panels.open_trip(whole, legs);
     }
     // And where the camera goes to see one whole. Every system the filter
     // admits, not only the ones the map has dragged in, since where a faction
@@ -2708,7 +2705,6 @@ fn route_section(
 fn applied(
     ui: &mut Ui,
     filters: &mut Filters,
-    flying: &Flying,
     panels: &mut Panels,
     place: &mut usize,
 ) -> RowAsk {
@@ -2742,7 +2738,6 @@ fn applied(
             && let Some(asked) = whole_set(
                 ui,
                 &section.said(rows.len()),
-                section.under(flying),
                 section.on(filters),
                 matches!(section, Section::Trip(_)),
                 place,
@@ -2798,7 +2793,13 @@ fn applied(
         // The trip as one route, which is what a panel about it is about. Its
         // legs are what it is made of and each has a panel of its own.
         Some((FilterAction::Describe, Section::Trip(trip), rows)) => {
-            ask.described = as_one(&trip, &rows, filters);
+            let legs: Vec<Filter> = rows
+                .iter()
+                .filter_map(|index| filters.get(*index))
+                .map(|active| active.filter.clone())
+                .collect();
+            ask.described =
+                as_one(&trip, &rows, filters).map(|whole| (whole, legs));
         }
         Some((FilterAction::Describe, ..)) => {}
         Some((FilterAction::LetGo, _, rows)) => filters.clear(&rows),
@@ -2872,8 +2873,11 @@ struct RowAsk {
     chosen: Option<Filter>,
     /// The filter a double click asked to see the whole of
     framed: Option<Filter>,
-    /// The trip a section's row asked for a panel about, as one route
-    described: Option<Filter>,
+    /// The trip a section's row asked for a panel about
+    ///
+    /// The route it is flown as, and the legs it is made of: the first is
+    /// what the panel is about and the second is how its list is broken up.
+    described: Option<(Filter, Vec<Filter>)>,
     /// Every filter of a section, where its own row asked to see them all
     ///
     /// Apart from [`Self::framed`] because it is a set rather than one of
@@ -3005,38 +3009,6 @@ impl Section {
     /// between them: one fewer than the stops, and one for every arrow.
     fn legs(trip: &str) -> usize {
         trip.matches(ARROW).count()
-    }
-
-    /// What the section's row says under its name, if anything
-    ///
-    /// A trip's figures: how far the whole of it is flown, and the longest
-    /// single jump in any of its legs, which is the one figure that says
-    /// whether the ship as it stands can make the trip at all -- each leg's
-    /// own row says only its own, and the worst of them decides.
-    ///
-    /// While legs are still landing it says how far along they are. A total
-    /// over three legs of five is not what the trip comes to and would read
-    /// as though it were.
-    ///
-    /// Nothing for the other sections. A count of filters or of loose routes
-    /// is a count of things that share nothing but their kind, and there is
-    /// nothing to add up across them.
-    fn under(&self, flying: &Flying) -> Option<String> {
-        let Section::Trip(trip) = self else { return None };
-        let flown = flying.0.get(trip)?;
-        let legs = Section::legs(trip);
-
-        if flown.legs < legs {
-            return Some(format!(
-                "{} of {legs} legs: {:.1} Ly so far",
-                flown.legs, flown.total
-            ));
-        }
-
-        Some(format!(
-            "{:.1} Ly flown, longest jump {:.1} Ly",
-            flown.total, flown.longest
-        ))
     }
 
     /// What a row standing over `count` of them says
@@ -3349,7 +3321,6 @@ enum FilterAction {
 fn whole_set(
     ui: &mut Ui,
     said: &str,
-    under: Option<String>,
     on: bool,
     describes: bool,
     place: &mut usize,
@@ -3419,13 +3390,6 @@ fn whole_set(
         name,
         egui::Color32::PLACEHOLDER,
     );
-
-    // What the whole of it comes to, under the name rather than beside it: a
-    // trip's name is its stops and runs the width of the bar on its own.
-    // Only a trip has one -- a count of filters comes to nothing.
-    if let Some(under) = under {
-        ui.label(egui::RichText::new(under).weak());
-    }
 
     let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
 
@@ -5080,13 +5044,7 @@ mod tests {
                 &mut filters,
                 &mut place,
             );
-            applied(
-                ui,
-                &mut filters,
-                &Flying::default(),
-                &mut panels,
-                &mut place,
-            );
+            applied(ui, &mut filters, &mut panels, &mut place);
         });
 
         assert!(said.is_empty(), "{said:?}");
@@ -5214,13 +5172,7 @@ mod tests {
                 &mut applied_to,
                 &mut place,
             );
-            applied(
-                ui,
-                &mut applied_to,
-                &Flying::default(),
-                &mut panels,
-                &mut place,
-            );
+            applied(ui, &mut applied_to, &mut panels, &mut place);
         }
     }
 
@@ -5374,7 +5326,7 @@ mod tests {
                 });
             }
             let mut panels = Panels::default();
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         }
     }
 
@@ -5388,7 +5340,7 @@ mod tests {
                     .add(a_route(&(0..=held as i64 + 1).collect::<Vec<_>>()));
             }
             let mut panels = Panels::default();
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         }
     }
 
@@ -5492,7 +5444,7 @@ mod tests {
             let mut standing =
                 standstill.rows(filters).unwrap_or_else(|| filters.clone());
             let mut panels = Panels::default();
-            applied(ui, &mut standing, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut standing, &mut panels, &mut 0);
         })
     }
 
@@ -5614,7 +5566,7 @@ mod tests {
                 });
             }
             let mut panels = Panels::default();
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
 
             let mut watch = Watch(1);
             let mut active = Filters::default();
@@ -5666,12 +5618,12 @@ mod tests {
         filters.add(Filter::Faction { id: 1, name: "Empire".into() });
         let mut panels = Panels::default();
         let alone = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         filters.add(Filter::Faction { id: 2, name: "Federation".into() });
         let both = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         assert!(
@@ -5706,7 +5658,7 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         assert!(said.contains(&"2 filters".to_owned()), "{said:?}");
@@ -5725,7 +5677,7 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         assert!(!said.iter().any(|line| line.contains("route")), "{said:?}");
@@ -5743,7 +5695,7 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         assert!(said.contains(&"2 routes".to_owned()), "{said:?}");
@@ -5762,7 +5714,7 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         let faction = said.iter().position(|line| line == "Empire");
@@ -5910,7 +5862,7 @@ mod tests {
         let ctx = crate::tests::context();
         let mut drawn = |filters: &mut Filters| {
             let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                applied(ui, filters, &Flying::default(), &mut panels, &mut 0);
+                applied(ui, filters, &mut panels, &mut 0);
             });
             let mut lefts = Vec::new();
             for shape in &output.shapes {
@@ -5939,44 +5891,21 @@ mod tests {
         assert_eq!(left_of("WOLF 359 -> SIRIUS"), under, "{lefts:?}");
     }
 
-    /// A trip's row is named for the trip and says what it comes to
+    /// A trip's row is named for how many legs it is
     ///
-    /// The whole distance and the longest jump in any leg, which is the one
-    /// figure saying whether the ship can make the trip. While legs are still
-    /// landing it says how far along they are instead: a total over two legs
-    /// of three is not what the trip comes to.
+    /// Not for its stops: they are the rows under it, named there and in that
+    /// order, and a trip through six of them spelled out runs longer than the
+    /// bar is wide. What the whole of it comes to is the panel's to say.
     #[test]
-    fn a_trips_row_says_what_the_whole_of_it_comes_to() {
-        let trip = Section::Trip("SOL -> LAVE -> DISO".to_owned());
-        let mut flying = Flying::default();
-
-        // Named for how many legs it is, not for its stops: the stops are
-        // the rows under it and a trip through six of them spelled out runs
-        // longer than the bar is wide.
-        assert_eq!(trip.said(2), "2 Leg Route");
-        assert_eq!(trip.under(&flying), None, "nothing landed yet");
-
-        flying.0.insert(
-            "SOL -> LAVE -> DISO".to_owned(),
-            crate::systems::route::Flown { legs: 1, total: 12., longest: 8. },
+    fn a_trips_row_is_named_for_its_legs() {
+        assert_eq!(
+            Section::Trip("SOL -> LAVE".to_owned()).said(1),
+            "1 Leg Route"
         );
         assert_eq!(
-            trip.under(&flying),
-            Some("1 of 2 legs: 12.0 Ly so far".into())
+            Section::Trip("SOL -> LAVE -> DISO".to_owned()).said(2),
+            "2 Leg Route"
         );
-
-        flying.0.insert(
-            "SOL -> LAVE -> DISO".to_owned(),
-            crate::systems::route::Flown { legs: 2, total: 30., longest: 11. },
-        );
-        assert_eq!(
-            trip.under(&flying),
-            Some("30.0 Ly flown, longest jump 11.0 Ly".into())
-        );
-
-        // The other sections have nothing to add up across them.
-        assert_eq!(Section::Filters.under(&flying), None);
-        assert_eq!(Section::Routes.under(&flying), None);
     }
 
     /// A section's own row reads the same way as the rows under it
@@ -6057,7 +5986,7 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         assert!(said.contains(&"4 hops".to_owned()), "{said:?}");
@@ -6082,7 +6011,7 @@ mod tests {
         let said = words(|ui| {
             // Too narrow for the name, whatever the bar is set to.
             ui.set_max_width(200.);
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         let name = said
@@ -6115,7 +6044,7 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = words(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         assert!(said.contains(&"1 hop".to_owned()), "{said:?}");
@@ -6513,7 +6442,7 @@ mod tests {
         let mut panels = Panels::default();
 
         let said = complaints(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
 
         assert!(said.is_empty(), "{said:?}");
@@ -6772,7 +6701,7 @@ mod tests {
         let mut panels = Panels::default();
 
         painted(|ui| {
-            applied(ui, &mut filters, &Flying::default(), &mut panels, &mut 0);
+            applied(ui, &mut filters, &mut panels, &mut 0);
         });
     }
 

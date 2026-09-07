@@ -219,7 +219,12 @@ enum Subject {
     /// and are nothing at all until they arrive. They come from the database
     /// rather than from the map, since the point of the list is to say where
     /// a faction is, and the map holds only what the spyglass has reached.
-    Filter { filter: Filter, systems: Option<Vec<System>> },
+    ///
+    /// `legs` is what a trip is made of, empty for everything else. A trip is
+    /// one filter here -- the route it is flown as, every stop in order --
+    /// and the legs are how its list is broken up: each named, with its own
+    /// stops drawn in under it.
+    Filter { filter: Filter, legs: Vec<Filter>, systems: Option<Vec<System>> },
 }
 
 impl Subject {
@@ -280,7 +285,17 @@ impl Panels {
 
     /// Open a panel listing what `filter` admits
     pub fn open_filter(&mut self, filter: Filter) {
-        self.push(Subject::Filter { filter, systems: None });
+        self.push(Subject::Filter { filter, legs: Vec::new(), systems: None });
+    }
+
+    /// Say what a whole trip holds, leg by leg
+    ///
+    /// `whole` is the route the trip is flown as and `legs` are the routes it
+    /// is made of, in the order they are flown. One panel about the trip
+    /// rather than one per leg: each leg has a row of its own in the bar and
+    /// a panel of its own behind it.
+    pub fn open_trip(&mut self, whole: Filter, legs: Vec<Filter>) {
+        self.push(Subject::Filter { filter: whole, legs, systems: None });
     }
 
     fn push(&mut self, subject: Subject) {
@@ -435,7 +450,9 @@ fn fill_filters(
         .open
         .iter()
         .filter_map(|panel| match &panel.subject {
-            Subject::Filter { filter, systems: None } => Some(filter.clone()),
+            Subject::Filter { filter, systems: None, .. } => {
+                Some(filter.clone())
+            }
             _ => None,
         })
         .collect();
@@ -443,7 +460,7 @@ fn fill_filters(
     for filter in unfilled {
         let found = fetch(&populated, &names, &filter);
         for panel in &mut panels.open {
-            if let Subject::Filter { filter: shown, systems } =
+            if let Subject::Filter { filter: shown, systems, .. } =
                 &mut panel.subject
                 && *shown == filter
             {
@@ -574,9 +591,10 @@ fn panels(
                 Subject::Body(body) => mark_if_wound(&mut clock, |clock| {
                     body_described(ui, body, clock)
                 }),
-                Subject::Filter { filter, systems } => admitted(
+                Subject::Filter { filter, legs, systems } => admitted(
                     ui,
                     filter,
+                    legs,
                     systems.as_deref(),
                     center,
                     &mut picked,
@@ -1124,6 +1142,7 @@ fn summary(filter: &Filter, count: usize) -> String {
 fn admitted(
     ui: &mut Ui,
     filter: &Filter,
+    legs: &[Filter],
     systems: Option<&[System]>,
     center: Option<DVec3>,
     picked: &mut Option<(System, bool)>,
@@ -1233,33 +1252,62 @@ fn admitted(
     // Named for the filter it lists, since a panel stands per filter and two
     // of them open at once are two lists, each scrolled to its own place.
     crate::ui::scrolling(ui, line * LISTED as f32, filter, |ui| {
-        for (index, (system, away)) in order.into_iter().enumerate() {
-            // Said as well as sorted by, where it is what sorts them. A list
-            // in an order nobody can see reads as an order nobody chose.
-            let trailing = away.map(|away| format!("{away:.1} Ly"));
-            // Keyed by place rather than by which system stands there. The
-            // list is put in order afresh every frame, so a row holds its
-            // rectangle while the system in it changes as the camera moves,
-            // which is the one thing egui reads as a widget taking another's
-            // state.
-            let asked = crate::ui::system_line(
-                ui,
-                &system.name,
-                trailing,
-                ("admitted", index),
-            );
-            match asked {
-                Some(SystemAction::Select { gathering }) => {
-                    *picked = Some((system.clone(), gathering))
+        // One row, wherever in the list it stands. `at` keys it by place
+        // rather than by which system stands there: the list is put in order
+        // afresh every frame, so a row holds its rectangle while the system
+        // in it changes as the camera moves, which is the one thing egui
+        // reads as a widget taking another's state.
+        let mut line_of =
+            |ui: &mut Ui, at: usize, system: &System, away: Option<f64>| {
+                // Said as well as sorted by, where it is what sorts them. A list
+                // in an order nobody can see reads as an order nobody chose.
+                let trailing = away.map(|away| format!("{away:.1} Ly"));
+                match crate::ui::system_line(
+                    ui,
+                    &system.name,
+                    trailing,
+                    ("admitted", at),
+                ) {
+                    Some(SystemAction::Select { gathering }) => {
+                        *picked = Some((system.clone(), gathering))
+                    }
+                    Some(SystemAction::Travel) => {
+                        *centered = Some(DVec3::from(system.position))
+                    }
+                    Some(SystemAction::Describe) => {
+                        *described = Some(system.clone())
+                    }
+                    None => {}
                 }
-                Some(SystemAction::Travel) => {
-                    *centered = Some(DVec3::from(system.position))
-                }
-                Some(SystemAction::Describe) => {
-                    *described = Some(system.clone())
-                }
-                None => {}
+            };
+
+        if legs.is_empty() {
+            for (at, (system, away)) in order.into_iter().enumerate() {
+                line_of(ui, at, system, away);
             }
+            return;
+        }
+
+        // A trip, listed leg by leg. One run of forty systems says nothing
+        // about which of them the user asked for, so each leg is named and
+        // its stops drawn in under it -- the same reading the bar's rows
+        // give, in the panel that is about the whole of it.
+        let mut at = 0;
+        for leg in legs {
+            let Filter::Route { systems: hops, .. } = leg else { continue };
+            // The stop a leg lands on is the stop the next sets out from and
+            // stands in the joined list once, so every leg after the first
+            // begins on the one before's last.
+            let takes = hops.len().saturating_sub(usize::from(at > 0));
+            let Some(stops) = order.get(at..at + takes) else { break };
+
+            ui.label(egui::RichText::new(leg.name()).strong());
+            ui.indent(("leg", leg.name()), |ui| {
+                for (step, (system, away)) in stops.iter().enumerate() {
+                    line_of(ui, at + step, system, *away);
+                }
+            });
+            at += takes;
         }
     });
 }
@@ -1887,6 +1935,7 @@ mod tests {
             admitted(
                 ui,
                 &faction(7),
+                &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -1910,6 +1959,7 @@ mod tests {
             admitted(
                 ui,
                 &route,
+                &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -2164,6 +2214,7 @@ mod tests {
             admitted(
                 ui,
                 &route,
+                &[],
                 Some(&systems),
                 Some(DVec3::new(100., 0., 0.)),
                 &mut None,
@@ -2208,6 +2259,7 @@ mod tests {
             admitted(
                 ui,
                 &faction(7),
+                &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -2293,6 +2345,7 @@ mod tests {
             admitted(
                 ui,
                 &plotted_for("SOL -> BARNARD", "10"),
+                &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -2517,6 +2570,62 @@ mod tests {
         );
     }
 
+    /// A trip's panel lists it leg by leg, each leg's stops under its name
+    ///
+    /// One run of forty systems says nothing about which of them the user
+    /// asked for. The figures above are still the whole trip's, and the seam
+    /// stands in one leg only: the stop a leg lands on is where the next sets
+    /// out from, and naming it twice would count a jump from a system to
+    /// itself.
+    #[test]
+    fn a_trips_panel_lists_it_leg_by_leg() {
+        let held = [
+            placed(1, [0., 0., 0.]),
+            placed(2, [5., 0., 0.]),
+            placed(3, [17., 0., 0.]),
+            placed(4, [20., 0., 0.]),
+            placed(5, [26., 0., 0.]),
+        ];
+        let leg = |label: &str, systems: Vec<i64>| Filter::Route {
+            label: label.to_owned(),
+            systems,
+            range: "12".to_owned(),
+            trip: Some("A -> C -> E".to_owned()),
+        };
+        let legs = vec![
+            leg("FIRST LEG", vec![1, 2, 3]),
+            leg("SECOND LEG", vec![3, 4, 5]),
+        ];
+
+        let said = crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &leg("2 Leg Route", vec![1, 2, 3, 4, 5]),
+                &legs,
+                Some(&held),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+        let at = |what: &str| {
+            said.iter()
+                .position(|line| line == what)
+                .unwrap_or_else(|| panic!("{what} was painted: {said:?}"))
+        };
+
+        // The whole trip's figures, above either leg.
+        assert!(at("26.0 Ly flown, longest jump 12.0 Ly") < at("FIRST LEG"));
+        // Each leg's stops under its own name, in the order flown.
+        assert!(at("FIRST LEG") < at("Test 1"));
+        assert!(at("Test 3") < at("SECOND LEG"));
+        assert!(at("SECOND LEG") < at("Test 4"));
+        // And the seam once: the first leg lands on Test 3, the second sets
+        // out from it.
+        assert_eq!(said.iter().filter(|line| *line == "Test 3").count(), 1);
+    }
+
     /// The list copied is the list drawn, a system to a line
     ///
     /// With the distance each line ends in, where it ends in one, set off by
@@ -2557,6 +2666,7 @@ mod tests {
             admitted(
                 ui,
                 filter,
+                &[],
                 Some(systems),
                 None,
                 &mut None,
