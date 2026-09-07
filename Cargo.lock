@@ -3450,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "elite_journal"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "geozero",
@@ -4001,7 +4001,7 @@ dependencies = [
 
 [[package]]
 name = "galos"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-std",
  "chrono",
@@ -4034,7 +4034,7 @@ dependencies = [
 
 [[package]]
 name = "galos_db"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-std",
  "chrono",
@@ -4054,7 +4054,7 @@ dependencies = [
 
 [[package]]
 name = "galos_index"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4069,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "galos_map"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "async-std",
@@ -4096,7 +4096,7 @@ dependencies = [
 
 [[package]]
 name = "galos_server"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "askama",
  "axum",

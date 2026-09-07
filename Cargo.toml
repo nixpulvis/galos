@@ -1,6 +1,6 @@
 [package]
 name = "galos"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 rust-version.workspace = true
