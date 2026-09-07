@@ -550,7 +550,7 @@ fn panels(
     let mut shut = Vec::new();
     let mut tallest: f32 = 0.;
     let mut widest: f32 = 0.;
-    let mut centered = None;
+    let mut moved = None;
     let mut picked = None;
     let mut opening = None;
     let mut wanted = None;
@@ -558,6 +558,7 @@ fn panels(
     // whole pass, since a press is one press however many windows are drawn.
     let pressed = ctx.input(|input| input.pointer.any_pressed());
     let mut chosen = None;
+    let mut worked = None;
     for panel in &mut panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
@@ -577,14 +578,9 @@ fn panels(
         let window = window.show(ctx, |ui| {
             spread(ui);
             match &panel.subject {
-                Subject::System(system) => described(
-                    ui,
-                    system,
-                    &names,
-                    eye,
-                    &mut centered,
-                    &mut wanted,
-                ),
+                Subject::System(system) => {
+                    described(ui, system, &names, eye, &mut moved, &mut wanted)
+                }
                 Subject::Star(star) => mark_if_wound(&mut clock, |clock| {
                     star_described(ui, star, clock)
                 }),
@@ -599,7 +595,8 @@ fn panels(
                     center,
                     &mut picked,
                     &mut opening,
-                    &mut centered,
+                    &mut moved,
+                    &mut worked,
                 ),
             }
         });
@@ -631,8 +628,8 @@ fn panels(
         }
     }
 
-    if let Some(position) = centered {
-        camera.write(MoveCamera { position: Some(position), framing: None });
+    if let Some(move_) = moved {
+        camera.write(move_);
     }
     // Picking a system out of a list says which one is meant, as clicking a
     // star does. Where the camera goes is asked for separately, from the row
@@ -655,7 +652,10 @@ fn panels(
     // said; only a route reads that it was, `route::active` weighing what is
     // picked out against the routes being shown, so a faction picked out
     // leaves the routes as they were.
-    if let Some(filter) = chosen {
+    // A leg named inside a trip's panel beats the press that reached the
+    // panel at all: the press says which window is being worked with, and the
+    // name inside it says which of the routes drawn there is meant.
+    if let Some(filter) = worked.or(chosen) {
         selected.0 = Some(filter);
     }
 
@@ -680,7 +680,7 @@ fn described(
     system: &System,
     names: &FactionNames,
     eye: Option<DVec3>,
-    centered: &mut Option<DVec3>,
+    moved: &mut Option<MoveCamera>,
     wanted: &mut Option<Filter>,
 ) {
     egui::Grid::new(("system-fields", system.address)).num_columns(2).show(
@@ -743,7 +743,10 @@ fn described(
     ui.add_space(MARGIN);
     ui.horizontal(|ui| {
         if ui.button("Center Camera").clicked() {
-            *centered = Some(DVec3::from(system.position));
+            *moved = Some(MoveCamera {
+                position: Some(DVec3::from(system.position)),
+                framing: None,
+            });
         }
         // The name is what the user carries out of here: into the game's own
         // map, a message to somebody, a spreadsheet. Nothing on the panel is
@@ -1147,7 +1150,8 @@ fn admitted(
     center: Option<DVec3>,
     picked: &mut Option<(System, bool)>,
     described: &mut Option<System>,
-    centered: &mut Option<DVec3>,
+    moved: &mut Option<MoveCamera>,
+    worked: &mut Option<Filter>,
 ) {
     let Some(systems) = systems else {
         ui.label(egui::RichText::new("Looking...").weak());
@@ -1257,29 +1261,19 @@ fn admitted(
         // afresh every frame, so a row holds its rectangle while the system
         // in it changes as the camera moves, which is the one thing egui
         // reads as a widget taking another's state.
-        let mut line_of =
-            |ui: &mut Ui, at: usize, system: &System, away: Option<f64>| {
-                // Said as well as sorted by, where it is what sorts them. A list
-                // in an order nobody can see reads as an order nobody chose.
-                let trailing = away.map(|away| format!("{away:.1} Ly"));
-                match crate::ui::system_line(
-                    ui,
-                    &system.name,
-                    trailing,
-                    ("admitted", at),
-                ) {
-                    Some(SystemAction::Select { gathering }) => {
-                        *picked = Some((system.clone(), gathering))
-                    }
-                    Some(SystemAction::Travel) => {
-                        *centered = Some(DVec3::from(system.position))
-                    }
-                    Some(SystemAction::Describe) => {
-                        *described = Some(system.clone())
-                    }
-                    None => {}
-                }
-            };
+        // Answers rather than acts, so that what a row asked for is written
+        // where the row is drawn. Acting here would hold the borrow of it for
+        // as long as the list, and the name over each leg has answers of its
+        // own to write.
+        let line_of = |ui: &mut Ui,
+                       at: usize,
+                       system: &System,
+                       away: Option<f64>| {
+            // Said as well as sorted by, where it is what sorts them. A list
+            // in an order nobody can see reads as an order nobody chose.
+            let trailing = away.map(|away| format!("{away:.1} Ly"));
+            crate::ui::system_line(ui, &system.name, trailing, ("admitted", at))
+        };
 
         // A trip is listed leg by leg. One run of forty systems says nothing
         // about which of them the user asked for, so each leg is named and
@@ -1289,18 +1283,80 @@ fn admitted(
         // The grouping is `by_leg`'s, which is also what the copying reads,
         // so what is drawn and what is taken away are the one list.
         let mut at = 0;
-        for (named, stops) in by_leg(&order, legs) {
-            if let Some(named) = named {
-                ui.label(egui::RichText::new(named).strong());
+        for (leg, stops) in by_leg(&order, legs) {
+            // A leg's name is the control for the leg, read the way its row
+            // in the bar is read: a click says it is the one being worked
+            // with, and a double says to see the whole of it. The stops under
+            // it are systems and answer as the lines of any other list do, so
+            // a trip's panel offers what the bar and the search list offer
+            // rather than being the one place a route cannot be reached from.
+            if let Some(leg) = leg {
+                let heading = ui.add(
+                    egui::Label::new(egui::RichText::new(leg.name()).strong())
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
+                );
+                match crate::ui::asked_of_row(
+                    false,
+                    false,
+                    false,
+                    heading.double_clicked(),
+                    heading.clicked(),
+                ) {
+                    // Every stop the leg runs through, taken off the whole
+                    // list rather than off the rows drawn under the name.
+                    // The two differ by one: a leg sets out from the system
+                    // the leg before it landed on, which is drawn up there
+                    // and is still where this one starts. Framed without it
+                    // the camera stands over the leg's tail, and the bar's
+                    // own row for the same leg would frame it differently.
+                    Some(crate::ui::RowGesture::Frame) => {
+                        let places: Vec<DVec3> = order
+                            .iter()
+                            .filter(|(system, _)| {
+                                leg.place_of(system.address).is_some()
+                            })
+                            .map(|(system, _)| DVec3::from(system.position))
+                            .collect();
+                        if let Some((middle, extent)) =
+                            crate::systems::route::spawn::framing(&places)
+                            && extent > 0.
+                        {
+                            *moved = Some(MoveCamera {
+                                position: Some(middle),
+                                framing: Some(extent),
+                            });
+                        }
+                    }
+                    Some(crate::ui::RowGesture::Select) => {
+                        *worked = Some(leg.clone())
+                    }
+                    _ => {}
+                }
+                heading.on_hover_cursor(egui::CursorIcon::PointingHand);
             }
             let mut rows = |ui: &mut Ui| {
                 for (step, (system, away)) in stops.iter().enumerate() {
-                    line_of(ui, at + step, system, *away);
+                    match line_of(ui, at + step, system, *away) {
+                        Some(SystemAction::Select { gathering }) => {
+                            *picked = Some(((*system).clone(), gathering))
+                        }
+                        Some(SystemAction::Travel) => {
+                            *moved = Some(MoveCamera {
+                                position: Some(DVec3::from(system.position)),
+                                framing: None,
+                            })
+                        }
+                        Some(SystemAction::Describe) => {
+                            *described = Some((*system).clone())
+                        }
+                        None => {}
+                    }
                 }
             };
-            match named {
-                Some(named) => {
-                    ui.indent(("leg", named), |ui| rows(ui));
+            match leg {
+                Some(leg) => {
+                    ui.indent(("leg", leg.name()), |ui| rows(ui));
                 }
                 None => rows(ui),
             }
@@ -1440,7 +1496,7 @@ fn flying(legs: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
 fn by_leg<'a, 'l>(
     order: &'a [(&'a System, Option<f64>)],
     legs: &'l [Filter],
-) -> Vec<(Option<&'l str>, &'a [(&'a System, Option<f64>)])> {
+) -> Vec<(Option<&'l Filter>, &'a [(&'a System, Option<f64>)])> {
     if legs.is_empty() {
         return vec![(None, order)];
     }
@@ -1451,7 +1507,7 @@ fn by_leg<'a, 'l>(
         let Filter::Route { systems: hops, .. } = leg else { continue };
         let takes = hops.len().saturating_sub(usize::from(at > 0));
         let Some(stops) = order.get(at..at + takes) else { break };
-        groups.push((Some(leg.name()), stops));
+        groups.push((Some(leg), stops));
         at += takes;
     }
     groups
@@ -1471,8 +1527,8 @@ fn as_text(order: &[(&System, Option<f64>)], legs: &[Filter]) -> String {
         // text says the same. Two spaces rather than a tab, the tab already
         // standing between a name and the distance after it.
         let indent = if named.is_some() { "  " } else { "" };
-        if let Some(named) = named {
-            said.push(named.to_owned());
+        if let Some(leg) = named {
+            said.push(leg.name().to_owned());
         }
         for (system, away) in stops {
             said.push(match away {
@@ -1983,6 +2039,7 @@ mod tests {
                 &mut None,
                 &mut None,
                 &mut None,
+                &mut None,
             );
         });
     }
@@ -2004,6 +2061,7 @@ mod tests {
                 &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
+                &mut None,
                 &mut None,
                 &mut None,
                 &mut None,
@@ -2262,6 +2320,7 @@ mod tests {
                 &mut None,
                 &mut None,
                 &mut None,
+                &mut None,
             );
         })
         .into_iter()
@@ -2304,6 +2363,7 @@ mod tests {
                 &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
+                &mut None,
                 &mut None,
                 &mut None,
                 &mut None,
@@ -2390,6 +2450,7 @@ mod tests {
                 &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
+                &mut None,
                 &mut None,
                 &mut None,
                 &mut None,
@@ -2649,6 +2710,7 @@ mod tests {
                 &mut None,
                 &mut None,
                 &mut None,
+                &mut None,
             );
         });
         let at = |what: &str| {
@@ -2714,6 +2776,7 @@ mod tests {
                 &mut None,
                 &mut None,
                 &mut None,
+                &mut None,
             );
         })
     }
@@ -2760,5 +2823,144 @@ mod tests {
     fn what_is_not_recorded_says_so() {
         assert_eq!(named(&Some(Allegiance::Empire)), "Empire");
         assert_eq!(named::<Allegiance>(&None), "Unknown");
+    }
+    /// Where each piece of text landed, and what it said
+    fn placed_text(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        contents: impl FnMut(&mut Ui),
+    ) -> Vec<(String, egui::Rect)> {
+        let mut contents = contents;
+        let output = ctx.run_ui(input, |ui| contents(ui));
+        let mut found = Vec::new();
+        fn walk(shape: &egui::Shape, into: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => into.push((
+                    text.galley.text().to_owned(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                )),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut found);
+        }
+        found
+    }
+
+    /// A leg in a trip's panel is reached the way its row in the bar is
+    ///
+    /// A click on the name says the leg is the one being worked with, and a
+    /// double says to see the whole of it. The stops under it are systems and
+    /// answer as any list's lines do, so a route drawn as part of a trip can
+    /// be got at from the panel about the trip rather than only from the bar.
+    ///
+    /// Driven at the position the name was actually painted at, since where
+    /// the press lands is the whole of what is being claimed.
+    #[test]
+    fn a_leg_is_worked_with_by_a_click_and_framed_by_a_double() {
+        let trip = Filter::Route {
+            label: "SOL -> LAVE -> DISO".to_owned(),
+            systems: vec![1, 2, 3, 4, 5],
+            range: "10".to_owned(),
+            trip: None,
+        };
+        let legs = vec![
+            Filter::Route {
+                label: "SOL -> LAVE".to_owned(),
+                systems: vec![1, 2, 3],
+                range: "10".to_owned(),
+                trip: Some("SOL -> LAVE -> DISO".to_owned()),
+            },
+            Filter::Route {
+                label: "LAVE -> DISO".to_owned(),
+                systems: vec![3, 4, 5],
+                range: "10".to_owned(),
+                trip: Some("SOL -> LAVE -> DISO".to_owned()),
+            },
+        ];
+        let held = [
+            placed(1, [0., 0., 0.]),
+            placed(2, [5., 0., 0.]),
+            placed(3, [17., 0., 0.]),
+            placed(4, [20., 0., 0.]),
+            placed(5, [26., 0., 0.]),
+        ];
+
+        let ctx = context();
+        let pass = |input: egui::RawInput,
+                    moved: &mut Option<MoveCamera>,
+                    worked: &mut Option<Filter>| {
+            placed_text(&ctx, input, |ui| {
+                admitted(
+                    ui,
+                    &trip,
+                    &legs,
+                    Some(&held),
+                    Some(DVec3::ZERO),
+                    &mut None,
+                    &mut None,
+                    moved,
+                    worked,
+                );
+            })
+        };
+
+        pass(egui::RawInput::default(), &mut None, &mut None);
+        let text = pass(egui::RawInput::default(), &mut None, &mut None);
+        let at = text
+            .iter()
+            .find(|(said, _)| said == "LAVE -> DISO")
+            .expect("the second leg's name")
+            .1
+            .center();
+
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let frame = |events| egui::RawInput { events, ..Default::default() };
+
+        let (mut moved, mut worked) = (None, None);
+        pass(
+            frame(vec![
+                egui::Event::PointerMoved(at),
+                button(true),
+                button(false),
+            ]),
+            &mut moved,
+            &mut worked,
+        );
+        assert_eq!(worked.as_ref().map(|leg| leg.name()), Some("LAVE -> DISO"));
+        assert!(moved.is_none(), "a click asked the camera for nothing");
+
+        // The stops it runs through, which is one more than the rows drawn
+        // under its name: it sets out from the system the leg before landed
+        // on, and that row belongs to the leg before. Framed off the rows
+        // alone this would read 23.0 and 3.0, standing the camera over the
+        // leg's tail rather than over the leg.
+        let (mut moved, mut worked) = (None, None);
+        pass(
+            frame(vec![
+                egui::Event::PointerMoved(at),
+                button(true),
+                button(false),
+                button(true),
+                button(false),
+            ]),
+            &mut moved,
+            &mut worked,
+        );
+        let moved = moved.expect("a double asked the camera to frame it");
+        assert_eq!(moved.position, Some(DVec3::new(21.5, 0., 0.)));
+        assert_eq!(moved.framing, Some(4.5));
+        assert!(worked.is_none(), "the double stood in for the click");
     }
 }

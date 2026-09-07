@@ -2838,7 +2838,7 @@ fn applied(
 /// whole of it: [`asked_of_row`] is where that order is written down and the
 /// only place it can be got wrong.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum RowGesture {
+pub(crate) enum RowGesture {
     /// Take the filter away for good
     LetGo,
     /// Open the panel describing it
@@ -2861,7 +2861,12 @@ enum RowGesture {
 ///
 /// The switch beats the row for the plainer reason that it stands inside it.
 /// A press on the dot is a press on the row as well, and it means the dot.
-fn asked_of_row(
+///
+/// Read here by everything a press can land on that stands for one filter or
+/// one system: the bar's rows, the sections over them, and the legs a trip's
+/// panel lists. A row that offers fewer of the five says so by passing
+/// `false`, rather than keeping an order of its own.
+pub(crate) fn asked_of_row(
     close: bool,
     info: bool,
     switch: bool,
