@@ -105,6 +105,10 @@ fn diagnostics(
     systems: Query<(), With<System>>,
     camera: Query<&OrbitCamera>,
     descent: Descent,
+    // How much of the window was its own frame last time it was drawn, which
+    // is what comes off the room the readouts are given. A `Local`, there
+    // being one diagnostics window and nobody else with any use for it.
+    mut framing: Local<f32>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
 
@@ -134,21 +138,32 @@ fn diagnostics(
     // than positioned: egui puts the true right edge at the margin whatever
     // the window's width turns out to be.
     let top = toggle.response.rect.bottom() + MARGIN;
-    egui::Window::new("diagnostics")
+    // The room under the toggle for the readouts, less what the window round
+    // them took last frame — the same measure a panel is sized by, for the
+    // same reason: every block here is drawn whatever the viewport is, so
+    // unbounded it ran the frame rate at the end off the bottom of the screen
+    // with nothing to reach it by. See `crate::systems::info::room_under`,
+    // which does this for the panels; the window is measured rather than
+    // worked out from the style because egui lays its own title bar out and
+    // leaves the frame's margins out of its own clamping.
+    let room = (ctx.content_rect().bottom() - top - MARGIN - *framing).max(64.);
+    let mut held = 0.;
+    let window = egui::Window::new("diagnostics")
         // Over the chrome, as a panel is.
         .order(egui::Order::Foreground)
         .default_width(WIDTH)
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-MARGIN, top))
-        .resizable(false)
+        // The height alone: how much of a long readout to show is the user's
+        // business, and the width is what the rows need.
+        .resizable([false, true])
+        // The room, both ways: filled where there is more to show than fits,
+        // and a ceiling on a dragged height and on a shrinking viewport.
+        .default_height(room)
+        .max_height(room)
+        .constrain_to(ctx.content_rect().shrink(MARGIN))
         .open(&mut show.0)
         .show(ctx, |ui| {
-            // Scrolled, and no taller than the room under the toggle it hangs
-            // from. Every block here is drawn whatever the viewport is, and a
-            // short window ran the readouts off the bottom of it with the
-            // frame rate at the end out of reach. No height is imposed:
-            // `scrolling` grows to what it is given and stops at what is in
-            // it, so this is as tall as the readouts and no taller.
-            crate::ui::scrolling(ui, ui.available_height(), "diagnostics", |ui| {
+            crate::ui::scrolling(ui, room, "diagnostics", |ui| {
             row(
                 ui,
                 "index",
@@ -553,7 +568,15 @@ fn diagnostics(
                 "Frames per second, smoothed, with the time a frame took.",
             );
             });
+            held = ui.min_rect().height();
         });
+
+    // What the window took over what it held, for the next frame's room.
+    if let Some(window) = window
+        && window.inner.is_some()
+    {
+        *framing = window.response.rect.height() - held;
+    }
 
     Ok(())
 }

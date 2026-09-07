@@ -96,6 +96,35 @@ fn titled(ctx: &Context, title: &str) -> egui::RichText {
         .text_style(egui::TextStyle::Body)
 }
 
+/// The least room a panel is ever offered for what it holds, in pixels
+///
+/// A viewport too short to hold a panel is a viewport too short to hold
+/// anything; what it gets is a couple of rows and a scroll bar rather than a
+/// window egui refuses to draw.
+const LEAST: f32 = 64.;
+
+/// The box a panel is kept inside: the viewport, a margin off every edge
+///
+/// Where it may stand, and how tall: the room under it is measured from here.
+fn kept_inside(ctx: &Context) -> egui::Rect {
+    ctx.content_rect().shrink(crate::ui::MARGIN)
+}
+
+/// The room a panel standing at `top` has for what it holds, in pixels
+///
+/// Down to the bottom of the box it is kept inside, less `frame` — how much of
+/// a panel is the window round it, which is [`Panels::frame`] and is measured
+/// rather than worked out.
+///
+/// Measured from where the panel actually stands, which is where it stood last
+/// frame: a panel the user has dragged halfway down the screen is capped by
+/// the room where it is rather than by the room the tiling would have given it.
+fn room_under(ctx: &Context, id: egui::Id, at: egui::Pos2, frame: f32) -> f32 {
+    let stood =
+        ctx.memory(|memory| memory.area_rect(id).map(|rect| rect.top()));
+    (kept_inside(ctx).bottom() - stood.unwrap_or(at.y) - frame).max(LEAST)
+}
+
 /// The window a panel stands in, put where the tiling says
 ///
 /// `at` is where its right hand top corner goes, that being the corner the
@@ -107,6 +136,12 @@ fn titled(ctx: &Context, title: &str) -> egui::RichText {
 /// frame it opens, and asked for `at` as a default after that, so that one
 /// dragged somewhere stays where it was dragged.
 ///
+/// `room` is what it has for what it holds, and is both the height it opens
+/// filling where it has more to show than that and the height a dragged one is
+/// held to. Egui does its own clamping against the box a window is constrained
+/// to, and does not take the window's own margins off when it does, so the
+/// room is the figure to trust.
+///
 /// The title is cut to the room there is for it, both ends of a route kept.
 /// A panel as wide as its name is a panel the tiling cannot place and the
 /// user cannot read two of side by side.
@@ -115,13 +150,17 @@ fn framed<'open>(
     title: &str,
     id: egui::Id,
     at: egui::Pos2,
+    room: f32,
     placed: bool,
     showing: &'open mut bool,
 ) -> egui::Window<'open> {
     let window = egui::Window::new(titled(ctx, title))
         .id(id)
         .open(showing)
-        .resizable(false)
+        // The height alone. A panel is as wide as its two columns and its
+        // title bar need and no wider, so there is nothing to drag there; how
+        // much of a long list to show is the user's business.
+        .resizable([false, true])
         .pivot(egui::Align2::RIGHT_TOP)
         // Over the chrome, which is what a window is: the pane and the bar
         // stand where the map put them and a panel stands where the user
@@ -133,11 +172,17 @@ fn framed<'open>(
         .order(egui::Order::Foreground)
         // The width alone. Left unsaid it is `Style::default_area_size`, 600,
         // which will not fit where a panel is asked to be placed, so egui
-        // slides the window somewhere it does and remembers it there. The
-        // height is the window's own business: said here it is imposed rather
-        // than defaulted, and a list asked to fit the height of the last panel
-        // drawn shows three lines of eight.
-        .default_width(WIDTH);
+        // slides the window somewhere it does and remembers it there.
+        .default_width(WIDTH)
+        // The room, both ways. Preferred, so a panel with more to show than
+        // fits opens filling it rather than at egui's own default of four
+        // hundred pixels with the screen empty under it; and at most, so a
+        // height the user has dragged is held to it and a viewport shrinking
+        // under a tall panel brings it back inside.
+        .default_height(room)
+        .max_height(room)
+        // On the screen, wherever it was dragged to.
+        .constrain_to(kept_inside(ctx));
 
     if placed { window.default_pos(at) } else { window.current_pos(at) }
 }
@@ -156,7 +201,8 @@ fn spread(ui: &mut Ui) {
     ui.set_min_width(WIDTH);
 }
 
-/// A panel's contents: across the whole of the window, and scrolled inside it
+/// A panel's contents: across the whole of the window, and scrolled inside the
+/// `room` there is for them — answering how tall they came out
 ///
 /// A panel is as tall as what it holds — four rows of a body's orbit, or four
 /// hundred systems of a faction's holdings — and nothing about a window bounds
@@ -164,18 +210,26 @@ fn spread(ui: &mut Ui) {
 /// out of reach. Scrolled, the panel stops at the room there is and the bar
 /// carries the rest.
 ///
-/// The room is what egui has already worked out. A window's contents are given
-/// the rect from where the window stands to the edge of the screen, so
-/// `available_height` is the height there is for this one, wherever the tiling
-/// opened it.
+/// The room rather than `ui.available_height()`, which is what the window has
+/// already decided to be: read from there a long panel can never ask for more
+/// than it was given last frame, so it never grows into the room it has.
 ///
 /// No height is imposed: [`crate::ui::scrolling`] grows to what it is given
 /// and stops at what is in it, so a panel of four rows is four rows tall.
 /// Which is what the tiling wants — it steps the next panel by the tallest
 /// drawn — and what a fixed height would take away.
-fn inside(ui: &mut Ui, id: egui::Id, contents: impl FnOnce(&mut Ui)) {
+///
+/// What comes back is the height the contents came out at, which is the other
+/// half of measuring [`Panels::frame`].
+fn inside(
+    ui: &mut Ui,
+    id: egui::Id,
+    room: f32,
+    contents: impl FnOnce(&mut Ui),
+) -> f32 {
     spread(ui);
-    crate::ui::scrolling(ui, ui.available_height(), id, contents);
+    crate::ui::scrolling(ui, room, id, contents);
+    ui.min_rect().height()
 }
 
 /// What the user has a panel open for
@@ -209,6 +263,24 @@ pub struct Panels {
     /// Only the columns. Where a panel opens down the edge does not depend on
     /// this, panels being placed by the corner they are tiled against.
     width: f32,
+    /// How much of a panel is the window round it: its title bar, its frame
+    /// and its margins
+    ///
+    /// What comes off the room before the room is offered to the contents,
+    /// which is what [`room_under`] takes it for. Measured — the height a
+    /// panel came out at, less the height its contents came out at — rather
+    /// than read off the style: the title bar is egui's to lay out, and its
+    /// own clamping of a window against the box it is constrained to leaves
+    /// the window's margins out, so a figure worked out from the style was
+    /// a few pixels short and a full-height panel hung that far past the
+    /// bottom of the viewport.
+    ///
+    /// One number for every panel, they all being the same window. Nothing
+    /// until one has been drawn, which leaves the first frame of a session
+    /// offering the room the window itself takes up as well; the frame after
+    /// has it right, and a panel that has to shrink by a title bar's worth
+    /// does it before it is ever seen.
+    frame: f32,
 }
 
 /// One open panel
@@ -644,6 +716,10 @@ fn panels(
         contents.guessed_under(held, id)
     };
     let mut worked = None;
+    // How much of a panel turned out to be its window, for the next frame to
+    // take off the room; see [`Panels::frame`].
+    let mut framing: f32 = 0.;
+    let was_framing = panels.frame;
     for panel in &mut panels.open {
         let mut showing = true;
         let (row, column) = tile(panel.slot, down, across);
@@ -652,16 +728,20 @@ fn panels(
         // Set before the panel is read from, so that the two borrows of it
         // do not overlap.
         let placed = std::mem::replace(&mut panel.placed, true);
+        let id = panel.subject.id();
+        let room = room_under(ctx, id, at, was_framing);
         let window = framed(
             ctx,
             panel.subject.title(),
-            panel.subject.id(),
+            id,
             at,
+            room,
             placed,
             &mut showing,
         );
+        let mut held = 0.;
         let window = window.show(ctx, |ui| {
-            inside(ui, panel.subject.id(), |ui| match &panel.subject {
+            held = inside(ui, id, room, |ui| match &panel.subject {
                 Subject::System(system) => {
                     described(ui, system, &names, eye, &mut moved, &mut wanted)
                 }
@@ -704,6 +784,10 @@ fn panels(
             widest = widest.max(window.response.rect.width());
             if window.inner.is_some() {
                 tallest = tallest.max(window.response.rect.height());
+                // What the window took over what it held, which is the title
+                // bar and the margins. The most of any panel drawn, so the
+                // room is measured against the hungriest of them.
+                framing = framing.max(window.response.rect.height() - held);
             }
             // A panel about a filter reads as the filter's own row does: a
             // click says it is the one being worked with, a double says to
@@ -761,6 +845,9 @@ fn panels(
     // not a height to place the next one by.
     if tallest > 0. {
         panels.height = tallest;
+    }
+    if framing > 0. {
+        panels.frame = framing;
     }
     if widest > 0. {
         panels.width = widest;
@@ -2254,13 +2341,25 @@ mod tests {
         let ctx = crate::tests::context();
         let mut rect = egui::Rect::ZERO;
 
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        // A screen to stand on. A panel is kept inside the viewport now, so
+        // one opened on a context with no screen at all is pushed to wherever
+        // egui's default rect leaves room for it.
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600., 600.),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
             let mut showing = true;
+            let id = egui::Id::new("test-panel");
             let panel = framed(
                 ui.ctx(),
                 title,
-                egui::Id::new("test-panel"),
+                id,
                 at,
+                room_under(ui.ctx(), id, at, 0.),
                 false,
                 &mut showing,
             );
@@ -2272,68 +2371,104 @@ mod tests {
         rect
     }
 
-    /// How tall a panel of `rows` lines comes out, on a screen `high` tall
+    /// How tall a panel of `rows` lines comes out, on each screen in turn
     ///
-    /// Drawn where the tiling opens one, against the top of the screen, and
-    /// through [`inside`] as a panel's contents always are. A few frames,
-    /// since a window settles its size against what it held last.
-    fn stands(high: f32, rows: usize) -> f32 {
+    /// Drawn where the tiling opens one, against the top right of the screen,
+    /// and through [`inside`] as a panel's contents always are — including the
+    /// measuring of the window round them, which is what the room is worked
+    /// out from. A few frames per screen, since that measurement is a frame
+    /// old, and one context throughout, so a screen that shrinks under a panel
+    /// already standing is a shrink rather than a fresh panel.
+    fn stands(screens: &[f32], rows: usize) -> f32 {
         let ctx = crate::tests::context();
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(600., high),
-            )),
-            ..Default::default()
-        };
+        let id = egui::Id::new("tall-panel");
+        let at = egui::pos2(600. - MARGIN, MARGIN);
         let mut rect = egui::Rect::ZERO;
-        for _ in 0..3 {
-            let _ = ctx.run_ui(input.clone(), |ui| {
-                let mut showing = true;
-                let panel = framed(
-                    ui.ctx(),
-                    "PANEL",
-                    egui::Id::new("tall-panel"),
-                    egui::pos2(600. - MARGIN, MARGIN),
-                    false,
-                    &mut showing,
-                );
-                let shown = panel.show(ui.ctx(), |ui| {
-                    inside(ui, egui::Id::new("tall-panel"), |ui| {
-                        for row in 0..rows {
-                            ui.label(format!("row {row}"));
-                        }
+        let mut framing = 0.;
+        for high in screens {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600., *high),
+                )),
+                ..Default::default()
+            };
+            for _ in 0..4 {
+                let _ = ctx.run_ui(input.clone(), |ui| {
+                    let mut showing = true;
+                    let room = room_under(ui.ctx(), id, at, framing);
+                    let panel = framed(
+                        ui.ctx(),
+                        "PANEL",
+                        id,
+                        at,
+                        room,
+                        false,
+                        &mut showing,
+                    );
+                    let mut held = 0.;
+                    let shown = panel.show(ui.ctx(), |ui| {
+                        held = inside(ui, id, room, |ui| {
+                            for row in 0..rows {
+                                ui.label(format!("row {row}"));
+                            }
+                        });
                     });
+                    if let Some(shown) = shown {
+                        rect = shown.response.rect;
+                        framing = rect.height() - held;
+                    }
                 });
-                if let Some(shown) = shown {
-                    rect = shown.response.rect;
-                }
-            });
+            }
         }
 
         rect.height()
     }
 
-    /// A panel is as tall as what it holds, and no taller than the room
+    /// A panel is as tall as what it holds, up to the room there is
     ///
-    /// Both halves of one answer. A panel holds anything from four rows of an
-    /// orbit to four hundred systems of a faction's holdings, and it ran off
-    /// the bottom of the viewport with the rest of itself out of reach: the
-    /// contents are scrolled now, so a long one stops at the screen. And no
-    /// height is imposed to do it, because the tiling steps the next panel by
-    /// the tallest drawn — a short panel held to the room would leave the
-    /// column with one panel in it and a screen of nothing under it.
+    /// A panel holds anything from four rows of an orbit to four hundred
+    /// systems of a faction's holdings, and it ran off the bottom of the
+    /// viewport with the rest of itself out of reach: the contents are
+    /// scrolled now, so a long one stops at the room.
+    ///
+    /// It fills that room rather than egui's own default of four hundred
+    /// pixels for a window with a scroll area in it, which left a long panel
+    /// short with the screen empty under it. And no height is imposed to do
+    /// either: the tiling steps the next panel by the tallest drawn, so a
+    /// short panel held to the room would leave a column with one panel in it
+    /// and a screen of nothing under it.
     #[test]
-    fn a_panel_is_as_tall_as_what_it_holds_and_no_taller_than_the_room() {
-        let short = stands(600., 4);
-        let long = stands(600., 400);
+    fn a_panel_is_as_tall_as_what_it_holds_up_to_the_room() {
+        let short = stands(&[600.], 4);
+        let long = stands(&[600.], 400);
 
         assert!(short < 200., "four rows stood {short} tall");
         assert!(
             long <= 600.,
             "four hundred rows stood {long} tall, past a 600 screen"
         );
-        assert!(long > short, "a longer panel came out no taller");
+        assert!(
+            long > 500.,
+            "four hundred rows stood {long} tall, well short of the room"
+        );
+    }
+
+    /// And comes back inside a viewport that shrinks under it
+    ///
+    /// The reported trouble: a panel standing the height of the screen and
+    /// then the screen made shorter kept the height it had, so the end of it —
+    /// the buttons under a system's factions — was off the bottom with nothing
+    /// to reach it by. The room is measured afresh every frame, from where the
+    /// panel actually stands, and caps the height as well as suggesting it.
+    #[test]
+    fn a_panel_comes_back_inside_a_shrinking_viewport() {
+        let shrunk = stands(&[600., 300.], 400);
+
+        assert!(
+            shrunk <= 300.,
+            "the panel stood {shrunk} tall on a screen of 300"
+        );
     }
 
     /// How wide a panel titled `title` lays its contents out, and how much
@@ -2437,6 +2572,7 @@ mod tests {
                     "SOL",
                     id,
                     egui::Pos2::ZERO,
+                    room_under(ui.ctx(), id, egui::Pos2::ZERO, 0.),
                     pass > 0,
                     &mut showing,
                 );
