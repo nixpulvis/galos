@@ -111,9 +111,9 @@ fn diagnostics(
     // A button, always drawn, to open the panel; F3 and the window's own close
     // do the same. Top-right, clear of the search bar and the settings gear on
     // the left, and on the chrome's layer under the windows like the rest of
-    // it.
+    // it; see `crate::ui::settings_pane` for why that layer is `Middle`.
     let toggle = egui::Area::new(egui::Id::new("diagnostics-toggle"))
-        .order(egui::Order::Background)
+        .order(egui::Order::Middle)
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-MARGIN, MARGIN))
         .show(ctx, |ui| ui.button("diagnostics"));
     if toggle.inner.clicked() {
@@ -135,6 +135,8 @@ fn diagnostics(
     // the window's width turns out to be.
     let top = toggle.response.rect.bottom() + MARGIN;
     egui::Window::new("diagnostics")
+        // Over the chrome, as a panel is.
+        .order(egui::Order::Foreground)
         .default_width(WIDTH)
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-MARGIN, top))
         .resizable(false)

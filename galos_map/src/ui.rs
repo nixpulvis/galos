@@ -1187,10 +1187,21 @@ fn settings_pane(
     let margins = frame.total_margin().sum();
 
     egui::Area::new(egui::Id::new("settings-pane"))
-        // Below the windows and above the map, like the rest of the chrome. A
-        // window is the user's to put where they like, so where the two meet
-        // the window lays over the chrome rather than under it.
-        .order(egui::Order::Background)
+        // Above the map and its annotations, below the windows. `Middle` is
+        // the order an area takes by itself, and is named here because the
+        // whole of the map's chrome sits in it deliberately: the annotations
+        // are painted into `Order::Background` and the panels are pushed up
+        // to `Order::Foreground`, so the three read as a stack.
+        //
+        // `Background` was the wrong end of that stack and cost two things.
+        // Painting: a layer that is not an area — the annotations are one
+        // painter list, not a window — is drained after every area of its own
+        // order, so a selection ring and a name plate were drawn over the
+        // pane. And the pointer: `is_pointer_over_egui` answers false for
+        // anything in `Background` that is inside the root ui's available
+        // rect, so egui did not count the chrome as its own, and a wheel
+        // turned over the pane zoomed the map behind it.
+        .order(egui::Order::Middle)
         // The pane stands off the left of the viewport while it is shut, and
         // egui would otherwise pull it back into view.
         .constrain(false)
@@ -1230,7 +1241,8 @@ fn settings_pane(
 fn gear(ctx: &Context, left: f32, middle: f32, open: &mut bool) {
     let style = ctx.global_style();
     let clicked = egui::Area::new(egui::Id::new("settings-gear"))
-        .order(egui::Order::Background)
+        // With the rest of the chrome; see `settings_pane`.
+        .order(egui::Order::Middle)
         .pivot(egui::Align2::LEFT_CENTER)
         .fixed_pos(egui::pos2(left + MARGIN, middle))
         .show(ctx, |ui| {
@@ -1318,7 +1330,8 @@ fn main_bar(
     let dragging = ctx.egui_is_using_pointer();
 
     let bar = egui::Area::new(egui::Id::new("main-bar"))
-        .order(egui::Order::Background)
+        // With the rest of the chrome; see `settings_pane`.
+        .order(egui::Order::Middle)
         .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
         .show(ctx, |ui| {
             frame
@@ -4291,6 +4304,81 @@ mod tests {
     use crate::systems::filter::Filter;
     use crate::systems::selection::PickedBody;
     use crate::tests::{painted, words};
+
+    /// The chrome, drawn with the pointer at `at`, once it stands still
+    ///
+    /// Several frames, because the pane slides in on an animation and is not
+    /// drawn at all while the slide stands at nothing: what is wanted is the
+    /// frame after it has finished, which is the pane as the user meets it.
+    fn chromed(at: egui::Pos2) -> (egui::Context, egui::FullOutput) {
+        let ctx = crate::tests::context();
+        let input = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(at)],
+            predicted_dt: 1. / 60.,
+            ..Default::default()
+        };
+        let mut output = None;
+        for _ in 0..60 {
+            output = Some(ctx.run(input.clone(), |ctx| {
+                // A ring, as `selection::ring` paints one, into the layer the
+                // map puts its annotations in.
+                ctx.layer_painter(crate::systems::labels::annotations_layer())
+                    .circle_stroke(
+                        egui::pos2(PANE_WIDTH * 0.5, 300.),
+                        12.,
+                        egui::Stroke::new(2., egui::Color32::YELLOW),
+                    );
+                settings_pane(ctx, true, |ui| {
+                    ui.label("Spyglass");
+                });
+            }));
+        }
+
+        (ctx, output.expect("a frame was drawn"))
+    }
+
+    /// A wheel turned over the chrome is not a wheel turned at the map
+    ///
+    /// Reported: scrolling the settings pane zoomed the map behind it. The
+    /// camera asks [`PointerOverUi`], which is `is_pointer_over_egui`, and
+    /// that answers false for anything in `Order::Background` inside the root
+    /// ui's available rect — which the whole of the chrome was. Nothing about
+    /// the guard was wrong; egui did not count the pane as its own.
+    #[test]
+    fn the_pointer_over_the_chrome_is_egui_s() {
+        let (inside, _) = chromed(egui::pos2(20., 300.));
+        assert!(
+            inside.is_pointer_over_egui(),
+            "a pointer over the pane was the map's"
+        );
+
+        let (outside, _) = chromed(egui::pos2(PANE_WIDTH + 400., 300.));
+        assert!(
+            !outside.is_pointer_over_egui(),
+            "a pointer out on the map was the chrome's"
+        );
+    }
+
+    /// And what the map annotates is painted under the chrome, not over it
+    ///
+    /// The other half of the same report: a selection ring and a name plate
+    /// were drawn over the pane. The annotations are one painter list rather
+    /// than an area, and a layer that is not an area is drained after every
+    /// area of its own order, so sharing `Background` with the chrome put
+    /// them on top of it however the two were ordered against each other.
+    #[test]
+    fn the_chrome_is_painted_over_the_annotations() {
+        let (_, output) = chromed(egui::pos2(20., 300.));
+        let at = |what: fn(&egui::Shape) -> bool| {
+            output.shapes.iter().position(|clipped| what(&clipped.shape))
+        };
+        let ring = at(|shape| matches!(shape, egui::Shape::Circle(_)))
+            .expect("the ring was painted");
+        let pane = at(|shape| matches!(shape, egui::Shape::Rect(_)))
+            .expect("the pane was painted");
+
+        assert!(ring < pane, "the ring was painted over the pane");
+    }
 
     /// A results list holding `names`
     fn results(names: &[&str], _placed: bool) -> SearchResults {

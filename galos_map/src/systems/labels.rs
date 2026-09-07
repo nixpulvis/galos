@@ -487,8 +487,14 @@ pub(crate) fn world_per_pixel(
 /// top, so that no ring or readout row crosses the words. All four are pinned
 /// against one another where they are registered, so none of the stacking is
 /// left to how egui happens to order separate layers or to which painter the
-/// executor happens to reach first. Background, so the whole of it sits under
-/// the chrome and over the map.
+/// executor happens to reach first.
+///
+/// `Background`, so the whole of it sits under the chrome and over the map.
+/// Which takes the chrome being somewhere else: a layer that is not an area —
+/// this is one painter list, not a window — is drained after every area of
+/// its own order, so while the chrome shared `Background` a ring and a name
+/// were painted over the settings pane. The chrome is `Order::Middle` and the
+/// panels `Order::Foreground`; see [`crate::ui::settings_pane`].
 pub(crate) fn annotations_layer() -> egui::LayerId {
     egui::LayerId::new(
         egui::Order::Background,

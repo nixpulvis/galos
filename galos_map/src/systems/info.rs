@@ -123,6 +123,14 @@ fn framed<'open>(
         .open(showing)
         .resizable(false)
         .pivot(egui::Align2::RIGHT_TOP)
+        // Over the chrome, which is what a window is: the pane and the bar
+        // stand where the map put them and a panel stands where the user
+        // dragged it, so where the two meet the window is the one on top.
+        // Said here rather than left to a window's own `Order::Middle`, which
+        // is where the chrome sits: same-order areas are stacked by which was
+        // last interacted with, and a panel would slide under the pane the
+        // moment the pane was touched.
+        .order(egui::Order::Foreground)
         // The width alone. Left unsaid it is `Style::default_area_size`, 600,
         // which will not fit where a panel is asked to be placed, so egui
         // slides the window somewhere it does and remembers it there. The
