@@ -23,6 +23,11 @@ elite_journal = { path = "../elite_journal" }
 # self-describing codec can read back.
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
+# The vectors and quaternions the orbits are worked out in, which is the one
+# thing in here that is arithmetic rather than records. `glam` rather than
+# `bevy_math`, which is a re-export of exactly these types: the map and the
+# builder both read this crate and only one of them has a renderer.
+glam = "0.32"
 chrono = { version = "0.4", features = ["serde"] }
 # The transport seam is async so the one HTTP impl to come is a drop-in; boxed
 # so a client holds it behind `Arc<dyn Source>` and swaps FS for HTTP whole.

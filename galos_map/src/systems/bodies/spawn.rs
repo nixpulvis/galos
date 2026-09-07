@@ -36,10 +36,7 @@
 //! is watched is one thing becoming another, which
 //! `the_contents_come_and_go_before_the_mark_gives_way` holds them to.
 
-use super::{
-    Clock, Contents,
-    orbit::{Orbits, Spacing},
-};
+use super::{Clock, Contents};
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::space;
@@ -54,6 +51,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
 use galos_index::meta::{Body as DbBody, Star as DbStar};
+use galos_index::orbit::{Orbits, Spacing};
 use std::collections::HashSet;
 use std::f64::consts::PI;
 
@@ -440,6 +438,36 @@ pub struct Body {
     pub star: bool,
 }
 
+/// A place a chain names that the map has no row for
+///
+/// A barycentre, most of the time, and now and then a star or a planet whose
+/// own scan never landed. One mark for all of them: what they have in common
+/// is that a chain says something is there and nothing says what, and an
+/// ellipse whose middle is empty sky reads as a thing the map failed to draw
+/// whichever kind it was. Which kind it was is said in words, by the panel of
+/// whatever rides it.
+///
+/// Carries its id, so the clock can put the mark back where its parent has
+/// gone, and how near the tightest ring around it comes, so the mark can be
+/// held inside it. Whether the place itself is a guess is said by the
+/// material it is drawn in.
+#[derive(Component)]
+pub struct Unscanned {
+    pub id: i16,
+    /// How near the tightest ring around it comes, in metres
+    pub ridden: f32,
+}
+
+/// The mark drawn there: three segments of unit length through the place
+///
+/// Unit, so the scale [`crate::systems::scale::size_marks`] writes is the arm
+/// of the cross in metres. A cross rather than a shape with a body to it,
+/// which would read as a thing drawn at its own size — and the size is the
+/// one thing none of these has on record. Axes rather than anything turned to
+/// face the camera, so it reads the same from anywhere.
+const CROSS: [Vec3; 6] =
+    [Vec3::NEG_X, Vec3::X, Vec3::NEG_Y, Vec3::Y, Vec3::NEG_Z, Vec3::Z];
+
 /// What a star is drawn in, by the colour its class comes to
 #[derive(Resource)]
 struct StarMaterials(Vec<Handle<StandardMaterial>>);
@@ -451,6 +479,18 @@ struct BodyMaterials(Vec<Handle<StandardMaterial>>);
 /// What an orbit's line is drawn in
 #[derive(Resource)]
 struct OrbitMaterial(Handle<StandardMaterial>);
+
+/// What the mark at a barycentre is drawn in
+///
+/// Two, so that a mark at a place the map made up is drawn more faintly than
+/// one at a place something on record puts there. What the difference says is
+/// said in words in a panel; what it does here is keep a guess from reading
+/// as a reading.
+#[derive(Resource)]
+struct MarkMaterials {
+    recorded: Handle<StandardMaterial>,
+    guessed: Handle<StandardMaterial>,
+}
 
 /// The colours a star is drawn in
 ///
@@ -660,6 +700,22 @@ fn init_materials(
         unlit: true,
         ..default()
     })));
+
+    // The marks. Brighter than a line, a mark being a few pixels of it, and
+    // the guessed one dimmer than the read one: a mark at a place nobody
+    // measured should not read as firmly as a mark at one somebody did.
+    let mut mark = |alpha| {
+        assets.add(StandardMaterial {
+            base_color: Color::srgba(0.5, 0.6, 0.75, alpha),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        })
+    };
+    commands.insert_resource(MarkMaterials {
+        recorded: mark(0.7),
+        guessed: mark(0.3),
+    });
 }
 
 /// Put a system's insides on the map, and take them off again
@@ -681,6 +737,7 @@ fn draw(
     stars: Res<StarMaterials>,
     bodies: Res<BodyMaterials>,
     orbit_material: Res<OrbitMaterial>,
+    marks: Res<MarkMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnContents>,
     mut holding: ResMut<HeldSystem>,
@@ -904,6 +961,48 @@ fn draw(
         }
     }
 
+    // A mark at each place a chain names that has no row of its own — a
+    // barycentre, or a star or planet whose scan never landed. Only where
+    // something goes round it at a distance: a place its riders sit on top of
+    // is one they already say is there, and a mark inside the primary star is
+    // a mark over the thing it stands beside.
+    let stood_for: HashSet<i16> = contents
+        .stars()
+        .iter()
+        .map(|star| star.id)
+        .chain(contents.bodies().iter().map(|body| body.id))
+        .collect();
+    let marked: Vec<(i16, f32)> = orbits
+        .circling()
+        .filter(|(id, _)| !stood_for.contains(id))
+        .filter_map(|(id, _)| Some((id, contents.ridden_at(id)?)))
+        .collect();
+    if !marked.is_empty() {
+        let cross = meshes.add(LineList { points: CROSS.to_vec() });
+        for (id, ridden) in marked {
+            let (cell, offset) =
+                placed(orbits.place(id, clock.at) - middle, &grid);
+            commands.with_child((
+                Inside,
+                Unscanned { id, ridden },
+                cell,
+                Transform::from_translation(offset),
+                // Nothing until `scale::size_marks` has looked at the camera.
+                // A mark is spawned at unit scale and a metre from wherever
+                // `big_space` has yet to put it, which for the frame before
+                // the transforms are propagated is a shape the size of the
+                // view sitting on the camera: the box that flashed.
+                Visibility::Hidden,
+                Mesh3d(cross.clone()),
+                MeshMaterial3d(if orbits.guessed(id) {
+                    marks.guessed.clone()
+                } else {
+                    marks.recorded.clone()
+                }),
+            ));
+        }
+    }
+
     debug!("drew what is inside {address}");
     drawn.0 = Some((address, contents.revision()));
 }
@@ -1068,6 +1167,12 @@ fn drawn_orbit(
     meshes: &mut Assets<Mesh>,
     material: &OrbitMaterial,
 ) -> Option<impl Bundle> {
+    // Nothing for a path the map made up. How far out a guessed barycentre
+    // stands is a reading and the ring through it is not, so the mark at the
+    // point is the whole of what there is to draw. See `Contents::stood_off`.
+    if orbits.guessed(id) {
+        return None;
+    }
     let about =
         parent.map_or(DVec3::ZERO, |parent| orbits.place(parent, clock));
     // A ring drawn in dashes is laid closest where the camera stands, so that
@@ -1273,11 +1378,15 @@ fn wind(
     grids: Query<&Grid>,
     mut placed_bodies: Query<
         (&Body, &ChildOf, &mut CellCoord, &mut Transform),
-        Without<OrbitLine>,
+        (Without<OrbitLine>, Without<Unscanned>),
     >,
     mut lines: Query<
         (&OrbitLine, &ChildOf, &mut CellCoord, &mut Transform),
-        Without<Body>,
+        (Without<Body>, Without<Unscanned>),
+    >,
+    mut marks: Query<
+        (&Unscanned, &ChildOf, &mut CellCoord, &mut Transform),
+        (Without<Body>, Without<OrbitLine>),
     >,
 ) {
     if !clock.is_changed() {
@@ -1308,16 +1417,65 @@ fn wind(
             .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at));
         put(grid, about + line.pin, &mut cell, &mut at);
     }
+
+    for (mark, of, mut cell, mut at) in &mut marks {
+        let Ok(grid) = grids.get(of.parent()) else { continue };
+        put(grid, orbits.place(mark.id, clock.at), &mut cell, &mut at);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::systems::spawn::Shell;
+    use galos_index::meta::SystemBodies;
 
     /// A ring laid to a view a hundred thousandth of it across
     fn laid_at(at: f64) -> Spacing {
         Spacing::round(at, 1e-6, ORBIT_POINTS)
+    }
+
+    /// A path the map made up is not drawn, and what rides it still is
+    ///
+    /// How far out a guessed barycentre stands is a reading and the ring
+    /// through that point is not, so drawing the ring would put a shape on
+    /// screen that nobody measured. The mark at the point is what says it is
+    /// there, and the pair's own ellipses about it are readings and are drawn.
+    #[test]
+    fn a_guessed_path_is_not_drawn() {
+        use galos_index::orbit::Orbit;
+
+        let mut orbits = Orbits::default();
+        orbits.insert(1, None, Orbit::still());
+        orbits.guess(10, Some(1), Orbit::circle_to(DVec3::new(4e11, 0., 0.)));
+        orbits.insert(
+            11,
+            Some(10),
+            Orbit::recorded(1e9, 0., 0., 0., 0., 0., 1.),
+        );
+
+        let mut meshes = Assets::default();
+        let material = OrbitMaterial(Handle::default());
+        let grid = space::system_grid();
+        let mut line = |id, parent| {
+            drawn_orbit(
+                id,
+                parent,
+                false,
+                DVec3::ZERO,
+                0.,
+                DVec3::ZERO,
+                1e12,
+                &orbits,
+                &grid,
+                &mut meshes,
+                &material,
+            )
+            .is_some()
+        };
+
+        assert!(!line(10, Some(1)), "an invented ring was drawn");
+        assert!(line(11, Some(10)), "the pair's own ring was not drawn");
     }
 
     /// A ring standing still is not laid again
@@ -1554,8 +1712,7 @@ mod tests {
         app.insert_resource(Contents {
             of: Some(1),
             revision: 0,
-            state: FetchState::Known {
-                stars: vec![],
+            state: FetchState::Known(SystemBodies {
                 bodies: vec![{
                     // A period of its own. The shared row carries none, and a
                     // body with nothing to come round in has nowhere to be
@@ -1565,8 +1722,8 @@ mod tests {
                         (400. * crate::systems::info::DAY) as f32;
                     row
                 }],
-                centers: vec![],
-            },
+                ..default()
+            }),
         });
         app.add_systems(Update, wind);
 
@@ -2097,11 +2254,10 @@ mod tests {
         app.insert_resource(Contents {
             of: Some(2),
             revision: 0,
-            state: FetchState::Known {
-                stars: vec![],
+            state: FetchState::Known(SystemBodies {
                 bodies: vec![super::super::tests::body(1e11)],
-                centers: vec![],
-            },
+                ..default()
+            }),
         });
         app.add_plugins(crate::systems::roundness::plugin);
         app.add_systems(Startup, init_materials);

@@ -26,7 +26,7 @@
 //! anywhere, so this is a convention rather than a reading: orbits will lie
 //! plausibly and a system will not be turned the same way the game turns it.
 
-use bevy::math::{DQuat, DVec3};
+use glam::{DQuat, DVec3};
 use std::collections::HashMap;
 
 /// How many turns of Newton's method to give Kepler's equation
@@ -82,6 +82,38 @@ impl Orbit {
             inclination: 0.,
             periapsis: 0.,
             ascending_node: 0.,
+            mean_anomaly: 0.,
+            period: None,
+        }
+    }
+
+    /// A circle that puts the thing exactly at `place`, relative to whatever
+    /// it goes round
+    ///
+    /// Elements worked backwards from a position rather than read off a scan:
+    /// the size of the circle is how far out `place` stands, and the two
+    /// angles are the ones [`Orbit::place`] needs to land there. Written with
+    /// the periapsis a quarter turn round, which is what puts the answer off
+    /// the map's own plane — measured from the node line, an orbit at no
+    /// anomaly and no periapsis lies in that plane whatever its inclination.
+    ///
+    /// What stands a barycentre up where only its distance is on record. No
+    /// period, so it stands where it was put rather than turning: a circle
+    /// nobody measured has no year either.
+    pub fn circle_to(place: DVec3) -> Orbit {
+        let a = place.length();
+        if a <= 0. {
+            return Orbit::still();
+        }
+
+        // The map stands `y` up where the arithmetic in `place` stands `z` up,
+        // so the height comes off `y` and the bearing off the other two.
+        Orbit {
+            semi_major_axis: a,
+            eccentricity: 0.,
+            inclination: (place.y / a).clamp(-1., 1.).asin(),
+            periapsis: std::f64::consts::FRAC_PI_2,
+            ascending_node: (-place.x).atan2(place.z),
             mean_anomaly: 0.,
             period: None,
         }
@@ -432,7 +464,67 @@ fn eccentric_anomaly(mean: f64, eccentricity: f64) -> f64 {
 /// relative to its planet and its planet relative to the star, without any of
 /// them having to know how deep they sit.
 #[derive(Default)]
-pub struct Orbits(HashMap<i16, (Option<i16>, Orbit)>);
+pub struct Orbits(HashMap<i16, Held>);
+
+/// One thing's path, what it goes round, and how much of that was read
+struct Held {
+    parent: Option<i16>,
+    orbit: Orbit,
+    standing: Standing,
+}
+
+/// Whether an orbit is what a scan recorded or what the map made up
+///
+/// Only ever [`Standing::Guessed`] for a barycentre the map stood up itself:
+/// a close pair whose own centre was never scanned is known to be out there
+/// somewhere, and how far out is on record, so it is placed at that distance
+/// in a direction nobody measured. The alternative was the walk ending at the
+/// missing row and the whole pair being drawn at the middle of its system.
+///
+/// Carried so that what rests on a guess can say so: [`Orbits::guessed_under`]
+/// is what a panel asks, and nothing is drawn for a guessed path itself —
+/// its size is a reading and its shape is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// As the scan recorded it
+    Recorded,
+    /// Stood up by the map, from a distance and nothing else
+    Guessed,
+}
+
+/// A direction on the sphere, chosen from `seed` and nothing else
+///
+/// What a guessed place is pointed along. The distance a close pair stands
+/// off is on record and the bearing is not, so the bearing is taken from the
+/// system's own address and the barycentre's id: the same point every session
+/// and every frame, which is what stops a guess from wandering, and spread
+/// evenly over the sphere, so the guesses do not pile into one plane and read
+/// as a claim about it.
+///
+/// Splitmix64, which is a few multiplies and shifts and mixes well enough
+/// that neighbouring ids do not come out neighbouring directions. Uniform on
+/// the sphere rather than in the angles: an even spread in latitude crowds
+/// the poles.
+pub fn made_up_direction(address: i64, id: i16) -> DVec3 {
+    fn mixed(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    }
+    // A double holds 53 bits exactly, which is what the shift leaves.
+    fn unit(x: u64) -> f64 {
+        (x >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    let seed = mixed(address as u64).wrapping_add(id as u64);
+    let up = 2. * unit(mixed(seed)) - 1.;
+    let round = std::f64::consts::TAU * unit(mixed(seed.wrapping_add(1)));
+    let flat = (1. - up * up).max(0.).sqrt();
+
+    // `y` is the map's own normal, as everywhere else here.
+    DVec3::new(flat * round.cos(), up, flat * round.sin())
+}
 
 /// How far up a chain of parents to walk before giving up
 ///
@@ -442,14 +534,29 @@ pub struct Orbits(HashMap<i16, (Option<i16>, Orbit)>);
 const ANCESTRY: usize = 16;
 
 impl Orbits {
-    /// Take in one thing and what it goes round
+    /// Take in one thing and what it goes round, as it was recorded
     pub fn insert(&mut self, id: i16, parent: Option<i16>, orbit: Orbit) {
-        self.0.insert(id, (parent, orbit));
+        self.hold(id, parent, orbit, Standing::Recorded);
+    }
+
+    /// Take in one thing the map made up a path for
+    pub fn guess(&mut self, id: i16, parent: Option<i16>, orbit: Orbit) {
+        self.hold(id, parent, orbit, Standing::Guessed);
+    }
+
+    fn hold(
+        &mut self,
+        id: i16,
+        parent: Option<i16>,
+        orbit: Orbit,
+        standing: Standing,
+    ) {
+        self.0.insert(id, Held { parent, orbit, standing });
     }
 
     /// What `id` goes round, if it is held and goes round anything
     pub fn parent(&self, id: i16) -> Option<i16> {
-        self.0.get(&id).and_then(|(parent, _)| *parent)
+        self.0.get(&id).and_then(|held| held.parent)
     }
 
     /// Whether `id` is held at all
@@ -460,13 +567,44 @@ impl Orbits {
         self.0.contains_key(&id)
     }
 
+    /// Whether `id`'s own path is one the map made up
+    ///
+    /// About the one thing rather than about the chain over it, which is
+    /// [`Self::guessed_under`]. What decides whether a line is drawn for
+    /// it: the distance a guess is built from is a reading, and the ring
+    /// through that distance is not.
+    pub fn guessed(&self, id: i16) -> bool {
+        self.0.get(&id).is_some_and(|held| held.standing == Standing::Guessed)
+    }
+
+    /// Which place `id` stands on that the map made up, if any
+    ///
+    /// Itself or the nearest thing it hangs from. A moon of a close pair
+    /// whose centre was never scanned is placed exactly as its own scan says
+    /// about a point the map put somewhere plausible, so the moon's own
+    /// reading is sound and where it lands is not. Which is the thing a panel
+    /// has to say out loud — and it says what kind of place it was, so the id
+    /// comes back rather than a bare yes.
+    pub fn guessed_under(&self, id: i16) -> Option<i16> {
+        let mut at = Some(id);
+        for _ in 0..ANCESTRY {
+            let this = at?;
+            let held = self.0.get(&this)?;
+            if held.standing == Standing::Guessed {
+                return Some(this);
+            }
+            at = held.parent;
+        }
+        None
+    }
+
     /// Everything held, with what each of them goes round
     ///
     /// What the lines are drawn from. Stars, bodies and barycenters all arrive
     /// through [`Self::insert`], so a loop over this draws a line for each of
     /// the three without having to be told there are three.
     pub fn circling(&self) -> impl Iterator<Item = (i16, Option<i16>)> + '_ {
-        self.0.iter().map(|(id, (parent, _))| (*id, *parent))
+        self.0.iter().map(|(id, held)| (*id, held.parent))
     }
 
     /// The ring `id` traces about whatever it goes round, as `spacing` lays it
@@ -476,26 +614,25 @@ impl Orbits {
     /// planet is. Nothing for something that does not go round anything, which
     /// is what a system's primary comes back as.
     pub fn path(&self, id: i16, spacing: &Spacing) -> Option<Vec<DVec3>> {
-        let (_, orbit) = self.0.get(&id)?;
-        let path = orbit.path(spacing);
+        let path = self.0.get(&id)?.orbit.path(spacing);
         (!path.is_empty()).then_some(path)
     }
 
     /// How far round `id`'s ring the point nearest `to` sits
     pub fn nearest(&self, id: i16, to: DVec3) -> f64 {
-        self.0.get(&id).map_or(0., |(_, orbit)| orbit.nearest(to))
+        self.0.get(&id).map_or(0., |held| held.orbit.nearest(to))
     }
 
     /// How far round `id`'s ring it stands, `since` seconds after the epoch
     pub fn anomaly(&self, id: i16, since: f64) -> f64 {
-        self.0.get(&id).map_or(0., |(_, orbit)| orbit.anomaly(since))
+        self.0.get(&id).map_or(0., |held| held.orbit.anomaly(since))
     }
 
     /// How far apart to lay `id`'s points where the camera stands, in radians
     pub fn finest(&self, id: i16, across: f64) -> f64 {
         self.0
             .get(&id)
-            .map_or(std::f64::consts::PI, |(_, orbit)| orbit.finest(across))
+            .map_or(std::f64::consts::PI, |held| held.orbit.finest(across))
     }
 
     /// Where `id` sits within its system, in metres from where the walk ends
@@ -506,7 +643,7 @@ impl Orbits {
     /// Where the walk ends is the point the system's stars go round, which is
     /// the arrival star itself only where there is one of them. The map wants
     /// the arrival star either way, that being where it puts the middle of a
-    /// system, so what draws a system subtracts [`super::Contents`]'s middle
+    /// system, so what draws a system subtracts [`crate::inside`]'s middle
     /// from this and every one of them lands short of it.
     ///
     /// A parent that is not on record ends the walk, and what is left is
@@ -517,13 +654,17 @@ impl Orbits {
     /// # Barycentres
     ///
     /// A barycentre is nobody's row in `bodies`, so a chain that names one
-    /// steps somewhere else for it: [`super::Contents::orbits`] puts them in
-    /// alongside the stars and the bodies, and the chain runs whole.
+    /// steps somewhere else for it: [`SystemBodies::orbits`](crate::meta::SystemBodies::orbits) puts them in
+    /// alongside the stars and the bodies, and the chain runs whole. It puts
+    /// in the ones no scan ever landed for as well — the type a chain names
+    /// says what they are, and how far out they stand is read off the things
+    /// riding them — so the walk ending early is now the pathological case
+    /// rather than the common one.
     ///
-    /// One of them stays missing on purpose. The barycentre at the root of a
-    /// multi-star system goes round nothing and is the middle of the system,
-    /// so ending the walk there and measuring from the centre lands exactly
-    /// where following it would have.
+    /// The barycentre at the root goes round nothing and is the middle of the
+    /// system, so ending the walk there and measuring from the centre lands
+    /// exactly where following it would have. It is held all the same, as the
+    /// point a mark is drawn at.
     ///
     /// This was read the other way round for a while, with none of them held:
     /// the root came out right by accident and every close pair was drawn at
@@ -536,9 +677,9 @@ impl Orbits {
 
         for _ in 0..ANCESTRY {
             let Some(this) = at else { break };
-            let Some((parent, orbit)) = self.0.get(&this) else { break };
-            place += orbit.at(since);
-            at = *parent;
+            let Some(held) = self.0.get(&this) else { break };
+            place += held.orbit.at(since);
+            at = held.parent;
         }
         place
     }
@@ -560,6 +701,61 @@ mod tests {
             mean_anomaly: 0.,
             period: Some(1000.),
         }
+    }
+
+    /// A circle worked back from a place puts the thing exactly there
+    ///
+    /// Which is the whole of what it is for: a barycentre nobody scanned is
+    /// stood up at the distance its riders report, so the elements have to
+    /// land on the point that distance picked out rather than near it. Every
+    /// octant, since the two angles are read off the position and a sign the
+    /// wrong way round comes out plausible everywhere but one of them.
+    #[test]
+    fn a_circle_worked_back_from_a_place_lands_on_it() {
+        for x in [-3e11, 4e11] {
+            for y in [-7e11, 2e11] {
+                for z in [-5e11, 9e11] {
+                    let wanted = DVec3::new(x, y, z);
+                    let landed = Orbit::circle_to(wanted).at(0.);
+
+                    assert!(
+                        landed.distance(wanted) < wanted.length() * 1e-9,
+                        "asked for {wanted}, landed on {landed}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// And a place of nothing is something standing still
+    #[test]
+    fn a_circle_to_nowhere_stands_still() {
+        assert_eq!(Orbit::circle_to(DVec3::ZERO).at(0.), DVec3::ZERO);
+    }
+
+    /// A made up direction is a direction, and the same one every time
+    ///
+    /// Both halves carry a guess. Being a unit vector is what leaves the
+    /// distance a guessed place is built from a reading rather than something
+    /// scaled by the guess; being the same answer every call is what stops
+    /// the mark drawn at it from wandering as the map redraws — it is asked
+    /// afresh every time a system's contents are placed.
+    #[test]
+    fn a_made_up_direction_is_a_direction_and_holds_still() {
+        for id in [0, 1, 10, 4096] {
+            let way = made_up_direction(633675551490, id);
+
+            assert!(
+                (way.length() - 1.).abs() < 1e-12,
+                "{id} pointed {} of the way",
+                way.length()
+            );
+            assert_eq!(way, made_up_direction(633675551490, id));
+        }
+
+        // And two centres of one system do not share a direction, or a pair
+        // would be stood up on top of the point it goes round.
+        assert_ne!(made_up_direction(1, 10), made_up_direction(1, 11));
     }
 
     /// A circle is solved without iterating at all

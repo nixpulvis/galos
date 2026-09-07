@@ -4061,6 +4061,7 @@ dependencies = [
  "clap 4.6.6",
  "elite_journal",
  "galos_photometry",
+ "glam",
  "pollster 0.3.0",
  "rmp-serde",
  "serde",

@@ -127,12 +127,13 @@ impl Metadata {
             .into_iter()
             .map(|system| (system.address, system))
             .collect();
-        let reaches = reaches(db, None).await?;
+        let grouped = bodies_of(db, None).await?;
+        let reaches = reaches_of(&grouped);
         let factions = factions_above(db, 0).await?;
         let high = factions.last().map(|f| f.id).unwrap_or(0);
         let mut metadata =
             Metadata { names, populated, reaches, factions, high };
-        let report = metadata.publish(db, dir, None, true, true, true).await?;
+        let report = metadata.publish(dir, &grouped, None, true, true, true)?;
         Ok((metadata, report))
     }
 
@@ -208,8 +209,12 @@ impl Metadata {
 
         // A scan is what moves a reach, so this is the table a watch pass
         // really does move: a system reported again with nothing new scanned
-        // reads exactly as the one held and writes nothing.
-        let reached = reaches(db, Some(touched)).await?;
+        // reads exactly as the one held and writes nothing. Worked out from
+        // the rows the body files are written from, which is what keeps the
+        // reach the map sizes a system by and the arrangement it draws inside
+        // that system the same answer.
+        let grouped = bodies_of(db, Some(touched)).await?;
+        let reached = reaches_of(&grouped);
         let mut scanned = HashSet::with_capacity(reached.len());
         let mut grew = false;
         for (address, reach) in reached {
@@ -243,16 +248,16 @@ impl Metadata {
             self.factions.extend(named);
         }
 
-        self.publish(db, dir, Some(touched), moved, grew, reported).await
+        self.publish(dir, &grouped, Some(touched), moved, grew, reported)
     }
 
     /// Write the dirty names chunks, whichever whole tables changed, and the
-    /// body files of `bodies_for` — every system's for a full build, the
-    /// changed ones' for a watch pass.
-    async fn publish(
+    /// body files of `grouped` — every system's for a full build, the changed
+    /// ones' for a watch pass.
+    fn publish(
         &mut self,
-        db: &Database,
         dir: &Path,
+        grouped: &HashMap<i64, meta::SystemBodies>,
         bodies_for: Option<&[i64]>,
         populated: bool,
         reaches: bool,
@@ -273,7 +278,7 @@ impl Metadata {
             names: self.names.len(),
             factions: self.factions.len(),
             reaches: self.reaches.len(),
-            body_files: write_bodies(db, dir, bodies_for).await?,
+            body_files: write_bodies(dir, grouped, bodies_for)?,
             name_chunks,
         })
     }
@@ -417,20 +422,22 @@ fn write_reaches(dir: &Path, reaches: &HashMap<i64, f32>) -> Result<usize> {
     Ok(table.len())
 }
 
-/// Write `bodies/<address>.bin`: one [`meta::SystemBodies`] per system that has
-/// any stars, bodies or barycenters on record.
+/// Group `bodies/<address>.bin`'s worth of rows: one [`meta::SystemBodies`] per
+/// system that has any stars, bodies or barycenters on record.
 ///
 /// The three kinds are read in bulk, ordered by system and grouped in memory,
 /// so a system with a hundred bodies costs one row per body of one query rather
 /// than a query of its own. `addresses` is [`None`] for a full build, which
 /// reads every system, and [`Some`] for a watch pass, which reads only what
-/// changed and removes the file of any changed address left with nothing, so a
-/// system whose last scan was withdrawn stops reading as one that still has it.
-async fn write_bodies(
+/// changed.
+///
+/// Read once and used twice: [`write_bodies`] writes these out and
+/// [`reaches_of`] measures them. They were two passes over the same rows until
+/// the reach stopped being its own query.
+async fn bodies_of(
     db: &Database,
-    dir: &Path,
     addresses: Option<&[i64]>,
-) -> Result<usize> {
+) -> Result<HashMap<i64, meta::SystemBodies>> {
     let mut grouped: HashMap<i64, meta::SystemBodies> = HashMap::new();
     for star in all_stars(db, addresses).await? {
         grouped
@@ -453,9 +460,19 @@ async fn write_bodies(
             .barycenters
             .push(meta_barycenter(barycenter));
     }
+    Ok(grouped)
+}
 
+/// Write the body files, and remove the file of any changed address left with
+/// nothing — so a system whose last scan was withdrawn stops reading as one
+/// that still has it.
+fn write_bodies(
+    dir: &Path,
+    grouped: &HashMap<i64, meta::SystemBodies>,
+    addresses: Option<&[i64]>,
+) -> Result<usize> {
     std::fs::create_dir_all(dir.join(source::BODIES_DIR))?;
-    for (address, system_bodies) in &grouped {
+    for (address, system_bodies) in grouped {
         write_meta(&source::bodies_path(dir, *address), system_bodies)?;
     }
 
@@ -473,85 +490,27 @@ async fn write_bodies(
     Ok(grouped.len())
 }
 
-/// How far each system reaches from its arrival star, in metres: the far edge
-/// of the furthest thing on record, over bodies, stars and the points a close
-/// pair goes round. All of them for a full build, or those of `addresses` for a
-/// watch pass. One grouped query rather than one per system, and the only place
-/// the reach is worked out at all: the map reads it out of the published table
-/// rather than asking the database how big a system is.
+/// How far each system reaches from its arrival star, in metres, over the rows
+/// already grouped for the body files.
 ///
-/// The far edge is the furthest the thing ever gets, not where it was found:
-/// how far from arrival the scan put it or the far end of its orbit, whichever
-/// is greater, with its own radius on top. A scan records where a thing stood
-/// on the day, so the orbit is what says how far it ever carries, and the
-/// recorded distance is what says how far its parent stands from the middle.
+/// [`galos_index::inside`]'s answer and nobody else's. The map sizes every
+/// system in the sky by this table and draws the one it descends into from the
+/// same rows, and the two have to agree: a shell drawn smaller than the orbits
+/// inside it is the one thing a reach cannot be. This was a query of its own
+/// for a while — a `GREATEST(away, apoapsis) + radius` maxed per system — and
+/// it did not agree. It never added the displacement of what a thing goes
+/// round, so a star whose own orbit is measured about a point ten billion
+/// kilometres off came back reaching only as far as that orbit, and the shell
+/// cut through the far half of its own ellipse. Written twice, in two
+/// languages, it was never going to hold.
 ///
-/// The points a close pair goes round count as well. Nothing stands at one, but
-/// the pair rides its ellipse, and a pair scanned near periapsis says nothing
-/// about how far that ellipse reaches.
-///
-/// Eccentricity is held short of one. What is recorded is a scan rather than a
-/// solution, and a parabola read literally reaches forever.
-///
-/// The `299792458` is the metres in a light second, the distances from arrival
-/// being recorded in those and everything else in metres.
-///
-/// A system with nothing scanned in it comes back with no row at all, which is
-/// what leaves it out of the table: the map reads an absent reach as a system
-/// whose size is not on record and stands in for it.
-async fn reaches(
-    db: &Database,
-    addresses: Option<&[i64]>,
-) -> Result<HashMap<i64, f32>> {
-    // Every reaching thing, in the terms the outer query maxes over: how far
-    // out it stands, how far its own orbit carries it, and how wide it is.
-    const REACHING: &str = "SELECT system_address AS address, \
-                MAX(GREATEST(away, apoapsis) + radius) AS reach \
-         FROM ( \
-             SELECT system_address, \
-                    (COALESCE(distance_from_arrival, 0) * 299792458)::real \
-                        AS away, \
-                    (semi_major_axis \
-                        * (1 + LEAST(eccentricity, 0.99)))::real AS apoapsis, \
-                    radius \
-             FROM bodies";
-    const AND_STARS: &str = "           UNION ALL \
-             SELECT system_address, \
-                    (distance_from_arrival_ls * 299792458)::real, \
-                    (COALESCE(semi_major_axis, 0) \
-                        * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real, \
-                    radius \
-             FROM stars";
-    const AND_CENTERS: &str = "           UNION ALL \
-             SELECT system_address, \
-                    0::real, \
-                    (COALESCE(semi_major_axis, 0) \
-                        * (1 + LEAST(COALESCE(eccentricity, 0), 0.99)))::real, \
-                    0::real \
-             FROM barycenters";
-    const GROUPED: &str = ") reaching GROUP BY system_address";
-
-    let rows = match addresses {
-        None => {
-            sqlx::query(&format!(
-                "{REACHING} {AND_STARS} {AND_CENTERS} {GROUPED}"
-            ))
-            .fetch_all(&db.pool)
-            .await?
-        }
-        Some(addresses) => {
-            let of = " WHERE system_address = ANY($1)";
-            sqlx::query(&format!(
-                "{REACHING}{of} {AND_STARS}{of} {AND_CENTERS}{of} {GROUPED}"
-            ))
-            .bind(addresses)
-            .fetch_all(&db.pool)
-            .await?
-        }
-    };
-
-    rows.iter()
-        .map(|row| Ok((row.try_get("address")?, row.try_get("reach")?)))
+/// A system with nothing to say comes back with no entry at all, which is what
+/// leaves it out of the table: the map reads an absent reach as a system whose
+/// size is not on record and stands in for it.
+fn reaches_of(grouped: &HashMap<i64, meta::SystemBodies>) -> HashMap<i64, f32> {
+    grouped
+        .iter()
+        .filter_map(|(&address, rows)| Some((address, rows.extent(address)?)))
         .collect()
 }
 

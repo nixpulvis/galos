@@ -116,6 +116,18 @@ pub struct Parent {
     pub id: i16,
 }
 
+impl Parent {
+    /// Whether this ancestor is a barycentre
+    ///
+    /// The journal names a barycentre parent `Null` and nothing else by that
+    /// name, so the type alone answers it. Worth asking even where the
+    /// barycentre has no row of its own: what kind of thing a chain names is
+    /// known from the naming, and only its own orbit waits on its scan.
+    pub fn is_barycenter(&self) -> bool {
+        self.ty.as_deref() == Some("Null")
+    }
+}
+
 /// What a body with a surface has, and a gas giant has none of.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Surface {

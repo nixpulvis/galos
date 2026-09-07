@@ -290,7 +290,7 @@ pub(super) fn collect(
         answer.bodies.len(),
         answer.barycenters.len()
     );
-    contents.hold(answer.stars, answer.bodies, answer.barycenters);
+    contents.hold(answer);
 }
 
 #[cfg(test)]

@@ -17,12 +17,13 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 
 use super::System;
-use super::bodies::spawn::{Body, WORTH_KEEPING, WORTH_SIZING};
-use super::labels::{depth_of, world_per_pixel};
+use super::bodies::spawn::{Body, Unscanned, WORTH_KEEPING, WORTH_SIZING};
+use super::labels::{depth, depth_of, world_per_pixel};
 use super::roundness::Roundness;
 use super::spawn::{Shell, StarExposure};
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use big_space::prelude::{CellCoord, Grid};
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
@@ -56,6 +57,12 @@ pub fn plugin(app: &mut App) {
     // does. What it writes is read by the next frame's propagation, which is
     // a frame behind and nowhere near enough movement to see.
     app.add_systems(PostUpdate, size_inside.after(TransformSystems::Propagate));
+    // In `Update` rather than beside `size_inside`, since it reads where a
+    // mark stands off the grid rather than off a transform: a mark spawned
+    // this frame has no propagated one yet, and it also decides whether the
+    // mark is drawn at all, which has to be settled before the visibility it
+    // writes is propagated.
+    app.add_systems(Update, size_marks.in_set(MapSet::Present));
 }
 
 #[derive(Resource, Debug, PartialEq)]
@@ -438,6 +445,92 @@ pub fn size_inside(
         let wanted = roundness.at(&mesh.0, size / per_pixel);
         if mesh.0 != *wanted {
             mesh.0 = wanted.clone();
+        }
+    }
+}
+
+/// How long each arm of the cross standing for a barycentre is, in pixels
+///
+/// Small: nothing is there, and the mark is only saying where. Under
+/// [`super::pointing`]'s floor for a body's mark, so a mark standing in for
+/// nothing never draws wider than the smallest thing that is actually there.
+const MARK_ARM: f32 = 3.;
+
+/// How much of the ring around it a mark may take up
+///
+/// A mark stands at the middle of whatever goes round it, so the ring it sits
+/// in is what it has to fit inside: at a quarter of that ring's near radius,
+/// a mark reads as a place marked out and leaves the ring the eye's. Held to
+/// this rather than to the sizes above alone, which fill a ring a few pixels
+/// across and draw a mark over the very thing it stands beside — the
+/// reported trouble.
+const MARK_SHARE: f32 = 0.25;
+
+/// How small a mark is not worth drawing at all, in pixels
+///
+/// Past here the ring is too tight to hold a mark and the mark is too small
+/// to read, so it goes out rather than being drawn as a speck inside a speck.
+/// What is lost is nothing: at this size the ring itself is a few pixels, and
+/// the thing to do about a place that small is fly in, which brings the mark
+/// straight back.
+const MARK_LEAST: f32 = 1.5;
+
+/// Hold each mark to a size on screen, and inside the ring it stands in
+///
+/// An unscanned place has no size of its own — that is what is missing about
+/// it — so unlike a body there is nothing to draw it at and nothing to grow
+/// into. What it wants is to stay legible at every zoom, which is a size in
+/// pixels and so a scale that follows the distance, bounded by how much of
+/// the ring around it that size would swallow.
+///
+/// Measured off the grid holding it rather than off its own
+/// [`GlobalTransform`], which is the other way round from [`size_inside`] and
+/// for the reason [`super::pointing::size_bodies`] is: `big_space` writes
+/// that transform during `PostUpdate`, and a mark spawned this frame has not
+/// got one yet. Read there, the frame a system's contents arrive sized every
+/// mark as if it stood on the camera — a shape the width of the view,
+/// flashing once and gone, which is the box that flickered on the way in.
+pub fn size_marks(
+    camera: Query<(&OrbitCamera, &Camera)>,
+    systems: Query<(&System, &Grid)>,
+    mut marks: Query<(
+        &Unscanned,
+        &ChildOf,
+        &CellCoord,
+        &mut Transform,
+        &mut Visibility,
+    )>,
+) {
+    let Ok((orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    for (mark, of, cell, mut drawn, mut shown) in &mut marks {
+        let Ok((system, grid)) = systems.get(of.parent()) else { continue };
+        let metres = cell.as_dvec3(grid) + drawn.translation.as_dvec3();
+        let place = system.position() + crate::space::light_years(metres);
+        // A metre, which is as near as the camera may be pulled to anything.
+        let into_view = depth(orbit, place).max(1.);
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
+
+        // How near the ring around it comes, in pixels, which is what the
+        // mark has to fit inside.
+        let ring = mark.ridden / per_pixel;
+        let across = MARK_ARM.min(ring * MARK_SHARE);
+        if across < MARK_LEAST {
+            shown.set_if_neq(Visibility::Hidden);
+            continue;
+        }
+        // Inherited rather than visible: the system holding it is still
+        // free to take the whole of its insides away.
+        shown.set_if_neq(Visibility::Inherited);
+
+        // Only where it moved, as every scale asked of everything drawn every
+        // frame is: a scale assigned regardless marks the mark changed every
+        // frame and has `big_space` walk it again for nothing.
+        let size = across * per_pixel;
+        if drawn.scale.x != size {
+            drawn.scale = Vec3::splat(size);
         }
     }
 }

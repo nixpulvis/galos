@@ -60,7 +60,12 @@ pub(crate) fn metres(position: DVec3) -> DVec3 {
 /// Exact, the speed of light being defined. What distances inside a system are
 /// said in: a light year is the whole of one and a body sits light seconds or
 /// light hours out.
-pub(crate) const LIGHT_SECOND: f64 = 2.99792458e8;
+///
+/// Taken from the crate that places a system's insides rather than written
+/// again here. The same number twice is the same number until one of them is
+/// edited, and a body's distance from arrival is read through it on both
+/// sides: here to say it out loud, there to work out where the thing stands.
+pub(crate) const LIGHT_SECOND: f64 = galos_index::inside::LIGHT_SECOND;
 
 /// How many light seconds `distance` light years comes to
 ///

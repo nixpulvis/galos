@@ -535,6 +535,7 @@ fn panels(
     mut clock: ResMut<crate::systems::bodies::Clock>,
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
+    contents: Res<crate::systems::bodies::Contents>,
 ) -> Result {
     if panels.open.is_empty() {
         return Ok(());
@@ -589,6 +590,29 @@ fn panels(
         input.pointer.button_clicked(egui::PointerButton::Primary)
     });
     let mut chosen = None;
+    // Where a thing inside a system stands may rest on a place the map made
+    // up rather than on one anybody scanned — see
+    // [`crate::systems::bodies::Contents::guessed_under`] — and that is a
+    // thing a panel has to say out loud, in the word for what kind of place
+    // it was: a close pair's centre is the commonest, and an unscanned star
+    // or body is stood up the same way.
+    //
+    // Only asked where a panel about something inside a system is open, and
+    // only of the system whose rows are in hand: a panel holds a row and
+    // outlives the camera leaving, so what is held may be about somewhere else
+    // entirely by the time it is read.
+    let orbits = panels
+        .open
+        .iter()
+        .any(|panel| {
+            matches!(panel.subject, Subject::Star(_) | Subject::Body(_))
+        })
+        .then(|| contents.orbits());
+    let guessed = |address: i64, id: i16| {
+        let held =
+            orbits.as_ref().filter(|_| contents.of() == Some(address))?;
+        contents.guessed_under(held, id)
+    };
     let mut worked = None;
     for panel in &mut panels.open {
         let mut showing = true;
@@ -613,10 +637,20 @@ fn panels(
                     described(ui, system, &names, eye, &mut moved, &mut wanted)
                 }
                 Subject::Star(star) => mark_if_wound(&mut clock, |clock| {
-                    star_described(ui, star, clock)
+                    star_described(
+                        ui,
+                        star,
+                        clock,
+                        guessed(star.system_address, star.id),
+                    )
                 }),
                 Subject::Body(body) => mark_if_wound(&mut clock, |clock| {
-                    body_described(ui, body, clock)
+                    body_described(
+                        ui,
+                        body,
+                        clock,
+                        guessed(body.system_address, body.id),
+                    )
                 }),
                 Subject::Filter { filter, legs, systems } => admitted(
                     ui,
@@ -823,6 +857,7 @@ fn star_described(
     ui: &mut Ui,
     star: &DbStar,
     clock: &mut crate::systems::bodies::Clock,
+    guessed: Option<&str>,
 ) {
     egui::Grid::new(("star-fields", star.system_address, star.id))
         .num_columns(2)
@@ -851,7 +886,7 @@ fn star_described(
             );
             field(ui, "Magnitude", format!("{:.2}", star.absolute_magnitude));
             turning(ui, &star.spin);
-            circling(ui, star.orbit.as_ref(), clock);
+            circling(ui, star.orbit.as_ref(), clock, guessed);
             found(ui, &star.discovery);
             field(
                 ui,
@@ -866,6 +901,7 @@ fn body_described(
     ui: &mut Ui,
     body: &DbBody,
     clock: &mut crate::systems::bodies::Clock,
+    guessed: Option<&str>,
 ) {
     egui::Grid::new(("body-fields", body.system_address, body.id))
         .num_columns(2)
@@ -904,7 +940,7 @@ fn body_described(
             standing(ui, &body.surface);
             field(ui, "Tidal lock", yes_no(body.tidal_lock));
             turning(ui, &body.spin);
-            circling(ui, Some(&body.orbit), clock);
+            circling(ui, Some(&body.orbit), clock, guessed);
             found(ui, &body.discovery);
             field(
                 ui,
@@ -1017,10 +1053,20 @@ fn turning(ui: &mut Ui, spin: &Spin) {
 /// One line saying None for the one that goes round nothing, which is the
 /// star a system arrives at, as a body with no surface is one line saying the
 /// same.
+///
+/// `guessed` names the kind of place this path is measured from where that
+/// place is one the map made up: a close pair whose centre was never scanned,
+/// or a star or body a chain names with no row behind it, is stood up at
+/// the distance its riders report in a direction nobody measured, so
+/// everything under it is drawn exactly as its own scan says about a point
+/// that is a guess. The path is a reading either way, and where it puts the
+/// thing is not, which is the one thing about it a panel could not otherwise
+/// say.
 fn circling(
     ui: &mut Ui,
     orbit: Option<&Orbit>,
     clock: &mut crate::systems::bodies::Clock,
+    guessed: Option<&str>,
 ) {
     let Some(orbit) = orbit else {
         field(ui, "Orbit", "None".into());
@@ -1033,6 +1079,9 @@ fn circling(
     under(ui, "Period", lasting(orbit.orbital_period));
     under(ui, "Eccentricity", format!("{:.4}", orbit.eccentricity));
     under(ui, "Inclination", format!("{:.1}°", orbit.orbital_inclination));
+    if let Some(kind) = guessed {
+        under(ui, "Place", format!("Guessed ({kind} unscanned)"));
+    }
     turned(ui, orbit.orbital_period as f64, clock);
 }
 
@@ -1853,8 +1902,46 @@ mod tests {
                 ui,
                 &founders(),
                 &mut crate::systems::bodies::Clock::default(),
+                None,
             )
         })
+    }
+
+    /// A place the map made up is owned as one, and says what was missing
+    ///
+    /// The body's own path is a reading and where it puts the body is not:
+    /// what it is measured from was never scanned, so the map stood that up
+    /// at the distance its riders report in a direction nobody measured. Not
+    /// only ever a barycentre — an unscanned star or body is stood up the
+    /// same way — so the word is part of the answer.
+    #[test]
+    fn a_guessed_place_says_what_was_never_scanned() {
+        let said = |kind| {
+            words(|ui| {
+                body_described(
+                    ui,
+                    &founders(),
+                    &mut crate::systems::bodies::Clock::default(),
+                    kind,
+                )
+            })
+        };
+
+        let guessed = said(Some("star"));
+        assert!(
+            guessed.contains(&"Guessed (star unscanned)".to_owned()),
+            "{guessed:?}"
+        );
+        assert!(
+            said(Some("barycentre"))
+                .contains(&"Guessed (barycentre unscanned)".to_owned())
+        );
+        // And nothing at all where nothing was made up, which is the
+        // ordinary case: a row that says where it is says it.
+        assert!(
+            !said(None).iter().any(|word| word.starts_with("Guessed")),
+            "a place nobody guessed at was called a guess"
+        );
     }
 
     /// A body's panel reads in the units a body is talked about in

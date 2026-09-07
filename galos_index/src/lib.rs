@@ -19,9 +19,11 @@ pub mod aggregate;
 pub mod cache;
 pub mod checkpoint;
 pub mod geometry;
+pub mod inside;
 pub mod meta;
 pub mod moments;
 pub mod names;
+pub mod orbit;
 pub mod serialization;
 pub mod source;
 pub mod store;
@@ -35,12 +37,14 @@ pub use aggregate::{Aggregate, Cell};
 pub use cache::{Point, Resident, ResidentCell};
 pub use checkpoint::Checkpoint;
 pub use geometry::{Aabb, CellId};
+pub use inside::STAND_IN;
 pub use meta::{
     Barycenter, Body, Economies, Faction, NameEntry, Parent, PopulatedSystem,
     Star, Surface, SystemBodies, SystemReach,
 };
 pub use moments::Moments;
 pub use names::NameTable;
+pub use orbit::{Orbit, Orbits, Spacing};
 pub use serialization::{Codec, Decode, Encode, FixedCodec};
 pub use source::{FsSource, Source};
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
