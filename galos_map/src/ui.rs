@@ -2397,8 +2397,8 @@ fn stops_of(selection: &Selection) -> Result<Vec<&str>, &'static str> {
     let stops: Vec<&str> =
         selection.systems().map(|system| system.name()).collect();
     match stops.len() {
-        0 => Err("Pick out two systems to plot between"),
-        1 => Err("Pick out a second system to plot to"),
+        0 => Err("Pick two or more systems"),
+        1 => Err("Pick one more system"),
         _ => Ok(stops),
     }
 }
