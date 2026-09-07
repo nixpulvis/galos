@@ -142,6 +142,13 @@ fn diagnostics(
         .resizable(false)
         .open(&mut show.0)
         .show(ctx, |ui| {
+            // Scrolled, and no taller than the room under the toggle it hangs
+            // from. Every block here is drawn whatever the viewport is, and a
+            // short window ran the readouts off the bottom of it with the
+            // frame rate at the end out of reach. No height is imposed:
+            // `scrolling` grows to what it is given and stops at what is in
+            // it, so this is as tall as the readouts and no taller.
+            crate::ui::scrolling(ui, ui.available_height(), "diagnostics", |ui| {
             row(
                 ui,
                 "index",
@@ -545,6 +552,7 @@ fn diagnostics(
             frame.on_hover_text(
                 "Frames per second, smoothed, with the time a frame took.",
             );
+            });
         });
 
     Ok(())

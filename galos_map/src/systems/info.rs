@@ -156,6 +156,28 @@ fn spread(ui: &mut Ui) {
     ui.set_min_width(WIDTH);
 }
 
+/// A panel's contents: across the whole of the window, and scrolled inside it
+///
+/// A panel is as tall as what it holds — four rows of a body's orbit, or four
+/// hundred systems of a faction's holdings — and nothing about a window bounds
+/// that, so a long one ran off the bottom of the viewport with the rest of it
+/// out of reach. Scrolled, the panel stops at the room there is and the bar
+/// carries the rest.
+///
+/// The room is what egui has already worked out. A window's contents are given
+/// the rect from where the window stands to the edge of the screen, so
+/// `available_height` is the height there is for this one, wherever the tiling
+/// opened it.
+///
+/// No height is imposed: [`crate::ui::scrolling`] grows to what it is given
+/// and stops at what is in it, so a panel of four rows is four rows tall.
+/// Which is what the tiling wants — it steps the next panel by the tallest
+/// drawn — and what a fixed height would take away.
+fn inside(ui: &mut Ui, id: egui::Id, contents: impl FnOnce(&mut Ui)) {
+    spread(ui);
+    crate::ui::scrolling(ui, ui.available_height(), id, contents);
+}
+
 /// What the user has a panel open for
 ///
 /// A list rather than a map, since there are only ever a handful of them and
@@ -639,8 +661,7 @@ fn panels(
             &mut showing,
         );
         let window = window.show(ctx, |ui| {
-            spread(ui);
-            match &panel.subject {
+            inside(ui, panel.subject.id(), |ui| match &panel.subject {
                 Subject::System(system) => {
                     described(ui, system, &names, eye, &mut moved, &mut wanted)
                 }
@@ -671,7 +692,7 @@ fn panels(
                     &mut moved,
                     &mut worked,
                 ),
-            }
+            })
         });
 
         // Only a panel that drew what it holds. A window rolled up into its
@@ -1192,13 +1213,6 @@ fn yes_no(answer: bool) -> String {
     if answer { "Yes".into() } else { "No".into() }
 }
 
-/// How many systems a filter's panel lists before it starts scrolling
-///
-/// Enough to read a faction's holdings at a glance, and few enough that a
-/// panel does not run the height of the viewport and leave the tiling
-/// nowhere to put the next one.
-const LISTED: usize = 8;
-
 /// What a filter's panel says it is showing, above the list of it
 ///
 /// How many systems, and for a route the range it was plotted for as well. A
@@ -1257,9 +1271,6 @@ fn admitted(
 
     ui.label(egui::RichText::new(summary(filter, systems.len())).weak());
 
-    let line = ui.text_style_height(&egui::TextStyle::Body)
-        + crate::ui::LINE_PADDING * 2.
-        + ui.spacing().item_spacing.y;
     // What each line has to say about where its system is, which is not the
     // same question in the two kinds of list.
     //
@@ -1371,9 +1382,14 @@ fn admitted(
     });
     ui.add_space(MARGIN);
 
-    // Named for the filter it lists, since a panel stands per filter and two
-    // of them open at once are two lists, each scrolled to its own place.
-    crate::ui::scrolling(ui, line * LISTED as f32, filter, |ui| {
+    // The list is not scrolled here. The panel it stands in is one scroll
+    // area of its own (see [`panels`]), and a list scrolled inside a scrolled
+    // panel is two bars to reach one row with. It was capped at eight lines
+    // for the tiling's sake — a panel that ran the height of the viewport
+    // left nowhere to put the next one — and the panel scrolling is what
+    // answers that instead, so a faction's whole holdings are listed and the
+    // one bar carries them.
+    {
         // One row, wherever in the list it stands. `at` keys it by place
         // rather than by which system stands there: the list is put in order
         // afresh every frame, so a row holds its rectangle while the system
@@ -1480,7 +1496,7 @@ fn admitted(
             }
             at += stops.len();
         }
-    });
+    }
 }
 
 /// Every faction present in the system, one to a line
@@ -2254,6 +2270,70 @@ mod tests {
         });
 
         rect
+    }
+
+    /// How tall a panel of `rows` lines comes out, on a screen `high` tall
+    ///
+    /// Drawn where the tiling opens one, against the top of the screen, and
+    /// through [`inside`] as a panel's contents always are. A few frames,
+    /// since a window settles its size against what it held last.
+    fn stands(high: f32, rows: usize) -> f32 {
+        let ctx = crate::tests::context();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600., high),
+            )),
+            ..Default::default()
+        };
+        let mut rect = egui::Rect::ZERO;
+        for _ in 0..3 {
+            let _ = ctx.run_ui(input.clone(), |ui| {
+                let mut showing = true;
+                let panel = framed(
+                    ui.ctx(),
+                    "PANEL",
+                    egui::Id::new("tall-panel"),
+                    egui::pos2(600. - MARGIN, MARGIN),
+                    false,
+                    &mut showing,
+                );
+                let shown = panel.show(ui.ctx(), |ui| {
+                    inside(ui, egui::Id::new("tall-panel"), |ui| {
+                        for row in 0..rows {
+                            ui.label(format!("row {row}"));
+                        }
+                    });
+                });
+                if let Some(shown) = shown {
+                    rect = shown.response.rect;
+                }
+            });
+        }
+
+        rect.height()
+    }
+
+    /// A panel is as tall as what it holds, and no taller than the room
+    ///
+    /// Both halves of one answer. A panel holds anything from four rows of an
+    /// orbit to four hundred systems of a faction's holdings, and it ran off
+    /// the bottom of the viewport with the rest of itself out of reach: the
+    /// contents are scrolled now, so a long one stops at the screen. And no
+    /// height is imposed to do it, because the tiling steps the next panel by
+    /// the tallest drawn — a short panel held to the room would leave the
+    /// column with one panel in it and a screen of nothing under it.
+    #[test]
+    fn a_panel_is_as_tall_as_what_it_holds_and_no_taller_than_the_room() {
+        let short = stands(600., 4);
+        let long = stands(600., 400);
+
+        assert!(short < 200., "four rows stood {short} tall");
+        assert!(
+            long <= 600.,
+            "four hundred rows stood {long} tall, past a 600 screen"
+        );
+        assert!(long > short, "a longer panel came out no taller");
     }
 
     /// How wide a panel titled `title` lays its contents out, and how much

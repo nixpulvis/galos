@@ -4319,16 +4319,17 @@ mod tests {
         };
         let mut output = None;
         for _ in 0..60 {
-            output = Some(ctx.run(input.clone(), |ctx| {
+            output = Some(ctx.run_ui(input.clone(), |ui| {
+                let ctx = ui.ctx().clone();
                 // A ring, as `selection::ring` paints one, into the layer the
                 // map puts its annotations in.
                 ctx.layer_painter(crate::systems::labels::annotations_layer())
                     .circle_stroke(
                         egui::pos2(PANE_WIDTH * 0.5, 300.),
                         12.,
-                        egui::Stroke::new(2., egui::Color32::YELLOW),
+                        egui::Stroke::new(2_f32, egui::Color32::YELLOW),
                     );
-                settings_pane(ctx, true, |ui| {
+                settings_pane(&ctx, true, |ui| {
                     ui.label("Spyglass");
                 });
             }));
