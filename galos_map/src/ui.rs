@@ -1525,6 +1525,11 @@ fn main_bar(
     if let Some(chosen) = row_ask.chosen {
         filter.chosen.0 = Some(chosen);
     }
+    // A panel about the whole trip, which reads as a route's panel because
+    // that is what a trip is: one line through every stop, in order.
+    if let Some(described) = row_ask.described {
+        panels.open_filter(described);
+    }
     // And where the camera goes to see one whole. Every system the filter
     // admits, not only the ones the map has dragged in, since where a faction
     // is, is most of what is being asked.
@@ -2717,9 +2722,9 @@ fn applied(
     let mut toggling = None;
     let mut removing = None;
     let mut opening = None;
-    let mut whole = None;
+    let mut whole: Option<(FilterAction, Section, Vec<usize>)> = None;
 
-    for section in Section::all(filters) {
+    for (place_of, section) in Section::all(filters).into_iter().enumerate() {
         let rows = section.rows(filters);
         if rows.is_empty() {
             continue;
@@ -2739,22 +2744,35 @@ fn applied(
                 &section.said(rows.len()),
                 section.under(flying),
                 section.on(filters),
+                matches!(section, Section::Trip(_)),
                 place,
             )
         {
-            whole = Some((asked, rows.clone()));
+            whole = Some((asked, section.clone(), rows.clone()));
         }
 
-        section_rows(
-            ui,
-            filters,
-            &rows,
-            place,
-            &mut toggling,
-            &mut removing,
-            &mut opening,
-            &mut ask,
-        );
+        // A trip's legs are drawn in from its row, so the block reads as one
+        // trip with its legs under it rather than as a row and then some
+        // routes. The other sections are counts of things that stand on their
+        // own and are not drawn in from anything.
+        let mut rows_of = |ui: &mut Ui| {
+            section_rows(
+                ui,
+                filters,
+                &rows,
+                place,
+                &mut toggling,
+                &mut removing,
+                &mut opening,
+                &mut ask,
+            );
+        };
+        match section {
+            Section::Trip(_) => {
+                ui.indent(("trip-legs", place_of), |ui| rows_of(ui));
+            }
+            _ => rows_of(ui),
+        }
     }
 
     if let Some(index) = toggling {
@@ -2767,17 +2785,23 @@ fn applied(
         panels.open_filter(filter);
     }
     match whole {
-        Some((FilterAction::Toggle, rows)) => filters.toggle_all(&rows),
+        Some((FilterAction::Toggle, _, rows)) => filters.toggle_all(&rows),
         // Every filter of the section at once, so what the camera stands back
         // to take in is all of them together rather than each in turn.
-        Some((FilterAction::Frame, rows)) => {
+        Some((FilterAction::Frame, _, rows)) => {
             ask.framed_all = rows
                 .iter()
                 .filter_map(|index| filters.get(*index))
                 .map(|active| active.filter.clone())
                 .collect();
         }
-        Some((FilterAction::LetGo, rows)) => filters.clear(&rows),
+        // The trip as one route, which is what a panel about it is about. Its
+        // legs are what it is made of and each has a panel of its own.
+        Some((FilterAction::Describe, Section::Trip(trip), rows)) => {
+            ask.described = as_one(&trip, &rows, filters);
+        }
+        Some((FilterAction::Describe, ..)) => {}
+        Some((FilterAction::LetGo, _, rows)) => filters.clear(&rows),
         None => {}
     }
 
@@ -2848,12 +2872,55 @@ struct RowAsk {
     chosen: Option<Filter>,
     /// The filter a double click asked to see the whole of
     framed: Option<Filter>,
+    /// The trip a section's row asked for a panel about, as one route
+    described: Option<Filter>,
     /// Every filter of a section, where its own row asked to see them all
     ///
     /// Apart from [`Self::framed`] because it is a set rather than one of
     /// them: the camera stands back to take in all of them together, which is
     /// not where it would stand for any one.
     framed_all: Vec<Filter>,
+}
+
+/// A trip's legs joined back into the one route they are flown as
+///
+/// Every system it passes through, in the order it passes through them, with
+/// the seams closed: the stop a leg lands on is the stop the next sets out
+/// from and stands in the list once. So a panel about it lists the trip as it
+/// would list a route, and the distance each line ends in is the jump that
+/// reaches that system whichever leg it fell in.
+///
+/// Nothing until a leg has landed. A trip whose legs are all still being
+/// walked has no systems to describe, and the row already says how far along
+/// they are.
+///
+/// The range comes off the legs, they having all been plotted for the one
+/// ship. The trip it names is its own, so a panel about a trip is one panel
+/// however often the row is pressed.
+fn as_one(trip: &str, rows: &[usize], filters: &Filters) -> Option<Filter> {
+    let legs: Vec<&Filter> = rows
+        .iter()
+        .filter_map(|index| filters.get(*index))
+        .map(|active| &active.filter)
+        .collect();
+    let range = legs.first()?.range()?.to_owned();
+
+    let mut systems: Vec<i64> = Vec::new();
+    for leg in legs {
+        let Filter::Route { systems: hops, .. } = leg else { continue };
+        let seam = usize::from(!systems.is_empty());
+        systems.extend(hops.iter().skip(seam));
+    }
+    if systems.len() < 2 {
+        return None;
+    }
+
+    Some(Filter::Route {
+        label: Section::Trip(trip.to_owned()).said(rows.len()),
+        systems,
+        range,
+        trip: Some(trip.to_owned()),
+    })
 }
 
 /// Which group of the bar's filter rows a filter stands in
@@ -2932,6 +2999,14 @@ impl Section {
             .any(|active| active.enabled)
     }
 
+    /// How many legs the trip called `trip` has
+    ///
+    /// Its name is its stops joined by [`ARROW`], so the legs are the gaps
+    /// between them: one fewer than the stops, and one for every arrow.
+    fn legs(trip: &str) -> usize {
+        trip.matches(ARROW).count()
+    }
+
     /// What the section's row says under its name, if anything
     ///
     /// A trip's figures: how far the whole of it is flown, and the longest
@@ -2949,7 +3024,7 @@ impl Section {
     fn under(&self, flying: &Flying) -> Option<String> {
         let Section::Trip(trip) = self else { return None };
         let flown = flying.0.get(trip)?;
-        let legs = trip.matches(ARROW).count();
+        let legs = Section::legs(trip);
 
         if flown.legs < legs {
             return Some(format!(
@@ -2966,10 +3041,11 @@ impl Section {
 
     /// What a row standing over `count` of them says
     ///
-    /// A trip is named for its stops rather than counted, the count of its
-    /// legs being one less than the count of the systems the user picked and
-    /// no answer to anything they asked. What it comes to is added on
-    /// separately, by whoever has the legs to add up.
+    /// A trip says how many legs it is rather than naming its stops. The
+    /// stops are the rows under it, named there and in that order, and a
+    /// trip through six of them spelled out runs longer than the bar is
+    /// wide. What it comes to is added on separately, by whoever has the legs
+    /// to add up.
     fn said(&self, count: usize) -> String {
         match self {
             Section::Filters => {
@@ -2979,7 +3055,14 @@ impl Section {
                     format!("{count} filters")
                 }
             }
-            Section::Trip(trip) => trip.clone(),
+            Section::Trip(trip) => {
+                let legs = Section::legs(trip);
+                if legs == 1 {
+                    "1 Leg Route".to_owned()
+                } else {
+                    format!("{legs} Leg Route")
+                }
+            }
             Section::Routes => {
                 if count == 1 {
                     "1 route".to_owned()
@@ -2995,7 +3078,6 @@ impl Section {
 ///
 /// Split out from [`applied`] because the sections draw the same row and only
 /// the count above them differs.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn section_rows(
     ui: &mut Ui,
@@ -3237,6 +3319,8 @@ fn dot(ui: &mut Ui, radius: f32, color: egui::Color32) {
 enum FilterAction {
     /// Turn every filter off, or every one back on
     Toggle,
+    /// Open a panel describing the whole of it
+    Describe,
     /// Send the camera to see the whole of what all of them admit
     Frame,
     /// Take them all away
@@ -3267,10 +3351,16 @@ fn whole_set(
     said: &str,
     under: Option<String>,
     on: bool,
+    describes: bool,
     place: &mut usize,
 ) -> Option<FilterAction> {
     let gap = ui.spacing().item_spacing.x;
-    let buttons = lay_out_close(ui);
+    // A trip is one thing to be described, as each of its legs is: how far
+    // the whole of it runs, and every system it passes through in the order
+    // it passes through them. A count of filters is not, there being nothing
+    // to say about a heap of them that their own rows do not say.
+    let buttons =
+        if describes { lay_out_buttons(ui) } else { lay_out_close(ui) };
 
     let room = ui.available_width()
         - ROW_PADDING * 2.
@@ -3337,7 +3427,7 @@ fn whole_set(
         ui.label(egui::RichText::new(under).weak());
     }
 
-    let Buttons { close, .. } = place_buttons(ui, rect, buttons, of);
+    let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
 
     // The switch, as the rows below have. Said of all of them at once, which
     // is what this row is for.
@@ -3352,12 +3442,13 @@ fn whole_set(
     // being no one filter for a section to be the one being worked with.
     let asked = match asked_of_row(
         close.clicked(),
-        false,
+        info.is_some_and(|info| info.clicked()),
         switch.clicked(),
         row.double_clicked(),
         false,
     ) {
         Some(RowGesture::LetGo) => Some(FilterAction::LetGo),
+        Some(RowGesture::Describe) => Some(FilterAction::Describe),
         Some(RowGesture::Toggle) => Some(FilterAction::Toggle),
         Some(RowGesture::Frame) => Some(FilterAction::Frame),
         _ => None,
@@ -5761,6 +5852,93 @@ mod tests {
         assert_eq!(held(&sections[2]), 1, "the route on its own");
     }
 
+    /// A trip is described as the one route it is flown as
+    ///
+    /// Every system it passes through, in order, with the seams closed: the
+    /// stop a leg lands on is the stop the next sets out from and stands in
+    /// the list once, or the panel would count a jump from a system to
+    /// itself.
+    #[test]
+    fn a_trip_is_described_as_one_route() {
+        let trip = "SOL -> LAVE -> DISO";
+        let hops = |from: i64, to: i64| Filter::Route {
+            label: "leg".to_owned(),
+            systems: vec![from, from + 1, to],
+            range: "10".to_owned(),
+            trip: Some(trip.to_owned()),
+        };
+        let mut filters = Filters::default();
+        filters.add(hops(1, 3));
+        filters.add(hops(3, 5));
+        let rows: Vec<usize> = (0..2).collect();
+
+        let whole = as_one(trip, &rows, &filters).expect("a trip");
+
+        assert_eq!(whole.name(), "2 Leg Route");
+        assert_eq!(whole.range(), Some("10"));
+        // 3 stands once, being where the first leg landed and the second set
+        // out from.
+        let Filter::Route { systems, .. } = &whole else { panic!("a route") };
+        assert_eq!(systems, &vec![1, 2, 3, 4, 5]);
+    }
+
+    /// A trip with nothing landed yet is not described
+    ///
+    /// A panel about it would be a panel about no systems, and its row
+    /// already says how far along the legs are.
+    #[test]
+    fn a_trip_with_no_legs_yet_is_not_described() {
+        let filters = Filters::default();
+
+        assert_eq!(as_one("SOL -> LAVE", &[], &filters), None);
+    }
+
+    /// A trip's legs are drawn in from its row
+    ///
+    /// So the block reads as one trip with its legs under it rather than as a
+    /// row and then some routes. A route belonging to no trip is drawn in
+    /// from nothing, standing level with the section rows.
+    #[test]
+    fn a_trips_legs_are_indented_under_it() {
+        let trip = "SOL -> LAVE -> DISO";
+        let mut filters = Filters::default();
+        filters.add(leg("SOL", "LAVE", Some(trip)));
+        filters.add(leg("LAVE", "DISO", Some(trip)));
+        filters.add(leg("WOLF 359", "SIRIUS", None));
+        let mut panels = Panels::default();
+
+        let ctx = crate::tests::context();
+        let mut drawn = |filters: &mut Filters| {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                applied(ui, filters, &Flying::default(), &mut panels, &mut 0);
+            });
+            let mut lefts = Vec::new();
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    lefts.push((text.galley.text().to_owned(), text.pos.x));
+                }
+            }
+            lefts
+        };
+
+        // Twice, the first pass being where the rows are placed.
+        drawn(&mut filters);
+        let lefts = drawn(&mut filters);
+        let left_of = |name: &str| {
+            lefts
+                .iter()
+                .find(|(said, _)| said == name)
+                .unwrap_or_else(|| panic!("{name} was painted: {lefts:?}"))
+                .1
+        };
+
+        let under = left_of("2 Leg Route");
+        assert!(left_of("SOL -> LAVE") > under, "{lefts:?}");
+        assert!(left_of("LAVE -> DISO") > under, "{lefts:?}");
+        // The loose route belongs to no trip and is drawn in from nothing.
+        assert_eq!(left_of("WOLF 359 -> SIRIUS"), under, "{lefts:?}");
+    }
+
     /// A trip's row is named for the trip and says what it comes to
     ///
     /// The whole distance and the longest jump in any leg, which is the one
@@ -5772,7 +5950,10 @@ mod tests {
         let trip = Section::Trip("SOL -> LAVE -> DISO".to_owned());
         let mut flying = Flying::default();
 
-        assert_eq!(trip.said(2), "SOL -> LAVE -> DISO");
+        // Named for how many legs it is, not for its stops: the stops are
+        // the rows under it and a trip through six of them spelled out runs
+        // longer than the bar is wide.
+        assert_eq!(trip.said(2), "2 Leg Route");
         assert_eq!(trip.under(&flying), None, "nothing landed yet");
 
         flying.0.insert(
