@@ -891,6 +891,7 @@ pub(crate) mod tests {
                 label: "6 to 6".into(),
                 systems: vec![6],
                 range: "10".into(),
+                trip: None,
             },
         );
 

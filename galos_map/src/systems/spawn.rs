@@ -568,7 +568,7 @@ pub fn spawn(
             if let Some(at) = at {
                 answered.push((index.clone(), at));
             }
-            if let FetchIndex::Route(start, end, range) = index {
+            if let FetchIndex::Route(start, end, range, trip) = index {
                 // A leg is a line between two systems, so one system is no
                 // leg. Coming back with nothing is how the router says it
                 // could not get from one end to the other in jumps that
@@ -598,7 +598,9 @@ pub fn spawn(
                 // systems are in hand, so it is the one place that can say
                 // what they are. The systems arrive built, so the line is
                 // drawn straight from them before they join the spawn queue.
-                if let Some(landed) = plotted_route(&new_systems, range) {
+                if let Some(landed) =
+                    plotted_route(&new_systems, range, trip.clone())
+                {
                     spawn_route(
                         &landed.filter(),
                         &new_systems,
@@ -657,7 +659,11 @@ pub fn spawn(
 /// Named for its two ends as the rows spell them, rather than as the user
 /// typed them: a leg of a trip is a route like any other, and the map's own
 /// spelling is what the rest of the map says.
-fn plotted_route(systems: &[System], range: &str) -> Option<PlottedRoute> {
+fn plotted_route(
+    systems: &[System],
+    range: &str,
+    trip: Option<String>,
+) -> Option<PlottedRoute> {
     let (first, last) = (systems.first()?, systems.last()?);
     if systems.len() < 2 {
         return None;
@@ -669,6 +675,7 @@ fn plotted_route(systems: &[System], range: &str) -> Option<PlottedRoute> {
         // back in and the order its panel lists.
         systems: systems.iter().map(|system| system.address).collect(),
         range: range.to_owned(),
+        trip,
     })
 }
 
@@ -1181,7 +1188,7 @@ mod tests {
         let hops =
             [called(1, "SOL"), called(2, "WOLF 359"), called(3, "BARNARD")];
 
-        let landed = plotted_route(&hops, "10").unwrap();
+        let landed = plotted_route(&hops, "10", None).unwrap();
 
         assert_eq!(landed.label, "SOL -> BARNARD");
         assert_eq!(landed.systems, vec![1, 2, 3]);

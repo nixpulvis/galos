@@ -38,10 +38,25 @@ pub fn fetch_route(
     // rather than the trip, so a leg asked for twice — the same pair turning
     // up in two trips, or a trip asked for again while it is still landing —
     // is the one question and the one answer.
+    // What the legs are one trip under, where there is more than one of
+    // them. A route asked for on its own is a trip of one leg and has nothing
+    // to be grouped with, so it carries no trip and its row stands alone.
+    //
+    // Named for its stops, as a leg is named for its two ends, so that two
+    // trips between the same ends read apart in the bar. Part of the key as
+    // well: the same leg flown in two trips is two answers, each belonging to
+    // its own trip, and one shared between them would land in whichever
+    // asked first.
+    let trip = (stops.len() > 2).then(|| stops.join(crate::ui::ARROW));
     let legs: Vec<FetchIndex> = stops
         .windows(2)
         .map(|leg| {
-            FetchIndex::Route(leg[0].clone(), leg[1].clone(), range.clone())
+            FetchIndex::Route(
+                leg[0].clone(),
+                leg[1].clone(),
+                range.clone(),
+                trip.clone(),
+            )
         })
         .collect();
 

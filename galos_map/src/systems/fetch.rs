@@ -139,7 +139,7 @@ pub enum FetchIndex {
     /// several of these, asked and answered one per leg. The range as it was
     /// typed, since it is part of what tells one route from another and a
     /// float is no kind of key.
-    Route(String, String, String),
+    Route(String, String, String, Option<String>),
     /// Named systems, by address
     ///
     /// What the map is asked for a row at a time rather than by where it is:
@@ -260,9 +260,10 @@ impl fmt::Debug for FetchIndex {
                 }
                 write!(f, ">")
             }
-            Route(start, end, range) => {
-                write!(f, "<{start}-{end}>{range}>")
-            }
+            Route(start, end, range, trip) => match trip {
+                Some(trip) => write!(f, "<{start}-{end}>{range}>{trip}"),
+                None => write!(f, "<{start}-{end}>{range}>"),
+            },
             Systems(addresses) => write!(f, "<{} named>", addresses.len()),
         }
     }
@@ -791,7 +792,7 @@ pub(crate) mod tests {
             .fetched
             .keys()
             .filter_map(|index| match index {
-                FetchIndex::Route(start, end, _) => {
+                FetchIndex::Route(start, end, ..) => {
                     Some((start.clone(), end.clone()))
                 }
                 _ => None,
@@ -1121,7 +1122,8 @@ pub(crate) mod tests {
     /// map asking again for most of what it already holds.
     #[test]
     fn a_route_under_way_does_not_hold_the_spyglass_up() {
-        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
+        let route =
+            FetchIndex::Route("A".into(), "B".into(), "10".into(), None);
 
         assert!(!region_asked([route].iter()));
     }
@@ -1201,7 +1203,8 @@ pub(crate) mod tests {
     /// A route is never a refresh of anything, nor refreshed by one
     #[test]
     fn a_route_is_always_a_new_question() {
-        let route = FetchIndex::Route("A".into(), "B".into(), "10".into());
+        let route =
+            FetchIndex::Route("A".into(), "B".into(), "10".into(), None);
         assert!(!route.refreshes(&region(0, 10)));
         assert!(!region(0, 10).refreshes(&route));
         assert!(!route.refreshes(&route));

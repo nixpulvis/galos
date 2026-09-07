@@ -1904,6 +1904,7 @@ mod tests {
             label: "A -> B".to_owned(),
             systems: vec![1, 2],
             range: "10".to_owned(),
+            trip: None,
         };
         painted(|ui| {
             admitted(
@@ -2156,6 +2157,7 @@ mod tests {
             label: "A -> B".to_owned(),
             systems: (1..=places.len() as i64).collect(),
             range: "10".to_owned(),
+            trip: None,
         };
 
         crate::tests::words(|ui| {
@@ -2224,6 +2226,7 @@ mod tests {
             label: label.to_owned(),
             systems: vec![1, 2],
             range: range.to_owned(),
+            trip: None,
         }
     }
 

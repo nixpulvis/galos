@@ -9,7 +9,7 @@ use crate::systems::filter::{Filter, Filters};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
-use bevy::platform::collections::HashSet;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
@@ -29,13 +29,13 @@ pub fn plugin(app: &mut App) {
     // Where the trip is asked for rather than where its legs land, which is
     // the whole point of it: see `frame_trip`.
     app.init_resource::<Trip>();
-    app.init_resource::<TripFlown>();
+    app.init_resource::<Flying>();
     app.add_systems(Update, frame_trip.in_set(MapSet::Fetch));
     // After the lines have been cut back to what is on the map, so the legs
     // it adds up are the legs that are drawn.
     app.add_systems(
         Update,
-        tally_trip.in_set(MapSet::Present).after(follow_filters),
+        tally_trips.in_set(MapSet::Present).after(follow_filters),
     );
     // Once the lines and the filters have settled, so what is drawn faintly
     // this frame answers what is being asked this frame.
@@ -85,11 +85,6 @@ impl Path {
         self.stops.iter().map(|(_, at)| *at).collect()
     }
 
-    /// The two systems this leg runs between, by address
-    fn ends(&self) -> Option<(i64, i64)> {
-        Some((self.stops.first()?.0, self.stops.last()?.0))
-    }
-
     /// How far the whole leg is flown, and its longest single jump, in light
     /// years
     ///
@@ -112,17 +107,18 @@ impl Path {
 #[derive(Resource, Default)]
 pub(crate) struct Trip(pub(crate) Vec<String>);
 
-/// What the trip on the map comes to, flown, once its legs are in
+/// What every trip on the map comes to, flown, by the trip's own name
+///
+/// Read by the row the bar stands over a trip's legs. A table rather than one
+/// answer, several trips being plotted at once and each row wanting its own.
 #[derive(Resource, Default)]
-pub(crate) struct TripFlown(pub(crate) Option<Flown>);
+pub(crate) struct Flying(pub(crate) HashMap<String, Flown>);
 
 /// A trip added up over the legs that have landed
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Flown {
     /// How many of its legs are drawn
     pub(crate) legs: usize,
-    /// How many it has
-    pub(crate) of: usize,
     /// How far the whole of it is flown, in light years
     pub(crate) total: f64,
     /// The longest single jump in any of its legs, in light years
@@ -133,87 +129,30 @@ pub(crate) struct Flown {
     pub(crate) longest: f64,
 }
 
-/// Whether what is picked out is the trip that was asked for
+/// Add each trip up over its legs
 ///
-/// The same systems, as a set rather than in order: the cheapest order flies
-/// a trip in an order nobody picked, and it is the same trip through the same
-/// systems for all that.
-///
-/// Names rather than addresses, both sides being spelled by the rows the trip
-/// was gathered from. Bodies picked out beside the systems are not weighed: a
-/// body is a thing inside a system rather than a stop, and picking one out
-/// does not make the trip somebody else's.
-fn holds_the_trip(
-    selection: &crate::systems::selection::Selection,
-    stops: &[String],
-) -> bool {
-    let mut picked: Vec<String> = selection
-        .systems()
-        .map(|system| system.name().to_lowercase())
-        .collect();
-    let mut asked: Vec<String> =
-        stops.iter().map(|stop| stop.to_lowercase()).collect();
-    picked.sort();
-    picked.dedup();
-    asked.sort();
-    asked.dedup();
-
-    !asked.is_empty() && picked == asked
-}
-
-/// Add the trip up over its legs
-///
-/// A leg is matched to the trip by the pair it runs between, spelled either
-/// way: the trip holds what the user typed and a line is named as the rows
+/// Off the lines themselves, so a leg counts once it is drawn and stops
+/// counting when its row is closed. A leg says which trip it belongs to, so
+/// nothing here needs to know what was asked for: a trip is whatever legs
 /// name it.
 ///
-/// Counted afresh each frame rather than when a leg lands, so it answers the
-/// legs that are drawn now. Legs land one at a time and a line closed takes
-/// its leg back out, and a total that stood after the leg it was measured
-/// from had gone would be a figure about nothing.
-fn tally_trip(
-    trip: Res<Trip>,
-    selection: Res<crate::systems::selection::Selection>,
-    lines: Query<(&Route, &Path)>,
-    mut flown: ResMut<TripFlown>,
-) {
-    let legs: Vec<(String, String)> =
-        trip.0.windows(2).map(|leg| (leg[0].clone(), leg[1].clone())).collect();
-    // Nothing unless what is picked out is the trip. The figure is said on
-    // the selection's own summary line, under the count of what is held, so
-    // it reads as being about what is held: a user who plots a trip and then
-    // picks out two other systems was being told what some other trip came
-    // to. A trip is still drawn and its legs still say what they come to on
-    // their own rows; this is the line that has to stop talking.
-    if legs.is_empty() || !holds_the_trip(&selection, &trip.0) {
-        if flown.0.is_some() {
-            flown.0 = None;
-        }
-        return;
-    }
-
-    let mut tally = Flown { legs: 0, of: legs.len(), total: 0., longest: 0. };
-    for (from, to) in &legs {
-        let found = lines.iter().find(|(route, path)| {
-            let Filter::Route { label, .. } = &route.0 else { return false };
-            let Some((start, end)) = label.split_once(crate::ui::ARROW) else {
-                return false;
-            };
-            path.ends().is_some()
-                && start.eq_ignore_ascii_case(from)
-                && end.eq_ignore_ascii_case(to)
-        });
-        let Some((_, path)) = found else { continue };
-
+/// Counted afresh each frame rather than when a leg lands. Legs land one at a
+/// time and a line closed takes its leg back out, and a total that stood
+/// after the leg it was measured from had gone would be a figure about
+/// nothing.
+fn tally_trips(lines: Query<(&Route, &Path)>, mut flying: ResMut<Flying>) {
+    let mut flown: HashMap<String, Flown> = HashMap::default();
+    for (route, path) in lines.iter() {
+        let Some(trip) = route.0.trip() else { continue };
         let (total, longest) = path.flown();
-        tally.legs += 1;
-        tally.total += total;
-        tally.longest = tally.longest.max(longest);
+        let so_far = flown.entry(trip.to_owned()).or_default();
+        so_far.legs += 1;
+        so_far.total += total;
+        so_far.longest = so_far.longest.max(longest);
     }
 
-    let said = (tally.legs > 0).then_some(tally);
-    if flown.0 != said {
-        flown.0 = said;
+    if flying.0 != flown {
+        flying.0 = flown;
     }
 }
 
@@ -432,6 +371,8 @@ pub(crate) struct PlottedRoute {
     pub(crate) label: String,
     /// Every system it runs through, by address, in the order travelled
     pub(crate) systems: Vec<i64>,
+    /// The trip this leg is one of, where it is one of several
+    pub(crate) trip: Option<String>,
     /// How far the ship it was plotted for reaches in one jump, in light years
     ///
     /// Carried along rather than worked out from the legs. The longest jump a
@@ -452,6 +393,7 @@ impl PlottedRoute {
             label: self.label.clone(),
             systems: self.systems.clone(),
             range: self.range.clone(),
+            trip: self.trip.clone(),
         }
     }
 }
@@ -873,6 +815,7 @@ mod tests {
             label: "a to c".to_owned(),
             systems,
             range: "20".to_owned(),
+            trip: None,
         }
     }
 
@@ -1056,6 +999,7 @@ mod tests {
             label: "A -> B".to_owned(),
             systems: addresses.to_vec(),
             range: "10".to_owned(),
+            trip: None,
         }
     }
 
@@ -1185,6 +1129,7 @@ mod tests {
                 ),
                 systems: vec![leg as i64],
                 range: "10".to_owned(),
+                trip: None,
             });
             app.update();
         }
@@ -1217,6 +1162,7 @@ mod tests {
                 label: label.to_owned(),
                 systems: vec![1],
                 range: "10".to_owned(),
+                trip: None,
             });
             app.update();
         }
@@ -1228,47 +1174,6 @@ mod tests {
             .map(|entry| entry.filter.name().to_owned())
             .collect();
         assert_eq!(rows, vec!["SOL -> LAVE", "WOLF 359 -> SIRIUS"]);
-    }
-
-    /// What a trip came to is said only while the trip is what is held
-    ///
-    /// Reported: a trip plotted, then two other systems picked out, and the
-    /// selection's summary line went on saying what the trip came to. It is
-    /// said under the count of what is held, so it reads as being about what
-    /// is held.
-    ///
-    /// As a set rather than in order, since the cheapest order flies a trip
-    /// in an order nobody picked and it is the same trip for all that.
-    #[test]
-    fn a_trips_figures_are_said_only_of_the_trip() {
-        let stops = ["SOL".to_owned(), "LAVE".to_owned(), "DISO".to_owned()];
-
-        assert!(holds_the_trip(&picking(&["SOL", "LAVE", "DISO"]), &stops));
-        // The order it was flown in is not the order it was picked in.
-        assert!(holds_the_trip(&picking(&["DISO", "SOL", "LAVE"]), &stops));
-        // Spelled as the rows spell them either way.
-        assert!(holds_the_trip(&picking(&["sol", "lave", "diso"]), &stops));
-
-        // Two other systems entirely, which is the report.
-        assert!(!holds_the_trip(&picking(&["WOLF 359", "SIRIUS"]), &stops));
-        // And part of it is not it: a stop let go of leaves a trip whose
-        // figures are about a leg nobody is holding.
-        assert!(!holds_the_trip(&picking(&["SOL", "LAVE"]), &stops));
-        assert!(!holds_the_trip(&picking(&[]), &stops));
-    }
-
-    /// A selection holding a system called each of `names`
-    fn picking(names: &[&str]) -> crate::systems::selection::Selection {
-        let mut selection = crate::systems::selection::Selection::default();
-        for (at, name) in names.iter().enumerate() {
-            selection.pick(
-                crate::systems::selection::Picked::System(
-                    crate::systems::tests::named(at as i64 + 1, name),
-                ),
-                true,
-            );
-        }
-        selection
     }
 
     /// A trip is looked at whole, once, however many legs it has
@@ -1533,6 +1438,7 @@ mod tests {
             label: "C -> D".to_owned(),
             systems: vec![8, 9],
             range: "10".to_owned(),
+            trip: None,
         });
         app.update();
 

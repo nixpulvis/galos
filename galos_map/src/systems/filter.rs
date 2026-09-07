@@ -158,7 +158,24 @@ pub enum Filter {
     /// What the ship can cross rather than what it does. The legs of the route
     /// are shorter, each landing on whatever system lies within reach rather
     /// than out at the limit of it.
-    Route { label: String, systems: Vec<i64>, range: String },
+    ///
+    /// `trip` is the trip this leg belongs to, where it is one leg of several.
+    /// A trip through five systems is four routes, each its own filter with
+    /// its own line and its own row, and this is what says the four are one
+    /// thing: the bar groups them under a row of their own, framing takes
+    /// them together, and what the whole of it comes to is added up over
+    /// them. [`None`] for a route asked for on its own, which is a trip of
+    /// one leg and has nothing to be grouped with.
+    ///
+    /// The trip's name rather than a number, so that two trips between the
+    /// same ends read apart in the bar and a leg says which trip it is a leg
+    /// of without anything else being asked.
+    Route {
+        label: String,
+        systems: Vec<i64>,
+        range: String,
+        trip: Option<String>,
+    },
     /// The systems the user picked out by hand
     ///
     /// A copy of what was selected rather than a reading of the selection as
@@ -227,6 +244,16 @@ impl Filter {
     /// own question rather than a reading of [`Self::ordered`] or of
     /// [`Self::range`], which happen to answer the same today and are about
     /// what a route is like rather than about what it is.
+    /// The trip this filter is a leg of, where it is one
+    ///
+    /// Only a route can be, and only one asked for as part of a longer trip.
+    pub fn trip(&self) -> Option<&str> {
+        match self {
+            Filter::Route { trip, .. } => trip.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn is_route(&self) -> bool {
         matches!(self, Filter::Route { .. })
     }
@@ -1223,6 +1250,7 @@ mod tests {
             label: "A -> B".to_owned(),
             systems: addresses.to_vec(),
             range: "10".to_owned(),
+            trip: None,
         }
     }
 

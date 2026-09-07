@@ -628,6 +628,7 @@ mod tests {
             label: "Stop 1 to Stop 3".into(),
             systems: vec![1, 2, 3],
             range: "10".into(),
+            trip: None,
         });
         // The first stop already drawn, the other two never built, and a
         // system that is on no route at all.
