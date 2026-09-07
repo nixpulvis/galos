@@ -800,7 +800,7 @@ pub(crate) mod tests {
     }
 
     /// A system placed at `at`, in light years, for the evictor's reach tests.
-    fn placed(address: i64, at: DVec3) -> System {
+    pub(crate) fn placed(address: i64, at: DVec3) -> System {
         let mut system = system(address);
         system.position = [at.x, at.y, at.z];
         system

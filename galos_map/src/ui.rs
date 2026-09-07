@@ -2405,30 +2405,39 @@ fn stops_of(selection: &Selection) -> Result<Vec<&str>, &'static str> {
 
 /// How wide the systems picked out stand, in light years
 ///
-/// Across the whole of them: twice the distance from the middle of what they
-/// span to whichever is furthest out, off the same
-/// [`crate::systems::route::spawn::framing`] the camera is stood back by and
-/// a system's shell is drawn to over the orbits inside it. Over a pair that
-/// is exactly how far apart the two are, the middle of a span of two being
-/// the point between them.
+/// The distance between the two that stand furthest apart, which is the
+/// widest the set is by any reading: no two are further, and no one system
+/// lies outside a sphere that wide.
+///
+/// Not [`spanned`]'s reach, which is what the camera stands back by and what
+/// a system's shell is drawn to over the orbits inside it. That is measured
+/// from the middle of the *box* the systems fill, and the box's middle moves
+/// when the set changes -- so dropping a system can leave the rest further
+/// from the new middle than any of them were from the old one, and the figure
+/// would climb as the set shrank. Measured over pairs it cannot: taking a
+/// system away takes its pairs with it and leaves the rest as they were.
+///
+/// Every pair, which is one comparison for each. A hand-picked set runs to
+/// tens rather than thousands, and the alternative is a hull.
 ///
 /// This rather than the legs added up. A route has not been asked for yet, so
 /// how far one would run is not knowable: it turns on the order the stops are
 /// reached in, and for the cheapest order that turns on a jump range which
-/// may not have been typed. How much sky the set covers needs none of it, and
-/// is the question a set of destinations raises.
+/// may not have been typed. How wide the set stands needs none of it, and is
+/// the question a set of destinations raises.
 ///
-/// Nothing where fewer than two are picked out, one system spanning nothing
-/// and the form having said so already.
+/// Nothing where fewer than two are picked out: no pair, nothing to be wide.
 fn across(selection: &Selection) -> Option<f64> {
     let places: Vec<DVec3> =
         selection.systems().map(|system| system.position()).collect();
-    if places.len() < 2 {
-        return None;
-    }
-    let (_, extent) = crate::systems::route::spawn::framing(&places)?;
 
-    Some(2. * extent as f64)
+    places
+        .iter()
+        .enumerate()
+        .flat_map(|(index, from)| {
+            places[index + 1..].iter().map(move |to| from.distance(*to))
+        })
+        .max_by(f64::total_cmp)
 }
 
 /// The order the trip will be flown in, as indices into what is picked out
@@ -4824,6 +4833,18 @@ mod tests {
         selection
     }
 
+    /// A selection holding a system at each of `places`
+    fn scattered(places: &[DVec3]) -> Selection {
+        let mut selection = Selection::default();
+        for (address, at) in places.iter().enumerate() {
+            selection.toggle(Picked::System(crate::systems::tests::placed(
+                address as i64,
+                *at,
+            )));
+        }
+        selection
+    }
+
     /// How wide the systems at `along` stand
     fn wide(along: &[f64]) -> Option<f64> {
         across(&strung_out(along))
@@ -4852,6 +4873,37 @@ mod tests {
         assert_eq!(wide(&[30., 0., 20., 10.]), Some(30.));
         // Nor does a system standing inside the span.
         assert_eq!(wide(&[0., 30., 15.]), Some(30.));
+    }
+
+    /// Taking a system away never makes the set wider
+    ///
+    /// The figure is over pairs, so dropping a system drops its pairs and
+    /// leaves the rest as they were. Measured instead from the middle of the
+    /// box the systems fill -- which is what [`spanned`] does for the camera
+    /// -- this set read 100.9 Ly and read **114.5** once the third system was
+    /// taken out of it: losing that one let the box's middle slide, and left
+    /// the far corners further from the new middle than anything had been
+    /// from the old one.
+    #[test]
+    fn taking_a_system_away_does_not_widen_the_set() {
+        let places = [
+            DVec3::new(-7.1, -35.3, 28.5),
+            DVec3::new(10.1, 27.3, 26.9),
+            DVec3::new(-48.9, -0.4, 9.8),
+            DVec3::new(0.6, -33.2, -3.2),
+            DVec3::new(-13.7, -49.9, -30.6),
+            DVec3::new(46.7, -5.8, 14.1),
+        ];
+        let whole = across(&scattered(&places)).expect("a span");
+        for dropped in 0..places.len() {
+            let mut fewer = places.to_vec();
+            fewer.remove(dropped);
+            let after = across(&scattered(&fewer)).expect("a span");
+            assert!(
+                after <= whole,
+                "dropping #{dropped} widened {whole:.1} to {after:.1}"
+            );
+        }
     }
 
     /// A set with nothing to span is not measured at all
