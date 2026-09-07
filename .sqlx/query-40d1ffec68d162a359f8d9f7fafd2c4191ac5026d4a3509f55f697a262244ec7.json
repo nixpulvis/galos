@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                b.system_address,\n                b.id,\n                b.name,\n                b.parent_ids,\n                b.parent_types,\n                b.body_type,\n                b.distance_from_arrival,\n                b.updated_at,\n                b.updated_by,\n                b.planet_class,\n                b.tidal_lock,\n                b.landable,\n                b.terraform_state,\n                b.atmosphere,\n                b.atmosphere_type,\n                b.volcanism,\n                b.mass,\n                b.radius,\n                b.gravity,\n                b.temperature,\n                b.surface_pressure,\n                b.composition_ice,\n                b.composition_rock,\n                b.composition_metal,\n                b.semi_major_axis,\n                b.eccentricity,\n                b.orbital_inclination,\n                b.periapsis,\n                b.orbital_period,\n                b.rotation_period,\n                b.axial_tilt,\n                b.ascending_node,\n                b.mean_anomaly,\n                b.was_mapped,\n                b.was_discovered,\n                COALESCE(ARRAY_AGG(m.name ORDER BY m.name)\n                    FILTER (WHERE m.name IS NOT NULL), '{}')\n                    AS \"material_names!: Vec<String>\",\n                COALESCE(ARRAY_AGG(m.percent ORDER BY m.name)\n                    FILTER (WHERE m.name IS NOT NULL), '{}')\n                    AS \"material_percents!: Vec<f64>\"\n            FROM bodies b\n            LEFT JOIN body_materials m\n                ON m.system_address = b.system_address AND m.body_id = b.id\n            WHERE b.system_address = $1\n            GROUP BY b.system_address, b.id\n            ",
+  "query": "\n            SELECT\n                b.system_address,\n                b.id,\n                b.name,\n                b.parent_ids,\n                b.parent_types,\n                b.body_type,\n                b.distance_from_arrival,\n                b.updated_at,\n                b.updated_by,\n                b.planet_class,\n                b.tidal_lock,\n                b.landable,\n                b.terraform_state,\n                b.atmosphere,\n                b.atmosphere_type,\n                b.volcanism,\n                b.mass,\n                b.radius,\n                b.gravity,\n                b.temperature,\n                b.surface_pressure,\n                b.composition_ice,\n                b.composition_rock,\n                b.composition_metal,\n                b.semi_major_axis,\n                b.eccentricity,\n                b.orbital_inclination,\n                b.periapsis,\n                b.orbital_period,\n                b.rotation_period,\n                b.axial_tilt,\n                b.ascending_node,\n                b.mean_anomaly,\n                b.was_mapped,\n                b.discovered_at,\n                COALESCE(ARRAY_AGG(m.name ORDER BY m.name)\n                    FILTER (WHERE m.name IS NOT NULL), '{}')\n                    AS \"material_names!: Vec<String>\",\n                COALESCE(ARRAY_AGG(m.percent ORDER BY m.name)\n                    FILTER (WHERE m.name IS NOT NULL), '{}')\n                    AS \"material_percents!: Vec<f64>\"\n            FROM bodies b\n            LEFT JOIN body_materials m\n                ON m.system_address = b.system_address AND m.body_id = b.id\n            WHERE b.system_address = $1 AND lower(b.name) ILIKE $2\n            GROUP BY b.system_address, b.id\n            ",
   "describe": {
     "columns": [
       {
@@ -175,8 +175,8 @@
       },
       {
         "ordinal": 34,
-        "name": "was_discovered",
-        "type_info": "Bool"
+        "name": "discovered_at",
+        "type_info": "Timestamp"
       },
       {
         "ordinal": 35,
@@ -191,7 +191,8 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Int8",
+        "Text"
       ]
     },
     "nullable": [
@@ -229,10 +230,10 @@
       true,
       true,
       false,
-      false,
+      true,
       null,
       null
     ]
   },
-  "hash": "1100e3f62325494c1f8222124adf080677f6a0788d2501a3a99d6db2429174d4"
+  "hash": "40d1ffec68d162a359f8d9f7fafd2c4191ac5026d4a3509f55f697a262244ec7"
 }

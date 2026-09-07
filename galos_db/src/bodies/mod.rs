@@ -1,7 +1,7 @@
 //! A body within a star system
 use chrono::{DateTime, Utc};
 use elite_journal::body::{
-    AtmosphereType, BodyType, Composition, Discovery, Material, Orbit, Spin,
+    AtmosphereType, BodyType, Composition, Material, Orbit, Spin,
 };
 use std::collections::BTreeMap as Map;
 
@@ -39,7 +39,13 @@ pub struct Body {
     /// The path the body takes around its nearest ancestor
     pub orbit: Orbit,
     pub spin: Spin,
-    pub discovery: Discovery,
+    /// Whether anybody had mapped the body when it was scanned
+    pub mapped: bool,
+    /// When the body was found, where a scan on record says so
+    ///
+    /// [`None`] for a body every scan of which found it already discovered:
+    /// such a scan says somebody got there earlier without saying when.
+    pub discovered_at: Option<DateTime<Utc>>,
 }
 
 impl Eq for Body {}

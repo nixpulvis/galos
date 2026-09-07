@@ -35,58 +35,58 @@
       },
       {
         "ordinal": 6,
-        "name": "was_discovered",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 7,
         "name": "was_mapped",
         "type_info": "Bool"
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "parent_ids",
         "type_info": "Int2Array"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "parent_types",
         "type_info": "VarcharArray"
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "semi_major_axis",
         "type_info": "Float4"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "eccentricity",
         "type_info": "Float4"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "orbital_inclination",
         "type_info": "Float4"
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "periapsis",
         "type_info": "Float4"
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "orbital_period",
         "type_info": "Float4"
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "ascending_node",
         "type_info": "Float4"
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "mean_anomaly",
         "type_info": "Float4"
+      },
+      {
+        "ordinal": 16,
+        "name": "discovered_at",
+        "type_info": "Timestamp"
       }
     ],
     "parameters": {
@@ -102,7 +102,6 @@
       false,
       true,
       false,
-      false,
       true,
       true,
       false,
@@ -110,6 +109,7 @@
       false,
       false,
       false,
+      true,
       true,
       true
     ]

@@ -40,6 +40,22 @@ fn table_data<T: Display>(option: &Option<T>) -> String {
     option.as_ref().map(|o| o.to_string()).unwrap_or("---".into())
 }
 
+/// Whether anybody had mapped the body when it was scanned
+///
+/// A fact about the body, which is why it is answered plainly. The discovery
+/// flag that used to sit beside this one was not: it said whether somebody
+/// had got there before the commander whose scan reached us, and a scan
+/// reporting nobody had is itself the discovery, so every body on record was
+/// discovered and the row only ever denied it. What stands there now is the
+/// time of that scan, which is what the flag was really carrying.
+fn yes_no(answer: &bool) -> String {
+    if *answer {
+        "Yes".into()
+    } else {
+        "No".into()
+    }
+}
+
 /// The nearest ancestor, which is what a body's orbit is measured about
 fn parent_id(parents: &[Parent]) -> String {
     table_data(&parents.first().map(|parent| parent.id))

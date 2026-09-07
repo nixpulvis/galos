@@ -20,8 +20,12 @@ pub struct Cluster {
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
     pub distance_from_arrival: Option<f32>,
-    pub discovered: bool,
     pub mapped: bool,
+    /// When the cluster was found, where a scan on record says so
+    ///
+    /// [`None`] for a cluster every scan of which found it already discovered:
+    /// such a scan says somebody got there earlier without saying when.
+    pub discovered_at: Option<DateTime<Utc>>,
     /// Nearest ancestor first, as [`crate::bodies`] keeps them. The first is
     /// the ring the cluster lies in.
     pub parent_ids: Vec<i16>,

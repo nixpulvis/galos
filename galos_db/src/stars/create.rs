@@ -3,15 +3,20 @@ use crate::bodies::Parent;
 use crate::orbit;
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
-use elite_journal::body::{Discovery, Spin, Star as JournalStar};
+use elite_journal::body::{Spin, Star as JournalStar};
 
 impl Star {
+    /// `discovered_at` is worked out by the caller rather than read off the
+    /// scan. A scan reporting the star undiscovered is itself the discovery,
+    /// so the reading is the enclosing entry's timestamp, and only something
+    /// holding that entry can say which that is.
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
         user: &str,
         star: &JournalStar,
         system_address: i64,
+        discovered_at: Option<DateTime<Utc>>,
     ) -> Result<Star, Error> {
         // Kept where a scan names none, as a body's and a ring's are. A
         // primary star has no ancestor to name, and nothing tells that apart
@@ -55,7 +60,7 @@ impl Star {
                 temperature,
 
                 was_mapped,
-                was_discovered)
+                discovered_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                 $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
             ON CONFLICT (system_address, id)
@@ -90,8 +95,14 @@ impl Star {
                 semi_major_axis = COALESCE($25, stars.semi_major_axis),
                 temperature = $26,
 
+                -- Only ever up. A scan that finds a star already mapped is
+                -- knowledge, and one that finds it unmapped is not evidence
+                -- that it has stayed that way.
                 was_mapped = stars.was_mapped OR $27,
-                was_discovered = stars.was_discovered OR $28
+                -- The earliest claim on record wins, and `LEAST` ignores a
+                -- null, so a scan that says nothing about discovery leaves
+                -- what is there alone.
+                discovered_at = LEAST(stars.discovered_at, $28)
             RETURNING *
             ",
             system_address,
@@ -121,7 +132,7 @@ impl Star {
             orbit.map(|orbit| orbit.semi_major_axis),
             star.temperature,
             star.discovery.mapped,
-            star.discovery.discovered,
+            discovered_at.map(|at| at.naive_utc()),
         )
         .fetch_one(&db.pool)
         .await?;
@@ -156,10 +167,8 @@ impl Star {
             spin: Spin { period: row.rotation_period, tilt: row.axial_tilt },
             radius: row.radius,
             temperature: row.temperature,
-            discovery: Discovery {
-                discovered: row.was_discovered,
-                mapped: row.was_mapped,
-            },
+            mapped: row.was_mapped,
+            discovered_at: row.discovered_at.map(|at| at.and_utc()),
         })
     }
 }

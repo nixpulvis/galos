@@ -91,12 +91,12 @@
     </tr>
 
     <tr>
-        <th>Was Mapped?</th>
-        <td>{{ body.discovery.mapped }}</td>
+        <th>Mapped?</th>
+        <td>{{ self::yes_no(body.mapped) }}</td>
     </tr>
     <tr>
-        <th>Was Discovered?</th>
-        <td>{{ body.discovery.discovered }}</td>
+        <th>Discovered</th>
+        <td>{{ self::table_data(body.discovered_at) }}</td>
     </tr>
 
     <tr>

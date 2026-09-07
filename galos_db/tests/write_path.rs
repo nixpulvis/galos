@@ -186,6 +186,7 @@ const LATE_COUNT: i64 = 900_000_020;
 const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
 const WRONGLY_NAMED: i64 = 900_000_050;
+const DISCOVERED: i64 = 900_000_051;
 
 /// A market id each, for the reason the addresses above are one each
 ///
@@ -861,7 +862,7 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
         discovery: Discovery { discovered: true, mapped: false },
     };
 
-    Cluster::from_journal(&db, at(0), "test", &cluster, CLUSTER)
+    Cluster::from_journal(&db, at(0), "test", &cluster, CLUSTER, None)
         .await
         .expect("cluster should write");
 
@@ -870,14 +871,13 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     assert_eq!(held[0].name, "Test Cluster A Belt Cluster 1");
     assert_eq!(held[0].id, 5);
     assert_eq!(held[0].distance_from_arrival, Some(12.5));
-    assert!(held[0].discovered);
     assert!(!held[0].mapped);
     // Nearest ancestor first: the ring it lies in, then what that goes round.
     assert_eq!(held[0].parent_ids, vec![1, 0]);
     assert_eq!(held[0].parent_types, vec!["Ring", "Star"]);
 
     cluster.discovery.mapped = true;
-    Cluster::from_journal(&db, at(60), "test", &cluster, CLUSTER)
+    Cluster::from_journal(&db, at(60), "test", &cluster, CLUSTER, None)
         .await
         .expect("second scan should write");
 
@@ -890,8 +890,8 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
 /// A scan delivered late does not call a cluster what it called it
 ///
 /// Every other column in that write takes care over a late message: the stamp
-/// holds at the newest reading, the sender follows it, what was found stays
-/// found, and the ancestry is only ever filled in. The name was written
+/// holds at the newest reading, the sender follows it, what was mapped stays
+/// mapped, and the ancestry is only ever filled in. The name was written
 /// outright, so the field a reader sees first was the one an older message
 /// could take back.
 ///
@@ -930,6 +930,7 @@ async fn a_late_scan_does_not_rename_a_cluster() {
         "newer",
         &named("Test Renamed A Belt Cluster 1"),
         RENAMED,
+        None,
     )
     .await
     .expect("the newer scan should write");
@@ -941,6 +942,7 @@ async fn a_late_scan_does_not_rename_a_cluster() {
         "older",
         &named("Test Renamed A Belt"),
         RENAMED,
+        None,
     )
     .await
     .expect("the late scan should write");
@@ -1020,7 +1022,7 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
     let mut detailed = detailed;
     detailed.tidal_lock = Some(true);
 
-    Body::from_journal(&db, at(0), "test", &detailed, RESCAN)
+    Body::from_journal(&db, at(0), "test", &detailed, RESCAN, None)
         .await
         .expect("detailed scan should write");
 
@@ -1029,9 +1031,10 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
     // As a sender that passes the game's scans on without them sends it.
     basic.orbit.ascending_node = None;
     basic.orbit.mean_anomaly = None;
-    let returned = Body::from_journal(&db, at(60), "test", &basic, RESCAN)
-        .await
-        .expect("basic scan should write");
+    let returned =
+        Body::from_journal(&db, at(60), "test", &basic, RESCAN, None)
+            .await
+            .expect("basic scan should write");
 
     // What the write says it wrote is what is on record, materials included.
     // They are read back rather than handed on from the scan, which carried
@@ -1373,7 +1376,7 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
         discovery: Discovery { discovered: false, mapped: false },
     };
 
-    Ring::from_journal(&db, at(0), "test", &scanned, RING)
+    Ring::from_journal(&db, at(0), "test", &scanned, RING, None)
         .await
         .expect("ring should write");
 
@@ -1385,7 +1388,7 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
         distance_from_arrival: Some(377022.0),
         discovery: Discovery { discovered: true, mapped: false },
     };
-    Cluster::from_journal(&db, at(0), "test", &cluster, RING)
+    Cluster::from_journal(&db, at(0), "test", &cluster, RING, None)
         .await
         .expect("cluster should write");
 
@@ -1411,10 +1414,10 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
 
 /// Once something has been mapped it stays mapped
 ///
-/// The flags say whether anyone has found or mapped a thing, and the galaxy
-/// has no way to undo either. A scan still reports `WasMapped` false after
-/// another has reported it true: one report in every three hundred that come
-/// back for the same body does, and the one this was found on was a ring.
+/// `was_mapped` says whether anybody had mapped a thing, and the galaxy has no
+/// way to undo that. A scan still reports `WasMapped` false after another has
+/// reported it true: one report in every three hundred that come back for the
+/// same body does, and the one this was found on was a ring.
 #[async_std::test]
 async fn a_thing_once_mapped_stays_mapped() {
     let db = db!();
@@ -1437,7 +1440,7 @@ async fn a_thing_once_mapped_stays_mapped() {
         parent.insert(ty.to_owned(), id);
         parent
     };
-    let ring = |discovered, mapped| JournalRing {
+    let ring = |mapped| JournalRing {
         name: "Test Unmapped 2 A Ring".into(),
         id: 40,
         parents: vec![hangs_off("Planet", 39)],
@@ -1451,22 +1454,103 @@ async fn a_thing_once_mapped_stays_mapped() {
             ascending_node: Some(0.),
             mean_anomaly: Some(0.),
         },
-        discovery: Discovery { discovered, mapped },
+        discovery: Discovery { discovered: true, mapped },
     };
 
-    Ring::from_journal(&db, at(0), "test", &ring(true, true), UNMAPPED)
+    Ring::from_journal(&db, at(0), "test", &ring(true), UNMAPPED, None)
         .await
         .expect("the first scan should write");
 
     // Another scan of the same ring, saying nobody has mapped it.
-    Ring::from_journal(&db, at(60), "test", &ring(false, false), UNMAPPED)
+    Ring::from_journal(&db, at(60), "test", &ring(false), UNMAPPED, None)
         .await
         .expect("the second scan should write");
 
     let held = Ring::fetch_all(&db, UNMAPPED).await.expect("should read");
     let stored = held.iter().find(|r| r.id == 40).expect("on record");
     assert!(stored.mapped, "a later scan unmapped it");
-    assert!(stored.discovered, "a later scan undiscovered it");
+}
+
+/// The earliest discovery on record is the one that is kept
+///
+/// A scan reporting a thing undiscovered is itself the discovery, so that
+/// scan's own stamp is the reading. A scan reporting it discovered says
+/// somebody had been there and not when, so it has no reading to offer and
+/// must not overwrite the one on record with the time it happened to pass by.
+/// The stamp therefore only ever moves earlier, and a scan carrying nothing
+/// leaves what is there alone.
+#[async_std::test]
+async fn the_earliest_discovery_on_record_is_kept() {
+    let db = db!();
+    forget(DISCOVERED).await;
+
+    System::set_body_counts(
+        &db,
+        DISCOVERED,
+        Some("Test Discovered"),
+        Some(somewhere(26.0)),
+        1,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("system should write");
+
+    let cluster = JournalCluster {
+        name: "Test Discovered A Belt Cluster 1".into(),
+        id: 5,
+        parents: vec![],
+        distance_from_arrival: Some(12.5),
+        discovery: Discovery { discovered: false, mapped: false },
+    };
+
+    let discovering = Cluster::from_journal(
+        &db,
+        at(0),
+        "test",
+        &cluster,
+        DISCOVERED,
+        Some(at(0)),
+    )
+    .await
+    .expect("the discovering scan should write");
+    assert_eq!(discovering.discovered_at, Some(at(0)));
+
+    // A commander who arrived later, whose scan found it already discovered.
+    // The stamp that scan would carry is when it passed by, not when the
+    // cluster was found.
+    Cluster::from_journal(
+        &db,
+        at(60),
+        "test",
+        &cluster,
+        DISCOVERED,
+        Some(at(60)),
+    )
+    .await
+    .expect("the later scan should write");
+
+    let held = Cluster::fetch_all(&db, DISCOVERED).await.expect("should read");
+    let stored = held.iter().find(|c| c.id == 5).expect("on record");
+    assert_eq!(
+        stored.discovered_at,
+        Some(at(0)),
+        "a later scan moved the discovery forward",
+    );
+
+    // And a scan with nothing to say about discovery at all.
+    Cluster::from_journal(&db, at(120), "test", &cluster, DISCOVERED, None)
+        .await
+        .expect("a scan without a reading should write");
+
+    let held = Cluster::fetch_all(&db, DISCOVERED).await.expect("should read");
+    let stored = held.iter().find(|c| c.id == 5).expect("on record");
+    assert_eq!(
+        stored.discovered_at,
+        Some(at(0)),
+        "a scan carrying no reading cleared the one on record",
+    );
 }
 
 /// Two systems may stand at one point
@@ -1565,12 +1649,13 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
         "test",
         &ring(vec![hangs_off("Planet", 39), hangs_off("Star", 0)]),
         ORPHANED,
+        None,
     )
     .await
     .expect("the first scan should write");
 
     // The same ring from a sender that left the field out.
-    Ring::from_journal(&db, at(60), "test", &ring(vec![]), ORPHANED)
+    Ring::from_journal(&db, at(60), "test", &ring(vec![]), ORPHANED, None)
         .await
         .expect("a scan without parents should write");
 
@@ -1618,12 +1703,13 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
         "test",
         &star(vec![hangs_off("Null", 1)]),
         ORPHANED,
+        None,
     )
     .await
     .expect("the first scan should write");
 
     let answered =
-        Star::from_journal(&db, at(60), "test", &star(vec![]), ORPHANED)
+        Star::from_journal(&db, at(60), "test", &star(vec![]), ORPHANED, None)
             .await
             .expect("a scan without parents should write");
 
@@ -1687,12 +1773,12 @@ async fn a_message_delivered_late_does_not_put_the_stamp_back() {
         discovery: Discovery { discovered: true, mapped: true },
     };
 
-    Body::from_journal(&db, at(600), "newer", &body(None), LATE)
+    Body::from_journal(&db, at(600), "newer", &body(None), LATE, None)
         .await
         .expect("the scan taken later should write");
 
     // The fuller scan, taken ten minutes before and arriving after.
-    Body::from_journal(&db, at(0), "older", &body(Some(500.)), LATE)
+    Body::from_journal(&db, at(0), "older", &body(Some(500.)), LATE, None)
         .await
         .expect("the scan delivered late should write");
 

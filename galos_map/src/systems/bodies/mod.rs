@@ -355,10 +355,7 @@ impl Contents {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use elite_journal::body::{
-        Discovery as JournalDiscovery, Orbit as JournalOrbit,
-        Spin as JournalSpin,
-    };
+    use elite_journal::body::{Orbit as JournalOrbit, Spin as JournalSpin};
 
     /// A body `a` metres out on a circle, with no size of its own
     ///
@@ -391,7 +388,8 @@ mod tests {
                 mean_anomaly: Some(0.),
             },
             spin: JournalSpin { period: 0., tilt: 0. },
-            discovery: JournalDiscovery { discovered: false, mapped: false },
+            discovered_at: None,
+            mapped: false,
         }
     }
 

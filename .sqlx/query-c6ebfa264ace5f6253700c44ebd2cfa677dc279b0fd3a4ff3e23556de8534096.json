@@ -130,18 +130,18 @@
       },
       {
         "ordinal": 25,
-        "name": "was_discovered",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 26,
         "name": "parent_ids",
         "type_info": "Int2Array"
       },
       {
-        "ordinal": 27,
+        "ordinal": 26,
         "name": "parent_types",
         "type_info": "VarcharArray"
+      },
+      {
+        "ordinal": 27,
+        "name": "discovered_at",
+        "type_info": "Timestamp"
       }
     ],
     "parameters": {
@@ -176,7 +176,7 @@
       true,
       false,
       false,
-      false,
+      true,
       true,
       true
     ]

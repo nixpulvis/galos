@@ -14,7 +14,9 @@
 
 use chrono::{DateTime, Utc};
 use elite_journal::body::{Body as JournalBody, Signal};
-use elite_journal::entry::incremental::exploration::ScanTarget;
+use elite_journal::entry::incremental::exploration::{
+    Scan, ScanTarget, ScanType,
+};
 use elite_journal::entry::market::{
     BlackMarket as JournalBlackMarket, Market as JournalMarket,
     Outfitting as JournalOutfitting, Shipyard as JournalShipyard,
@@ -53,6 +55,14 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
             )
             .await;
 
+            // A kind nobody has modelled is a kind whose discovery flag
+            // [`discovered_at`] trusts without anybody having decided it
+            // should be, so it is said out loud rather than passed over. What
+            // arrives here is what to add to `ScanType`.
+            if let Some(ScanType::Other(kind)) = &scan.scan_type {
+                warn!(kind = %kind, "scan of an unmodeled kind");
+            }
+            let found = discovered_at(scan, entry.timestamp);
             match &scan.target {
                 ScanTarget::Star(star) => match Star::from_journal(
                     db,
@@ -60,6 +70,7 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                     user,
                     star,
                     scan.system_address,
+                    found,
                 )
                 .await
                 {
@@ -76,6 +87,7 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                     user,
                     body,
                     scan.system_address,
+                    found,
                 )
                 .await
                 {
@@ -93,6 +105,7 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                         user,
                         cluster,
                         scan.system_address,
+                        found,
                     )
                     .await
                     {
@@ -110,6 +123,7 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
                     user,
                     ring,
                     scan.system_address,
+                    found,
                 )
                 .await
                 {
@@ -406,6 +420,32 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
     }
 }
 
+/// When a scan says what it looked at was found, where it says at all
+///
+/// `WasDiscovered` is a fact about the scan and not about the body: whether
+/// somebody had got there before the commander who wrote it. So a scan
+/// reporting it clear *is* the discovery, and the entry's own time is when the
+/// body was found. One reporting it set says somebody was there earlier and
+/// says nothing about when, so it records nothing and leaves whatever is
+/// already known alone.
+///
+/// A nav beacon is not read for this. It answers for every body in the system
+/// at once out of what it holds rather than out of a look anybody took, and
+/// its scans carry the flag clear for bodies charted before the commander was
+/// born; see [`ScanType::is_beacon`]. Sol arrives that way, which taken at its
+/// word makes one commander the discoverer of the solar system.
+///
+/// An uploader that sends no `ScanType` at all cannot be told from an ordinary
+/// one, and a beacon read of theirs is taken as a discovery. What guards
+/// against that is the merge, which keeps the earliest time it is ever given.
+fn discovered_at(
+    scan: &Scan,
+    timestamp: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let beacon = scan.scan_type.as_ref().is_some_and(ScanType::is_beacon);
+    (!beacon && !scan.target.discovery().discovered).then_some(timestamp)
+}
+
 /// Write where a ship said it was going
 ///
 /// Arrives as an event in the log and as the whole of `NavRoute.json` beside
@@ -567,8 +607,18 @@ async fn record_visit(
     }
 
     if let Some(body) = body {
-        match Body::from_journal(db, timestamp, user, body, system.address)
-            .await
+        // No discovery time: none of the events that land here is a scan, so
+        // whatever the body carries for it was never reported. See
+        // [`discovered_at`].
+        match Body::from_journal(
+            db,
+            timestamp,
+            user,
+            body,
+            system.address,
+            None,
+        )
+        .await
         {
             Ok(_) => info!(body = %body.name, "{}", what),
             Err(err) => warn!(body = %body.name, error = %err, "{}", what),

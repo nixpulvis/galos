@@ -24,7 +24,8 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use elite_journal::body::{Composition, Discovery, Material, Orbit, Spin};
+use chrono::{DateTime, Utc};
+use elite_journal::body::{Composition, Material, Orbit, Spin};
 use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
 use galos_photometry::{Distance, Magnitude};
 use std::collections::HashMap;
@@ -1003,7 +1004,8 @@ fn star_described(
             field(ui, "Magnitude", format!("{:.2}", star.absolute_magnitude));
             turning(ui, &star.spin);
             circling(ui, star.orbit.as_ref(), clock, guessed);
-            found(ui, &star.discovery);
+            field(ui, "Mapped", yes_no(star.mapped));
+            field(ui, "Discovered", dated(star.discovered_at));
             field(
                 ui,
                 "Updated",
@@ -1057,7 +1059,8 @@ fn body_described(
             field(ui, "Tidal lock", yes_no(body.tidal_lock));
             turning(ui, &body.spin);
             circling(ui, Some(&body.orbit), clock, guessed);
-            found(ui, &body.discovery);
+            field(ui, "Mapped", yes_no(body.mapped));
+            field(ui, "Discovered", dated(body.discovered_at));
             field(
                 ui,
                 "Updated",
@@ -1248,14 +1251,6 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
     ui.end_row();
 }
 
-/// What is known about a thing rather than about the thing itself
-fn found(ui: &mut Ui, discovery: &Discovery) {
-    ui.label(egui::RichText::new("Discovery").strong());
-    ui.end_row();
-    under(ui, "Discovered", yes_no(discovery.discovered));
-    under(ui, "Mapped", yes_no(discovery.mapped));
-}
-
 /// How long something takes, in the largest unit it fills
 ///
 /// Days for anything that turns slowly, which is most of what is scanned, and
@@ -1298,6 +1293,18 @@ fn spanning(metres: f32) -> String {
 /// What the database says of a yes or no question
 fn yes_no(answer: bool) -> String {
     if answer { "Yes".into() } else { "No".into() }
+}
+
+/// When something happened, where anything has said it did
+///
+/// Unknown for a discovery whose time nobody reported, which is most of them:
+/// a scan finding a body already charted says somebody had been there without
+/// saying when, and only a scan that found it unclaimed dates the finding.
+fn dated(at: Option<DateTime<Utc>>) -> String {
+    match at {
+        Some(at) => at.format("%Y-%m-%d %H:%M UTC").to_string(),
+        None => UNKNOWN.into(),
+    }
 }
 
 /// What a filter's panel says it is showing, above the list of it
@@ -1820,8 +1827,7 @@ mod tests {
     use chrono::DateTime;
     use elite_journal::Allegiance;
     use elite_journal::body::{
-        AtmosphereType, Discovery as JournalDiscovery, Orbit as JournalOrbit,
-        Spin as JournalSpin,
+        AtmosphereType, Orbit as JournalOrbit, Spin as JournalSpin,
     };
     use elite_journal::system::Economy;
 
@@ -2002,7 +2008,8 @@ mod tests {
                 mean_anomaly: Some(0.),
             },
             spin: JournalSpin { period: 3.6254802e6, tilt: 0.373026 },
-            discovery: JournalDiscovery { discovered: false, mapped: true },
+            discovered_at: None,
+            mapped: true,
         }
     }
 

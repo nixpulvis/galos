@@ -530,9 +530,7 @@ fn reach(semi_major_axis: f32, eccentricity: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::orbit::Spacing;
-    use elite_journal::body::{
-        Discovery as JournalDiscovery, Spin as JournalSpin,
-    };
+    use elite_journal::body::Spin as JournalSpin;
 
     /// The system every fixture here is about
     ///
@@ -569,7 +567,8 @@ mod tests {
                 mean_anomaly: Some(0.),
             },
             spin: JournalSpin { period: 0., tilt: 0. },
-            discovery: JournalDiscovery { discovered: false, mapped: false },
+            mapped: false,
+            discovered_at: None,
         }
     }
 
@@ -606,7 +605,8 @@ mod tests {
             spin: JournalSpin { period: 0., tilt: 0. },
             radius: 0.,
             temperature: 0.,
-            discovery: JournalDiscovery { discovered: false, mapped: false },
+            mapped: false,
+            discovered_at: None,
         }
     }
 

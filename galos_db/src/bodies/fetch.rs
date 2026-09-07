@@ -1,7 +1,7 @@
 use super::{composition, Body, Parent, Surface};
 use crate::{Database, Error};
 use chrono::NaiveDateTime;
-use elite_journal::body::{Discovery, Material, Orbit, Spin};
+use elite_journal::body::{Material, Orbit, Spin};
 
 /// A body as the table holds it, with what it is made of gathered alongside
 ///
@@ -45,7 +45,7 @@ struct Row {
     mean_anomaly: Option<f32>,
 
     was_mapped: bool,
-    was_discovered: bool,
+    discovered_at: Option<NaiveDateTime>,
 
     material_names: Vec<String>,
     material_percents: Vec<f64>,
@@ -100,10 +100,8 @@ impl From<Row> for Body {
                 mean_anomaly: row.mean_anomaly,
             },
             spin: Spin { period: row.rotation_period, tilt: row.axial_tilt },
-            discovery: Discovery {
-                discovered: row.was_discovered,
-                mapped: row.was_mapped,
-            },
+            mapped: row.was_mapped,
+            discovered_at: row.discovered_at.map(|at| at.and_utc()),
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         }
@@ -154,7 +152,7 @@ impl Body {
                 b.ascending_node,
                 b.mean_anomaly,
                 b.was_mapped,
-                b.was_discovered,
+                b.discovered_at,
                 COALESCE(ARRAY_AGG(m.name ORDER BY m.name)
                     FILTER (WHERE m.name IS NOT NULL), '{}')
                     AS "material_names!: Vec<String>",
@@ -218,7 +216,7 @@ impl Body {
                 b.ascending_node,
                 b.mean_anomaly,
                 b.was_mapped,
-                b.was_discovered,
+                b.discovered_at,
                 COALESCE(ARRAY_AGG(m.name ORDER BY m.name)
                     FILTER (WHERE m.name IS NOT NULL), '{}')
                     AS "material_names!: Vec<String>",
@@ -282,7 +280,7 @@ impl Body {
                 b.ascending_node,
                 b.mean_anomaly,
                 b.was_mapped,
-                b.was_discovered,
+                b.discovered_at,
                 COALESCE(ARRAY_AGG(m.name ORDER BY m.name)
                     FILTER (WHERE m.name IS NOT NULL), '{}')
                     AS "material_names!: Vec<String>",
@@ -346,7 +344,7 @@ impl Body {
                 b.ascending_node,
                 b.mean_anomaly,
                 b.was_mapped,
-                b.was_discovered,
+                b.discovered_at,
                 COALESCE(ARRAY_AGG(m.name ORDER BY m.name)
                     FILTER (WHERE m.name IS NOT NULL), '{}')
                     AS "material_names!: Vec<String>",

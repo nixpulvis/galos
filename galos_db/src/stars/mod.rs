@@ -1,7 +1,7 @@
 //! A star within a system
 use crate::bodies::Parent;
 use chrono::{DateTime, Utc};
-use elite_journal::body::{Discovery, Orbit, Spin};
+use elite_journal::body::{Orbit, Spin};
 
 /// Clone because the map carries one into a component and into whatever
 /// panel is describing it, and a star outlives the query it came back in.
@@ -28,7 +28,13 @@ pub struct Star {
     pub spin: Spin,
     pub radius: f32,
     pub temperature: f32,
-    pub discovery: Discovery,
+    /// Whether anybody had mapped the star when it was scanned
+    pub mapped: bool,
+    /// When the star was found, where a scan on record says so
+    ///
+    /// [`None`] for a star every scan of which found it already discovered:
+    /// such a scan says somebody got there earlier without saying when.
+    pub discovered_at: Option<DateTime<Utc>>,
 }
 
 impl Eq for Star {}

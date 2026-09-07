@@ -5,12 +5,17 @@ use elite_journal::body::Orbit;
 use elite_journal::entry::incremental::exploration::Ring as JournalRing;
 
 impl Ring {
+    /// `discovered_at` is worked out by the caller rather than read off the
+    /// scan. A scan reporting the ring undiscovered is itself the discovery,
+    /// so the reading is the enclosing entry's timestamp, and only something
+    /// holding that entry can say which that is.
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
         user: &str,
         ring: &JournalRing,
         system_address: i64,
+        discovered_at: Option<DateTime<Utc>>,
     ) -> Result<Ring, Error> {
         // A scan names each ancestor as a one entry map of kind to id, nearest
         // first, and is kept in that order for the reason a body's are: the
@@ -34,10 +39,10 @@ impl Ring {
                 updated_by,
 
                 distance_from_arrival,
-                was_discovered,
                 was_mapped,
                 parent_ids,
                 parent_types,
+                discovered_at,
 
                 semi_major_axis,
                 eccentricity,
@@ -62,10 +67,16 @@ impl Ring {
 
                 distance_from_arrival =
                     COALESCE($6, rings.distance_from_arrival),
-                was_discovered = rings.was_discovered OR $7,
-                was_mapped = rings.was_mapped OR $8,
-                parent_ids = COALESCE($9, rings.parent_ids),
-                parent_types = COALESCE($10, rings.parent_types),
+                -- `was_mapped` only ever goes up. A scan that finds a ring
+                -- already mapped is knowledge, and one that finds it unmapped
+                -- is not evidence that it has stayed that way.
+                was_mapped = rings.was_mapped OR $7,
+                parent_ids = COALESCE($8, rings.parent_ids),
+                parent_types = COALESCE($9, rings.parent_types),
+                -- The earliest claim on record wins, and `LEAST` ignores a
+                -- null, so a scan that says nothing about discovery leaves
+                -- what is there alone.
+                discovered_at = LEAST(rings.discovered_at, $10),
 
                 semi_major_axis = $11,
                 eccentricity = $12,
@@ -82,10 +93,10 @@ impl Ring {
             timestamp.naive_utc(),
             user,
             ring.distance_from_arrival,
-            ring.discovery.discovered,
             ring.discovery.mapped,
             (!parent_ids.is_empty()).then_some(&parent_ids[..]),
             (!parent_types.is_empty()).then_some(&parent_types[..]),
+            discovered_at.map(|at| at.naive_utc()),
             ring.orbit.semi_major_axis,
             ring.orbit.eccentricity,
             ring.orbit.orbital_inclination,
@@ -104,8 +115,8 @@ impl Ring {
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
             distance_from_arrival: row.distance_from_arrival,
-            discovered: row.was_discovered,
             mapped: row.was_mapped,
+            discovered_at: row.discovered_at.map(|at| at.and_utc()),
             parent_ids: row.parent_ids.unwrap_or_default(),
             parent_types: row.parent_types.unwrap_or_default(),
             orbit: Orbit {

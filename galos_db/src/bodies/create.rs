@@ -1,17 +1,20 @@
 use super::{composition, Body, Parent, Surface};
 use crate::{Database, Error};
 use chrono::{DateTime, Utc};
-use elite_journal::body::{
-    Body as JournalBody, Discovery, Material, Orbit, Spin,
-};
+use elite_journal::body::{Body as JournalBody, Material, Orbit, Spin};
 
 impl Body {
+    /// `discovered_at` is worked out by the caller rather than read off the
+    /// scan. A scan reporting the body undiscovered is itself the discovery,
+    /// so the reading is the enclosing entry's timestamp, and only something
+    /// holding that entry can say which that is.
     pub async fn from_journal(
         db: &Database,
         timestamp: DateTime<Utc>,
         user: &str,
         body: &JournalBody,
         system_address: i64,
+        discovered_at: Option<DateTime<Utc>>,
     ) -> Result<Body, Error> {
         // A scan names each ancestor as a one entry map of kind to id,
         // nearest first. Kept in that order and whole, since the walk back to
@@ -104,7 +107,7 @@ impl Body {
                 mean_anomaly,
 
                 was_mapped,
-                was_discovered)
+                discovered_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                 COALESCE($12, false), COALESCE($13, false), $14, $15, $16, $17,
                 $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
@@ -149,8 +152,14 @@ impl Body {
                 ascending_node = COALESCE($33, bodies.ascending_node),
                 mean_anomaly = COALESCE($34, bodies.mean_anomaly),
 
+                -- Only ever up. A scan that finds a body already mapped is
+                -- knowledge, and one that finds it unmapped is not evidence
+                -- that it has stayed that way.
                 was_mapped = bodies.was_mapped OR $35,
-                was_discovered = bodies.was_discovered OR $36
+                -- The earliest claim on record wins, and `LEAST` ignores a
+                -- null, so a scan that says nothing about discovery leaves
+                -- what is there alone.
+                discovered_at = LEAST(bodies.discovered_at, $36)
             RETURNING *
             ",
             body.name,
@@ -188,7 +197,7 @@ impl Body {
             body.orbit.ascending_node,
             body.orbit.mean_anomaly,
             body.discovery.mapped,
-            body.discovery.discovered
+            discovered_at.map(|at| at.naive_utc())
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -291,10 +300,8 @@ impl Body {
                 mean_anomaly: row.mean_anomaly,
             },
             spin: Spin { period: row.rotation_period, tilt: row.axial_tilt },
-            discovery: Discovery {
-                discovered: row.was_discovered,
-                mapped: row.was_mapped,
-            },
+            mapped: row.was_mapped,
+            discovered_at: row.discovered_at.map(|at| at.and_utc()),
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })

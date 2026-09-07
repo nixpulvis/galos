@@ -27,8 +27,8 @@ impl Ring {
                 updated_at: row.updated_at.and_utc(),
                 updated_by: row.updated_by,
                 distance_from_arrival: row.distance_from_arrival,
-                discovered: row.was_discovered,
                 mapped: row.was_mapped,
+                discovered_at: row.discovered_at.map(|at| at.and_utc()),
                 parent_ids: row.parent_ids.unwrap_or_default(),
                 parent_types: row.parent_types.unwrap_or_default(),
                 orbit: Orbit {

@@ -2,7 +2,7 @@ use super::Star;
 use crate::bodies::Parent;
 use crate::orbit;
 use crate::{Database, Error};
-use elite_journal::body::{Discovery, Spin};
+use elite_journal::body::Spin;
 
 /// Turn a row of `stars` into one
 ///
@@ -42,10 +42,8 @@ macro_rules! star {
             spin: Spin { period: row.rotation_period, tilt: row.axial_tilt },
             radius: row.radius,
             temperature: row.temperature,
-            discovery: Discovery {
-                discovered: row.was_discovered,
-                mapped: row.was_mapped,
-            },
+            mapped: row.was_mapped,
+            discovered_at: row.discovered_at.map(|at| at.and_utc()),
         }
     }};
 }

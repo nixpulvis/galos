@@ -29,7 +29,7 @@ use crate::bodies::{composition, Body, Parent, Surface};
 use crate::index::Parts;
 use crate::stars::Star;
 use crate::{orbit, Database, Result};
-use elite_journal::body::{Discovery, Material, Orbit, Spin};
+use elite_journal::body::{Material, Orbit, Spin};
 use galos_index::source::{read_meta, write_meta};
 use galos_index::{meta, source, NameTable};
 use sqlx::postgres::PgRow;
@@ -693,6 +693,8 @@ fn star_from_row(row: &PgRow) -> Result<Star> {
     let parent_ids: Option<Vec<i16>> = row.try_get("parent_ids")?;
     let parent_types: Option<Vec<String>> = row.try_get("parent_types")?;
     let updated_at: chrono::NaiveDateTime = row.try_get("updated_at")?;
+    let discovered_at: Option<chrono::NaiveDateTime> =
+        row.try_get("discovered_at")?;
     Ok(Star {
         system_address: row.try_get("system_address")?,
         id: row.try_get("id")?,
@@ -722,10 +724,8 @@ fn star_from_row(row: &PgRow) -> Result<Star> {
         },
         radius: row.try_get("radius")?,
         temperature: row.try_get("temperature")?,
-        discovery: Discovery {
-            discovered: row.try_get("was_discovered")?,
-            mapped: row.try_get("was_mapped")?,
-        },
+        mapped: row.try_get("was_mapped")?,
+        discovered_at: discovered_at.map(|at| at.and_utc()),
     })
 }
 
@@ -737,6 +737,8 @@ fn body_from_row(row: &PgRow) -> Result<Body> {
     let parent_ids: Option<Vec<i16>> = row.try_get("parent_ids")?;
     let parent_types: Option<Vec<String>> = row.try_get("parent_types")?;
     let updated_at: chrono::NaiveDateTime = row.try_get("updated_at")?;
+    let discovered_at: Option<chrono::NaiveDateTime> =
+        row.try_get("discovered_at")?;
     let body_type: Option<String> = row.try_get("body_type")?;
     let material_names: Vec<String> = row.try_get("material_names")?;
     let material_percents: Vec<f64> = row.try_get("material_percents")?;
@@ -787,10 +789,8 @@ fn body_from_row(row: &PgRow) -> Result<Body> {
             period: row.try_get("rotation_period")?,
             tilt: row.try_get("axial_tilt")?,
         },
-        discovery: Discovery {
-            discovered: row.try_get("was_discovered")?,
-            mapped: row.try_get("was_mapped")?,
-        },
+        mapped: row.try_get("was_mapped")?,
+        discovered_at: discovered_at.map(|at| at.and_utc()),
     })
 }
 
@@ -857,7 +857,8 @@ fn meta_star(star: Star) -> meta::Star {
         spin: star.spin,
         radius: star.radius,
         temperature: star.temperature,
-        discovery: star.discovery,
+        mapped: star.mapped,
+        discovered_at: star.discovered_at,
     }
 }
 
@@ -881,7 +882,8 @@ fn meta_body(body: Body) -> meta::Body {
         surface: body.surface.map(meta_surface),
         orbit: body.orbit,
         spin: body.spin,
-        discovery: body.discovery,
+        mapped: body.mapped,
+        discovered_at: body.discovered_at,
     }
 }
 
@@ -942,7 +944,8 @@ mod tests {
             spin: Spin { period: 25.0, tilt: 0.1 },
             radius: 6.96e8,
             temperature: 5772.0,
-            discovery: Discovery { discovered: true, mapped: false },
+            mapped: false,
+            discovered_at: None,
         };
 
         let barycenter = Barycenter {
@@ -981,7 +984,8 @@ mod tests {
                 mean_anomaly: Some(20.0),
             },
             spin: Spin { period: 0.4, tilt: 3.1 },
-            discovery: Discovery { discovered: true, mapped: false },
+            mapped: false,
+            discovered_at: None,
         };
 
         let want = meta::SystemBodies {
@@ -1046,7 +1050,8 @@ mod tests {
                 mean_anomaly: Some(358.0),
             },
             spin: Spin { period: 1.0, tilt: 23.4 },
-            discovery: Discovery { discovered: true, mapped: true },
+            mapped: true,
+            discovered_at: None,
         };
         let surfaced_bodies = meta::SystemBodies {
             bodies: vec![meta_body(surfaced)],

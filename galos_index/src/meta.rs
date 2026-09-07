@@ -14,7 +14,7 @@
 
 use chrono::{DateTime, Utc};
 use elite_journal::body::{
-    AtmosphereType, BodyType, Composition, Discovery, Material, Orbit, Spin,
+    AtmosphereType, BodyType, Composition, Material, Orbit, Spin,
 };
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
 use serde::{Deserialize, Serialize};
@@ -163,7 +163,15 @@ pub struct Star {
     pub spin: Spin,
     pub radius: f32,
     pub temperature: f32,
-    pub discovery: Discovery,
+    /// Whether anybody had mapped the star when it was scanned, which is a
+    /// fact about the star rather than about the scan the way the discovery
+    /// flag that used to sit beside this was.
+    pub mapped: bool,
+    /// When the star was found, where a scan on record says so.
+    ///
+    /// [`None`] where every scan on record found it already discovered, such
+    /// a scan saying somebody had been there without saying when.
+    pub discovered_at: Option<DateTime<Utc>>,
 }
 
 /// A body within a system.
@@ -191,7 +199,15 @@ pub struct Body {
     pub surface: Option<Surface>,
     pub orbit: Orbit,
     pub spin: Spin,
-    pub discovery: Discovery,
+    /// Whether anybody had mapped the body when it was scanned, which is a
+    /// fact about the body rather than about the scan the way the discovery
+    /// flag that used to sit beside this was.
+    pub mapped: bool,
+    /// When the body was found, where a scan on record says so.
+    ///
+    /// [`None`] where every scan on record found it already discovered, such
+    /// a scan saying somebody had been there without saying when.
+    pub discovered_at: Option<DateTime<Utc>>,
 }
 
 /// The center of mass a close pair of bodies goes round.
