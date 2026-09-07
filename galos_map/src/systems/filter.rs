@@ -38,6 +38,7 @@ use galos_index::meta::Faction as DbFaction;
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
     app.init_resource::<LastCutAt>();
+    app.init_resource::<Cut>();
     app.init_resource::<Watch>();
     app.init_resource::<Standstill>();
     app.init_resource::<DimTo>();
@@ -52,7 +53,9 @@ pub fn plugin(app: &mut App) {
     // sync point and nothing here could see it in time.
     app.add_systems(
         Update,
-        mark.in_set(MapSet::Populate).after(super::spawn::spawn),
+        mark.in_set(MapSet::Populate)
+            .in_set(Marking)
+            .after(super::spawn::spawn),
     );
     // The dim and the filters decide which systems belong on the map at all, so
     // a change to either asks the loaded regions again to catch up.
@@ -77,6 +80,36 @@ impl Default for LastCutAt {
         LastCutAt(Instant::now())
     }
 }
+
+/// The verdicts being cut afresh, for whatever has to read them settled
+///
+/// A label rather than the system itself, so ordering against it does not
+/// make [`mark`] or the resources it takes public. [`super::bounded`]'s draw
+/// runs after this: it reads [`Cut`], `mark` writes it, and the two disagreeing
+/// within a frame would fill a cell's budget by one cut's verdicts while the
+/// systems already standing wore the other's.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Marking;
+
+/// How many times what the filters admit may have moved
+///
+/// A counter rather than a change flag, so a reader can keep an answer of its
+/// own and say which cut it holds. [`mark`] bumps it on the one beat the
+/// verdicts are settled on: a filter added, lifted or dropped, and a span
+/// re-cut against the clock as its near edge slides.
+///
+/// What that buys is [`super::bounded`]'s: choosing the systems a cell draws
+/// by what the filters admit means asking about every point of every resident
+/// payload, which is a walk to keep rather than to repeat every frame. The
+/// walk is redone when this moves and not otherwise.
+///
+/// Nothing else can move an answer. A payload point's moment is fixed for as
+/// long as the payload is resident — a republished one is a new payload, and
+/// [`super::bounded::adopt`] drops what was worked out about the old — and the
+/// political table a faction filter reads is a whole-table swap that [`mark`]
+/// counts here like any other change.
+#[derive(Resource, Default)]
+pub(crate) struct Cut(pub u64);
 
 /// How far back the control over time offers to look, longest first
 ///
@@ -211,16 +244,40 @@ pub enum Filter {
     Recency { label: String, span: Duration },
 }
 
+/// The whole of what a filter asks about a system
+///
+/// Three facts: which factions are present, what the address is, and when the
+/// system was last heard from. A [`System`] answers all three, and so does a
+/// payload point joined against [`crate::Populated`] — which is what lets the
+/// LOD draw ask what the filters admit before it builds anything, and choose
+/// the systems it draws by the answer. See [`super::bounded`].
+pub(crate) struct Candidate<'a> {
+    pub address: i64,
+    /// The factions present, by id, empty for an ungoverned system
+    pub factions: &'a [i32],
+    /// When the system was last updated, [`None`] where nothing says
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
 impl Filter {
-    /// Whether this filter admits `system`
-    fn admits(&self, system: &System, now: DateTime<Utc>) -> bool {
+    /// Whether this filter admits `candidate`
+    fn admits(&self, candidate: &Candidate, now: DateTime<Utc>) -> bool {
         match self {
-            Filter::Faction { id, .. } => system.factions.contains(id),
-            Filter::Route { systems, .. } => systems.contains(&system.address),
-            Filter::Systems { systems, .. } => {
-                systems.contains(&system.address)
+            Filter::Faction { id, .. } => candidate.factions.contains(id),
+            Filter::Route { systems, .. } => {
+                systems.contains(&candidate.address)
             }
-            Filter::Recency { span, .. } => system.updated_at >= now - *span,
+            Filter::Systems { systems, .. } => {
+                systems.contains(&candidate.address)
+            }
+            // A system with no moment on record is not one heard from inside
+            // the span. Only the payload carries a moment, so this is a route's
+            // stop or a searched system, built off the names table and still
+            // waiting for its cell — and drawn, where it is drawn at all, for
+            // being a hop or a selection rather than for being recent.
+            Filter::Recency { span, .. } => {
+                candidate.updated_at.is_some_and(|at| at >= now - *span)
+            }
         }
     }
 
@@ -591,6 +648,19 @@ impl Filters {
     /// Nothing asked for admits everything. A map with no filter on it is a
     /// map showing the sky rather than an empty one.
     pub fn admit(&self, system: &System, now: DateTime<Utc>) -> bool {
+        self.admits(&system.candidate(), now)
+    }
+
+    /// Whether the enabled filters admit what `candidate` says
+    ///
+    /// [`Self::admit`] with the system left out of it, for a caller holding
+    /// the facts and not a [`System`]: the LOD draw asks this of a payload
+    /// point to decide whether the point is worth building at all.
+    pub(crate) fn admits(
+        &self,
+        candidate: &Candidate,
+        now: DateTime<Utc>,
+    ) -> bool {
         // Nothing while no filter picks systems out, which is what says a span
         // asked on its own admits whatever it reaches rather than nothing.
         let mut picked = None;
@@ -598,17 +668,28 @@ impl Filters {
         for active in self.asked.iter().filter(|active| active.enabled) {
             match &active.filter {
                 timed @ Filter::Recency { .. } => {
-                    if !timed.admits(system, now) {
+                    if !timed.admits(candidate, now) {
                         return false;
                     }
                 }
                 picking => {
-                    *picked.get_or_insert(false) |= picking.admits(system, now);
+                    *picked.get_or_insert(false) |=
+                        picking.admits(candidate, now);
                 }
             }
         }
 
         picked.unwrap_or(true)
+    }
+
+    /// Whether any filter is being asked at all
+    ///
+    /// What tells a map with nothing on it from one whose filters happen to
+    /// admit everything drawn. Nothing asked means every system is admitted,
+    /// so whoever weighs admitted against excluded has nothing to weigh and
+    /// can take the sky as it comes.
+    pub(crate) fn asking(&self) -> bool {
+        self.asked.iter().any(|active| active.enabled)
     }
 
     /// Add `filter`, unless it is already being asked
@@ -920,12 +1001,17 @@ impl Filtering<'_> {
 
 /// Ask the loaded regions again when systems that are absent must return
 ///
+/// The spyglass region fetch's, and only its: the walk chooses its set afresh
+/// every frame off payloads it already holds, so a filter change there is
+/// answered by the next [`super::bounded`] pass and asks the transport for
+/// nothing. The regions this clears are the surveys that path remembers.
+///
 /// The fetch is unfiltered — the whole region in reach, dimmed or dropped by
 /// the filters afterwards — so what they admit never drives it. A fetch is
 /// worth issuing only when a system that is off the map has to come back onto
-/// it, and nothing is off the map while the excluded are drawn: above zero
-/// dim every system in reach is spawned, filtered or not, so a filter change
-/// there only re-marks what already stands and asks for nothing.
+/// it, and nothing the spyglass fetched is off the map while the excluded are
+/// drawn: above zero dim it spawns every system in reach, filtered or not, so a
+/// filter change there only re-marks what already stands and asks for nothing.
 ///
 /// Below zero the excluded are dropped ([`super::spawn`] never spawns them and
 /// [`super::evict`] drops what stands), so two moves bring absent systems
@@ -972,11 +1058,20 @@ const DEFAULT_DIM: f32 = 0.25;
 /// Only where something has changed. This runs over every system on the map,
 /// and the filters are usually quiet, so the common case is a walk that
 /// writes nothing.
+///
+/// Three things can change a verdict: the filters, the clock a span is
+/// measured against, and the political table a faction filter reads. The last
+/// of those is a whole-table swap by [`crate::refresh`] — the systems on the
+/// map are untouched by it, so nothing about them says to ask again, and a
+/// system that has just become a faction's would keep the mark it was given
+/// before it was.
 fn mark(
     filters: Res<Filters>,
+    populated: Res<Populated>,
     poll: Res<Poll>,
     time: Res<Time<Real>>,
     mut last_cut_at: ResMut<LastCutAt>,
+    mut cut: ResMut<Cut>,
     systems: Query<(Entity, Ref<System>, Has<Filtered>)>,
     mut commands: Commands,
 ) {
@@ -993,7 +1088,13 @@ fn mark(
         *last_cut_at = LastCutAt(running);
     }
 
-    let filters_changed = filters.is_changed() || recut;
+    let filters_changed =
+        filters.is_changed() || populated.is_changed() || recut;
+    // Said once here rather than worked out again by everything that keeps an
+    // answer about what the filters admit. See [`Cut`].
+    if filters_changed {
+        cut.0 += 1;
+    }
     for (entity, system, marked) in &systems {
         // A row that has changed may have changed its factions, so it is
         // asked again even while the filters stand still.
@@ -1440,7 +1541,9 @@ mod tests {
         // hand and there is no waiting in it.
         app.insert_resource(Poll(Some(0.)));
         app.init_resource::<LastCutAt>();
+        app.init_resource::<Cut>();
         app.init_resource::<Time<Real>>();
+        app.init_resource::<Populated>();
         app.add_systems(Update, mark);
         app
     }
@@ -1607,6 +1710,21 @@ mod tests {
             !filters.admit(&heard(3, 40), now()),
             "earlier than the moment"
         );
+    }
+
+    /// A system with no moment on record is not one heard from since
+    ///
+    /// The moment rides on the payload point, so a system built off the names
+    /// table has none: a route's stop, a searched system flown to. It stood at
+    /// `Utc::now()` before the payload carried a moment at all, which admitted
+    /// every system on the map to every span and made the filter answer the
+    /// same as no filter.
+    #[test]
+    fn a_system_with_no_moment_is_not_admitted_by_a_span() {
+        let mut filters = Filters::default();
+        filters.add(within(100));
+
+        assert!(!filters.admit(&system(1), now()));
     }
 
     /// A system belonging to each of `factions`, heard from at `secs`

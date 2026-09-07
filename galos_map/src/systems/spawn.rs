@@ -833,9 +833,10 @@ fn drain_spawns(
 /// system absent from `populated` is ungoverned, which is most of the galaxy,
 /// and drawn as such.
 ///
-/// The cells carry no per-system time, so `updated_at` is stamped now rather
-/// than read: Recency over individuals lands with the field step's age buckets,
-/// and until then a freshly drawn system is never taken to be stale.
+/// When the system was last updated comes off the payload point with the rest
+/// of it, so a [`System`] built here says what the database says. [`None`]
+/// where the raw system came from the names table instead, which carries no
+/// moment; see [`RawSystem::updated_at`].
 pub(crate) fn build_system(
     raw: &RawSystem,
     populated: &Populated,
@@ -866,7 +867,7 @@ pub(crate) fn build_system(
             reach,
             absolute_magnitude: raw.magnitude,
             temp_bucket: raw.temp_bucket,
-            updated_at: Utc::now(),
+            updated_at: raw.updated_at,
         },
         None => System {
             address: raw.address,
@@ -883,7 +884,7 @@ pub(crate) fn build_system(
             reach,
             absolute_magnitude: raw.magnitude,
             temp_bucket: raw.temp_bucket,
-            updated_at: Utc::now(),
+            updated_at: raw.updated_at,
         },
     }
 }
@@ -908,6 +909,10 @@ pub(crate) fn system_at(
         ],
         magnitude: None,
         temp_bucket: None,
+        // The names table says where a system is and what it is called, and
+        // nothing about when it was last heard from. A span excludes it until
+        // its cell payload lands and the system is rebuilt from the point.
+        updated_at: None,
     };
     Some(build_system(&raw, populated, names))
 }
@@ -1154,6 +1159,7 @@ mod tests {
                 position: [address as f64, 0., 0.],
                 magnitude: None,
                 temp_bucket: None,
+                updated_at: None,
             },
             &Populated::default(),
             &Names::default(),

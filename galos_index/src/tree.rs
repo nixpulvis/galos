@@ -48,6 +48,7 @@ struct Record {
     magnitude: f64,
     temperature: f64,
     age_bucket: usize,
+    updated_at: u32,
 }
 
 /// A monotonic `u64` image of a magnitude, so a `BTreeSet` orders systems
@@ -124,6 +125,7 @@ impl Tree {
                         magnitude: s.absolute_magnitude,
                         temperature: s.temperature,
                         age_bucket: s.age_bucket,
+                        updated_at: s.updated_at,
                     },
                 )
             })
@@ -248,6 +250,7 @@ impl Tree {
                 absolute_magnitude: rec.magnitude,
                 temperature: rec.temperature,
                 age_bucket: rec.age_bucket,
+                updated_at: rec.updated_at,
             })
             .collect()
     }
@@ -260,6 +263,7 @@ impl Tree {
             magnitude: system.absolute_magnitude,
             temperature: system.temperature,
             age_bucket: system.age_bucket,
+            updated_at: system.updated_at,
         };
         let id = system.id64;
         self.records.insert(id, rec);
@@ -615,7 +619,13 @@ impl Tree {
                     .iter()
                     .map(|&(_, pid)| {
                         let r = &self.records[&pid];
-                        Point::new(pid, r.position, r.magnitude, r.temperature)
+                        Point::new(
+                            pid,
+                            r.position,
+                            r.magnitude,
+                            r.temperature,
+                            r.updated_at,
+                        )
                     })
                     .collect();
                 payloads.insert(id, points);
@@ -696,13 +706,21 @@ impl Default for BuildParams {
     }
 }
 
-/// One system as the build reads it: where it is and the photometry the
-/// ordering and the glow need.
+/// One system as the build reads it: where it is, the photometry the ordering
+/// and the glow need, and when it was last updated.
 ///
 /// Absolute magnitude and temperature are the finished figures from the
 /// photometry fallback chain (scanned stars summed, else the primary's class,
 /// else a default), not anything the build works out. `age_bucket` is the
 /// Recency axis the caller has already binned.
+///
+/// `updated_at` is the same fact unbinned: Unix seconds of the row's own
+/// `updated_at`. Both, because they answer at different distances. A cell's
+/// aggregate counts systems per age bucket, which is a binning and cannot be
+/// undone; the payload carries the second so that the Recency filter, whose
+/// shortest span is a minute, has something finer than a day to test. The
+/// caller bins one from the other off one reading, so the far view and the near
+/// view of the same filter cannot disagree about a system.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct System {
     pub id64: u64,
@@ -710,6 +728,7 @@ pub struct System {
     pub absolute_magnitude: f64,
     pub temperature: f64,
     pub age_bucket: usize,
+    pub updated_at: u32,
 }
 
 /// A built tree: the index the walks plan on and the per-cell payloads.
@@ -983,6 +1002,7 @@ fn assign_slices(
                     s.position,
                     s.absolute_magnitude,
                     s.temperature,
+                    s.updated_at,
                 ));
                 break;
             }
@@ -1025,6 +1045,7 @@ mod batch_tests {
                         absolute_magnitude: id as f64 * 0.001,
                         temperature: 5000.0,
                         age_bucket: 0,
+                        updated_at: 0,
                     });
                     id += 1;
                 }
@@ -1258,6 +1279,10 @@ mod tests {
             absolute_magnitude: rng.magnitude(),
             temperature: 3000.0 + (rng.below(20000) as f64),
             age_bucket: rng.below(8) as usize,
+            // Off the id rather than the rng, so the draws below it keep the
+            // sequence they had, and distinct per system so a payload that
+            // mixed the stamps up fails the equivalence below.
+            updated_at: 1_700_000_000 + id as u32,
         }
     }
 

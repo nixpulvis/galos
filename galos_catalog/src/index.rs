@@ -75,6 +75,11 @@ impl Star {
             absolute_magnitude: self.absolute_magnitude,
             temperature: self.temperature(),
             age_bucket: 0,
+            // A survey star is a measurement, not a report off the feed, so
+            // there is no moment at which one was last updated. Zero, which
+            // reads as the epoch and so falls outside every span the Recency
+            // filter asks about.
+            updated_at: 0,
         }
     }
 }

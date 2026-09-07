@@ -17,8 +17,15 @@ fn main() {
     let dir = std::env::var("GALOS_INDEX_DIR")
         .unwrap_or_else(|_| ".galos_index".to_string());
     let source = FsSource::new(&dir);
-    let (index, populated, names, reaches, factions) =
+    let (index, populated, names, reaches, factions, held) =
         future::block_on(async {
+            // What each part is, before a byte of it is read: a publish
+            // landing during the read is then held under the older stamp and
+            // re-read on the first poll. Stamped afterwards, a part read
+            // before the publish would be filed under the stamp of the
+            // publish and never asked for again. See
+            // [`galos_map::refresh::Held::before_reading`].
+            let held = refresh::Held::before_reading(&source).await;
             let index = source
                 .index()
                 .await
@@ -27,7 +34,7 @@ fn main() {
             let names = source.names().await.unwrap_or_default();
             let reaches = source.reaches().await.unwrap_or_default();
             let factions = source.factions().await.unwrap_or_default();
-            (index, populated, names, reaches, factions)
+            (index, populated, names, reaches, factions, held)
         });
 
     // Said before the log plugin is up, so plain stderr. What loaded is the
@@ -95,6 +102,7 @@ fn main() {
     app.insert_resource(ClearColor(Color::BLACK));
     app.insert_resource(IndexDir(dir.clone()));
     app.insert_resource(Transport(Arc::new(source)));
+    app.insert_resource(held);
     app.insert_resource(ResidentIndex(index));
     app.insert_resource(Populated(Arc::new(
         populated.into_iter().map(|s| (s.address, s)).collect(),
@@ -109,6 +117,9 @@ fn main() {
     app.add_plugins(space::plugin);
     app.add_plugins(camera::plugin);
     app.add_plugins(systems::plugin);
+    // After the systems, whose bounded source holds the payloads a refresh
+    // replaces and the stamps it asks about.
+    app.add_plugins(refresh::plugin);
     // After the systems, whose descent into a star is what carries the ruled
     // plane from light years to light seconds.
     app.add_plugins(grid::plugin);

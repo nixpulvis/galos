@@ -46,7 +46,7 @@ pub use moments::Moments;
 pub use names::NameTable;
 pub use orbit::{Orbit, Orbits, Spacing};
 pub use serialization::{Codec, Decode, Encode, FixedCodec};
-pub use source::{FsSource, Source};
+pub use source::{FsSource, Part, Source, Stamp};
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
 pub use walk::{
     Index, MARK_SEPARATION_PX, Mode, Needed, STAR_SEPARATION_PX, SplatRef,

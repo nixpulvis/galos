@@ -101,13 +101,60 @@ impl Zero for Cost {
 pub struct Jumps(pub Arc<JumpGraph>);
 
 /// Every system's place, bucketed in space for neighbour queries.
+///
+/// Two of these: the table as it was read, and the systems the feed has named
+/// since. Both behind [`Arc`]s and neither ever written to, so a refresh
+/// publishes a new [`JumpGraph`] by cloning two handles and building the small
+/// one — where growing the base in place would copy a hundred and fifty
+/// megabytes, and would do it under whatever route is being searched.
+///
+/// A route in flight holds the graph it started on and finishes against that.
+/// It is the right answer as well as the cheap one: a search half-run against
+/// a set of places that grew underneath it has been searching two different
+/// skies.
 pub struct JumpGraph {
+    /// The table as it was read, which is most of the galaxy.
+    base: Arc<Places>,
+    /// The systems named since, bucketed the same way. See
+    /// [`extended`](Self::extended).
+    fresh: Arc<Places>,
+}
+
+/// A set of systems' places, and the grid that finds them by neighbourhood.
+#[derive(Default)]
+struct Places {
     /// Each system's address and position, in light years.
     points: Vec<(i64, [f64; 3])>,
     /// Address to its index in `points`.
     by_address: HashMap<i64, usize>,
     /// Grid bucket to the indices of the points that fall in it.
     buckets: HashMap<[i32; 3], Vec<usize>>,
+}
+
+impl Places {
+    /// Bucket `entries` into a searchable set.
+    fn of(entries: impl IntoIterator<Item = (i64, [f64; 3])>) -> Places {
+        let points: Vec<(i64, [f64; 3])> = entries.into_iter().collect();
+        let by_address =
+            points.iter().enumerate().map(|(i, (a, _))| (*a, i)).collect();
+        let mut buckets: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
+        for (i, (_, p)) in points.iter().enumerate() {
+            buckets.entry(bucket_of(*p)).or_default().push(i);
+        }
+        Places { points, by_address, buckets }
+    }
+}
+
+/// The place of a [`NameEntry`], at the table's own precision.
+fn placed(entry: &NameEntry) -> (i64, [f64; 3]) {
+    (
+        entry.address,
+        [
+            entry.position[0] as f64,
+            entry.position[1] as f64,
+            entry.position[2] as f64,
+        ],
+    )
 }
 
 /// Which bucket a point falls in.
@@ -129,45 +176,109 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
 impl JumpGraph {
     /// Build the graph from the resident names table.
     pub fn new(entries: &[NameEntry]) -> JumpGraph {
-        let points: Vec<(i64, [f64; 3])> = entries
-            .iter()
-            .map(|e| {
-                (
-                    e.address,
-                    [
-                        e.position[0] as f64,
-                        e.position[1] as f64,
-                        e.position[2] as f64,
-                    ],
-                )
-            })
-            .collect();
-        let by_address =
-            points.iter().enumerate().map(|(i, (a, _))| (*a, i)).collect();
-        let mut buckets: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
-        for (i, (_, p)) in points.iter().enumerate() {
-            buckets.entry(bucket_of(*p)).or_default().push(i);
+        JumpGraph {
+            base: Arc::new(Places::of(entries.iter().map(placed))),
+            fresh: Arc::default(),
         }
-        JumpGraph { points, by_address, buckets }
+    }
+
+    /// The same base with `arrivals` alongside it: the systems the feed has
+    /// named since the table was read.
+    ///
+    /// Whole rather than added to, since [`crate::Names::fresh`] is itself the
+    /// accumulated set and is handed here entire. Rebuilding the small side
+    /// costs its own size and nothing else — the base is a handle clone — so a
+    /// pass that found one arrival pays for the few thousand of a session, not
+    /// for the two million of the galaxy.
+    ///
+    /// Only addresses the base does not hold. A rename is nothing to a router,
+    /// which asks where a system is and not what it is called, and a position
+    /// corrected under an address already known is not applied until the table
+    /// is read afresh: the names table's own doc has it that a position is
+    /// corrected about never, and taking one here would leave the same system
+    /// bucketed twice, in two places, for a search to route through either.
+    pub fn extended<'a>(
+        &self,
+        arrivals: impl IntoIterator<Item = &'a NameEntry>,
+    ) -> JumpGraph {
+        let known = &self.base.by_address;
+        JumpGraph {
+            base: Arc::clone(&self.base),
+            fresh: Arc::new(Places::of(
+                arrivals
+                    .into_iter()
+                    .filter(|entry| !known.contains_key(&entry.address))
+                    .map(placed),
+            )),
+        }
+    }
+
+    /// How many systems the graph can route between.
+    pub fn len(&self) -> usize {
+        self.base.points.len() + self.fresh.points.len()
+    }
+
+    /// Whether the graph holds no places at all.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The system at an index, whichever set holds it
+    ///
+    /// One index space over the two: below the base's length it is the base's
+    /// own, above it the overlay's. Which is what lets the searches below key
+    /// on a plain `usize` as they did when there was one set.
+    fn place(&self, i: usize) -> (i64, [f64; 3]) {
+        match i.checked_sub(self.base.points.len()) {
+            Some(i) => self.fresh.points[i],
+            None => self.base.points[i],
+        }
+    }
+
+    /// Where a system sits in that one index space, by address
+    ///
+    /// The overlay first, so a system named since the table was read is
+    /// routable at all.
+    fn index_of(&self, address: i64) -> Option<usize> {
+        match self.fresh.by_address.get(&address) {
+            Some(&i) => Some(self.base.points.len() + i),
+            None => self.base.by_address.get(&address).copied(),
+        }
     }
 
     /// The systems within `range` light years of the point at `i`, by index.
+    ///
+    /// Both sets, cell by cell: one bucket lookup each over the same reach
+    /// cube. The overlay's is a hash lookup into a table of the arrivals of
+    /// one session, so it misses cheaply, and the distance tests it adds are
+    /// the arrivals it actually holds nearby.
     fn neighbors(&self, i: usize, range: f64) -> Vec<usize> {
-        let p = self.points[i].1;
-        let base = bucket_of(p);
+        let p = self.place(i).1;
+        let home = bucket_of(p);
         let reach = (range / BUCKET_LY).ceil() as i32;
+        let held = self.base.points.len();
         let mut out = Vec::new();
         for dx in -reach..=reach {
             for dy in -reach..=reach {
                 for dz in -reach..=reach {
-                    let cell = [base[0] + dx, base[1] + dy, base[2] + dz];
-                    let Some(bucket) = self.buckets.get(&cell) else {
-                        continue;
-                    };
-                    for &j in bucket {
-                        if j != i && dist2(p, self.points[j].1) <= range * range
-                        {
-                            out.push(j);
+                    let cell = [home[0] + dx, home[1] + dy, home[2] + dz];
+                    let sets = [
+                        (self.base.buckets.get(&cell), 0, &self.base.points),
+                        (
+                            self.fresh.buckets.get(&cell),
+                            held,
+                            &self.fresh.points,
+                        ),
+                    ];
+                    for (bucket, offset, points) in sets {
+                        let Some(bucket) = bucket else { continue };
+                        for &j in bucket {
+                            let there = points[j].1;
+                            if j + offset != i
+                                && dist2(p, there) <= range * range
+                            {
+                                out.push(j + offset);
+                            }
                         }
                     }
                 }
@@ -192,14 +303,14 @@ impl JumpGraph {
         range: f64,
         how: Routing,
     ) -> Option<Vec<(i64, [f64; 3])>> {
-        let start = *self.by_address.get(&start)?;
-        let end = *self.by_address.get(&end)?;
-        let goal = self.points[end].1;
+        let start = self.index_of(start)?;
+        let end = self.index_of(end)?;
+        let goal = self.place(end).1;
         let path = match how {
             Routing::Direct => self.direct(start, end, goal, range),
             Routing::Shortest => self.shortest(start, end, goal, range),
         }?;
-        Some(path.into_iter().map(|i| self.points[i]).collect())
+        Some(path.into_iter().map(|i| self.place(i)).collect())
     }
 
     /// Fewest jumps, taking the neighbour that gets nearest the goal first
@@ -222,13 +333,13 @@ impl JumpGraph {
             |&i| {
                 let mut near = self.neighbors(i, range);
                 near.sort_by(|&a, &b| {
-                    let a = dist2(self.points[a].1, goal);
-                    let b = dist2(self.points[b].1, goal);
+                    let a = dist2(self.place(a).1, goal);
+                    let b = dist2(self.place(b).1, goal);
                     a.total_cmp(&b)
                 });
                 near.into_iter().map(|j| (j, 1u32))
             },
-            |&i| (dist2(self.points[i].1, goal).sqrt() / range).ceil() as u32,
+            |&i| (dist2(self.place(i).1, goal).sqrt() / range).ceil() as u32,
             |&i| i == end,
         )?;
         Some(path)
@@ -251,14 +362,14 @@ impl JumpGraph {
         let (path, _) = astar(
             &start,
             |&i| {
-                let from = self.points[i].1;
+                let from = self.place(i).1;
                 self.neighbors(i, range).into_iter().map(move |j| {
-                    let leg = dist2(from, self.points[j].1).sqrt();
+                    let leg = dist2(from, self.place(j).1).sqrt();
                     (j, Cost { jumps: 1, light_years: leg.ceil() as u64 })
                 })
             },
             |&i| {
-                let left = dist2(self.points[i].1, goal).sqrt();
+                let left = dist2(self.place(i).1, goal).sqrt();
                 Cost {
                     jumps: (left / range).ceil() as u32,
                     light_years: left.floor() as u64,
@@ -413,5 +524,83 @@ mod tests {
 
         assert_eq!(graph.neighbors(0, far as f64 + 1.), vec![1]);
         assert!(graph.neighbors(0, far as f64 - 1.).is_empty());
+    }
+
+    /// A system named since the table was read is routable, as an end and as
+    /// a waypoint
+    ///
+    /// The router reads the names table, and the map reads that table once at
+    /// startup. A system the feed named while the map ran was not in the graph
+    /// at all, so a route to it came back with nothing and a route past it
+    /// took the long way round — which is what [`crate::refresh`] hands the
+    /// arrivals here for.
+    #[test]
+    fn a_system_named_since_is_routable() {
+        // Two ends 900 ly apart, too far for one 500 ly jump, with nothing
+        // between them when the table was read.
+        let base = vec![at(0, [0., 0., 0.]), at(9, [900., 0., 0.])];
+        let graph = JumpGraph::new(&base);
+        for how in BOTH {
+            assert!(
+                graph.route(0, 9, 500., how).is_none(),
+                "{how:?} crossed 900 ly at a 500 ly range"
+            );
+        }
+
+        // The feed names one in the middle, and one further out again.
+        let arrivals = vec![at(50, [450., 0., 0.]), at(99, [1350., 0., 0.])];
+        let grown = graph.extended(&arrivals);
+
+        assert_eq!(grown.len(), 4, "two known systems and two arrivals");
+        for how in BOTH {
+            let path = grown.route(0, 9, 500., how).expect("a route");
+            assert_eq!(
+                path.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
+                vec![0, 50, 9],
+                "{how:?} did not route through the arrival"
+            );
+
+            let path = grown.route(0, 99, 500., how).expect("a route to it");
+            assert_eq!(
+                path.last().map(|(a, _)| *a),
+                Some(99),
+                "{how:?} could not reach the arrival itself"
+            );
+            assert_eq!(path.len() - 1, 3, "{how:?} took the wrong count");
+        }
+
+        // And the base is untouched by any of it: the graph it was asked for
+        // is the graph it keeps, which is what a route in flight holds.
+        for how in BOTH {
+            assert!(
+                graph.route(0, 9, 500., how).is_none(),
+                "{how:?} saw an arrival the graph it holds never had"
+            );
+        }
+    }
+
+    /// An arrival under an address the table already names is left alone
+    ///
+    /// A rename is nothing to a router: it asks where a system is. Taking one
+    /// anyway would bucket the same system twice and let a search route
+    /// through either copy.
+    #[test]
+    fn a_rename_does_not_double_a_system() {
+        let base = vec![at(0, [0., 0., 0.]), at(1, [450., 0., 0.])];
+        let graph = JumpGraph::new(&base);
+
+        let renamed = vec![NameEntry {
+            address: 1,
+            name: "Renamed".into(),
+            position: [450., 0., 0.],
+        }];
+        let grown = graph.extended(&renamed);
+
+        assert_eq!(grown.len(), 2, "the renamed system is held once");
+        assert_eq!(
+            grown.neighbors(grown.index_of(0).expect("an index"), 500.).len(),
+            1,
+            "and offered as one neighbour, not two"
+        );
     }
 }

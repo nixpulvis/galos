@@ -16,11 +16,12 @@
 //! `m_min` as a NaN-sentinel `f32`, a point's magnitude as fixed-point `i16`),
 //! which is the part a derive could not express.
 //!
-//! The payload is thirty-five bytes a system, its position carried in full as
+//! The payload is thirty-nine bytes a system, its position carried in full as
 //! three `f64`, so a block stands on its own without its cell. Nothing is
-//! frozen yet: the version is zero while the format settles, and the index
-//! record keeps growing, as the aggregate gains the field step's filter
-//! marginals and its quantization.
+//! frozen yet: the version moves when a record's width does and the check
+//! cannot catch it (see [`INDEX_VERSION`]), and the index record keeps
+//! growing, as the aggregate gains the field step's filter marginals and its
+//! quantization.
 
 use crate::aggregate::{Aggregate, Cell};
 use crate::cache::Point;
@@ -220,6 +221,7 @@ record! {
         pos: [f64; 3],
         magnitude: f32 as Centimag,
         temp_bucket: u8,
+        updated_at: u32,
     }
 }
 
@@ -258,17 +260,28 @@ impl Decode for Vec<Point> {
 
 /// The magic and version at the head of an index file.
 const INDEX_MAGIC: [u8; 4] = *b"GIDX";
-/// Zero while the format is pre-1.0 and free to change; bumped once the first
-/// cut is settled.
+/// One, and moved by the payload record's width
 ///
-/// So a record may change width without this moving, and has: the age buckets
-/// went from `u64` to `u32`. What makes that safe is not the version but the
-/// length check in [`Index`]'s own `decode` — a stale file carries the same
-/// magic and the same zero, so nothing in the header tells it apart, and only
-/// its size does. A build is the fix, and rebuilding is cheap against inputs
-/// that are already to hand. Once these bytes have to outlive a rebuild —
-/// anything shipped, anything served — a width change costs a bump.
-const INDEX_VERSION: u16 = 0;
+/// It stood at zero while the format settled, and a record changed width under
+/// it more than once — the age buckets went from `u64` to `u32` — on the
+/// argument that the length check in [`Index`]'s own `decode` catches a stale
+/// file by its size, so a rebuild is the fix and rebuilding is cheap against
+/// inputs already to hand.
+///
+/// That argument holds for the index file and not for the payload. A block of
+/// points carries no magic, no version and no count, so nothing about it can
+/// be held to a width: [`Vec<Point>`]'s decode takes whole records until fewer
+/// than one remains, and a file written at the old width decodes as the right
+/// number of plausible systems with every field read out of the wrong bytes.
+/// The index beside it cannot tell either, `Cell::LEN` being unchanged. So a
+/// change to [`Point`]'s width has to be caught in the one header there is,
+/// and this is it: a stale directory is refused at `index.bin` and the map
+/// says so instead of drawing a galaxy of nonsense.
+///
+/// Which means a bump costs a full rebuild of the cells, and is worth it only
+/// for a width change the payload cannot catch itself. A change to the index
+/// record alone still rides on the length check.
+const INDEX_VERSION: u16 = 1;
 
 impl Encode for Index {
     fn encode(&self, out: &mut Vec<u8>) {
@@ -291,14 +304,16 @@ impl Decode for Index {
     /// The header says how many cells follow and a cell is a fixed width, so
     /// the length is a thing the file can be held to: anything but exactly
     /// `count * Cell::LEN` bytes of body was written by a different build of
-    /// this code. That is the check that makes a record's width safe to change
-    /// while `INDEX_VERSION` stands at zero — without it a stale index
+    /// this code. That is the check that makes the index record's width safe
+    /// to change without moving [`INDEX_VERSION`] — without it a stale index
     /// passes the header, decodes one record's bytes as another's, and hands
     /// back a plausible-looking tree of nonsense. Refused here, it is a
     /// rebuild instead of a wrong sky.
     ///
-    /// Unlike the payload, which drops a short tail rather than failing: a
-    /// payload block carries no count to be held against.
+    /// The payload has no such check — it carries no count to be held against,
+    /// and drops a short tail rather than failing — so a change to *its* width
+    /// is caught here instead, by the version this refuses on. See
+    /// [`INDEX_VERSION`].
     fn decode(cur: &mut &[u8]) -> Option<Index> {
         if <[u8; 4]>::decode(cur)? != INDEX_MAGIC {
             return None;
@@ -328,6 +343,7 @@ mod tests {
             pos: [10.5, -40000.25, 65535.0],
             magnitude: mag,
             temp_bucket: 3,
+            updated_at: 1_757_260_000,
         }
     }
 
@@ -345,6 +361,7 @@ mod tests {
             assert_eq!(back.id64, p.id64);
             assert_eq!(back.pos, p.pos);
             assert_eq!(back.temp_bucket, p.temp_bucket);
+            assert_eq!(back.updated_at, p.updated_at);
             assert!((back.magnitude - p.magnitude).abs() <= 0.005);
         }
     }
@@ -362,6 +379,7 @@ mod tests {
             assert_eq!(a.id64, b.id64);
             assert_eq!(a.pos, b.pos);
             assert_eq!(a.temp_bucket, b.temp_bucket);
+            assert_eq!(a.updated_at, b.updated_at);
             assert!((a.magnitude - b.magnitude).abs() <= 0.005);
         }
     }

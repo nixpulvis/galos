@@ -913,10 +913,15 @@ fn described(
             field(ui, "Government", named(&system.government));
             field(ui, "Security", named(&system.security));
             economies(ui, &system.economies);
+            // Unknown for the same systems the magnitude is: the moment rides
+            // on the payload point, and one built off the names table has none.
             field(
                 ui,
                 "Updated",
-                system.updated_at.format("%Y-%m-%d %H:%M UTC").to_string(),
+                match system.updated_at {
+                    Some(at) => at.format("%Y-%m-%d %H:%M UTC").to_string(),
+                    None => UNKNOWN.into(),
+                },
             );
         },
     );

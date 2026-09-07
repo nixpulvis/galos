@@ -87,7 +87,8 @@ pub struct Aggregate {
     /// Counts per age bucket, a column of the record so a Recency span can be
     /// answered by prefix sum off the aggregates alone. Every build writes it
     /// and nothing reads it back yet: the Recency filter asks per system, off
-    /// `updated_at`.
+    /// the `updated_at` the payload carries, which is the same clock binned
+    /// finer.
     ///
     /// `u32` rather than `u64`, which halves what the column costs and loses
     /// nothing: a bucket counts systems, the buckets of one cell sum to its

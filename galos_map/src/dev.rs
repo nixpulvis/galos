@@ -195,9 +195,10 @@ fn diagnostics(
                     pair(
                         ui,
                         "names",
-                        &loaded.names.entries.len().to_string(),
+                        &loaded.names.len().to_string(),
                         "Systems in the names-and-positions table: the search \
-                         index and the router's graph.",
+                         index and the router's graph. Counting whatever a \
+                         refresh has added since it was read.",
                     );
                     pair(
                         ui,

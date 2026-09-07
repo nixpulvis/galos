@@ -148,12 +148,16 @@ fn age_bucket(days: i64) -> usize {
 /// Their light adds, so the magnitudes combine to one figure and the tint is
 /// the brightest star's, which dominates it. With no stars the primary class
 /// stands in, and with no class the default M dwarf does.
+///
+/// `age_bucket` and `updated_at` are the two forms of one fact, as [`updated`]
+/// settles them: the binned one the cell aggregates count by and the exact one
+/// the payload carries.
 fn system_input(
     address: i64,
     position: [f64; 3],
     primary_star_class: Option<&str>,
     stars: &[(f64, f64)],
-    age_bucket: usize,
+    (age_bucket, updated_at): (usize, u32),
 ) -> System {
     let (absolute_magnitude, temperature) =
         match Magnitude::combine(stars.iter().map(|&(m, _)| Magnitude(m))) {
@@ -177,7 +181,33 @@ fn system_input(
         absolute_magnitude,
         temperature,
         age_bucket,
+        updated_at,
     }
+}
+
+/// How lately a system was updated, in the two forms the index wants it: the
+/// Recency bucket the cell aggregates count by and the Unix second the payload
+/// carries.
+///
+/// One reading of `updated_at`, so the two cannot disagree about a system. The
+/// bucket alone was what the index carried and the buckets are days wide, which
+/// answers a Recency span of thirty days and none of the five spans shorter
+/// than a day — the end of the control the map is actually used at. So the
+/// second goes on the payload point beside it.
+///
+/// `u32`, which is Unix seconds to 2106 and four bytes rather than eight on a
+/// record of thirty-five. Clamped rather than wrapped: `updated_at` is a
+/// timestamp off a journal entry and a client can write whatever it likes
+/// there, and a year outside the `u32` range should read as the far end of the
+/// axis rather than fold back into the middle of it.
+fn updated(
+    updated_at: chrono::NaiveDateTime,
+    now: chrono::NaiveDateTime,
+) -> (usize, u32) {
+    (
+        age_bucket((now - updated_at).num_days()),
+        updated_at.and_utc().timestamp().clamp(0, u32::MAX as i64) as u32,
+    )
 }
 
 /// Every scanned star grouped under its system: its visual `(absolute
@@ -236,7 +266,8 @@ async fn stars_by_system(
 /// One `systems` row turned into build input through the photometry fallback.
 ///
 /// The row carries `address`, the three `ST_?` coordinates, `primary_star_class`
-/// and `updated_at`; `now` dates the Recency bucket and `stars` supplies any scan.
+/// and `updated_at`; `now` dates the Recency reading and `stars` supplies any
+/// scan.
 fn input_from_row(
     row: &sqlx::postgres::PgRow,
     stars: &HashMap<i64, Vec<(f64, f64)>>,
@@ -247,10 +278,15 @@ fn input_from_row(
     let y: f64 = row.try_get("y")?;
     let z: f64 = row.try_get("z")?;
     let class: Option<String> = row.try_get("primary_star_class")?;
-    let updated: chrono::NaiveDateTime = row.try_get("updated_at")?;
-    let bucket = age_bucket((now - updated).num_days());
+    let updated_at: chrono::NaiveDateTime = row.try_get("updated_at")?;
     let system_stars = stars.get(&address).map(Vec::as_slice).unwrap_or(&[]);
-    Ok(system_input(address, [x, y, z], class.as_deref(), system_stars, bucket))
+    Ok(system_input(
+        address,
+        [x, y, z],
+        class.as_deref(),
+        system_stars,
+        updated(updated_at, now),
+    ))
 }
 
 /// The addresses of systems reported since `since`: those whose own row
@@ -634,20 +670,20 @@ mod tests {
     fn scanned_stars_combine_and_take_the_brightest_tint() {
         // Two equal stars are about 0.75 mag brighter together than either.
         let stars = [(4.83, 5772.0), (4.83, 3000.0)];
-        let s = system_input(42, [0.0; 3], Some("G"), &stars, 0);
+        let s = system_input(42, [0.0; 3], Some("G"), &stars, (0, 0));
         assert!((s.absolute_magnitude - (4.83 - 0.7526)).abs() < 0.01);
         assert_eq!(s.id64, 42);
 
         // A distinct brightest star pins the tint to its temperature.
         let stars = [(2.0, 9000.0), (5.0, 3000.0)];
-        let s = system_input(42, [0.0; 3], Some("G"), &stars, 0);
+        let s = system_input(42, [0.0; 3], Some("G"), &stars, (0, 0));
         assert_eq!(s.temperature, 9000.0);
     }
 
     /// A starless system takes its named class.
     #[test]
     fn a_starless_system_falls_back_to_its_class() {
-        let s = system_input(1, [0.0; 3], Some("M"), &[], 0);
+        let s = system_input(1, [0.0; 3], Some("M"), &[], (0, 0));
         let m = ClassLight::of("M");
         assert_eq!(s.absolute_magnitude, m.absolute_magnitude.0);
         assert_eq!(s.temperature, m.temperature.0);
@@ -656,7 +692,7 @@ mod tests {
     /// No stars and no class is the default dwarf.
     #[test]
     fn no_stars_and_no_class_is_the_default_dwarf() {
-        let s = system_input(1, [0.0; 3], None, &[], 0);
+        let s = system_input(1, [0.0; 3], None, &[], (0, 0));
         assert_eq!(
             s.absolute_magnitude,
             galos_photometry::ClassLight::DEFAULT.absolute_magnitude.0
@@ -671,6 +707,36 @@ mod tests {
         assert_eq!(age_bucket(6), 1);
         assert_eq!(age_bucket(7), 2);
         assert_eq!(age_bucket(10_000), 7);
+    }
+
+    /// An update is carried to the second as well as binned
+    ///
+    /// The second is what the Recency filter tests, and its spans run from a
+    /// minute to thirty days: five of the eight are shorter than the finest
+    /// bucket, so the bucket cannot stand in for the stamp. Both come out of one
+    /// reading of one column, so the cell aggregates and the payload cannot say
+    /// different things about the same system.
+    #[test]
+    fn an_update_is_kept_to_the_second_as_well_as_binned() {
+        let now = chrono::DateTime::from_timestamp(1_757_260_000, 0)
+            .expect("a moment")
+            .naive_utc();
+
+        // Five minutes ago and now are the same bucket, and the stamp is the
+        // whole of what tells them apart.
+        let live = now - chrono::TimeDelta::minutes(5);
+        assert_eq!(updated(live, now), (0, live.and_utc().timestamp() as u32));
+
+        let week = now - chrono::TimeDelta::days(8);
+        assert_eq!(updated(week, now), (2, week.and_utc().timestamp() as u32));
+
+        // A journal entry can carry any timestamp its client cared to write.
+        // Beyond the range of the stamp it reads as the far end of the axis
+        // rather than folding back into the middle of it.
+        let absurd = chrono::DateTime::from_timestamp(1i64 << 40, 0)
+            .expect("a moment")
+            .naive_utc();
+        assert_eq!(updated(absurd, now), (0, u32::MAX));
     }
 
     /// A report whose event timestamp is a year old still reads as newly

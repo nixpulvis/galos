@@ -106,6 +106,9 @@ pub fn fetch_route(
                                     position,
                                     magnitude: None,
                                     temp_bucket: None,
+                                    // A stop comes out of the jump graph,
+                                    // which is places and nothing else.
+                                    updated_at: None,
                                 };
                                 build_system(&raw, &populated, &names)
                             })

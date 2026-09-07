@@ -1,13 +1,13 @@
 //! The builder's private resume point.
 //!
 //! The served index is a lossy projection: a payload [`Point`](crate::Point)
-//! carries an exact position but a downcast `f32` magnitude, a bucketed
-//! temperature, and no age at all, so the editable [`Tree`](crate::Tree) and its
-//! aggregates cannot be rebuilt from it. This can. A checkpoint holds the
-//! full-precision inputs the tree was last built from and the database time they
-//! were read at, so a `--watch` restart rebuilds the tree in memory and follows
-//! changes from the cursor rather than re-reading the whole database and
-//! rewriting every file.
+//! carries an exact position and the second a system was last updated at, but a
+//! downcast `f32` magnitude, a bucketed temperature, and no age bucket, so the
+//! editable [`Tree`](crate::Tree) and its aggregates cannot be rebuilt from it.
+//! This can. A checkpoint holds the full-precision inputs the tree was
+//! last built from and the database time they were read at, so a `--watch`
+//! restart rebuilds the tree in memory and follows changes from the cursor
+//! rather than re-reading the whole database and rewriting every file.
 //!
 //! It is server-private and never served: it belongs beside the builder, not in
 //! the published directory a client reads. Written whole and atomically (a
@@ -75,6 +75,7 @@ mod tests {
             absolute_magnitude: 4.83 - id as f64,
             temperature: 3000.0 + id as f64,
             age_bucket: (id % 8) as usize,
+            updated_at: 1_700_000_000 + id as u32,
         }
     }
 

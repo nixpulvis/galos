@@ -26,6 +26,7 @@ use crate::space::Map;
 use crate::systems::aggregate::Planned;
 use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::fetch::{FetchTasks, RawSystem};
+use crate::systems::filter::{Candidate, Cut, Filtering, Filters};
 use crate::systems::scale::View;
 use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
@@ -34,9 +35,10 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use chrono::{DateTime, Utc};
 use galos_index::{
-    CellId, MARK_SEPARATION_PX, Point, Resident, STAR_SEPARATION_PX,
-    resolvable_count,
+    CellId, MARK_SEPARATION_PX, Part, Point, Resident, STAR_SEPARATION_PX,
+    Stamp, resolvable_count,
 };
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -46,6 +48,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LodFetch>();
     app.init_resource::<ResidentCells>();
     app.init_resource::<BoundedTasks>();
+    app.init_resource::<AdmittedPoints>();
 
     // Clears the map when the source is switched, before either source runs,
     // so the two never overlap on screen.
@@ -55,9 +58,19 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, collect.in_set(MapSet::Populate).run_if(enabled));
     // Then draw each resident cell's resolvable prefix — grown and shed per
     // system with distance — and drop whatever falls outside every prefix.
+    //
+    // After the marking, which is what bumps [`Cut`] when a verdict moves.
+    // The two conflict on it — one reads, the other writes — so left
+    // unordered the schedule picks, and on the frame a filter is asked for
+    // this would fill every cell's budget by the verdicts of the cut before
+    // it while the standing systems were marked by the one after.
     app.add_systems(
         Update,
-        reconcile.in_set(MapSet::Populate).after(collect).run_if(enabled),
+        reconcile
+            .in_set(MapSet::Populate)
+            .after(collect)
+            .after(crate::systems::filter::Marking)
+            .run_if(enabled),
     );
     // Free the payloads of cells the walk no longer wants at all.
     app.add_systems(
@@ -119,11 +132,19 @@ fn cell_in_reach(id: CellId, center: DVec3, radius: f64) -> bool {
 /// Keyed by cell, so [`Resident::missing`] is the marks a fetch must load and
 /// [`Resident::stale`] the held cells the walk no longer asks for.
 #[derive(Resource, Default)]
-struct ResidentCells(Resident);
+pub(crate) struct ResidentCells(pub(crate) Resident);
 
 /// The payload reads in flight, one per marks cell not yet resident or asked
+///
+/// Each carries the payload and the [`Stamp`] the transport gave for it, so a
+/// refresh knows what it is holding and asks whether that has moved rather
+/// than reading every resident cell again. Stamped before the read, so a
+/// payload rewritten between the two is held under the older stamp and read
+/// again on the next poll — the safe way round.
 #[derive(Resource, Default)]
-struct BoundedTasks(HashMap<CellId, Task<io::Result<Vec<Point>>>>);
+struct BoundedTasks(
+    HashMap<CellId, Task<io::Result<(Vec<Point>, Option<Stamp>)>>>,
+);
 
 /// Clear the map when the source switches, so one does not draw over the other
 ///
@@ -144,6 +165,8 @@ fn switch(
     mut evictions: ResMut<PendingEvictions>,
     mut resident: ResMut<ResidentCells>,
     mut tasks: ResMut<BoundedTasks>,
+    mut admitted: ResMut<AdmittedPoints>,
+    mut held: ResMut<crate::refresh::Held>,
     mut fetched: ResMut<FetchTasks>,
     mut last: Local<Option<bool>>,
     mut commands: Commands,
@@ -166,7 +189,14 @@ fn switch(
     for entity in &systems {
         evictions.0.insert(entity);
     }
+    // The payloads, what was worked out about them, and the stamps they were
+    // read under: one set of three, dropped together. A stamp left behind for
+    // a cell that is no longer resident is never asked about again — the
+    // refresh stamps what it holds — so it is a row that would sit there for
+    // the life of the process.
     resident.0 = Resident::default();
+    admitted.cells.clear();
+    held.clear();
     tasks.0.clear();
     fetched.fetched.clear();
     fetched.surveyed.clear();
@@ -202,7 +232,17 @@ fn fetch(
             continue;
         }
         let source = transport.0.clone();
-        tasks.0.insert(id, pool.spawn(async move { source.payload(id).await }));
+        tasks.0.insert(
+            id,
+            pool.spawn(async move {
+                // The stamp first: a payload republished between the two is
+                // then held under the older stamp and re-read by the next
+                // refresh, where the other order would hold a stamp for
+                // contents the map does not have.
+                let stamp = source.stamp(Part::Cell(id)).await.ok().flatten();
+                Ok((source.payload(id).await?, stamp))
+            }),
+        );
     }
 }
 
@@ -211,29 +251,194 @@ fn fetch(
 /// The transport half only: a payload lands keyed by its cell and the draw
 /// reads it from there. Reading it is [`reconcile`]'s, run straight after, so a
 /// cell's systems are chosen from what is now held.
+///
+/// The stamp it arrived under is noted with it, which is what lets
+/// [`crate::refresh`] ask whether the cell has been republished since instead
+/// of reading every resident payload on every poll.
 fn collect(
     mut tasks: ResMut<BoundedTasks>,
     mut resident: ResMut<ResidentCells>,
+    mut admitted: ResMut<AdmittedPoints>,
+    mut held: ResMut<crate::refresh::Held>,
 ) {
     tasks.0.retain(|&id, task| {
         let Some(result) = block_on(future::poll_once(task)) else {
             return true;
         };
-        if let Ok(points) = result {
-            resident.0.insert(id, points);
+        if let Ok((points, stamp)) = result {
+            adopt(&mut resident, &mut admitted, id, points);
+            held.holding(id, stamp);
         }
         false
     });
 }
 
-/// Draw each resident cell's resolvable prefix, grown and shed per system as
-/// the camera moves
+/// Which of a resident cell's points the filters admit, kept until the
+/// verdicts move
+///
+/// [`reconcile`] draws what the filters admit before what they exclude, so it
+/// has to know which of every resident payload is which — a walk of every
+/// point of every marks cell, asking the filters about each. That answer holds
+/// still between the four things that can move it: a filter asked or lifted, a
+/// span re-cut against the clock, the political table replaced by a refresh,
+/// and the payload itself replaced. [`Cut`] counts the first three and
+/// [`adopt`] drops a cell's list with its payload for the fourth, so the walk
+/// is done once per cut rather than once per frame.
+///
+/// Indices into the cell's payload rather than addresses, ascending, so the
+/// fill can walk the payload and the admitted list together and take what is
+/// in one and not the other without a set to test against.
+#[derive(Resource, Default)]
+pub(crate) struct AdmittedPoints {
+    /// The cut these were taken at
+    cut: u64,
+    cells: HashMap<CellId, Vec<u32>>,
+}
+
+impl AdmittedPoints {
+    /// Drop what a new cut, or a map with nothing asked of it, has invalidated
+    fn hold(&mut self, cut: u64, asking: bool) {
+        if self.cut != cut || !asking {
+            self.cut = cut;
+            self.cells.clear();
+        }
+    }
+
+    /// The indices of `points` the filters admit, walking them if this cut has
+    /// not asked about this cell yet
+    ///
+    /// Empty where nothing is asked, since then every point is admitted and an
+    /// order over them says nothing. [`reconcile`]'s fill draws the whole
+    /// payload in that case, which is the pass this made before the filters
+    /// had a say in it.
+    fn of(
+        &mut self,
+        id: CellId,
+        points: &[Point],
+        filters: &Filters,
+        populated: &Populated,
+        now: DateTime<Utc>,
+    ) -> &[u32] {
+        if !filters.asking() {
+            return &[];
+        }
+        self.cells.entry(id).or_insert_with(|| {
+            points
+                .iter()
+                .enumerate()
+                .filter(|(_, point)| {
+                    filters.admits(&candidate(point, populated), now)
+                })
+                .map(|(index, _)| index as u32)
+                .collect()
+        })
+    }
+
+    /// Forget a cell, its payload having been freed
+    pub(crate) fn forget(&mut self, id: CellId) {
+        self.cells.remove(&id);
+    }
+}
+
+/// Take `points` as a cell's payload, dropping whatever was worked out about
+/// the one it replaces
+///
+/// The two go together and must: [`AdmittedPoints`] holds *indices into the
+/// payload*, so a list kept across a replacement names whichever systems now
+/// sit at those places. A republished cell is the case — see
+/// [`crate::refresh`] — and a first read is the same call with nothing to
+/// forget.
+pub(crate) fn adopt(
+    resident: &mut ResidentCells,
+    admitted: &mut AdmittedPoints,
+    id: CellId,
+    points: Vec<Point>,
+) {
+    resident.0.insert(id, points);
+    admitted.forget(id);
+}
+
+/// What the filters ask about a payload point: its address, the factions the
+/// resident table puts in it, and the moment the payload carries.
+///
+/// The same three facts a [`System`] answers, so a point is weighed by the one
+/// predicate a drawn system is, and without building a system to ask —
+/// [`build_from_point`] clones a name and reads a reach, work worth avoiding
+/// for a point that is not going to be drawn.
+fn candidate<'a>(point: &Point, populated: &'a Populated) -> Candidate<'a> {
+    let address = point.id64 as i64;
+    Candidate {
+        address,
+        factions: populated
+            .get(address)
+            .map(|system| system.factions.as_slice())
+            .unwrap_or(&[]),
+        updated_at: DateTime::from_timestamp(point.updated_at as i64, 0),
+    }
+}
+
+/// The order a cell's points are drawn in: what the filters admit, brightest
+/// first, then the rest to fill what is left of the budget.
+///
+/// `admits` is ascending, so the fill walks it alongside the payload with one
+/// cursor and yields the indices it does not name. `fill` false stops the
+/// second half outright, for a dim of zero where an excluded system is not
+/// drawn at all and queueing one costs a slot of the spawn budget and buys
+/// nothing.
+fn drawn_first<'a>(
+    points: &'a [Point],
+    admits: &'a [u32],
+    fill: bool,
+) -> impl Iterator<Item = usize> + 'a {
+    let mut cursor = 0usize;
+    let rest = (0..points.len()).filter(move |&index| {
+        while cursor < admits.len() && (admits[cursor] as usize) < index {
+            cursor += 1;
+        }
+        !(cursor < admits.len() && admits[cursor] as usize == index)
+    });
+    admits.iter().map(|&index| index as usize).chain(rest.take(if fill {
+        points.len()
+    } else {
+        0
+    }))
+}
+
+/// Draw each resident cell's resolvable prefix, admitted systems first, grown
+/// and shed per system as the camera moves
 ///
 /// A cell's payload is magnitude-ordered, and [`resolvable_count`] says how many
 /// of its systems separate on screen from where the eye stands. Drawing that
-/// prefix — and only it — is what lets a cell fill in and empty one system at a
-/// time rather than switching on whole: a single system is drawn wherever it is
-/// resolvable, so the index's cell boundaries stop showing through.
+/// many — and only that many — is what lets a cell fill in and empty one system
+/// at a time rather than switching on whole: a single system is drawn wherever
+/// it is resolvable, so the index's cell boundaries stop showing through.
+///
+/// *Which* of them fill that count is the filters' to say. The count is a
+/// budget of marks the screen can tell apart, worked out from the slice's own
+/// density and not from which systems are chosen, so spending it on what the
+/// filters admit draws exactly as many marks as before, no closer together.
+/// Taking the brightest of the payload instead spends the budget on whatever
+/// happens to be bright: a faction is a handful of systems in a cell of
+/// thousands, so a filter on one used to draw nothing at all from most cells
+/// while the marks the screen could carry went unused.
+///
+/// So the order is: what the filters admit, brightest first, and then — only
+/// where [`super::filter::DimTo`] still draws the excluded — the rest,
+/// brightest first, to
+/// fill whatever the admitted left. The excluded are what a short budget sheds
+/// first, which is what they are for: the space a faction is read against
+/// gives way to the faction. Where the admitted alone overrun the budget they
+/// decimate among themselves by magnitude, exactly as the whole payload used
+/// to. Where nothing is asked every system is admitted, the order is the
+/// payload's own, and this costs nothing.
+///
+/// What this gives up is that the drawn set is no longer a prefix of the
+/// cell's magnitude order: it is a subset chosen by admission, still in
+/// magnitude order within each half. Nothing reads it as a prefix today.
+/// Whoever writes the residual splat must subtract the aggregate of the
+/// systems actually drawn — `Aggregate::remove` over exactly these points —
+/// and not a rank range off [`resolvable_count`], or the glow will double the
+/// light of every system the filters promoted into the budget.
 ///
 /// The prefix is pushed to the shared spawn queue, which builds only the
 /// systems not already on the map, and everything outside every cell's prefix
@@ -262,7 +467,9 @@ fn reconcile(
     spyglass: Res<Spyglass>,
     view_mode: Res<View>,
     selection: Res<crate::systems::selection::Selection>,
-    filters: Res<crate::systems::filter::Filters>,
+    filtering: Filtering,
+    cut: Res<Cut>,
+    mut admitted: ResMut<AdmittedPoints>,
     systems: Query<(Entity, &System, Has<crate::systems::route::Hop>)>,
     mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
@@ -289,7 +496,21 @@ fn reconcile(
     // Every stop of every route being shown. A line is only a line if it has
     // both ends of each leg to draw between, so these are wanted whatever the
     // walk resolves and wherever the bubble ends. See [`Filters::routed`].
-    let routed = filters.routed();
+    let routed = filtering.filters.routed();
+
+    // With nothing asked every system is admitted, so there is no order to
+    // impose: the admitted lists are dropped and the fill draws the payload in
+    // its own order, which is what this did before the filters had a say.
+    let asking = filtering.filters.asking();
+    admitted.hold(cut.0, asking);
+    // Whether the excluded are wanted on screen at all. Below the dim they are
+    // never spawned ([`super::spawn`]) and dropped where they stand
+    // ([`super::evict`]), so queueing them is a slot of the spawn budget spent
+    // on a system that cannot land and rebuilt again next frame.
+    let fill = !asking || filtering.excluded_are_drawn();
+    // One clock for the pass, as the spawn batch takes one: a span's near edge
+    // moves by a frame's worth in a frame.
+    let wall = Utc::now();
 
     // The resolvable prefix of every resident cell: the systems close enough to
     // separate. Build only the ones not already drawn; note every one wanted.
@@ -303,7 +524,10 @@ fn reconcile(
         }
         let target = (resolvable_count(indexed, &view, separation) as usize)
             .min(cell.points.len());
-        for point in &cell.points[..target] {
+        let admits =
+            admitted.of(id, &cell.points, &filtering.filters, &populated, wall);
+        let order = drawn_first(&cell.points, admits, fill).take(target);
+        for point in order.map(|index| &cell.points[index]) {
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
             if let Some(radius) = bubble
@@ -370,12 +594,14 @@ fn reconcile(
 /// [`Resident::stale`] is the held cells outside the marks — those with nothing
 /// left to resolve from here. Their entities are dropped by [`reconcile`], which
 /// finds them outside every prefix once the payload is gone; this only frees the
-/// memory the payload held.
+/// memory the payload held, and the verdicts held about its points with it.
 fn evict_payloads(
     planned: Res<Planned>,
     spyglass: Res<Spyglass>,
     cameras: Query<&OrbitCamera>,
     mut resident: ResMut<ResidentCells>,
+    mut admitted: ResMut<AdmittedPoints>,
+    mut held: ResMut<crate::refresh::Held>,
 ) {
     let mut stale = resident.0.stale(&planned.0);
     // The payloads the walk still marks but the clamp no longer reaches, so a
@@ -391,6 +617,8 @@ fn evict_payloads(
     }
     for id in stale {
         resident.0.remove(id);
+        admitted.forget(id);
+        held.forget(id);
     }
 }
 
@@ -401,6 +629,11 @@ fn evict_payloads(
 /// the names table's whole-light-year placement, and present for every system,
 /// named or not. The name and the political columns are the same join the
 /// spyglass path does, keyed by the point's id.
+///
+/// The one place a point becomes a system, the spyglass fetch included, so the
+/// payload's [`Point::updated_at`] is read into a moment here rather than at
+/// each caller. Unix seconds on the wire and a moment on the map: the payload
+/// keeps four bytes a system and the filter compares against a clock.
 pub(crate) fn build_from_point(
     point: &Point,
     populated: &Populated,
@@ -412,6 +645,7 @@ pub(crate) fn build_from_point(
             position: point.pos,
             magnitude: Some(point.magnitude),
             temp_bucket: Some(point.temp_bucket),
+            updated_at: DateTime::from_timestamp(point.updated_at as i64, 0),
         },
         populated,
         names,
@@ -428,7 +662,13 @@ mod tests {
     #[test]
     fn a_point_becomes_a_placed_system() {
         let at = [1234.5, -678.25, 90123.75];
-        let point = Point { id64: 7, pos: at, magnitude: 0., temp_bucket: 0 };
+        let point = Point {
+            id64: 7,
+            pos: at,
+            magnitude: 0.,
+            temp_bucket: 0,
+            updated_at: 0,
+        };
 
         let system = build_from_point(
             &point,
@@ -439,6 +679,213 @@ mod tests {
         assert_eq!(system.address, 7);
         assert_eq!(system.name(), "7", "an unlisted point takes its id");
         assert_eq!(system.position(), DVec3::from(at), "placed exactly");
+    }
+
+    /// A span admits the point the index says was updated inside it
+    ///
+    /// The whole chain the filter on time rests on: the payload's Unix second
+    /// becomes the moment on the [`System`], and the span is measured against
+    /// that rather than against when the star was drawn. Stamping the moment of
+    /// the build here is what it did before the payload carried one, and it
+    /// admitted every system on the map to every span.
+    #[test]
+    fn a_span_admits_a_point_by_the_moment_it_carries() {
+        use crate::systems::filter::{Filter, Filters};
+        use chrono::{Duration as Span, Utc};
+
+        let now = Utc::now();
+        let point = |id: u64, ago: i64| Point {
+            id64: id,
+            pos: [0.; 3],
+            magnitude: 0.,
+            temp_bucket: 0,
+            updated_at: (now - Span::seconds(ago)).timestamp() as u32,
+        };
+        let built = |point: &Point| {
+            build_from_point(
+                point,
+                &Populated::default(),
+                &Names::reaching(Vec::new(), Vec::new()),
+            )
+        };
+
+        let mut filters = Filters::default();
+        filters.add(Filter::Recency {
+            label: "Last 1 hour".into(),
+            span: Span::hours(1),
+        });
+
+        assert!(
+            filters.admit(&built(&point(1, 30)), now),
+            "reported half a minute ago"
+        );
+        assert!(
+            !filters.admit(&built(&point(2, 60 * 60 * 24)), now),
+            "a day old, and the span asks about an hour"
+        );
+    }
+
+    /// A payload point at `id`, faintness rising with the id
+    fn point(id: u64) -> Point {
+        Point {
+            id64: id,
+            pos: [0.; 3],
+            magnitude: id as f32,
+            temp_bucket: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// The addresses the draw would take, in order, from a budget of `target`
+    fn drawn(
+        points: &[Point],
+        admits: &[u32],
+        fill: bool,
+        target: usize,
+    ) -> Vec<u64> {
+        drawn_first(points, admits, fill)
+            .take(target)
+            .map(|index| points[index].id64)
+            .collect()
+    }
+
+    /// What the filters admit takes the budget, however faint it is
+    ///
+    /// The count is the screen's, worked out from the slice's density and not
+    /// from which systems fill it, so spending it on the admitted draws as many
+    /// marks as before. Brightest-first over the whole payload is what drew
+    /// nothing from a cell of thousands with a faction filter on.
+    #[test]
+    fn the_admitted_take_the_budget_before_the_excluded() {
+        let points: Vec<Point> = (1..=6).map(point).collect();
+        // The fourth and sixth brightest are the ones asked for.
+        let admits = [3u32, 5];
+
+        assert_eq!(
+            drawn(&points, &admits, true, 2),
+            vec![4, 6],
+            "the admitted, brightest of them first"
+        );
+    }
+
+    /// The excluded fill what the admitted leave, and so are shed first
+    ///
+    /// Which is what dimming is for: the space a faction is read against, and
+    /// the first thing to give way when there is less room than systems.
+    #[test]
+    fn the_excluded_fill_what_is_left_and_go_first() {
+        let points: Vec<Point> = (1..=6).map(point).collect();
+        let admits = [3u32];
+
+        assert_eq!(
+            drawn(&points, &admits, true, 4),
+            vec![4, 1, 2, 3],
+            "the one admitted, then the brightest of the rest"
+        );
+        assert_eq!(
+            drawn(&points, &admits, true, 1),
+            vec![4],
+            "a budget of one leaves nothing for the excluded"
+        );
+    }
+
+    /// Where the excluded are not drawn at all they are not offered either
+    ///
+    /// At a dim of zero [`super::spawn`] refuses them and [`super::evict`]
+    /// drops them, so queueing one spends a slot of the spawn budget on a
+    /// system that cannot land — and it is rebuilt and queued again every frame,
+    /// since it never becomes an entity to be found already drawn.
+    #[test]
+    fn nothing_excluded_is_offered_while_the_dim_drops_it() {
+        let points: Vec<Point> = (1..=6).map(point).collect();
+        let admits = [3u32];
+
+        assert_eq!(
+            drawn(&points, &admits, false, 4),
+            vec![4],
+            "the admitted alone, though the budget has room"
+        );
+    }
+
+    /// A filter dense enough to overrun the budget decimates by magnitude
+    ///
+    /// The admitted are ordered among themselves as the whole payload used to
+    /// be, so a filter admitting everything draws exactly what no filter draws.
+    #[test]
+    fn a_dense_filter_decimates_by_magnitude() {
+        let points: Vec<Point> = (1..=6).map(point).collect();
+        let all: Vec<u32> = (0..6).collect();
+
+        assert_eq!(drawn(&points, &all, true, 3), vec![1, 2, 3]);
+        assert_eq!(
+            drawn(&points, &[], true, 3),
+            vec![1, 2, 3],
+            "and nothing asked is the payload's own order"
+        );
+    }
+
+    /// The verdicts are taken once per cut and kept
+    ///
+    /// Choosing by admission means asking about every point of every resident
+    /// payload, which is a walk to keep rather than to repeat each frame. It is
+    /// redone when the filters move and not otherwise; see [`Cut`].
+    #[test]
+    fn the_verdicts_are_kept_until_the_filters_move() {
+        use crate::systems::filter::Filter;
+        use galos_index::meta::PopulatedSystem;
+
+        let points: Vec<Point> = (1..=4).map(point).collect();
+        let id = CellId::of_point([0.; 3], 4);
+        // The third point is the only one a faction is present in.
+        let populated = Populated(std::sync::Arc::new(HashMap::from([(
+            3i64,
+            PopulatedSystem {
+                address: 3,
+                name: "Held".into(),
+                position: [0.; 3],
+                population: 1,
+                security: None,
+                government: None,
+                allegiance: None,
+                primary_economy: None,
+                secondary_economy: None,
+                factions: vec![7],
+                body_count: None,
+                non_body_count: None,
+            },
+        )])));
+
+        let mut filters = Filters::default();
+        filters.add(Filter::Faction { id: 7, name: "Faction 7".into() });
+        let now = Utc::now();
+
+        let mut held = AdmittedPoints::default();
+        held.hold(1, true);
+        assert_eq!(
+            held.of(id, &points, &filters, &populated, now),
+            &[2],
+            "the point the faction is present in, by its place in the payload"
+        );
+
+        // Asking for a second faction readmits nothing here, but the cut has
+        // moved and the walk is taken again rather than the old answer kept.
+        filters.add(Filter::Systems {
+            label: "2 systems".into(),
+            systems: vec![1, 4],
+        });
+        held.hold(2, true);
+        assert_eq!(
+            held.of(id, &points, &filters, &populated, now),
+            &[0, 2, 3],
+            "the faction's, and the two picked out by hand"
+        );
+
+        // Nothing asked admits everything, so there is no order to hold.
+        held.hold(2, false);
+        assert!(
+            held.of(id, &points, &Filters::default(), &populated, now)
+                .is_empty(),
+        );
     }
 
     /// The clamp is the spyglass reach, and only while it is clearing
@@ -492,6 +939,8 @@ mod tests {
         app.init_resource::<PendingEvictions>();
         app.init_resource::<ResidentCells>();
         app.init_resource::<BoundedTasks>();
+        app.init_resource::<AdmittedPoints>();
+        app.init_resource::<crate::refresh::Held>();
         app.init_resource::<FetchTasks>();
         app.insert_resource(LodFetch(true));
 
@@ -521,6 +970,9 @@ mod tests {
         app.init_resource::<HeldSystem>();
         app.init_resource::<crate::systems::selection::Selection>();
         app.init_resource::<crate::systems::filter::Filters>();
+        app.init_resource::<crate::systems::filter::DimTo>();
+        app.init_resource::<crate::systems::filter::Cut>();
+        app.init_resource::<AdmittedPoints>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
@@ -646,6 +1098,107 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             2,
             "the stops the walk never built were never asked for"
+        );
+    }
+
+    /// The walk keeps what the filters admit and sheds the rest
+    ///
+    /// End to end through the real pass: a resident cell, a faction filter, and
+    /// a dim of zero where an excluded system is not drawn at all. The one
+    /// system the faction is present in is the faintest of the five, so a
+    /// brightest-first prefix kept the four it is not in and dropped it — the
+    /// map went dark where the filter was supposed to show something.
+    #[test]
+    fn the_walk_keeps_what_the_filters_admit() {
+        use crate::systems::filter::{Filter, Filters};
+        use crate::systems::tests::system;
+        use galos_index::meta::PopulatedSystem;
+        use galos_index::{BuildParams, Snapshot};
+
+        // Five systems a few light years apart, faintest last, and the faction
+        // is in that faintest one.
+        let held = 5i64;
+        let inputs: Vec<galos_index::System> = (1..=5)
+            .map(|id| galos_index::System {
+                id64: id as u64,
+                position: [id as f64, 0., 0.],
+                absolute_magnitude: id as f64,
+                temperature: 5000.,
+                age_bucket: 0,
+                updated_at: 0,
+            })
+            .collect();
+        let built = Snapshot::build(&inputs, &BuildParams::default());
+
+        let mut app = walking();
+        app.insert_resource(ResidentIndex(built.index.clone()));
+        {
+            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
+            for cell in built.index.cells() {
+                let points = built.payload(cell.id);
+                if !points.is_empty() {
+                    resident.0.insert(cell.id, points.to_vec());
+                }
+            }
+        }
+        app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([(
+            held,
+            PopulatedSystem {
+                address: held,
+                name: "Held".into(),
+                position: [held as f32, 0., 0.],
+                population: 1,
+                security: None,
+                government: None,
+                allegiance: None,
+                primary_economy: None,
+                secondary_economy: None,
+                factions: vec![7],
+                body_count: None,
+                non_body_count: None,
+            },
+        )]))));
+        for address in 1..=5 {
+            let mut drawn = system(address);
+            drawn.position = [address as f64, 0., 0.];
+            app.world_mut().spawn(drawn);
+        }
+
+        // Nothing asked: the walk keeps every system it resolves, so whatever
+        // it drops here it drops for being unresolvable and not for a filter.
+        app.update();
+        let unfiltered = dropping(&mut app);
+        assert!(
+            !unfiltered.contains(&held),
+            "the faintest system resolves before any filter is asked"
+        );
+
+        // Asked for, with the excluded still drawn faintly: the budget has
+        // room for all five, so the dim ones stay as the space the faction is
+        // read against.
+        app.world_mut()
+            .resource_mut::<Filters>()
+            .add(Filter::Faction { id: 7, name: "Faction 7".into() });
+        app.update();
+        assert!(
+            dropping(&mut app).is_empty(),
+            "the excluded are drawn at this dim and the budget holds them"
+        );
+
+        // Dimmed to nothing, where an excluded system is not drawn at all:
+        // only what the filter admits is wanted, and the rest go.
+        app.insert_resource(crate::systems::filter::DimTo(0.));
+        app.update();
+
+        let dropped = dropping(&mut app);
+        assert!(
+            !dropped.contains(&held),
+            "the walk dropped the one system the filter asked for"
+        );
+        assert_eq!(
+            dropped,
+            (1..held).collect::<Vec<i64>>(),
+            "and it kept systems no filter admits, at a dim that drops them"
         );
     }
 

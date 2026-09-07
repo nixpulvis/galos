@@ -135,7 +135,24 @@ pub(crate) struct System {
     /// Already binned by the index, so the client needs no per-star
     /// temperature. [`None`] alongside [`Self::absolute_magnitude`].
     temp_bucket: Option<u8>,
-    updated_at: DateTime<Utc>,
+    /// When the system was last updated
+    ///
+    /// What [`filter`]'s span is asked of: which systems have been heard from
+    /// inside the last minute, hour, thirty days. The database's own
+    /// `updated_at`, carried through the index on the payload point — the one
+    /// published table that is rewritten a cell at a time rather than a chunk
+    /// at a time, so a stamp that moves whenever a system is reported costs
+    /// tens of kilobytes a pass instead of the names table's megabytes.
+    ///
+    /// [`None`] where the system was built with no payload point behind it: a
+    /// route's stops and a searched system flown to, which come off the names
+    /// table, as [`Self::absolute_magnitude`] is [`None`] for them. A span
+    /// admits neither, rather than a moment being invented to stand in for one,
+    /// and [`spawn::spawn_systems`] replaces the system in place the frame its
+    /// cell payload lands, which is where the stamp arrives.
+    ///
+    /// [`spawn::spawn_systems`]: crate::systems::spawn::spawn_systems
+    updated_at: Option<DateTime<Utc>>,
 }
 
 impl System {
@@ -193,6 +210,19 @@ impl System {
         self.temp_bucket
             .map(usize::from)
             .unwrap_or_else(|| temp_bucket(ClassLight::DEFAULT.temperature.0))
+    }
+
+    /// The whole of what the filters ask about this system
+    ///
+    /// The same three facts a payload point can answer, so a system on the map
+    /// and a point the LOD draw is weighing are put to one predicate rather
+    /// than to two that could drift apart. See [`filter::Candidate`].
+    pub(crate) fn candidate(&self) -> filter::Candidate<'_> {
+        filter::Candidate {
+            address: self.address,
+            factions: &self.factions,
+            updated_at: self.updated_at,
+        }
     }
 
     /// The combined absolute magnitude the index baked for this system, if it
@@ -767,7 +797,7 @@ impl From<&NameEntry> for System {
             reach: None,
             absolute_magnitude: None,
             temp_bucket: None,
-            updated_at: Utc::now(),
+            updated_at: None,
         }
     }
 }
@@ -798,7 +828,7 @@ pub(crate) mod tests {
             reach: None,
             absolute_magnitude: None,
             temp_bucket: None,
-            updated_at: DateTime::UNIX_EPOCH,
+            updated_at: None,
         }
     }
 
@@ -1065,7 +1095,7 @@ pub(crate) mod tests {
         system
     }
 
-    /// A system last heard from `secs` after the epoch
+    /// A system reported to us `secs` after the epoch
     ///
     /// Shared for the same reason [`named`] is. A moment is set from in here
     /// or not at all, and what the map does with one is tested from wherever
@@ -1073,7 +1103,7 @@ pub(crate) mod tests {
     pub(crate) fn heard(address: i64, secs: i64) -> System {
         let mut system = system(address);
         system.updated_at =
-            DateTime::from_timestamp(secs, 0).expect("a moment");
+            Some(DateTime::from_timestamp(secs, 0).expect("a moment"));
         system
     }
 

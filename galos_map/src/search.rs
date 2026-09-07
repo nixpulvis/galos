@@ -119,9 +119,7 @@ pub(crate) enum Search {
 /// than leaving the user to guess.
 fn locate(names: &Names, name: &str) -> Result<(), String> {
     names
-        .entries
-        .iter()
-        .any(|entry| entry.name.eq_ignore_ascii_case(name))
+        .names_exactly(name)
         .then_some(())
         .ok_or_else(|| format!("No system named {name}"))
 }

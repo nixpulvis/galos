@@ -1,13 +1,13 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::selection::Selection;
-use crate::systems::spawn::{build_system, system_at};
+use crate::systems::spawn::system_at;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Names, Populated, ResidentIndex, Transport, search::Search};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
-use chrono::{DateTime, Duration as Span, Utc};
+use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -99,9 +99,11 @@ pub struct Throttle(pub u64);
 /// so neither earns a wait and neither sets this. `region_asked` says the same
 /// thing about what is in flight.
 ///
-/// Nothing re-reads a cell the walk already holds, so there is no clock for the
-/// walk to keep. Picking up a republished index is a real gap and a separate
-/// one; it wants cells invalidated, which is more than a timer.
+/// Nothing re-reads a cell the walk already holds on this beat, so there is no
+/// clock for the walk to keep. Picking up a republished index is
+/// [`crate::refresh`]'s, which keeps its own stamps and asks the transport
+/// what has moved — a different question from "has it been long enough to ask
+/// again", and one a timer alone could not have answered.
 #[derive(Resource)]
 pub struct LastFetchedAt(pub Instant);
 
@@ -119,19 +121,20 @@ impl Default for LastFetchedAt {
 #[derive(Hash, Eq, PartialEq, Clone)]
 pub enum FetchIndex {
     // System<String>
-    /// Everywhere within a radius of a point, and how far back it looks
+    /// Everywhere within a radius of a point
     ///
     /// The whole region rather than what the filters admit, however they are
     /// set: the map draws everything in reach and `filter` dims what it
     /// excludes, so there is nothing of them for the question to carry. See
     /// `fetch_spyglass`.
     ///
-    /// The span a filter on time asks for is part of the question, and the
-    /// span rather than the moment it reaches back to: a moment is worked out
-    /// afresh every frame, so a region carrying one would never match the last
-    /// and the map would ask again at the throttle for as long as the filter
-    /// stood. A span holds still until the user moves the control.
-    Region(IVec3, i32, Option<Span>),
+    /// A span was part of this while the region was a database query narrowed
+    /// by `updated_at`. The region is read from the index cells now, which are
+    /// static files holding every system in the sky whenever they were last
+    /// heard from, so there is no narrower question to ask about time: the
+    /// filter reads the moment each payload point carries and dims or drops
+    /// what falls outside its span.
+    Region(IVec3, i32),
     // View<Frustum>,
     /// One leg of a trip: from one named system to the next, at a jump range
     ///
@@ -157,10 +160,9 @@ impl FetchIndex {
     /// somewhere should bring stars promptly however slowly the map is set to
     /// refresh.
     ///
-    /// A region refreshes another when it stands in the same place, takes in no
-    /// more sky, and looks back no further. A larger radius takes in systems
-    /// that were never asked for, and so does a longer span, so either is a new
-    /// question about the same place.
+    /// A region refreshes another when it stands in the same place and takes in
+    /// no more sky. A larger radius takes in systems that were never asked for,
+    /// so it is a new question about the same place.
     ///
     /// A question and a predicate rather than an ordering. Two regions about
     /// different centers are each no answer to the other, which is a thing an
@@ -169,13 +171,9 @@ impl FetchIndex {
     fn refreshes(&self, last: &FetchIndex) -> bool {
         match (self, last) {
             (
-                FetchIndex::Region(center, radius, span),
-                FetchIndex::Region(before, reached, spanned),
-            ) => {
-                center == before
-                    && radius <= reached
-                    && looks_back_no_further(span, spanned)
-            }
+                FetchIndex::Region(center, radius),
+                FetchIndex::Region(before, reached),
+            ) => center == before && radius <= reached,
             // Only the spyglass records what it last fetched, so neither a
             // route nor a named system is ever on either side of this.
             // Somewhere new either way.
@@ -203,7 +201,7 @@ impl FetchIndex {
         center: DVec3,
         keep: f64,
     ) -> Option<FetchIndex> {
-        let FetchIndex::Region(at, radius, ..) = self else {
+        let FetchIndex::Region(at, radius) = self else {
             return None;
         };
         let at = DVec3::new(at.x as f64, at.y as f64, at.z as f64);
@@ -212,35 +210,10 @@ impl FetchIndex {
             return None;
         }
         let mut clamped = self.clone();
-        if let FetchIndex::Region(_, reach, ..) = &mut clamped {
+        if let FetchIndex::Region(_, reach) = &mut clamped {
             *reach = (*radius).min(resident.floor() as i32);
         }
         Some(clamped)
-    }
-}
-
-/// Whether `span` asks about a stretch of time `spanned` already answered
-///
-/// A span narrows: the shorter of two asks about part of what the longer
-/// covered, and asking nothing of time covers the whole of it. So a filter
-/// switched on asks for less than is already held and can wait out the poll,
-/// while one switched off asks for what was never fetched and is answered at
-/// the throttle.
-///
-/// Part of, at one moment. A radius holds a smaller radius for good; a span
-/// slides, so the narrower one asked later reaches systems heard from since the
-/// wider one was answered. That is the poll's to bring in, and it brings the
-/// same arrivals in for a span nobody has touched, the window having moved
-/// under it either way.
-///
-/// Spelled out rather than compared as [`Option`]s, whose own ordering puts
-/// [`None`] below every [`Some`] and would read asking nothing about time as
-/// the narrowest question of the lot.
-fn looks_back_no_further(span: &Option<Span>, spanned: &Option<Span>) -> bool {
-    match (span, spanned) {
-        (_, None) => true,
-        (None, Some(_)) => false,
-        (Some(span), Some(spanned)) => span <= spanned,
     }
 }
 
@@ -249,17 +222,11 @@ impl fmt::Debug for FetchIndex {
         use FetchIndex::*;
 
         match self {
-            Region(center, radius, span) => {
-                write!(
-                    f,
-                    "<({},{},{}),{}",
-                    center.x, center.y, center.z, radius
-                )?;
-                if let Some(span) = span {
-                    write!(f, " within {}s", span.num_seconds())?;
-                }
-                write!(f, ">")
-            }
+            Region(center, radius) => write!(
+                f,
+                "<({},{},{}),{}>",
+                center.x, center.y, center.z, radius
+            ),
             Route(start, end, range, trip) => match trip {
                 Some(trip) => write!(f, "<{start}-{end}>{range}>{trip}"),
                 None => write!(f, "<{start}-{end}>{range}>"),
@@ -277,8 +244,8 @@ impl fmt::Debug for FetchIndex {
 /// union.
 ///
 /// Kept as the region was asked for, in whole light years, so that a region
-/// asked for again is recognised as the same one. `at` is the database's
-/// clock, which is the only clock `updated_at` can be compared against.
+/// asked for again is recognised as the same one. `at` is when the answer
+/// landed, which is what says how stale the survey is.
 #[derive(Clone)]
 pub struct Survey {
     /// What was asked, which says what the answer covers
@@ -323,6 +290,12 @@ pub struct RawSystem {
     /// point — a route's stops, a searched system flown to.
     pub magnitude: Option<f32>,
     pub temp_bucket: Option<u8>,
+    /// When the system was last updated, as the payload point carries it.
+    ///
+    /// What the filter on time is asked of. [`None`] alongside the photometry
+    /// and for the same reason: no point behind this one, so nothing on record
+    /// here says when the system was last heard from.
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// What a fetch came back with, and the moment it landed.
@@ -485,7 +458,7 @@ fn fetch_spyglass(
     // under [`FETCH_LEAST`]. What is drawn is still only what the reach holds;
     // this only decides what is in hand to draw from.
     let asking = spyglass.radius.ceil().max(FETCH_LEAST);
-    let key = FetchIndex::Region(center, asking as i32, None);
+    let key = FetchIndex::Region(center, asking as i32);
     let now = time.last_update().unwrap_or(time.startup());
     if spyglass_condition(&key, tasks, now, last_fetched_at, throttle, poll) {
         debug!("fetching {:?} @ {:?}", key, now.duration_since(time.startup()));
@@ -536,15 +509,11 @@ fn fetch_spyglass(
                                 let dz = pos[2] - cent[2];
                                 if dx * dx + dy * dy + dz * dz <= range * range
                                 {
-                                    let raw = RawSystem {
-                                        address: point.id64 as i64,
-                                        position: pos,
-                                        magnitude: Some(point.magnitude),
-                                        temp_bucket: Some(point.temp_bucket),
-                                    };
-                                    systems.push(build_system(
-                                        &raw, &populated, &names,
-                                    ));
+                                    systems.push(
+                                        super::bounded::build_from_point(
+                                            &point, &populated, &names,
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -693,18 +662,9 @@ fn region_asked<'a>(mut asked: impl Iterator<Item = &'a FetchIndex>) -> bool {
 pub(crate) mod tests {
     use super::*;
 
-    /// A region of `radius` about `center` on the x axis, asked for whole
+    /// A region of `radius` about `center` on the x axis
     fn region(center: i32, radius: i32) -> FetchIndex {
-        FetchIndex::Region(IVec3::new(center, 0, 0), radius, None)
-    }
-
-    /// The same region, asked only for what was heard from within `secs`
-    fn region_within(center: i32, radius: i32, secs: i64) -> FetchIndex {
-        FetchIndex::Region(
-            IVec3::new(center, 0, 0),
-            radius,
-            Some(Span::seconds(secs)),
-        )
+        FetchIndex::Region(IVec3::new(center, 0, 0), radius)
     }
 
     /// A world wired as the map wires it, holding two systems a jump apart
@@ -1053,50 +1013,6 @@ pub(crate) mod tests {
         // Covered by the two of them together and by neither alone, which is
         // asked again rather than worked out.
         assert!(!surveyed_already(&region(5, 10), &tasks.surveyed));
-    }
-
-    /// Turning a filter on time on is a refresh of what is already held
-    ///
-    /// A span only narrows, so everything it admits has already been fetched by
-    /// the region asked for whole. Nothing new to hurry for, so it waits out
-    /// the poll.
-    #[test]
-    fn asking_about_time_refreshes_the_region_asked_whole() {
-        assert!(region_within(0, 10, 60).refreshes(&region(0, 10)));
-    }
-
-    /// And turning it off is a new question
-    ///
-    /// Everything older than the span was never asked for. Left as a refresh,
-    /// the map would go on drawing the thinned sky until the poll came round,
-    /// or for good where the poll is off.
-    #[test]
-    fn asking_nothing_of_time_is_a_new_question() {
-        assert!(!region(0, 10).refreshes(&region_within(0, 10, 60)));
-    }
-
-    /// A shorter span refreshes a longer one
-    #[test]
-    fn a_shorter_span_refreshes_a_longer_one() {
-        assert!(region_within(0, 10, 60).refreshes(&region_within(0, 10, 600)));
-    }
-
-    /// And a longer span asks for what the shorter never fetched
-    #[test]
-    fn a_longer_span_is_not_a_refresh() {
-        assert!(
-            !region_within(0, 10, 600).refreshes(&region_within(0, 10, 60))
-        );
-    }
-
-    /// The same span about the same place is a refresh
-    ///
-    /// Which is what the whole thing rests on: the span is worked out afresh
-    /// every frame and must come out equal every time, or the region is a new
-    /// question at every frame and the throttle is all that holds it back.
-    #[test]
-    fn the_same_span_refreshes() {
-        assert!(region_within(0, 10, 60).refreshes(&region_within(0, 10, 60)));
     }
 
     /// A region already on the wire is one the spyglass waits for

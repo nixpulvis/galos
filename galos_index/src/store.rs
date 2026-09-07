@@ -29,7 +29,7 @@ pub const PAYLOAD_DIR: &str = "cells";
 
 /// The file a cell's payload lives in, named by level and Morton key so the
 /// name is stable and a cell is found without consulting the index.
-fn payload_path(dir: &Path, id: CellId) -> PathBuf {
+pub(crate) fn payload_path(dir: &Path, id: CellId) -> PathBuf {
     dir.join(PAYLOAD_DIR).join(format!(
         "{:02}-{:016x}.bin",
         id.level,
@@ -150,6 +150,10 @@ mod tests {
                         absolute_magnitude: id as f64 * 0.001 - 3.0,
                         temperature: 4000.0 + (id % 5000) as f64,
                         age_bucket: (id % 8) as usize,
+                        // Each its own moment, so a payload that dropped the
+                        // stamp or carried a neighbour's would show up in the
+                        // round trip below.
+                        updated_at: 1_700_000_000 + id as u32,
                     });
                     id += 1;
                 }
@@ -177,6 +181,7 @@ mod tests {
                 assert_eq!(a.id64, b.id64);
                 assert_eq!(a.pos, b.pos);
                 assert_eq!(a.temp_bucket, b.temp_bucket);
+                assert_eq!(a.updated_at, b.updated_at);
             }
         }
     }
@@ -253,6 +258,7 @@ mod tests {
             absolute_magnitude: 9.0,
             temperature: 3500.0,
             age_bucket: 0,
+            updated_at: 1_800_000_000,
         });
         s.remove(0);
 
