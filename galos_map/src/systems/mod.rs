@@ -390,6 +390,18 @@ pub(crate) struct InReach {
 /// or a filter that admits this system and not the next, would take away the
 /// one thing that answers it.
 ///
+/// Or unless its insides are on the map, which is what the `Grid` it wears
+/// says: [`bodies::spawn::draw`] puts one on with a system's contents and
+/// takes it off with them. Every star, body and orbit line inside a system is
+/// a child of it, so hiding the system takes the whole of its insides with
+/// them — and the reach is measured to the system's own point, which the
+/// camera is not standing on once it has flown to anything else in there. A
+/// body two and a half thousand light seconds out is further from that point
+/// than a reach drawn in to look at it, so closing on one used to hide
+/// everything in the system, name and mark still drawn over empty sky. The
+/// same exemption [`evict`] makes, and for a stronger reason: what is drawn
+/// cannot be measured by how far its system's point is from the crosshair.
+///
 /// A filtered system is only hidden where it is being dimmed to nothing.
 /// Anywhere above that it is drawn faintly, which is the other half of what
 /// [`filter`] is for: a faction read against the space around it.
@@ -404,6 +416,7 @@ pub(crate) fn visibility(
         &mut Visibility,
         Has<filter::Filtered>,
         Has<route::Hop>,
+        Has<big_space::prelude::Grid>,
     )>,
     spyglass: Res<Spyglass>,
     dim: Res<filter::DimTo>,
@@ -422,7 +435,7 @@ pub(crate) fn visibility(
     // a per-system faction/allegiance question the aggregates do not carry — so
     // it stays a count of drawn-and-admitted, or wants its own answer.
     let mut tally = InReach::default();
-    for (system, mut visibility, filtered, hop) in &mut systems {
+    for (system, mut visibility, filtered, hop, descended) in &mut systems {
         let within =
             spyglass.reaches(camera.center, DVec3::from(system.position));
         if within {
@@ -433,7 +446,8 @@ pub(crate) fn visibility(
         }
 
         visibility.set_if_neq(
-            if hop || (within && (!filtered || excluded_are_drawn)) {
+            if hop || descended || (within && (!filtered || excluded_are_drawn))
+            {
                 Visibility::Visible
             } else {
                 Visibility::Hidden
@@ -1227,6 +1241,40 @@ pub(crate) mod tests {
 
         assert!(!drawn(&app, excluded));
         assert!(drawn(&app, included));
+    }
+
+    /// A system the camera has descended into is drawn wherever it is looking
+    ///
+    /// The reported trouble, from the far side. Everything inside a system is
+    /// a child of it, so hiding the system takes its star, its bodies and
+    /// every orbit line with it — and the reach is measured to the system's
+    /// own point, which the camera is nowhere near once it has flown to a
+    /// body two and a half thousand light seconds out. Closing on one hid the
+    /// whole system, leaving the body's name and mark drawn over empty sky.
+    ///
+    /// The `Grid` is what says its insides are on the map: `bodies::spawn`
+    /// puts one on with the contents and takes it off with them.
+    #[test]
+    fn a_system_the_camera_is_inside_is_drawn() {
+        let mut app = map(1e-4, true, 0.15);
+        let descended = app
+            .world_mut()
+            .spawn((
+                at(1, 5.),
+                Visibility::default(),
+                crate::space::system_grid(),
+            ))
+            .id();
+        let neighbour =
+            app.world_mut().spawn((at(2, 5.), Visibility::default())).id();
+
+        app.update();
+
+        assert!(drawn(&app, descended));
+        assert!(
+            !drawn(&app, neighbour),
+            "the reach held a system five light years off"
+        );
     }
 
     /// What the tally came to
