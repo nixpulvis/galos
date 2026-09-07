@@ -2403,33 +2403,32 @@ fn stops_of(selection: &Selection) -> Result<Vec<&str>, &'static str> {
     }
 }
 
-/// How far a route through the systems picked out would run at the least
+/// How wide the systems picked out stand, in light years
 ///
-/// In straight lines from each to the next, which is as short as a route
-/// through them could be and is knowable before one is asked for. What comes
-/// back is longer: a route is flown in jumps, and each of them lands on a
-/// system rather than on a point along the line.
+/// Across the whole of them: twice the distance from the middle of what they
+/// span to whichever is furthest out, off the same
+/// [`crate::systems::route::spawn::framing`] the camera is stood back by and
+/// a system's shell is drawn to over the orbits inside it. Over a pair that
+/// is exactly how far apart the two are, the middle of a span of two being
+/// the point between them.
 ///
-/// Only over a set a route could run through, which is what [`stops_of`]
-/// answers with. A distance standing under a line saying there is no route to
-/// plot yet would be answering a question the form has just said it cannot
-/// take.
-fn apart(selection: &Selection, order: &[usize]) -> Option<f64> {
+/// This rather than the legs added up. A route has not been asked for yet, so
+/// how far one would run is not knowable: it turns on the order the stops are
+/// reached in, and for the cheapest order that turns on a jump range which
+/// may not have been typed. How much sky the set covers needs none of it, and
+/// is the question a set of destinations raises.
+///
+/// Nothing where fewer than two are picked out, one system spanning nothing
+/// and the form having said so already.
+fn across(selection: &Selection) -> Option<f64> {
     let places: Vec<DVec3> =
         selection.systems().map(|system| system.position()).collect();
-    if order.len() < 2 {
+    if places.len() < 2 {
         return None;
     }
+    let (_, extent) = crate::systems::route::spawn::framing(&places)?;
 
-    Some(
-        order
-            .windows(2)
-            .filter_map(|leg| {
-                Some((*places.get(leg[0])?, *places.get(leg[1])?))
-            })
-            .map(|(from, to)| from.distance(to))
-            .sum(),
-    )
+    Some(2. * extent as f64)
 }
 
 /// The order the trip will be flown in, as indices into what is picked out
@@ -2476,35 +2475,21 @@ fn asked_in_order(
         .collect()
 }
 
-/// What the form says of how far a route would run, before it is asked for
+/// What the form says of the systems picked out, before a route is asked for
 ///
-/// Nothing is routed yet, so nothing here knows what the trip will be flown
-/// in. What is known is where the stops stand: a pair is so far apart, and a
-/// longer set is the straight lines from each stop to the next, added up.
+/// A pair is so far apart, which is the whole of what there is to say about
+/// two: a route between them runs from the one to the other however it gets
+/// there.
 ///
-/// Which is a floor, not an answer. A ship flies in jumps and each one lands
-/// on a star rather than on a point along the line, so the trip that comes
-/// back is always longer than this and never shorter. Said as `at least`, so
-/// the figure claims what it can stand behind -- and so that it reads apart
-/// from the flown distance the selection line says once the legs are in,
-/// which is the real one.
-///
-/// A pair is the exception and needs no hedge: two systems are exactly as far
-/// apart as they are, whatever a ship does about it.
-///
-/// How far is [`None`] where the cheapest order was asked for and no range
-/// has been typed to work it out with: which order the trip is flown in
-/// settles what it comes to, and the range settles the order. So the legs are
-/// counted, which is known either way, and no distance is claimed.
-fn apart_said(away: Option<f64>, stops: usize) -> String {
-    let legs = stops.saturating_sub(1);
-    match (away, legs) {
-        (Some(away), 0 | 1) => format!("{away:.1} Ly apart"),
-        (Some(away), legs) => {
-            format!("{legs} legs, at least {away:.1} Ly")
-        }
-        (None, 1) => "1 leg".to_owned(),
-        (None, legs) => format!("{legs} legs"),
+/// More than two is said as how many legs it will be and how wide they
+/// stand. Not how far the route will run: that turns on the order they are
+/// reached in, and the order may turn on a range not yet typed. How much sky
+/// they cover is knowable before anything is walked, and is what a set of
+/// destinations raises.
+fn apart_said(away: f64, stops: usize) -> String {
+    match stops.saturating_sub(1) {
+        0 | 1 => format!("{away:.1} Ly apart"),
+        legs => format!("{legs} legs, {away:.1} Ly across"),
     }
 }
 
@@ -2547,26 +2532,18 @@ fn route_section(
         // scolding whoever fills it in.
         ui.label(egui::RichText::new(*why).weak());
     }
-    // How far it runs, which is the one thing about the plot the map can say
-    // before it is asked for -- measured along the order it will be flown in,
-    // which is what the cheapest-order box below changes.
-    let start = if search.any_start { Start::Anywhere } else { Start::First };
-    let tour = search
-        .tour
-        .then(|| {
-            typed(&search.route_range)
-                .and_then(|typed| jump_range(typed).ok())
-                .map(|range| (range, start))
-        })
-        .flatten();
-    if let Ok(stops) = &stops {
-        let order = flown_order(selection, tour);
-        let away = (!search.tour || tour.is_some())
-            .then(|| apart(selection, &order))
-            .flatten();
+    // What the map can say about them before a route is asked for: how many
+    // legs it will be, and how wide they stand. Nothing about the order they
+    // will be reached in, which is what the range settles and what nothing
+    // here waits on.
+    if let (Ok(stops), Some(away)) = (&stops, across(selection)) {
         ui.label(egui::RichText::new(apart_said(away, stops.len())).weak());
     }
     ui.add_space(FIELD_GAP);
+
+    // Where the trip may set out from, which only the cheapest order has a
+    // say in. Read here so the ask below and the box further down agree.
+    let start = if search.any_start { Start::Anywhere } else { Start::First };
 
     // The range is typed rather than looked up, so it never waits on
     // anything.
@@ -4847,79 +4824,56 @@ mod tests {
         selection
     }
 
-    /// How far a trip runs, measured along the picked order
-    fn ran(along: &[f64]) -> Option<f64> {
-        let picked = strung_out(along);
-        let order = flown_order(&picked, None);
-
-        apart(&picked, &order)
+    /// How wide the systems at `along` stand
+    fn wide(along: &[f64]) -> Option<f64> {
+        across(&strung_out(along))
     }
 
-    /// A route is said to run as far as its legs come to
+    /// A pair is said to be as far apart as they stand
     ///
-    /// The one thing about the plot that can be said before it is asked for,
-    /// and what says whether a ship could make the trip at all. Over a pair
-    /// that is how far apart they stand; over more it is the legs summed.
+    /// The whole of what there is to say about two: a route between them runs
+    /// from the one to the other however it gets there.
     #[test]
-    fn a_route_runs_as_far_as_its_legs_come_to() {
-        assert_eq!(ran(&[3., 15.]), Some(12.));
-        assert_eq!(ran(&[3., 15., 20.]), Some(17.));
-        // Out and back: the legs are what is summed, not the span.
-        assert_eq!(ran(&[0., 10., 4.]), Some(16.));
+    fn a_pair_is_as_far_apart_as_it_stands() {
+        assert_eq!(wide(&[3., 15.]), Some(12.));
     }
 
-    /// A set with no leg to fly is not measured at all
+    /// And a longer set is said by how much sky it covers
     ///
-    /// A distance under a line saying there is no route to plot yet would
-    /// answer a question the form has just said it cannot take.
+    /// Across the whole of them, from the middle of what they span to
+    /// whichever is furthest and out the other side. Which is not the legs
+    /// added up: the set below covers thirty light years however it is
+    /// flown, where walking it end to end is thirty and doubling back over
+    /// it is more.
+    #[test]
+    fn a_longer_set_is_as_wide_as_the_sky_it_covers() {
+        assert_eq!(wide(&[0., 30., 10., 20.]), Some(30.));
+        // The order it was picked in says nothing about it.
+        assert_eq!(wide(&[30., 0., 20., 10.]), Some(30.));
+        // Nor does a system standing inside the span.
+        assert_eq!(wide(&[0., 30., 15.]), Some(30.));
+    }
+
+    /// A set with nothing to span is not measured at all
+    ///
+    /// One system spans nothing, and the form has already said it wants
+    /// another.
     #[test]
     fn a_set_that_cannot_be_routed_is_not_measured() {
-        assert_eq!(ran(&[]), None);
-        assert_eq!(ran(&[3.]), None);
-    }
-
-    /// And it is measured along the order the trip will be flown in
-    ///
-    /// Which is the whole point of saying it: asked for the cheapest order,
-    /// the trip is not flown in the order it was picked, and a figure summed
-    /// along the picked order would be about a trip nobody is going to fly.
-    #[test]
-    fn a_trip_is_measured_along_the_order_it_will_be_flown() {
-        let picked = strung_out(&[0., 30., 10., 20.]);
-
-        let as_picked = apart(&picked, &flown_order(&picked, None));
-        let cheapest =
-            apart(&picked, &flown_order(&picked, Some((10., Start::First))));
-
-        assert_eq!(as_picked, Some(60.));
-        assert_eq!(cheapest, Some(30.));
+        assert_eq!(wide(&[]), None);
+        assert_eq!(wide(&[3.]), None);
     }
 
     /// And how it is said turns on whether there is more than one leg
     ///
-    /// Two systems are exactly as far apart as they stand, whatever a ship
-    /// does about it. A longer set is the straight lines added up, which is a
-    /// floor and not an answer: a jump lands on a star rather than on a point
-    /// along the line, so the trip that comes back is longer. It says `at
-    /// least` so that it claims only what it can stand behind, and so that it
-    /// reads apart from the flown distance said once the legs are in.
+    /// Two systems are apart. More stand across a span, and are said as how
+    /// many legs the trip will be as well: the figure is no longer a gap
+    /// between two things.
     #[test]
     fn a_longer_route_is_said_in_legs() {
-        assert_eq!(apart_said(Some(12.), 2), "12.0 Ly apart");
-        assert_eq!(apart_said(Some(17.), 3), "2 legs, at least 17.0 Ly");
-        assert_eq!(apart_said(Some(4.), 0), "4.0 Ly apart");
-    }
-
-    /// A trip whose order is not settled yet says its legs and no distance
-    ///
-    /// The cheapest order asked for and no range typed to work it out with:
-    /// the range settles the order and the order settles the distance, so the
-    /// legs are all that is known. Saying a figure anyway would be measuring
-    /// along an order the trip will not be flown in.
-    #[test]
-    fn a_trip_with_no_order_settled_yet_claims_no_distance() {
-        assert_eq!(apart_said(None, 6), "5 legs");
-        assert_eq!(apart_said(None, 2), "1 leg");
+        assert_eq!(apart_said(12., 2), "12.0 Ly apart");
+        assert_eq!(apart_said(30., 4), "3 legs, 30.0 Ly across");
+        assert_eq!(apart_said(4., 0), "4.0 Ly apart");
     }
 
     /// The selection rows each answer for themselves
