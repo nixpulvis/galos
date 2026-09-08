@@ -1417,8 +1417,7 @@ mod tests {
         // the range the estimate divides by are different numbers — which is
         // what a leg has to be measured against, and what a search reaching
         // by the wrong one of the two would be caught by below.
-        let boosts =
-            Boosts(std::sync::Arc::new(HashMap::from([(15, Boost::Neutron)])));
+        let boosts = Boosts::holding(HashMap::from([(15, Boost::Neutron)]));
         let graph = JumpGraph::new(&entries, &boosts);
         let drive = Drive::Standard;
 
@@ -1659,8 +1658,7 @@ mod tests {
             // And the far side of a gap only a boost crosses.
             at(9, [440., 0., 0.]),
         ];
-        let boosts =
-            Boosts(std::sync::Arc::new(HashMap::from([(2, Boost::Neutron)])));
+        let boosts = Boosts::holding(HashMap::from([(2, Boost::Neutron)]));
         let graph = JumpGraph::new(&entries, &boosts);
 
         for how in BOTH {
@@ -1694,8 +1692,7 @@ mod tests {
             at(2, [90., 0., 0.]),
             at(9, [440., 0., 0.]),
         ];
-        let boosts =
-            Boosts(std::sync::Arc::new(HashMap::from([(9, Boost::Neutron)])));
+        let boosts = Boosts::holding(HashMap::from([(9, Boost::Neutron)]));
         let graph = JumpGraph::new(&entries, &boosts);
 
         for how in BOTH {
@@ -1714,10 +1711,7 @@ mod tests {
     #[test]
     fn a_white_dwarf_carries_what_the_drive_allows() {
         let entries = vec![at(1, [0., 0., 0.]), at(9, [250., 0., 0.])];
-        let boosts = Boosts(std::sync::Arc::new(HashMap::from([(
-            1,
-            Boost::WhiteDwarf,
-        )])));
+        let boosts = Boosts::holding(HashMap::from([(1, Boost::WhiteDwarf)]));
         let graph = JumpGraph::new(&entries, &boosts);
 
         for how in BOTH {

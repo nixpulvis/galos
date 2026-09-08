@@ -111,20 +111,53 @@ pub struct Names {
 /// than over what is drawn, so a fetch per step is not a thing that could
 /// work. What a boost is worth is the drive's to say
 /// ([`systems::route::graph::Drive`]); this is only where one can be had.
+///
+/// Whether the index publishes such a table at all is kept beside it. An
+/// index built before the table existed, or one whose builder has not reached
+/// it, reads as [`Boosts::absent`] rather than as a galaxy where nobody has a
+/// jet cone — and a route for a supercharging ship is then a question the map
+/// cannot answer, which [`crate::ui`] says rather than answering the unaided
+/// one under the supercharged drive's name.
 #[derive(Resource, Default, Clone)]
-pub struct Boosts(pub Arc<HashMap<i64, Boost>>);
+pub struct Boosts {
+    by_address: Arc<HashMap<i64, Boost>>,
+    /// Whether the index published the table this came from
+    published: bool,
+}
 
 impl Boosts {
     /// What the system at `address` can supercharge, if anything.
     pub fn get(&self, address: i64) -> Option<Boost> {
-        self.0.get(&address).copied()
+        self.by_address.get(&address).copied()
     }
 
     /// The table keyed by address, as the published rows give it.
     pub fn of(rows: Vec<galos_index::SystemBoost>) -> Boosts {
-        Boosts(Arc::new(
-            rows.into_iter().map(|it| (it.address, it.boost)).collect(),
-        ))
+        Boosts {
+            by_address: Arc::new(
+                rows.into_iter().map(|it| (it.address, it.boost)).collect(),
+            ),
+            published: true,
+        }
+    }
+
+    /// No such table in the index, which is not the same as an empty one.
+    pub fn absent() -> Boosts {
+        Boosts::default()
+    }
+
+    /// Whether the index published a supercharge table at all
+    ///
+    /// False is "the map cannot say where a jet cone is", not "there are
+    /// none". Rebuilt with `galos-db index --only boosts`.
+    pub fn published(&self) -> bool {
+        self.published
+    }
+
+    /// A table built from what is already keyed, for tests.
+    #[cfg(test)]
+    pub(crate) fn holding(by_address: HashMap<i64, Boost>) -> Boosts {
+        Boosts { by_address: Arc::new(by_address), published: true }
     }
 }
 

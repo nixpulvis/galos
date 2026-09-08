@@ -48,7 +48,7 @@ fn main() {
         populated.len(),
         names.len(),
         reaches.len(),
-        boosts.len(),
+        boosts.as_ref().map_or(0, Vec::len),
         factions.len(),
     );
     // A cell tree with no metadata beside it is a stale or half-written build:
@@ -63,8 +63,19 @@ fn main() {
     }
 
     // Which systems can supercharge a drive, which the router plots by and
-    // the graph below is built against.
-    let boosts = Boosts::of(boosts);
+    // the graph below is built against. Absent where the index publishes no
+    // such table, which is not a galaxy without jet cones: the form refuses a
+    // supercharged route rather than handing back the unaided one under its
+    // name. See [`Boosts::published`].
+    let boosts = boosts.map_or_else(Boosts::absent, Boosts::of);
+    if !index.is_empty() && !boosts.published() {
+        eprintln!(
+            "galos: NOTE — {dir} publishes no supercharge table, so routes \
+             for a supercharging drive cannot be plotted. Add it with \
+             `cargo run -p galos_db --bin galos-db -- index {dir} \
+             --only boosts`."
+        );
+    }
 
     // The jump graph the router walks, bucketed once from the resident names.
     let jumps = JumpGraph::new(&names, &boosts);

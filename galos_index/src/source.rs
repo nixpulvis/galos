@@ -190,7 +190,14 @@ pub trait Source: Send + Sync {
     /// Held resident, since the router weighs it at every step of a search and
     /// a route is plotted over the whole galaxy rather than over what is
     /// drawn.
-    async fn boosts(&self) -> io::Result<Vec<SystemBoost>>;
+    ///
+    /// [`None`] where the directory publishes no such table, which is one
+    /// built before it existed or one whose builder has not reached it yet.
+    /// Told apart from an empty table on purpose: a route asked for a
+    /// supercharging ship cannot be answered at all without this, and a map
+    /// that read the two the same answered a different question instead —
+    /// handing back the unaided route under the supercharged drive's name.
+    async fn boosts(&self) -> io::Result<Option<Vec<SystemBoost>>>;
 
     /// The bodies inside a system, fetched when a click opens it. Empty where
     /// the system has no scan on record.
@@ -273,12 +280,10 @@ impl Source for FsSource {
         read_meta(&reaches_path(&self.dir))
     }
 
-    async fn boosts(&self) -> io::Result<Vec<SystemBoost>> {
+    async fn boosts(&self) -> io::Result<Option<Vec<SystemBoost>>> {
         match read_meta(&boosts_path(&self.dir)) {
-            Ok(table) => Ok(table),
-            // A directory built before this table existed has none, and a map
-            // that reads it as empty plots the routes it always did.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Ok(table) => Ok(Some(table)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
     }

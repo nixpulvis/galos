@@ -160,7 +160,10 @@ struct Refreshed {
     index: Option<(Index, Option<Stamp>)>,
     populated: Option<(Vec<PopulatedSystem>, Option<Stamp>)>,
     reaches: Option<(Vec<SystemReach>, Option<Stamp>)>,
-    boosts: Option<(Vec<SystemBoost>, Option<Stamp>)>,
+    /// The supercharge table, or its absence: the inner [`Option`] is whether
+    /// the index publishes one at all, which the router needs told apart from
+    /// a galaxy where nobody has a jet cone. See [`Boosts::published`].
+    boosts: Option<(Option<Vec<SystemBoost>>, Option<Stamp>)>,
     factions: Option<(Vec<Faction>, Option<Stamp>)>,
     /// The chunks read, by number, and how far the table now goes
     chunks: Vec<(usize, Vec<NameEntry>, Option<Stamp>)>,
@@ -255,6 +258,8 @@ fn poll(
             found.reaches = Some((read, stamp));
         }
 
+        // A table gone as well as a table moved: an index rebuilt without one
+        // takes the supercharging away, and the map has to stop claiming it.
         let (moved_it, stamp) = moved(&source, Part::Boosts, boosts).await;
         if moved_it && let Ok(read) = source.boosts().await {
             found.boosts = Some((read, stamp));
@@ -345,7 +350,7 @@ fn apply(
     // megabyte and written whole, so there is no part of it to read.
     let found_boosts = found.boosts.is_some();
     if let Some((read, stamp)) = found.boosts {
-        *boosts = Boosts::of(read);
+        *boosts = read.map_or_else(Boosts::absent, Boosts::of);
         held.boosts = stamp;
     }
 
@@ -496,7 +501,10 @@ mod tests {
         // the router's graph bucketed off it.
         let named = block_on(source.names()).unwrap_or_default();
         let reaches = block_on(source.reaches()).unwrap_or_default();
-        let boosts = Boosts::of(block_on(source.boosts()).unwrap_or_default());
+        let boosts = block_on(source.boosts())
+            .ok()
+            .flatten()
+            .map_or_else(Boosts::absent, Boosts::of);
         app.insert_resource(Jumps(Arc::new(JumpGraph::new(&named, &boosts))));
         app.insert_resource(boosts);
         app.insert_resource(Names::reaching(named, reaches));

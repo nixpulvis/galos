@@ -1196,6 +1196,7 @@ pub(crate) fn chrome(
         &mut bar.plot,
         &mut bar.how,
         &mut bar.drive,
+        &bar.boosts,
         &bar.searching,
         &mut filter,
     );
@@ -1372,6 +1373,7 @@ fn main_bar(
     plot: &mut Plot,
     how: &mut Routing,
     drive: &mut Drive,
+    boosts: &crate::Boosts,
     searching: &Frontiers,
     filter: &mut FilterBar,
 ) -> f32 {
@@ -1553,7 +1555,7 @@ fn main_bar(
                         taken |= filter_section(ui, filter);
                         taken |= route_section(
                             ui, search, selection, searched, plot, how, drive,
-                            searching, routing,
+                            boosts, searching, routing,
                         );
                     }
 
@@ -1710,6 +1712,9 @@ pub(crate) struct SearchBar<'w> {
     /// Which of the fewest-jumps routes to ask for
     how: ResMut<'w, Routing>,
     drive: ResMut<'w, Drive>,
+    /// Whether the index publishes a supercharge table at all, which is what
+    /// a route for a supercharging drive needs before it can be asked for
+    boosts: Res<'w, crate::Boosts>,
     searching: Res<'w, Frontiers>,
 }
 
@@ -2531,6 +2536,36 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
     }
 }
 
+/// What the map needs before it can plot at all, or what is missing
+///
+/// Two preconditions, and the second is why this stands beside
+/// [`jump_range`] rather than inside it. A range is what the user typed; a
+/// supercharge table is what the index published, and a route for a drive
+/// that can take a jet cone is a question the map cannot answer without one.
+///
+/// It used to answer anyway. The router read an absent table as a galaxy
+/// where nobody has a jet cone and handed back the unaided route — under the
+/// supercharged drive's name, since a route carries what it was plotted with
+/// and its panel says so. So the map claimed to have plotted something it had
+/// not, and the only tell was a jump count that looked high. Said instead,
+/// with the command that fixes it.
+///
+/// An empty table is not this. A published table with nothing in it is an
+/// answer — there is nowhere to supercharge — and the unaided route is the
+/// right one.
+fn plotting(
+    asked: &str,
+    drive: Drive,
+    boosts: &crate::Boosts,
+) -> Result<f64, &'static str> {
+    let range = jump_range(asked)?;
+    if drive.named().is_some() && !boosts.published() {
+        return Err("No supercharge table in the index. Add it with \
+             `galos-db index --only boosts`, or plot unaided.");
+    }
+    Ok(range)
+}
+
 /// The systems a route runs through, or why it has nowhere to run
 ///
 /// What is picked out on the map, in the order it was picked, rather than
@@ -2677,6 +2712,7 @@ fn route_section(
     plot: &mut Plot,
     how: &mut Routing,
     drive: &mut Drive,
+    boosts: &crate::Boosts,
     searching: &Frontiers,
     asked_for: bool,
 ) -> bool {
@@ -2886,7 +2922,7 @@ fn route_section(
     if (button.response.clicked() || submitted)
         && let Some((stops, range)) = asked
     {
-        *plot = match jump_range(range) {
+        *plot = match plotting(range, *drive, boosts) {
             Ok(range) => {
                 searched.write(Search::Route {
                     how: *how,
@@ -7703,6 +7739,44 @@ mod tests {
     fn a_range_of_nothing_or_less_is_refused() {
         assert!(jump_range("0").is_err());
         assert!(jump_range("-5").is_err());
+    }
+
+    /// A supercharged route wants a supercharge table, and says so
+    ///
+    /// Reported: the table was deleted and the map plotted anyway, handing
+    /// back the unaided route — under the supercharged drive's name, a route
+    /// carrying what it was plotted with and its panel saying so. So the map
+    /// claimed to have plotted something it had not, and the only tell was a
+    /// jump count that looked high.
+    ///
+    /// An empty table is a different answer and not this one: published with
+    /// nothing in it says there is nowhere to supercharge, and the unaided
+    /// route is right.
+    #[test]
+    fn a_supercharged_route_is_refused_without_a_table_to_plot_it() {
+        let absent = crate::Boosts::absent();
+        let published = crate::Boosts::of(Vec::new());
+
+        // Unaided asks nothing of the table either way.
+        assert_eq!(plotting("50", Drive::Unaided, &absent), Ok(50.));
+        assert_eq!(plotting("50", Drive::Unaided, &published), Ok(50.));
+
+        // A drive that can take a jet cone cannot be answered without one.
+        for drive in [Drive::Standard, Drive::Optimised] {
+            assert!(
+                plotting("50", drive, &absent).is_err(),
+                "{drive:?} plotted with no table to plot it from"
+            );
+            assert_eq!(
+                plotting("50", drive, &published),
+                Ok(50.),
+                "{drive:?} refused against a table that is simply empty"
+            );
+        }
+
+        // And the range is still asked first, so the nearer trouble is the
+        // one reported.
+        assert!(plotting("far", Drive::Standard, &published).is_err());
     }
 
     /// The stops go out in the order they were picked, unless the map is asked
