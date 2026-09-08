@@ -229,9 +229,10 @@ fn diagnostics(
                         ui,
                         "camera",
                         if settled { "settled" } else { "easing" },
-                        "Whether the view has come to rest, or is still easing \
-                         toward its target. While easing the reach moves and \
-                         the evictor works.",
+                        "Whether the view has come to rest, or is still \
+                         moving into place. While it moves the reach moves \
+                         and the evictor works. A zoom the floor is holding \
+                         off its target stands still, and reads as at rest.",
                     );
                     pair(
                         ui,

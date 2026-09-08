@@ -362,14 +362,29 @@ fn snap(value: f64, target: f64) -> f64 {
     }
 }
 
-/// Move `fraction` of the way from `value` to `target`, landing on it
+/// Move `fraction` of the way from `value` to `target`, pinning what is
+/// within an ulp of it
 ///
-/// Snapped in f32 rather than through [`snap`]: [`SNAP_TOLERANCE`] is an f64
-/// figure far finer than an f32 can resolve, so a radius or an angle
-/// approaching its target would stall about an ulp short and never reach it.
-/// The camera would then read as forever easing and rewrite its transform
-/// every frame for [`big_space`] to chase, however still the view. Within an
-/// ulp or so of the target is the target.
+/// Snapped against an ulp rather than through [`snap`]: [`SNAP_TOLERANCE`] is
+/// an f64 figure, and a radius or an angle read as far from its target by
+/// several thousandths of it in an f32.
+///
+/// It is a pin and not an arrival. An f32 lerp comes to rest short of its
+/// target — `a * (1 - t) + b * t` rounds twice, and the closer the two ends
+/// the more of the step is lost to it, so the last stretch is covered in
+/// steps that round to nothing — and measured, that resting place is tens of
+/// ulps out at the fractions a frame actually asks for, well past this. So
+/// most eases stop a rounding short of what was asked and are pinned by
+/// nothing at all.
+///
+/// Which costs nothing, because the resting place is a resting place: the
+/// value stops changing, the camera stops moving, and
+/// [`OrbitCamera::is_settled`] asks whether it moved rather than whether it
+/// arrived. Widening this to catch the stall would only trade a rounding
+/// error for a jump, and the jump is the bigger at the near end of the zoom:
+/// the `max(1.)` below holds the tolerance to a scale of one light year
+/// however far in the camera is, and inside a system that is more than the
+/// whole of the distance left to cover.
 fn eased(value: f32, target: f32, fraction: f32) -> f32 {
     let stepped = value.lerp(target, fraction);
     if (target - stepped).abs() <= f32::EPSILON * target.abs().max(1.) {
@@ -567,6 +582,15 @@ pub(crate) struct OrbitCamera {
     pub(crate) orbit_smoothness: f32,
     pub(crate) pan_smoothness: f32,
     pub(crate) zoom_smoothness: f32,
+    /// Whether the pose [`orbit_camera`] worked out last frame was the one
+    /// the camera already held
+    ///
+    /// Written there and read through [`OrbitCamera::is_settled`], because
+    /// standing still is something only the frame that places the camera can
+    /// see: the zoom floor holds the radius off a target it may never be let
+    /// to reach, so how far the camera is from what was asked for says
+    /// nothing about whether it is moving.
+    pub(crate) settled: bool,
 }
 
 impl Default for OrbitCamera {
@@ -588,23 +612,30 @@ impl Default for OrbitCamera {
             orbit_smoothness: 0.1,
             pan_smoothness: 0.02,
             zoom_smoothness: 0.1,
+            // A camera that has not been placed yet has not moved. The frame
+            // that places it says otherwise if it has.
+            settled: true,
         }
     }
 }
 
 impl OrbitCamera {
-    /// Whether the camera has arrived: no move under way and every control at
-    /// its target, so the eye and the reach hold still frame to frame.
+    /// Whether the view has come to rest, the pose it landed on being the one
+    /// it already held, so the eye and the reach hold still frame to frame.
     ///
     /// What the diagnostics panel reads to tell a view standing still from one
     /// still easing into place, since the evictor is meant to go quiet only
     /// once the camera stops moving.
+    ///
+    /// Asked of where the camera went rather than of how far it is from its
+    /// targets. The two part company at the zoom floor: flying to a system the
+    /// map cannot descend into frames it well inside [`subgridless_floor`] of
+    /// it, and the target is deliberately left where the user's own zoom put
+    /// it (see [`orbit_camera`]), so a camera parked on that floor sat a fixed
+    /// distance from its target forever and read as easing for as long as the
+    /// map stood still.
     pub(crate) fn is_settled(&self) -> bool {
-        self.travel.is_none()
-            && self.center == self.target_center
-            && self.radius == self.target_radius
-            && self.yaw == self.target_yaw
-            && self.pitch == self.target_pitch
+        self.settled
     }
 }
 
@@ -964,6 +995,21 @@ pub(crate) fn orbit_camera(
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
     let eye = center + (rotation * Vec3::Z * radius).as_dvec3();
 
+    // Whether any of it moved, taken before the new pose is written over the
+    // old. Each of the four comes to a rest — the center exactly on its
+    // target ([`snap`]), the three an f32 carries a rounding short of theirs
+    // ([`eased`]) — so a view standing still lands the pose it already had,
+    // and this comparison is the whole question. A camera the zoom floor is
+    // holding off a target further in stands just as still, and is read the
+    // same way.
+    //
+    // A move under way is never at rest, even where its two ends coincide.
+    orbit.settled = orbit.travel.is_none()
+        && center == orbit.center
+        && radius == orbit.radius
+        && yaw == orbit.yaw
+        && pitch == orbit.pitch;
+
     orbit.center = center;
     orbit.radius = radius;
     orbit.yaw = yaw;
@@ -1169,6 +1215,15 @@ mod tests {
             .single(app.world())
             .unwrap()
             .radius
+    }
+
+    /// Whether the view has come to rest
+    fn rests(app: &mut App) -> bool {
+        app.world_mut()
+            .query::<&OrbitCamera>()
+            .single(app.world())
+            .unwrap()
+            .is_settled()
     }
 
     /// A spyglass reaching ten light years, set however the test wants
@@ -1448,6 +1503,72 @@ mod tests {
             asked(&mut app),
             subgridless_floor(crate::systems::bodies::STAND_IN)
         );
+    }
+
+    /// And a camera the floor holds off still comes to rest
+    ///
+    /// The reported trouble: the diagnostics panel read `easing` for as long
+    /// as the map stood still. Flying to a system the map cannot descend into
+    /// frames it — [`stand_back`] over its own extent, which is well inside
+    /// [`subgridless_floor`] of it — so the target the user is left with is
+    /// one the floor will not let the camera reach. Measured against that
+    /// target the camera never arrives, though it is standing perfectly still.
+    #[test]
+    fn a_camera_held_off_by_the_floor_comes_to_rest() {
+        let asked_for = 1e-3;
+        let floor = subgridless_floor(crate::systems::bodies::STAND_IN);
+        assert!(floor > asked_for, "the floor does not hold the camera off");
+
+        let mut app = scrolled(asked_for, spyglass(false, false));
+        app.insert_resource(AccumulatedMouseScroll::default());
+
+        for _ in 0..60 {
+            app.update();
+        }
+
+        assert_eq!(stands(&mut app), floor, "left off the floor");
+        assert_eq!(asked(&mut app), asked_for, "the user's zoom was rewritten");
+        assert!(rests(&mut app), "a camera standing still read as easing");
+    }
+
+    /// A camera on its way somewhere reads as easing until it arrives
+    ///
+    /// The other half of the same question, and what keeps the answer from
+    /// being "at rest" outright: a zoom eases over about a second, and every
+    /// frame of that is a frame the reach moves and the evictor works.
+    #[test]
+    fn a_camera_on_its_way_is_not_at_rest() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+
+        let mut app = scrolled(100., spyglass(false, false));
+        // A frame of fixed length, since the easing covers ground per second
+        // and a test's frames take microseconds.
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            Duration::from_secs_f32(1. / 60.),
+        ));
+
+        // The first frame of an app has no time in it — `Time<Real>` reports
+        // no delta until it has an update to measure from — so nothing eases
+        // on it. The wheel is still turning on the second.
+        app.update();
+        app.update();
+        assert!(!rests(&mut app), "a zoom under way read as at rest");
+
+        app.insert_resource(AccumulatedMouseScroll::default());
+        for _ in 0..600 {
+            app.update();
+        }
+
+        // Where it was asked to stand, bar the rounding an f32 ease comes to
+        // rest inside; see [`eased`]. What is being asked is that it stopped
+        // there rather than somewhere else.
+        let (stands, asked) = (stands(&mut app), asked(&mut app));
+        assert!(
+            (stands - asked).abs() <= 1e-5 * asked,
+            "came to rest at {stands}, asked for {asked}"
+        );
+        assert!(rests(&mut app), "arrived and still read as easing");
     }
 
     /// Where [`approach`] lands after `steps` frames of `dt` seconds each
