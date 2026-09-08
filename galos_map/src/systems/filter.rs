@@ -1139,10 +1139,13 @@ const DEFAULT_DIM: f32 = 0.25;
 ///
 /// Three things can change a verdict: the filters, the clock a span is
 /// measured against, and the political table a faction filter reads. The last
-/// of those is a whole-table swap by [`crate::refresh`] — the systems on the
-/// map are untouched by it, so nothing about them says to ask again, and a
-/// system that has just become a faction's would keep the mark it was given
-/// before it was.
+/// of those is a whole-table swap by [`crate::refresh`], and it reaches a
+/// drawn system by way of [`super::bounded::Republished`]: the swap comes with
+/// the payloads it was published beside, the walk rebuilds those cells, and a
+/// rebuilt [`System`] is a changed one, which the loop below asks again on its
+/// own account. What the table's own change settles here is the [`Cut`], since
+/// the verdicts kept about *points* are read against the fresh table directly
+/// and have to be dropped the moment it moves.
 fn mark(
     filters: Res<Filters>,
     populated: Res<Populated>,

@@ -31,6 +31,7 @@ use crate::systems::scale::{ScalePopulation, View, by_population};
 use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
 use crate::{Names, Populated, ResidentIndex, Transport};
+use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
@@ -50,6 +51,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<ResidentCells>();
     app.init_resource::<BoundedTasks>();
     app.init_resource::<PointOrders>();
+    app.init_resource::<Republished>();
 
     // Clears the map when the source is switched, before either source runs,
     // so the two never overlap on screen.
@@ -134,6 +136,53 @@ fn cell_in_reach(id: CellId, center: DVec3, radius: f64) -> bool {
 /// [`Resident::stale`] the held cells the walk no longer asks for.
 #[derive(Resource, Default)]
 pub(crate) struct ResidentCells(pub(crate) Resident);
+
+/// The cells whose payload has been replaced since [`reconcile`] last read it
+///
+/// A republished cell is mostly the same addresses said again, and a drawn
+/// system is a [`System`] built out of a payload point once. So `reconcile`'s
+/// ordinary test — build only what is not already on the map — is exactly
+/// wrong for one: every address is already there, nothing is queued, and the
+/// systems keep the columns of the first read for as long as they stay drawn.
+/// What goes stale with them is everything the cells carry and the names table
+/// does not: the moment a span is cut against, the magnitude the sky is
+/// painted from, the position, and the political columns
+/// ([`super::filter`]'s `mark` re-asks a system's own copy of those).
+///
+/// So a replaced payload is noted here and its cell is rebuilt whole on the
+/// next walk, `spawn_systems` replacing each system in place. Noted rather
+/// than acted on at once because the walk is where a cell's drawn prefix is
+/// known, and rebuilding a system the prefix does not reach would spend the
+/// spawn budget on something about to be evicted.
+#[derive(Resource, Default)]
+pub(crate) struct Republished(HashSet<CellId>);
+
+impl Republished {
+    /// Whether this cell wants rebuilding rather than filling in
+    fn holds(&self, id: CellId) -> bool {
+        self.0.contains(&id)
+    }
+
+    /// Done with: the walk has rebuilt what it draws of this cell
+    ///
+    /// Per cell rather than cleared whole, since a walk skips the cells
+    /// outside the bubble and a cell it never reached is still republished.
+    fn settled(&mut self, id: CellId) {
+        self.0.remove(&id);
+    }
+}
+
+/// What the draw has worked out about the resident payloads: the orders a
+/// cell's points are drawn in, and which cells have been published again
+/// since it last looked.
+///
+/// Bundled so [`reconcile`] reads both without spending two of Bevy's
+/// system-parameter slots, that walk being at the limit.
+#[derive(SystemParam)]
+pub(crate) struct Worked<'w> {
+    orders: ResMut<'w, PointOrders>,
+    republished: ResMut<'w, Republished>,
+}
 
 /// The payload reads in flight, one per marks cell not yet resident or asked
 ///
@@ -260,6 +309,7 @@ fn collect(
     mut tasks: ResMut<BoundedTasks>,
     mut resident: ResMut<ResidentCells>,
     mut orders: ResMut<PointOrders>,
+    mut republished: ResMut<Republished>,
     mut held: ResMut<crate::refresh::Held>,
 ) {
     tasks.0.retain(|&id, task| {
@@ -267,7 +317,7 @@ fn collect(
             return true;
         };
         if let Ok((points, stamp)) = result {
-            adopt(&mut resident, &mut orders, id, points);
+            adopt(&mut resident, &mut orders, &mut republished, id, points);
             held.holding(id, stamp);
         }
         false
@@ -410,14 +460,23 @@ impl PointOrders {
 /// sit at those places. A republished cell is the case — see
 /// [`crate::refresh`] — and a first read is the same call with nothing to
 /// forget.
+///
+/// The systems already drawn out of the old payload are the third thing that
+/// goes with it, and the one this cannot do itself: they are entities, and
+/// which of them the walk still draws is not known until it walks. So the
+/// cell is noted in [`Republished`] and [`reconcile`] rebuilds it. A first
+/// read notes it too and nothing comes of that, the cell having nothing drawn
+/// out of it yet.
 pub(crate) fn adopt(
     resident: &mut ResidentCells,
     orders: &mut PointOrders,
+    republished: &mut Republished,
     id: CellId,
     points: Vec<Point>,
 ) {
     resident.0.insert(id, points);
     orders.forget(id);
+    republished.0.insert(id);
 }
 
 /// What the filters ask about a payload point: its address, the factions the
@@ -564,7 +623,7 @@ fn reconcile(
     filtering: Filtering,
     cut: Res<Cut>,
     scale_population: Res<ScalePopulation>,
-    mut orders: ResMut<PointOrders>,
+    mut worked: Worked,
     systems: Query<(Entity, &System, Has<crate::systems::route::Hop>)>,
     mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
@@ -573,6 +632,7 @@ fn reconcile(
     let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
         return;
     };
+    let Worked { ref mut orders, ref mut republished } = worked;
     let now = Instant::now();
     // Clearing, the spyglass clamps the drawn set to a bubble about the camera:
     // the LOD is untouched inside it, only the far tail is shed.
@@ -623,6 +683,9 @@ fn reconcile(
         {
             continue;
         }
+        // Whether this cell's payload is the one the drawn systems were built
+        // from, or a later one; see [`Republished`].
+        let refreshed = republished.holds(id);
         let target = (resolvable_count(indexed, &view, separation) as usize)
             .min(cell.points.len());
         orders.walk(
@@ -655,13 +718,22 @@ fn reconcile(
             }
             let address = point.id64 as i64;
             wanted.insert(address);
-            if !existing.contains(&address) {
+            // Already drawn is already answered, except out of a cell that
+            // has just been published again: then the system on the map was
+            // built from the payload this one replaced, and what it says about
+            // the moment, the magnitude and the politics is what the index
+            // said last time. Queued either way, and `spawn_systems` replaces
+            // it in place.
+            if !existing.contains(&address) || refreshed {
                 pending.push(
                     build_from_point(point, &populated, &names),
                     false,
                     now,
                 );
             }
+        }
+        if refreshed {
+            republished.settled(id);
         }
     }
 
@@ -1091,6 +1163,7 @@ mod tests {
         app.init_resource::<crate::systems::filter::DimTo>();
         app.init_resource::<crate::systems::filter::Cut>();
         app.init_resource::<PointOrders>();
+        app.init_resource::<Republished>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
@@ -1402,6 +1475,88 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             2,
             "the budget went on systems the mode does not draw"
+        );
+    }
+
+    /// A cell published again rebuilds the systems already drawn out of it
+    ///
+    /// The reported trouble: the walk builds what is not already on the map,
+    /// which is the right test for a cell arriving and exactly the wrong one
+    /// for a cell arriving a second time. Every address was already there, so
+    /// nothing was queued and every system kept the columns of the first read
+    /// — the moment a span is cut against among them, which is the whole of
+    /// what [`crate::refresh`] exists to keep current.
+    #[test]
+    fn a_republished_cell_rebuilds_the_systems_already_drawn() {
+        use galos_index::{BuildParams, Snapshot};
+
+        let at = |id: u64, when: u32| galos_index::System {
+            id64: id,
+            position: [id as f64, 0., 0.],
+            absolute_magnitude: id as f64,
+            temperature: 5000.,
+            age_bucket: 0,
+            updated_at: when,
+        };
+        let built =
+            Snapshot::build(&[at(1, 1_700_000_000)], &BuildParams::default());
+        let owner = built
+            .index
+            .cells()
+            .map(|cell| cell.id)
+            .find(|&id| !built.payload(id).is_empty())
+            .expect("some cell owns the system");
+
+        let mut app = walking();
+        app.insert_resource(ResidentIndex(built.index.clone()));
+        app.world_mut()
+            .resource_mut::<ResidentCells>()
+            .0
+            .insert(owner, built.payload(owner).to_vec());
+        // Drawn already, as it would be a frame after the first read.
+        app.world_mut().spawn(crate::systems::tests::system(1));
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            0,
+            "a system already drawn was built again for nothing"
+        );
+
+        // The feed hears from it again, and the builder republishes the cell.
+        let again =
+            Snapshot::build(&[at(1, 1_700_000_600)], &BuildParams::default());
+        {
+            let payload = again.payload(owner).to_vec();
+            let world = app.world_mut();
+            world.resource_scope(|world, mut resident: Mut<ResidentCells>| {
+                world.resource_scope(|world, mut orders: Mut<PointOrders>| {
+                    let mut republished = world.resource_mut::<Republished>();
+                    adopt(
+                        &mut resident,
+                        &mut orders,
+                        &mut republished,
+                        owner,
+                        payload.clone(),
+                    );
+                });
+            });
+        }
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            1,
+            "the republished cell left its drawn system as first read"
+        );
+
+        // And once, not every frame after: the walk is done with the cell.
+        app.insert_resource(PendingSpawns::default());
+        app.update();
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            0,
+            "the cell went on being rebuilt after it was settled"
         );
     }
 

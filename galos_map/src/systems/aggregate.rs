@@ -59,6 +59,14 @@ pub struct Planned(pub Needed);
 /// sweeps in new sky on a turn, which is what should load. The mode follows
 /// the drawn [`View`]: the shell over a political field, or the photometric
 /// sky.
+///
+/// And whenever the aggregates themselves move. The walk plans off
+/// [`ResidentIndex`], so a cell the index has only just published is a cell
+/// this has never marked — and a camera at rest is the ordinary case, the eye
+/// key alone holding the last move's answer for as long as nobody touches the
+/// mouse. Without this a republished cell could reach the map only by being
+/// evicted and asked for again, which is what zooming out until the walk stops
+/// marking it and coming back does. See [`crate::refresh`].
 fn plan(
     cameras: Query<(&OrbitCamera, &Camera)>,
     index: Res<ResidentIndex>,
@@ -74,7 +82,7 @@ fn plan(
     };
     let size = camera.logical_viewport_size().unwrap_or_default().as_uvec2();
     let key = (orbit.eye, orbit.rotation, mode, size);
-    if last.as_ref() == Some(&key) {
+    if last.as_ref() == Some(&key) && !index.is_changed() {
         return;
     }
     *last = Some(key);
@@ -156,5 +164,54 @@ mod tests {
         // A quarter turn about Y sends -Z to -X, and leaves Y up.
         assert!((view.forward[0] + 1.).abs() < 1e-6, "not facing -X");
         assert!((view.up[1] - 1.).abs() < 1e-6, "up did not stay Y");
+    }
+
+    /// Republished aggregates are re-walked without the camera moving
+    ///
+    /// The reported trouble: the walk is skipped while the eye stands still,
+    /// and a camera at rest is the ordinary case — so a cell the aggregates
+    /// did not hold when the map started could not be marked, could not be
+    /// fetched, and never appeared. The only way to see one was to move the
+    /// camera. See [`crate::refresh`].
+    #[test]
+    fn a_republished_index_is_walked_again_where_it_stands() {
+        use galos_index::{BuildParams, Snapshot};
+
+        let mut app = App::new();
+        app.add_systems(Update, plan);
+        app.insert_resource(Planned(Needed {
+            mode: Mode::Shell,
+            marks: Vec::new(),
+            splats: Vec::new(),
+        }));
+        app.insert_resource(View::Map);
+        app.insert_resource(ResidentIndex(galos_index::Index::default()));
+        app.world_mut()
+            .spawn((OrbitCamera::default(), crate::systems::tests::seeing()));
+
+        app.update();
+        let empty = app.world().resource::<Planned>().0.marks.len();
+        assert_eq!(empty, 0, "an empty index planned marks");
+
+        // The builder publishes systems the map had never heard of. Nothing
+        // touches the camera.
+        let inputs: Vec<galos_index::System> = (1..=4)
+            .map(|id| galos_index::System {
+                id64: id as u64,
+                position: [id as f64, 0., 0.],
+                absolute_magnitude: id as f64,
+                temperature: 5000.,
+                age_bucket: 0,
+                updated_at: 0,
+            })
+            .collect();
+        let built = Snapshot::build(&inputs, &BuildParams::default());
+        app.insert_resource(ResidentIndex(built.index.clone()));
+
+        app.update();
+        assert!(
+            app.world().resource::<Planned>().0.marks.len() > empty,
+            "the walk kept the plan it made before the cells existed"
+        );
     }
 }

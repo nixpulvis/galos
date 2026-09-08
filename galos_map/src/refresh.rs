@@ -32,7 +32,7 @@
 //! parts moved reads six and hands them back together rather than trickling
 //! them in over six polls.
 
-use crate::systems::bounded::{PointOrders, ResidentCells, adopt};
+use crate::systems::bounded::{PointOrders, Republished, ResidentCells, adopt};
 use crate::systems::fetch::Poll;
 use crate::systems::route::graph::Jumps;
 use crate::{Boosts, Factions, Names, Populated, ResidentIndex, Transport};
@@ -301,6 +301,7 @@ fn apply(
     mut index: ResMut<ResidentIndex>,
     mut resident: ResMut<ResidentCells>,
     mut admitted: ResMut<PointOrders>,
+    mut republished: ResMut<Republished>,
     mut populated: ResMut<Populated>,
     mut names: ResMut<Names>,
     mut factions: ResMut<Factions>,
@@ -398,8 +399,8 @@ fn apply(
     }
 
     // A replaced payload is a new set of points in the same cell, so whatever
-    // was worked out about the old one goes with it; [`adopt`] is where the two
-    // are kept together.
+    // was worked out about the old one goes with it, and so do the systems
+    // already drawn out of it; [`adopt`] is where the three are kept together.
     //
     // Only cells the map still holds. A pass takes seconds and the walk lets
     // payloads go as the camera moves, so a cell asked about at the start of
@@ -413,7 +414,7 @@ fn apply(
         if !resident.0.contains(id) {
             continue;
         }
-        adopt(&mut resident, &mut admitted, id, points);
+        adopt(&mut resident, &mut admitted, &mut republished, id, points);
         held.holding(id, stamp);
     }
 }
@@ -482,6 +483,7 @@ mod tests {
         app.init_resource::<Refreshing>();
         app.init_resource::<ResidentCells>();
         app.init_resource::<PointOrders>();
+        app.init_resource::<Republished>();
         app.init_resource::<Populated>();
         app.init_resource::<Factions>();
         // The tables as `main` loads them: the names table read whole, and
