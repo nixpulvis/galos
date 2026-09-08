@@ -192,7 +192,7 @@ pub(crate) struct Worked<'w> {
 /// payload rewritten between the two is held under the older stamp and read
 /// again on the next poll — the safe way round.
 #[derive(Resource, Default)]
-struct BoundedTasks(
+pub(crate) struct BoundedTasks(
     HashMap<CellId, Task<io::Result<(Vec<Point>, Option<Stamp>)>>>,
 );
 
@@ -259,7 +259,7 @@ fn switch(
 /// annulus it newly reaches. Run every frame rather than on a plan change: a
 /// switch turning this source on holds a still camera whose plan has not
 /// moved, and its marks must still be asked for.
-fn fetch(
+pub(crate) fn fetch(
     planned: Res<Planned>,
     resident: Res<ResidentCells>,
     transport: Res<Transport>,

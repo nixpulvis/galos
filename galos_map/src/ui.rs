@@ -3015,16 +3015,14 @@ fn applied(
         // Every stop of the set, in the order they are flown, each once. A
         // trip is legs and a leg is two ends, so the stop one leg lands on is
         // where the next sets out from and is one stop rather than two.
-        Some((FilterAction::Select, _, rows)) => {
+        Some((FilterAction::Select(gathering), _, rows)) => {
             let legs: Vec<Filter> = rows
                 .iter()
                 .filter_map(|index| filters.get(*index))
                 .map(|active| active.filter.clone())
                 .collect();
-            ask.picked = Some((
-                crate::systems::filter::trip_stops(&legs),
-                gathering(ui),
-            ));
+            ask.picked =
+                Some((crate::systems::filter::trip_stops(&legs), gathering));
         }
         Some((FilterAction::Toggle, _, rows)) => filters.toggle_all(&rows),
         // Every filter of the section at once, so what the camera stands back
@@ -3110,6 +3108,76 @@ pub(crate) fn asked_of_row(
     } else {
         None
     }
+}
+
+/// Whether a click on `row` is a click, and not the first half of a double
+///
+/// egui raises `clicked()` on the first release of a double click, a frame
+/// before anything reports the double at all — measured: frame one
+/// `clicked` alone, frame two `clicked` and `double_clicked` together. So
+/// [`asked_of_row`]'s priority, which arbitrates the flags of one pass and
+/// gets frame two right, has already been handed frame one and acted on it.
+///
+/// Which matters wherever [`RowGesture::Select`] does something a double
+/// click is not supposed to do. It replaces what is picked out, so
+/// double clicking a route's row to fly to it first wiped whatever the user
+/// was holding and put the route's own ends there instead — and the double
+/// then framed it, over a selection it had no business changing.
+///
+/// So the click is held for the window a double may still arrive in, and
+/// answered only once it has passed. A double inside it takes the pending
+/// click away with it. The wait is egui's own `max_double_click_delay`,
+/// three tenths of a second, and it is the wait a double click already costs
+/// the gesture it is not.
+///
+/// What comes back is the modifiers of the *press*, since that is what the
+/// gesture meant and the hand is off the key by the time the window has
+/// passed. See [`gathering_with`].
+///
+/// Kept in egui's own per-id store rather than in a resource: it is one
+/// press per row, it belongs to the row, and it goes when the row does.
+/// A row must be drawn to be answered — a pending click on a row that stops
+/// being listed is never returned, which is the same as the row's press
+/// never having been read.
+pub(crate) fn settled_click(
+    ui: &Ui,
+    row: egui::Id,
+    click: bool,
+    double: bool,
+) -> Option<egui::Modifiers> {
+    let pending = row.with("click awaiting a double");
+    let now = ui.input(|input| input.time);
+
+    if double {
+        ui.data_mut(|data| data.remove::<(f64, egui::Modifiers)>(pending));
+        return None;
+    }
+    if click {
+        let keys = ui.input(|input| input.modifiers);
+        ui.data_mut(|data| data.insert_temp(pending, (now, keys)));
+        return None;
+    }
+    let held: Option<(f64, egui::Modifiers)> =
+        ui.data(|data| data.get_temp(pending));
+    let waited = ui.ctx().options(|it| it.input_options.max_double_click_delay);
+    match held {
+        Some((since, keys)) if now - since >= waited => {
+            ui.data_mut(|data| data.remove::<(f64, egui::Modifiers)>(pending));
+            Some(keys)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a press meant "and these as well", read off the press itself
+///
+/// [`gathering`] asks the frame it is called in, which is right for a gesture
+/// acted on where it lands. A click held to see whether a double follows is
+/// not: by the time it is answered the modifier has been let go of, and the
+/// press would read as a bare one. So the keys travel with the pending click
+/// and are asked here.
+pub(crate) fn gathering_with(keys: egui::Modifiers) -> bool {
+    keys.command || keys.ctrl || keys.shift
 }
 
 /// What a press on a filter's row asked of it, beyond what the row settles
@@ -3450,12 +3518,14 @@ fn section_rows(
             egui::Sense::click(),
         );
 
+        let settled =
+            settled_click(ui, row.id, row.clicked(), row.double_clicked());
         match asked_of_row(
             close.clicked(),
             info.is_some_and(|info| info.clicked()),
             switch.clicked(),
             row.double_clicked(),
-            row.clicked(),
+            settled.is_some(),
         ) {
             Some(RowGesture::LetGo) => *removing = Some(index),
             Some(RowGesture::Describe) => {
@@ -3464,7 +3534,9 @@ fn section_rows(
             Some(RowGesture::Toggle) => *toggling = Some(index),
             Some(RowGesture::Frame) => ask.framed = Some(active.filter.clone()),
             Some(RowGesture::Select) => {
-                ask.picked = Some((active.filter.stops(), gathering(ui)));
+                let keys = settled.unwrap_or_default();
+                ask.picked =
+                    Some((active.filter.stops(), gathering_with(keys)));
                 ask.chosen = Some(active.filter.clone());
             }
             None => {}
@@ -3561,7 +3633,12 @@ enum FilterAction {
     /// to be the one being worked with, which is what a click on a filter's
     /// own row settles, so the row is free to mean the thing a set can answer
     /// and a single row cannot: every stop of the trip at once.
-    Select,
+    ///
+    /// Carries whether the press meant "and these as well", read off the
+    /// press rather than off the frame it is acted on — the click waits out
+    /// the window a double could arrive in, and the modifier is let go of
+    /// inside it. See [`settled_click`].
+    Select(bool),
     /// Turn every filter off, or every one back on
     Toggle,
     /// Open a panel describing the whole of it
@@ -3678,18 +3755,22 @@ fn whole_set(
     // [`asked_of_row`]. A click on the name means the systems the set was
     // plotted between — a trip's every stop, which is the one thing this row
     // can say that none of the rows under it can.
+    let settled =
+        settled_click(ui, row.id, row.clicked(), row.double_clicked());
     let asked = match asked_of_row(
         close.clicked(),
         info.is_some_and(|info| info.clicked()),
         switch.clicked(),
         row.double_clicked(),
-        row.clicked(),
+        settled.is_some(),
     ) {
         Some(RowGesture::LetGo) => Some(FilterAction::LetGo),
         Some(RowGesture::Describe) => Some(FilterAction::Describe),
         Some(RowGesture::Toggle) => Some(FilterAction::Toggle),
         Some(RowGesture::Frame) => Some(FilterAction::Frame),
-        Some(RowGesture::Select) => Some(FilterAction::Select),
+        Some(RowGesture::Select) => Some(FilterAction::Select(gathering_with(
+            settled.unwrap_or_default(),
+        ))),
         None => None,
     };
     row.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -6491,6 +6572,54 @@ mod tests {
         assert_eq!(
             asked_of_row(false, false, false, false, true),
             Some(RowGesture::Select)
+        );
+    }
+
+    /// A click is answered once no double can still arrive, and a double
+    /// takes it away
+    ///
+    /// [`asked_of_row`] above arbitrates the flags of one pass, and egui
+    /// raises `clicked()` on the first release of a double click a whole frame
+    /// before it reports the double — so the priority is handed the click
+    /// alone, first, and acts on it. Which is why the click is held: a
+    /// double click on a route's row is a flight to it and must not also
+    /// replace what the user has picked out.
+    #[test]
+    fn a_click_waits_to_see_whether_it_is_half_of_a_double() {
+        let ctx = egui::Context::default();
+        let row = egui::Id::new("a row");
+        // A pass, and what the row was told, at `time` seconds.
+        let pass = |time: f64, click: bool, double: bool| {
+            let mut answered = false;
+            let _ = ctx.run_ui(
+                egui::RawInput { time: Some(time), ..Default::default() },
+                |ui| {
+                    answered = settled_click(ui, row, click, double).is_some();
+                },
+            );
+            answered
+        };
+        // Longer than egui's own `max_double_click_delay`.
+        let window = 0.4;
+
+        // A click alone says nothing yet, and still nothing while a double
+        // could arrive.
+        assert!(!pass(1.0, true, false), "the click was answered at once");
+        assert!(!pass(1.05, false, false), "answered inside the window");
+        assert!(pass(1.0 + window, false, false), "never answered at all");
+        // And once only.
+        assert!(
+            !pass(1.0 + window * 2., false, false),
+            "the same click was answered twice"
+        );
+
+        // The second half of a double takes the pending click with it, so the
+        // window passing afterwards answers nothing.
+        assert!(!pass(2.0, true, false));
+        assert!(!pass(2.05, true, true), "the double read as a click");
+        assert!(
+            !pass(2.0 + window, false, false),
+            "a double click picked its row out as well"
         );
     }
 

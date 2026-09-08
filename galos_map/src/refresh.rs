@@ -52,10 +52,16 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<Refreshing>();
     // In the fetch set, before the walk asks for cells: a refreshed index is
     // what says which cells the walk should be marking, and a refreshed
-    // payload is what the draw reads this frame rather than next.
+    // payload is what the draw reads this frame rather than next. Ordered
+    // rather than left to the set — the two conflict on [`ResidentCells`] so
+    // they cannot overlap, but which runs first was whatever registration
+    // gave them, and `systems::plugin` is added first.
     app.add_systems(
         Update,
-        (apply, poll).chain().in_set(crate::schedule::MapSet::Fetch),
+        (apply, poll)
+            .chain()
+            .in_set(crate::schedule::MapSet::Fetch)
+            .before(crate::systems::bounded::fetch),
     );
 }
 

@@ -41,9 +41,15 @@ pub fn plugin(app: &mut App) {
     // Flying is asked for here rather than with the rest of the camera, since
     // what it asks for is a [`MoveCamera`], which `Camera` is where the map
     // answers.
+    // `shut_search` before `toggle_keys`, both reading the one escape: the
+    // form stands down while the bindings window is up, so it has to be asked
+    // before the window takes itself down. Run the other way round, the
+    // window would shut and the form would then see it closed and shut too,
+    // which is one press putting away two things.
     app.add_systems(
         Update,
-        (toggle, toggle_keys, open_search, shut_search, fly, home)
+        (toggle, open_search, shut_search, toggle_keys, fly, home)
+            .chain()
             .in_set(MapSet::Search),
     );
     // Between the two systems that already write the camera. After the one
@@ -482,7 +488,21 @@ fn open_search(
 /// The one binding that answers while a field is being typed into, and it has
 /// to: a caret in a field is the state this exists to undo. Nothing is lost by
 /// its doing so, an escape being no part of any name.
-fn shut_search(keys: Res<ButtonInput<KeyCode>>, mut bar: ResMut<BarFields>) {
+///
+/// Stands down while the bindings window is up, which is the other half of
+/// what [`toggle_keys`] says about the same key. One escape is the way out of
+/// one thing, and the thing it means is the last one opened: the window is
+/// opened over the form and shuts first. Ungated, both answered the one press
+/// — the form collapsing behind a window the user was only reading — and
+/// there was no way to put away just the one.
+fn shut_search(
+    keys: Res<ButtonInput<KeyCode>>,
+    open: Res<crate::ui::KeysOpen>,
+    mut bar: ResMut<BarFields>,
+) {
+    if open.0 {
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) && bare(&keys) {
         bar.shut();
     }
@@ -1173,7 +1193,11 @@ mod tests {
     fn barred() -> App {
         let mut app = world();
         app.init_resource::<BarFields>();
-        app.add_systems(Update, (open_search, shut_search));
+        app.init_resource::<crate::ui::KeysOpen>();
+        app.add_systems(
+            Update,
+            (open_search, shut_search, toggle_keys).chain(),
+        );
         app
     }
 
@@ -1264,6 +1288,29 @@ mod tests {
         pressed(&mut app, &[KeyCode::Escape]);
 
         assert!(shutting(&app));
+    }
+
+    /// And stands down while the bindings are being read
+    ///
+    /// One escape is the way out of one thing, and the thing it means is the
+    /// last one opened. Both answered the one press before this: the window
+    /// shut, as it should, and the form collapsed behind it — a form the user
+    /// had left standing while they looked something up, and no way to put
+    /// away only the window.
+    #[test]
+    fn an_escape_meant_for_the_bindings_is_not_spent_on_the_form() {
+        let mut app = barred();
+
+        pressed(&mut app, &[KeyCode::F1]);
+        assert!(helping(&app), "the bindings did not open");
+
+        pressed(&mut app, &[KeyCode::Escape]);
+        assert!(!helping(&app), "the escape did not shut the bindings");
+        assert!(!shutting(&app), "and it put the form away as well");
+
+        // With the window down, the next one is the form's as it always was.
+        pressed(&mut app, &[KeyCode::Escape]);
+        assert!(shutting(&app), "the form no longer answers an escape");
     }
 
     /// A world where the bindings can be asked for

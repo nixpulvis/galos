@@ -1553,12 +1553,18 @@ fn admitted(
                         .selectable(false)
                         .sense(egui::Sense::click()),
                 );
+                let settled = crate::ui::settled_click(
+                    ui,
+                    heading.id,
+                    heading.clicked(),
+                    heading.double_clicked(),
+                );
                 match crate::ui::asked_of_row(
                     false,
                     false,
                     false,
                     heading.double_clicked(),
-                    heading.clicked(),
+                    settled.is_some(),
                 ) {
                     // Every stop the leg runs through, taken off the whole
                     // list rather than off the rows drawn under the name.
@@ -1604,7 +1610,9 @@ fn admitted(
                                 })
                                 .map(|(system, _)| (*system).clone())
                                 .collect(),
-                            crate::ui::gathering(ui),
+                            crate::ui::gathering_with(
+                                settled.unwrap_or_default(),
+                            ),
                         ));
                         *worked = Some(leg.clone());
                     }
@@ -3502,15 +3510,35 @@ mod tests {
             pressed,
             modifiers: egui::Modifiers::default(),
         };
-        let frame = |events| egui::RawInput { events, ..Default::default() };
+        // A click is answered once no double can still arrive
+        // (`crate::ui::settled_click`), so the frames carry their own clock
+        // and the gesture takes as many of them as a user's would.
+        let frame = |time: f64, events| egui::RawInput {
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        // Longer than egui's `max_double_click_delay`, which is when a click
+        // stops being half of anything.
+        let settled = 0.4;
 
         let (mut stops, mut moved, mut worked) = (None, None, None);
         pass(
-            frame(vec![
-                egui::Event::PointerMoved(at),
-                button(true),
-                button(false),
-            ]),
+            frame(
+                1.,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    button(true),
+                    button(false),
+                ],
+            ),
+            &mut stops,
+            &mut moved,
+            &mut worked,
+        );
+        assert!(worked.is_none(), "the click was answered before its window");
+        pass(
+            frame(1. + settled, Vec::new()),
             &mut stops,
             &mut moved,
             &mut worked,
@@ -3533,24 +3561,47 @@ mod tests {
         // on, and that row belongs to the leg before. Framed off the rows
         // alone this would read 23.0 and 3.0, standing the camera over the
         // leg's tail rather than over the leg.
+        //
+        // A press per frame, since that is what a double click is: egui
+        // raises the click on the first release and the double on the second,
+        // a frame apart, and the whole point is that the first does not act.
         let (mut stops, mut moved, mut worked) = (None, None, None);
         pass(
-            frame(vec![
-                egui::Event::PointerMoved(at),
-                button(true),
-                button(false),
-                button(true),
-                button(false),
-            ]),
+            frame(
+                3.,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    button(true),
+                    button(false),
+                ],
+            ),
             &mut stops,
             &mut moved,
             &mut worked,
         );
-        let moved = moved.expect("a double asked the camera to frame it");
-        assert_eq!(moved.position, Some(DVec3::new(21.5, 0., 0.)));
-        assert_eq!(moved.framing, Some(4.5));
+        pass(
+            frame(3.05, vec![button(true), button(false)]),
+            &mut stops,
+            &mut moved,
+            &mut worked,
+        );
+        let framed =
+            moved.as_ref().expect("a double asked the camera to frame it");
+        assert_eq!(framed.position, Some(DVec3::new(21.5, 0., 0.)));
+        assert_eq!(framed.framing, Some(4.5));
         assert!(worked.is_none(), "the double stood in for the click");
         assert!(stops.is_none(), "the double picked its stops out as well");
+
+        // And nothing arrives afterwards: the double took the pending click
+        // with it rather than leaving it to fire once the window passed.
+        pass(
+            frame(3. + settled, Vec::new()),
+            &mut stops,
+            &mut moved,
+            &mut worked,
+        );
+        assert!(worked.is_none(), "the double's first click landed late");
+        assert!(stops.is_none(), "the double picked its stops out late");
     }
 
     /// And the modifier reads there as it does everywhere else
@@ -3615,6 +3666,7 @@ mod tests {
         let mut stops = None;
         pass(
             egui::RawInput {
+                time: Some(1.),
                 events: vec![
                     egui::Event::PointerMoved(at),
                     button(true),
@@ -3623,6 +3675,14 @@ mod tests {
                 modifiers: keys,
                 ..Default::default()
             },
+            &mut stops,
+        );
+        // Answered once no double can still arrive; see
+        // [`crate::ui::settled_click`]. The modifier is read off the press
+        // rather than off this frame, which is the whole of what is asked
+        // here — it is not held down any more.
+        pass(
+            egui::RawInput { time: Some(1.4), ..Default::default() },
             &mut stops,
         );
 
