@@ -1,6 +1,7 @@
 use crate::Names;
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use crate::systems::route::graph::{Drive, Routing};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future::poll_once;
@@ -109,6 +110,13 @@ pub(crate) enum Search {
     Route {
         stops: Vec<String>,
         range: String,
+        /// Which drive it is flown with, and so whether a jet cone counts
+        ///
+        /// Asked with the route rather than read from a setting, for the
+        /// reason the range is asked with it: it is part of what was plotted.
+        drive: Drive,
+        /// How hard to work at it, on the same argument
+        how: Routing,
     },
 }
 

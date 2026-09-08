@@ -5,7 +5,9 @@
 //! Requires a built `galos_index` directory: the cell tree and the metadata
 //! sidecars beside it, read through one [`galos_index::Source`].
 use bevy::prelude::*;
-use galos_index::meta::{Faction as MetaFaction, NameEntry, PopulatedSystem};
+use galos_index::meta::{
+    Boost, Faction as MetaFaction, NameEntry, PopulatedSystem,
+};
 use galos_index::{Index, Source as IndexSource};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -100,6 +102,30 @@ pub struct Names {
     /// it: a scan arrives and the system it is about grows, which is the one
     /// thing in here that really changes with the feed.
     pub reaches: Arc<HashMap<i64, f32>>,
+}
+
+/// Which systems can supercharge a drive, and on what, by address.
+///
+/// Four systems in a hundred, held resident because the router weighs it at
+/// every step of a search: a route is plotted over the whole galaxy rather
+/// than over what is drawn, so a fetch per step is not a thing that could
+/// work. What a boost is worth is the drive's to say
+/// ([`systems::route::graph::Drive`]); this is only where one can be had.
+#[derive(Resource, Default, Clone)]
+pub struct Boosts(pub Arc<HashMap<i64, Boost>>);
+
+impl Boosts {
+    /// What the system at `address` can supercharge, if anything.
+    pub fn get(&self, address: i64) -> Option<Boost> {
+        self.0.get(&address).copied()
+    }
+
+    /// The table keyed by address, as the published rows give it.
+    pub fn of(rows: Vec<galos_index::SystemBoost>) -> Boosts {
+        Boosts(Arc::new(
+            rows.into_iter().map(|it| (it.address, it.boost)).collect(),
+        ))
+    }
 }
 
 /// Faction id to the name it is shown under, read whole and held.

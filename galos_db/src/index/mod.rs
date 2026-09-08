@@ -62,6 +62,7 @@ pub struct Parts {
     pub names: bool,
     pub populated: bool,
     pub reaches: bool,
+    pub boosts: bool,
     pub factions: bool,
     pub bodies: bool,
 }
@@ -73,6 +74,7 @@ impl Parts {
         names: true,
         populated: true,
         reaches: true,
+        boosts: true,
         factions: true,
         bodies: true,
     };
@@ -83,6 +85,7 @@ impl Parts {
         names: false,
         populated: false,
         reaches: false,
+        boosts: false,
         factions: false,
         bodies: false,
     };

@@ -33,7 +33,6 @@ chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_index = { path = "../galos_index", default-features = false }
 galos_photometry = { path = "../galos_photometry" }
-pathfinding = "4"
 
 [dev-dependencies]
 log = "0.4"

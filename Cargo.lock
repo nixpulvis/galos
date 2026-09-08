@@ -4083,7 +4083,6 @@ dependencies = [
  "galos_index",
  "galos_photometry",
  "log",
- "pathfinding",
 ]
 
 [[package]]

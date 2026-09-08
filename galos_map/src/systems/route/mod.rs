@@ -1,21 +1,23 @@
 use crate::Names;
-use crate::camera::{FRAMING_MARGIN, MoveCamera};
+use crate::camera::{FRAMING_MARGIN, MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::search::Search;
 use crate::systems::Spyglass;
 use crate::systems::System;
 use crate::systems::bodies::spawn::{HeldSystem, Strength};
 use crate::systems::filter::{Filter, Filters};
+use crate::systems::route::graph::{Drive, Routing};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
-use bevy::platform::collections::HashSet;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
     app.init_resource::<SelectedFilter>();
     app.init_resource::<graph::Routing>();
+    app.init_resource::<graph::Drive>();
     // After the fetch it answers has been drawn, and before the camera is
     // pointed, since where it asks the camera to go is what `move_camera`
     // then works out.
@@ -48,6 +50,19 @@ pub fn plugin(app: &mut App) {
         Update,
         trim.in_set(MapSet::Present).after(crate::systems::visibility),
     );
+    // Which of a route's systems are worth a mark, which is a question about
+    // the screen. Before the field is built from them, that being what reads
+    // the answer.
+    app.add_systems(
+        Update,
+        thin.in_set(MapSet::Present).before(crate::systems::field::build_field),
+    );
+    // What the searches under way have reached, drawn while they run and
+    // taken down as each finishes. In `Populate`, with the rest of what the
+    // map builds, and before the lines are cut back: a frontier is not a
+    // route and `trim` has nothing to say about it.
+    app.init_resource::<frontier::Frontiers>();
+    app.add_systems(Update, frontier::draw.in_set(MapSet::Populate));
 }
 
 /// The stops a route's line runs through, and which of them were drawn
@@ -143,6 +158,167 @@ fn trim(
 /// is faint: the line crosses systems that are meant to go on being seen, and
 /// this is a mark around one of them.
 pub(crate) const HOP: Srgba = Srgba::new(1., 1., 1., 0.9);
+
+/// How much of a route system's mark is left, where a route asked for less
+///
+/// One per system on a route, and only there: the marks are the star field's
+/// and it paints them at what the filters and the descent leave: see
+/// [`crate::systems::field`]. This is a route's own say over the systems it
+/// runs through, which it has for one reason — a route of a hundred jumps seen
+/// from far enough away is a hundred marks a pixel apart, and a pixel apart
+/// they are not systems on a route any more, they are a stipple over the line
+/// that says where the route goes.
+///
+/// Whole where a hop stands clear of the one before it, nothing where they
+/// have closed up, and part of the way between: see [`thin`].
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Thinned(pub(crate) f32);
+
+/// Under how many pixels apart two systems on a route stop telling apart
+///
+/// A mark is a few pixels across, so hops closer together than this overlap
+/// outright: what is drawn is not two systems but a smear where two were.
+const MERGED: f32 = 2.5;
+
+/// And past how many they read as separate systems
+///
+/// Between the two a hop is faded rather than dropped, so nothing pops as the
+/// camera pulls back. Roomy rather than tight: marks stop reading as separate
+/// places well before they touch.
+const APART: f32 = 8.;
+
+/// Thin a route's hops down to the ones that can be told apart
+///
+/// Which systems on a route are worth a mark is a question about the screen
+/// and not about the route: zoomed in they are the nodes the line joins and
+/// the whole of what a route is made of, and zoomed out they are a hundred
+/// marks over a line a hundred pixels long. So this walks each route in the
+/// order it is flown and keeps whichever hops stand clear of the last one it
+/// kept — the pixels between them measured where they actually fall, so the
+/// answer follows the camera without anything having to be told.
+///
+/// A stop is never thinned. It is what the user asked for rather than where
+/// the ship refuels, and it is the one thing on a route that is worth a mark
+/// at any distance; see [`Filter::stops`].
+///
+/// The suppressed hops do not move the reckoning on. Measuring from the last
+/// system *seen* rather than the last one *kept* would thin every hop after
+/// the first crowded one, and a route through a crowded region into a bare one
+/// would come out with a gap in it.
+///
+/// A system on two routes keeps the most either asks for: two routes are two
+/// answers and neither is entitled to rub out the other's node.
+fn thin(
+    filters: Res<Filters>,
+    camera: Query<(&OrbitCamera, &Camera)>,
+    systems: Query<(Entity, &System, Option<&Thinned>)>,
+    mut commands: Commands,
+) {
+    let Ok((orbit, camera)) = camera.single() else { return };
+    let Some(viewport) = camera.logical_viewport_size() else { return };
+    let cot_half_fov = camera.clip_from_view().y_axis.y;
+
+    // Which systems any route runs through, before the sky is walked: the map
+    // holds a hundred thousand systems and a route holds hundreds, so the
+    // question asked of each system is a lookup in the small set rather than
+    // the routes being searched for each of them.
+    let mut on_routes: HashSet<i64> = HashSet::default();
+    for route in shown(&filters) {
+        let Filter::Route { systems: hops, .. } = route else { continue };
+        on_routes.extend(hops.iter().copied());
+    }
+
+    // One pass over the sky, which is the only one: where each of those
+    // systems falls on screen, and what it is standing at now. A mark that has
+    // gone off every route is put back to whole here, that being the pass that
+    // can see it has.
+    let mut on_screen: HashMap<i64, (Entity, Option<Vec2>, Option<f32>)> =
+        HashMap::default();
+    for (entity, system, thinned) in &systems {
+        if !on_routes.contains(&system.address) {
+            if thinned.is_some() {
+                commands.entity(entity).remove::<Thinned>();
+            }
+            continue;
+        }
+        let at = crate::systems::labels::screen_position(
+            orbit,
+            cot_half_fov,
+            viewport,
+            DVec3::from(system.position),
+        );
+        on_screen
+            .insert(system.address, (entity, at, thinned.map(|left| left.0)));
+    }
+
+    // Every route on the map is walked, so what a system is left at is the
+    // most any of them wants of it.
+    let mut wanted: HashMap<i64, f32> = HashMap::default();
+    for route in shown(&filters) {
+        let Filter::Route { systems: hops, .. } = route else { continue };
+        let along = walk(hops, &route.stops(), |address| {
+            on_screen.get(&address).and_then(|(_, at, _)| *at)
+        });
+        for (address, left) in along {
+            keep(&mut wanted, address, left);
+        }
+    }
+
+    // Written only where it moved: this runs every frame, and a route nobody
+    // is zooming past is a walk that writes nothing.
+    for (address, (entity, _, standing)) in &on_screen {
+        let left = wanted.get(address).copied().unwrap_or(1.);
+        if *standing != Some(left) {
+            commands.entity(*entity).insert(Thinned(left));
+        }
+    }
+}
+
+/// What each of `hops` is left at, walking the route in the order it is flown
+///
+/// The rule itself, apart from the sky it is asked about: `at` says where a
+/// system falls on screen, and [`None`] is a system off the frame or not on
+/// the map — nothing to measure and nothing drawn either way, so it is left
+/// whole and left out of the reckoning.
+fn walk(
+    hops: &[i64],
+    stops: &[i64],
+    at: impl Fn(i64) -> Option<Vec2>,
+) -> Vec<(i64, f32)> {
+    let mut along = Vec::with_capacity(hops.len());
+    let mut last: Option<Vec2> = None;
+    for address in hops {
+        let Some(here) = at(*address) else {
+            along.push((*address, 1.));
+            continue;
+        };
+        if stops.contains(address) {
+            along.push((*address, 1.));
+            last = Some(here);
+            continue;
+        }
+        let left = match last {
+            None => 1.,
+            Some(last) => {
+                let pixels = here.distance(last);
+                ((pixels - MERGED) / (APART - MERGED)).clamp(0., 1.)
+            }
+        };
+        along.push((*address, left));
+        // Only a hop that is drawn stands as the one the next is measured
+        // against. See [`thin`].
+        if left > 0. {
+            last = Some(here);
+        }
+    }
+    along
+}
+
+/// Hold `address` at the most anything has asked for it.
+fn keep(wanted: &mut HashMap<i64, f32>, address: i64, left: f32) {
+    let held = wanted.entry(address).or_insert(left);
+    *held = held.max(left);
+}
 
 /// A stop a route reaches from the system the camera is standing in
 ///
@@ -302,6 +478,13 @@ pub(crate) struct PlottedRoute {
     /// ship reaching 20 may never need more than 12, and it is what the user
     /// asked that tells two plots between the same ends apart.
     pub(crate) range: String,
+    /// Which drive it was plotted for, carried along for the same reason the
+    /// range is: it is part of what tells two plots between the same ends
+    /// apart. See [`crate::systems::route::graph::Drive`].
+    pub(crate) drive: Drive,
+    /// How hard the search worked at it, carried along for the same reason.
+    /// See [`crate::systems::route::graph::Routing`].
+    pub(crate) how: Routing,
 }
 
 impl PlottedRoute {
@@ -316,6 +499,8 @@ impl PlottedRoute {
             systems: self.systems.clone(),
             range: self.range.clone(),
             trip: self.trip.clone(),
+            drive: self.drive,
+            how: self.how,
         }
     }
 }
@@ -618,6 +803,7 @@ fn emphasise(
 pub(crate) mod fetch;
 // The one module the binary names: it builds the jump graph from the
 // resident names before the app is up.
+pub(crate) mod frontier;
 pub mod graph;
 pub(crate) mod spawn;
 pub(crate) mod tour;
@@ -744,6 +930,8 @@ mod tests {
             systems,
             range: "20".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         }
     }
 
@@ -928,6 +1116,8 @@ mod tests {
             systems: addresses.to_vec(),
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         }
     }
 
@@ -990,8 +1180,12 @@ mod tests {
         });
         app.add_systems(Update, frame_trip);
 
-        app.world_mut()
-            .write_message(Search::Route { stops, range: "10".to_owned() });
+        app.world_mut().write_message(Search::Route {
+            stops,
+            range: "10".to_owned(),
+            drive: Drive::Unaided,
+            how: Routing::default(),
+        });
         app.update();
 
         let held = app.world().resource::<Spyglass>();
@@ -1055,6 +1249,8 @@ mod tests {
                 systems: vec![leg as i64],
                 range: "10".to_owned(),
                 trip: Some(trip.clone()),
+                drive: Drive::Unaided,
+                how: Routing::default(),
             });
             app.update();
         }
@@ -1092,6 +1288,8 @@ mod tests {
                 systems: vec![1],
                 range: "10".to_owned(),
                 trip,
+                drive: Drive::Unaided,
+                how: Routing::default(),
             });
             app.update();
         }
@@ -1367,6 +1565,8 @@ mod tests {
             systems: vec![8, 9],
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         app.update();
 
@@ -1379,6 +1579,121 @@ mod tests {
         assert_eq!(strength(true), 1.);
         assert!(strength(false) < strength(true));
         assert!(strength(false) > 0., "a route faded to nothing is no route");
+    }
+
+    /// A place `along` pixels down the screen's x axis
+    fn px(along: f32) -> Option<Vec2> {
+        Some(Vec2::new(along, 0.))
+    }
+
+    /// Systems on a route keep their marks while they can be told apart
+    ///
+    /// Zoomed in, a route is nodes with edges between them and every one of
+    /// them is worth a mark: this is the case that must not be lost, whatever
+    /// is done about the other one.
+    #[test]
+    fn a_route_whose_systems_stand_apart_keeps_every_mark() {
+        let hops = [1, 2, 3, 4];
+        let along =
+            walk(&hops, &[1, 4], |address| px((address - 1) as f32 * 40.));
+
+        for (address, left) in along {
+            assert_eq!(left, 1., "system {address} lost its mark");
+        }
+    }
+
+    /// And lose them where they have closed up into a stipple
+    ///
+    /// The reported trouble: pulled far enough back, a hundred jumps are a
+    /// hundred marks a pixel apart, which is not a route with systems on it
+    /// but a smear over the line that says where the route goes. Half a pixel
+    /// to the jump is that, and nothing of it is left but the stops — which
+    /// are what the user asked for and are worth a mark at any distance.
+    #[test]
+    fn a_route_whose_systems_merge_keeps_its_stops_alone() {
+        let hops = [1, 2, 3, 4, 5];
+        let along =
+            walk(&hops, &[1, 5], |address| px((address - 1) as f32 * 0.5));
+
+        for (address, left) in along {
+            match address {
+                1 | 5 => assert_eq!(left, 1., "stop {address} was thinned"),
+                _ => assert_eq!(left, 0., "hop {address} was left drawn"),
+            }
+        }
+    }
+
+    /// Whatever the zoom, no two marks it leaves drawn are on top of each other
+    ///
+    /// The whole of what thinning is for, and the invariant rather than the
+    /// arithmetic: a hop is drawn only where it stands clear of the last hop
+    /// that was, so what survives is spread however tightly the route is
+    /// packed. Walked at a spacing that leaves some drawn and some not, which
+    /// is where an off-by-one in what the reckoning moves to would show.
+    #[test]
+    fn the_marks_left_drawn_are_never_on_top_of_one_another() {
+        let hops: Vec<i64> = (1..=40).collect();
+        // A pixel to the jump: forty systems over forty pixels.
+        let along = walk(&hops, &[], |address| px((address - 1) as f32));
+
+        let drawn: Vec<f32> = along
+            .iter()
+            .filter(|(_, left)| *left > 0.)
+            .map(|(address, _)| (*address - 1) as f32)
+            .collect();
+        assert!(drawn.len() > 1, "nothing was left drawn at all");
+        for two in drawn.windows(2) {
+            assert!(
+                two[1] - two[0] >= MERGED,
+                "marks {} and {} are {} pixels apart",
+                two[0],
+                two[1],
+                two[1] - two[0]
+            );
+        }
+    }
+
+    /// A hop faded to nothing does not move the reckoning on
+    ///
+    /// Measuring from the last system seen rather than the last one drawn
+    /// would thin every hop after the first crowded pair, so a route through a
+    /// crowded region into a bare one would come out of the crowd and never
+    /// come back: here the hop two pixels along is dropped, and the one past
+    /// it is measured from the mark that is actually on screen.
+    #[test]
+    fn a_dropped_hop_is_not_what_the_next_is_measured_from() {
+        let along = walk(&[1, 2, 3], &[], |address| {
+            px(match address {
+                1 => 0.,
+                2 => 2.,
+                _ => 4.,
+            })
+        });
+
+        assert_eq!(along[1].1, 0., "two pixels along is not a second mark");
+        assert!(
+            along[2].1 > 0.,
+            "measured from the dropped hop, not from the drawn one: {}",
+            along[2].1
+        );
+    }
+
+    /// A system the map is not drawing is left whole and left out
+    ///
+    /// Off the frame there is nothing to measure and nothing drawn either
+    /// way. Thinning it would be a mark suppressed for the moment it comes
+    /// back on screen, and counting it would measure the next hop from
+    /// somewhere the user cannot see.
+    #[test]
+    fn a_system_off_the_frame_is_not_measured_against() {
+        let along = walk(&[1, 2, 3], &[], |address| match address {
+            2 => None,
+            1 => px(0.),
+            _ => px(1.),
+        });
+
+        assert_eq!(along[1].1, 1., "an unseen system was thinned");
+        assert_eq!(along[2].1, 0., "it was measured against all the same");
     }
 
     /// Closing one route's row leaves the other route drawn

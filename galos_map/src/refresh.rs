@@ -35,11 +35,13 @@
 use crate::systems::bounded::{AdmittedPoints, ResidentCells, adopt};
 use crate::systems::fetch::Poll;
 use crate::systems::route::graph::Jumps;
-use crate::{Factions, Names, Populated, ResidentIndex, Transport};
+use crate::{Boosts, Factions, Names, Populated, ResidentIndex, Transport};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::meta::{Faction, NameEntry, PopulatedSystem, SystemReach};
+use galos_index::meta::{
+    Faction, NameEntry, PopulatedSystem, SystemBoost, SystemReach,
+};
 use galos_index::{CellId, Index, Part, Point, Stamp};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,6 +70,7 @@ pub struct Held {
     index: Option<Stamp>,
     populated: Option<Stamp>,
     reaches: Option<Stamp>,
+    boosts: Option<Stamp>,
     factions: Option<Stamp>,
     /// The chunks of the names table, by number, as far as the table went when
     /// it was last read. A chunk appearing past the end is a chunk to read.
@@ -112,6 +115,7 @@ impl Held {
             index: stamp(Part::Index).await,
             populated: stamp(Part::Populated).await,
             reaches: stamp(Part::Reaches).await,
+            boosts: stamp(Part::Boosts).await,
             factions: stamp(Part::Factions).await,
             chunks,
             cells: HashMap::new(),
@@ -150,6 +154,7 @@ struct Refreshed {
     index: Option<(Index, Option<Stamp>)>,
     populated: Option<(Vec<PopulatedSystem>, Option<Stamp>)>,
     reaches: Option<(Vec<SystemReach>, Option<Stamp>)>,
+    boosts: Option<(Vec<SystemBoost>, Option<Stamp>)>,
     factions: Option<(Vec<Faction>, Option<Stamp>)>,
     /// The chunks read, by number, and how far the table now goes
     chunks: Vec<(usize, Vec<NameEntry>, Option<Stamp>)>,
@@ -162,6 +167,7 @@ impl Refreshed {
         self.index.is_none()
             && self.populated.is_none()
             && self.reaches.is_none()
+            && self.boosts.is_none()
             && self.factions.is_none()
             && self.chunks.is_empty()
             && self.cells.is_empty()
@@ -196,8 +202,8 @@ fn poll(
     // What the task must ask about: the parts held, named here on the main
     // thread where the resident sets are.
     let index = held.index;
-    let (populated, reaches, factions) =
-        (held.populated, held.reaches, held.factions);
+    let (populated, reaches, boosts, factions) =
+        (held.populated, held.reaches, held.boosts, held.factions);
     let chunks = held.chunks.clone();
     let cells: Vec<(CellId, Option<Stamp>)> = resident
         .0
@@ -208,16 +214,19 @@ fn poll(
     refreshing.task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let mut found = Refreshed::default();
 
-        // Whether a part has moved. Nothing to compare against — a transport
-        // that cannot say, or a part the map has no stamp for — reads as
-        // moved, so a part is re-read rather than assumed.
+        // Whether a part has moved since the stamp in hand. Every part the
+        // map holds was stamped before it was read (see
+        // [`Held::before_reading`]), so there is always something to compare
+        // against: a part still absent stamps [`None`] on both sides and reads
+        // as unchanged, where taking that for "cannot say" would re-read the
+        // same absence on every poll and mark its table changed each time.
         async fn moved(
             source: &Arc<dyn galos_index::Source>,
             part: Part,
             held: Option<Stamp>,
         ) -> (bool, Option<Stamp>) {
             match source.stamp(part).await {
-                Ok(now) => (held.is_none() || now != held, now),
+                Ok(now) => (now != held, now),
                 // A transport that errors on a stamp is one to ask again next
                 // pass, not one to read the whole index from.
                 Err(_) => (false, held),
@@ -238,6 +247,11 @@ fn poll(
         let (moved_it, stamp) = moved(&source, Part::Reaches, reaches).await;
         if moved_it && let Ok(read) = source.reaches().await {
             found.reaches = Some((read, stamp));
+        }
+
+        let (moved_it, stamp) = moved(&source, Part::Boosts, boosts).await;
+        if moved_it && let Ok(read) = source.boosts().await {
+            found.boosts = Some((read, stamp));
         }
 
         let (moved_it, stamp) = moved(&source, Part::Factions, factions).await;
@@ -290,6 +304,7 @@ fn apply(
     mut populated: ResMut<Populated>,
     mut names: ResMut<Names>,
     mut factions: ResMut<Factions>,
+    mut boosts: ResMut<Boosts>,
     mut jumps: ResMut<Jumps>,
 ) {
     let Some(task) = refreshing.task.as_mut() else { return };
@@ -317,6 +332,14 @@ fn apply(
             read.into_iter().map(|it| (it.address, it.reach)).collect(),
         );
         held.reaches = stamp;
+    }
+
+    // Which systems can supercharge, replaced whole: the table is about a
+    // megabyte and written whole, so there is no part of it to read.
+    let found_boosts = found.boosts.is_some();
+    if let Some((read, stamp)) = found.boosts {
+        *boosts = Boosts::of(read);
+        held.boosts = stamp;
     }
 
     // The chunks that moved, merged into the overlay: only what the table does
@@ -355,16 +378,23 @@ fn apply(
     if let Some(gone) = gone {
         held.chunks.truncate(gone);
     }
-    if !arrived.is_empty() {
+    let named = !arrived.is_empty();
+    if named {
         let mut fresh = HashMap::clone(&names.fresh);
         fresh.extend(arrived.into_iter().map(|entry| (entry.address, entry)));
         names.fresh = Arc::new(fresh);
-        // The router reads places, and it has just been given some it did not
-        // have. Rebuilt from the whole overlay rather than added to, which is
-        // the same work and no bookkeeping: the base is a handle clone and the
-        // overlay is the arrivals of one session. A route already searching
-        // holds the graph it started on and finishes against that.
-        jumps.0 = Arc::new(jumps.0.extended(names.fresh.values()));
+    }
+
+    // The router reads places and what they can supercharge, and has just been
+    // handed either some places it did not have or a new table of the second.
+    //
+    // Rebuilt from the whole overlay rather than added to, which is the same
+    // work and no bookkeeping: the base is a handle clone, the overlay is the
+    // arrivals of one session, and the supercharge table is another handle. A
+    // route already searching holds the graph it started on and finishes
+    // against that.
+    if named || found_boosts {
+        jumps.0 = Arc::new(jumps.0.extended(names.fresh.values(), &boosts));
     }
 
     // A replaced payload is a new set of points in the same cell, so whatever
@@ -391,7 +421,7 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::route::graph::{JumpGraph, Routing};
+    use crate::systems::route::graph::{Drive, JumpGraph, Routing};
     use galos_index::{
         BuildParams, FsSource, NameEntry, NameTable, Snapshot,
         Source as IndexSource,
@@ -458,7 +488,9 @@ mod tests {
         // the router's graph bucketed off it.
         let named = block_on(source.names()).unwrap_or_default();
         let reaches = block_on(source.reaches()).unwrap_or_default();
-        app.insert_resource(Jumps(Arc::new(JumpGraph::new(&named))));
+        let boosts = Boosts::of(block_on(source.boosts()).unwrap_or_default());
+        app.insert_resource(Jumps(Arc::new(JumpGraph::new(&named, &boosts))));
+        app.insert_resource(boosts);
         app.insert_resource(Names::reaching(named, reaches));
         app.insert_resource(ResidentIndex(
             block_on(source.index()).expect("a published index"),
@@ -719,7 +751,7 @@ mod tests {
             app.world()
                 .resource::<Jumps>()
                 .0
-                .route(1, 9, 500., Routing::Direct)
+                .route(1, 9, 500., Routing::Direct, Drive::Unaided, None)
                 .map(|path| path.iter().map(|(a, _)| *a).collect::<Vec<_>>())
         };
         assert!(

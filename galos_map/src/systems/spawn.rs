@@ -3,6 +3,7 @@ use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
 use crate::systems::bodies::spawn::{Body, Places};
+use crate::systems::route::graph::{Drive, Routing};
 use crate::systems::{
     Spyglass, System,
     fetch::FetchIndex,
@@ -568,7 +569,9 @@ pub fn spawn(
             if let Some(at) = at {
                 answered.push((index.clone(), at));
             }
-            if let FetchIndex::Route(start, end, range, trip) = index {
+            if let FetchIndex::Route(start, end, range, trip, drive, how) =
+                index
+            {
                 // A leg is a line between two systems, so one system is no
                 // leg. Coming back with nothing is how the router says it
                 // could not get from one end to the other in jumps that
@@ -598,9 +601,13 @@ pub fn spawn(
                 // systems are in hand, so it is the one place that can say
                 // what they are. The systems arrive built, so the line is
                 // drawn straight from them before they join the spawn queue.
-                if let Some(landed) =
-                    plotted_route(&new_systems, range, trip.clone())
-                {
+                if let Some(landed) = plotted_route(
+                    &new_systems,
+                    range,
+                    *drive,
+                    *how,
+                    trip.clone(),
+                ) {
                     spawn_route(
                         &landed.filter(),
                         &new_systems,
@@ -662,6 +669,8 @@ pub fn spawn(
 fn plotted_route(
     systems: &[System],
     range: &str,
+    drive: Drive,
+    how: Routing,
     trip: Option<String>,
 ) -> Option<PlottedRoute> {
     let (first, last) = (systems.first()?, systems.last()?);
@@ -675,6 +684,8 @@ fn plotted_route(
         // back in and the order its panel lists.
         systems: systems.iter().map(|system| system.address).collect(),
         range: range.to_owned(),
+        drive,
+        how,
         trip,
     })
 }
@@ -1194,7 +1205,14 @@ mod tests {
         let hops =
             [called(1, "SOL"), called(2, "WOLF 359"), called(3, "BARNARD")];
 
-        let landed = plotted_route(&hops, "10", None).unwrap();
+        let landed = plotted_route(
+            &hops,
+            "10",
+            Drive::Unaided,
+            Routing::default(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(landed.label, "SOL -> BARNARD");
         assert_eq!(landed.systems, vec![1, 2, 3]);

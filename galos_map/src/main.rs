@@ -17,7 +17,7 @@ fn main() {
     let dir = std::env::var("GALOS_INDEX_DIR")
         .unwrap_or_else(|_| ".galos_index".to_string());
     let source = FsSource::new(&dir);
-    let (index, populated, names, reaches, factions, held) =
+    let (index, populated, names, reaches, boosts, factions, held) =
         future::block_on(async {
             // What each part is, before a byte of it is read: a publish
             // landing during the read is then held under the older stamp and
@@ -33,20 +33,22 @@ fn main() {
             let populated = source.populated().await.unwrap_or_default();
             let names = source.names().await.unwrap_or_default();
             let reaches = source.reaches().await.unwrap_or_default();
+            let boosts = source.boosts().await.unwrap_or_default();
             let factions = source.factions().await.unwrap_or_default();
-            (index, populated, names, reaches, factions, held)
+            (index, populated, names, reaches, boosts, factions, held)
         });
 
     // Said before the log plugin is up, so plain stderr. What loaded is the
     // first thing to check when the map draws but nothing is coloured or named.
     eprintln!(
         "galos: index {} has {} cells, {} populated, {} names, \
-         {} reaches, {} factions",
+         {} reaches, {} supercharging, {} factions",
         dir,
         index.len(),
         populated.len(),
         names.len(),
         reaches.len(),
+        boosts.len(),
         factions.len(),
     );
     // A cell tree with no metadata beside it is a stale or half-written build:
@@ -60,8 +62,12 @@ fn main() {
         );
     }
 
+    // Which systems can supercharge a drive, which the router plots by and
+    // the graph below is built against.
+    let boosts = Boosts::of(boosts);
+
     // The jump graph the router walks, bucketed once from the resident names.
-    let jumps = JumpGraph::new(&names);
+    let jumps = JumpGraph::new(&names, &boosts);
 
     let mut app = App::new();
     // `big_space` computes every `GlobalTransform` relative to the floating
@@ -108,6 +114,7 @@ fn main() {
         populated.into_iter().map(|s| (s.address, s)).collect(),
     )));
     app.insert_resource(Jumps(Arc::new(jumps)));
+    app.insert_resource(boosts);
     app.insert_resource(Names::reaching(names, reaches));
     app.insert_resource(Factions(
         factions.into_iter().map(|f| (f.id, f.name)).collect(),

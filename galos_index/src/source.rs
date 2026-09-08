@@ -20,7 +20,7 @@
 use crate::cache::Point;
 use crate::geometry::CellId;
 use crate::meta::{
-    Faction, NameEntry, PopulatedSystem, SystemBodies, SystemReach,
+    Faction, NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach,
 };
 use crate::walk::Index;
 use async_trait::async_trait;
@@ -38,6 +38,8 @@ pub const NAMES_DIR: &str = "names";
 pub const REACHES_FILE: &str = "reaches.bin";
 /// The faction id-to-name table, small and read whole.
 pub const FACTIONS_FILE: &str = "factions.bin";
+/// Which systems can supercharge a drive, resident for the router.
+pub const BOOSTS_FILE: &str = "boosts.bin";
 /// The subdirectory of per-system body files.
 pub const BODIES_DIR: &str = "bodies";
 
@@ -72,6 +74,11 @@ pub fn factions_path(dir: &Path) -> PathBuf {
 /// The reaches table's path within a build directory.
 pub fn reaches_path(dir: &Path) -> PathBuf {
     dir.join(REACHES_FILE)
+}
+
+/// The supercharge table's path within a build directory.
+pub fn boosts_path(dir: &Path) -> PathBuf {
+    dir.join(BOOSTS_FILE)
 }
 
 /// A system's body file within a build directory, keyed by address.
@@ -123,6 +130,8 @@ pub enum Part {
     Reaches,
     /// The factions table
     Factions,
+    /// The supercharge table
+    Boosts,
     /// One chunk of the names table, numbered from zero
     ///
     /// Per chunk and not per table, because the table is a hundred megabytes
@@ -164,6 +173,13 @@ pub trait Source: Send + Sync {
     /// on a fetch for it.
     async fn reaches(&self) -> io::Result<Vec<SystemReach>>;
 
+    /// Which systems can supercharge a drive, and on what
+    ///
+    /// Held resident, since the router weighs it at every step of a search and
+    /// a route is plotted over the whole galaxy rather than over what is
+    /// drawn.
+    async fn boosts(&self) -> io::Result<Vec<SystemBoost>>;
+
     /// The bodies inside a system, fetched when a click opens it. Empty where
     /// the system has no scan on record.
     async fn bodies(&self, address: i64) -> io::Result<SystemBodies>;
@@ -183,11 +199,15 @@ pub trait Source: Send + Sync {
     /// every poll, so an implementation that reads the part to answer would
     /// cost more than the refresh it is meant to avoid.
     ///
-    /// [`None`] is "cannot say", not "unchanged": a transport with no cheap
-    /// answer says so and leaves the client to re-read on its own cadence.
-    /// A part that does not exist answers [`None`] as well — a cell with no
-    /// payload file and a chunk past the end of the table are both nothing to
-    /// hold a stamp for.
+    /// [`None`] is "not there": a cell with no payload file, a chunk past the
+    /// end of the table, a sidecar an older build never wrote. Two [`None`]s
+    /// compare equal and read as unchanged, which is what a part that is still
+    /// absent should say — answering "cannot say" here instead would have a
+    /// client re-read the same absence on every poll for the life of the
+    /// session.
+    ///
+    /// A transport that cannot answer cheaply says so with an error, and the
+    /// client leaves that part for the next pass rather than reading it.
     async fn stamp(&self, part: Part) -> io::Result<Option<Stamp>>;
 }
 
@@ -241,6 +261,16 @@ impl Source for FsSource {
         read_meta(&reaches_path(&self.dir))
     }
 
+    async fn boosts(&self) -> io::Result<Vec<SystemBoost>> {
+        match read_meta(&boosts_path(&self.dir)) {
+            Ok(table) => Ok(table),
+            // A directory built before this table existed has none, and a map
+            // that reads it as empty plots the routes it always did.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
     async fn bodies(&self, address: i64) -> io::Result<SystemBodies> {
         match std::fs::read(bodies_path(&self.dir, address)) {
             Ok(bytes) => rmp_serde::from_slice(&bytes)
@@ -272,6 +302,7 @@ impl Source for FsSource {
             Part::Populated => populated_path(&self.dir),
             Part::Reaches => reaches_path(&self.dir),
             Part::Factions => factions_path(&self.dir),
+            Part::Boosts => boosts_path(&self.dir),
             Part::NamesChunk(chunk) => names_chunk_path(&self.dir, chunk),
         };
         match std::fs::metadata(&path).and_then(|it| it.modified()) {

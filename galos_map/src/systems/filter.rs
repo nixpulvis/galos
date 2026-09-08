@@ -27,6 +27,7 @@ use crate::search::Pending;
 use crate::systems::System;
 use crate::systems::fetch::FetchTasks;
 use crate::systems::fetch::Poll;
+use crate::systems::route::graph::{Drive, Routing};
 use crate::systems::spawn::system_at;
 use crate::{Factions, Names, Populated};
 use bevy::ecs::system::SystemParam;
@@ -208,6 +209,21 @@ pub enum Filter {
         systems: Vec<i64>,
         range: String,
         trip: Option<String>,
+        /// Which drive it was plotted for, and so whether a jet cone was
+        /// counted on
+        ///
+        /// Part of the question for the reason `range` is: a route flown by a
+        /// ship that can supercharge off a neutron star runs through different
+        /// systems, and one row over two answers would be the map claiming to
+        /// have plotted something it did not.
+        drive: Drive,
+        /// How hard the search worked at it, on the same argument
+        ///
+        /// A route that was not asked to prove it takes the fewest jumps may
+        /// be a jump over, so it is a different answer to a different question
+        /// and reads under its own row. Carried rather than read off the
+        /// setting, which the user may have moved since.
+        how: Routing,
     },
     /// The systems the user picked out by hand
     ///
@@ -375,6 +391,49 @@ impl Filter {
         }
     }
 
+    /// Which drive this was plotted for, where it is a route
+    ///
+    /// The other half of what a route was asked for, beside the range. A
+    /// faction and a hand-picked set are not plotted, so there is nothing to
+    /// ask them.
+    pub fn drive(&self) -> Option<Drive> {
+        match self {
+            Filter::Route { drive, .. } => Some(*drive),
+            _ => None,
+        }
+    }
+
+    /// How hard the search worked at this, where it is a route.
+    pub fn how(&self) -> Option<Routing> {
+        match self {
+            Filter::Route { how, .. } => Some(*how),
+            _ => None,
+        }
+    }
+
+    /// The systems this was plotted between, in the order they are flown
+    ///
+    /// The two ends of a route: what the form was filled in with, rather than
+    /// the systems the walk found on the way. Empty for a filter that was
+    /// never plotted, which was never asked to go anywhere.
+    ///
+    /// A leg of a trip answers its own two ends, so a trip's stops are its
+    /// legs' ends gathered up — see [`trip_stops`], which is where the seams
+    /// are closed.
+    pub fn stops(&self) -> Vec<i64> {
+        match self {
+            Filter::Route { systems, .. } => {
+                match (systems.first(), systems.last()) {
+                    // One system is no route, and both ends of it are it.
+                    (Some(first), Some(last)) if first == last => vec![*first],
+                    (Some(first), Some(last)) => vec![*first, *last],
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// What the filter is asking for, as a row can say it
     pub fn name(&self) -> &str {
         match self {
@@ -415,6 +474,25 @@ impl Filter {
             Filter::Recency { .. } => Vec::new(),
         }
     }
+}
+
+/// The stops of a trip, in the order they are flown, each named once
+///
+/// A trip is its legs and a leg is its two ends, so the stop one leg lands on
+/// is the stop the next sets out from: gathered end to end they would be named
+/// twice over, and what a user picked out was one stop. In the order flown
+/// rather than sorted, that being the order the legs stand in and the order
+/// the form asked for them.
+pub fn trip_stops(legs: &[Filter]) -> Vec<i64> {
+    let mut stops: Vec<i64> = Vec::new();
+    for leg in legs {
+        for stop in leg.stops() {
+            if !stops.contains(&stop) {
+                stops.push(stop);
+            }
+        }
+    }
+    stops
 }
 
 /// A name to be resolved into the id a filter tests against
@@ -1352,7 +1430,54 @@ mod tests {
             systems: addresses.to_vec(),
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         }
+    }
+
+    /// A route's stops are its two ends, not the systems it passes through
+    ///
+    /// Which is what a click on its row picks out. The hops between them are
+    /// the answer the walk came back with; the ends are the question, and the
+    /// question is what the form was filled in with.
+    #[test]
+    fn a_route_stops_at_its_two_ends() {
+        assert_eq!(route(&[7, 3, 9]).stops(), vec![7, 9]);
+        // A route to where it already stands is one stop, not the same one
+        // twice.
+        assert_eq!(route(&[7]).stops(), vec![7]);
+        // And nothing that was never plotted was asked to go anywhere.
+        assert!(
+            Filter::Systems { label: "3".to_owned(), systems: vec![1, 2, 3] }
+                .stops()
+                .is_empty()
+        );
+    }
+
+    /// A trip stops once at each stop, in the order it is flown
+    ///
+    /// The seam is the whole of the test: the stop a leg lands on is the stop
+    /// the next leg sets out from, so gathering the legs' ends end to end
+    /// names the middle of the trip twice over. What the user picked out was
+    /// one stop, and what a click on the trip's row should give back is the
+    /// set they picked.
+    #[test]
+    fn a_trip_stops_once_at_each_stop() {
+        let legs = [route(&[1, 5, 2]), route(&[2, 8, 3]), route(&[3, 4])];
+
+        assert_eq!(trip_stops(&legs), vec![1, 2, 3, 4]);
+    }
+
+    /// A trip that comes back where it set out from says so once
+    ///
+    /// A round trip's last leg lands on its first stop, which is already
+    /// named: a selection holding it twice is a set with a duplicate in it,
+    /// and the form would be asked to plot a stop it is already at.
+    #[test]
+    fn a_round_trip_names_where_it_started_once() {
+        let legs = [route(&[1, 2]), route(&[2, 3]), route(&[3, 1])];
+
+        assert_eq!(trip_stops(&legs), vec![1, 2, 3]);
     }
 
     /// A route filter admits the systems it runs through

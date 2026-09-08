@@ -59,6 +59,58 @@ pub struct SystemReach {
     pub reach: f32,
 }
 
+/// What a system's arrival star can supercharge a frame shift drive by
+///
+/// Flying the jet cone of a neutron star or a white dwarf in supercruise, with
+/// a fuel scoop, charges the drive for one jump: four times the range off a
+/// neutron star, half again off a white dwarf, and more of both off a drive
+/// built for it. The charge is held until a jump spends it, so what it is
+/// worth is a fact about the system a ship is standing in and not about how it
+/// got there — which is what lets the router read it as a property of a place.
+///
+/// Which of the two, rather than the multiplier: what a boost is worth depends
+/// on the drive fitted, and the table is about the sky. See
+/// `galos_map::systems::route::graph::Drive`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Boost {
+    /// A white dwarf: half again, and a much larger exclusion zone to be
+    /// caught out by.
+    WhiteDwarf,
+    /// A neutron star: four times over, which is what a neutron highway is.
+    Neutron,
+}
+
+impl Boost {
+    /// What the star of class `primary_star_class` can supercharge, if it can
+    ///
+    /// The arrival star's class, which is the one that matters: a ship drops in
+    /// at the main star and can reach its jet cone without crossing the system.
+    /// A neutron star is class `N`; every white dwarf class begins with `D`
+    /// (`DA`, `DB`, `DC` and their variants). Nothing else has a jet cone to
+    /// fly — a black hole is class `H` and gives nothing, whatever it looks
+    /// like it should.
+    pub fn of(primary_star_class: &str) -> Option<Boost> {
+        match primary_star_class {
+            "N" => Some(Boost::Neutron),
+            class if class.starts_with('D') => Some(Boost::WhiteDwarf),
+            _ => None,
+        }
+    }
+}
+
+/// A system whose arrival star can supercharge a drive, and on what.
+///
+/// Its own table, as the reaches are and for the same reason: it is about
+/// every system rather than the populated few, it is a fact the feed reports
+/// (a system's main star class arrives with its first scan), and the router
+/// reads it over the whole galaxy without fetching anything. Four systems in a
+/// hundred are in it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SystemBoost {
+    pub address: i64,
+    pub boost: Boost,
+}
+
 /// A name and where it is: the search index and the routing graph in one.
 ///
 /// Every system, not just the populated ones, since a search reaches any name

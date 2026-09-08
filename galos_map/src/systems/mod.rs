@@ -805,6 +805,7 @@ impl From<&NameEntry> for System {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::systems::route::graph::{Drive, Routing};
     use chrono::DateTime;
 
     /// A system with nothing on record but the address that names it
@@ -936,6 +937,8 @@ pub(crate) mod tests {
                 systems: vec![6],
                 range: "10".into(),
                 trip: None,
+                drive: Drive::Unaided,
+                how: Routing::default(),
             },
         );
 

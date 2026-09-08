@@ -67,7 +67,7 @@ struct FieldCamera;
 
 /// The mesh entity, so a view change can swap which material paints it
 #[derive(Component)]
-struct FieldMark;
+pub(crate) struct FieldMark;
 
 /// The two ways the one field is painted, chosen by the view
 ///
@@ -263,10 +263,17 @@ fn tune_field(
 }
 
 /// Rebuild the field mesh from where every visible system falls on screen
-fn build_field(
+pub(crate) fn build_field(
     camera: Query<(&OrbitCamera, &Camera)>,
     shells: Query<
-        (&System, &Drawn, &Visibility, &Strength, Has<Filtered>),
+        (
+            &System,
+            &Drawn,
+            &Visibility,
+            &Strength,
+            Has<Filtered>,
+            Option<&crate::systems::route::Thinned>,
+        ),
         With<Shell>,
     >,
     view: Res<View>,
@@ -287,7 +294,7 @@ fn build_field(
     let mut indices: Vec<u32> = Vec::new();
 
     let half = viewport * 0.5;
-    for (system, drawn, visibility, strength, filtered) in &shells {
+    for (system, drawn, visibility, strength, filtered, thinned) in &shells {
         // Out of the spyglass is not drawn; `super::visibility` says which.
         if *visibility == Visibility::Hidden {
             continue;
@@ -311,6 +318,15 @@ fn build_field(
         let mut fade = strength.0.clamp(0., 1.);
         if filtered {
             fade *= dim.opacity();
+        }
+        // What a route left of it, where it is on one: a hop that has closed
+        // up on the hop before it is a mark over the line rather than a system
+        // anyone can see. See [`crate::systems::route::Thinned`].
+        if let Some(thinned) = thinned {
+            fade *= thinned.0.clamp(0., 1.);
+        }
+        if fade <= 0. {
+            continue;
         }
         let color = match *view {
             // A flat solid dot in the allegiance colour, its fade in the alpha

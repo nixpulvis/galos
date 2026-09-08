@@ -80,6 +80,8 @@ pub struct MetaReport {
     pub factions: Option<usize>,
     /// How many systems have a reach on record, which is every scanned one.
     pub reaches: Option<usize>,
+    /// How many systems can supercharge a drive, which is four in a hundred.
+    pub boosts: Option<usize>,
     pub body_files: Option<usize>,
     /// How many of the names table's chunks were written.
     pub name_chunks: usize,
@@ -94,10 +96,11 @@ impl std::fmt::Display for MetaReport {
         };
         write!(
             f,
-            "{}, {}, {}, {}, {}",
+            "{}, {}, {}, {}, {}, {}",
             said("populated", self.populated),
             said("names", self.names),
             said("reaches", self.reaches),
+            said("boosts", self.boosts),
             said("factions", self.factions),
             said("body files", self.body_files),
         )
@@ -124,6 +127,12 @@ pub(super) struct Metadata {
     /// chunks all over the galaxy every pass, which is what chunking that
     /// table was for.
     reaches: HashMap<i64, f32>,
+    /// Which systems can supercharge a drive, by address. Keyed like the two
+    /// above, and the quietest of the three: a system's main star class
+    /// arrives with the scan that first names it and then stands, so a pass
+    /// moves this only where it has met a neutron star or a white dwarf it had
+    /// not met before.
+    boosts: HashMap<i64, meta::Boost>,
     /// The faction names, in id order. Ids come from a sequence and a name is
     /// never rewritten (`Faction::create` conflicts onto the name on record),
     /// so this only ever grows, past `high`.
@@ -153,11 +162,13 @@ impl Metadata {
             .collect();
         let grouped = bodies_of(db, None).await?;
         let reaches = reaches_of(&grouped);
+        let boosts = boosts_of(db, None).await?.into_iter().collect();
         let factions = factions_above(db, 0).await?;
         let high = factions.last().map(|f| f.id).unwrap_or(0);
         let mut metadata =
-            Metadata { names, populated, reaches, factions, high };
-        let report = metadata.publish(dir, &grouped, None, true, true, true)?;
+            Metadata { names, populated, reaches, boosts, factions, high };
+        let report =
+            metadata.publish(dir, &grouped, None, true, true, true, true)?;
         Ok((metadata, report))
     }
 
@@ -172,6 +183,10 @@ impl Metadata {
             read_meta(&source::populated_path(dir))?;
         let reaches: Vec<meta::SystemReach> =
             read_meta(&source::reaches_path(dir))?;
+        // A directory published before this table existed has none, and the
+        // first pass over a system with a jet cone puts it back.
+        let boosts: Vec<meta::SystemBoost> =
+            read_meta(&source::boosts_path(dir)).unwrap_or_default();
         let factions: Vec<meta::Faction> =
             read_meta(&source::factions_path(dir))?;
         let high = factions.iter().map(|f| f.id).max().unwrap_or(0);
@@ -184,6 +199,10 @@ impl Metadata {
             reaches: reaches
                 .into_iter()
                 .map(|it| (it.address, it.reach))
+                .collect(),
+            boosts: boosts
+                .into_iter()
+                .map(|it| (it.address, it.boost))
                 .collect(),
             factions,
             high,
@@ -265,6 +284,26 @@ impl Metadata {
             }
         }
 
+        // The star class of each system reported, which says whether its
+        // arrival star can supercharge a drive.
+        let boosting = boosts_of(db, Some(touched)).await?;
+        let mut charged = HashSet::with_capacity(boosting.len());
+        let mut lit = false;
+        for (address, boost) in boosting {
+            charged.insert(address);
+            if self.boosts.get(&address) != Some(&boost) {
+                self.boosts.insert(address, boost);
+                lit = true;
+            }
+        }
+        for address in touched {
+            if !charged.contains(address)
+                && self.boosts.remove(address).is_some()
+            {
+                lit = true;
+            }
+        }
+
         let named = factions_above(db, self.high).await?;
         let reported = !named.is_empty();
         if let Some(highest) = named.last() {
@@ -272,7 +311,7 @@ impl Metadata {
             self.factions.extend(named);
         }
 
-        self.publish(dir, &grouped, Some(touched), moved, grew, reported)
+        self.publish(dir, &grouped, Some(touched), moved, grew, lit, reported)
     }
 
     /// Write the dirty names chunks, whichever whole tables changed, and the
@@ -290,6 +329,7 @@ impl Metadata {
         bodies_for: Option<&[i64]>,
         populated: bool,
         reaches: bool,
+        boosts: bool,
         factions: bool,
     ) -> Result<MetaReport> {
         let name_chunks = self.names.publish(dir)?;
@@ -299,6 +339,9 @@ impl Metadata {
         if reaches {
             write_reaches(dir, &self.reaches)?;
         }
+        if boosts {
+            write_boosts(dir, &self.boosts)?;
+        }
         if factions {
             write_meta(&source::factions_path(dir), &self.factions)?;
         }
@@ -307,6 +350,7 @@ impl Metadata {
             names: Some(self.names.len()),
             factions: Some(self.factions.len()),
             reaches: Some(self.reaches.len()),
+            boosts: Some(self.boosts.len()),
             body_files: Some(write_bodies(dir, grouped, bodies_for)?),
             name_chunks,
         })
@@ -357,6 +401,12 @@ pub(super) async fn write_parts(
         if parts.bodies {
             report.body_files = Some(write_bodies(dir, &grouped, None)?);
         }
+    }
+
+    if parts.boosts {
+        let boosts: HashMap<i64, meta::Boost> =
+            boosts_of(db, None).await?.into_iter().collect();
+        report.boosts = Some(write_boosts(dir, &boosts)?);
     }
 
     if parts.factions {
@@ -504,6 +554,64 @@ fn write_reaches(dir: &Path, reaches: &HashMap<i64, f32>) -> Result<usize> {
     table.sort_unstable_by_key(|it| it.address);
     write_meta(&source::reaches_path(dir), &table)?;
     Ok(table.len())
+}
+
+/// Write `boosts.bin`: which systems can supercharge a drive, in address order
+/// so the same table is always the same bytes.
+fn write_boosts(
+    dir: &Path,
+    boosts: &HashMap<i64, meta::Boost>,
+) -> Result<usize> {
+    let mut table: Vec<meta::SystemBoost> = boosts
+        .iter()
+        .map(|(&address, &boost)| meta::SystemBoost { address, boost })
+        .collect();
+    table.sort_unstable_by_key(|it| it.address);
+    write_meta(&source::boosts_path(dir), &table)?;
+    Ok(table.len())
+}
+
+/// Which of the positioned systems can supercharge a drive, or those of
+/// `addresses` alone.
+///
+/// Off `primary_star_class`, the arrival star's, which is the one a ship can
+/// reach the jet cone of without crossing the system. The classification is
+/// [`meta::Boost::of`]; a class that supercharges nothing is not in the
+/// result, and the caller takes such a system out of the table it stands in.
+async fn boosts_of(
+    db: &Database,
+    addresses: Option<&[i64]>,
+) -> Result<Vec<(i64, meta::Boost)>> {
+    let rows = match addresses {
+        None => {
+            sqlx::query(
+                "SELECT address, primary_star_class FROM systems \
+                 WHERE position IS NOT NULL \
+                   AND (primary_star_class = 'N' \
+                        OR primary_star_class LIKE 'D%')",
+            )
+            .fetch_all(&db.pool)
+            .await?
+        }
+        Some(addresses) => {
+            sqlx::query(
+                "SELECT address, primary_star_class FROM systems \
+                 WHERE address = ANY($1) AND position IS NOT NULL",
+            )
+            .bind(addresses)
+            .fetch_all(&db.pool)
+            .await?
+        }
+    };
+    let mut boosts = Vec::new();
+    for row in rows {
+        let address: i64 = row.try_get("address")?;
+        let class: Option<String> = row.try_get("primary_star_class")?;
+        if let Some(boost) = class.as_deref().and_then(meta::Boost::of) {
+            boosts.push((address, boost));
+        }
+    }
+    Ok(boosts)
 }
 
 /// Group `bodies/<address>.bin`'s worth of rows: one [`meta::SystemBodies`] per

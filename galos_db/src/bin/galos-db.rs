@@ -87,6 +87,8 @@ enum Part {
     Populated,
     /// How far each scanned system reaches, which every shell is sized by.
     Reaches,
+    /// Which systems can supercharge a drive, which the router plots by.
+    Boosts,
     /// The faction id-to-name table.
     Factions,
     /// One file per system of the stars, bodies and barycenters in it.
@@ -106,6 +108,7 @@ fn parts_of(named: &[Part]) -> Parts {
             Part::Names => parts.names = true,
             Part::Populated => parts.populated = true,
             Part::Reaches => parts.reaches = true,
+            Part::Boosts => parts.boosts = true,
             Part::Factions => parts.factions = true,
             Part::Bodies => parts.bodies = true,
         }
@@ -236,6 +239,7 @@ mod tests {
             Part::Names,
             Part::Populated,
             Part::Reaches,
+            Part::Boosts,
             Part::Factions,
             Part::Bodies,
         ]);

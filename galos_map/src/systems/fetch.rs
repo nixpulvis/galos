@@ -1,5 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use crate::systems::route::graph::{Drive, Routing};
 use crate::systems::selection::Selection;
 use crate::systems::spawn::system_at;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
@@ -141,8 +142,11 @@ pub enum FetchIndex {
     /// A leg rather than a whole trip, so that a trip through several stops is
     /// several of these, asked and answered one per leg. The range as it was
     /// typed, since it is part of what tells one route from another and a
-    /// float is no kind of key.
-    Route(String, String, String, Option<String>),
+    /// float is no kind of key, and the drive beside it for the same reason:
+    /// the same pair supercharged and unsupercharged are two routes through
+    /// different systems. The search mode last, on the same argument again: a
+    /// route that was not asked to prove the fewest jumps may not take them.
+    Route(String, String, String, Option<String>, Drive, Routing),
     /// Named systems, by address
     ///
     /// What the map is asked for a row at a time rather than by where it is:
@@ -227,10 +231,19 @@ impl fmt::Debug for FetchIndex {
                 "<({},{},{}),{}>",
                 center.x, center.y, center.z, radius
             ),
-            Route(start, end, range, trip) => match trip {
-                Some(trip) => write!(f, "<{start}-{end}>{range}>{trip}"),
-                None => write!(f, "<{start}-{end}>{range}>"),
-            },
+            Route(start, end, range, trip, drive, how) => {
+                let boosted = drive.named().unwrap_or("unaided");
+                let how = how.named();
+                match trip {
+                    Some(trip) => write!(
+                        f,
+                        "<{start}-{end}>{range},{boosted},{how}>{trip}"
+                    ),
+                    None => {
+                        write!(f, "<{start}-{end}>{range},{boosted},{how}>")
+                    }
+                }
+            }
             Systems(addresses) => write!(f, "<{} named>", addresses.len()),
         }
     }
@@ -376,9 +389,9 @@ pub fn fetch(
 pub fn fetch_searched(
     mut search_events: MessageReader<Search>,
     mut tasks: ResMut<FetchTasks>,
+    mut searching: ResMut<crate::systems::route::frontier::Frontiers>,
     time: Res<Time<Real>>,
     jumps: Res<crate::systems::route::graph::Jumps>,
-    routing: Res<crate::systems::route::graph::Routing>,
     names: Res<Names>,
     populated: Res<Populated>,
 ) {
@@ -388,14 +401,19 @@ pub fn fetch_searched(
             // here to fetch yet. Whatever the user picks out of what it
             // found is asked for by `fetch_selected`.
             Search::System { .. } => {}
-            Search::Route { stops, range } => {
+            // The mode comes with the ask rather than off the setting, as
+            // the range and the drive do: what the route is, is what was
+            // asked for, and the setting may have moved since.
+            Search::Route { stops, range, drive, how } => {
                 fetch_route(
                     stops.clone(),
                     range.into(),
+                    *drive,
                     &mut tasks,
+                    &mut searching,
                     &time,
                     &jumps,
-                    *routing,
+                    *how,
                     &names,
                     &populated,
                 );
@@ -700,9 +718,11 @@ pub(crate) mod tests {
         app.init_resource::<Selection>();
         app.init_resource::<crate::systems::bounded::LodFetch>();
         app.init_resource::<crate::systems::route::graph::Routing>();
+        app.init_resource::<crate::systems::route::frontier::Frontiers>();
         app.insert_resource(crate::systems::route::graph::Jumps(
             std::sync::Arc::new(crate::systems::route::graph::JumpGraph::new(
                 &entries,
+                &crate::Boosts::default(),
             )),
         ));
         app.insert_resource(Names::reaching(entries, Vec::new()));
@@ -731,6 +751,8 @@ pub(crate) mod tests {
         app.world_mut().write_message(Search::Route {
             stops: vec!["Start".into(), "End".into()],
             range: "10".into(),
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         app.update();
     }
@@ -740,6 +762,8 @@ pub(crate) mod tests {
         app.world_mut().write_message(Search::Route {
             stops: stops.iter().map(|stop| stop.to_string()).collect(),
             range: "10".into(),
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         app.update();
     }
@@ -1038,8 +1062,14 @@ pub(crate) mod tests {
     /// map asking again for most of what it already holds.
     #[test]
     fn a_route_under_way_does_not_hold_the_spyglass_up() {
-        let route =
-            FetchIndex::Route("A".into(), "B".into(), "10".into(), None);
+        let route = FetchIndex::Route(
+            "A".into(),
+            "B".into(),
+            "10".into(),
+            None,
+            Drive::Unaided,
+            Routing::default(),
+        );
 
         assert!(!region_asked([route].iter()));
     }
@@ -1119,8 +1149,14 @@ pub(crate) mod tests {
     /// A route is never a refresh of anything, nor refreshed by one
     #[test]
     fn a_route_is_always_a_new_question() {
-        let route =
-            FetchIndex::Route("A".into(), "B".into(), "10".into(), None);
+        let route = FetchIndex::Route(
+            "A".into(),
+            "B".into(),
+            "10".into(),
+            None,
+            Drive::Unaided,
+            Routing::default(),
+        );
         assert!(!route.refreshes(&region(0, 10)));
         assert!(!region(0, 10).refreshes(&route));
         assert!(!route.refreshes(&route));

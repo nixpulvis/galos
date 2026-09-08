@@ -717,6 +717,10 @@ fn panels(
         contents.guessed_under(held, id)
     };
     let mut worked = None;
+    // The stops a click on a leg's name inside a trip's panel asked to pick
+    // out, and whether as well as instead. Handed out of the panels rather
+    // than acted on inside them, as the system rows are.
+    let mut picked_stops: Option<(Vec<System>, bool)> = None;
     // How much of a panel turned out to be its window, for the next frame to
     // take off the room; see [`Panels::frame`].
     let mut framing: f32 = 0.;
@@ -769,6 +773,7 @@ fn panels(
                     systems.as_deref(),
                     center,
                     &mut picked,
+                    &mut picked_stops,
                     &mut opening,
                     &mut moved,
                     &mut worked,
@@ -819,6 +824,12 @@ fn panels(
     // in the bar that names what is picked out.
     if let Some((system, gathering)) = picked {
         selection.pick(Picked::System(system), gathering);
+    }
+    // And a leg named in a trip's panel picks out what it was plotted
+    // between, which is what a click on its row in the bar means. Through the
+    // one call, so the two cannot come to two different things.
+    if let Some((stops, gathering)) = picked_stops {
+        selection.pick_out(stops.into_iter().map(Picked::System), gathering);
     }
     // Opened after the loop, since a panel asked for from inside one is a
     // panel pushed onto the list being walked.
@@ -1314,24 +1325,36 @@ fn dated(at: Option<DateTime<Utc>>) -> String {
 
 /// What a filter's panel says it is showing, above the list of it
 ///
-/// How many systems, and for a route the range it was plotted for as well. A
-/// panel is titled with what the filter is called, and a route is called after
-/// its two ends, so two plots between the same pair come up under the same
-/// name. What tells them apart is the range that was asked for, and how many
-/// systems that came to: a ship that reaches further crosses the same gap in
-/// fewer.
+/// How many systems, and for a route the whole of what it was plotted for: the
+/// range, the drive, and how hard the search worked at it. A panel is titled
+/// with what the filter is called, and a route is called after its two ends,
+/// so two plots between the same pair come up under the same name. What tells
+/// them apart is what was asked for — and all three of those are part of the
+/// ask, each of them able to change which systems come back.
 ///
 /// A range rather than a jump. It is how far the ship can go in one, which is
 /// what the route was worked out against; how far it actually goes is the
-/// distance on each line of the list below, and is usually less.
+/// distance on each line of the list below, and is usually less. Which is the
+/// reason the drive belongs here beside it: a jump of nine hundred light years
+/// on a line below, under a range of a hundred and fifty, is a jet cone and
+/// not a mistake, and nothing else on screen said a jet cone was allowed.
 ///
 /// Said in the panel rather than in the title, which is cut to the room a
 /// window has and would lose it. The other filters are named for the whole of
 /// what they are and have nothing to add here.
 fn summary(filter: &Filter, count: usize) -> String {
-    match filter.range() {
-        Some(range) => format!("{count} systems, {range} Ly range"),
-        None => format!("{count} systems"),
+    let Some(range) = filter.range() else {
+        return format!("{count} systems");
+    };
+    // Both are part of what was asked, and both are read off the route rather
+    // than off the settings, which the user may have moved since.
+    let boosted = filter.drive().and_then(|drive| drive.named());
+    let how = filter.how().map(|how| how.named()).unwrap_or_default();
+    match boosted {
+        Some(boosted) => format!(
+            "{count} systems, {range} Ly range, {boosted}, {how} search"
+        ),
+        None => format!("{count} systems, {range} Ly range, {how} search"),
     }
 }
 
@@ -1354,6 +1377,7 @@ fn admitted(
     systems: Option<&[System]>,
     center: Option<DVec3>,
     picked: &mut Option<(System, bool)>,
+    picked_stops: &mut Option<(Vec<System>, bool)>,
     described: &mut Option<System>,
     moved: &mut Option<MoveCamera>,
     worked: &mut Option<Filter>,
@@ -1561,8 +1585,28 @@ fn admitted(
                             });
                         }
                     }
+                    // The same two things a click on the leg's row in the
+                    // bar means, and for the same reason: the leg is what is
+                    // being worked with, and what it was plotted between is
+                    // what the user is holding when they reach for its name.
+                    // Both answers are handed back rather than acted on here,
+                    // and the selection is picked out through
+                    // [`crate::systems::selection::Selection::pick_out`], so
+                    // a leg reached through the bar and the same leg reached
+                    // through this panel cannot come to two different things.
                     Some(crate::ui::RowGesture::Select) => {
-                        *worked = Some(leg.clone())
+                        let ends = leg.stops();
+                        *picked_stops = Some((
+                            order
+                                .iter()
+                                .filter(|(system, _)| {
+                                    ends.contains(&system.address)
+                                })
+                                .map(|(system, _)| (*system).clone())
+                                .collect(),
+                            crate::ui::gathering(ui),
+                        ));
+                        *worked = Some(leg.clone());
                     }
                     _ => {}
                 }
@@ -1827,6 +1871,7 @@ fn named<T: Display>(value: &Option<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::route::graph::{Drive, Routing};
     use crate::systems::tests::{system, tallied};
     use crate::tests::{context, painted, words};
     use chrono::DateTime;
@@ -2311,6 +2356,7 @@ mod tests {
                 &mut None,
                 &mut None,
                 &mut None,
+                &mut None,
             );
         });
     }
@@ -2324,6 +2370,8 @@ mod tests {
             systems: vec![1, 2],
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         };
         painted(|ui| {
             admitted(
@@ -2332,6 +2380,7 @@ mod tests {
                 &[],
                 Some(&systems),
                 Some(DVec3::ZERO),
+                &mut None,
                 &mut None,
                 &mut None,
                 &mut None,
@@ -2692,6 +2741,8 @@ mod tests {
             systems: (1..=places.len() as i64).collect(),
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         };
 
         crate::tests::words(|ui| {
@@ -2701,6 +2752,7 @@ mod tests {
                 &[],
                 Some(&systems),
                 Some(DVec3::new(100., 0., 0.)),
+                &mut None,
                 &mut None,
                 &mut None,
                 &mut None,
@@ -2751,6 +2803,7 @@ mod tests {
                 &mut None,
                 &mut None,
                 &mut None,
+                &mut None,
             );
         });
 
@@ -2760,28 +2813,56 @@ mod tests {
 
     /// A route between `label`'s ends, plotted for a ship reaching `range`
     fn plotted_for(label: &str, range: &str) -> Filter {
+        plotted_with(label, range, Drive::Unaided, Routing::default())
+    }
+
+    /// The same, for a named drive and search mode
+    fn plotted_with(
+        label: &str,
+        range: &str,
+        drive: Drive,
+        how: Routing,
+    ) -> Filter {
         Filter::Route {
             label: label.to_owned(),
             systems: vec![1, 2],
             range: range.to_owned(),
             trip: None,
+            drive,
+            how,
         }
     }
 
-    /// A route's panel says how far the ship it was plotted for reaches
+    /// A route's panel says the whole of what it was plotted for
     ///
     /// A panel is titled with what its filter is called and a route is called
-    /// after its two ends, so the range is the one thing on screen telling two
-    /// plots between the same pair apart.
+    /// after its two ends, so this line is the only thing on screen telling
+    /// two plots between the same pair apart — and each of the three can
+    /// change which systems came back.
     ///
     /// A range and not a jump. What the ship can cross in one is what the
     /// route was worked out against; what it actually crosses is on the lines
-    /// below, and is usually less.
+    /// below, and is usually less — unless a jet cone was allowed, which is
+    /// why the drive is said beside it: a nine hundred light year jump under
+    /// a hundred and fifty light year range is a supercharge and not a bug,
+    /// and nothing else on screen says one was permitted.
     #[test]
-    fn a_route_panel_says_the_range_it_was_plotted_for() {
+    fn a_route_panel_says_what_it_was_plotted_for() {
         assert_eq!(
             summary(&plotted_for("SOL -> BARNARD", "10"), 12),
-            "12 systems, 10 Ly range"
+            "12 systems, 10 Ly range, direct search"
+        );
+        assert_eq!(
+            summary(
+                &plotted_with(
+                    "SOL -> COLONIA",
+                    "150",
+                    Drive::Optimised,
+                    Routing::Quick
+                ),
+                116
+            ),
+            "116 systems, 150 Ly range, SCO supercharged, quick search"
         );
     }
 
@@ -2838,11 +2919,12 @@ mod tests {
                 &mut None,
                 &mut None,
                 &mut None,
+                &mut None,
             );
         });
 
         assert!(
-            said.contains(&"2 systems, 10 Ly range".to_owned()),
+            said.contains(&"2 systems, 10 Ly range, direct search".to_owned()),
             "{said:?}"
         );
     }
@@ -3078,6 +3160,8 @@ mod tests {
             systems,
             range: "12".to_owned(),
             trip: Some("A -> C -> E".to_owned()),
+            drive: Drive::Unaided,
+            how: Routing::default(),
         };
         let legs = vec![
             leg("FIRST LEG", vec![1, 2, 3]),
@@ -3091,6 +3175,7 @@ mod tests {
                 &legs,
                 Some(&held),
                 Some(DVec3::ZERO),
+                &mut None,
                 &mut None,
                 &mut None,
                 &mut None,
@@ -3157,6 +3242,7 @@ mod tests {
                 &[],
                 Some(systems),
                 None,
+                &mut None,
                 &mut None,
                 &mut None,
                 &mut None,
@@ -3271,6 +3357,8 @@ mod tests {
             systems: vec![1, 2, 3],
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         };
         let held = [
             placed(1, [0., 0., 0.]),
@@ -3287,6 +3375,7 @@ mod tests {
                     &[],
                     Some(&held),
                     Some(DVec3::ZERO),
+                    &mut None,
                     &mut None,
                     &mut None,
                     moved,
@@ -3347,6 +3436,8 @@ mod tests {
             systems: vec![1, 2, 3, 4, 5],
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         };
         let legs = vec![
             Filter::Route {
@@ -3354,12 +3445,16 @@ mod tests {
                 systems: vec![1, 2, 3],
                 range: "10".to_owned(),
                 trip: Some("SOL -> LAVE -> DISO".to_owned()),
+                drive: Drive::Unaided,
+                how: Routing::default(),
             },
             Filter::Route {
                 label: "LAVE -> DISO".to_owned(),
                 systems: vec![3, 4, 5],
                 range: "10".to_owned(),
                 trip: Some("SOL -> LAVE -> DISO".to_owned()),
+                drive: Drive::Unaided,
+                how: Routing::default(),
             },
         ];
         let held = [
@@ -3372,6 +3467,7 @@ mod tests {
 
         let ctx = context();
         let pass = |input: egui::RawInput,
+                    stops: &mut Option<(Vec<System>, bool)>,
                     moved: &mut Option<MoveCamera>,
                     worked: &mut Option<Filter>| {
             placed_text(&ctx, input, |ui| {
@@ -3382,6 +3478,7 @@ mod tests {
                     Some(&held),
                     Some(DVec3::ZERO),
                     &mut None,
+                    stops,
                     &mut None,
                     moved,
                     worked,
@@ -3389,8 +3486,9 @@ mod tests {
             })
         };
 
-        pass(egui::RawInput::default(), &mut None, &mut None);
-        let text = pass(egui::RawInput::default(), &mut None, &mut None);
+        pass(egui::RawInput::default(), &mut None, &mut None, &mut None);
+        let text =
+            pass(egui::RawInput::default(), &mut None, &mut None, &mut None);
         let at = text
             .iter()
             .find(|(said, _)| said == "LAVE -> DISO")
@@ -3406,25 +3504,36 @@ mod tests {
         };
         let frame = |events| egui::RawInput { events, ..Default::default() };
 
-        let (mut moved, mut worked) = (None, None);
+        let (mut stops, mut moved, mut worked) = (None, None, None);
         pass(
             frame(vec![
                 egui::Event::PointerMoved(at),
                 button(true),
                 button(false),
             ]),
+            &mut stops,
             &mut moved,
             &mut worked,
         );
         assert_eq!(worked.as_ref().map(|leg| leg.name()), Some("LAVE -> DISO"));
         assert!(moved.is_none(), "a click asked the camera for nothing");
+        // And what the leg was plotted between, which is what the same click
+        // on its row in the bar picks out: its two ends and none of the hops
+        // it passes through on the way.
+        let (picked, gathering) = stops.expect("the leg's stops");
+        assert_eq!(
+            picked.iter().map(|system| system.address).collect::<Vec<_>>(),
+            vec![3, 5],
+            "the hops came with it, or the ends did not"
+        );
+        assert!(!gathering, "a bare click was read as gathering");
 
         // The stops it runs through, which is one more than the rows drawn
         // under its name: it sets out from the system the leg before landed
         // on, and that row belongs to the leg before. Framed off the rows
         // alone this would read 23.0 and 3.0, standing the camera over the
         // leg's tail rather than over the leg.
-        let (mut moved, mut worked) = (None, None);
+        let (mut stops, mut moved, mut worked) = (None, None, None);
         pass(
             frame(vec![
                 egui::Event::PointerMoved(at),
@@ -3433,6 +3542,7 @@ mod tests {
                 button(true),
                 button(false),
             ]),
+            &mut stops,
             &mut moved,
             &mut worked,
         );
@@ -3440,5 +3550,83 @@ mod tests {
         assert_eq!(moved.position, Some(DVec3::new(21.5, 0., 0.)));
         assert_eq!(moved.framing, Some(4.5));
         assert!(worked.is_none(), "the double stood in for the click");
+        assert!(stops.is_none(), "the double picked its stops out as well");
+    }
+
+    /// And the modifier reads there as it does everywhere else
+    ///
+    /// A click means these systems, a click with the modifier means these as
+    /// well: the leg's stops joining what was already picked out rather than
+    /// replacing it. Read off the same press, since the modifier is part of
+    /// the press and not a setting.
+    #[test]
+    fn a_leg_clicked_with_the_modifier_gathers_its_stops() {
+        let trip = Filter::Route {
+            label: "SOL -> LAVE".to_owned(),
+            systems: vec![1, 2, 3],
+            range: "10".to_owned(),
+            trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
+        };
+        let legs = vec![trip.clone()];
+        let held = [
+            placed(1, [0., 0., 0.]),
+            placed(2, [5., 0., 0.]),
+            placed(3, [17., 0., 0.]),
+        ];
+
+        let ctx = context();
+        let pass =
+            |input: egui::RawInput, stops: &mut Option<(Vec<System>, bool)>| {
+                placed_text(&ctx, input, |ui| {
+                    admitted(
+                        ui,
+                        &trip,
+                        &legs,
+                        Some(&held),
+                        Some(DVec3::ZERO),
+                        &mut None,
+                        stops,
+                        &mut None,
+                        &mut None,
+                        &mut None,
+                    );
+                })
+            };
+
+        pass(egui::RawInput::default(), &mut None);
+        let text = pass(egui::RawInput::default(), &mut None);
+        let at = text
+            .iter()
+            .find(|(said, _)| said == "SOL -> LAVE")
+            .expect("the leg's name")
+            .1
+            .center();
+
+        let mut keys = egui::Modifiers::default();
+        keys.shift = true;
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: keys,
+        };
+        let mut stops = None;
+        pass(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    button(true),
+                    button(false),
+                ],
+                modifiers: keys,
+                ..Default::default()
+            },
+            &mut stops,
+        );
+
+        let (_, gathering) = stops.expect("the leg's stops");
+        assert!(gathering, "the modifier was not read off the press");
     }
 }

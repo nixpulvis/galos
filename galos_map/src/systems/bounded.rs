@@ -655,6 +655,7 @@ pub(crate) fn build_from_point(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::route::graph::{Drive, Routing};
     use bevy::math::DVec3;
 
     /// A payload point becomes a system placed exactly at its own position,
@@ -1081,6 +1082,8 @@ mod tests {
             systems: vec![1, 2, 3],
             range: "10".into(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         // The first stop already drawn, the other two never built, and a
         // system that is on no route at all.

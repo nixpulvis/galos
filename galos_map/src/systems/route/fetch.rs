@@ -1,9 +1,12 @@
 use crate::systems::fetch::{FetchIndex, FetchTasks, RawSystem};
-use crate::systems::route::graph::{Jumps, Routing};
+use crate::systems::route::frontier::Frontiers;
+use crate::systems::route::graph::{Drive, Frontier, Jumps, Routing};
 use crate::systems::spawn::build_system;
 use crate::{Names, Populated};
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
+use std::sync::Arc;
 
 /// Ask for a trip through `stops`, in order, at a ship's jump `range`
 ///
@@ -27,7 +30,9 @@ use bevy::tasks::AsyncComputeTaskPool;
 pub fn fetch_route(
     stops: Vec<String>,
     range: String,
+    drive: Drive,
     tasks: &mut ResMut<FetchTasks>,
+    searching: &mut ResMut<Frontiers>,
     time: &Res<Time<Real>>,
     jumps: &Res<Jumps>,
     how: Routing,
@@ -56,6 +61,8 @@ pub fn fetch_route(
                 leg[1].clone(),
                 range.clone(),
                 trip.clone(),
+                drive,
+                how,
             )
         })
         .collect();
@@ -85,6 +92,25 @@ pub fn fetch_route(
         // to a name that is not on record is nothing rather than a walk with
         // nowhere to end. The form has already been told which name it was.
         let ends = names.address(&leg[0]).zip(names.address(&leg[1]));
+        // What the search fills in as it runs, and what the map draws it from.
+        // Both ends, since the drawing is measured out from the start and the
+        // closed set is scaled by how far there is to go; a leg whose ends do
+        // not resolve is not searched and is not watched.
+        let placed = |address: i64| {
+            names.get(address).map(|entry| {
+                DVec3::new(
+                    entry.position[0] as f64,
+                    entry.position[1] as f64,
+                    entry.position[2] as f64,
+                )
+            })
+        };
+        let watching = ends
+            .and_then(|(start, end)| placed(start).zip(placed(end)))
+            .map(|(from, goal)| Frontier::between(from, goal));
+        if let Some(watching) = &watching {
+            searching.watch(Arc::clone(watching));
+        }
         // Cheap Arc handles onto the resident graph and tables, so the hops
         // are walked, named and coloured on the task's own thread rather than
         // on the main one.
@@ -97,7 +123,7 @@ pub fn fetch_route(
         let task = pool.spawn(async move {
             let systems = match (ends, range) {
                 (Some((start, end)), Some(range)) => graph
-                    .route(start, end, range, how)
+                    .route(start, end, range, how, drive, watching.as_ref())
                     .map(|hops| {
                         hops.into_iter()
                             .map(|(address, position)| {

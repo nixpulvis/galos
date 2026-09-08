@@ -29,7 +29,8 @@ use crate::systems::labels::ShowBodyNames;
 use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
 use crate::systems::route::SelectedFilter;
-use crate::systems::route::graph::Routing;
+use crate::systems::route::frontier::Frontiers;
+use crate::systems::route::graph::{Drive, Routing};
 use crate::systems::route::tour::Start;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
@@ -1131,6 +1132,8 @@ pub(crate) fn chrome(
         &mut panels,
         &mut bar.plot,
         &mut bar.how,
+        &mut bar.drive,
+        &bar.searching,
         &mut filter,
     );
     gear(ctx, edge, middle, &mut open.0);
@@ -1305,6 +1308,8 @@ fn main_bar(
     panels: &mut Panels,
     plot: &mut Plot,
     how: &mut Routing,
+    drive: &mut Drive,
+    searching: &Frontiers,
     filter: &mut FilterBar,
 ) -> f32 {
     // What the filter rows were asked, carried out of the closure they are
@@ -1415,32 +1420,21 @@ fn main_bar(
                     if let Some(system) = described {
                         panels.open_system(system);
                     }
-                    let mut went = None;
                     // One count for the whole column rather than one per
                     // kind of row. The rows are the same height and stand one
-                    // after another, so letting go of a selection moves every
-                    // filter row up into a rectangle a selection row was drawn
+                    // after another, so letting go of a filter row moves every
+                    // selection row up into a rectangle a filter row was drawn
                     // in. Numbered apart, the two would put a fresh id at a
                     // rectangle that kept its place, which is what egui reads
                     // as a widget taking another's state.
                     let mut place = 0;
-                    let routing = selected(
-                        ui,
-                        selection,
-                        contents,
-                        center,
-                        &mut went,
-                        panels,
-                        filter.active.bypass_change_detection(),
-                        &mut place,
-                    );
-                    if let Some(went) = went {
-                        camera.write(went);
-                    }
-                    // Drawn whether or not the form is out, as the selection
-                    // is and for the same reason. A half lit sky with
-                    // nothing on screen to say why is the one thing a filter
-                    // must not leave behind.
+                    // The filters first, and the selection under them. Both
+                    // stand in the one column, so whichever is on top decides
+                    // which of them holds still: picking a system out or
+                    // letting one go is a thing the user does over and over,
+                    // and doing it must not walk the filter rows up and down
+                    // under the pointer. A filter is asked for once and its
+                    // row then stays, so the selection is what moves.
                     //
                     // From wherever the rows are being held while a control
                     // is held, so that asking for a filter does not move the
@@ -1460,6 +1454,20 @@ fn main_bar(
                         None => filter.active.bypass_change_detection(),
                     };
                     row_ask = applied(ui, rows, panels, &mut place);
+                    let mut went = None;
+                    let routing = selected(
+                        ui,
+                        selection,
+                        contents,
+                        center,
+                        &mut went,
+                        panels,
+                        filter.active.bypass_change_detection(),
+                        &mut place,
+                    );
+                    if let Some(went) = went {
+                        camera.write(went);
+                    }
                     // Two numbers only where there is a sky behind what is
                     // picked out and the user can see it: something has to be
                     // excluded, and what is excluded has to be drawn.
@@ -1481,7 +1489,8 @@ fn main_bar(
                     if search.expanded {
                         taken |= filter_section(ui, filter);
                         taken |= route_section(
-                            ui, search, selection, searched, plot, how, routing,
+                            ui, search, selection, searched, plot, how, drive,
+                            searching, routing,
                         );
                     }
 
@@ -1526,6 +1535,34 @@ fn main_bar(
     if std::mem::take(&mut search.shutting) {
         search.expanded = false;
         ctx.memory_mut(|memory| memory.stop_text_input());
+    }
+
+    // Clicking a route picks out what it was plotted between: a plot is an
+    // answer to a question about two systems, and the question is what the
+    // user is holding when they reach for the row. So the form comes back
+    // filled in with the stops that made it, and the rings stand on them.
+    //
+    // A leg's row means its own two ends. A trip's row means every stop of the
+    // trip, which is its legs' ends with the seams closed: the stop one leg
+    // lands on is where the next sets out from, and it is one stop rather than
+    // two. See [`Filter::stops`] and [`crate::systems::filter::trip_stops`].
+    //
+    // The click and only the click. This hung off the panel the info button
+    // opens to begin with, which meant asking what a trip was made of picked
+    // its stops out as a side effect — a button that quietly did the other
+    // button's job.
+    if let Some((stops, gathering)) = row_ask.picked {
+        selection.pick_out(
+            stops.iter().filter_map(|address| {
+                crate::systems::spawn::system_at(
+                    *address,
+                    &filter.populated,
+                    &filter.names,
+                )
+                .map(Picked::System)
+            }),
+            gathering,
+        );
     }
 
     // Which filter is being worked with. Every kind can be picked out, and
@@ -1609,6 +1646,8 @@ pub(crate) struct SearchBar<'w> {
     plot: ResMut<'w, Plot>,
     /// Which of the fewest-jumps routes to ask for
     how: ResMut<'w, Routing>,
+    drive: ResMut<'w, Drive>,
+    searching: Res<'w, Frontiers>,
 }
 
 /// The search box, and the mark that empties it
@@ -1739,7 +1778,7 @@ pub(crate) enum SystemAction {
 /// for something else.
 ///
 /// The same three [`crate::systems::spawn`] asks the keyboard for directly.
-fn gathering(ui: &Ui) -> bool {
+pub(crate) fn gathering(ui: &Ui) -> bool {
     ui.input(|input| {
         let keys = input.modifiers;
         keys.command || keys.ctrl || keys.shift
@@ -2574,6 +2613,8 @@ fn route_section(
     searched: &mut MessageWriter<Search>,
     plot: &mut Plot,
     how: &mut Routing,
+    drive: &mut Drive,
+    searching: &Frontiers,
     asked_for: bool,
 ) -> bool {
     heading(ui, "Route", true);
@@ -2614,14 +2655,70 @@ fn route_section(
     // Return in the range asks for the route, as pressing the button does. It
     // is the one thing a route waits on, and a form with one thing left to do
     // should not have to be reached for.
-    // Which of the equally-short routes to come back with. Both settings are
-    // the fewest jumps; this is whether the map may spend a minute proving the
-    // shortest of them or should take the one that heads most directly at the
-    // goal. See `Routing` for what the difference measured out at.
-    let mut proven = *how == Routing::Shortest;
-    if ui.checkbox(&mut proven, "Shortest").changed() {
-        *how = if proven { Routing::Shortest } else { Routing::Direct };
-    }
+    // How hard the map should work at it. Two of the three are the fewest
+    // jumps and differ in whether the map may spend the time proving the
+    // shortest of them; the third declines to prove anything and comes back
+    // in a hundredth of the time. What each gives up is said on hover rather
+    // than in the label, a route being something the reader either has an
+    // opinion about or does not. See `Routing` for what they measured out at.
+    egui::ComboBox::from_label("Search")
+        .selected_text(match *how {
+            Routing::Quick => "Quick",
+            Routing::Direct => "Direct",
+            Routing::Shortest => "Shortest",
+        })
+        .show_ui(ui, |ui| {
+            for (mode, said, gives_up) in [
+                (
+                    Routing::Quick,
+                    "Quick",
+                    "Does not prove the fewest jumps: at most one jump over \
+                     for every twenty it takes, so under twenty jumps it is \
+                     the fewest there are. It may wander where Direct would \
+                     not — the bound is on jumps, not on light years. Little \
+                     use with supercharging on, where the time goes \
+                     elsewhere.",
+                ),
+                (
+                    Routing::Direct,
+                    "Direct",
+                    "The fewest jumps, and of those the chain that heads \
+                     most directly at the goal. No claim that it is the \
+                     shortest of them in light years.",
+                ),
+                (
+                    Routing::Shortest,
+                    "Shortest",
+                    "The fewest jumps, and provably the shortest chain of \
+                     that many. Costs half again what Direct does to prove \
+                     a difference usually under a light year a jump.",
+                ),
+            ] {
+                ui.selectable_value(&mut *how, mode, said)
+                    .on_hover_text(gives_up);
+            }
+        });
+    // Whether a jet cone counts, and what it is worth. A neutron star
+    // supercharges a drive for one jump — four times the range, six off the
+    // drive built for it — so a route that may use one runs through the
+    // neutron stars on the way rather than in the ship's own reach. The range
+    // typed above stays what the ship does unaided; this is what a boost
+    // multiplies it by. See `Drive`.
+    egui::ComboBox::from_label("Supercharging")
+        .selected_text(match *drive {
+            Drive::Unaided => "None",
+            Drive::Standard => "Standard (x4 / x1.5)",
+            Drive::Optimised => "SCO Mk II (x6 / x3)",
+        })
+        .show_ui(ui, |ui| {
+            for (fitted, said) in [
+                (Drive::Unaided, "None"),
+                (Drive::Standard, "Standard (x4 / x1.5)"),
+                (Drive::Optimised, "SCO Mk II (x6 / x3)"),
+            ] {
+                ui.selectable_value(&mut *drive, fitted, said);
+            }
+        });
 
     let submitted = entered(&range, ui);
     // What came back of the last route asked for answers the field as it was
@@ -2687,6 +2784,28 @@ fn route_section(
     if let Some(turning) = button.rect(slot) {
         egui::Spinner::new().paint_at(ui, turning);
     }
+    // How far the search has got. A route across the galaxy expands hundreds
+    // of thousands of systems over several seconds, and a spinner says the map
+    // is working without saying whether it is getting anywhere. The map draws
+    // the same progress out on the sky; this is the number beside the button.
+    let expanded = searching.expanded();
+    if *plot == Plot::Working && expanded > 0 {
+        // How much has been looked at, and how close it has got. The second is
+        // the one that answers the question a wait asks: the map draws the
+        // chain to that system out on the sky, and this is how far it still
+        // has to go.
+        let said = match searching.closest() {
+            Some(away) => format!(
+                "{} systems searched, {} Ly to go",
+                crate::ui::thousands(expanded),
+                crate::ui::thousands(away.round() as u64),
+            ),
+            None => {
+                format!("{} systems searched", crate::ui::thousands(expanded))
+            }
+        };
+        ui.label(egui::RichText::new(said).weak());
+    }
 
     if (button.response.clicked() || submitted)
         && let Some((stops, range)) = asked
@@ -2694,6 +2813,7 @@ fn route_section(
         *plot = match jump_range(range) {
             Ok(range) => {
                 searched.write(Search::Route {
+                    how: *how,
                     stops: asked_in_order(
                         &stops,
                         selection,
@@ -2703,6 +2823,7 @@ fn route_section(
                     // made of what was asked for and a float is no kind of
                     // key.
                     range: range.to_string(),
+                    drive: *drive,
                 });
                 Plot::Working
             }
@@ -2815,6 +2936,20 @@ fn applied(
         panels.open_filter(filter);
     }
     match whole {
+        // Every stop of the set, in the order they are flown, each once. A
+        // trip is legs and a leg is two ends, so the stop one leg lands on is
+        // where the next sets out from and is one stop rather than two.
+        Some((FilterAction::Select, _, rows)) => {
+            let legs: Vec<Filter> = rows
+                .iter()
+                .filter_map(|index| filters.get(*index))
+                .map(|active| active.filter.clone())
+                .collect();
+            ask.picked = Some((
+                crate::systems::filter::trip_stops(&legs),
+                gathering(ui),
+            ));
+        }
         Some((FilterAction::Toggle, _, rows)) => filters.toggle_all(&rows),
         // Every filter of the section at once, so what the camera stands back
         // to take in is all of them together rather than each in turn.
@@ -2924,6 +3059,13 @@ struct RowAsk {
     /// them: the camera stands back to take in all of them together, which is
     /// not where it would stand for any one.
     framed_all: Vec<Filter>,
+    /// The systems a click asked to pick out, and whether as well as instead
+    ///
+    /// What a route or a whole trip was plotted between, in the order it is
+    /// flown. The flag is the modifier: held, the stops are picked out
+    /// alongside whatever was already, which is a union and not a toggle —
+    /// see [`crate::systems::selection::Selection::gather`].
+    picked: Option<(Vec<i64>, bool)>,
 }
 
 /// A trip's legs joined back into the one route they are flown as
@@ -2948,6 +3090,11 @@ fn as_one(trip: &str, rows: &[usize], filters: &Filters) -> Option<Filter> {
         .map(|active| &active.filter)
         .collect();
     let range = legs.first()?.range()?.to_owned();
+    // As the range is, and for the same reason: the legs were all plotted for
+    // the one ship, so the trip they come to was plotted for it too. The
+    // search mode with them, all the legs having been asked the one way.
+    let drive = legs.first()?.drive()?;
+    let how = legs.first()?.how()?;
 
     let mut systems: Vec<i64> = Vec::new();
     for leg in legs {
@@ -2964,6 +3111,8 @@ fn as_one(trip: &str, rows: &[usize], filters: &Filters) -> Option<Filter> {
         systems,
         range,
         trip: Some(trip.to_owned()),
+        drive,
+        how,
     })
 }
 
@@ -3239,7 +3388,8 @@ fn section_rows(
             Some(RowGesture::Toggle) => *toggling = Some(index),
             Some(RowGesture::Frame) => ask.framed = Some(active.filter.clone()),
             Some(RowGesture::Select) => {
-                ask.chosen = Some(active.filter.clone())
+                ask.picked = Some((active.filter.stops(), gathering(ui)));
+                ask.chosen = Some(active.filter.clone());
             }
             None => {}
         }
@@ -3329,6 +3479,13 @@ fn dot(ui: &mut Ui, radius: f32, color: egui::Color32) {
 /// What the bar can be asked to do with the filters as a set
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum FilterAction {
+    /// Pick out the systems every one of them was plotted between
+    ///
+    /// What a click on the row means. A section of filters has no one filter
+    /// to be the one being worked with, which is what a click on a filter's
+    /// own row settles, so the row is free to mean the thing a set can answer
+    /// and a single row cannot: every stop of the trip at once.
+    Select,
     /// Turn every filter off, or every one back on
     Toggle,
     /// Open a panel describing the whole of it
@@ -3442,20 +3599,22 @@ fn whole_set(
     );
 
     // Read in the same order a row below is, by the same rule: see
-    // [`asked_of_row`]. A click on the name alone asks nothing here, there
-    // being no one filter for a section to be the one being worked with.
+    // [`asked_of_row`]. A click on the name means the systems the set was
+    // plotted between — a trip's every stop, which is the one thing this row
+    // can say that none of the rows under it can.
     let asked = match asked_of_row(
         close.clicked(),
         info.is_some_and(|info| info.clicked()),
         switch.clicked(),
         row.double_clicked(),
-        false,
+        row.clicked(),
     ) {
         Some(RowGesture::LetGo) => Some(FilterAction::LetGo),
         Some(RowGesture::Describe) => Some(FilterAction::Describe),
         Some(RowGesture::Toggle) => Some(FilterAction::Toggle),
         Some(RowGesture::Frame) => Some(FilterAction::Frame),
-        _ => None,
+        Some(RowGesture::Select) => Some(FilterAction::Select),
+        None => None,
     };
     row.on_hover_cursor(egui::CursorIcon::PointingHand);
     switch.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -5296,6 +5455,11 @@ mod tests {
                 &mut travelled,
                 &mut described,
             );
+            // In the bar's own order: the filters, and the selection under
+            // them. Which is the whole point of drawing them together here —
+            // a harness that stacked them the other way round would clear
+            // every clash the real column can have.
+            applied(ui, &mut applied_to, &mut panels, &mut place);
             selected(
                 ui,
                 &mut held,
@@ -5308,7 +5472,6 @@ mod tests {
                 &mut applied_to,
                 &mut place,
             );
-            applied(ui, &mut applied_to, &mut panels, &mut place);
         }
     }
 
@@ -5326,10 +5489,14 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
     }
 
-    /// Nor does letting go of the selection hand its rows to the filters
+    /// Nor does letting go of the selection hand its rows to anything
     ///
-    /// The two kinds of row are drawn one after the other in the one column,
-    /// so a filter row moves up into a rectangle a selection row was in.
+    /// The two kinds of row are drawn one after the other in the one column.
+    /// The selection stands under the filters, so letting go of it takes rows
+    /// off the bottom and the filter rows above do not move at all — which is
+    /// the arrangement, and this is what holds it to it: numbered the other
+    /// way round, every filter row would land in a rectangle a selection row
+    /// was drawn in.
     #[test]
     fn letting_go_of_the_selection_does_not_change_the_filter_row_ids() {
         let said = crate::tests::between_passes(
@@ -5340,13 +5507,73 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
     }
 
-    /// Gathering past what the bar holds hands no place to the filters
+    /// A filter's row stands in the same place however much is picked out
+    ///
+    /// Which is why the selection is drawn under the filters and not over
+    /// them. Picking a system out and letting one go is done over and over —
+    /// a route is plotted by doing it several times — and every one of those
+    /// clicks used to walk the filter rows down the column under the pointer,
+    /// so the row a user was reaching for was somewhere else by the time they
+    /// got there. A filter is asked for once and then stays, so it is the one
+    /// that holds still and the selection is what moves.
+    ///
+    /// Read off where the text actually landed, since where the row is drawn
+    /// is the whole of the claim. The id tests beside this one say no widget
+    /// took another's state; this says the user's eye was not moved.
+    #[test]
+    fn a_filter_row_holds_its_place_as_the_selection_changes() {
+        let ctx = crate::tests::context();
+        let placed = |selection: &[&str]| {
+            let mut draw = draw_bar(&[], selection, 2);
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| draw(ui));
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, into: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Text(text) => {
+                        into.push((text.galley.text().to_owned(), text.pos))
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, into);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, &mut found);
+            }
+            found
+        };
+        let row_of = |placed: &[(String, egui::Pos2)], said: &str| {
+            placed
+                .iter()
+                .find(|(text, _)| text == said)
+                .unwrap_or_else(|| panic!("no row saying {said}"))
+                .1
+        };
+
+        // Twice through, so nothing here is egui settling a first pass.
+        placed(&["SOL"]);
+        let one = placed(&["SOL"]);
+        placed(&["SOL", "BARNARD", "WOLF 359"]);
+        let three = placed(&["SOL", "BARNARD", "WOLF 359"]);
+
+        for filter in ["Faction 0", "Faction 1"] {
+            assert_eq!(
+                row_of(&one, filter),
+                row_of(&three, filter),
+                "{filter} moved when two more systems were picked out"
+            );
+        }
+    }
+
+    /// Gathering past what the bar holds hands no place to anything
     ///
     /// The selection's rows scroll once there are more than [`SELECTED`] of
     /// them, so from there the column stops growing however many are picked
-    /// out. The filter rows below keep the rectangles they had, and a count
-    /// that went on rising would put a fresh id at a rectangle that never
-    /// moved.
+    /// out. Nothing under them moves, and a count that went on rising would
+    /// put a fresh id at a rectangle that never moved.
     ///
     /// Both ways round it, since a system is let go of from a scrolling list
     /// as easily as it is added to one.
@@ -5379,10 +5606,9 @@ mod tests {
     /// Letting go of one of several hands no row's place to another kind
     ///
     /// The rows of both kinds are the same height and stand in the one
-    /// column, so dropping a selection row moves every filter row up by
-    /// exactly one row: each lands in a rectangle a selection row was drawn
-    /// in. The summary line stays put through this, more than one system
-    /// being held either way, so nothing else takes up the slack.
+    /// column, so dropping a selection row moves every row under it up by
+    /// exactly one. The summary line stays put through this, more than one
+    /// system being held either way, so nothing else takes up the slack.
     #[test]
     fn dropping_one_of_several_does_not_hand_its_place_to_a_filter() {
         let said = crate::tests::between_passes(
@@ -5776,6 +6002,8 @@ mod tests {
             systems: addresses.to_vec(),
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         }
     }
 
@@ -5907,6 +6135,8 @@ mod tests {
             systems: vec![1, 2],
             range: "10".to_owned(),
             trip: trip.map(|trip| trip.to_owned()),
+            drive: Drive::Unaided,
+            how: Routing::default(),
         }
     }
 
@@ -5954,6 +6184,8 @@ mod tests {
             systems: vec![from, from + 1, to],
             range: "10".to_owned(),
             trip: Some(trip.to_owned()),
+            drive: Drive::Unaided,
+            how: Routing::default(),
         };
         let mut filters = Filters::default();
         filters.add(hops(1, 3));
@@ -6146,6 +6378,8 @@ mod tests {
             systems: vec![1, 2, 3, 4, 5],
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         let mut panels = Panels::default();
 
@@ -6169,6 +6403,8 @@ mod tests {
             systems: vec![1, 2, 3],
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         let mut panels = Panels::default();
 
@@ -6204,6 +6440,8 @@ mod tests {
             systems: vec![1, 2],
             range: "10".to_owned(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         let mut panels = Panels::default();
 
@@ -6602,6 +6840,8 @@ mod tests {
             systems: vec![1, 2],
             range: "10".into(),
             trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
         });
         let mut panels = Panels::default();
 

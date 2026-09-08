@@ -226,6 +226,47 @@ impl Selection {
         }
     }
 
+    /// Pick `picked` out alongside the rest, and leave it where it already is
+    ///
+    /// What a set asks for, where [`Self::toggle`] is what one thing asks
+    /// for: a route's stops picked out as well as what was already held is a
+    /// union, and toggling a stop that happened to be held already would take
+    /// it back out — a click that means "and these too" leaving fewer things
+    /// picked out than it found.
+    pub fn gather(&mut self, picked: Picked) {
+        if !self.0.iter().any(|one| one.same(&picked)) {
+            self.0.push(picked);
+        }
+    }
+
+    /// Pick out `these`, holding what was already picked out where `gathering`
+    ///
+    /// What a set asks for, where [`Self::pick`] is what one thing asks for.
+    /// Both gestures are the one gesture — a click means these, a click with
+    /// the modifier means these as well — and both are answered here so that
+    /// a route's stops picked out of the bar and the same route's stops picked
+    /// out of its panel cannot come to two different things.
+    ///
+    /// Nothing where `these` is empty, rather than a selection emptied: a
+    /// route whose stops the map cannot place is no reason to let go of what
+    /// the user was holding.
+    pub fn pick_out(
+        &mut self,
+        these: impl IntoIterator<Item = Picked>,
+        gathering: bool,
+    ) {
+        let these: Vec<Picked> = these.into_iter().collect();
+        if these.is_empty() {
+            return;
+        }
+        if !gathering {
+            self.clear();
+        }
+        for one in these {
+            self.gather(one);
+        }
+    }
+
     /// Pick out nothing
     pub fn clear(&mut self) {
         self.0.clear();
@@ -1094,6 +1135,32 @@ mod tests {
         selection.toggle(picked(1));
 
         assert_eq!(selection.addresses(), vec![2]);
+    }
+
+    /// A set gathered in holds what it found, and holds it once
+    ///
+    /// Where [`Selection::toggle`] is what one thing asks for, this is what a
+    /// set asks for: a route's stops picked out as well as what was already
+    /// held is a union. Toggling each of them would take back whichever were
+    /// already there — a gesture that means "and these too" leaving fewer
+    /// things picked out than it found, and a route whose stops it dropped
+    /// half of.
+    #[test]
+    fn gathering_a_set_holds_what_it_found() {
+        let mut selection = Selection::default();
+        selection.set(picked(1));
+        selection.toggle(picked(2));
+
+        // A trip from 2 through 3 to 1: two of its stops are held already.
+        for stop in [2, 3, 1] {
+            selection.gather(picked(stop));
+        }
+
+        assert_eq!(
+            selection.addresses(),
+            vec![1, 2, 3],
+            "a stop was let go of, or held twice"
+        );
     }
 
     /// A row's close mark lets go of that one and holds the rest
