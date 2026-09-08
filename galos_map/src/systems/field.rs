@@ -55,11 +55,11 @@ use bevy::render::render_resource::{
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
-    // After `bake_star_psf`, whose `StarSprite` carries the baked point
-    // spread the realistic glint is painted through.
+    // After `cut_star_psf`, whose `StarSprite` carries the point spread the
+    // realistic glint is painted through.
     app.add_systems(
         Startup,
-        spawn_field.after(crate::systems::spawn::bake_star_psf),
+        spawn_field.after(crate::systems::spawn::cut_star_psf),
     );
     app.add_systems(Update, tune_field);
     app.add_systems(

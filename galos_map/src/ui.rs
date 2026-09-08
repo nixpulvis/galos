@@ -1053,7 +1053,7 @@ pub(crate) fn chrome(
             // The point-spread profile the stars wear: a Moffat with its wings
             // or a tighter Gaussian. Read into a local and written back only on
             // a change, so drawing the radios does not mark the resource changed
-            // every frame and rebake the texture; see
+            // every frame and cut the texture again; see
             // [`crate::systems::spawn::reprofile`].
             titled(ui, "Point spread", "How a star's light blurs");
             let mut profile = settings.star_profile.0;

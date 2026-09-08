@@ -122,7 +122,7 @@ pub(crate) struct System {
     reach: Option<f32>,
     /// The star's combined absolute magnitude, for the realistic view
     ///
-    /// The index bakes a system's stars down to one absolute magnitude and
+    /// The builder works a system's stars down to one absolute magnitude and
     /// carries it on the payload point; kept here so the realistic view can
     /// work out how bright the star looks from where the camera stands. [`None`]
     /// where the system was built from a path with no payload — a route's
@@ -223,19 +223,19 @@ impl System {
         }
     }
 
-    /// The combined absolute magnitude the index baked for this system, if it
+    /// The combined absolute magnitude the index carries for this system, if it
     /// was built from a payload point rather than a name lookup
     ///
     /// The raw figure the realistic view reads, [`None`] rather than the
-    /// default class, so a panel can say what the bake actually assigned and a
-    /// too-bright star can be told from a merely unscanned one.
-    pub(crate) fn baked_magnitude(&self) -> Option<f32> {
+    /// default class, so a panel can say what the index build actually assigned
+    /// and a too-bright star can be told from a merely unscanned one.
+    pub(crate) fn indexed_magnitude(&self) -> Option<f32> {
         self.absolute_magnitude
     }
 
-    /// A representative temperature for the star's tint bucket, if one was
-    /// baked, kelvin.
-    pub(crate) fn baked_temperature(&self) -> Option<f64> {
+    /// A representative temperature for the star's tint bucket, if the index
+    /// carried one, kelvin.
+    pub(crate) fn indexed_temperature(&self) -> Option<f64> {
         self.temp_bucket.map(|bucket| bucket_temperature(bucket as usize))
     }
 }

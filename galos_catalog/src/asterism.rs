@@ -5,8 +5,8 @@
 //! figure a person recognises, the Plough in Ursa Major or the
 //! belt-and-shoulders of Orion. Unlike the region, the figure is a drawing
 //! convention rather than a measurement: there is no single official set of
-//! lines, and different atlases join the stars differently. So it is data, not
-//! a table baked into the code.
+//! lines, and different atlases join the stars differently. So it is data,
+//! not a table written into the code.
 //!
 //! # The seam a renderer draws against
 //!

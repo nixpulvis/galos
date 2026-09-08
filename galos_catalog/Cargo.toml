@@ -6,10 +6,10 @@ edition = "2024"
 rust-version.workspace = true
 
 # Star catalogs measured from Earth, read into the vocabulary the rest of the
-# workspace speaks. A peer of the bake rather than of the database: its job is
-# what `galos_db/src/index/mod.rs` does for the Elite dataset — read its own
-# data, hand back stars with a position, a magnitude and a temperature, and
-# know nothing about the tree or the renderer.
+# workspace speaks. A peer of the index build rather than of the database:
+# its job is what `galos_db/src/index/mod.rs` does for the Elite dataset —
+# read its own data, hand back stars with a position, a magnitude and a
+# temperature, and know nothing about the tree or the renderer.
 #
 # It owns everything between a foreign file and that vocabulary: parsing,
 # units, and frames.

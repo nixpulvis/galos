@@ -716,10 +716,10 @@ pub struct JumpGraph {
     fresh: Arc<Places>,
     /// Which systems can supercharge a drive, as published.
     ///
-    /// Held beside the places rather than baked into them, though a boost is a
+    /// Held beside the places rather than folded into them, though a boost is a
     /// fact about a place. The table moves on nearly every publish — four
     /// systems in a hundred can supercharge and the feed names eighty a minute
-    /// — and baking it in would mean rebuilding the base to take one in, which
+    /// — and folding it in would mean rebuilding the base to take one in, which
     /// is two hundred milliseconds and a hundred and fifty megabytes. Read per
     /// expansion instead, which is one lookup for the system being left, not
     /// one for each of the thousands it can see.

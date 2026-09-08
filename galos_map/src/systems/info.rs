@@ -885,19 +885,19 @@ fn described(
         |ui| {
             let [x, y, z] = system.position;
             copied(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
-            // What the realistic view sizes a star by: the magnitude the bake
-            // assigned, how bright it looks from where the camera stands, and
-            // its tint bucket. Unknown for a system built from a name lookup
+            // What the realistic view sizes a star by: the magnitude the index
+            // build assigned, how bright it looks from where the camera stands,
+            // and its tint bucket. Unknown for a system built from a name lookup
             // rather than a payload point.
             field(
                 ui,
                 "Abs. magnitude",
-                match system.baked_magnitude() {
+                match system.indexed_magnitude() {
                     Some(m) => format!("{m:.1}"),
                     None => UNKNOWN.into(),
                 },
             );
-            if let (Some(m), Some(eye)) = (system.baked_magnitude(), eye) {
+            if let (Some(m), Some(eye)) = (system.indexed_magnitude(), eye) {
                 let away = eye.distance(DVec3::from(system.position));
                 field(
                     ui,
@@ -910,7 +910,7 @@ fn described(
                     ),
                 );
             }
-            if let Some(t) = system.baked_temperature() {
+            if let Some(t) = system.indexed_temperature() {
                 field(ui, "Temperature", format!("{t:.0} K"));
             }
             // Two rows rather than one, because the two counts are reported

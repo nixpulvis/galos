@@ -12,7 +12,7 @@
 //!
 //! The seam is drawn there and not at the crate boundary. What a renderer
 //! keeps is how it *deposits* the profile — a loop over pixels, or a quad and a
-//! fragment shader, or a texture baked once from [`Moffat::shape`] — and how it
+//! fragment shader, or a texture cut once from [`Moffat::shape`] — and how it
 //! compresses the result for a display. What it may not keep is its own idea of
 //! the profile's shape or its normalization.
 //!
@@ -134,8 +134,8 @@ pub trait Profile: std::fmt::Debug {
     /// The profile's shape, normalized to unit peak: one at the centre, falling
     /// away to nothing in the wings.
     ///
-    /// The shape alone, with no energy in it — what a renderer bakes into a
-    /// texture or evaluates in a shader. [`at`](Self::at) is this times the
+    /// The shape alone, with no energy in it — what a renderer cuts a texture
+    /// from or evaluates in a shader. [`at`](Self::at) is this times the
     /// [`peak`](Self::peak) the energy comes to, and is where the shared
     /// normalization enters; this carries the profile's form and nothing else.
     fn shape(&self, distance: f64) -> f64;
@@ -153,8 +153,8 @@ pub trait Profile: std::fmt::Debug {
     /// The value `distance` from the centre for a star carrying `energy`:
     /// [`peak`](Self::peak) times [`shape`](Self::shape).
     ///
-    /// Separable in energy by construction, which is what lets a texture bake
-    /// the shape once and scale it by the peak.
+    /// Separable in energy by construction, which is what lets a renderer cut
+    /// one texture from the shape and scale it by the peak.
     fn at(&self, energy: f64, distance: f64) -> f64 {
         self.peak(energy) * self.shape(distance)
     }
@@ -380,7 +380,7 @@ impl Layer {
 /// [`with_layer`](Self::with_layer) composes in any order and adding one layer
 /// never rescales another's stored weight. Everything stays linear in energy,
 /// so the stack is still separable: [`at`] is [`peak`] times a fixed [`shape`]
-/// exactly as a single kernel is, which is what lets a GPU still bake one
+/// exactly as a single kernel is, which is what lets a GPU still cut one
 /// texture from [`shape`] and scale it by [`peak`].
 ///
 /// [`at`]: Self::at
@@ -425,7 +425,8 @@ impl Psf {
     }
 
     /// The unit-peak shape at `distance`: the whole stack, normalized so the
-    /// centre is one. Separable from energy, so a texture can bake it once.
+    /// centre is one. Separable from energy, so one texture cut from it serves
+    /// every star.
     pub fn shape(&self, distance: f64) -> f64 {
         let numerator: f64 = self
             .layers
@@ -544,7 +545,8 @@ mod tests {
     }
 
     /// The shape carries the profile's form and no energy: unit at the centre,
-    /// monotone outward, gone in the far wings. It is what a texture bakes.
+    /// monotone outward, gone in the far wings. It is what a texture is cut
+    /// from.
     #[test]
     fn the_shape_is_unit_peak_and_falls_away() {
         let psf = Moffat::new(2.0, STELLAR_BETA);
@@ -727,7 +729,7 @@ mod tests {
     }
 
     /// A stack is still linear in energy, so it stays separable: the value at a
-    /// distance is the peak times a fixed shape, which is what lets a GPU bake
+    /// distance is the peak times a fixed shape, which is what lets a GPU cut
     /// one texture from [`Psf::shape`] and scale it by [`Psf::peak`].
     #[test]
     fn a_stack_stays_separable() {

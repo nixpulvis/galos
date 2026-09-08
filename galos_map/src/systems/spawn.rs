@@ -47,7 +47,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(StarExposure::default());
     app.insert_resource(StarProfile::default());
 
-    app.add_systems(Startup, bake_star_psf);
+    app.add_systems(Startup, cut_star_psf);
     app.init_resource::<PendingSpawns>();
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     // Turns a bounded number of queued systems into entities each frame, so a
@@ -55,7 +55,7 @@ pub fn plugin(app: &mut App) {
     // which fills the queue from what the fetch tasks return.
     app.add_systems(Update, drain_spawns.in_set(MapSet::Populate).after(spawn));
     app.add_systems(Update, update.in_set(MapSet::Populate).before(spawn));
-    // Rebakes the star texture when the profile changes; guarded on the
+    // Cuts the star texture again when the profile changes; guarded on the
     // change inside, so a resting frame does nothing.
     app.add_systems(Update, reprofile.in_set(MapSet::Populate));
 
@@ -177,13 +177,13 @@ pub(crate) fn photometric_emissive(
     LinearRgba::rgb(tint[0] * level, tint[1] * level, tint[2] * level)
 }
 
-/// How wide the baked point spread is, in texels a side
+/// How wide the point spread is cut, in texels a side
 const PSF_TEXELS: u32 = 128;
 
-/// The star point spread: [`galos_photometry::psf::Moffat`], baked to a texture
+/// The star point spread: [`galos_photometry::psf::Moffat`], cut to a texture
 ///
 /// The one shared profile, sampled from the crate so the map and `galos_sky`
-/// wear the same instrument — the map bakes its shape into a texture once, the
+/// wear the same instrument — the map cuts its shape into a texture once, the
 /// sky evaluates it per pixel, but the `β` and the falloff are one definition.
 /// A bright core with power-law wings falling to nothing by the edge; a
 /// brighter star clears more of it above the eye's floor (see
@@ -223,24 +223,24 @@ pub(crate) fn star_psf(profile: ProfileKind) -> Image {
 
 /// The point spread every star's mark is painted through
 ///
-/// One baked image shared by the whole sky, so the map and `galos_sky` wear
-/// the same instrument. [`super::field`] samples it per mark in the realistic
-/// view — a bright core falling to nothing, which the camera's bloom spreads
-/// into a glint — and [`reprofile`] rewrites it in place when the profile
-/// changes, repainting every star at once.
+/// One image, cut once and shared by the whole sky, so the map and `galos_sky`
+/// wear the same instrument. [`super::field`] samples it per mark in the
+/// realistic view — a bright core falling to nothing, which the camera's bloom
+/// spreads into a glint — and [`reprofile`] rewrites it in place when the
+/// profile changes, repainting every star at once.
 #[derive(Resource)]
 pub(crate) struct StarSprite {
-    /// What [`star_psf`] baked, under the handle [`super::field`] cloned.
+    /// What [`star_psf`] cut, under the handle [`super::field`] cloned.
     pub psf: Handle<Image>,
 }
 
 /// Which point-spread profile the realistic view's stars wear
 ///
-/// The shape [`star_psf`] bakes into the sprite texture — a Moffat with its
+/// The shape [`star_psf`] cuts into the sprite texture — a Moffat with its
 /// wings or a tighter Gaussian; see [`galos_photometry::psf::ProfileKind`].
 /// The map sizes a star by [`super::scale`]'s own `psf_radius` law either way,
 /// so this changes the halo a star wears, not how large it draws.
-/// [`reprofile`] rebakes the texture when it changes.
+/// [`reprofile`] cuts the texture again when it changes.
 #[derive(Resource, Default)]
 pub struct StarProfile(pub ProfileKind);
 
@@ -1072,13 +1072,13 @@ pub(crate) fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     }
 }
 
-/// Bake the point spread every star's mark is painted through
+/// Cut the point spread every star's mark is painted through
 ///
 /// One image for the whole sky, put up before [`super::field`]'s own startup
 /// reads it. Nothing else is prepared here: a mark is painted flat in screen
 /// space from a system's position and its size, so there is no per-star mesh
 /// or material to build.
-pub(crate) fn bake_star_psf(
+pub(crate) fn cut_star_psf(
     mut images: ResMut<Assets<Image>>,
     star_profile: Res<StarProfile>,
     mut commands: Commands,
@@ -1087,12 +1087,13 @@ pub(crate) fn bake_star_psf(
     commands.insert_resource(StarSprite { psf });
 }
 
-/// Rebake the star point spread when the profile changes
+/// Cut the star point spread again when the profile changes
 ///
 /// The sprite's texture is the profile's shape ([`star_psf`]); a change to the
 /// profile is a change to that one image, and rewriting it in place repaints
 /// every star drawn through it at once, the field's glint included.
-/// Guarded on the change, since baking and re-uploading the texture is not free.
+/// Guarded on the change, since cutting the texture again and re-uploading it
+/// is not free.
 fn reprofile(
     profile: Res<StarProfile>,
     sprite: Option<Res<StarSprite>>,
@@ -1378,19 +1379,19 @@ mod tests {
         assert!(last.doubled(clickable(1), 0.3));
     }
 
-    /// Switching the profile rebakes the one star texture in place
+    /// Switching the profile cuts the one star texture again in place
     ///
     /// The sprite's point spread is a shared image; changing the profile has to
     /// rewrite it so every star repaints at once, rather than leaving the sky on
-    /// the shape it was baked with. The two profiles draw different textures, so
+    /// the shape it was cut with. The two profiles draw different textures, so
     /// the bytes must change.
     #[test]
-    fn switching_the_profile_rebakes_the_star_texture() {
+    fn switching_the_profile_cuts_the_star_texture_again() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Assets<Image>>();
         app.insert_resource(StarProfile(ProfileKind::Moffat));
-        app.add_systems(Startup, bake_star_psf);
+        app.add_systems(Startup, cut_star_psf);
         app.add_systems(Update, reprofile);
         app.update();
 
@@ -1399,7 +1400,7 @@ mod tests {
             .world()
             .resource::<Assets<Image>>()
             .get(&handle)
-            .expect("a baked star texture")
+            .expect("a star texture cut at startup")
             .data
             .clone();
 
@@ -1409,10 +1410,10 @@ mod tests {
             .world()
             .resource::<Assets<Image>>()
             .get(&handle)
-            .expect("a rebaked star texture")
+            .expect("a re-cut star texture")
             .data
             .clone();
 
-        assert_ne!(moffat, gaussian, "the profile switch did not rebake");
+        assert_ne!(moffat, gaussian, "the profile switch did not re-cut");
     }
 }

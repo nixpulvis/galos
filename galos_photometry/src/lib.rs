@@ -21,9 +21,9 @@
 //! scanned star, and color needs a temperature. Where a scan is absent the
 //! class the system is named for is all there is, so [`ClassLight::of`] turns
 //! that class into a typical magnitude and heat. It is the last link in the
-//! bake's fallback chain — scanned stars first, then this — and it is what lets
-//! a system with nothing recorded but its primary's letter still take its place
-//! in the ordering.
+//! fallback chain the index build walks — scanned stars first, then this — and
+//! it is what lets a system with nothing recorded but its primary's letter
+//! still take its place in the ordering.
 //!
 //! Nothing here knows about the database or the renderer. A [`Color`] is linear
 //! RGB as `[f32; 3]`, and the caller converts to whatever it draws in.
@@ -155,8 +155,8 @@ impl Magnitude {
     /// member.
     ///
     /// Fed absolute magnitudes it returns a combined absolute magnitude, which
-    /// is how the bake collapses a system's scanned stars into the one figure
-    /// it orders by; fed apparent ones it returns a combined apparent
+    /// is how the index build collapses a system's scanned stars into the one
+    /// figure it orders by; fed apparent ones it returns a combined apparent
     /// magnitude, which is what an unresolved pair looks like from where it is
     /// seen. It is the same sum either way. Empty in, [`None`] out: no light is
     /// not a magnitude.
@@ -511,9 +511,9 @@ fn xy_to_linear_srgb(x: f64, y: f64) -> [f32; 3] {
 
 /// A typical absolute magnitude and temperature for a class of star.
 ///
-/// What [`ClassLight::of`] answers: the two numbers the bake needs where no
-/// scan gives them, standing in for the whole class rather than any one member
-/// of it.
+/// What [`ClassLight::of`] answers: the two numbers the index build needs
+/// where no scan gives them, standing in for the whole class rather than any
+/// one member of it.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ClassLight {
     /// Typical absolute visual magnitude for the class.
@@ -540,18 +540,18 @@ impl ClassLight {
 
     /// A typical absolute magnitude and temperature for an Elite star class.
     ///
-    /// The last link in the bake's fallback chain, reached only where a system
-    /// carries no scanned star to sum. It takes the class the system is named
-    /// for — the game's `StarClass`, a letter or two and nothing finer — and
-    /// answers the pair the ordering and the glow need.
+    /// The last link in the index build's fallback chain, reached only where a
+    /// system carries no scanned star to sum. It takes the class the system is
+    /// named for — the game's `StarClass`, a letter or two and nothing finer —
+    /// and answers the pair the ordering and the glow need.
     ///
     /// The figures are representative values for each family, drawn from the
     /// standard dwarf sequence (Pecaut & Mamajek 2013) for the main one and
     /// from the character of each remnant and oddity for the rest, and are
-    /// meant to be tuned against the bake once it runs rather than settled to a
-    /// decimal now. What matters at this stage is the ordering they impose: hot
-    /// before cool, bright before dim, remnants and brown dwarfs down where
-    /// their flux really sits.
+    /// meant to be tuned once the index build has run over a real galaxy
+    /// rather than settled to a decimal now. What matters at this stage is the
+    /// ordering they impose: hot before cool, bright before dim, remnants and
+    /// brown dwarfs down where their flux really sits.
     ///
     /// Matching runs specific before general. The pairs that begin with a
     /// letter another family also begins with — `MS` and `S` for the S-type

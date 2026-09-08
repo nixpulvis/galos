@@ -3,9 +3,9 @@
 //! A catalog is a source of stars exactly as the Elite dataset is a source of
 //! systems, and the two meet where every other source does: a position, an
 //! absolute magnitude and a temperature. That makes this a peer of
-//! `galos_db`'s bake rather than of the database — it reads its own data and
-//! hands back [`Star`]s, and knows nothing about the tree, the renderer or
-//! Postgres.
+//! `galos_db`'s index build rather than of the database — it reads its own
+//! data and hands back [`Star`]s, and knows nothing about the tree, the
+//! renderer or Postgres.
 //!
 //! What it owns is everything between a foreign file and that vocabulary.
 //!
@@ -223,9 +223,9 @@ impl Star {
     /// A measured color index first, since it is a measurement of this star;
     /// then the spectral type through [`ClassLight::of`], which is a typical
     /// figure for its family; then the default that stands in for a row with
-    /// neither. The same shape of fallback the bake uses, for the same reason:
-    /// a catalog is holey and a star with no color still has to be given a
-    /// tint.
+    /// neither. The same shape of fallback the index build uses, for the same
+    /// reason: a catalog is holey and a star with no color still has to be
+    /// given a tint.
     ///
     /// [`ClassLight::of`] reads Elite's class tokens, which are the leading
     /// letters of a spectral type, and a catalog's `K2IIIp` leads with the same

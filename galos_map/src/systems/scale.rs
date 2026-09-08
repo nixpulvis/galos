@@ -668,13 +668,13 @@ pub(crate) const UNSEEN: f32 = 1e-3;
 /// rather than a disc, with no cap to impose.
 //
 // TODO(psf): the profile and its `β` are now [`galos_photometry::psf::Moffat`],
-// baked to a texture by [`super::spawn::star_psf`] and stretched to this radius
+// cut to a texture by [`super::spawn::star_psf`] and stretched to this radius
 // on a billboard. The stretch is the approximation left to remove: the plan is
 // a custom billboard material that evaluates the Moffat per fragment at a fixed
 // core width, integrated over each pixel's footprint so a star crossing a pixel
 // boundary does not shimmer, its above-floor radius falling out of the profile
 // itself. The shape is the instrument's — one profile for every star, and only
-// the exposure between them — so stretching a baked texture to each star's
+// the exposure between them — so stretching one cut texture to each star's
 // radius makes the core width a per-star number instead: a bright star is
 // drawn through a wider instrument rather than through more of the same one,
 // and the light its mark lays down follows its drawn area rather than its

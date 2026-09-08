@@ -1,5 +1,5 @@
 //! Catalog stars as index systems: the bridge that makes this a peer of the
-//! bake.
+//! index build.
 //!
 //! `galos_db/src/index/mod.rs` reads Postgres and hands back
 //! `Vec<galos_index::System>`. This does the same from a catalog file, and the
