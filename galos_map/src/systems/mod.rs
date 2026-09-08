@@ -426,6 +426,17 @@ pub(crate) struct InReach {
 /// Anywhere above that it is drawn faintly, which is the other half of what
 /// [`filter`] is for: a faction read against the space around it.
 ///
+/// And a third question, while the map is scaling systems by population
+/// ([`scale::ScalePopulation`]): somebody has to live there. In that mode how
+/// large a mark is drawn is how many people are in it, and an empty system
+/// has no size to say that with — drawn at the smallest mark it would say
+/// what a system with somebody in it says. So it is left off the sky
+/// altogether, which is the honest reading and the one the mode is for.
+///
+/// Only in the map view. The realistic sky draws stars at what they put out,
+/// which is nothing to do with who lives under them, and the setting is not
+/// offered there.
+///
 /// Runs over every star every frame, so it writes only where the answer
 /// actually changed. Assigning regardless would mark the whole sky as
 /// changed each frame, and each star drags its name along with it.
@@ -440,10 +451,13 @@ pub(crate) fn visibility(
     )>,
     spyglass: Res<Spyglass>,
     dim: Res<filter::DimTo>,
+    view: Res<scale::View>,
+    scale_population: Res<scale::ScalePopulation>,
     mut in_reach: ResMut<InReach>,
 ) {
     let Ok(camera) = camera.single() else { return };
     let excluded_are_drawn = dim.0 > 0.;
+    let by_population = scale::by_population(&view, &scale_population);
 
     // TODO(bounded): this counts drawn entities, which under the walk is the
     // resolvable prefix rather than every system in reach — the number is
@@ -465,8 +479,13 @@ pub(crate) fn visibility(
             }
         }
 
+        // A route's stop and the system the camera is standing inside are
+        // drawn whatever any of the three say; see above.
+        let peopled = !by_population || system.population > 0;
         visibility.set_if_neq(
-            if hop || descended || (within && (!filtered || excluded_are_drawn))
+            if hop
+                || descended
+                || (within && peopled && (!filtered || excluded_are_drawn))
             {
                 Visibility::Visible
             } else {
@@ -1155,6 +1174,8 @@ pub(crate) mod tests {
             follow_camera: false,
         });
         app.insert_resource(filter::DimTo(dim));
+        app.insert_resource(scale::View::Map);
+        app.insert_resource(scale::ScalePopulation(false));
         app.init_resource::<InReach>();
         app.world_mut().spawn(OrbitCamera::default());
         app.add_systems(Update, visibility);
@@ -1292,6 +1313,68 @@ pub(crate) mod tests {
             !drawn(&app, neighbour),
             "the reach held a system five light years off"
         );
+    }
+
+    /// A system with `population` living in it, five light years off
+    fn peopled(address: i64, population: u64) -> System {
+        let mut system = at(address, 5.);
+        system.population = population;
+        system
+    }
+
+    /// Scaling by population takes the empty systems off the sky
+    ///
+    /// How large a mark is drawn is how many people are in it, and nobody
+    /// living there is not a size. Drawn at the smallest mark instead, an
+    /// empty system says what a system with somebody in it says — and most of
+    /// the galaxy is empty, so most of what the mode drew said nothing.
+    #[test]
+    fn scaling_by_population_hides_an_empty_system() {
+        let mut app = map(10., true, 0.15);
+        app.insert_resource(scale::ScalePopulation(true));
+        let empty =
+            app.world_mut().spawn((peopled(1, 0), Visibility::default())).id();
+        let lived_in =
+            app.world_mut().spawn((peopled(2, 12), Visibility::default())).id();
+
+        app.update();
+
+        assert!(!drawn(&app, empty), "an empty system was drawn at a size");
+        assert!(drawn(&app, lived_in));
+    }
+
+    /// And nothing else does
+    ///
+    /// An empty system is a system, and every other way of reading the map
+    /// draws it: the mode is what makes its size a claim about people.
+    #[test]
+    fn an_empty_system_is_drawn_when_nothing_scales_by_population() {
+        let mut app = map(10., true, 0.15);
+        let empty =
+            app.world_mut().spawn((peopled(1, 0), Visibility::default())).id();
+
+        app.update();
+
+        assert!(drawn(&app, empty));
+    }
+
+    /// Nor does the realistic sky, whatever the setting says
+    ///
+    /// A star is drawn there at what it puts out, which is nothing to do with
+    /// who lives under it, and the setting is not offered in that view. Left
+    /// on from the map view it would empty the sky of all but the inhabited
+    /// stars.
+    #[test]
+    fn the_realistic_sky_draws_an_empty_system() {
+        let mut app = map(10., true, 0.15);
+        app.insert_resource(scale::ScalePopulation(true));
+        app.insert_resource(scale::View::Realistic);
+        let empty =
+            app.world_mut().spawn((peopled(1, 0), Visibility::default())).id();
+
+        app.update();
+
+        assert!(drawn(&app, empty));
     }
 
     /// What the tally came to

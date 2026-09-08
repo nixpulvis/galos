@@ -92,24 +92,48 @@ struct FieldMaterials {
 /// light years this is what a mark is drawn at, and nearer than that the angle
 /// is. The two are argued together in `scale::ANGULAR`, which is the place to
 /// read before moving either.
-const SMALLEST: f32 = 0.75;
+///
+/// The floor under a mark drawn by distance, and the last word over
+/// `scale::ANGULAR` out where that angle falls under it.
+///
+/// Not the last word while the map is scaling by population; see [`floor`].
+pub(crate) const SMALLEST: f32 = 0.75;
+
+/// The smallest a mark is painted at, given whether the map is scaling
+/// systems by population
+///
+/// [`SMALLEST`] ordinarily, and nothing at all in that mode: there a mark's
+/// size is how many people live in the system, so a thinly populated one is
+/// drawn smaller than an ordinary one — including smaller than a point of
+/// light, out where an ordinary one is already that. Floored, every system
+/// under some population came out the size of an ordinary one, which is a
+/// floor saying something untrue about population.
+///
+/// Read by [`build_field`] and by [`super::pointing::size_indicators`], which
+/// both put it through [`drawn_radius`], so what is painted and what is ringed
+/// cannot come apart.
+pub(crate) fn floor(scaling_by_population: bool) -> f32 {
+    if scaling_by_population { 0. } else { SMALLEST }
+}
 
 /// The pixel radius to draw a system's mark at, or `None` to leave it undrawn
 ///
 /// `raw` is the radius the view's sizing system settled, read off the world
 /// size it left on the shell. The two views floor it apart:
 ///
-/// - [`View::Map`] holds every system to [`SMALLEST`], so a distant one stays
-///   a point rather than a sub-pixel speck.
+/// - [`View::Map`] holds every system to `floor`, so a distant one stays a
+///   point rather than a sub-pixel speck — unless the map is scaling by
+///   population, where the size is the reading and there is no floor; see
+///   [`floor`].
 /// - [`View::Realistic`] draws only the stars that clear the eye's floor. One
 ///   that did not was shrunk by [`super::scale::size_photometrically`] to the
 ///   [`UNSEEN`] sliver, which is the sentinel that says it did not clear the
 ///   floor. Flooring it up to [`SMALLEST`] the way the map does would light
 ///   the whole sub-floor sky; so a sliver is dropped and every cleared star
 ///   keeps its own photometric radius, no floor.
-fn mark_radius(view: &View, raw: f32) -> Option<f32> {
+fn mark_radius(view: &View, raw: f32, floor: f32) -> Option<f32> {
     match view {
-        View::Map => Some(raw.max(SMALLEST)),
+        View::Map => Some(raw.max(floor)),
         // The sliver's own radius is `UNSEEN / 2`; anything larger cleared the
         // floor and is drawn at that radius.
         View::Realistic => (raw > UNSEEN * 0.5).then_some(raw),
@@ -128,6 +152,8 @@ fn mark_radius(view: &View, raw: f32) -> Option<f32> {
 /// realistic view halves it — read the same way, the map mark would come out
 /// half the extent and stand inside the orbits it is meant to enclose.
 ///
+/// `floor` is the smallest it may be painted at, which is [`floor`]'s to say.
+///
 /// The one answer, so that what the field paints and what
 /// [`super::pointing::size_indicators`] rings and catches the pointer over
 /// cannot come apart. A ring worked out from a second reading of the same
@@ -136,6 +162,7 @@ pub(crate) fn drawn_radius(
     view: &View,
     scale: f32,
     per_pixel: f32,
+    floor: f32,
 ) -> Option<f32> {
     let raw = scale / per_pixel.max(f32::MIN_POSITIVE);
     mark_radius(
@@ -144,15 +171,27 @@ pub(crate) fn drawn_radius(
             View::Map => raw,
             View::Realistic => raw * 0.5,
         },
+        floor,
     )
 }
 
 /// The side of the disc-mask texture, in texels
 ///
-/// A mark is a handful of pixels at most until the camera is close enough to
-/// descend, so the mask needs no more than this to round it, and small enough
-/// that a linear fetch at a pixel or two still lands on the solid centre.
-const MARK_TEXELS: u32 = 64;
+/// What sets how crisp a mark's rim is, because the fade at that rim is
+/// authored in texels: a mark drawn `d` pixels across spreads a texel over
+/// `d / MARK_TEXELS` of them, so the blur is a fixed *fraction* of whatever
+/// size the mark is drawn at. At sixty-four texels that fraction is some two
+/// and a half percent of the diameter, which a mark of a few pixels never
+/// shows and a mark the width of a system — a system the camera has come in
+/// on, or a busy one under the population scale — wears as a couple of
+/// pixels of soft edge. Reported as blurry circles, and it was.
+///
+/// Here the same fade is under a pixel out to a mark a hundred and fifty
+/// pixels across, which is wider than any mark left standing: past that the
+/// system's own contents are drawn and the mark has faded out
+/// ([`super::bodies::spawn::WORTH_HIDING`]). A quarter of a megabyte of
+/// texels, uploaded once.
+const MARK_TEXELS: u32 = 256;
 
 /// Put the field's mesh, its two materials, and the origin camera up
 fn spawn_field(
@@ -277,6 +316,7 @@ pub(crate) fn build_field(
         With<Shell>,
     >,
     view: Res<View>,
+    scale_population: Res<crate::systems::scale::ScalePopulation>,
     exposure: Res<StarExposure>,
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
@@ -292,6 +332,9 @@ pub(crate) fn build_field(
     let mut uvs: Vec<[f32; 2]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    // Whether a mark may be painted under a pixel, which is the population
+    // scale's to say; see [`floor`].
+    let floor = floor(scale_population.0);
 
     let half = viewport * 0.5;
     for (system, drawn, visibility, strength, filtered, thinned) in &shells {
@@ -309,7 +352,8 @@ pub(crate) fn build_field(
         // The pixel radius the view's sizing system settled, read back off the
         // world size it left on the shell, then floored or dropped by the
         // view; see [`drawn_radius`].
-        let Some(radius) = drawn_radius(&view, drawn.0, per_pixel) else {
+        let Some(radius) = drawn_radius(&view, drawn.0, per_pixel, floor)
+        else {
             continue;
         };
 
@@ -421,8 +465,10 @@ fn field_mesh(
 /// Sampled as a material's base color, this cuts each quad to the disc
 /// inscribed in it — in every channel, so it rounds the solid mark's alpha and
 /// the glint's color alike. A texel and a half of fade at the rim antialiases
-/// the edge; the centre holds solid at any size, so a mark a pixel across is
-/// still a point of light rather than a sample of a faint edge that vanishes.
+/// the edge — read in texels, so how soft it comes out on screen is
+/// [`MARK_TEXELS`]'s to say — and the centre holds solid at any size, so a
+/// mark a pixel across is still a point of light rather than a sample of a
+/// faint edge that vanishes.
 fn disc_mask() -> Image {
     let n = MARK_TEXELS;
     let centre = (n as f32 - 1.) / 2.;
@@ -480,18 +526,70 @@ mod tests {
         );
     }
 
+    /// And its rim is crisp at the sizes a mark is actually drawn at
+    ///
+    /// Reported as blurry circles. The rim's fade is authored in texels, so
+    /// on screen it is a fraction of whatever the mark is drawn at, and at
+    /// sixty-four texels a mark the width of a system wore a couple of pixels
+    /// of soft edge. Read as that fraction, and against the widest mark left
+    /// standing: past about this the system's own contents are drawn and the
+    /// mark has faded out.
+    #[test]
+    fn the_mark_rim_is_crisp_at_the_sizes_it_is_drawn() {
+        let n = MARK_TEXELS as usize;
+        let data = disc_mask().data.expect("the mask carries its texels");
+        let alpha = |x: usize| data[((n / 2) * n + x) * 4 + 3];
+
+        // Out from the middle of the mask: how far it holds solid, and how
+        // far anything is drawn at all.
+        let solid = (n / 2..n).take_while(|x| alpha(*x) == 255).count();
+        let lit = (n / 2..n).take_while(|x| alpha(*x) > 0).count();
+        let fade = (lit - solid) as f32 / n as f32;
+
+        assert!(fade < 0.01, "the rim fades over {fade} of a mark's width");
+
+        // The widest mark still drawn, in pixels.
+        let widest = 150.;
+        assert!(
+            fade * widest < 1.5,
+            "a {widest} px mark wore {} px of soft edge",
+            fade * widest
+        );
+    }
+
     /// The realistic view draws only the stars that clear the eye's floor
     ///
     /// A star below it is shrunk to the [`UNSEEN`] sliver by
     /// `size_photometrically`; drawn as a mark it lit the whole sub-floor sky.
     /// So a sliver is not drawn, a cleared star keeps its own radius with no
-    /// floor, and only the map holds every system up to [`SMALLEST`].
+    /// floor, and only the map holds every system up to the floor it is given.
     #[test]
     fn the_realistic_view_drops_a_sub_floor_star() {
-        assert_eq!(mark_radius(&View::Realistic, UNSEEN * 0.5), None);
-        assert_eq!(mark_radius(&View::Realistic, 0.6), Some(0.6));
-        assert_eq!(mark_radius(&View::Realistic, 4.0), Some(4.0));
-        assert_eq!(mark_radius(&View::Map, UNSEEN * 0.5), Some(SMALLEST));
-        assert_eq!(mark_radius(&View::Map, 3.0), Some(3.0));
+        let floor = floor(false);
+
+        assert_eq!(mark_radius(&View::Realistic, UNSEEN * 0.5, floor), None);
+        assert_eq!(mark_radius(&View::Realistic, 0.6, floor), Some(0.6));
+        assert_eq!(mark_radius(&View::Realistic, 4.0, floor), Some(4.0));
+        assert_eq!(
+            mark_radius(&View::Map, UNSEEN * 0.5, floor),
+            Some(SMALLEST)
+        );
+        assert_eq!(mark_radius(&View::Map, 3.0, floor), Some(3.0));
+    }
+
+    /// And scaling by population takes the map's floor off
+    ///
+    /// In that mode a mark's size is how many people live in the system, so a
+    /// thinly populated one is drawn smaller than an ordinary one — under a
+    /// pixel out where an ordinary one is already about that. Held up to the
+    /// floor, every system under some population drew the size of an ordinary
+    /// one.
+    #[test]
+    fn the_population_scale_paints_under_the_floor() {
+        let floor = floor(true);
+        let speck = SMALLEST * 0.2;
+
+        assert_eq!(mark_radius(&View::Map, speck, floor), Some(speck));
+        assert_eq!(mark_radius(&View::Map, 3.0, floor), Some(3.0));
     }
 }

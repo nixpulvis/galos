@@ -27,7 +27,7 @@ use crate::systems::aggregate::Planned;
 use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::fetch::{FetchTasks, RawSystem};
 use crate::systems::filter::{Candidate, Cut, Filtering, Filters};
-use crate::systems::scale::View;
+use crate::systems::scale::{ScalePopulation, View, by_population};
 use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
 use crate::{Names, Populated, ResidentIndex, Transport};
@@ -40,6 +40,7 @@ use galos_index::{
     CellId, MARK_SEPARATION_PX, Part, Point, Resident, STAR_SEPARATION_PX,
     Stamp, resolvable_count,
 };
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Instant;
@@ -48,7 +49,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<LodFetch>();
     app.init_resource::<ResidentCells>();
     app.init_resource::<BoundedTasks>();
-    app.init_resource::<AdmittedPoints>();
+    app.init_resource::<PointOrders>();
 
     // Clears the map when the source is switched, before either source runs,
     // so the two never overlap on screen.
@@ -165,7 +166,7 @@ fn switch(
     mut evictions: ResMut<PendingEvictions>,
     mut resident: ResMut<ResidentCells>,
     mut tasks: ResMut<BoundedTasks>,
-    mut admitted: ResMut<AdmittedPoints>,
+    mut orders: ResMut<PointOrders>,
     mut held: ResMut<crate::refresh::Held>,
     mut fetched: ResMut<FetchTasks>,
     mut last: Local<Option<bool>>,
@@ -195,7 +196,7 @@ fn switch(
     // refresh stamps what it holds — so it is a row that would sit there for
     // the life of the process.
     resident.0 = Resident::default();
-    admitted.cells.clear();
+    orders.clear();
     held.clear();
     tasks.0.clear();
     fetched.fetched.clear();
@@ -258,7 +259,7 @@ fn fetch(
 fn collect(
     mut tasks: ResMut<BoundedTasks>,
     mut resident: ResMut<ResidentCells>,
-    mut admitted: ResMut<AdmittedPoints>,
+    mut orders: ResMut<PointOrders>,
     mut held: ResMut<crate::refresh::Held>,
 ) {
     tasks.0.retain(|&id, task| {
@@ -266,96 +267,157 @@ fn collect(
             return true;
         };
         if let Ok((points, stamp)) = result {
-            adopt(&mut resident, &mut admitted, id, points);
+            adopt(&mut resident, &mut orders, id, points);
             held.holding(id, stamp);
         }
         false
     });
 }
 
-/// Which of a resident cell's points the filters admit, kept until the
-/// verdicts move
+/// The orders a resident cell's points are drawn in, kept until what they are
+/// worked out from moves
 ///
-/// [`reconcile`] draws what the filters admit before what they exclude, so it
-/// has to know which of every resident payload is which — a walk of every
-/// point of every marks cell, asking the filters about each. That answer holds
-/// still between the four things that can move it: a filter asked or lifted, a
-/// span re-cut against the clock, the political table replaced by a refresh,
-/// and the payload itself replaced. [`Cut`] counts the first three and
-/// [`adopt`] drops a cell's list with its payload for the fourth, so the walk
-/// is done once per cut rather than once per frame.
+/// Two of them, both walks of every point of every resident payload and both
+/// answers that hold still between the same few events, which is the whole
+/// reason they are kept rather than asked afresh every frame:
 ///
-/// Indices into the cell's payload rather than addresses, ascending, so the
-/// fill can walk the payload and the admitted list together and take what is
-/// in one and not the other without a set to test against.
+/// - Which points the filters admit, since [`reconcile`] draws those before
+///   the ones they exclude. It moves when a filter is asked or lifted, when a
+///   span is re-cut against the clock, when the political table is replaced by
+///   a refresh, and when the payload itself is. [`Cut`] counts the first three
+///   and [`adopt`] drops a cell's lists with its payload for the last.
+/// - Which points anybody lives in, busiest first, for the sky read as
+///   populations. Empty systems are left out rather than ordered last: in
+///   that mode they are not drawn at all
+///   ([`crate::systems::visibility`]), so a slot of a cell's budget spent on
+///   one buys nothing. It moves with the political table and the payload,
+///   which is the same [`Cut`] and the same [`adopt`].
+///
+/// Indices into the cell's payload rather than addresses. The admitted list is
+/// ascending, so the fill can walk the payload and it together and take what
+/// is in one and not the other without a set to test against; the peopled list
+/// is in the order it is drawn in.
 #[derive(Resource, Default)]
-pub(crate) struct AdmittedPoints {
+pub(crate) struct PointOrders {
     /// The cut these were taken at
     cut: u64,
     cells: HashMap<CellId, Vec<u32>>,
+    peopled: HashMap<CellId, Vec<u32>>,
 }
 
-impl AdmittedPoints {
+impl PointOrders {
     /// Drop what a new cut, or a map with nothing asked of it, has invalidated
+    ///
+    /// A cut carries both lists off. Nothing asked of the filters carries only
+    /// the verdicts, there being no order over them to keep — who lives where
+    /// is no business of the filters.
     fn hold(&mut self, cut: u64, asking: bool) {
-        if self.cut != cut || !asking {
+        if self.cut != cut {
             self.cut = cut;
+            self.clear();
+        } else if !asking {
             self.cells.clear();
         }
     }
 
-    /// The indices of `points` the filters admit, walking them if this cut has
-    /// not asked about this cell yet
+    /// Forget every cell, the map having been cleared out from under them
+    fn clear(&mut self) {
+        self.cells.clear();
+        self.peopled.clear();
+    }
+
+    /// Work out whatever this cut has not asked about this cell yet
     ///
-    /// Empty where nothing is asked, since then every point is admitted and an
-    /// order over them says nothing. [`reconcile`]'s fill draws the whole
-    /// payload in that case, which is the pass this made before the filters
-    /// had a say in it.
-    fn of(
+    /// Both lists in one pass over the payload, so [`reconcile`] can read
+    /// either or both of them afterwards without holding this borrow open.
+    /// `by_population` says whether the busiest order is wanted at all: it is
+    /// a walk of the payload against the political table, and there is no
+    /// sense paying for one while the sky is not being read that way.
+    fn walk(
         &mut self,
         id: CellId,
         points: &[Point],
         filters: &Filters,
         populated: &Populated,
         now: DateTime<Utc>,
-    ) -> &[u32] {
-        if !filters.asking() {
-            return &[];
+        by_population: bool,
+    ) {
+        // Nothing asked of the filters admits everything, and there is no
+        // order over them worth keeping; see [`Self::admits`].
+        if filters.asking() {
+            self.cells.entry(id).or_insert_with(|| {
+                points
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, point)| {
+                        filters.admits(&candidate(point, populated), now)
+                    })
+                    .map(|(index, _)| index as u32)
+                    .collect()
+            });
         }
-        self.cells.entry(id).or_insert_with(|| {
-            points
-                .iter()
-                .enumerate()
-                .filter(|(_, point)| {
-                    filters.admits(&candidate(point, populated), now)
-                })
-                .map(|(index, _)| index as u32)
-                .collect()
-        })
+        if by_population {
+            self.peopled.entry(id).or_insert_with(|| {
+                let mut order: Vec<(u64, u32)> = points
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, point)| {
+                        let people = populated
+                            .get(point.id64 as i64)
+                            .map(|system| system.population)
+                            .filter(|people| *people > 0)?;
+                        Some((people, index as u32))
+                    })
+                    .collect();
+                // Busiest first, and by their place in the payload where two
+                // hold the same number, so the order is the same answer every
+                // time rather than whatever the sort happened to do.
+                order.sort_unstable_by_key(|&(people, index)| {
+                    (Reverse(people), index)
+                });
+                order.into_iter().map(|(_, index)| index).collect()
+            });
+        }
+    }
+
+    /// The indices of a cell's points the filters admit, ascending
+    ///
+    /// Empty where nothing is asked, since then every point is admitted and an
+    /// order over them says nothing. [`reconcile`]'s fill draws the whole
+    /// payload in that case, which is the pass this made before the filters
+    /// had a say in it. Empty, too, for a cell [`Self::walk`] has not reached.
+    fn admits(&self, id: CellId) -> &[u32] {
+        self.cells.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// The indices of a cell's points anybody lives in, busiest first
+    fn busiest(&self, id: CellId) -> &[u32] {
+        self.peopled.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// Forget a cell, its payload having been freed
     pub(crate) fn forget(&mut self, id: CellId) {
         self.cells.remove(&id);
+        self.peopled.remove(&id);
     }
 }
 
 /// Take `points` as a cell's payload, dropping whatever was worked out about
 /// the one it replaces
 ///
-/// The two go together and must: [`AdmittedPoints`] holds *indices into the
+/// The two go together and must: [`PointOrders`] holds *indices into the
 /// payload*, so a list kept across a replacement names whichever systems now
 /// sit at those places. A republished cell is the case — see
 /// [`crate::refresh`] — and a first read is the same call with nothing to
 /// forget.
 pub(crate) fn adopt(
     resident: &mut ResidentCells,
-    admitted: &mut AdmittedPoints,
+    orders: &mut PointOrders,
     id: CellId,
     points: Vec<Point>,
 ) {
     resident.0.insert(id, points);
-    admitted.forget(id);
+    orders.forget(id);
 }
 
 /// What the filters ask about a payload point: its address, the factions the
@@ -402,6 +464,38 @@ fn drawn_first<'a>(
     } else {
         0
     }))
+}
+
+/// The order a cell's points are drawn in while the map is reading the sky as
+/// populations: the busiest first, and what the filters admit ahead of what
+/// they exclude.
+///
+/// `busiest` is [`PointOrders::busiest`]'s list, so the empty systems are
+/// already out of it — in that mode they are not drawn — and a cell's budget
+/// is spent on the systems that have something to say. What is left of the
+/// budget after the admitted is filled with the excluded, as [`drawn_first`]
+/// fills it, and `fill` false stops that half outright for the same reason.
+///
+/// The filters lead the population for the reason they lead the pointer
+/// (see [`crate::systems::pointing`]): the excluded are the space the
+/// admitted are read against, and a cell that spent its whole budget on
+/// excluded systems because they happen to be the busiest would draw the
+/// background and leave the thing asked for off the map.
+fn busiest_first<'a>(
+    busiest: &'a [u32],
+    admits: &'a [u32],
+    fill: bool,
+) -> impl Iterator<Item = usize> + 'a {
+    // Nothing asked of the filters admits everything, and says so with an
+    // empty list rather than a whole one; see [`PointOrders::admits`].
+    let admitted = move |index: &&u32| {
+        admits.is_empty() || admits.binary_search(index).is_ok()
+    };
+    let lead = busiest.iter().filter(admitted);
+    let rest = busiest.iter().filter(move |index| !admitted(index));
+
+    lead.chain(rest.take(if fill { busiest.len() } else { 0 }))
+        .map(|&index| index as usize)
 }
 
 /// Draw each resident cell's resolvable prefix, admitted systems first, grown
@@ -469,7 +563,8 @@ fn reconcile(
     selection: Res<crate::systems::selection::Selection>,
     filtering: Filtering,
     cut: Res<Cut>,
-    mut admitted: ResMut<AdmittedPoints>,
+    scale_population: Res<ScalePopulation>,
+    mut orders: ResMut<PointOrders>,
     systems: Query<(Entity, &System, Has<crate::systems::route::Hop>)>,
     mut pending: ResMut<PendingSpawns>,
     mut evictions: ResMut<PendingEvictions>,
@@ -502,7 +597,13 @@ fn reconcile(
     // impose: the admitted lists are dropped and the fill draws the payload in
     // its own order, which is what this did before the filters had a say.
     let asking = filtering.filters.asking();
-    admitted.hold(cut.0, asking);
+    orders.hold(cut.0, asking);
+    // Whether a cell's budget is spent on the systems people live in, which is
+    // what the sky says while it is read that way. The cells are the walk's to
+    // choose either way — that is the index's own business and it knows
+    // nothing of who lives where — so what this settles is which of a held
+    // cell's systems are drawn out of it.
+    let by_population = by_population(&view_mode, &scale_population);
     // Whether the excluded are wanted on screen at all. Below the dim they are
     // never spawned ([`super::spawn`]) and dropped where they stand
     // ([`super::evict`]), so queueing them is a slot of the spawn budget spent
@@ -524,9 +625,26 @@ fn reconcile(
         }
         let target = (resolvable_count(indexed, &view, separation) as usize)
             .min(cell.points.len());
-        let admits =
-            admitted.of(id, &cell.points, &filtering.filters, &populated, wall);
-        let order = drawn_first(&cell.points, admits, fill).take(target);
+        orders.walk(
+            id,
+            &cell.points,
+            &filtering.filters,
+            &populated,
+            wall,
+            by_population,
+        );
+        let admits = orders.admits(id);
+        // Taken rather than walked lazily, since the two orders are different
+        // iterators and what follows is the same for both. A budget's worth of
+        // indices, which is a few tens.
+        let taken: Vec<usize> = if by_population {
+            busiest_first(orders.busiest(id), admits, fill)
+                .take(target)
+                .collect()
+        } else {
+            drawn_first(&cell.points, admits, fill).take(target).collect()
+        };
+        let order = taken.into_iter();
         for point in order.map(|index| &cell.points[index]) {
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
@@ -600,7 +718,7 @@ fn evict_payloads(
     spyglass: Res<Spyglass>,
     cameras: Query<&OrbitCamera>,
     mut resident: ResMut<ResidentCells>,
-    mut admitted: ResMut<AdmittedPoints>,
+    mut orders: ResMut<PointOrders>,
     mut held: ResMut<crate::refresh::Held>,
 ) {
     let mut stale = resident.0.stale(&planned.0);
@@ -617,7 +735,7 @@ fn evict_payloads(
     }
     for id in stale {
         resident.0.remove(id);
-        admitted.forget(id);
+        orders.forget(id);
         held.forget(id);
     }
 }
@@ -860,10 +978,11 @@ mod tests {
         filters.add(Filter::Faction { id: 7, name: "Faction 7".into() });
         let now = Utc::now();
 
-        let mut held = AdmittedPoints::default();
+        let mut held = PointOrders::default();
         held.hold(1, true);
+        held.walk(id, &points, &filters, &populated, now, false);
         assert_eq!(
-            held.of(id, &points, &filters, &populated, now),
+            held.admits(id),
             &[2],
             "the point the faction is present in, by its place in the payload"
         );
@@ -875,18 +994,17 @@ mod tests {
             systems: vec![1, 4],
         });
         held.hold(2, true);
+        held.walk(id, &points, &filters, &populated, now, false);
         assert_eq!(
-            held.of(id, &points, &filters, &populated, now),
+            held.admits(id),
             &[0, 2, 3],
             "the faction's, and the two picked out by hand"
         );
 
         // Nothing asked admits everything, so there is no order to hold.
         held.hold(2, false);
-        assert!(
-            held.of(id, &points, &Filters::default(), &populated, now)
-                .is_empty(),
-        );
+        held.walk(id, &points, &Filters::default(), &populated, now, false);
+        assert!(held.admits(id).is_empty());
     }
 
     /// The clamp is the spyglass reach, and only while it is clearing
@@ -939,7 +1057,7 @@ mod tests {
         app.init_resource::<PendingEvictions>();
         app.init_resource::<ResidentCells>();
         app.init_resource::<BoundedTasks>();
-        app.init_resource::<AdmittedPoints>();
+        app.init_resource::<PointOrders>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<FetchTasks>();
         app.insert_resource(LodFetch(true));
@@ -972,11 +1090,12 @@ mod tests {
         app.init_resource::<crate::systems::filter::Filters>();
         app.init_resource::<crate::systems::filter::DimTo>();
         app.init_resource::<crate::systems::filter::Cut>();
-        app.init_resource::<AdmittedPoints>();
+        app.init_resource::<PointOrders>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.insert_resource(Spyglass {
             radius: 50.,
             clear: true,
@@ -1200,6 +1319,89 @@ mod tests {
             dropped,
             (1..held).collect::<Vec<i64>>(),
             "and it kept systems no filter admits, at a dim that drops them"
+        );
+    }
+
+    /// Reading the sky as populations, a cell's budget goes on the systems
+    /// people live in
+    ///
+    /// Most of the galaxy is empty, and in that mode an empty system is not
+    /// drawn at all ([`crate::systems::visibility`]) — so a prefix taken
+    /// brightest-first spent a cell's whole budget building systems that were
+    /// never painted, and the populated ones behind them never arrived. The
+    /// walk still chooses the cells: what this settles is which of a held
+    /// cell's systems come out of it.
+    #[test]
+    fn the_walk_spends_a_cells_budget_on_the_peopled_systems() {
+        use galos_index::meta::PopulatedSystem;
+        use galos_index::{BuildParams, Snapshot};
+
+        let inputs: Vec<galos_index::System> = (1..=5)
+            .map(|id| galos_index::System {
+                id64: id as u64,
+                position: [id as f64, 0., 0.],
+                absolute_magnitude: id as f64,
+                temperature: 5000.,
+                age_bucket: 0,
+                updated_at: 0,
+            })
+            .collect();
+        let built = Snapshot::build(&inputs, &BuildParams::default());
+
+        let mut app = walking();
+        app.insert_resource(ResidentIndex(built.index.clone()));
+        {
+            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
+            for cell in built.index.cells() {
+                let points = built.payload(cell.id);
+                if !points.is_empty() {
+                    resident.0.insert(cell.id, points.to_vec());
+                }
+            }
+        }
+        // Two of the five have anybody in them: a world and a hamlet.
+        let peopled = |address: i64, population: u64| {
+            (
+                address,
+                PopulatedSystem {
+                    address,
+                    name: format!("Home {address}"),
+                    position: [address as f32, 0., 0.],
+                    population,
+                    security: None,
+                    government: None,
+                    allegiance: None,
+                    primary_economy: None,
+                    secondary_economy: None,
+                    factions: Vec::new(),
+                    body_count: None,
+                    non_body_count: None,
+                },
+            )
+        };
+        app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([
+            peopled(2, 10),
+            peopled(4, 1_000_000),
+        ]))));
+
+        // The ordinary sky: every system the cell resolves is built.
+        app.update();
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            5,
+            "the walk left a resolvable system unbuilt"
+        );
+
+        // Read as populations, only the two anybody lives in are asked for.
+        // The three empty ones would be built and then never painted.
+        app.insert_resource(PendingSpawns::default());
+        app.insert_resource(ScalePopulation(true));
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            2,
+            "the budget went on systems the mode does not draw"
         );
     }
 

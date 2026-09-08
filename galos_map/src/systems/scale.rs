@@ -29,13 +29,6 @@ use galos_photometry::{Distance, Magnitude};
 pub fn plugin(app: &mut App) {
     app.insert_resource(View::Map);
     app.insert_resource(ScalePopulation(false));
-    app.init_resource::<SystemsStats>();
-    // Reads what the fetch spawned and the despawn took away, so it belongs
-    // after both, and answers `size_by_distance`, so it belongs before that.
-    app.add_systems(
-        Update,
-        recount.in_set(MapSet::Present).before(size_by_distance),
-    );
     // One view is drawn at a time, so these two never run in the same frame.
     // The scheduler cannot see that from the run conditions alone.
     app.add_systems(
@@ -84,81 +77,87 @@ pub enum View {
 #[derive(Resource, Debug)]
 pub struct ScalePopulation(pub bool);
 
-/// What the systems on the map add up to
+/// Whether the map is reading the sky as populations
 ///
-/// Figures drawn from every system at once, which is more than anything
-/// wanting one should have to walk to find out. Held so that they are worked
-/// out when the systems behind them move, rather than once per frame
-/// regardless.
-///
-/// Over every system loaded, not the ones the spyglass reaches. That narrower
-/// question is [`super::InReach`]'s, and it is asked and answered afresh every
-/// frame because the camera moving changes the answer without anything on the
-/// map having moved at all.
-#[derive(Resource, Debug, Default)]
-pub struct SystemsStats {
-    /// What the average system is populated by
-    pub population_mean: f64,
+/// The option and the view it means anything in, asked together wherever it
+/// is asked. [`size_by_distance`] sizes marks by population only in
+/// [`View::Map`] — it does not run in the other — and everything else that
+/// answers to the option has to agree with it: what is drawn at all
+/// ([`super::visibility`]), what the pointer prefers between two marks
+/// ([`super::pointing`]), and whether a mark may be painted under a pixel
+/// ([`super::field::floor`]). The realistic sky sizes stars by what they put
+/// out, which is nothing to do with who lives under them, and the option is
+/// not offered there.
+pub(crate) fn by_population(view: &View, option: &ScalePopulation) -> bool {
+    *view == View::Map && option.0
 }
 
-/// Keep the stats answering to what is on the map
+/// The population a system is drawn at its ordinary size for
 ///
-/// Three things move them, and they are not all visible the same way. A row
-/// arriving and a row being written over both mark a [`System`] changed,
-/// which covers the two ways [`super::spawn::spawn_systems`] admits one: a
-/// system fetched again has its row inserted over the old one rather than
-/// being respawned, and what it carries is free to differ. A system leaving
-/// the map takes its component with it, so there is nothing left to mark and
-/// it has to be asked after separately.
-pub fn recount(
-    systems: Query<&System>,
-    touched: Query<(), Changed<System>>,
-    mut gone: RemovedComponents<System>,
-    mut stats: ResMut<SystemsStats>,
-) {
-    // Both asked before either is acted on. Removals are read through a
-    // cursor, and one left unread is one held over to be answered again on
-    // the next frame that recounts.
-    let any_gone = gone.read().count() > 0;
-    let any_touched = !touched.is_empty();
-    if !any_gone && !any_touched {
-        return;
-    }
-
-    let (total, count) = systems
-        .iter()
-        .fold((0., 0.), |(t, n), s| (t + s.population as f64, n + 1.));
-    // An empty map has no average to give. Dividing to find one anyway
-    // yields a NaN, and every star sized against it draws at no size at all.
-    stats.population_mean = if count > 0. { total / count } else { 0. };
-}
-
-/// How strongly population pulls a system's size around
+/// The median of the index's own 62,788 populated systems. Measured, along
+/// with the rest of the spread this scale is cut to: nobody lives in fewer
+/// than ten, a quarter of systems hold under 200 thousand, nineteen in twenty
+/// under 720 million, and the busiest on record holds 32 billion — ten
+/// decades end to end, with four of them carrying nine tenths of the systems.
 ///
-/// Applied to the log of how a system compares to the average, so each step
-/// of this is one e-fold of population.
-const POP_SPREAD: f32 = 0.2;
+/// The anchor rather than the bottom of the scale, so turning the option on
+/// leaves the middle of the sky drawn where it already was and spreads the
+/// rest around it. Anchored at the bottom instead every mark grew, which is a
+/// sky that has only got larger: the reading is which systems are bigger than
+/// the ones around them, and that is a comparison the ordinary sky has to be
+/// one end of.
+const POP_TYPICAL: f32 = 1.6e6;
 
-/// Bounds on what population may do to a system's size
+/// How much of a decade of population goes into the mark
 ///
-/// Population runs from nobody to tens of billions. Left unbounded the busy
-/// end swallows the map and the quiet end shrinks to nothing.
-const POP_MIN: f32 = 0.25;
-const POP_MAX: f32 = 4.;
+/// The power the ratio to [`POP_TYPICAL`] is raised to, so a decade of people
+/// is a fixed multiple of a mark wherever on the scale it falls: at this
+/// figure ten times the population draws about three tenths wider and a
+/// hundred times two thirds again. Over the real spread that leaves a hamlet
+/// of ten at a quarter of an ordinary mark and the busiest system on record
+/// at three times one.
+///
+/// Steeper reads more easily and crowds sooner, and the whole populated
+/// bubble on screen is a few thousand marks. Held where the busiest are still
+/// plainly the busiest and a crowd of them is still a crowd of marks rather
+/// than one blob: at a fifth the top of the scale came out seven times an
+/// ordinary mark and the near half of the sky overlapped into itself.
+/// `the_population_scale_leaves_a_sky_rather_than_a_wall` holds the bounds.
+///
+/// The other lever on that crowding is how many marks are drawn at all rather
+/// than how large each is: [`super::bounded`] spends a cell's budget on the
+/// busiest systems in it, so holding marks further apart there
+/// (`MARK_SEPARATION_PX`) thins the drawn set from the bottom of the scale up.
+const POP_POWER: f32 = 0.11;
 
-/// How much bigger or smaller a system draws for its population
+/// How much larger or smaller than its ordinary mark a system is drawn for
+/// the people living in it
 ///
-/// One at the average, larger above it, smaller below, and never zero or
-/// negative. An uninhabited system is still a system and has to be drawn:
-/// most of the galaxy is uninhabited, and scaling by the bare log of the
-/// ratio sent all of it to a negative size.
-fn population_factor(population: u64, average: f64) -> f32 {
-    if average <= 0. {
-        return 1.;
-    }
-    let ratio = (population as f64 / average) as f32;
-    (1. + POP_SPREAD * ratio.max(f32::MIN_POSITIVE).ln())
-        .clamp(POP_MIN, POP_MAX)
+/// One at [`POP_TYPICAL`], under one below it, over one above, and applied to
+/// the mark [`mark_at`] draws rather than replacing it. So the sky still reads
+/// as depth — a mark still falls away with distance — and what population
+/// adds is which marks stand out from the ones around them.
+///
+/// Not clamped at either end, and not measured against what happens to be
+/// loaded. A clamp draws two different populations at one size, which is the
+/// lie a floor tells; an average over the loaded systems moves as the map
+/// fetches and evicts, so the same system would draw at different sizes on
+/// different frames with nothing about it having changed. What anchors this is
+/// a figure measured once off the whole index.
+///
+/// Nor is there a floor under it. A thinly populated system is drawn smaller
+/// than an ordinary one, and out where an ordinary one is already the smallest
+/// mark the map paints that means smaller than the floor: see
+/// [`super::field::floor`], which the map does without while it is scaling
+/// this way. Held up to the floor instead, every system with few enough people
+/// came out the size of an ordinary one, which is the floor saying something
+/// about population that is not true.
+///
+/// An empty system is not drawn at all rather than drawn at the bottom of the
+/// scale: nobody living there is not a size, and [`super::visibility`] is what
+/// leaves it off the sky.
+fn population_factor(population: u64) -> f32 {
+    (population.max(1) as f32 / POP_TYPICAL).powf(POP_POWER)
 }
 
 /// The size a system is marked at, in metres
@@ -178,10 +177,10 @@ const MARK: f32 = (8.5e-2 * crate::space::LIGHT_YEAR) as f32;
 /// across, and a system whose mark the camera is already inside cannot be
 /// flown into.
 ///
-/// Which is what this and [`ANGULAR`] are held to: the two of them together,
-/// at the most [`POP_MAX`] can make of a mark, stay well under one, so a mark
-/// is always a smaller length than the distance it is seen from.
-/// `a_mark_never_encloses_the_camera` is what holds them.
+/// Which is what this and [`ANGULAR`] are held to: the two of them together
+/// stay well under one, so a mark is always a smaller length than the
+/// distance it is seen from. `a_mark_never_encloses_the_camera` is what holds
+/// them.
 const NEAREST: f32 = 4e-3;
 
 /// How large a system is drawn from far off, in radians
@@ -204,8 +203,15 @@ const NEAREST: f32 = 4e-3;
 ///   which is the band the "same dot" reading is really about.
 /// - Taller windows move the crossing down: at 1600 lines and up this decides
 ///   the whole way out.
-/// - `ScalePopulation` multiplies this and not the floor, by up to
-///   [`POP_MAX`], so a busy system draws larger than the floor everywhere.
+/// - `ScalePopulation` multiplies whichever of the two decided, rather than
+///   standing in for either: [`size_by_distance`] floors the ordinary mark
+///   first and scales that by [`population_factor`]. Which is the order the
+///   reported trouble turned on. Scaled *before* the floor, the factor was
+///   swallowed for everything it did not lift clear — and out past a thousand
+///   light years the floor is what a mark comes to, so the far half of the
+///   galaxy drew one size whatever lived in it. Taken after, an ordinary
+///   system draws exactly as it does with the option off wherever it stands,
+///   and the population is the whole of the difference.
 ///
 /// The floor is what guarantees a system is drawn at all; this is what makes
 /// the far field read as one depth rather than as a size falling away. Neither
@@ -261,20 +267,29 @@ pub(crate) fn drawn_shell(reach: f32) -> f32 {
     reach * MARGIN
 }
 
+/// How wide the mark saying a system is there is drawn from `away` metres, in
+/// metres
+///
+/// [`MARK`] across the middle of the map, which is a size in the world: twice
+/// as far off draws about half as large, and the sky reads as depth. It gives
+/// way to an angle at either end, where a size in the world is too large to
+/// get past or too small to see. Being an angle holds it still on screen as
+/// the camera moves, and close in that is what lets the system's own extent
+/// come up through it: the mark shrinks into the shell rather than the shell
+/// arriving out of it.
+///
+/// The map's ordinary answer, and the one [`population_factor`] scales while
+/// the sky is being read as populations.
+fn mark_at(away: f32) -> f32 {
+    MARK.min(NEAREST * away) + ANGULAR * away
+}
+
 /// How large a system is drawn, in metres
 ///
-/// The wider of the system itself and a mark saying one is there. A system at
-/// its true size is invisible from the next one over, and a mark is no use
-/// once the camera is inside the system, so each answers for the range the
-/// other cannot.
-///
-/// The mark is [`MARK`] across the middle of the map, which is a size in the
-/// world: twice as far off draws about half as large, and the sky reads as
-/// depth. It gives way to an angle at either end, where a size in the world is
-/// too large to get past or too small to see. Being an angle holds it still on
-/// screen as the camera moves, and close in that is what lets the system's own
-/// extent come up through it: the mark shrinks into the shell rather than the
-/// shell arriving out of it.
+/// The wider of the system itself and `mark`, the mark saying one is there. A
+/// system at its true size is invisible from the next one over, and a mark is
+/// no use once the camera is inside the system, so each answers for the range
+/// the other cannot.
 ///
 /// The wider rather than the two added, so that how far a system reaches
 /// cannot swell a mark that is still doing its job.
@@ -295,16 +310,15 @@ pub(crate) fn drawn_shell(reach: f32) -> f32 {
 /// drawn to a part of the extent anywhere between them would stand inside the
 /// orbits still being drawn in it.
 ///
-/// `prominence` scales the mark and not the system. A busy system is worth a
-/// larger mark; it is not worth a larger volume, and a quarter of one would
-/// put the shell inside the orbits it stands around.
-fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
-    let mark = MARK.min(NEAREST * away) + ANGULAR * away;
+/// Whichever mark it is given, the system's own extent is its own: a busy
+/// system is worth a larger mark, it is not worth a larger volume, and how
+/// far a system reaches is not a thing the people in it move.
+fn shell(extent: f32, away: f32, mark: f32) -> f32 {
     let seen = extent / away.max(1.);
     let counting =
         ((seen - WORTH_SIZING) / (WORTH_KEEPING - WORTH_SIZING)).clamp(0., 1.);
 
-    (extent * MARGIN * counting).max(mark * prominence)
+    (extent * MARGIN * counting).max(mark)
 }
 
 /// Draw each system large enough to be seen from where the camera is
@@ -335,16 +349,22 @@ fn shell(extent: f32, away: f32, prominence: f32) -> f32 {
 /// exactly what it does as the camera comes inside one.
 pub(crate) fn size_by_distance(
     scale_population: Res<ScalePopulation>,
-    stats: Res<SystemsStats>,
-    camera: Query<&OrbitCamera>,
-    mut shells: Query<(&mut Drawn, &System, &Visibility), With<Shell>>,
+    camera: Query<(&OrbitCamera, &Camera)>,
+    // A route's stop is drawn to be found rather than to say who lives there,
+    // so the population scale leaves it alone; see below.
+    mut shells: Query<
+        (&mut Drawn, &System, &Visibility, Has<super::route::Hop>),
+        With<Shell>,
+    >,
 ) {
     if !shells.is_empty() {
-        let Ok(orbit) = camera.single() else { return };
+        let Ok((orbit, camera)) = camera.single() else { return };
+        let Some(viewport) = camera.logical_viewport_size() else { return };
+        let cot_half_fov = camera.clip_from_view().y_axis.y;
         let eye = orbit.eye;
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
-        for (mut drawn, system, visible) in shells.iter_mut() {
+        for (mut drawn, system, visible, hop) in shells.iter_mut() {
             // Out of the spyglass is not drawn, so the size it would draw at
             // is not worked out. It is left where it last stood, which is
             // close enough for the frame it comes back on.
@@ -354,13 +374,36 @@ pub(crate) fn size_by_distance(
             let away = crate::space::metres(eye - DVec3::from(system.position))
                 .length() as f32;
             let extent = system.reach();
-            let prominence = if scale_population.0 {
-                population_factor(system.population, stats.population_mean)
+
+            // The mark the ordinary sky draws: [`mark_at`]'s size in the
+            // world, held at the smallest the field paints. The floor is
+            // taken here rather than left to the field because the population
+            // scale multiplies it, and out past a thousand light years the
+            // floor is what an ordinary mark comes to — scaled after it, an
+            // ordinary system draws exactly as it does with the option off
+            // wherever it stands, which is what the option has to leave
+            // alone.
+            let per_pixel =
+                world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
+            let ordinary =
+                mark_at(away).max(super::field::SMALLEST * per_pixel);
+
+            // How much larger or smaller than that the people living there
+            // make it. The size in the world still falls away with distance,
+            // so the sky goes on reading as depth, and what the population
+            // changes is which marks stand out from the ones beside them.
+            //
+            // A stop on a route is exempt. It is drawn where the spyglass and
+            // the filters would both have dropped it, because it is what
+            // answers where to go next, and a stop shrunk to a speck for
+            // having nobody living on it is a stop that cannot be found.
+            let prominence = if scale_population.0 && !hop {
+                population_factor(system.population)
             } else {
                 1.
             };
 
-            let size = shell(extent, away, prominence);
+            let size = shell(extent, away, ordinary * prominence);
             // Only where it moved, as `size_inside` is: what reads it is
             // gated on the change, and every shell in the sky marked changed
             // every frame is every one of them re-read.
@@ -681,7 +724,16 @@ pub(crate) fn size_photometrically(
 mod tests {
     use super::*;
     use crate::systems::bodies::STAND_IN;
-    use crate::systems::tests::{at, reaching, system};
+    use crate::systems::tests::{at, reaching};
+
+    /// How large a system reaching `extent` is drawn from `away`, the map
+    /// drawing marks by distance rather than by population
+    ///
+    /// The ordinary sky, which is what everything about the exchange between
+    /// a mark and a system's own extent is read at.
+    fn plain(extent: f32, away: f32) -> f32 {
+        shell(extent, away, mark_at(away))
+    }
 
     /// A shell holds the system it stands around wherever the insides are drawn
     ///
@@ -699,8 +751,12 @@ mod tests {
             // A metre out to as far as the system's insides are still kept.
             let kept = extent / WORTH_KEEPING;
             for away in [1f32, kept * 1e-4, kept * 1e-2, kept * 0.5, kept] {
-                for prominence in [POP_MIN, 1., POP_MAX] {
-                    let drawn = shell(extent, away, prominence);
+                // Both scales, since a mark of any size is only ever the
+                // wider of the two answers: the distance mark, and a mark
+                // wide enough to swamp it, which is what a busy system's
+                // population mark is up close.
+                for mark in [mark_at(away), mark_at(away) * 20.] {
+                    let drawn = shell(extent, away, mark);
 
                     assert!(
                         drawn >= extent,
@@ -723,9 +779,9 @@ mod tests {
         let extent = 1.7e14;
         let held = extent * MARGIN;
 
-        assert!(shell(extent, 1e18, 1.) > held, "the mark had already gone");
-        assert_eq!(shell(extent, 1e16, 1.), held);
-        assert_eq!(shell(extent, 1e12, 1.), held);
+        assert!(plain(extent, 1e18) > held, "the mark had already gone");
+        assert_eq!(plain(extent, 1e16), held);
+        assert_eq!(plain(extent, 1e12), held);
     }
 
     /// A wide system is a mark from far off, as any other system is
@@ -740,9 +796,9 @@ mod tests {
         let away = 100. * crate::space::LIGHT_YEAR as f32;
         // The widest on record, one of the ordinary sort, and a system of no
         // size at all, which is the mark and nothing else.
-        let widest = shell(2.1e15, away, 1.);
-        let ordinary = shell(1e14, away, 1.);
-        let mark = shell(0., away, 1.);
+        let widest = plain(2.1e15, away);
+        let ordinary = plain(1e14, away);
+        let mark = plain(0., away);
 
         assert_eq!(
             widest, mark,
@@ -764,7 +820,7 @@ mod tests {
 
         for extent in [STAND_IN, 1e13, 1e14, 5e14, 1e15, 2.1e15] {
             let away = extent / WORTH_DRAWING;
-            let drawn = shell(extent, away, 1.);
+            let drawn = plain(extent, away);
 
             assert_eq!(
                 drawn,
@@ -792,11 +848,11 @@ mod tests {
     fn a_shell_only_grows_on_screen_as_the_camera_comes_in() {
         for extent in [STAND_IN, 1e13, 1e14, 5e14, 1e15, 2.1e15] {
             let mut away = 2000. * crate::space::LIGHT_YEAR as f32;
-            let mut before = shell(extent, away, 1.) / away;
+            let mut before = plain(extent, away) / away;
 
             while away > extent {
                 away *= 0.98;
-                let seen = shell(extent, away, 1.) / away;
+                let seen = plain(extent, away) / away;
 
                 assert!(
                     seen >= before - before * 1e-6,
@@ -841,14 +897,53 @@ mod tests {
         // A metre out to the far rim of the galaxy.
         for away in [1f32, 1e9, 1e13, 1e17, 4.7e20] {
             // A system of no size at all, so the mark is the whole of what is
-            // drawn, and as large as a population can make one.
-            let drawn = shell(0., away, POP_MAX);
+            // drawn.
+            let drawn = plain(0., away);
 
             assert!(
                 drawn < away,
                 "a mark drawn {drawn}m wide was seen from {away}m"
             );
         }
+    }
+
+    /// The population scale leaves a sky rather than a wall
+    ///
+    /// The reported trouble, twice. A scale anchored at its bottom made every
+    /// mark larger — turning the option on only swelled the sky — and one
+    /// that added pixels per decade put the median system at an eight pixel
+    /// radius, a galaxy of overlapping discs saying nothing about any of them.
+    ///
+    /// So the middle of the spread is drawn exactly as the ordinary sky draws
+    /// it, the thin end under that, and the busy end a few times it. Read
+    /// against the real spread: the median system holds 1.6 million, the
+    /// thinnest ten, and the busiest on record thirty-two billion.
+    #[test]
+    fn the_population_scale_leaves_a_sky_rather_than_a_wall() {
+        let ordinary = population_factor(POP_TYPICAL as u64);
+        let thinnest = population_factor(10);
+        let busiest = population_factor(32_000_000_000);
+
+        assert!(
+            (ordinary - 1.).abs() < 1e-3,
+            "an ordinary system drew {ordinary} times its ordinary mark"
+        );
+        assert!(
+            thinnest < 0.5,
+            "a system of ten people drew {thinnest} times an ordinary mark"
+        );
+        assert!(
+            (2.0..4.).contains(&busiest),
+            "the busiest system on record drew {busiest} times one"
+        );
+
+        // And nine in twenty systems hold under 720 million, which is where
+        // the crowding is: a few thousand marks of the bubble at once, so what
+        // the sky is mostly made of has to stay near an ordinary mark rather
+        // than swell into its neighbours. Reported as too much overlap at a
+        // fifth of a decade, where this came to two and a half.
+        let most = population_factor(720_000_000);
+        assert!(most < 2., "the ninety-fifth percentile drew {most} times one");
     }
 
     /// Learning how far a system reaches leaves its mark alone
@@ -861,10 +956,10 @@ mod tests {
     #[test]
     fn learning_how_far_a_system_reaches_leaves_its_mark_alone() {
         let away = 5. * crate::space::LIGHT_YEAR as f32;
-        let unknown = shell(STAND_IN, away, 1.);
+        let unknown = plain(STAND_IN, away);
 
         for extent in [STAND_IN, 1e13, 1e14] {
-            let known = shell(extent, away, 1.);
+            let known = plain(extent, away);
             assert_eq!(
                 known, unknown,
                 "a system reaching {extent}m drew {known}m where the map \
@@ -877,7 +972,7 @@ mod tests {
     /// `ly` light years off, as an angular radius in radians
     fn seen(ly: f32) -> f32 {
         let away = ly * crate::space::LIGHT_YEAR as f32;
-        shell(STAND_IN, away, 1.) / away
+        plain(STAND_IN, away) / away
     }
 
     /// Twice as far off draws about half as large, across the middle of the map
@@ -952,118 +1047,9 @@ mod tests {
     fn a_neighbour_is_a_mark_rather_than_a_sky() {
         // A tenth of a light year, which is nearer than any real neighbour.
         let away = 0.1 * crate::space::LIGHT_YEAR as f32;
-        let seen = shell(STAND_IN, away, 1.) / away;
+        let seen = plain(STAND_IN, away) / away;
 
         assert!(seen < 0.01, "a system {away}m off subtended {seen} radians");
-    }
-
-    /// A world that keeps the stats current, and nothing else
-    fn map() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<SystemsStats>();
-        app.add_systems(Update, recount);
-        app
-    }
-
-    /// A system with `population` living in it
-    fn populated(address: i64, population: u64) -> System {
-        let mut system = system(address);
-        system.population = population;
-        system
-    }
-
-    /// What the map currently takes the average population to be
-    fn mean(app: &App) -> f64 {
-        app.world().resource::<SystemsStats>().population_mean
-    }
-
-    /// A system written over carries the average with it
-    ///
-    /// The case a count of the systems on the map cannot see, and the reason
-    /// the recount is asked for by what has changed rather than by how many
-    /// there are. A row fetched again is inserted over the one already there
-    /// rather than respawned, so nothing arrives and nothing leaves, and the
-    /// population it carries is free to differ from the one it replaces.
-    #[test]
-    fn a_system_written_over_moves_the_average() {
-        let mut app = map();
-        let entity = app.world_mut().spawn(populated(1, 100)).id();
-        app.world_mut().spawn(populated(2, 300));
-        app.update();
-        assert_eq!(mean(&app), 200.);
-
-        app.world_mut().entity_mut(entity).insert(populated(1, 700));
-        app.update();
-        assert_eq!(
-            mean(&app),
-            500.,
-            "kept the population of a row that had been replaced"
-        );
-    }
-
-    /// A system arriving moves the average
-    #[test]
-    fn a_system_arriving_moves_the_average() {
-        let mut app = map();
-        app.world_mut().spawn(populated(1, 100));
-        app.update();
-        assert_eq!(mean(&app), 100.);
-
-        app.world_mut().spawn(populated(2, 300));
-        app.update();
-        assert_eq!(mean(&app), 200.);
-    }
-
-    /// A system leaving moves the average
-    ///
-    /// Leaving takes the component with it, so there is nothing left to mark
-    /// as changed and this is the one of the three that has to be asked
-    /// after separately.
-    #[test]
-    fn a_system_leaving_moves_the_average() {
-        let mut app = map();
-        let entity = app.world_mut().spawn(populated(1, 100)).id();
-        app.world_mut().spawn(populated(2, 300));
-        app.update();
-        assert_eq!(mean(&app), 200.);
-
-        app.world_mut().entity_mut(entity).despawn();
-        app.update();
-        assert_eq!(mean(&app), 300., "kept a system that had gone");
-    }
-
-    /// A frame that moves nothing leaves the average where it stands
-    ///
-    /// This is what holding the average is for. The systems it averages are
-    /// walked when they move, and not on the frames in between.
-    #[test]
-    fn a_resting_frame_leaves_the_average_alone() {
-        let mut app = map();
-        app.world_mut().spawn(populated(1, 100));
-        app.update();
-
-        // Set to something the map does not add up to, so that only a
-        // recount would put it back.
-        app.world_mut().resource_mut::<SystemsStats>().population_mean = 42.;
-        app.update();
-        assert_eq!(mean(&app), 42., "recounted a map that had not moved");
-    }
-
-    /// An empty map has no average rather than a NaN
-    ///
-    /// Every star's size is multiplied by a factor worked out from this, so
-    /// a NaN here would spread to the size of every star drawn.
-    #[test]
-    fn an_emptied_map_has_no_average() {
-        let mut app = map();
-        let entity = app.world_mut().spawn(populated(1, 100)).id();
-        app.update();
-        assert_eq!(mean(&app), 100.);
-
-        app.world_mut().entity_mut(entity).despawn();
-        app.update();
-        assert_eq!(mean(&app), 0., "averaged an empty map to a NaN");
     }
 
     /// A system is drawn to its own reach, whatever the map is looking into
@@ -1084,8 +1070,153 @@ mod tests {
         app.update();
 
         let away = 5. * crate::space::LIGHT_YEAR as f32;
-        assert_eq!(drawn(&mut app, 1), shell(2.1e15, away, 1.));
-        assert_eq!(drawn(&mut app, 2), shell(STAND_IN, away, 1.));
+        assert_eq!(drawn(&mut app, 1), plain(2.1e15, away));
+        assert_eq!(drawn(&mut app, 2), plain(STAND_IN, away));
+    }
+
+    /// A system with `population` living in it, `away` light years off
+    fn peopled(address: i64, away: f64, population: u64) -> System {
+        let mut system = at(address, away);
+        system.population = population;
+        system
+    }
+
+    /// The pixel radius the field paints a system's mark at
+    ///
+    /// What a reader actually sees, which is the world size the sizing left
+    /// on the shell put through the same [`super::field::drawn_radius`] the
+    /// field and the rings both read it by, floored as that mode floors.
+    fn pixels(app: &mut App, address: i64, by_population: bool) -> f32 {
+        let mut cameras = app.world_mut().query::<(&OrbitCamera, &Camera)>();
+        let (orbit, camera) = cameras.single(app.world()).expect("a camera");
+        let height = camera.logical_viewport_size().expect("a viewport").y;
+        let cot_half_fov = camera.clip_from_view().y_axis.y;
+        let eye = orbit.eye;
+
+        let mut shells =
+            app.world_mut().query_filtered::<(&Drawn, &System), With<Shell>>();
+        let (drawn, system) = shells
+            .iter(app.world())
+            .find(|(_, system)| system.address == address)
+            .expect("a shell for that system");
+        let away =
+            crate::space::metres(eye - system.position()).length() as f32;
+        let per_pixel = world_per_pixel(cot_half_fov, height, away.max(1.));
+
+        crate::systems::field::drawn_radius(
+            &View::Map,
+            drawn.0,
+            per_pixel,
+            crate::systems::field::floor(by_population),
+        )
+        .expect("a mark the map draws")
+    }
+
+    /// What a system holding `population` draws at from `away` light years,
+    /// with the option on or off
+    fn drawn_px(population: u64, away: f64, by_population: bool) -> f32 {
+        let mut app = sky();
+        app.insert_resource(ScalePopulation(by_population));
+        app.add_systems(Update, size_by_distance);
+        shelled(&mut app, peopled(1, away, population));
+        app.update();
+
+        pixels(&mut app, 1, by_population)
+    }
+
+    /// Population orders how large the marks are drawn
+    ///
+    /// Read at five thousand light years, where an ordinary mark comes to
+    /// less than [`super::field::SMALLEST`] and the floor is what it is drawn
+    /// at — so every rung of this ladder is a system the floor used to catch
+    /// and draw at one size.
+    ///
+    /// A ladder rather than two ends, because what the option says is how
+    /// many people live there: two systems drawn the same size at the same
+    /// distance have to be two systems with the same population, and a floor
+    /// or a clamp anywhere in the range breaks that for everything it
+    /// catches.
+    ///
+    /// It starts at ten, the fewest anyone lives in. Nobody at all is not a
+    /// smaller mark, it is no mark: [`super::visibility`] leaves an empty
+    /// system off the sky, and
+    /// `scaling_by_population_hides_an_empty_system` is where that is held.
+    #[test]
+    fn population_orders_how_large_the_marks_are_drawn() {
+        let mut app = sky();
+        app.insert_resource(ScalePopulation(true));
+        app.add_systems(Update, size_by_distance);
+        // The thinnest on record, an outpost, a town, the median system, a
+        // world, and one of the busiest there is.
+        let ladder =
+            [10, 10_000, 200_000, 1_600_000, 1_000_000_000, 32_000_000_000];
+        for (rung, population) in ladder.iter().enumerate() {
+            shelled(&mut app, peopled(rung as i64, 5000., *population));
+        }
+        app.update();
+
+        let mut last = 0.;
+        for (rung, population) in ladder.iter().enumerate() {
+            let drawn = pixels(&mut app, rung as i64, true);
+            assert!(
+                drawn > last,
+                "{population} people drew at {drawn} px, no larger than the \
+                 {last} px of the rung below"
+            );
+            last = drawn;
+        }
+    }
+
+    /// An ordinary system is drawn as it is with the option off
+    ///
+    /// The reported trouble: turning the option on only made the sky larger.
+    /// Every mark grew, so nothing stood out against the rest and the sky one
+    /// remembers was gone.
+    ///
+    /// So [`POP_TYPICAL`] is the anchor rather than the bottom of the scale,
+    /// and it holds at every distance — including out where an ordinary mark
+    /// is the floor rather than the angle, which is where the floor has to be
+    /// taken before the population rather than after it.
+    #[test]
+    fn an_ordinary_system_is_drawn_as_it_is_without_the_option() {
+        for away in [20., 100., 1000., 5000.] {
+            let off = drawn_px(POP_TYPICAL as u64, away, false);
+            let on = drawn_px(POP_TYPICAL as u64, away, true);
+
+            assert!(
+                (on - off).abs() <= off * 1e-3,
+                "an ordinary system {away} ly off drew {on} px with the \
+                 option on against {off} px with it off"
+            );
+        }
+    }
+
+    /// A thinly populated one is drawn smaller than that, and a busy one
+    /// larger
+    ///
+    /// The other half of the same reading. Smaller means smaller than the
+    /// ordinary sky's mark, floor included: out at five thousand light years
+    /// an ordinary mark is already the smallest the map paints, so a system
+    /// of ten people is painted under a pixel — which is why
+    /// [`super::field::floor`] stands down in this mode.
+    #[test]
+    fn a_thin_population_draws_smaller_and_a_busy_one_larger() {
+        for away in [20., 100., 5000.] {
+            let ordinary = drawn_px(POP_TYPICAL as u64, away, false);
+            let thin = drawn_px(10, away, true);
+            let busy = drawn_px(32_000_000_000, away, true);
+
+            assert!(
+                thin < ordinary * 0.5,
+                "ten people {away} ly off drew {thin} px against an ordinary \
+                 {ordinary} px"
+            );
+            assert!(
+                busy > ordinary * 2.,
+                "thirty-two billion {away} ly off drew {busy} px against an \
+                 ordinary {ordinary} px"
+            );
+        }
     }
 
     /// How many shells were written to
@@ -1107,7 +1238,6 @@ mod tests {
     fn sky() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<SystemsStats>();
         app.init_resource::<Writes>();
         app.insert_resource(ScalePopulation(false));
         app.world_mut()

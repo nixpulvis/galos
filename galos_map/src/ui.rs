@@ -1045,7 +1045,7 @@ pub(crate) fn chrome(
                 ui,
                 &mut settings.population_scale.0,
                 "Scale w/ Population",
-                "Draw populated systems larger",
+                "Size systems by population; hide empty ones",
             );
         }
         if *settings.view == View::Realistic {

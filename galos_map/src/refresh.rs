@@ -32,7 +32,7 @@
 //! parts moved reads six and hands them back together rather than trickling
 //! them in over six polls.
 
-use crate::systems::bounded::{AdmittedPoints, ResidentCells, adopt};
+use crate::systems::bounded::{PointOrders, ResidentCells, adopt};
 use crate::systems::fetch::Poll;
 use crate::systems::route::graph::Jumps;
 use crate::{Boosts, Factions, Names, Populated, ResidentIndex, Transport};
@@ -300,7 +300,7 @@ fn apply(
     mut held: ResMut<Held>,
     mut index: ResMut<ResidentIndex>,
     mut resident: ResMut<ResidentCells>,
-    mut admitted: ResMut<AdmittedPoints>,
+    mut admitted: ResMut<PointOrders>,
     mut populated: ResMut<Populated>,
     mut names: ResMut<Names>,
     mut factions: ResMut<Factions>,
@@ -481,7 +481,7 @@ mod tests {
         app.insert_resource(block_on(Held::before_reading(&*transport)));
         app.init_resource::<Refreshing>();
         app.init_resource::<ResidentCells>();
-        app.init_resource::<AdmittedPoints>();
+        app.init_resource::<PointOrders>();
         app.init_resource::<Populated>();
         app.init_resource::<Factions>();
         // The tables as `main` loads them: the names table read whole, and

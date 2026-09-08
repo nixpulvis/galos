@@ -14,7 +14,7 @@ use crate::systems::labels::{
     Label, PlateText, color32, depth, name_rect, screen_offset,
     screen_position, world_per_pixel,
 };
-use crate::systems::scale::{Drawn, View};
+use crate::systems::scale::{Drawn, ScalePopulation, View};
 use crate::systems::selection::Selected;
 use crate::systems::spawn::Shell;
 use bevy::camera::RenderTarget;
@@ -26,6 +26,7 @@ use bevy::picking::pointer::{PointerId, PointerLocation, PointerMap};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, PrimaryWindow, SystemCursorIcon};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use std::cmp::Reverse;
 
 pub fn plugin(app: &mut App) {
     app.add_systems(
@@ -83,10 +84,10 @@ pub const INDICATOR: Srgba = Srgba::new(1., 0.82, 0.35, 1.);
 ///
 /// A gap on the glass rather than a multiple of the star, which is the whole
 /// of what keeps a ring a ring. A multiple reads well while a mark is a
-/// handful of pixels and turns into a halo once one is not: a prominent
-/// system's mark runs to `scale`'s `POP_MAX` times its `NEAREST` share of the
-/// sky, tens of pixels across, and half again of that is a hoop with the star
-/// loose inside it.
+/// handful of pixels and turns into a halo once one is not: a busy system's
+/// mark runs to a dozen pixels of radius where the map is scaling by
+/// population (`scale`'s `population_factor`), and half again of that is a
+/// hoop with the star loose inside it.
 ///
 /// Held instead at a fixed few pixels, so the ring hugs whatever is drawn at
 /// every size and there is no ceiling to impose: what bounds it is the bound
@@ -333,11 +334,15 @@ impl PointedAt {
 /// laid across a star or a planet is a label for something else rather than a
 /// reason to stop aiming at what it was laid across.
 ///
-/// Between stars, an admitted one wins, and only then the nearer of the two,
-/// as it would if they blocked each other. A filter says which systems the
-/// user is working with, and the rest are drawn faintly to be the space those
-/// are read against; letting that space take the pointer off an admitted
-/// system would have the background answer for the thing in front of it.
+/// Between stars, an admitted one wins; then, while the map is reading the sky
+/// as populations, the busier of the two; and only then the nearer, as it
+/// would if they blocked each other. A filter says which systems the user is
+/// working with, and the rest are drawn faintly to be the space those are
+/// read against; letting that space take the pointer off an admitted system
+/// would have the background answer for the thing in front of it. Population
+/// comes next for the same reason depth does: in that mode a mark's size is
+/// how many people live there, so the larger of two overlapping marks is the
+/// one the eye is aiming at, and the pointer answers with what is drawn.
 ///
 /// Reachable across [`super`], since what is drawn for a system is ordered
 /// after it: a ring, a tint and a selection all answer what this decides, and
@@ -353,6 +358,10 @@ pub(super) fn point_at(
     bodies: Query<&Body>,
     marked: Query<(), With<Indicator>>,
     filtered: Query<(), With<Filtered>>,
+    // Read only where the map is drawing marks by population; see below.
+    peopled: Query<&System>,
+    view: Res<View>,
+    scale_population: Res<ScalePopulation>,
     pointed_at: Query<Entity, With<PointedAt>>,
     mut commands: Commands,
 ) {
@@ -378,12 +387,26 @@ pub(super) fn point_at(
     }
 
     let mut named: Option<Entity> = None;
-    // What is admitted, and only then what is nearest. A system the filters
-    // admit is what the user asked to be looking at, so one lying behind
-    // another they did not ask for is still the one they are pointing at:
-    // the dim star in front is the background the filter is read against, and
-    // background that answers the pointer is background in the way.
-    let mut nearest: Option<(Entity, bool, f32)> = None;
+    // Whether the marks under the pointer are drawn by population, which is
+    // what puts it into the ranking below; see [`super::scale::by_population`].
+    let by_population =
+        crate::systems::scale::by_population(&view, &scale_population);
+    // A mark standing for a system, weighed by three things in this order:
+    // whether the filters admit it, how many people live there where that is
+    // what its size says, and then the nearest.
+    //
+    // A system the filters admit is what the user asked to be looking at, so
+    // one lying behind another they did not ask for is still the one they are
+    // pointing at: the dim star in front is the background the filter is read
+    // against, and background that answers the pointer is background in the
+    // way.
+    //
+    // Then the population, and only while the map is drawing marks by it. The
+    // size of a mark is the whole of what that mode says, so the busier of two
+    // overlapping marks is the one being aimed at — the same argument depth
+    // makes, on the figure the picture is drawn from. Off, every system counts
+    // as none and depth decides as it always did.
+    let mut nearest: Option<(Entity, (bool, Reverse<u64>, f32))> = None;
     // Whatever is inside a system, weighed by four things in this order: how
     // far down the system it sits, whether it is a star, whether it was
     // reached by its name, and then the nearest.
@@ -422,11 +445,14 @@ pub(super) fn point_at(
                 named = Some(thing);
             } else if marked.contains(thing) {
                 let dim = filtered.contains(thing);
-                let better = nearest.is_none_or(|(_, was_dim, depth)| {
-                    (dim, hit.depth) < (was_dim, depth)
-                });
-                if better {
-                    nearest = Some((thing, dim, hit.depth));
+                let people = if by_population {
+                    peopled.get(thing).map_or(0, |system| system.population)
+                } else {
+                    0
+                };
+                let rank = (dim, Reverse(people), hit.depth);
+                if nearest.is_none_or(|(_, was)| rank < was) {
+                    nearest = Some((thing, rank));
                 }
             }
         }
@@ -476,6 +502,9 @@ pub(super) fn point_at(
 pub fn size_indicators(
     camera: Query<(&OrbitCamera, &Camera)>,
     view: Res<View>,
+    // The same floor the field paints to, so a ring and the mark it goes
+    // around cannot come apart; see [`super::field::floor`].
+    scale_population: Res<ScalePopulation>,
     mut systems: Query<
         (&System, &Drawn, &Visibility, &Strength, &mut Indicator),
         With<Shell>,
@@ -510,7 +539,7 @@ pub fn size_indicators(
         // Only where it moved, as everything asked of every system every frame
         // is. Nothing watches a mark for changes today, and writing one
         // regardless is how that stops being safe without anyone meaning it to.
-        let wanted = system_mark(&view, drawn, per_pixel);
+        let wanted = system_mark(&view, drawn, per_pixel, scale_population.0);
         if indicator.0 != wanted {
             indicator.0 = wanted;
         }
@@ -533,8 +562,19 @@ pub fn size_indicators(
 /// A star the field draws none of — a sliver under the eye's floor in the
 /// realistic view — is still marked at the floor. It may be named, picked out
 /// or a route's stop, and each of those has to be aimed at.
-fn system_mark(view: &View, drawn: f32, per_pixel: f32) -> f32 {
-    let star = super::field::drawn_radius(view, drawn, per_pixel).unwrap_or(0.);
+fn system_mark(
+    view: &View,
+    drawn: f32,
+    per_pixel: f32,
+    scaling_by_population: bool,
+) -> f32 {
+    let star = super::field::drawn_radius(
+        view,
+        drawn,
+        per_pixel,
+        super::field::floor(scaling_by_population),
+    )
+    .unwrap_or(0.);
 
     (star + INDICATOR_AIR).max(INDICATOR_MIN_RADIUS)
 }
@@ -1039,6 +1079,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.add_systems(Update, point_at);
 
         let mut over = EntityHashMap::default();
@@ -1110,6 +1152,96 @@ mod tests {
         let (app, stars) = pointed(&[(true, 1.), (true, 50.)]);
 
         assert_eq!(points_at(&app, &stars), vec![true, false]);
+    }
+
+    /// A map with `stars` under the pointer at once, each
+    /// `(population, dim, depth)`, reading the sky as populations or not
+    ///
+    /// As [`pointed`], with a system's row on each mark so the population is
+    /// there to be read.
+    fn peopled(
+        stars: &[(u64, bool, f32)],
+        by_population: bool,
+    ) -> (App, Vec<Entity>) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(by_population));
+        app.add_systems(Update, point_at);
+
+        let mut over = EntityHashMap::default();
+        let systems = stars
+            .iter()
+            .enumerate()
+            .map(|(n, (population, dim, depth))| {
+                let mut row = crate::systems::tests::at(n as i64, 5.);
+                row.population = *population;
+                let system = app.world_mut().spawn((row, Indicator(0.))).id();
+                if *dim {
+                    app.world_mut().entity_mut(system).insert(Filtered);
+                }
+                over.insert(
+                    system,
+                    HitData {
+                        camera: Entity::PLACEHOLDER,
+                        depth: *depth,
+                        position: None,
+                        normal: None,
+                        extra: None,
+                    },
+                );
+                system
+            })
+            .collect();
+
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+        (app, systems)
+    }
+
+    /// Reading the sky as populations, the busier system is pointed at
+    ///
+    /// There a mark's size is how many people live in the system, so of two
+    /// marks under the pointer the larger is the one the eye is aiming at —
+    /// even where the smaller stands nearer the camera. Asked for: the mode
+    /// is for comparing populations, and a pointer that answered with the
+    /// nearest picked out whichever hamlet happened to lie in front.
+    #[test]
+    fn the_busier_system_is_pointed_at_where_its_size_says_population() {
+        let (app, stars) =
+            peopled(&[(10, false, 1.), (1_000_000_000, false, 50.)], true);
+
+        assert_eq!(points_at(&app, &stars), vec![false, true]);
+    }
+
+    /// With the option off it says nothing, and the nearer is pointed at
+    ///
+    /// Nothing about the picture says population then — every mark is drawn
+    /// by distance alone — so a pointer that preferred the busier would
+    /// answer with something the sky does not show.
+    #[test]
+    fn population_does_not_reach_the_pointer_with_the_option_off() {
+        let (app, stars) =
+            peopled(&[(10, false, 1.), (1_000_000_000, false, 50.)], false);
+
+        assert_eq!(points_at(&app, &stars), vec![true, false]);
+    }
+
+    /// And the filters still lead it
+    ///
+    /// A busy system the filters exclude is drawn as the space an admitted
+    /// one is read against, however large its mark. Taking the pointer off
+    /// the admitted system would put that background in the way, which is the
+    /// one thing the ordering above population is for.
+    #[test]
+    fn an_admitted_system_is_pointed_at_through_a_busier_dim_one() {
+        let (app, stars) =
+            peopled(&[(1_000_000_000, true, 1.), (10, false, 50.)], true);
+
+        assert_eq!(points_at(&app, &stars), vec![false, true]);
     }
 
     /// A camera at the origin, looking down `-Z`
@@ -1268,24 +1400,33 @@ mod tests {
         // bounds on a mark allow.
         for drawn in [0., 1e-3, 1., 5.5, 8., 34., 1e3] {
             for view in [View::Map, View::Realistic] {
-                let star = super::super::field::drawn_radius(&view, drawn, 1.)
+                // Both floors: the ordinary sky's, and the population scale's
+                // want of one.
+                for by_population in [false, true] {
+                    let star = super::super::field::drawn_radius(
+                        &view,
+                        drawn,
+                        1.,
+                        super::super::field::floor(by_population),
+                    )
                     .unwrap_or(0.);
-                let ring = system_mark(&view, drawn, 1.);
+                    let ring = system_mark(&view, drawn, 1., by_population);
 
-                assert!(
-                    ring > star,
-                    "a {star} px mark wore a {ring} px ring in {view:?}"
-                );
-                assert!(
-                    ring >= INDICATOR_MIN_RADIUS,
-                    "a {ring} px ring is under the floor in {view:?}"
-                );
-                // And no further out than the air, so it never reads as a halo
-                // however large the mark grows.
-                assert!(
-                    ring - star <= INDICATOR_AIR.max(INDICATOR_MIN_RADIUS),
-                    "a {star} px mark wore a {ring} px ring in {view:?}"
-                );
+                    assert!(
+                        ring > star,
+                        "a {star} px mark wore a {ring} px ring in {view:?}"
+                    );
+                    assert!(
+                        ring >= INDICATOR_MIN_RADIUS,
+                        "a {ring} px ring is under the floor in {view:?}"
+                    );
+                    // And no further out than the air, so it never reads as a
+                    // halo however large the mark grows.
+                    assert!(
+                        ring - star <= INDICATOR_AIR.max(INDICATOR_MIN_RADIUS),
+                        "a {star} px mark wore a {ring} px ring in {view:?}"
+                    );
+                }
             }
         }
     }
@@ -1298,6 +1439,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.add_systems(Update, point_at);
 
         let system = app.world_mut().spawn(Indicator(0.)).id();
@@ -1362,6 +1505,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.add_systems(Update, point_at);
 
         let star = app.world_mut().spawn((Indicator(0.), body(1, over))).id();
@@ -1422,6 +1567,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.add_systems(Update, point_at);
 
         let star = app.world_mut().spawn((Indicator(0.), sun(1, 1))).id();
@@ -1458,6 +1605,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.add_systems(Update, point_at);
 
         let star = app.world_mut().spawn((Indicator(0.), body(1, 0))).id();
@@ -1500,6 +1649,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.add_systems(Update, point_at);
 
         let near = app.world_mut().spawn((Indicator(0.), body(1, 2))).id();
@@ -1570,6 +1721,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Marks>();
         app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(false));
         app.add_systems(Update, (size_indicators, count_marks).chain());
         app.world_mut().spawn((looking(), crate::systems::tests::seeing()));
 
