@@ -4,11 +4,19 @@
 
 Somewhere between reality and the space/flight sim E:D.
 
-Use `galos-sync` to populate the database and `galos` to perform basic queries
-from the CLI.
+Elite's galaxy arrives as events and is kept in Postgres. A builder derives one
+spatial index from it, and the [`galos-map`](./galos_map) program draws the
+galaxy from that index alone, with no database. Beside them sits the sky as it
+is measured from Earth, read from published star catalogs and compared against
+what the game says.
 
-The [`galos-map`](./galos_map) program is a 3D galaxy map, see its
-documentation for more.
+[ARCHITECTURE.md](./ARCHITECTURE.md) is the map of it: what each of the eight
+crates is for, which way the data runs, what crosses the seam between the
+database and the index, and which module header to open for a given decision.
+
+Use `galos-sync` to populate the database and `galos` to perform basic queries
+from the CLI. The map has its own [README](./galos_map/README.md) for the mouse
+and keys.
 
 ## Prerequisites
 
