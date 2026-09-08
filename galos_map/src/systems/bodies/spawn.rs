@@ -468,7 +468,7 @@ pub struct Unscanned {
 const CROSS: [Vec3; 6] =
     [Vec3::NEG_X, Vec3::X, Vec3::NEG_Y, Vec3::Y, Vec3::NEG_Z, Vec3::Z];
 
-/// What a star is drawn in, by the colour its class comes to
+/// What a star is drawn in, by the color its class comes to
 #[derive(Resource)]
 struct StarMaterials(Vec<Handle<StandardMaterial>>);
 
@@ -492,10 +492,10 @@ struct MarkMaterials {
     guessed: Handle<StandardMaterial>,
 }
 
-/// The colours a star is drawn in
+/// The colors a star is drawn in
 ///
 /// By temperature, which is what a star's class is a shorthand for. The
-/// remnants and the oddities share one colour rather than being guessed at.
+/// remnants and the oddities share one color rather than being guessed at.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Glow {
     Blue,
@@ -528,7 +528,7 @@ impl Glow {
         }
     }
 
-    /// Which colour a class of star comes to
+    /// Which color a class of star comes to
     ///
     /// The first letter carries it for the ordinary sequence, hottest to
     /// coolest. What is left — dwarfs, neutron stars, holes, the carbon and
@@ -559,7 +559,7 @@ impl Glow {
     }
 }
 
-/// The colours a body is drawn in
+/// The colors a body is drawn in
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SurfaceLook {
     Earthlike,
@@ -2158,7 +2158,7 @@ mod tests {
 
     /// A class nobody has written down is still drawn
     #[test]
-    fn an_unheard_of_star_is_still_given_a_colour() {
+    fn an_unheard_of_star_is_still_given_a_color() {
         assert_eq!(Glow::of(""), Glow::Odd);
         assert_eq!(Glow::of("Quite unlike anything"), Glow::Odd);
     }

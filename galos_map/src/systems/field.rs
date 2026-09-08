@@ -175,8 +175,8 @@ fn spawn_field(
     // centre, so a mark a pixel or two across still lands a bright point
     // rather than a sample of its faint edge.
     //
-    // The per-vertex colour is the rest: the map's fade in the alpha, the
-    // realistic view's blackbody colour at its HDR level, added for the bloom
+    // The per-vertex color is the rest: the map's fade in the alpha, the
+    // realistic view's blackbody color at its HDR level, added for the bloom
     // to grow a bright star past its faint neighbours. Unlit either way: a
     // mark is a light, not a thing lit by one.
     let mask = images.add(disc_mask());
@@ -329,7 +329,7 @@ pub(crate) fn build_field(
             continue;
         }
         let color = match *view {
-            // A flat solid dot in the allegiance colour, its fade in the alpha
+            // A flat solid dot in the allegiance color, its fade in the alpha
             // for the blend over the galaxy.
             View::Map => {
                 let c = LinearRgba::from(hue(system, &color_by).color());
@@ -418,9 +418,9 @@ fn field_mesh(
 /// at the rim
 ///
 /// The marks are screen-aligned quads, and painted bare they are squares.
-/// Sampled as a material's base colour, this cuts each quad to the disc
+/// Sampled as a material's base color, this cuts each quad to the disc
 /// inscribed in it — in every channel, so it rounds the solid mark's alpha and
-/// the glint's colour alike. A texel and a half of fade at the rim antialiases
+/// the glint's color alike. A texel and a half of fade at the rim antialiases
 /// the edge; the centre holds solid at any size, so a mark a pixel across is
 /// still a point of light rather than a sample of a faint edge that vanishes.
 fn disc_mask() -> Image {

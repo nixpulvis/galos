@@ -24,7 +24,7 @@
 //!   are left for the id itself, which is [`MAX_ID`] and far past anything HYG
 //!   carries.
 //! - **`age_bucket`** is how long ago a row was last written, and it feeds
-//!   only the Recency colouring. A catalog has no such notion — Hipparcos was
+//!   only the Recency coloring. A catalog has no such notion — Hipparcos was
 //!   published once — so every star sits in bucket zero. That the index's
 //!   input vocabulary carries a field of pure presentation is visible here
 //!   precisely because a second dataset has nothing to say about it.
@@ -47,7 +47,7 @@ impl Star {
     ///
     /// The three fields that survive are the position, the absolute magnitude
     /// and the temperature — the name, the measured apparent magnitude, the
-    /// colour index and the spectral type do not, which is what makes `System`
+    /// color index and the spectral type do not, which is what makes `System`
     /// the lossy projection and [`Star`] the fuller record.
     /// The index id this star takes: the catalog tag, its source's namespace,
     /// and its own id.

@@ -1,7 +1,7 @@
-//! The physics of how bright a star is and what colour it comes to.
+//! The physics of how bright a star is and what color it comes to.
 //!
 //! Everything the galaxy is drawn from rests on one ordering, by absolute
-//! magnitude, and one colour, from temperature. Both are physics rather than
+//! magnitude, and one color, from temperature. Both are physics rather than
 //! taste: a bright giant five thousand light years out belongs in the sky
 //! while a hundred dim dwarfs nearby do not, and a star's tint is the tint of
 //! a blackbody at its surface heat. So the quantities here are claims about the
@@ -18,7 +18,7 @@
 //!
 //! Two claims the map cannot compute for itself. Ordering by absolute magnitude
 //! needs a magnitude for every system, including the two thirds that carry no
-//! scanned star, and colour needs a temperature. Where a scan is absent the
+//! scanned star, and color needs a temperature. Where a scan is absent the
 //! class the system is named for is all there is, so [`ClassLight::of`] turns
 //! that class into a typical magnitude and heat. It is the last link in the
 //! bake's fallback chain — scanned stars first, then this — and it is what lets
@@ -261,11 +261,11 @@ const POGSON_RATIO: f64 = 2.5;
 /// direction of the conversion reads as one factor rather than a bare decimal.
 const POGSON_EXPONENT: f64 = 0.4;
 
-/// A surface temperature, in kelvin, which fixes a star's colour.
+/// A surface temperature, in kelvin, which fixes a star's color.
 ///
 /// A star radiates as a blackbody, so its heat is the whole of its tint: this
 /// carries into [`color`](Self::color) and nothing else is needed for it. A
-/// measured survey records a colour index rather than a temperature, so
+/// measured survey records a color index rather than a temperature, so
 /// [`from_color_index`](Self::from_color_index) is the second way in.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub struct Temperature(pub f64);
@@ -300,7 +300,7 @@ impl Temperature {
     /// The Sun's effective temperature in kelvin.
     pub const SOLAR: Temperature = Temperature(5772.0);
 
-    /// The effective temperature a `B-V` colour index implies.
+    /// The effective temperature a `B-V` color index implies.
     ///
     /// Ballesteros' formula, which treats the two photometric bands as
     /// blackbody samples and solves for the temperature that would produce
@@ -309,7 +309,7 @@ impl Temperature {
     /// Sirius' 0.009 as about 10100 against 9940.
     ///
     /// This is the second way into [`color`](Self::color), and the important
-    /// one for a real catalog: measured surveys record a colour index, not a
+    /// one for a real catalog: measured surveys record a color index, not a
     /// temperature, so without this nothing outside the game can be drawn or
     /// checked at all. Where a scanned star already carries a temperature that
     /// figure is better and this is not consulted.
@@ -325,7 +325,7 @@ impl Temperature {
         )
     }
 
-    /// The linear-RGB colour of a blackbody at this temperature.
+    /// The linear-RGB color of a blackbody at this temperature.
     ///
     /// A star radiates as a blackbody, so its tint is fixed by its surface heat
     /// and nothing else: cool stars are red, the Sun is a warm white, and the
@@ -338,7 +338,7 @@ impl Temperature {
     /// The chromaticity is Kim et al.'s cubic fit to the Planckian locus, valid
     /// from 1667 to 25000 K and clamped either side, which covers everything
     /// with visible flux: below the floor are brown dwarfs the eye cannot see
-    /// and above the ceiling the colour has already gone as blue as it goes.
+    /// and above the ceiling the color has already gone as blue as it goes.
     pub fn color(self) -> Color {
         let (x, y) = self.planckian_locus();
         Color(xy_to_linear_srgb(x, y))
@@ -369,9 +369,9 @@ impl Temperature {
     /// The chromaticity `(x, y)` of the Planckian locus at this temperature.
     ///
     /// Kim, Weyrich and Kautz (2002), the cubic-spline approximation astronomy
-    /// and colour tooling both cite. `x` is fit in two temperature ranges and
+    /// and color tooling both cite. `x` is fit in two temperature ranges and
     /// `y` as a cubic in `x`; outside 1667..25000 K the temperature is clamped,
-    /// since the fit is undefined there and the colour has stopped moving in any
+    /// since the fit is undefined there and the color has stopped moving in any
     /// case.
     fn planckian_locus(self) -> (f64, f64) {
         let t = self.0.clamp(PLANCKIAN_LOCUS_MIN_K, PLANCKIAN_LOCUS_MAX_K);
@@ -423,7 +423,7 @@ impl std::ops::Index<usize> for Color {
 
 /// The Rec. 709 perceived brightness of a linear-RGB triple.
 ///
-/// The one brightness the crate's colours are held to. A blackbody tint carries
+/// The one brightness the crate's colors are held to. A blackbody tint carries
 /// hue at unit luminance so flux alone sets how bright a star is drawn; this
 /// measures that unit.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
@@ -480,7 +480,7 @@ fn xyz_to_linear_srgb(xyz: [f64; 3]) -> [f64; 3] {
 
 /// A chromaticity `(x, y)` as linear sRGB at unit luminance.
 ///
-/// Through XYZ at unit luminance, then the sRGB primaries under D65. A colour
+/// Through XYZ at unit luminance, then the sRGB primaries under D65. A color
 /// off the sRGB gamut lands a channel below zero, which is clamped up, so the
 /// deepest reds and blues sit at the edge of what the display can show rather
 /// than turning inside out. The result is then scaled to unit Rec. 709
@@ -734,11 +734,11 @@ mod tests {
         assert_eq!(Magnitude::combine(std::iter::empty()), None);
     }
 
-    /// Every blackbody colour is a real one: each channel in gamut above zero,
+    /// Every blackbody color is a real one: each channel in gamut above zero,
     /// and the triple carrying a fixed luminance, since it stands for hue alone
     /// and flux carries the brightness.
     #[test]
-    fn a_blackbody_colour_is_normalized_and_in_range() {
+    fn a_blackbody_color_is_normalized_and_in_range() {
         for t in [1000.0, 3000.0, 5772.0, 10000.0, 30000.0] {
             let c = Temperature(t).color();
             assert!(c.0.iter().all(|&ch| ch >= 0.0));
@@ -929,18 +929,18 @@ mod tests {
         assert!((hot.0 - 12.0).abs() < 1.5);
     }
 
-    /// The Sun's colour index reads its temperature back, which is the one
+    /// The Sun's color index reads its temperature back, which is the one
     /// anchor for this fit a reader can check by eye.
     #[test]
-    fn the_suns_colour_index_gives_the_suns_temperature() {
+    fn the_suns_color_index_gives_the_suns_temperature() {
         let t = Temperature::from_color_index(0.656);
         assert!((t.0 - Temperature::SOLAR.0).abs() < 100.0, "{t:?}");
     }
 
-    /// Bluer is hotter, the whole content of a colour index, and it holds
+    /// Bluer is hotter, the whole content of a color index, and it holds
     /// across the range the fit is defined on.
     #[test]
-    fn a_bluer_colour_index_is_hotter() {
+    fn a_bluer_color_index_is_hotter() {
         let seq = [-0.3, 0.0, 0.3, 0.656, 1.0, 1.5, 2.0];
         for pair in seq.windows(2) {
             assert!(
@@ -956,20 +956,20 @@ mod tests {
     /// The formula's second term diverges near -0.674, so the clamp holds the
     /// answer finite and positive however far out of range the input is.
     #[test]
-    fn an_out_of_range_colour_index_stays_finite() {
+    fn an_out_of_range_color_index_stays_finite() {
         for bv in [-100.0, -0.674, -0.5, 3.0, 100.0] {
             let t = Temperature::from_color_index(bv).0;
             assert!(t.is_finite() && t > 0.0, "{bv} gave {t}");
         }
     }
 
-    /// A colour index and a class agree on a Sun-like star, which is the check
+    /// A color index and a class agree on a Sun-like star, which is the check
     /// that the two independent routes into a temperature meet.
     #[test]
     fn the_two_routes_to_a_temperature_agree_on_a_g_star() {
-        let from_colour = Temperature::from_color_index(0.656);
+        let from_color = Temperature::from_color_index(0.656);
         let from_class = ClassLight::of("G").temperature;
-        assert!((from_colour.0 - from_class.0).abs() < 500.0);
+        assert!((from_color.0 - from_class.0).abs() < 500.0);
     }
 
     /// A star at the zero point is one unit of exposure, and the scale stays

@@ -161,9 +161,9 @@ impl StarExposure {
 /// The emission a photometric star of temperature `bucket` and brightness
 /// `step` is drawn at, at exposure `factor`
 ///
-/// The one place the realistic view's colour is worked out — the field's
+/// The one place the realistic view's color is worked out — the field's
 /// per-vertex glint reads it (see [`super::field`]). The tint is the bucket's
-/// blackbody colour; the strength is the step's flux compressed by [`GAMMA`],
+/// blackbody color; the strength is the step's flux compressed by [`GAMMA`],
 /// lifted by [`BRIGHT`] and the exposure, so a bright star's core outshines a
 /// faint one's.
 pub(crate) fn photometric_emissive(
@@ -247,7 +247,7 @@ pub struct StarProfile(pub ProfileKind);
 /// The colors a star may be drawn in
 ///
 /// Named rather than numbered, so that a scheme below says which color it
-/// means. One colour each, and nothing indexes them: [`super::field`] asks
+/// means. One color each, and nothing indexes them: [`super::field`] asks
 /// `Hue::color` for the three channels it paints a mark with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Hue {
@@ -264,7 +264,7 @@ pub enum Hue {
 impl Hue {
     /// What the hue is painted in
     ///
-    /// The colour alone. What [`super::field`] paints a mark at is these
+    /// The color alone. What [`super::field`] paints a mark at is these
     /// three channels and a fade of its own — how much of the mark is left as
     /// it goes out, and how far the filters have dimmed it — so an alpha
     /// carried here would be read by nobody. The grey a system with nothing
@@ -523,7 +523,7 @@ impl LastClick {
 
 /// Polls the fetch tasks and queues the systems they built for spawning
 ///
-/// The systems arrive already named and coloured, built on the task's own
+/// The systems arrive already named and colored, built on the task's own
 /// thread (see [`super::fetch`]), so nothing here joins a table or clones a
 /// row. What lands is queued into [`PendingSpawns`] rather than spawned on the
 /// spot, and [`drain_spawns`] turns a bounded number into entities each frame:
@@ -836,10 +836,10 @@ fn drain_spawns(
     );
 }
 
-/// Name and colour a raw system from the resident tables
+/// Name and color a raw system from the resident tables
 ///
 /// The cells give an address and a place and nothing political. Everything a
-/// [`System`] is coloured and filtered by comes from the [`Populated`] table
+/// [`System`] is colored and filtered by comes from the [`Populated`] table
 /// where the system is one of the dynamic set, and its name from [`Names`]. A
 /// system absent from `populated` is ungoverned, which is most of the galaxy,
 /// and drawn as such.

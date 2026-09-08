@@ -77,7 +77,7 @@ impl Image {
     ///
     /// Light adds — two stars overlapping are the sum of both, never the
     /// brighter of the two — which is the same reason the index's aggregates
-    /// carry summed flux rather than a representative colour.
+    /// carry summed flux rather than a representative color.
     pub fn add(&mut self, x: i64, y: i64, energy: [f32; 3]) {
         if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 {
             return;
@@ -151,7 +151,7 @@ impl Image {
         }
     }
 
-    /// Blend a colour into one display pixel by coverage, ignoring anything off
+    /// Blend a color into one display pixel by coverage, ignoring anything off
     /// the edge. Unlike [`plot`](Self::plot), which writes, this mixes with what
     /// is already there, so an antialiased edge reads as a fraction of a pixel
     /// lit rather than all or nothing.
@@ -290,12 +290,12 @@ pub struct Mark {
     pub y: f64,
     /// The ring's radius, pixels.
     pub radius: f64,
-    /// The ring's colour, as displayed. Not tone-mapped — it is chrome, not
+    /// The ring's color, as displayed. Not tone-mapped — it is chrome, not
     /// light, and is written straight into the output.
     pub color: [f32; 3],
 }
 
-/// The default ring colour: green.
+/// The default ring color: green.
 ///
 /// Chosen because **a blackbody is never green**. Across the whole Planckian
 /// locus the dominant channel is red below about 6500 K and blue above it, and
@@ -304,7 +304,7 @@ pub struct Mark {
 /// would collide with something real.
 pub const MARK_COLOR: [f32; 3] = [0.0, 1.0, 0.35];
 
-/// The colour for a ring around something that is *not* drawn: magenta.
+/// The color for a ring around something that is *not* drawn: magenta.
 ///
 /// Safe on a weaker property than [`MARK_COLOR`]'s, and it is worth being
 /// exact about which. Green being the *minimum* channel is not impossible for a
@@ -319,24 +319,24 @@ pub const MARK_COLOR: [f32; 3] = [0.0, 1.0, 0.35];
 pub const HOLE_COLOR: [f32; 3] = [1.0, 0.0, 0.85];
 
 impl Mark {
-    /// A ring of the default colour.
+    /// A ring of the default color.
     pub fn new(x: f64, y: f64, radius: f64) -> Mark {
         Mark { x, y, radius, color: MARK_COLOR }
     }
 
-    /// The same ring in another colour.
+    /// The same ring in another color.
     pub fn colored(mut self, color: [f32; 3]) -> Mark {
         self.color = color;
         self
     }
 }
 
-/// The default colour for a figure line: a dim steel blue.
+/// The default color for a figure line: a dim steel blue.
 ///
 /// A muted blue-grey, the convention for constellation lines, and safe for the
 /// same reason [`MARK_COLOR`] and [`HOLE_COLOR`] are chosen the way they are: a
 /// figure line is thin chrome a viewer reads as a line, not light, and its
-/// colour only has to stay legible over a black sky and under the stars it
+/// color only has to stay legible over a black sky and under the stars it
 /// joins. Dim, so it sits behind the stars rather than competing with them.
 pub const LINE_COLOR: [f32; 3] = [0.28, 0.36, 0.55];
 
@@ -358,12 +358,12 @@ pub struct Segment {
     pub gap0: f64,
     /// How far short of the second endpoint the line stops, pixels.
     pub gap1: f64,
-    /// The colour to draw it, linear RGB.
+    /// The color to draw it, linear RGB.
     pub color: [f32; 3],
 }
 
 impl Segment {
-    /// A line of the default colour between two points, drawn end to end.
+    /// A line of the default color between two points, drawn end to end.
     pub fn new(x0: f64, y0: f64, x1: f64, y1: f64) -> Segment {
         Segment { x0, y0, x1, y1, gap0: 0.0, gap1: 0.0, color: LINE_COLOR }
     }
@@ -537,11 +537,11 @@ mod tests {
         assert_eq!(out.len(), 16 * 16 * 3);
     }
 
-    /// The default mark colour is one no star can wear. A blackbody's dominant
+    /// The default mark color is one no star can wear. A blackbody's dominant
     /// channel is red below about 6500 K and blue above, and green leads at no
     /// temperature at all, so a green ring is never mistaken for light.
     #[test]
-    fn no_star_is_ever_the_colour_of_a_mark() {
+    fn no_star_is_ever_the_color_of_a_mark() {
         for t in (500..60000).step_by(25) {
             let c = galos_photometry::Temperature(t as f64).color();
             assert!(
@@ -552,21 +552,21 @@ mod tests {
         assert!(MARK_COLOR[1] > MARK_COLOR[0].max(MARK_COLOR[2]));
     }
 
-    /// The hole colour rests on a different and weaker property: not that
+    /// The hole color rests on a different and weaker property: not that
     /// green can never be a blackbody's smallest channel — between about 6250
     /// and 7250 K it is, by a few per cent — but that it never goes anywhere
     /// near zero. Magenta's green is nothing, which is far under the floor.
     #[test]
-    fn no_blackbody_comes_near_the_hole_colour() {
+    fn no_blackbody_comes_near_the_hole_color() {
         // The floor a blackbody's green holds to, a shade under the 0.176 of
-        // peak the hole colour's own doc names. Reached below about 1500 K,
+        // peak the hole color's own doc names. Reached below about 1500 K,
         // where the fit clamps, and rising from there.
         const MIN_GREEN: f32 = 0.17;
         for t in (500..60000).step_by(25) {
             let c = galos_photometry::Temperature(t as f64).color();
             assert!(
                 c[1] >= MIN_GREEN,
-                "at {t} K green fell to {}, under the floor the hole colour \
+                "at {t} K green fell to {}, under the floor the hole color \
                  leans on",
                 c[1]
             );
@@ -618,7 +618,7 @@ mod tests {
     }
 
     /// A line is antialiased: some pixel along it is partly lit — neither black
-    /// nor the solid line colour — which a hard one-pixel line cannot produce.
+    /// nor the solid line color — which a hard one-pixel line cannot produce.
     #[test]
     fn a_line_is_antialiased() {
         let image = Image::new(32, 32);

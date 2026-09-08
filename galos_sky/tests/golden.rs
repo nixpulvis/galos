@@ -4,7 +4,7 @@
 //! nothing but this crate: no GPU, no dataset to fetch, nobody looking at the
 //! screen. A deterministic CPU render of a known sky is compared against a
 //! PNG on disk, so any change to the projection, the point-spread function,
-//! the exposure law, the blackbody colour or the tone curve shows up as a
+//! the exposure law, the blackbody color or the tone curve shows up as a
 //! picture that no longer matches — including changes made in
 //! `galos_photometry`, which is most of what is being guarded here.
 //!

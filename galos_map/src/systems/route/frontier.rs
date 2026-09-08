@@ -235,7 +235,7 @@ pub(crate) fn draw(
                             MeshMaterial3d(materials.add(StandardMaterial {
                                 base_color: color,
                                 alpha_mode: AlphaMode::Blend,
-                                // Drawn in the colour it is set to rather than
+                                // Drawn in the color it is set to rather than
                                 // lit to it, as a route's line is: a line has
                                 // no surface, and the exposure out here is set
                                 // for what a star puts out.

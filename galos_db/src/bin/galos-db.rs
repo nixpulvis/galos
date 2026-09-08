@@ -83,7 +83,7 @@ enum Part {
     Cells,
     /// Every system's name and place: the search index and the routing graph.
     Names,
-    /// The populated systems the map colours and filters by.
+    /// The populated systems the map colors and filters by.
     Populated,
     /// How far each scanned system reaches, which every shell is sized by.
     Reaches,
@@ -119,7 +119,7 @@ fn parts_of(named: &[Part]) -> Parts {
 fn main() -> galos_db::Result<()> {
     // Without a subscriber nothing the tool or the crate traces is heard;
     // `--watch` in particular would run silently. Info and above by default,
-    // `RUST_LOG` to change it, colour only when stderr is a terminal.
+    // `RUST_LOG` to change it, color only when stderr is a terminal.
     tracing_subscriber::fmt()
         .with_ansi(stderr().is_terminal())
         .with_env_filter(

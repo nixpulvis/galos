@@ -29,7 +29,7 @@ use serde::de::DeserializeOwned;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The populated-systems table, resident once and read for every colour.
+/// The populated-systems table, resident once and read for every color.
 pub const POPULATED_FILE: &str = "populated.bin";
 /// The subdirectory the names table's chunk files live in.
 pub const NAMES_DIR: &str = "names";
@@ -151,7 +151,7 @@ pub trait Source: Send + Sync {
     /// where the cell owns nothing.
     async fn payload(&self, id: CellId) -> io::Result<Vec<Point>>;
 
-    /// The populated-systems table, held resident for filtering and colour.
+    /// The populated-systems table, held resident for filtering and color.
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>>;
 
     /// Every system's name and position: the search index and routing graph.
@@ -188,7 +188,7 @@ pub trait Source: Send + Sync {
     ///
     /// The whole of how a client finds out that the index it holds has been
     /// republished. Everything resident is read once and then held — the
-    /// aggregates, the payloads of the cells in view, the tables a colour and
+    /// aggregates, the payloads of the cells in view, the tables a color and
     /// a name are read from — and a feed rewrites all of it underneath. A
     /// client keeps the stamp it was handed with each part and asks this
     /// before re-reading anything, so a still map with a quiet index reads

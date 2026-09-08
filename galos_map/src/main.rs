@@ -39,7 +39,7 @@ fn main() {
         });
 
     // Said before the log plugin is up, so plain stderr. What loaded is the
-    // first thing to check when the map draws but nothing is coloured or named.
+    // first thing to check when the map draws but nothing is colored or named.
     eprintln!(
         "galos: index {} has {} cells, {} populated, {} names, \
          {} reaches, {} supercharging, {} factions",
@@ -52,12 +52,12 @@ fn main() {
         factions.len(),
     );
     // A cell tree with no metadata beside it is a stale or half-written build:
-    // the map would draw every system uncoloured and unnamed rather than say so.
+    // the map would draw every system uncolored and unnamed rather than say so.
     // Loud here rather than a plausible-but-wrong sky.
     if !index.is_empty() && (populated.is_empty() || names.is_empty()) {
         eprintln!(
             "galos: WARNING — {dir} has cells but no metadata sidecars; \
-             systems will be uncoloured and unnamed. Rebuild the index with \
+             systems will be uncolored and unnamed. Rebuild the index with \
              `cargo run -p galos_db --bin galos-db -- index {dir}`."
         );
     }

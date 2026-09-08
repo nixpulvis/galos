@@ -112,7 +112,7 @@ pub fn fetch_route(
             searching.watch(Arc::clone(watching));
         }
         // Cheap Arc handles onto the resident graph and tables, so the hops
-        // are walked, named and coloured on the task's own thread rather than
+        // are walked, named and colored on the task's own thread rather than
         // on the main one.
         let graph = jumps.0.clone();
         let names = Names::clone(names);

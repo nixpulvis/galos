@@ -26,7 +26,7 @@ use crate::moments::Moments;
 use crate::serialization::{Decode, Encode, FixedCodec, record};
 use galos_photometry::Magnitude;
 
-/// Temperature buckets the glow keeps its colour structure in: a warm bulge
+/// Temperature buckets the glow keeps its color structure in: a warm bulge
 /// and blue arms without storing a temperature per star.
 pub const TEMP_BUCKETS: usize = 6;
 
@@ -35,7 +35,7 @@ pub const AGE_BUCKETS: usize = 8;
 
 /// The temperature range the buckets span, log-spaced between them.
 ///
-/// The coolest star worth colouring and the hottest whose blue has stopped
+/// The coolest star worth coloring and the hottest whose blue has stopped
 /// moving; [`temp_bucket`] bins the range and [`bucket_temperature`] names a
 /// point back out of a bucket.
 const TEMP_LO: f64 = 2000.0;
@@ -44,9 +44,9 @@ const TEMP_HI: f64 = 50000.0;
 /// Which temperature bucket a star falls in, log-spaced across the stellar
 /// range and clamped at both ends.
 ///
-/// The ends are the coolest star worth colouring and the hottest whose blue has
+/// The ends are the coolest star worth coloring and the hottest whose blue has
 /// stopped moving; between them the buckets are even in log temperature, which
-/// is where colour is even.
+/// is where color is even.
 pub fn temp_bucket(temperature_k: f64) -> usize {
     let t = temperature_k.clamp(TEMP_LO, TEMP_HI);
     let f = (t.ln() - TEMP_LO.ln()) / (TEMP_HI.ln() - TEMP_LO.ln());
@@ -57,7 +57,7 @@ pub fn temp_bucket(temperature_k: f64) -> usize {
 /// [`temp_bucket`].
 ///
 /// The geometric centre of the bucket's log-temperature span, so
-/// `temp_bucket(bucket_temperature(b)) == b` for every bucket, and the colour a
+/// `temp_bucket(bucket_temperature(b)) == b` for every bucket, and the color a
 /// bucket is drawn in is the blackbody tint at that centre.
 pub fn bucket_temperature(bucket: usize) -> f64 {
     let bucket = bucket.min(TEMP_BUCKETS - 1);
@@ -206,7 +206,7 @@ impl Aggregate {
         self.flux.iter().sum()
     }
 
-    /// The flux in each temperature bucket, which is what the glow's colour is
+    /// The flux in each temperature bucket, which is what the glow's color is
     /// resolved from.
     pub fn flux(&self) -> &[f64; TEMP_BUCKETS] {
         &self.flux
@@ -376,7 +376,7 @@ mod tests {
     }
 
     /// A bucket's representative temperature falls back in that same bucket, so
-    /// the colour drawn for a bucket is the tint of a star that would land in
+    /// the color drawn for a bucket is the tint of a star that would land in
     /// it, and the centres climb with the bucket.
     #[test]
     fn bucket_temperature_round_trips() {

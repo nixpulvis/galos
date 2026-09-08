@@ -457,7 +457,7 @@ impl Camera {
             .collect()
     }
 
-    /// How bright a star looks from here, and what colour, and how much energy
+    /// How bright a star looks from here, and what color, and how much energy
     /// that comes to at this exposure.
     ///
     /// The whole photometric path in one place: the distance modulus for the
@@ -775,10 +775,10 @@ mod tests {
         assert_eq!(ranked[0].0, "Sirius", "{ranked:?}");
     }
 
-    /// A star's colour is its temperature's: Betelgeuse draws red and Rigel
+    /// A star's color is its temperature's: Betelgeuse draws red and Rigel
     /// blue, in the picture and not merely in the table.
     #[test]
-    fn the_picture_carries_the_stars_colour() {
+    fn the_picture_carries_the_stars_color() {
         let stars = bright();
         for (name, red_leads) in [("Betelgeuse", true), ("Rigel", false)] {
             let star = named(&stars, name);
@@ -838,7 +838,7 @@ mod tests {
         // finding rather than an incidental. `Temperature::color` normalizes so
         // its brightest channel is one, which makes the three channels sum to
         // between 1.6 and 2.8 depending on temperature — see
-        // `a_stars_colour_should_not_change_how_bright_it_is` below. Until
+        // `a_stars_color_should_not_change_how_bright_it_is` below. Until
         // that is settled this test can only check that the PSF conserves
         // whatever energy it was handed, which is what it is for.
         let tint = Temperature(vega.temperature()).color();
@@ -864,12 +864,12 @@ mod tests {
         assert!(lit > 10, "only {lit} pixels lit");
     }
 
-    /// A star's colour does not change how bright it is drawn.
+    /// A star's color does not change how bright it is drawn.
     ///
     /// `Temperature::color` is normalized to unit luminance, so the tint
     /// carries hue and nothing else and the exposure's energy reaches the
     /// picture whole
-    /// whatever the hue. Weighted the way the eye weights colour, what a star
+    /// whatever the hue. Weighted the way the eye weights color, what a star
     /// deposits is its energy — so a red giant, a blue supergiant and a white
     /// star of the same energy come out equally bright. This was once a
     /// documented defect: peak normalization drew the saturated ends of the
@@ -879,7 +879,7 @@ mod tests {
     /// the picture matches the energy the exposure gave, to within the Moffat's
     /// truncated tail.
     #[test]
-    fn a_stars_colour_does_not_change_how_bright_it_is() {
+    fn a_stars_color_does_not_change_how_bright_it_is() {
         let stars = bright();
         for name in ["Betelgeuse", "Rigel", "Sirius"] {
             let star = named(&stars, name);
@@ -887,7 +887,7 @@ mod tests {
                 .looking_from([0.0; 3], star.position)
                 .with_fov_degrees(5.0)
                 .with_exposure(4.0)
-                // Colour is a core property; the aureole's sub-floor tail would
+                // Color is a core property; the aureole's sub-floor tail would
                 // only add noise to a luminance-conservation check.
                 .clear_effects();
             let image = camera.render(&[star.clone()]);

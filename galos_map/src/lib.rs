@@ -54,7 +54,7 @@ pub struct ResidentIndex(pub Index);
 
 /// The dynamic set: a populated system's political columns, keyed by address.
 ///
-/// About 96,000 systems against 129 million, held resident because a colour
+/// About 96,000 systems against 129 million, held resident because a color
 /// and a filter are asked of every drawn system every frame and neither can
 /// wait on a fetch. A system absent here is ungoverned, which is most of them.
 #[derive(Resource, Default, Clone)]
@@ -68,7 +68,7 @@ pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
 /// the size its reach says. The positions here are the graph the router walks,
 /// so routing needs nothing loaded past this.
 /// Cheap to clone: the tables sit behind [`Arc`]s so a fetch task can take a
-/// handle and name and colour its systems off the main thread.
+/// handle and name and color its systems off the main thread.
 #[derive(Resource, Default, Clone)]
 pub struct Names {
     /// Every entry, the order the table was written in.

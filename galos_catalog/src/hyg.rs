@@ -4,7 +4,7 @@
 //! because it has already done the work a raw survey leaves to the caller: it
 //! carries cartesian positions rather than right ascension and declination, so
 //! there is no astrometry to do, and it carries an absolute magnitude, a
-//! colour index and a spectral type in the same row, which is three
+//! color index and a spectral type in the same row, which is three
 //! independent columns to check a claim against.
 //!
 //! Its axes are equatorial and its distances are parsecs. Both are converted
@@ -78,7 +78,7 @@ const NO_PARALLAX: f64 = 100_000.0;
 /// reorders columns still reads. A row missing one of the five that matter —
 /// `id`, `dist`, `mag`, `absmag` and the three coordinates — is counted in
 /// [`Skipped::unreadable`](crate::Skipped::unreadable) and passed over; a row
-/// missing a name, a colour index or a spectral type is kept, since those are
+/// missing a name, a color index or a spectral type is kept, since those are
 /// the holes a real catalog has and a star with none of them still has a place
 /// and a brightness.
 pub fn read<R: io::Read>(reader: R) -> csv::Result<Catalog> {
@@ -295,10 +295,10 @@ mod tests {
         }
     }
 
-    /// A colour index is read and turned into a temperature that matches the
+    /// A color index is read and turned into a temperature that matches the
     /// star's kind: Betelgeuse is cool and red, Rigel is hot and blue.
     #[test]
-    fn temperature_follows_the_colour_index() {
+    fn temperature_follows_the_color_index() {
         let (stars, _) = bright();
         let betelgeuse = named(&stars, "Betelgeuse").temperature();
         let rigel = named(&stars, "Rigel").temperature();

@@ -78,7 +78,7 @@ struct Cli {
     #[arg(long, default_value = "1600x900")]
     size: String,
 
-    /// Ring these stars, by name, comma separated. Green, a colour no star
+    /// Ring these stars, by name, comma separated. Green, a color no star
     /// can be.
     #[arg(long, value_name = "NAMES")]
     highlight: Option<String>,

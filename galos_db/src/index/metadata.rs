@@ -1,7 +1,7 @@
 //! The serving metadata beside the cell tree, and how a watch keeps it current.
 //!
 //! The cells carry what the map draws. These carry what a click wants: the
-//! populated table the map colours and filters by, the names table a search and
+//! populated table the map colors and filters by, the names table a search and
 //! a route read, the faction names, and one file of bodies per system.
 //!
 //! All four were derived wholesale from the database every time the index
@@ -453,7 +453,7 @@ pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
 
 /// Every populated system with a place, or those of `addresses` alone.
 ///
-/// A population without a position is left out: the map only ever colours a
+/// A population without a position is left out: the map only ever colors a
 /// system it draws, and it draws only positioned ones, so a
 /// [`meta::PopulatedSystem`] carries a fixed `[f32; 3]` and never an absent one.
 /// How far a system reaches has its own table, [`write_reaches`]: most systems
@@ -532,7 +532,7 @@ async fn factions_above(
         .collect()
 }
 
-/// Write `populated.bin`: the dynamic set the map colours and navigates by, in
+/// Write `populated.bin`: the dynamic set the map colors and navigates by, in
 /// address order so the same table is always the same bytes.
 fn write_populated(
     dir: &Path,

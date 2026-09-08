@@ -12,7 +12,7 @@
 //!
 //! - **Shell** is the overview: a cell's slice draws as marks once its systems
 //!   separate on screen, and a cell whose contents do not yet separate splats
-//!   the rest, a field coloured by the political mix.
+//!   the rest, a field colored by the political mix.
 //! - **Real** is the sky, and it is one quantity split at the visibility floor
 //!   rather than two modes. Stars that clear the limit draw as discrete marks
 //!   (the photometric walk keeps a giant far out and prunes a cell of dim

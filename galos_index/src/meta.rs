@@ -22,9 +22,9 @@ use std::fmt;
 
 /// A system that changes: its political columns, its name and where it sits.
 ///
-/// The dynamic set the map colours and navigates by, about 96,000 systems
+/// The dynamic set the map colors and navigates by, about 96,000 systems
 /// against 129 million. Held resident, since a filter reads it over every drawn
-/// system every frame and a colour cannot wait on a fetch.
+/// system every frame and a color cannot wait on a fetch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PopulatedSystem {
     pub address: i64,
