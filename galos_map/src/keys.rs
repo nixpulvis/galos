@@ -1,13 +1,16 @@
 //! What the keyboard asks of the map
 //!
-//! Every binding is a key struck on its own, but for the one that opens the
-//! search. The map is read with one hand on the pointer, so the other hand is
+//! Every binding is a key struck on its own, but for the two that want shift.
+//! The map is read with one hand on the pointer, so the other hand is
 //! what these are for: it rests on the letters and never has to reach for a
 //! modifier to move the camera or to take an annotation off the sky.
 //!
 //! Which is why a chord is not a binding here. A key held with control,
 //! command or alt is on its way somewhere else. Shift is weighed apart from
-//! those three, exactly one binding wanting it.
+//! those three, and two bindings want it: the one that opens the search, and
+//! the `?` that opens the bindings window — which is shift and the slash key
+//! where the bare slash puts the caret in the search box, the modifier being
+//! the whole of what tells those two apart.
 //!
 //! Nothing answers while a field is being typed into, but for the escape that
 //! puts the field away. A system named SOL is spelled with the same S that pans
@@ -40,7 +43,8 @@ pub fn plugin(app: &mut App) {
     // answers.
     app.add_systems(
         Update,
-        (toggle, open_search, shut_search, fly, home).in_set(MapSet::Search),
+        (toggle, toggle_keys, open_search, shut_search, fly, home)
+            .in_set(MapSet::Search),
     );
     // Between the two systems that already write the camera. After the one
     // that starts a commanded move, since a key cancels one, and before the
@@ -312,8 +316,9 @@ fn head_for(selection: &Selection, at: DVec3, radius: f32) -> Option<DVec3> {
 /// The only binding that asks [`Keyboard::focused`] rather than
 /// [`Keyboard::typing`]. Egui reads a space as a click on whatever holds the
 /// focus, so a control tabbed onto and left holding it would be clicked again
-/// by every press of this key, and one of the controls on the settings pane
-/// despawns every system on the map.
+/// by every press of this key — and the source the whole map is loaded
+/// through is one of those controls, switching it clearing the map and
+/// rebuilding from nothing.
 fn fly(
     keys: Res<ButtonInput<KeyCode>>,
     keyboard: Res<Keyboard>,
@@ -395,10 +400,11 @@ fn toggle(
     }
 
     if keys.just_pressed(KeyCode::KeyL) {
-        // One key over the two settings the pane keeps apart, which it can
-        // leave disagreeing. A press with either of them on turns both off, so
-        // the first press always clears the names off the map whatever state
-        // they were left in, and the next puts them back.
+        // One key over the two settings the pane offers, which stand side by
+        // side under General and can still be left disagreeing. A press with
+        // either of them on turns both off, so the first press always clears
+        // the names off the map whatever state they were left in, and the next
+        // puts them back.
         let showing = show_names.0 || show_body_names.0;
         show_names.0 = !showing;
         show_body_names.0 = !showing;
@@ -410,6 +416,39 @@ fn toggle(
 
     if keys.just_pressed(KeyCode::KeyG) {
         show_grid.0 = !show_grid.0;
+    }
+}
+
+/// Show or hide what the keys do
+///
+/// Two ways in, and both are where a reader looks: `F1` is help on every
+/// desktop there is, and `?` is help everywhere a page has a keyboard. Shut
+/// by either again, by the window's own mark, and by escape.
+///
+/// `?` is shift and the slash key, where the bare slash puts the caret in the
+/// search box: the same key, and the modifier is the whole of what tells the
+/// two apart. Asked about before [`open_search`] runs would make no
+/// difference — that one wants the slash bare — but the shift is checked here
+/// all the same rather than left to the order the systems happen to run in.
+fn toggle_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<Keyboard>,
+    mut open: ResMut<crate::ui::KeysOpen>,
+) {
+    if keyboard.typing {
+        return;
+    }
+
+    let helped = keys.just_pressed(KeyCode::F1) && bare(&keys);
+    let asked = keys.just_pressed(KeyCode::Slash) && shifted(&keys);
+    if helped || asked {
+        open.0 = !open.0;
+    }
+    // As it shuts the form, and for the same reason: escape is where a reader
+    // looks for the way out of something they opened. Only where it is open,
+    // so an escape meant for the form is not spent here.
+    if open.0 && keys.just_pressed(KeyCode::Escape) && bare(&keys) {
+        open.0 = false;
     }
 }
 
@@ -870,7 +909,6 @@ mod tests {
     fn spyglass(lock_camera: bool, follow_camera: bool) -> Spyglass {
         Spyglass {
             radius: Spyglass::OPENING,
-            fetch: false,
             clear: true,
             lock_camera,
             follow_camera,
@@ -1228,6 +1266,77 @@ mod tests {
         assert!(shutting(&app));
     }
 
+    /// A world where the bindings can be asked for
+    fn helped() -> App {
+        let mut app = world();
+        app.init_resource::<crate::ui::KeysOpen>();
+        app.add_systems(Update, toggle_keys);
+        app
+    }
+
+    /// Whether the bindings are being read
+    fn helping(app: &App) -> bool {
+        app.world().resource::<crate::ui::KeysOpen>().0
+    }
+
+    /// F1 shows what the keys do, and hides it again
+    #[test]
+    fn f1_shows_the_bindings_and_hides_them() {
+        let mut app = helped();
+
+        pressed(&mut app, &[KeyCode::F1]);
+        assert!(helping(&app));
+
+        pressed(&mut app, &[KeyCode::F1]);
+        assert!(!helping(&app), "the same key did not put them away");
+    }
+
+    /// So does a question mark, which is a shifted slash
+    ///
+    /// The bare slash is the search box, so the two bindings share a key and
+    /// the modifier is the whole of what tells them apart: a reader asking
+    /// for help must not land in the search box, and one reaching for the
+    /// search box must not be handed a reference.
+    #[test]
+    fn a_question_mark_shows_the_bindings_and_a_bare_slash_does_not() {
+        let mut app = helped();
+
+        pressed(&mut app, &[KeyCode::Slash]);
+        assert!(!helping(&app), "a bare slash is the search box");
+
+        pressed(&mut app, &[KeyCode::ShiftLeft, KeyCode::Slash]);
+        assert!(helping(&app));
+    }
+
+    /// An escape puts them away, and only while they are up
+    ///
+    /// Where a reader looks for the way out of anything they opened. Spent
+    /// here while they are shut, it would be an escape the search form never
+    /// saw — the two answer the same key and only one of them is open.
+    #[test]
+    fn an_escape_puts_the_bindings_away() {
+        let mut app = helped();
+
+        pressed(&mut app, &[KeyCode::F1]);
+        pressed(&mut app, &[KeyCode::Escape]);
+        assert!(!helping(&app));
+
+        // Shut already: nothing to do, and nothing done.
+        pressed(&mut app, &[KeyCode::Escape]);
+        assert!(!helping(&app));
+    }
+
+    /// And a name being typed is not a reader asking for help
+    #[test]
+    fn typing_a_name_does_not_show_the_bindings() {
+        let mut app = helped();
+        type_a_name(&mut app);
+
+        pressed(&mut app, &[KeyCode::F1]);
+
+        assert!(!helping(&app));
+    }
+
     /// It does not ask for the box it is putting away
     ///
     /// The two are one key apart on the same resource, and asking for both in
@@ -1562,8 +1671,8 @@ mod tests {
     ///
     /// Egui reads a space as a click on whatever holds the focus, so a
     /// checkbox tabbed onto and left there would be clicked again by every
-    /// press of this key. One of the controls on the settings pane despawns
-    /// every system on the map.
+    /// press of this key — the source the whole map is loaded through is one
+    /// of them, and switching it clears the map and rebuilds from nothing.
     #[test]
     fn a_control_holding_the_focus_does_not_fly_the_map() {
         let mut app = gathered(picked(&[somewhere(1.)]));

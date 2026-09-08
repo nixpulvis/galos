@@ -189,7 +189,7 @@ fn diagnostics(
                         "populated",
                         &loaded.populated.0.len().to_string(),
                         "Systems in the political table — population, \
-                         allegiance, government — held resident for colour and \
+                         allegiance, government — held resident for color and \
                          filtering. Most of the galaxy is absent from it.",
                     );
                     pair(
@@ -251,13 +251,6 @@ fn diagnostics(
                         "How far a system is kept before it is dropped: the \
                          radius times the eviction margin. Wider than the \
                          reach so the edge does not churn.",
-                    );
-                    pair(
-                        ui,
-                        "fetch",
-                        on_off(spyglass.fetch),
-                        "Whether the spyglass is asking the index for the \
-                         systems in its reach.",
                     );
                     pair(
                         ui,

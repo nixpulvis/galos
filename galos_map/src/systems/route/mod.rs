@@ -1172,7 +1172,6 @@ mod tests {
         app.add_message::<MoveCamera>();
         app.insert_resource(Names::reaching(entries, Vec::new()));
         app.insert_resource(Spyglass {
-            fetch: true,
             radius: Spyglass::OPENING,
             clear: true,
             lock_camera: false,
@@ -1190,7 +1189,6 @@ mod tests {
 
         let held = app.world().resource::<Spyglass>();
         let spyglass = Spyglass {
-            fetch: held.fetch,
             radius: held.radius,
             clear: held.clear,
             lock_camera: held.lock_camera,
@@ -1551,7 +1549,6 @@ mod tests {
         app.add_message::<MoveCamera>();
         app.init_resource::<Filters>();
         app.insert_resource(Spyglass {
-            fetch: true,
             radius: Spyglass::OPENING,
             clear: true,
             lock_camera: false,

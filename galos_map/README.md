@@ -73,13 +73,15 @@ started on a slider goes on talking to the slider wherever the pointer wanders.
 | `O` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
 | `/` or `Shift-S` | Put the caret in the search box |
-| `Esc` | Put the search form away |
+| `Esc` | Put the search form or the bindings away |
+| `F1` or `?` | Show or hide these bindings |
 
 Panning and zooming cover ground in proportion to how far out the camera is, so
 a key moves the map at about the same rate whether it is looking at the whole
 galaxy or at one planet.
 
-Every binding is a key struck on its own, but for the one that opens the search.
+Every binding is a key struck on its own, but for the two that want shift: the
+one that opens the search, and the `?` that opens the key list.
 Held with control, command or alt, a key is left alone. So is every one of them
 while a field is being typed into, apart from the escape that puts the field
 away.

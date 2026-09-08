@@ -1516,14 +1516,14 @@ fn nameplate(words: String) -> impl Bundle {
 ///
 /// The layout is `choose_names`' and reaches here through the [`Label`]
 /// tokens `respawn` hangs off whatever wins a name: each carries the words to
-/// set, and its parent says where on screen the name goes and what colour it
+/// set, and its parent says where on screen the name goes and what color it
 /// comes out. Painted in the background layer, under the chrome and over the
 /// map.
 pub fn draw_names(
     mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
     tokens: Query<(&PlateText, &ChildOf), With<Label>>,
-    // The marks that colour a name and where its system stands. Spelled
+    // The marks that color a name and where its system stands. Spelled
     // `Without<Label>` so the scheduler can prove the token query disjoint
     // from these; a token is neither a system nor a body.
     //
@@ -1562,7 +1562,7 @@ pub fn draw_names(
 
     for (words, child_of) in &tokens {
         let thing = child_of.parent();
-        // Where the thing stands on screen, how large its mark is, what colour
+        // Where the thing stands on screen, how large its mark is, what color
         // its name comes out, and whether a line is drawn to it. A system is
         // out in the sky; a body is read off the grid holding it, the way
         // [`choose_names`] reads it, so the name is placed against the view it
@@ -1651,9 +1651,9 @@ pub fn draw_names(
     Ok(())
 }
 
-/// What colour a name comes out for the marks on it
+/// What color a name comes out for the marks on it
 ///
-/// A name is drawn the colour of the ring around its star, so a system marked
+/// A name is drawn the color of the ring around its star, so a system marked
 /// out is one thing in two places. Selection wins over pointing where both
 /// apply, as it does for the ring: the pointer will move on, and the selection
 /// is what was asked for.
@@ -1667,7 +1667,7 @@ fn marked_tint(pointed_at: bool, selected: bool) -> Srgba {
     }
 }
 
-/// An sRGB colour as egui knows it
+/// An sRGB color as egui knows it
 ///
 /// [`Srgba`] channels are already gamma-encoded, the space [`egui::Color32`]
 /// holds, so they cross straight over; the alpha is not premultiplied on
@@ -2424,13 +2424,7 @@ mod tests {
 
     /// A spyglass of a given reach, clearing unless said otherwise
     fn spyglass(radius: f32, clear: bool) -> Spyglass {
-        Spyglass {
-            fetch: true,
-            radius,
-            clear,
-            lock_camera: false,
-            follow_camera: false,
-        }
+        Spyglass { radius, clear, lock_camera: false, follow_camera: false }
     }
 
     /// Names reach no further than the spyglass shows

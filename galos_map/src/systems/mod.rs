@@ -17,7 +17,6 @@ use std::collections::HashSet;
 pub fn plugin(app: &mut App) {
     app.insert_resource(Spyglass {
         radius: Spyglass::OPENING,
-        fetch: true,
         clear: true,
         lock_camera: false,
         follow_camera: true,
@@ -30,7 +29,6 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(bodies::plugin);
     app.add_plugins(spawn::plugin);
     app.add_plugins(field::plugin);
-    app.add_plugins(despawn::plugin);
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
     app.add_plugins(pointing::plugin);
@@ -248,7 +246,6 @@ impl System {
 pub(crate) mod aggregate;
 pub(crate) mod bodies;
 pub(crate) mod bounded;
-pub(crate) mod despawn;
 pub(crate) mod fetch;
 pub(crate) mod field;
 pub(crate) mod filter;
@@ -264,13 +261,6 @@ pub(crate) mod spawn;
 /// A global setting which controls the spyglass around the camera
 #[derive(Resource)]
 pub(crate) struct Spyglass {
-    /// Ask the database for what is within the reach
-    ///
-    /// The two halves of what a spyglass does, this and [`Spyglass::clear`],
-    /// and each is worth having without the other. Off, the map draws what it
-    /// has and asks for nothing more, which is how to look at a sky that
-    /// stops changing under you.
-    pub(crate) fetch: bool,
     pub(crate) radius: f32,
     /// Clear away what the reach does not hold
     ///
@@ -868,7 +858,6 @@ pub(crate) mod tests {
         let mut app = App::new();
         app.insert_resource(Spyglass {
             radius: 10.,
-            fetch: true,
             clear: true,
             lock_camera: false,
             follow_camera: true,
@@ -988,7 +977,6 @@ pub(crate) mod tests {
         let mut app = App::new();
         app.insert_resource(Spyglass {
             radius: 10.,
-            fetch: true,
             clear: false,
             lock_camera: false,
             follow_camera: true,
@@ -1043,7 +1031,6 @@ pub(crate) mod tests {
         let mut app = App::new();
         app.insert_resource(Spyglass {
             radius: 10.,
-            fetch: true,
             clear: true,
             lock_camera: false,
             follow_camera: true,
@@ -1164,7 +1151,6 @@ pub(crate) mod tests {
         app.insert_resource(Spyglass {
             radius,
             clear,
-            fetch: false,
             lock_camera: false,
             follow_camera: false,
         });
@@ -1186,7 +1172,6 @@ pub(crate) mod tests {
     fn the_spyglass_reaches_what_is_within_it() {
         let spyglass = Spyglass {
             radius: 10.,
-            fetch: false,
             clear: true,
             lock_camera: false,
             follow_camera: false,
@@ -1203,7 +1188,6 @@ pub(crate) mod tests {
     fn a_spyglass_that_does_not_clear_reaches_whatever_is_loaded() {
         let spyglass = Spyglass {
             radius: 10.,
-            fetch: false,
             clear: false,
             lock_camera: false,
             follow_camera: false,
@@ -1447,7 +1431,6 @@ pub(crate) mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(Spyglass {
             radius: Spyglass::OPENING,
-            fetch: false,
             clear: true,
             lock_camera,
             follow_camera,

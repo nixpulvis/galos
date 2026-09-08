@@ -17,8 +17,7 @@ use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::systems::bodies::spawn::ShowOrbits;
 use crate::systems::bodies::{Clock, Contents, mark_if_wound};
-use crate::systems::despawn::{Despawn, ReloadCells};
-use crate::systems::fetch::{Poll, Throttle};
+use crate::systems::fetch::Poll;
 use crate::systems::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
     SPANS, Standstill, Watch,
@@ -50,6 +49,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
     app.init_resource::<Keyboard>();
     app.init_resource::<SettingsOpen>();
+    app.init_resource::<KeysOpen>();
     app.init_resource::<PressOwner>();
     app.init_resource::<BarFields>();
     // The lettering leads, being what everything after it is drawn in.
@@ -137,6 +137,13 @@ pub(crate) struct PointerOverUi(pub(crate) bool);
 /// can stand clear of it.
 #[derive(Resource, Default)]
 pub(crate) struct SettingsOpen(bool);
+
+/// Whether the key bindings are being read
+///
+/// Opened and shut from the keyboard alone — see [`crate::keys`] —
+/// since a reader wanting to know what a key does has a hand on the keys.
+#[derive(Resource, Default)]
+pub(crate) struct KeysOpen(pub(crate) bool);
 
 /// What the chrome has taken of the keyboard
 ///
@@ -623,7 +630,6 @@ pub(crate) struct Settings<'w> {
     star_exposure: ResMut<'w, StarExposure>,
     star_profile: ResMut<'w, StarProfile>,
     show_names: ResMut<'w, ShowNames>,
-    throttle: ResMut<'w, Throttle>,
     poll: ResMut<'w, Poll>,
     name_radius: ResMut<'w, NameRadius>,
     name_limit: ResMut<'w, NameLimit>,
@@ -635,8 +641,6 @@ pub(crate) struct Settings<'w> {
     show_middle: ResMut<'w, ShowMiddle>,
     show_picked: ResMut<'w, ShowPicked>,
     bright: ResMut<'w, Bright>,
-    despawner: MessageWriter<'w, Despawn>,
-    reloader: MessageWriter<'w, ReloadCells>,
     bounded: ResMut<'w, crate::systems::bounded::LodFetch>,
 }
 
@@ -706,6 +710,7 @@ pub(crate) fn chrome(
     mut over_ui: ResMut<PointerOverUi>,
     mut keyboard: ResMut<Keyboard>,
     mut open: ResMut<SettingsOpen>,
+    mut keys: ResMut<KeysOpen>,
     mut search: ResMut<BarFields>,
     mut selection: ResMut<Selection>,
     contents: Res<Contents>,
@@ -739,15 +744,26 @@ pub(crate) fn chrome(
         // so it nests under the toggle the way the other sections nest theirs.
         // "Enable" is the spyglass's `clear`: to bound the view is to clear
         // away what the reach does not hold.
-        ui.checkbox(&mut settings.spyglass.clear, "Enable");
+        check(
+            ui,
+            &mut settings.spyglass.clear,
+            "Enable",
+            "Only draw systems near the camera",
+        );
         if settings.spyglass.clear {
             ui.indent("spyglass", |ui| {
-                ui.checkbox(
+                check(
+                    ui,
                     &mut settings.spyglass.follow_camera,
                     "Follow Camera",
+                    "Set the radius from the camera's zoom",
                 );
                 ui.add_space(FIELD_GAP);
-                ui.label("Radius (Ly)");
+                titled(
+                    ui,
+                    "Radius (Ly)",
+                    "How far from the camera to draw systems",
+                );
                 // Greyed while the camera sets it: dragging it would be
                 // overwritten on the next frame, and a control that springs
                 // back is worse than one that says it is not yours to move.
@@ -763,39 +779,13 @@ pub(crate) fn chrome(
                 // the one that writes it.
                 if !settings.spyglass.follow_camera {
                     ui.add_space(FIELD_GAP);
-                    ui.checkbox(
+                    check(
+                        ui,
                         &mut settings.spyglass.lock_camera,
                         "Lock Camera",
+                        "Stop the camera leaving the radius",
                     );
                 }
-
-                // Folded away: reached for once in a session if at all.
-                ui.add_space(FIELD_GAP);
-                ui.collapsing("Advanced", |ui| {
-                    // Whether to ask the database for what the reach takes in.
-                    // Named for the half alone: inside the spyglass's own
-                    // section, saying so again would be saying it twice.
-                    ui.checkbox(&mut settings.spyglass.fetch, "Fetch");
-                    // The wait before asking about somewhere new. Offered only
-                    // where something reads it: `spyglass_condition` is the one
-                    // reader, and that runs only when the region fetch is the
-                    // source, so under the walk this would be a number the map
-                    // does not consult. The poll is not here for the opposite
-                    // reason — it is read map-wide, so it stands with the
-                    // source below.
-                    if throttle_offered(
-                        settings.spyglass.fetch,
-                        settings.bounded.0,
-                    ) {
-                        ui.horizontal(|ui| {
-                            field_name(ui, "Throttle");
-                            ui.add(
-                                egui::DragValue::new(&mut settings.throttle.0)
-                                    .suffix(" ms"),
-                            );
-                        });
-                    }
-                });
             });
         }
 
@@ -807,7 +797,12 @@ pub(crate) fn chrome(
         // payloads, in place of the spyglass region. On by default — it is what
         // ends the far-view entity explosion — and off falls back to the old
         // region fetch. Switching it clears the map and rebuilds from nothing.
-        ui.checkbox(&mut settings.bounded.0, "LoD Fetch");
+        check(
+            ui,
+            &mut settings.bounded.0,
+            "LoD Fetch",
+            "Load systems by detail, not by whole regions",
+        );
         // How often the map goes back for what it already holds. Out here
         // rather than under the spyglass because it is not the spyglass's:
         // `bodies::fetch` asks the inside of a system on it, and
@@ -817,96 +812,29 @@ pub(crate) fn chrome(
         // the one control that governs what the map does whichever source is
         // running.
         ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
-        ui.add_space(FIELD_GAP);
-        ui.collapsing("Debug", |ui| {
-            if ui.button("Despawn Systems").clicked() {
-                settings.despawner.write(Despawn);
-            }
-            // Cells only, for debugging a rebuilt index without a restart. See
-            // `reload_cells` for what it leaves alone and the auth note.
-            if ui.button("Reload Cells").clicked() {
-                settings.reloader.write(ReloadCells);
-            }
-        });
 
-        // Its own section rather than a row under either view, because it is
-        // the one thing on the pane that belongs to both: the same ruled plane
-        // carries the map from light years out among the systems to light
-        // seconds inside one, and a switch filed under either would read as
+        // What belongs to both views, which is what this section is for and
+        // what it is named for. The galaxy drawn as a map or as a sky, and a
+        // system seen from inside it, are two views with their own sections
+        // below; a switch that governs both filed under either would read as
         // turning off only that half of it.
-        heading(ui, "Scale", true);
-        ui.checkbox(&mut settings.show_grid.0, "Grid");
-        if settings.show_grid.0 {
-            // Indented under what turns them on, the same as the names are,
-            // since a unit for a ruler that is not drawn is a choice about
-            // nothing. Left to the map by default, which turns the ruler over
-            // as it descends into a system; pinned either way for reading a
-            // system's distances in light years or a neighbourhood's in light
-            // seconds.
-            ui.indent("said", |ui| {
-                ui.checkbox(
-                    &mut settings.show_middle.0,
-                    "Show Center Position",
-                );
-                ui.checkbox(
-                    &mut settings.show_picked.0,
-                    "Show Selected Positions",
-                );
-                ui.add_space(FIELD_GAP);
-                // How loudly the whole ruling is drawn, lines and numbers
-                // together. Past a hundred for a ruler that has to be read off
-                // a bright field, under it for one that should stay out of the
-                // way of a busy sky.
-                ui.label("Brightness (%)");
-                let mut bright = settings.bright.0 * 100.;
-                fill_width(ui, VALUE_WIDTH);
-                let slider = ui
-                    .horizontal(|ui| {
-                        let rail = ui.add(
-                            egui::Slider::new(&mut bright, 0.0..=100.)
-                                .step_by(5.)
-                                .show_value(false),
-                        );
-                        let typed = value_box(
-                            ui,
-                            egui::DragValue::new(&mut bright)
-                                .range(0.0..=100.)
-                                .suffix("%"),
-                        );
-                        rail | typed
-                    })
-                    .inner;
-                // Only on a change. Written every frame it would mark the
-                // resource changed every frame, and the planes are rebuilt
-                // from it.
-                if slider.changed() {
-                    settings.bright.0 = bright / 100.;
-                }
-                ui.add_space(FIELD_GAP);
-                ui.label("Units");
-                ui.radio_value(
-                    &mut *settings.unit,
-                    RulerUnit::Automatic,
-                    "Automatic",
-                );
-                ui.radio_value(
-                    &mut *settings.unit,
-                    RulerUnit::LightYears,
-                    "Light Years",
-                );
-                ui.radio_value(
-                    &mut *settings.unit,
-                    RulerUnit::LightSeconds,
-                    "Light Seconds",
-                );
-            });
-        }
-
-        heading(ui, "Galaxy View", true);
-        // Whether a system is named is a choice about what the map draws, the
-        // same as which color a star comes out and how large it is, so it
-        // stands with those rather than alone.
-        ui.checkbox(&mut settings.show_names.0, "Show Labels");
+        //
+        // The labels are that: a name is drawn over a system out among the
+        // stars and over a body within one, and one key turns both off (see
+        // [`crate::keys`]). They stood in the two view sections, which is
+        // where a reader who wanted the names off had to find them twice. The
+        // ruling is the same argument — one ruled plane carries the map from
+        // light years down to light seconds.
+        heading(ui, "General", true);
+        // Named apart, where the two sections named both of them "Show
+        // Labels" and left the heading over each to say which was meant.
+        // Together they have to say it themselves.
+        check(
+            ui,
+            &mut settings.show_names.0,
+            "System Names",
+            "Show system names on the map",
+        );
         if settings.show_names.0 {
             // Indented under what turns them on, since neither means anything
             // without it. The rule egui draws down the side of an indent says
@@ -919,9 +847,11 @@ pub(crate) fn chrome(
                 // rather than by standing near the center. See
                 // [`crate::systems::labels::worth_placing`].
                 if *settings.view == View::Map {
-                    ui.checkbox(
+                    check(
+                        ui,
                         &mut settings.name_radius.follow_spyglass,
                         "Names Follow Spyglass",
+                        "Name systems out to the spyglass radius",
                     );
                     if !settings.name_radius.follow_spyglass {
                         // A name can only be drawn for a system that is drawn,
@@ -933,7 +863,11 @@ pub(crate) fn chrome(
                         } else {
                             Spyglass::CEILING
                         };
-                        ui.label("Name Radius (Ly)");
+                        titled(
+                            ui,
+                            "Name Radius (Ly)",
+                            "How far from the center to show names",
+                        );
                         radius_slider(
                             ui,
                             &mut settings.name_radius.radius,
@@ -947,7 +881,11 @@ pub(crate) fn chrome(
                     // names fewer of them, the way Name Radius names fewer in
                     // the map view. A star past the exposure's floor is not
                     // drawn and so cannot be named whatever this says.
-                    ui.label("Name Limit (mag)");
+                    titled(
+                        ui,
+                        "Name Limit (mag)",
+                        "Only name stars brighter than this",
+                    );
                     let mut mag = settings.name_limit.0;
                     fill_width(ui, VALUE_WIDTH);
                     let slider = ui
@@ -976,31 +914,138 @@ pub(crate) fn chrome(
             });
         }
 
+        check(
+            ui,
+            &mut settings.show_body_names.0,
+            "Body Names",
+            "Show body names inside a system",
+        );
         ui.add_space(FIELD_GAP);
-        ui.radio_value(&mut *settings.view, View::Map, "Map");
-        ui.radio_value(&mut *settings.view, View::Realistic, "Realistic");
+        check(ui, &mut settings.show_grid.0, "Grid", "Show the measuring grid");
+        if settings.show_grid.0 {
+            // Indented under what turns them on, the same as the names are,
+            // since a unit for a ruler that is not drawn is a choice about
+            // nothing. Left to the map by default, which turns the ruler over
+            // as it descends into a system; pinned either way for reading a
+            // system's distances in light years or a neighbourhood's in light
+            // seconds.
+            ui.indent("said", |ui| {
+                check(
+                    ui,
+                    &mut settings.show_middle.0,
+                    "Show Center Position",
+                    "Show coordinates of the view center",
+                );
+                check(
+                    ui,
+                    &mut settings.show_picked.0,
+                    "Show Selected Positions",
+                    "Show coordinates of selected systems",
+                );
+                ui.add_space(FIELD_GAP);
+                // How loudly the whole ruling is drawn, lines and numbers
+                // together. Past a hundred for a ruler that has to be read off
+                // a bright field, under it for one that should stay out of the
+                // way of a busy sky.
+                titled(ui, "Brightness (%)", "How bright the grid is drawn");
+                let mut bright = settings.bright.0 * 100.;
+                fill_width(ui, VALUE_WIDTH);
+                let slider = ui
+                    .horizontal(|ui| {
+                        let rail = ui.add(
+                            egui::Slider::new(&mut bright, 0.0..=100.)
+                                .step_by(5.)
+                                .show_value(false),
+                        );
+                        let typed = value_box(
+                            ui,
+                            egui::DragValue::new(&mut bright)
+                                .range(0.0..=100.)
+                                .suffix("%"),
+                        );
+                        rail | typed
+                    })
+                    .inner;
+                // Only on a change. Written every frame it would mark the
+                // resource changed every frame, and the planes are rebuilt
+                // from it.
+                if slider.changed() {
+                    settings.bright.0 = bright / 100.;
+                }
+                ui.add_space(FIELD_GAP);
+                titled(ui, "Units", "What the grid is measured in");
+                choose(
+                    ui,
+                    &mut *settings.unit,
+                    RulerUnit::Automatic,
+                    "Automatic",
+                    "Light years in space, light seconds in a system",
+                );
+                choose(
+                    ui,
+                    &mut *settings.unit,
+                    RulerUnit::LightYears,
+                    "Light Years",
+                    "Always light years",
+                );
+                choose(
+                    ui,
+                    &mut *settings.unit,
+                    RulerUnit::LightSeconds,
+                    "Light Seconds",
+                    "Always light seconds",
+                );
+            });
+        }
+
+        // Which of the two ways the sky itself is drawn, and what each of
+        // them offers. What is named over it went up to General, a name being
+        // drawn either way.
+        heading(ui, "Galaxy View", true);
+        choose(
+            ui,
+            &mut *settings.view,
+            View::Map,
+            "Map",
+            "Flat colored dots, one per system",
+        );
+        choose(
+            ui,
+            &mut *settings.view,
+            View::Realistic,
+            "Realistic",
+            "Stars at their real color and brightness",
+        );
         if *settings.view == View::Map {
             ui.add_space(FIELD_GAP);
-            ui.label("Color By");
-            ui.radio_value(
+            titled(ui, "Color By", "What a system's color means");
+            choose(
+                ui,
                 &mut *settings.color_by,
                 ColorBy::Allegiance,
                 "Allegiance",
+                "Color by controlling power",
             );
-            ui.radio_value(
+            choose(
+                ui,
                 &mut *settings.color_by,
                 ColorBy::Government,
                 "Government",
+                "Color by government type",
             );
-            ui.radio_value(
+            choose(
+                ui,
                 &mut *settings.color_by,
                 ColorBy::Security,
                 "Security",
+                "Color by security level",
             );
             ui.add_space(FIELD_GAP);
-            ui.checkbox(
+            check(
+                ui,
                 &mut settings.population_scale.0,
                 "Scale w/ Population",
+                "Draw populated systems larger",
             );
         }
         if *settings.view == View::Realistic {
@@ -1010,10 +1055,16 @@ pub(crate) fn chrome(
             // a change, so drawing the radios does not mark the resource changed
             // every frame and rebake the texture; see
             // [`crate::systems::spawn::reprofile`].
-            ui.label("Point spread");
+            titled(ui, "Point spread", "How a star's light blurs");
             let mut profile = settings.star_profile.0;
             for choice in ProfileKind::ALL {
-                ui.radio_value(&mut profile, choice, choice.name());
+                choose(
+                    ui,
+                    &mut profile,
+                    choice,
+                    choice.name(),
+                    spread_hint(choice),
+                );
             }
             if profile != settings.star_profile.0 {
                 settings.star_profile.0 = profile;
@@ -1023,7 +1074,7 @@ pub(crate) fn chrome(
             // sky bright enough for only the most luminous stars, up through
             // the dark-adapted field at zero to several stops past it, where
             // the faint sky fills in.
-            ui.label("Exposure (EV)");
+            titled(ui, "Exposure (EV)", "How brightly the stars are exposed");
             let mut ev = settings.star_exposure.0;
             fill_width(ui, VALUE_WIDTH);
             let slider = ui
@@ -1054,17 +1105,27 @@ pub(crate) fn chrome(
         // What is drawn once the camera is inside a system, rather than what
         // the galaxy is drawn as. Its own section for that reason, and not
         // under the view above it: which of the two ways the sky is drawn says
-        // nothing about what a system looks like from within.
+        // nothing about what a system looks like from within. The body names
+        // went up to General with the system names, one key turning both off
+        // and a reader wanting them off having had to find them twice.
         heading(ui, "System View", true);
-        ui.checkbox(&mut settings.show_body_names.0, "Show Labels");
-        ui.checkbox(&mut settings.show_orbits.0, "Orbit Lines");
+        check(
+            ui,
+            &mut settings.show_orbits.0,
+            "Orbit Lines",
+            "Show the orbit each body follows",
+        );
         mark_if_wound(&mut settings.clock, |clock| clock_readout(ui, clock));
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
         // about them that is set once and left alone.
         heading(ui, "Filters", true);
-        ui.label("Filtered Opacity (%)");
+        titled(
+            ui,
+            "Filtered Opacity (%)",
+            "How faintly unmatched systems are drawn",
+        );
         let mut showing = filter.dim.0 * 100.;
         fill_width(ui, VALUE_WIDTH);
         let slider = ui
@@ -1104,12 +1165,14 @@ pub(crate) fn chrome(
         if filter.dim.0 == 0. {
             ui.label(egui::RichText::new("Not loaded").weak());
         }
-
-        // Last, and folded away: a reference rather than a control, read once
-        // and then reached for only to check one key.
-        heading(ui, "Keys", true);
-        ui.collapsing("Bindings", keys_reference);
     });
+
+    // Its own window rather than a fold at the foot of the pane. It is a
+    // reference and not a control: nothing in it is set, it is read while
+    // doing something else, and the pane it was filed under is where the
+    // things that *are* set live. Opened from the keyboard, which is what it
+    // is about.
+    keys_window(ctx, &mut keys.0);
 
     // The bar next, in the room the gear is not standing in, and the gear
     // last: it stands level with the search box, which is not known until the
@@ -2668,34 +2731,23 @@ fn route_section(
             Routing::Shortest => "Shortest",
         })
         .show_ui(ui, |ui| {
-            for (mode, said, gives_up) in [
+            // One line each, as the pane's hints are: what taking it gets
+            // you, in the words the rows use. What each of them gives up in
+            // exchange is [`Routing`]'s to say at length.
+            for (mode, said, hint) in [
                 (
                     Routing::Quick,
                     "Quick",
-                    "Does not prove the fewest jumps: at most one jump over \
-                     for every twenty it takes, so under twenty jumps it is \
-                     the fewest there are. It may wander where Direct would \
-                     not — the bound is on jumps, not on light years. Little \
-                     use with supercharging on, where the time goes \
-                     elsewhere.",
+                    "Fastest to find, up to 5% more jumps",
                 ),
-                (
-                    Routing::Direct,
-                    "Direct",
-                    "The fewest jumps, and of those the chain that heads \
-                     most directly at the goal. No claim that it is the \
-                     shortest of them in light years.",
-                ),
+                (Routing::Direct, "Direct", "Fewest jumps, straightest path"),
                 (
                     Routing::Shortest,
                     "Shortest",
-                    "The fewest jumps, and provably the shortest chain of \
-                     that many. Costs half again what Direct does to prove \
-                     a difference usually under a light year a jump.",
+                    "Fewest jumps, shortest distance, slowest to find",
                 ),
             ] {
-                ui.selectable_value(&mut *how, mode, said)
-                    .on_hover_text(gives_up);
+                ui.selectable_value(&mut *how, mode, said).on_hover_text(hint);
             }
         });
     // Whether a jet cone counts, and what it is worth. A neutron star
@@ -2711,12 +2763,27 @@ fn route_section(
             Drive::Optimised => "SCO Mk II (x6 / x3)",
         })
         .show_ui(ui, |ui| {
-            for (fitted, said) in [
-                (Drive::Unaided, "None"),
-                (Drive::Standard, "Standard (x4 / x1.5)"),
-                (Drive::Optimised, "SCO Mk II (x6 / x3)"),
+            // The multiples are in the names, so a hint says what they are
+            // multiples of rather than saying them twice.
+            for (fitted, said, hint) in [
+                (
+                    Drive::Unaided,
+                    "None",
+                    "No boosts: every jump is the ship's range",
+                ),
+                (
+                    Drive::Standard,
+                    "Standard (x4 / x1.5)",
+                    "Boost off neutron stars and white dwarfs",
+                ),
+                (
+                    Drive::Optimised,
+                    "SCO Mk II (x6 / x3)",
+                    "Bigger boosts off the same stars",
+                ),
             ] {
-                ui.selectable_value(&mut *drive, fitted, said);
+                ui.selectable_value(&mut *drive, fitted, said)
+                    .on_hover_text(hint);
             }
         });
 
@@ -2741,15 +2808,24 @@ fn route_section(
     // settle: two stops have one, and three or more picked out are as likely
     // to be a set of destinations as an itinerary.
     if stops.as_ref().is_ok_and(|stops| stops.len() > 2) {
-        ui.checkbox(&mut search.tour, "Cheapest order");
+        check(
+            ui,
+            &mut search.tour,
+            "Cheapest order",
+            "Reorder the stops to fly the least",
+        );
         // Only under the box it qualifies. Where the order is the user's own
         // there is nothing to hold the start against.
         if search.tour {
             ui.indent("start", |ui| {
                 let mut from_first = !search.any_start;
-                if ui
-                    .checkbox(&mut from_first, "Start w/ First Selected System")
-                    .changed()
+                if check(
+                    ui,
+                    &mut from_first,
+                    "Start w/ First Selected System",
+                    "Keep the first stop as the start",
+                )
+                .changed()
                 {
                     search.any_start = !from_first;
                 }
@@ -3698,7 +3774,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
     ui.add_space(FIELD_GAP);
     ui.horizontal(|ui| {
-        ui.label("Run on");
+        titled(ui, "Run on", "How far the orbits have advanced");
         if clock.at == 0. {
             ui.label(egui::RichText::new("not at all").weak());
         } else {
@@ -3854,9 +3930,10 @@ fn faction_list<'a>(
 /// wrote it. Held to the README's table by
 /// `the_pane_and_the_readme_list_the_same_keys`, so the two cannot drift.
 ///
-/// Each is a key struck on its own, but for the one that opens the search,
-/// which is what [`crate::keys`] promises and the README says.
-const BINDINGS: [(&str, &str); 12] = [
+/// Each is a key struck on its own, but for the two that want shift — the
+/// one that opens the search and the `?` that opens this window — which is
+/// what [`crate::keys`] promises and the README says.
+const BINDINGS: [(&str, &str); 13] = [
     ("W A S D", "Pan along the ruled plane"),
     ("Q E", "Pan down and up through it"),
     ("Z X", "Swing the camera round what it looks at"),
@@ -3868,13 +3945,32 @@ const BINDINGS: [(&str, &str); 12] = [
     ("O", "Show or hide the orbit lines"),
     ("G", "Show or hide the grid"),
     ("/ or Shift-S", "Put the caret in the search box"),
-    ("Esc", "Put the search form away"),
+    ("Esc", "Put the search form or the bindings away"),
+    ("F1 or ?", "Show or hide these bindings"),
 ];
 
-/// Say what the keys do, in the settings pane
+/// The window the bindings are read in
+///
+/// A window rather than a panel: it is read against whatever the reader was
+/// doing when they wanted it, and it is moved out of the way rather than
+/// closed. Its own close mark as well as the key that opened it, a window
+/// being the one thing on screen a reader already knows how to shut.
+///
+/// Not resizable and not collapsible. There is one thing in it, it is as wide
+/// as the widest binding, and a reference rolled up into its title bar is a
+/// reference nobody can read.
+fn keys_window(ctx: &Context, open: &mut bool) {
+    egui::Window::new("Keys")
+        .open(open)
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, keys_reference);
+}
+
+/// Say what the keys do
 ///
 /// Two columns, the key set as a heading is and what it does in the ordinary
-/// text of the pane, so the column of keys is what the eye runs down.
+/// text, so the column of keys is what the eye runs down.
 fn keys_reference(ui: &mut Ui) {
     egui::Grid::new("keys-reference").num_columns(2).show(ui, |ui| {
         for (key, does) in BINDINGS {
@@ -3883,6 +3979,59 @@ fn keys_reference(ui: &mut Ui) {
             ui.end_row();
         }
     });
+}
+
+/// A control and what it does, said on hover
+///
+/// One line, plainly: the ordinary word for the thing that happens when the
+/// control is used. "Fetch fresh data periodically", not "go back for what the
+/// map holds" — the second is the voice this crate's doc comments are written
+/// in, and in a tooltip it is a sentence a reader has to decode to learn that
+/// a checkbox fetches anything. The prose belongs in the comments; a hint is
+/// for someone who wants to know what a switch does and get on with it.
+///
+/// So: say the verb. Fetch, show, draw, color, name, hide. Say the noun the
+/// user would use for what it acts on — systems, names, the grid — and not the
+/// name the code gives it. Leave out why it is there, how it works and what it
+/// costs; those are what a doc comment is for, and [`Routing`] is an example
+/// of one carrying what would not fit here.
+///
+/// No full stop. It is a label rather than prose, as the control's own name
+/// is, and every one of them ends the same way for the same reason.
+///
+/// Answered through these three rather than by each control reaching for
+/// `on_hover_text` itself, so that a control added without a hint reads as
+/// odd at the callsite instead of quietly having none.
+fn check(ui: &mut Ui, on: &mut bool, said: &str, hint: &str) -> Response {
+    ui.checkbox(on, said).on_hover_text(hint)
+}
+
+/// What each point-spread profile does to a star, in a line
+///
+/// Its own function rather than a method on the kind, the kind belonging to
+/// [`galos_photometry`] and this being what the pane says about it rather than
+/// what it is.
+fn spread_hint(kind: ProfileKind) -> &'static str {
+    match kind {
+        ProfileKind::Moffat => "Soft halo, like a telescope",
+        ProfileKind::Gaussian => "Tight dot, no halo",
+    }
+}
+
+/// One of several, and what choosing it does. See [`check`].
+fn choose<T: PartialEq>(
+    ui: &mut Ui,
+    held: &mut T,
+    value: T,
+    said: &str,
+    hint: &str,
+) -> Response {
+    ui.radio_value(held, value, said).on_hover_text(hint)
+}
+
+/// The name over a slider or a value, and what it sets. See [`check`].
+fn titled(ui: &mut Ui, said: &str, hint: &str) -> Response {
+    ui.label(said).on_hover_text(hint)
 }
 
 /// Open a section, in the form or in the settings pane
@@ -4408,36 +4557,11 @@ fn singleline(
     response
 }
 
-/// Name the control beside it, as plainly as a checkbox names itself
-///
-/// Egui paints a label in the color it keeps for what cannot be interacted
-/// with, a shade under the text it puts on a checkbox. That is the right
-/// answer for a caption and the wrong one for the name of the box next to it,
-/// which stands in a column of checkboxes and is no lesser thing than any of
-/// them. Reading the color off the style rather than naming one keeps it
-/// with them through whatever theme is set.
-fn field_name(ui: &mut Ui, name: &str) {
-    let named = ui.visuals().widgets.inactive.fg_stroke.color;
-    ui.label(egui::RichText::new(name).color(named));
-}
-
-/// Whether the throttle is worth putting on the pane
-///
-/// It measures the wait before the region query asks about somewhere new, and
-/// `spyglass_condition` is the only thing that reads it. That runs only when
-/// the region fetch is the map's source, so under the walk the box would set a
-/// number nothing consults — a control that answers the user with nothing,
-/// which is worse than no control.
-///
-/// `fetch` is the spyglass's own half: with it off the region is never asked
-/// for at all, throttle or no throttle.
-fn throttle_offered(fetch: bool, bounded: bool) -> bool {
-    fetch && !bounded
-}
-
 fn poll_value(ui: &mut Ui, opt: &mut Option<f64>) {
     let mut enabled = opt.is_some();
-    if ui.checkbox(&mut enabled, "Poll").changed() {
+    if check(ui, &mut enabled, "Poll", "Fetch fresh data periodically")
+        .changed()
+    {
         if enabled {
             // Turned back on at what it opened at, the wait it was left at
             // having gone when it was turned off.
@@ -6689,31 +6813,6 @@ mod tests {
     #[test]
     fn a_radius_over_the_ceiling_is_kept() {
         assert_eq!(drawn_radius(5e4, 100.), 5e4);
-    }
-
-    /// The throttle is offered only where something reads it
-    ///
-    /// It times the region query and nothing else, and the region query runs
-    /// only when the spyglass is the map's source. Under the walk — which is
-    /// the default — the pane used to hold a box that set a number the map
-    /// would never consult.
-    #[test]
-    fn the_throttle_is_offered_only_to_the_source_that_reads_it() {
-        assert!(
-            throttle_offered(true, false),
-            "the region fetch is the source"
-        );
-        assert!(!throttle_offered(true, true), "the walk reads no throttle");
-    }
-
-    /// And not at all where the region is never asked for
-    ///
-    /// `fetch` off is the spyglass drawing what it has and asking for nothing,
-    /// so there is no question left for a wait to come before.
-    #[test]
-    fn a_spyglass_that_asks_for_nothing_is_offered_no_throttle() {
-        assert!(!throttle_offered(false, false));
-        assert!(!throttle_offered(false, true));
     }
 
     /// How much of the value one pixel of a `rail` pixels wide is worth

@@ -660,7 +660,7 @@ pub(crate) fn camera(spyglass: &Spyglass) -> impl Bundle {
 /// Its own, drawn by [`crate::systems::field`]'s camera at the world origin,
 /// so nothing that camera rasterises carries a galaxy-scale coordinate. Off
 /// the scene's layer as well as out of its pass: a mark is emitted at the
-/// colour it is meant to reach the screen as, where the eye's bloom and its
+/// color it is meant to reach the screen as, where the eye's bloom and its
 /// filmic curve are the scene's own and would spread it and wash it towards
 /// white.
 ///
@@ -720,7 +720,7 @@ const ANNOTATIONS_ORDER: isize = 2;
 /// [`Tonemapping::None`], so this pass does not run that tonemapped scene
 /// through the filmic curve a second time. No [`Bloom`]: an annotation is not
 /// a light source, and blooming one would spread it over the dark edge that
-/// holds it apart from what is behind it. It clears no colour, so what the
+/// holds it apart from what is behind it. It clears no color, so what the
 /// scene and the field drew stands.
 fn annotations() -> impl Bundle {
     (
@@ -1175,7 +1175,6 @@ mod tests {
     fn spyglass(lock_camera: bool, follow_camera: bool) -> Spyglass {
         Spyglass {
             radius: Spyglass::OPENING,
-            fetch: false,
             clear: true,
             lock_camera,
             follow_camera,

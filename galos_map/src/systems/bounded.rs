@@ -623,7 +623,7 @@ fn evict_payloads(
 }
 
 /// One payload point as a drawable system: placed where the payload puts it,
-/// named and coloured off the resident tables
+/// named and colored off the resident tables
 ///
 /// The position comes straight from the payload, in light years — finer than
 /// the names table's whole-light-year placement, and present for every system,
@@ -897,7 +897,6 @@ mod tests {
     #[test]
     fn the_clamp_is_the_reach_only_while_clearing() {
         let mut spyglass = Spyglass {
-            fetch: true,
             radius: 50.,
             clear: true,
             lock_camera: false,
@@ -979,7 +978,6 @@ mod tests {
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.insert_resource(View::Map);
         app.insert_resource(Spyglass {
-            fetch: true,
             radius: 50.,
             clear: true,
             lock_camera: false,

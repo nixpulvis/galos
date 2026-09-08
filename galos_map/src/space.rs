@@ -141,7 +141,10 @@ pub(crate) struct Galaxy(pub(crate) Entity);
 /// The grid the stars are laid out in
 ///
 /// Handed to whoever spawns a galaxy, which is [`spawn_map`] at startup and
-/// [`crate::systems::despawn`] every time the map is cleared after that.
+/// [`galaxy`] for the galaxy entity itself. The map is no longer thrown away
+/// and rebuilt: a source switch queues the evictions and re-parents the
+/// camera ([`crate::systems::bounded`]) rather than replacing the entity the
+/// grid hangs on.
 pub(crate) fn galaxy_grid() -> Grid {
     Grid::new(GALAXY_CELL_EDGE, SWITCHING_THRESHOLD)
 }

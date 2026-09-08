@@ -288,7 +288,7 @@ pub struct FetchTasks {
     pub surveyed: Vec<Survey>,
 }
 
-/// A system as the cells give it, before the resident tables name and colour
+/// A system as the cells give it, before the resident tables name and color
 /// it: an address and where it sits, in light years.
 ///
 /// The cells carry position and photometry and nothing political, so a fetch
@@ -313,7 +313,7 @@ pub struct RawSystem {
 
 /// What a fetch came back with, and the moment it landed.
 ///
-/// Already-built [`System`]s: naming and colouring happen in the task off the
+/// Already-built [`System`]s: naming and coloring happen in the task off the
 /// main thread (see [`RawSystem`]), so [`super::spawn`] has only to queue what
 /// arrives. The cells are static files, so unlike a database read there is no
 /// clock to compare a row's age against; the moment only stamps a survey so the
@@ -348,6 +348,12 @@ impl FetchTasks {
 /// while the walk is the one loading systems, so nothing a user asks for
 /// outright may be reached from in here. See [`fetch_searched`], which is what
 /// the route fetch was moved out to.
+///
+/// Unconditional now that it is the source or is not registered at all. A
+/// `Spyglass::fetch` flag stood in front of this — the other half of what a
+/// spyglass did, asking for the reach as well as clearing away what it did not
+/// hold — and under the level-of-detail walk it governed a loader that was
+/// already stood down, so what it turned off was nothing.
 pub fn fetch(
     camera_query: Query<&OrbitCamera>,
     mut tasks: ResMut<FetchTasks>,
@@ -361,21 +367,19 @@ pub fn fetch(
     names: Res<Names>,
     populated: Res<Populated>,
 ) {
-    if spyglass.fetch {
-        fetch_spyglass(
-            &camera_query,
-            &mut tasks,
-            &mut spyglass,
-            &time,
-            &mut last_fetched_at,
-            &throttle,
-            &poll,
-            &index,
-            &transport,
-            &names,
-            &populated,
-        );
-    }
+    fetch_spyglass(
+        &camera_query,
+        &mut tasks,
+        &mut spyglass,
+        &time,
+        &mut last_fetched_at,
+        &throttle,
+        &poll,
+        &index,
+        &transport,
+        &names,
+        &populated,
+    );
 }
 
 /// Ask for whatever a search named
@@ -484,7 +488,7 @@ fn fetch_spyglass(
         let task_pool = AsyncComputeTaskPool::get();
         let transport = transport.0.clone();
         // Cheap Arc handles onto the resident tables, so the task names and
-        // colours its systems on its own thread rather than handing raw rows
+        // colors its systems on its own thread rather than handing raw rows
         // back for the main thread to build.
         let names = Names::clone(names);
         let populated = Populated::clone(populated);
@@ -737,7 +741,6 @@ pub(crate) mod tests {
         )));
         app.insert_resource(Spyglass {
             radius: Spyglass::OPENING,
-            fetch: true,
             clear: true,
             lock_camera: false,
             follow_camera: true,
