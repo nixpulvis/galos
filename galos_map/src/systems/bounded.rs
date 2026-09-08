@@ -3,9 +3,12 @@
 //! An alternative source of star entities to the spyglass region fetch. The
 //! spyglass reads a sphere and spawns every system in it; this reads the cells
 //! the walk marks (`Planned::marks`) and spawns one entity per system in their
-//! payloads. The walk spends a point budget, so a zoom out draws a bounded set
-//! of marks with everything coarser summed into splats, rather than the
-//! million entities the transform walk would then pay for every frame.
+//! payloads. The walk spends no budget: a cell's slice draws exactly where its
+//! systems separate on screen and everything coarser is summed into splats, so
+//! what is drawn is bounded by what the screen can resolve rather than by the
+//! million entities a spyglass wide enough to hold the same sky would pay a
+//! transform for every frame. The count that reaches the map is held down here
+//! instead — see [`reach`] and the per-point clamp in `reconcile`.
 //!
 //! On by default, behind [`LodFetch`]. While it is on the spyglass region
 //! fetch and its eviction stand down through their run conditions and this

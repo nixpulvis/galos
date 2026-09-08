@@ -411,7 +411,7 @@ pub(crate) struct InReach {
 /// one thing that answers it.
 ///
 /// Or unless its insides are on the map, which is what the `Grid` it wears
-/// says: [`bodies::spawn::draw`] puts one on with a system's contents and
+/// says: `bodies::spawn::draw` puts one on with a system's contents and
 /// takes it off with them. Every star, body and orbit line inside a system is
 /// a child of it, so hiding the system takes the whole of its insides with
 /// them — and the reach is measured to the system's own point, which the

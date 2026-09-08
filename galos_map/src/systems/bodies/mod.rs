@@ -259,7 +259,7 @@ impl Contents {
     /// Everything about the arrangement they describe — what goes round what,
     /// where each thing stands, how far the whole of it reaches — is asked of
     /// these rather than of this, and asked through
-    /// [`galos_index::inside`](galos_index::inside), which is the same code the
+    /// [`galos_index::inside`], which is the same code the
     /// builder works the reach table out with. What is left here is the asking
     /// and the holding.
     pub fn rows(&self) -> Option<&SystemBodies> {

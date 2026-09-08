@@ -98,8 +98,9 @@ const CENTERED: f64 = 1e-2;
 
 /// The keys that turn a press into a chord rather than a binding
 ///
-/// Shift is not among them. It has one binding of its own here, so it is asked
-/// about separately by [`bare`] and [`shifted`].
+/// Shift is not among them. Two bindings want it of their own — the `S` that
+/// opens the search and the `?` that opens the bindings window — so it is
+/// asked about separately by [`bare`] and [`shifted`].
 const CHORDING: [KeyCode; 6] = [
     KeyCode::ControlLeft,
     KeyCode::ControlRight,
