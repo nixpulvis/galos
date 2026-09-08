@@ -20,7 +20,6 @@ galos_catalog/data/*
 /sky.png
 galos_map/IDEAS.md
 galos_map/docs/galaxy.md
-galos_map/docs/night-sky.md
 galos_index/docs/serving.md
 galos_sky/docs/sky.md
 galos_sky/figures.fab

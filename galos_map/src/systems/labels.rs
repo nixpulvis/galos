@@ -1,3 +1,50 @@
+//! Names, and the projection every flat annotation shares
+//!
+//! Two jobs in one module, because the second is what the first needed. Which
+//! systems and bodies are named, where each name stands and what it is read
+//! against is settled in `Update` by [`choose_names`] and painted in egui's
+//! own pass by [`draw_names`]. The projection it settles that through —
+//! [`screen_position`], [`screen_offset`], [`depth`], [`depth_of`] and
+//! [`world_per_pixel`] — is read by every other flat painter as well, and
+//! having one set of it rather than five is the point.
+//!
+//! Nothing the map draws over the galaxy is a mesh where the thing it stands
+//! for actually is. A mark built at a system's true coordinate goes through
+//! the clip transform in `f32` at the scale of the camera's own galaxy cell,
+//! where one part in `2^24` is millions of kilometres, so its corners snap
+//! apart and the field blinks and swims; [`super::field`]'s module comment
+//! argues that floor, and `crate::space` argues the placement that is not in
+//! trouble. So an annotation is projected to a pixel on the processor in
+//! `f64` and painted there. Five sites do it, and they are the whole list:
+//!
+//! - `super::field::build_field` — every system's mark, as one mesh
+//! - [`draw_names`] — names, the grounds they are read against, the leaders
+//! - [`super::pointing::ring`] — the ring around what is pointed at
+//! - [`super::selection::ring`] — the ring around what is picked out
+//! - [`crate::grid::draw_readouts`] — the ruled plane's three numbers, and
+//!   the crosses and droplines that place them
+//!
+//! What is still drawn in the scene is there because `f32` is exact where it
+//! is drawn: a descended system's stars, planets and orbit lines hang in that
+//! system's own metre grid at the floating origin, route lines with them, and
+//! the ruled plane is a real fullscreen pass. Only the readouts standing over
+//! the plane moved, through the one-way channel `crate::ruled::read`
+//! describes.
+//!
+//! **One answer per question.** Projecting on the processor means every
+//! consumer *could* work out where a thing is and how big it is drawn for
+//! itself, and where two of them do they drift — the symptom reading as the
+//! wrong thing in the wrong place rather than as a precision fault. A star's
+//! drawn pixel radius is `super::field::drawn_radius` and nothing else; a
+//! body's position is [`Places::of`] and a system's is [`System::position`].
+//! Both rules were learnt from a bug. The mark was once clamped to a ceiling
+//! in one reader and floored with no ceiling in the other, so past a certain
+//! size the ring, the gap a name stands off at and the clickable area were
+//! all inside the star. And hit-testing was once the last reader of a body's
+//! `GlobalTransform`, which `big_space` writes in `PostUpdate` — a frame
+//! after the name has been painted on it, and not at all for a body spawned
+//! this frame, which read as the label being up and clicking doing nothing.
+
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
@@ -462,6 +509,21 @@ pub(crate) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
 /// world size that draws at it, which is what makes a label hold its size on
 /// screen however far away the system is.
 ///
+/// What is handed in as `depth` is a choice, and everything that sizes a mark
+/// has to make the same one. A place on screen is a ratio, so
+/// [`screen_offset`] divides by the depth into the view; a size is not, and
+/// the two callers that convert one measure along the line to the thing
+/// instead — [`super::field::drawn_radius`], where the field builds its
+/// quads, and [`super::pointing::size_indicators`], which rings that mark and
+/// catches the pointer over it. The two lengths differ by `1/cos θ` off the
+/// middle of the frame: nothing at the centre, and about a third again at the
+/// corner of a 16:9 viewport with a quarter-turn field of view (see
+/// [`depth`]). So a mark converted from one and the ring around it converted
+/// from the other are drawn apart by that factor towards the edges, which is
+/// what happened — the indicator worked from the depth into the view while
+/// the field worked from the distance to the system, and the ring sat off its
+/// star.
+///
 /// `cot_half_fov` is `Camera::clip_from_view().y_axis.y`, which glam fills
 /// with `1 / tan(fov_y / 2)`. The vertical field of view is what the
 /// viewport's height is divided into; aspect ratio lives in the matrix's x
@@ -489,12 +551,18 @@ pub(crate) fn world_per_pixel(
 /// left to how egui happens to order separate layers or to which painter the
 /// executor happens to reach first.
 ///
+/// A pair left unordered is not a matter of taste: two rings that overlap at
+/// close zoom would stack one way this frame and the other way the next. So a
+/// fifth painter added to this list needs a constraint against all four, not
+/// only against the names it was written to sit under. `crate::ui`'s own
+/// `lettering` and `chrome` follow the four, chained there.
+///
 /// `Background`, so the whole of it sits under the chrome and over the map.
 /// Which takes the chrome being somewhere else: a layer that is not an area —
 /// this is one painter list, not a window — is drained after every area of
 /// its own order, so while the chrome shared `Background` a ring and a name
 /// were painted over the settings pane. The chrome is `Order::Middle` and the
-/// panels `Order::Foreground`; see [`crate::ui::settings_pane`].
+/// panels `Order::Foreground`; see `crate::ui::settings_pane`.
 pub(crate) fn annotations_layer() -> egui::LayerId {
     egui::LayerId::new(
         egui::Order::Background,
@@ -581,6 +649,19 @@ pub(crate) struct Sky<'w> {
 /// arrangement of a few hundred overlapping rectangles is not worth solving
 /// each frame, and taking them in order of what the viewer most wants to see
 /// gives them the ones that matter.
+///
+/// All of that is settled here, in `Update`, before any painter has run —
+/// what is named and where each name stands. Which means it is settled on an
+/// estimate: a name's exact width does not exist until [`draw_names`] asks
+/// egui to lay the words out into a galley, a schedule later, with every
+/// name's room already granted. The estimate is [`ADVANCE`], held a little
+/// wide so that being wrong costs a gap rather than an overlap. So the layout
+/// works from the reckoning and the paint from the truth, and the painter
+/// does not get to re-decide: a name that came out narrower than it was given
+/// keeps the room it won rather than letting a second name into the space,
+/// there being nothing downstream that could pack them again. That is an
+/// ordering constraint between two systems rather than a limitation of a text
+/// library.
 pub(crate) fn choose_names(
     mut commands: Commands,
     camera: Query<(&OrbitCamera, &Camera)>,

@@ -16,6 +16,18 @@
 //! material or render layer of their own — nothing draws a shell where it
 //! stands. This does all of the drawing, off a shell's position and the size
 //! [`super::scale`] leaves on it.
+//!
+//! Which shells are drawn is `Visibility`, read as a plain value out of this
+//! module's own query, and neither of the two the renderer settles will stand
+//! in for it. A `ViewVisibility` is useless twice over: it is written during
+//! rendering, a schedule after the `Update` this decides in, and it is never
+//! written for a shell at all — nothing draws one, so nothing computes one,
+//! and the answer is false for ever. An `InheritedVisibility` is propagated in
+//! `PostUpdate`, so anything reading it during `Update` is reading last
+//! frame's answer and a system just hidden or just shown is drawn a frame
+//! wrong. Whether a shell is off the frame is a separate question again, and
+//! [`screen_position`] answers it by giving nothing for what the camera cannot
+//! see, so no visibility test is asked to cover it.
 
 use crate::camera::{FIELD_LAYER, FIELD_ORDER, OrbitCamera, STAR_BLOOM};
 use crate::schedule::MapSet;
