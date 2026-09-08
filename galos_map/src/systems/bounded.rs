@@ -540,16 +540,23 @@ fn drawn_first<'a>(
 /// admitted are read against, and a cell that spent its whole budget on
 /// excluded systems because they happen to be the busiest would draw the
 /// background and leave the thing asked for off the map.
+///
+/// `asking` is what tells the two readings of an empty `admits` apart, and it
+/// has to be handed in rather than inferred: [`PointOrders::walk`] keeps no
+/// list at all while nothing is asked, and an empty one for a cell whose
+/// points a filter excludes to the last. Read as "everything admitted", the
+/// second becomes a whole cell offered as though it had been asked for — and
+/// under a dim of zero every one of those is refused by
+/// [`super::spawn::spawn_systems`], never becomes an entity, and is queued
+/// again the next frame off a budget the admitted elsewhere needed.
 fn busiest_first<'a>(
     busiest: &'a [u32],
     admits: &'a [u32],
+    asking: bool,
     fill: bool,
 ) -> impl Iterator<Item = usize> + 'a {
-    // Nothing asked of the filters admits everything, and says so with an
-    // empty list rather than a whole one; see [`PointOrders::admits`].
-    let admitted = move |index: &&u32| {
-        admits.is_empty() || admits.binary_search(index).is_ok()
-    };
+    let admitted =
+        move |index: &&u32| !asking || admits.binary_search(index).is_ok();
     let lead = busiest.iter().filter(admitted);
     let rest = busiest.iter().filter(move |index| !admitted(index));
 
@@ -701,7 +708,7 @@ fn reconcile(
         // iterators and what follows is the same for both. A budget's worth of
         // indices, which is a few tens.
         let taken: Vec<usize> = if by_population {
-            busiest_first(orders.busiest(id), admits, fill)
+            busiest_first(orders.busiest(id), admits, asking, fill)
                 .take(target)
                 .collect()
         } else {
@@ -1475,6 +1482,87 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             2,
             "the budget went on systems the mode does not draw"
+        );
+    }
+
+    /// A cell that admits nothing offers nothing, rather than offering it all
+    ///
+    /// The reported trouble: [`PointOrders`] keeps no admitted list while
+    /// nothing is asked, and an empty one for a cell a filter excludes to the
+    /// last point — so the population order read the second as the first and
+    /// led with every system in the cell. Below the dim
+    /// ([`crate::systems::filter::DimTo`] at zero) `spawn_systems` refuses
+    /// every one of them, so none became an entity, none was found already
+    /// drawn, and the whole cell was queued again every frame off a budget the
+    /// admitted in other cells needed.
+    #[test]
+    fn a_cell_the_filters_empty_offers_nothing_below_the_dim() {
+        use crate::systems::filter::{DimTo, Filter, Filters};
+        use galos_index::meta::PopulatedSystem;
+        use galos_index::{BuildParams, Snapshot};
+
+        let inputs: Vec<galos_index::System> = (1..=4)
+            .map(|id| galos_index::System {
+                id64: id as u64,
+                position: [id as f64, 0., 0.],
+                absolute_magnitude: id as f64,
+                temperature: 5000.,
+                age_bucket: 0,
+                updated_at: 0,
+            })
+            .collect();
+        let built = Snapshot::build(&inputs, &BuildParams::default());
+
+        let mut app = walking();
+        app.insert_resource(ResidentIndex(built.index.clone()));
+        {
+            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
+            for cell in built.index.cells() {
+                let points = built.payload(cell.id);
+                if !points.is_empty() {
+                    resident.0.insert(cell.id, points.to_vec());
+                }
+            }
+        }
+        // Everybody lives somewhere, so the population order holds them all.
+        let peopled = |address: i64| {
+            (
+                address,
+                PopulatedSystem {
+                    address,
+                    name: format!("Home {address}"),
+                    position: [address as f32, 0., 0.],
+                    population: 1_000 * address as u64,
+                    security: None,
+                    government: None,
+                    allegiance: None,
+                    primary_economy: None,
+                    secondary_economy: None,
+                    factions: Vec::new(),
+                    body_count: None,
+                    non_body_count: None,
+                },
+            )
+        };
+        app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([
+            peopled(1),
+            peopled(2),
+            peopled(3),
+            peopled(4),
+        ]))));
+        app.insert_resource(ScalePopulation(true));
+        // A faction nobody is in, and the excluded not drawn at all.
+        app.world_mut()
+            .resource_mut::<Filters>()
+            .add(Filter::Faction { id: 9_999, name: "Nobody".into() });
+        app.insert_resource(DimTo(0.));
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            0,
+            "a cell that admits nothing was offered whole"
         );
     }
 

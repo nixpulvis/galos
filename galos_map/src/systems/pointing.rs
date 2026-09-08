@@ -358,8 +358,10 @@ pub(super) fn point_at(
     bodies: Query<&Body>,
     marked: Query<(), With<Indicator>>,
     filtered: Query<(), With<Filtered>>,
-    // Read only where the map is drawing marks by population; see below.
-    peopled: Query<&System>,
+    // Read only where the map is drawing marks by population; see below. The
+    // hop flag comes with the row because a stop's mark is exempt from the
+    // population and so is its place in the ranking.
+    peopled: Query<(&System, Has<crate::systems::route::Hop>)>,
     view: Res<View>,
     scale_population: Res<ScalePopulation>,
     pointed_at: Query<Entity, With<PointedAt>>,
@@ -404,8 +406,9 @@ pub(super) fn point_at(
     // Then the population, and only while the map is drawing marks by it. The
     // size of a mark is the whole of what that mode says, so the busier of two
     // overlapping marks is the one being aimed at — the same argument depth
-    // makes, on the figure the picture is drawn from. Off, every system counts
-    // as none and depth decides as it always did.
+    // makes, on the figure the picture is drawn from, which is
+    // [`super::scale::drawn_population`] and not the row's own count. Off,
+    // every system counts as none and depth decides as it always did.
     let mut nearest: Option<(Entity, (bool, Reverse<u64>, f32))> = None;
     // Whatever is inside a system, weighed by four things in this order: how
     // far down the system it sits, whether it is a star, whether it was
@@ -446,7 +449,12 @@ pub(super) fn point_at(
             } else if marked.contains(thing) {
                 let dim = filtered.contains(thing);
                 let people = if by_population {
-                    peopled.get(thing).map_or(0, |system| system.population)
+                    peopled.get(thing).map_or(0, |(system, hop)| {
+                        crate::systems::scale::drawn_population(
+                            system.population,
+                            hop,
+                        )
+                    })
                 } else {
                     0
                 };
@@ -1215,6 +1223,60 @@ mod tests {
             peopled(&[(10, false, 1.), (1_000_000_000, false, 50.)], true);
 
         assert_eq!(points_at(&app, &stars), vec![false, true]);
+    }
+
+    /// A route's stop is ranked by the mark it is actually drawn at
+    ///
+    /// [`super::scale::size_by_distance`] exempts a stop from the population,
+    /// so an uninhabited one keeps its ordinary mark rather than shrinking to
+    /// a speck — it is what answers where to go next. Read off its own
+    /// population instead, the pointer put it at nothing and handed a hamlet
+    /// in front of it the answer, which is the one place a stop became
+    /// unfindable again.
+    #[test]
+    fn a_route_stop_is_pointed_at_over_the_hamlet_in_front_of_it() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.insert_resource(View::Map);
+        app.insert_resource(ScalePopulation(true));
+        app.add_systems(Update, point_at);
+
+        // The stop, empty, and drawn at an ordinary mark for being a stop.
+        let mut stop_row = crate::systems::tests::at(0, 5.);
+        stop_row.population = 0;
+        let stop = app
+            .world_mut()
+            .spawn((stop_row, Indicator(0.), crate::systems::route::Hop::Next))
+            .id();
+        // A hamlet of ten, nearer the camera and drawn a quarter the size.
+        let mut hamlet_row = crate::systems::tests::at(1, 5.);
+        hamlet_row.population = 10;
+        let hamlet = app.world_mut().spawn((hamlet_row, Indicator(0.))).id();
+
+        let mut over = EntityHashMap::default();
+        for (entity, depth) in [(stop, 50.), (hamlet, 1.)] {
+            over.insert(
+                entity,
+                HitData {
+                    camera: Entity::PLACEHOLDER,
+                    depth,
+                    position: None,
+                    normal: None,
+                    extra: None,
+                },
+            );
+        }
+        let mut hovered = HoverMap::default();
+        hovered.insert(PointerId::Mouse, over);
+        app.insert_resource(hovered);
+        app.update();
+
+        assert_eq!(
+            points_at(&app, &[stop, hamlet]),
+            vec![true, false],
+            "the pointer took the hamlet drawn a quarter the size"
+        );
     }
 
     /// With the option off it says nothing, and the nearer is pointed at

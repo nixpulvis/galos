@@ -160,6 +160,24 @@ fn population_factor(population: u64) -> f32 {
     (population.max(1) as f32 / POP_TYPICAL).powf(POP_POWER)
 }
 
+/// The population a mark is *drawn* from, which is what the pointer ranks by
+///
+/// The same number [`population_factor`] is handed, bar the one exemption
+/// [`size_by_distance`] makes: a route's stop keeps its ordinary mark however
+/// empty it is, because it is what answers where to go next and a stop shrunk
+/// to a speck is a stop that cannot be found. So it ranks as an ordinary
+/// system does, at [`POP_TYPICAL`] exactly.
+///
+/// Said here rather than at the pointer because the two have to agree. The
+/// pointer prefers the busier of two overlapping marks on the argument that
+/// the size of a mark is the whole of what this mode says — and read off a
+/// system's own population, a stop drawn at full size entered that comparison
+/// at nothing and lost to any hamlet in front of it. See
+/// [`crate::systems::pointing::point_at`].
+pub(crate) fn drawn_population(population: u64, hop: bool) -> u64 {
+    if hop { POP_TYPICAL as u64 } else { population }
+}
+
 /// The size a system is marked at, in metres
 ///
 /// About a twelfth of a light year. A size in the world rather than one on
