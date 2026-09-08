@@ -312,7 +312,21 @@ struct Reached {
     /// of entirely different pictures count the same and the drawing stands
     /// still until something else disturbs it — which is what happened, and
     /// what read as a picture that only updated when the camera moved.
+    ///
+    /// Read on its own by [`super::frontier::draw`] before it takes a copy,
+    /// so a frame where nothing has moved costs one lock and one compare
+    /// rather than a walk of the whole closed set.
     revision: u64,
+    /// How many times the closed set has grown, or been drawn coarser
+    cells_at: u64,
+    /// How many times the leading edge has moved
+    edge_at: u64,
+    /// How many times the chain to the closest reached has moved
+    ///
+    /// The three of these are what let a flush that only added a cell leave
+    /// the edge's and the chain's meshes alone. [`Self::revision`] is their
+    /// disjunction, and is what says whether to look at them at all.
+    reaching_at: u64,
 }
 
 /// What the map draws of a search, taken in one lock.
@@ -331,17 +345,29 @@ pub(crate) struct Drawn {
     pub(crate) closest: f64,
     /// How many times anything here has moved; see [`Reached::revision`]
     pub(crate) revision: u64,
+    /// How many times the closed set has grown or coarsened
+    pub(crate) cells_at: u64,
+    /// How many times the leading edge has moved
+    pub(crate) edge_at: u64,
+    /// How many times the chain has moved
+    pub(crate) reaching_at: u64,
 }
 
 impl Frontier {
     /// A frontier for a search from `from` to `goal`
     ///
-    /// The cell of the closed set is a sixty-fourth of the way between them,
-    /// so the picture is about sixty-four cells along the route whether that
-    /// is two hundred light years or twenty-two thousand. Which is what bounds
-    /// the set by the geometry rather than by a count: the cells the search
-    /// touches are the corridor it searched, and a corridor is not much wider
-    /// than the line through it.
+    /// The cell of the closed set is [`super::frontier::CELLS`]-th of the way
+    /// between them, so the picture is about that many cells along the route
+    /// whether that is two hundred light years or twenty-two thousand. Which
+    /// is what bounds the set by the geometry rather than by a count: the
+    /// cells the search touches are the corridor it searched, and a corridor
+    /// is not much wider than the line through it.
+    ///
+    /// A corridor is what a search that has a route to find walks. One that
+    /// has not expands in every direction until the reachable component runs
+    /// out, and then the geometry bounds nothing — so the cell is widened
+    /// again past [`super::frontier::CELL_CEILING`] of them; see
+    /// [`Sampler::flush`].
     pub(crate) fn between(from: DVec3, goal: DVec3) -> Arc<Frontier> {
         Arc::new(Frontier(Mutex::new(Reached {
             from: Some(from),
@@ -361,6 +387,7 @@ impl Frontier {
             cells: HashSet::new(),
             edge: VecDeque::with_capacity(super::frontier::EDGE),
             worked: None,
+            stepped: false,
             reaching: Vec::new(),
             closest: f64::INFINITY,
             settled: true,
@@ -387,7 +414,31 @@ impl Frontier {
             reaching: reached.reaching.clone(),
             closest: reached.closest,
             revision: reached.revision,
+            cells_at: reached.cells_at,
+            edge_at: reached.edge_at,
+            reaching_at: reached.reaching_at,
         })
+    }
+
+    /// Where the search set out from, once its ends have resolved
+    ///
+    /// Fixed for the whole of a search, so [`super::frontier::draw`] takes it
+    /// once and keeps it: the depth a mark is sized at is measured from here,
+    /// and that has to be known before the revision can be weighed against a
+    /// zoom that has moved.
+    pub(crate) fn from(&self) -> Option<DVec3> {
+        self.0.lock().expect("the frontier lock").from
+    }
+
+    /// How many times the picture has moved; see [`Reached::revision`]
+    ///
+    /// The whole of what [`super::frontier::draw`] needs to know whether to
+    /// take a copy at all. Asked first and on its own, since [`Self::drawn`]
+    /// walks every cell of the closed set and clones the chain, under the lock
+    /// the search flushes through — work worth nothing on a frame where the
+    /// picture has not changed, which is most of them.
+    pub(crate) fn revision(&self) -> u64 {
+        self.0.lock().expect("the frontier lock").revision
     }
 
     /// How many systems the search has expanded.
@@ -395,9 +446,29 @@ impl Frontier {
         self.0.lock().expect("the frontier lock").expanded
     }
 
-    /// Whether the search has stopped.
+    /// Whether nothing more will come of this search
+    ///
+    /// Set when the search stops of its own accord ([`Sampler::done`]) and
+    /// when its leg is given up on ([`Self::abandon`]), the map having the
+    /// same thing to do either way: take the layers down.
     pub(crate) fn finished(&self) -> bool {
         self.0.lock().expect("the frontier lock").finished
+    }
+
+    /// Give up on this search, its leg having been cancelled
+    ///
+    /// A route task dropped before the pool has begun polling it never runs,
+    /// so nothing calls [`Sampler::done`] and the frontier would sit here
+    /// unfinished for the rest of the session — three layer entities apiece,
+    /// re-uploaded on every zoom, and counted by [`Frontiers::expanded`] and
+    /// [`Frontiers::closest`] that the form reads. A leg the pool had already
+    /// begun does finish its own body and needs none of this; a queued one,
+    /// which is every leg past the pool's width, needs it.
+    ///
+    /// [`Frontiers::expanded`]: super::frontier::Frontiers::expanded
+    /// [`Frontiers::closest`]: super::frontier::Frontiers::closest
+    pub(crate) fn abandon(&self) {
+        self.0.lock().expect("the frontier lock").finished = true;
     }
 }
 
@@ -417,6 +488,16 @@ fn middle(cell: [i32; 3], across: f64) -> DVec3 {
         (cell[1] as f64 + 0.5) * across,
         (cell[2] as f64 + 0.5) * across,
     )
+}
+
+/// The cell a place falls in once the grid is twice as wide
+///
+/// Euclidean division, which is the whole of why it is exact: the cell of a
+/// grid `2w` wide is `floor(x / 2w)`, and that is `floor(floor(x / w) / 2)`
+/// for every sign of `x`. So a set of cells can be widened without going back
+/// to the places that filled it.
+fn coarser(cell: [i32; 3]) -> [i32; 3] {
+    [cell[0].div_euclid(2), cell[1].div_euclid(2), cell[2].div_euclid(2)]
 }
 
 /// A search's own tally, flushed into a [`Frontier`] in batches
@@ -439,6 +520,9 @@ pub(crate) struct Sampler {
     /// The cell the last sample fell in, so a run of them in one cell is one
     /// step of the edge rather than a dozen
     worked: Option<[i32; 3]>,
+    /// Whether the edge has moved since the last flush, so a flush that only
+    /// added a cell leaves the edge's mesh where it is
+    stepped: bool,
     /// The chain to the closest system reached
     reaching: Vec<DVec3>,
     /// How far that system is from the goal, in light years
@@ -485,6 +569,7 @@ impl Sampler {
         // holding one place a dozen times over.
         if self.worked != Some(cell) {
             self.worked = Some(cell);
+            self.stepped = true;
             self.edge.push_back(cell);
             if self.edge.len() > super::frontier::EDGE {
                 self.edge.pop_front();
@@ -529,22 +614,74 @@ impl Sampler {
     /// Hand what is held to the frontier
     ///
     /// The cells are merged in, the edge replaces whatever was there, and the
-    /// chain is handed over where it has moved. Nothing is thinned: the cells
-    /// are bounded by the corridor searched and the edge by its own length.
+    /// chain is handed over where it has moved. Nothing is thrown away: the
+    /// edge is bounded by its own length, and the cells by the corridor
+    /// searched — or, where the search is not walking a corridor, by being
+    /// drawn coarser.
     ///
-    /// The revision moves with them, since a flush is exactly when the picture
-    /// has changed and the map has no other way to know it.
+    /// That is the loop at the end. Past [`super::frontier::CELL_CEILING`]
+    /// cells the grid doubles and every cell held is mapped onto the wider
+    /// one, which is exact ([`coarser`]) and needs none of the places back.
+    /// The sampler's own width goes with it, so what it counts next lands on
+    /// the same grid; so does its edge, which is copied over whole every
+    /// flush and would otherwise put cells of the old width back. A doubling
+    /// takes about eight cells to one, so the loop runs once in practice and
+    /// terminates in any case.
+    ///
+    /// Each layer's own revision moves only where that layer did, so a flush
+    /// that added a cell and nothing else leaves the edge's and the chain's
+    /// meshes alone. [`Reached::revision`] moves where any of them did, and is
+    /// what the map reads first: unchanged, it never asks for the copy.
     fn flush(&mut self) {
         let mut reached = self.into.0.lock().expect("the frontier lock");
         reached.expanded = self.expanded;
-        reached.revision += 1;
+
+        let grew = !self.cells.is_empty();
         reached.cells.extend(self.cells.drain());
-        reached.edge.clear();
-        reached.edge.extend(self.edge.iter().copied());
-        if self.settled {
+        if grew {
+            reached.cells_at += 1;
+        }
+
+        let stepped = std::mem::take(&mut self.stepped);
+        if stepped {
+            reached.edge.clear();
+            reached.edge.extend(self.edge.iter().copied());
+            reached.edge_at += 1;
+        }
+
+        // Taken rather than read, so the chain is handed over on the flush
+        // after it moved and not on every flush thereafter.
+        let settled = std::mem::take(&mut self.settled);
+        if settled {
             reached.closest = self.closest;
             reached.reaching = std::mem::take(&mut self.reaching);
-            self.reaching = reached.reaching.clone();
+            reached.reaching_at += 1;
+        }
+
+        let mut coarsened = false;
+        while reached.cells.len() > super::frontier::CELL_CEILING {
+            reached.across *= 2.;
+            reached.cells =
+                reached.cells.iter().copied().map(coarser).collect();
+            for cell in reached.edge.iter_mut() {
+                *cell = coarser(*cell);
+            }
+            self.across = reached.across;
+            for cell in self.edge.iter_mut() {
+                *cell = coarser(*cell);
+            }
+            self.worked = self.worked.map(coarser);
+            coarsened = true;
+        }
+        // A wider cell moves every mark of both sampled layers, whatever else
+        // happened this flush.
+        if coarsened {
+            reached.cells_at += 1;
+            reached.edge_at += 1;
+        }
+
+        if grew || stepped || settled || coarsened {
+            reached.revision += 1;
         }
     }
 
@@ -897,10 +1034,16 @@ impl JumpGraph {
                     out.push((j, LEANING.1))
                 });
             },
+            // Saturating, because the range is whatever was typed into the
+            // form and a small enough one puts more jumps between two systems
+            // than a `u32` holds: the cast pins at the top and the scaling
+            // would then overflow. A saturated estimate is still an
+            // overstatement of a distance nothing can cross, which is what
+            // the search does with it.
             |graph, i| {
                 let left = dist2(graph.place(i).1, goal).sqrt();
                 let jumps = (left / widest).ceil() as u32;
-                jumps * LEANING.0
+                jumps.saturating_mul(LEANING.0)
             },
             sampled,
         )
@@ -1114,6 +1257,69 @@ mod tests {
 
     /// Both settings, since every claim below holds of both.
     const BOTH: [Routing; 2] = [Routing::Direct, Routing::Shortest];
+
+    /// A range small enough to make the estimate overflow is answered, not
+    /// panicked on
+    ///
+    /// The form takes any range over nothing, and a small enough one puts more
+    /// jumps between two systems than a `u32` holds: the cast pins at the top
+    /// and scaling it by [`LEANING`] wrapped — a panic on the compute pool in
+    /// a debug build. It fires on the first push, before a neighbour is looked
+    /// at, so having no reachable neighbours is no protection.
+    #[test]
+    fn a_range_too_small_to_estimate_does_not_overflow() {
+        let entries = vec![at(0, [0., 0., 0.]), at(1, [100., 0., 0.])];
+        let boosts = Boosts::default();
+        let graph = JumpGraph::new(&entries, &boosts);
+
+        assert!(
+            graph
+                .route(0, 1, 1e-9, Routing::Quick, Drive::Standard, None)
+                .is_none(),
+            "nothing is reachable at that range"
+        );
+    }
+
+    /// A search with no corridor to walk is drawn coarser rather than without
+    /// bound
+    ///
+    /// The cell of the closed set is sized off how far there is to go, on the
+    /// argument that the cells touched are the corridor searched. A leg with
+    /// no route expands in every direction instead, and the layer grew with
+    /// the search: every cell copied out under the lock each frame and turned
+    /// into four vertices. Held at [`super::frontier::CELL_CEILING`] now, by
+    /// widening the cell.
+    #[test]
+    fn a_search_that_spreads_is_held_at_the_cell_ceiling() {
+        let goal = DVec3::new(100., 0., 0.);
+        let frontier = Frontier::between(DVec3::ZERO, goal);
+        let first = frontier.drawn().expect("a frontier").across;
+        let mut sampler = frontier.sampler();
+        let came = vec![UNSEEN; 1];
+
+        // Expansions marching away in a straight line, one cell apiece: what
+        // a search with nowhere to go looks like to the sampler.
+        let ceiling = super::super::frontier::CELL_CEILING;
+        let stride = super::super::frontier::STRIDE;
+        let step = first * 1.5;
+        for n in 0..(ceiling as u64 * 4 * stride) {
+            let at = DVec3::new(0., 0., (n / stride) as f64 * step);
+            sampler.expanded(0, at, goal, &came, |_| DVec3::ZERO);
+        }
+        sampler.done();
+
+        let drawn = frontier.drawn().expect("a frontier");
+        assert!(
+            drawn.cells.len() <= ceiling,
+            "the closed set held {} cells, over the ceiling of {ceiling}",
+            drawn.cells.len()
+        );
+        assert!(
+            drawn.across > first,
+            "the cell never widened: still {} light years",
+            drawn.across
+        );
+    }
 
     /// Of two chains the same number of jumps long, the route follows the
     /// straighter

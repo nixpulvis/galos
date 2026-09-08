@@ -72,9 +72,15 @@ pub fn fetch_route(
     // trips landing at once would draw lines nobody asked for together and
     // the form has room to say how one of them is getting on. Dropping the
     // task is what stops it.
+    //
+    // And the frontier it was filling in goes with the task. A task dropped
+    // before the pool has begun polling it never runs, so nothing in the
+    // search would ever say the frontier was done with; said here, so the
+    // layers come down with the line.
     tasks.fetched.retain(|index, _| {
         !matches!(index, FetchIndex::Route(..)) || legs.contains(index)
     });
+    searching.abandon_others(&legs);
 
     let now = time.last_update().unwrap_or(time.startup());
     let pool = AsyncComputeTaskPool::get();
@@ -109,7 +115,7 @@ pub fn fetch_route(
             .and_then(|(start, end)| placed(start).zip(placed(end)))
             .map(|(from, goal)| Frontier::between(from, goal));
         if let Some(watching) = &watching {
-            searching.watch(Arc::clone(watching));
+            searching.watch(index.clone(), Arc::clone(watching));
         }
         // Cheap Arc handles onto the resident graph and tables, so the hops
         // are walked, named and colored on the task's own thread rather than

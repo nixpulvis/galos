@@ -44,6 +44,7 @@ use super::LineList;
 use super::graph::Frontier;
 use crate::camera::OrbitCamera;
 use crate::space::Galaxy;
+use crate::systems::fetch::FetchIndex;
 use crate::systems::labels::world_per_pixel;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -58,6 +59,23 @@ use std::sync::Arc;
 /// marks however long the route is. Fewer and larger reads; more and smaller
 /// is a haze over the sky.
 pub(crate) const CELLS: f64 = 20.;
+
+/// The most cells the closed set holds before it is drawn coarser
+///
+/// [`CELLS`] bounds the layer by geometry, which holds while the search stays
+/// in a corridor — and it does whenever there is a route to find. There is
+/// not always: a leg to a system unreachable at the range asked expands the
+/// whole component it can reach, in every direction, and a corridor's worth
+/// of cells becomes a region's. So there is a count as well as a geometry,
+/// and passing it doubles the cell rather than dropping anything: the picture
+/// goes coarser, which is what it should do when a search has stopped being
+/// a line and become a volume, and it stays a picture of everywhere the
+/// search has been.
+///
+/// Well clear of what the geometry asks for — a corridor two cells wide by
+/// twenty long is a hundred or so — so an ordinary route never reaches it and
+/// is drawn exactly as [`CELLS`] says.
+pub(crate) const CELL_CEILING: usize = 4096;
 
 /// One expansion in how many is drawn
 ///
@@ -123,10 +141,19 @@ pub(crate) struct Frontiers(Vec<Watched>);
 
 /// One search being watched, and the three lines drawing it
 struct Watched {
+    /// Which leg of which trip this is watching, so a leg given up on can be
+    /// told apart from one still being searched
+    leg: FetchIndex,
     /// What the search is filling in, shared with the task running it
     reached: Arc<Frontier>,
     /// The closed set's marks, the window's jumps, and the chain
     layers: Option<Layers>,
+    /// Where the search set out, once its ends resolved
+    ///
+    /// Kept because the depth a mark is sized at is measured from here, and
+    /// that has to be known before a revision can be weighed against a zoom
+    /// that has moved — before, that is, there is any reason to take a copy.
+    from: Option<DVec3>,
     /// Which revision of the search the meshes were built from, so a frame
     /// with nothing new to show rebuilds nothing
     ///
@@ -134,6 +161,9 @@ struct Watched {
     /// fixed length and the chain moves without changing how many links it
     /// has, so sizes are equal across frames whose pictures are nothing alike.
     shown: u64,
+    /// Which revision of each layer its own mesh was built from, so a flush
+    /// that only added a cell does not re-upload the chain
+    layered: (u64, u64, u64),
     /// What a pixel was worth when the marks were last sized, so a camera
     /// standing still costs nothing and one zooming re-sizes them
     scaled: f32,
@@ -147,9 +177,32 @@ struct Layers {
 }
 
 impl Frontiers {
-    /// Watch `reached`, which a search is about to start filling in.
-    pub(crate) fn watch(&mut self, reached: Arc<Frontier>) {
-        self.0.push(Watched { reached, layers: None, shown: 0, scaled: 0. });
+    /// Watch `reached`, which a search over `leg` is about to start filling in.
+    pub(crate) fn watch(&mut self, leg: FetchIndex, reached: Arc<Frontier>) {
+        self.0.push(Watched {
+            leg,
+            reached,
+            layers: None,
+            from: None,
+            shown: 0,
+            layered: (0, 0, 0),
+            scaled: 0.,
+        });
+    }
+
+    /// Give up on every watched search whose leg is not one of `legs`
+    ///
+    /// The other half of [`super::fetch::fetch_route`]'s cancelling a trip:
+    /// dropping the task stops the search, and a task the pool never began
+    /// polling never runs at all, so nothing there would ever have said the
+    /// frontier was done with. Said here instead, and [`draw`] takes the
+    /// layers down on the next frame as it does for a search that ended.
+    pub(crate) fn abandon_others(&self, legs: &[FetchIndex]) {
+        for watched in &self.0 {
+            if !legs.contains(&watched.leg) {
+                watched.reached.abandon();
+            }
+        }
     }
 
     /// How many systems the searches under way have expanded between them
@@ -203,23 +256,35 @@ pub(crate) fn draw(
     });
 
     for watched in &mut frontiers.0 {
-        // Nothing reached yet: a search that has only just started, or one
-        // whose ends could not be resolved at all.
-        let Some(drawn) = watched.reached.drawn() else { continue };
+        // Where it set out, taken once. Absent means a search whose ends could
+        // not be resolved at all: there is nothing to draw and nowhere to draw
+        // it.
+        let from = match watched.from {
+            Some(from) => from,
+            None => match watched.reached.from() {
+                Some(from) => *watched.from.insert(from),
+                None => continue,
+            },
+        };
 
         // One depth for the whole picture, taken where the search set out: the
         // corridor is narrow against how far away it is at any zoom the marks
         // need help at, and this is a size on screen rather than a projection.
         let per_pixel = seen.map_or(0., |(eye, cot_half_fov, height)| {
-            let away = crate::space::metres(eye - drawn.from).length() as f32;
+            let away = crate::space::metres(eye - from).length() as f32;
             world_per_pixel(cot_half_fov, height, away.max(1.))
         });
         // A tenth, so a drag that changes nothing anyone can see rebuilds
         // nothing, and a zoom that crosses a mark's width does.
         let resized = (per_pixel - watched.scaled).abs() > watched.scaled * 0.1;
-        if drawn.revision == watched.shown && !resized {
+        // The one number, and the one lock, a frame with nothing to show
+        // costs. Asked before [`Frontier::drawn`] because that walks every
+        // cell of the closed set and clones the chain, under the lock the
+        // search flushes through.
+        if watched.reached.revision() == watched.shown && !resized {
             continue;
         }
+        let Some(drawn) = watched.reached.drawn() else { continue };
 
         let layers = match &watched.layers {
             Some(layers) => layers,
@@ -267,31 +332,42 @@ pub(crate) fn draw(
         };
 
         // Each layer's own points, in metres from where the search set out.
-        let here = |at: DVec3| crate::space::metres(at - drawn.from).as_vec3();
+        // Rebuilt where that layer's own revision moved, or where a zoom has
+        // changed what a mark is worth in pixels — which moves every vertex of
+        // both sampled layers and none of the chain's.
+        let here = |at: DVec3| crate::space::metres(at - from).as_vec3();
         let across = across(drawn.across, per_pixel);
-        let mut points = Vec::with_capacity(drawn.cells.len() * 4);
-        for at in &drawn.cells {
-            points.extend(mark(here(*at), across));
+        let (closed_at, edge_at, reaching_at) = watched.layered;
+        if resized || drawn.cells_at != closed_at {
+            let mut points = Vec::with_capacity(drawn.cells.len() * 4);
+            for at in &drawn.cells {
+                points.extend(mark(here(*at), across));
+            }
+            put(&mut commands, &mut meshes, layers.closed, points);
         }
-        put(&mut commands, &mut meshes, layers.closed, points);
         // Half again as wide as the marks behind them, so the edge is the
         // same shape in the same places and reads as the front of one picture
         // rather than as a second one laid over it.
-        let mut points = Vec::with_capacity(drawn.edge.len() * 4);
-        for at in &drawn.edge {
-            points.extend(mark(here(*at), across * 1.5));
+        if resized || drawn.edge_at != edge_at {
+            let mut points = Vec::with_capacity(drawn.edge.len() * 4);
+            for at in &drawn.edge {
+                points.extend(mark(here(*at), across * 1.5));
+            }
+            put(&mut commands, &mut meshes, layers.edge, points);
         }
-        put(&mut commands, &mut meshes, layers.edge, points);
         // A chain of jumps rather than a list of places, so it is drawn as the
         // legs between them: what `super::legs` does for a route.
-        let places: Vec<Vec3> =
-            drawn.reaching.iter().map(|at| here(*at)).collect();
-        let points = places
-            .windows(2)
-            .flat_map(|leg| [leg[0], leg[1]])
-            .collect::<Vec<Vec3>>();
-        put(&mut commands, &mut meshes, layers.reaching, points);
+        if drawn.reaching_at != reaching_at {
+            let places: Vec<Vec3> =
+                drawn.reaching.iter().map(|at| here(*at)).collect();
+            let points = places
+                .windows(2)
+                .flat_map(|leg| [leg[0], leg[1]])
+                .collect::<Vec<Vec3>>();
+            put(&mut commands, &mut meshes, layers.reaching, points);
+        }
         watched.shown = drawn.revision;
+        watched.layered = (drawn.cells_at, drawn.edge_at, drawn.reaching_at);
         watched.scaled = per_pixel;
     }
 
@@ -516,9 +592,17 @@ mod tests {
 
         let goal = at(6400.);
         let frontier = Frontier::between(DVec3::ZERO, goal);
-        app.world_mut()
-            .resource_mut::<Frontiers>()
-            .watch(Arc::clone(&frontier));
+        app.world_mut().resource_mut::<Frontiers>().watch(
+            FetchIndex::Route(
+                "Sol".into(),
+                "Colonia".into(),
+                "50".into(),
+                None,
+                crate::systems::route::Drive::Standard,
+                crate::systems::route::Routing::Direct,
+            ),
+            Arc::clone(&frontier),
+        );
         let mut sampler = frontier.sampler();
         let came: Vec<u32> =
             (0..10).map(|i| if i == 0 { UNSEEN } else { i - 1 }).collect();
