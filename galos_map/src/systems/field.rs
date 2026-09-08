@@ -435,6 +435,13 @@ pub(crate) fn build_field(
 /// reallocates anyway. Never empty: an empty mesh takes the same zero-size path
 /// and draws the same error, so a field standing in for nothing carries one
 /// degenerate triangle that rasterises to nothing.
+///
+/// [`RenderAssetUsages::RENDER_WORLD`], so the frame's copy is freed once it
+/// has been extracted. Nothing in the main world reads these vertices back —
+/// the mesh is written whole and never sampled, picking going through the
+/// projected [`crate::systems::bodies::spawn::Places`] instead — and at four
+/// vertices per visible system, rebuilt every frame, the retained copy is the
+/// larger half of what the field costs in memory.
 fn field_mesh(
     mut positions: Vec<[f32; 3]>,
     mut uvs: Vec<[f32; 2]>,
@@ -449,7 +456,7 @@ fn field_mesh(
     }
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        RenderAssetUsages::RENDER_WORLD,
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
