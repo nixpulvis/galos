@@ -184,9 +184,17 @@ impl Metadata {
         let reaches: Vec<meta::SystemReach> =
             read_meta(&source::reaches_path(dir))?;
         // A directory published before this table existed has none, and the
-        // first pass over a system with a jet cone puts it back.
+        // first pass over a system with a jet cone puts it back. Only that:
+        // read as an empty table, a corrupt or truncated one would be
+        // republished from the handful of addresses one pass touches, and the
+        // hundred thousand rows already published would be gone with no error
+        // anywhere. Its siblings above say the same by using `?`.
         let boosts: Vec<meta::SystemBoost> =
-            read_meta(&source::boosts_path(dir)).unwrap_or_default();
+            match read_meta(&source::boosts_path(dir)) {
+                Ok(table) => table,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e),
+            };
         let factions: Vec<meta::Faction> =
             read_meta(&source::factions_path(dir))?;
         let high = factions.iter().map(|f| f.id).max().unwrap_or(0);
@@ -576,8 +584,16 @@ fn write_boosts(
 ///
 /// Off `primary_star_class`, the arrival star's, which is the one a ship can
 /// reach the jet cone of without crossing the system. The classification is
-/// [`meta::Boost::of`]; a class that supercharges nothing is not in the
-/// result, and the caller takes such a system out of the table it stands in.
+/// [`meta::Boost::of`] and only that: a class that supercharges nothing is
+/// not in the result, and the caller takes such a system out of the table it
+/// stands in.
+///
+/// So the query narrows by what it needs — a class to read at all — and not
+/// by which classes those are. Written out in SQL as well, the two would
+/// agree until [`meta::Boost::of`] was widened, and then a full build would
+/// publish a short table that every watch pass patched systems into: one
+/// directory disagreeing with itself about the same galaxy depending on how
+/// it was produced.
 async fn boosts_of(
     db: &Database,
     addresses: Option<&[i64]>,
@@ -587,8 +603,7 @@ async fn boosts_of(
             sqlx::query(
                 "SELECT address, primary_star_class FROM systems \
                  WHERE position IS NOT NULL \
-                   AND (primary_star_class = 'N' \
-                        OR primary_star_class LIKE 'D%')",
+                   AND primary_star_class IS NOT NULL",
             )
             .fetch_all(&db.pool)
             .await?
@@ -1188,5 +1203,51 @@ mod tests {
         assert_eq!(body.parents[0].ty.as_deref(), Some("Null"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A corrupt supercharge table stops a resume rather than emptying it
+    ///
+    /// [`Metadata::resume`] reads the table back so a watch pass can patch it
+    /// instead of rebuilding it, and a directory published before the table
+    /// existed has none — which is why the read tolerates an absence. Only an
+    /// absence: read as empty, a truncated file would be republished from the
+    /// handful of addresses one pass touches, and the hundred thousand rows
+    /// already published would be gone with nothing said. A refused resume is
+    /// a full rebuild, which is the recoverable answer.
+    #[test]
+    fn a_corrupt_boosts_table_refuses_a_resume() {
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_resume_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+
+        // The tables a resume needs, all present and all empty.
+        let empty: Vec<u8> = Vec::new();
+        source::write_meta(&source::populated_path(&dir), &empty)
+            .expect("populated");
+        source::write_meta(&source::reaches_path(&dir), &empty)
+            .expect("reaches");
+        source::write_meta(&source::factions_path(&dir), &empty)
+            .expect("factions");
+        galos_index::NameTable::from_entries(Vec::new())
+            .publish(&dir)
+            .expect("names");
+
+        // Nothing where the table would be: the case the tolerance is for.
+        assert!(
+            Metadata::resume(&dir).is_ok(),
+            "a directory published before the table refused to resume"
+        );
+
+        // A table half written, which is what a builder killed mid-pass left
+        // before the write became a rename.
+        std::fs::write(source::boosts_path(&dir), b"\xdd\xff\xff\xff\xff\x01")
+            .expect("a truncated table");
+        assert!(
+            Metadata::resume(&dir).is_err(),
+            "a corrupt table resumed as an empty one"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

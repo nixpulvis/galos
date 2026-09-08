@@ -89,10 +89,22 @@ pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
 /// Serialize a metadata value to a file, MessagePack-encoded. The builder's
 /// writer half; the reader half is [`read_meta`]. Both name the format in one
 /// place so a write and a read cannot disagree on it.
+///
+/// Written beside the file and renamed over it, as [`crate::Checkpoint`] is.
+/// Every metadata table is written whole and read whole, and carries no
+/// length, count or magic of its own — so a torn write is the one failure the
+/// format cannot detect, and what it decodes as is whatever MessagePack makes
+/// of a truncated stream. The rename is the only step that touches `path`, so
+/// a builder killed mid-write leaves the table it published last intact.
 pub fn write_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = rmp_serde::to_vec(value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, bytes)
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Read a metadata value back from a file, MessagePack-decoded. The reader half
@@ -295,6 +307,13 @@ impl Source for FsSource {
     /// a partial trailing record and the index's own length check refuses a
     /// half-written file, so the worst a race costs is a refresh that reads
     /// nothing and comes round again on the next poll.
+    ///
+    /// A time before the epoch stamps as zero rather than as [`None`], since
+    /// [`None`] is the answer for a part that is not there and this one is:
+    /// read as absent it would match the absence recorded at startup, compare
+    /// equal on every poll, and quietly leave that table or cell out of the
+    /// refresh for the life of the session. Archives and mirrors do carry
+    /// timestamps like that.
     async fn stamp(&self, part: Part) -> io::Result<Option<Stamp>> {
         let path = match part {
             Part::Index => self.dir.join(crate::store::INDEX_FILE),
@@ -306,10 +325,10 @@ impl Source for FsSource {
             Part::NamesChunk(chunk) => names_chunk_path(&self.dir, chunk),
         };
         match std::fs::metadata(&path).and_then(|it| it.modified()) {
-            Ok(at) => Ok(at
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|since| since.as_nanos() as Stamp)),
+            Ok(at) => Ok(Some(
+                at.duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_nanos() as Stamp),
+            )),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
@@ -413,6 +432,100 @@ mod tests {
         let after =
             source.stamp(Part::Index).await.expect("a stat").expect("a stamp");
         assert_ne!(before, after, "a republished index reads as changed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file whose mtime is before the epoch stamps as present, not absent
+    ///
+    /// [`None`] means "not there", and the refresh acts on exactly that: it
+    /// compares the stamp in hand against the one it holds, so a part
+    /// answering [`None`] every poll matches the [`None`] recorded at startup
+    /// and is never re-read for the whole of a session. Archives and mirrors
+    /// do hand out timestamps before 1970.
+    #[test]
+    fn a_pre_epoch_part_still_stamps_as_present() {
+        pollster::block_on(a_pre_epoch_part_stamps());
+    }
+
+    async fn a_pre_epoch_part_stamps() {
+        use super::{FsSource, Part, Source};
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_source_epoch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = super::boosts_path(&dir);
+        std::fs::write(&path, b"\x90").expect("an empty table");
+
+        // Ten years before the epoch, which is a negative seconds count on
+        // every platform that stores one.
+        let old =
+            std::time::UNIX_EPOCH - std::time::Duration::from_secs(315_360_000);
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("the table opens");
+        file.set_times(std::fs::FileTimes::new().set_modified(old))
+            .expect("a pre-epoch mtime");
+        let source = FsSource::new(&dir);
+        assert_eq!(
+            source.stamp(Part::Boosts).await.expect("a stat"),
+            Some(0),
+            "a file that is there read as a part that is not"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A metadata table is renamed over rather than written through
+    ///
+    /// Every one of them is written whole and read whole, and none carries a
+    /// length, a count or a magic — so a torn write is the one failure the
+    /// format cannot detect, and a builder killed mid-write would leave a
+    /// truncated file that decodes as whatever MessagePack makes of it.
+    ///
+    /// What this asks is the property that rules that out: the published path
+    /// is never the file being filled. A reader that opened the table and is
+    /// working through it goes on reading what was published, whole, however
+    /// far the next write has got — which is the map, whose refresh reads
+    /// these tables while the builder republishes them.
+    #[test]
+    fn a_metadata_write_does_not_touch_what_it_replaces() {
+        use super::{read_meta, write_meta};
+        use std::io::Read;
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_source_atomic_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = super::boosts_path(&dir);
+
+        let first: Vec<i64> = (0..1_000).collect();
+        write_meta(&path, &first).expect("the first write");
+
+        // A reader that has the table open, as the map does when a pass lands.
+        let mut held =
+            std::fs::File::open(&path).expect("the table opens for reading");
+
+        let second: Vec<i64> = (0..50_000).collect();
+        write_meta(&path, &second).expect("the second write");
+
+        let mut bytes = Vec::new();
+        held.read_to_end(&mut bytes).expect("the held table reads");
+        let held: Vec<i64> = rmp_serde::from_slice(&bytes)
+            .expect("the held table still decodes");
+        assert_eq!(
+            held, first,
+            "a reader holding the table saw the write land in it"
+        );
+
+        let read: Vec<i64> = read_meta(&path).expect("the second read");
+        assert_eq!(read, second, "the second write did not land whole");
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "the temporary was left beside the table"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
