@@ -1582,12 +1582,14 @@ pub(crate) trait Pane {
     fn shut(&mut self);
 }
 
-/// Every pane the chrome opens, in the order they are put away
+/// Every pane the chrome opens
 ///
-/// The bar's form leads, being the one that may be holding the caret, and the
-/// clock's scrubber follows. One gesture means one thing, so the two are
-/// asked in turn rather than together — but a click on empty sky means
-/// nothing at all, and takes the lot.
+/// Both gestures that put chrome away mean all of it: an escape, which is
+/// where a reader looks for the way out, and a click on empty sky, which is
+/// the gesture that means nothing at all. Neither asks which pane the reader
+/// had in mind — a form and a rail standing open together are two halves of
+/// one arrangement, and putting one of them away and leaving the other is a
+/// key that has to be pressed twice to do what it looks like it does.
 #[derive(SystemParam)]
 pub(crate) struct Panes<'w> {
     bar: ResMut<'w, BarFields>,
@@ -1595,33 +1597,14 @@ pub(crate) struct Panes<'w> {
 }
 
 impl Panes<'_> {
-    /// The panes, frontmost first
-    fn all(&mut self) -> [&mut dyn Pane; 2] {
-        [&mut *self.bar, &mut *self.clock]
-    }
-
-    /// Put away the frontmost pane that is out, and say whether one was
-    ///
-    /// What an escape means. The thing it puts away is the last one opened,
-    /// which is what the order stands for: a press over a form leaves the
-    /// rail below it standing, and the next press takes that.
-    pub(crate) fn shut_one(&mut self) -> bool {
-        for pane in self.all() {
-            if pane.showing() {
-                pane.shut();
-                return true;
-            }
-        }
-
-        false
-    }
-
     /// Put every one of them away
     ///
-    /// What a click on empty sky means. The gesture says nothing is wanted:
-    /// let go of what is held, and put away whatever was asking about it.
+    /// Asked only of the ones that are out, since asking is not free: the
+    /// bar's form is put away by a flag the next pass over the chrome reads,
+    /// and one raised over a form that was never open shuts a field the user
+    /// has only just clicked into.
     pub(crate) fn shut_all(&mut self) {
-        for pane in self.all() {
+        for pane in [&mut *self.bar as &mut dyn Pane, &mut *self.clock] {
             if pane.showing() {
                 pane.shut();
             }
@@ -5368,7 +5351,7 @@ const BINDINGS: [(&str, &str); 15] = [
     ("/ or Shift-S", "Search the box for a system"),
     ("Shift-F", "Ask the box for a faction to filter on"),
     ("Shift-R", "Ask the box for a route's jump range"),
-    ("Esc", "Put the form, the scrubber or the bindings away"),
+    ("Esc", "Put away the bindings, or everything the chrome has open"),
     ("F1 or ?", "Show or hide these bindings"),
 ];
 

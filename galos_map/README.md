@@ -92,8 +92,8 @@ started on a slider goes on talking to the slider wherever the pointer wanders.
 
 The bar's form and the clock's scrubber are put away the same way, being the
 same kind of thing: whatever opened them again, a click on empty sky, and the
-escape key. Which of them an escape means is the last one opened; a click on
-nothing means all of them.
+escape key. The last two mean all of them — an escape over an open form and an
+open rail takes both, rather than asking to be pressed twice.
 
 ## Keys
 
@@ -112,7 +112,7 @@ nothing means all of them.
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for a route's jump range |
-| `Esc` | Put the form, the scrubber or the bindings away |
+| `Esc` | Put away the bindings, or everything the chrome has open |
 | `F1` or `?` | Show or hide these bindings |
 
 Panning and zooming cover ground in proportion to how far out the camera is, so
@@ -125,8 +125,8 @@ list. Held with control, command or alt, a key is left alone. So is every one
 of them while a field is being typed into, apart from the escape that puts the
 field away.
 
-One escape is the way out of one thing, and the thing it means is the last
-one opened: the bindings window, then the bar's form, then the clock's
-scrubber.
+An escape puts away whatever the chrome has open, all of it at once. The
+bindings window is the exception and goes first, being read over everything —
+a form left standing while something is looked up included.
 
 The map is quit by closing its window.
