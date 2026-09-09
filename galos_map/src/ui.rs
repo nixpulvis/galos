@@ -50,6 +50,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<PointerOverUi>();
     app.init_resource::<Keyboard>();
     app.init_resource::<SettingsOpen>();
+    app.init_resource::<ClockControl>();
     app.init_resource::<KeysOpen>();
     app.init_resource::<PressOwner>();
     app.init_resource::<BarFields>();
@@ -145,6 +146,22 @@ pub(crate) struct SettingsOpen(bool);
 /// since a reader wanting to know what a key does has a hand on the keys.
 #[derive(Resource, Default)]
 pub(crate) struct KeysOpen(pub(crate) bool);
+
+/// Whether the pane's control over the clock is out
+///
+/// The date under the bar is what toggles it. The reading is where a user
+/// meets the clock, so it is where they reach to change it, and the control
+/// itself stands in the pane with the rest of what is set rather than in the
+/// bar, which says what the map is doing and sets none of it.
+///
+/// A resource rather than a local for the same reason [`SettingsOpen`] is
+/// one: the pane is drawn before the bar the date is in, so a click on the
+/// date settles the next frame's pane rather than this one's.
+#[derive(Resource, Default)]
+pub(crate) struct ClockControl {
+    /// Whether the pane is showing it
+    out: bool,
+}
 
 /// What the chrome has taken of the keyboard
 ///
@@ -636,6 +653,7 @@ pub(crate) struct Settings<'w> {
     name_limit: ResMut<'w, NameLimit>,
     show_orbits: ResMut<'w, ShowOrbits>,
     clock: ResMut<'w, Clock>,
+    clock_control: ResMut<'w, ClockControl>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
     unit: ResMut<'w, RulerUnit>,
@@ -1200,6 +1218,7 @@ pub(crate) fn chrome(
         &bar.searching,
         &mut filter,
         &mut settings.clock,
+        &mut settings.clock_control,
     );
     gear(ctx, edge, middle, &mut open.0);
 
@@ -1377,8 +1396,10 @@ fn main_bar(
     boosts: &crate::Boosts,
     searching: &Frontiers,
     filter: &mut FilterBar,
-    // What moment the held system is drawn at, for the status under the rows.
+    // What moment the held system is drawn at, for the status under the rows,
+    // and whether the slider that sets it is out under the date.
     clock: &mut ResMut<Clock>,
+    control: &mut ClockControl,
 ) -> f32 {
     // What the filter rows were asked, carried out of the closure they are
     // drawn in: acting on either inside it would want the bar's own state
@@ -1552,7 +1573,15 @@ fn main_bar(
                     // Under the count rather than over it: the count is about
                     // the sky the camera is in and this is about the one system
                     // it is inside, which is the narrower of the two.
-                    mark_if_moved(clock, |clock| dated(ui, clock, contents));
+                    mark_if_moved(clock, |clock| {
+                        dated(
+                            ui,
+                            clock,
+                            contents.recorded_at(),
+                            contents.slowest_turn(),
+                            control,
+                        )
+                    });
 
                     // Asking for a route out of the summary line is what opens
                     // the form, in the same pass, so that the section it asked
@@ -3897,32 +3926,147 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 /// what day the game is on.
 ///
 /// The date alone while nothing has run the map on, which is how it opens on
-/// every system. A slider dragged under a body puts the map some span past
-/// where the game's clock has carried it, and then the span is named beside
-/// the date and can be let go of: the sliders each cover one turn of their own
-/// body, so none of them can reach back to nothing on its own.
+/// every system. A slider puts the map some span past where the game's clock
+/// has carried it, and then the span is named beside the date and can be let
+/// go of: the sliders each cover one turn of something, so none of them can
+/// reach back to nothing on its own.
 ///
 /// Nothing at all where no system is held. The moment is counted from the one a
 /// system was last heard from, so with no system there is nothing to count from
-/// and the line has nothing to say.
-fn dated(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
-    let Some(recorded) = contents.recorded_at() else { return };
+/// and the line has nothing to say. Handed the two readings rather than the
+/// rows they come off, so that the line can be drawn without a system to hold.
+///
+/// Clicking the date opens the slider that sets it, in the line below. What a
+/// reader wants to change is the thing they are reading, so the way to it is
+/// the reading itself rather than a control filed away in the pane where
+/// nobody would find it. Clicked again it goes, the map being left wherever
+/// the slider put it -- `Now` is what lets go of that.
+fn dated(
+    ui: &mut Ui,
+    clock: &mut Clock,
+    recorded: Option<DateTime<Utc>>,
+    turn: Option<f64>,
+    control: &mut ClockControl,
+) {
+    let Some(recorded) = recorded else { return };
 
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(drawn_at(clock, recorded)).weak());
-        if clock.offset() != 0. {
-            ui.label(
-                egui::RichText::new(format!(
-                    "+{}",
-                    lasting(clock.offset() as f32)
-                ))
-                .weak(),
-            );
-            if ui.small_button("Now").clicked() {
-                clock.reset();
+    let clicked = ui
+        .horizontal(|ui| {
+            let date = ui
+                .add(
+                    egui::Label::new(
+                        egui::RichText::new(drawn_at(clock, recorded)).weak(),
+                    )
+                    .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Set what moment the system is drawn at");
+            if clock.offset() != 0. {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "+{}",
+                        lasting(clock.offset() as f32)
+                    ))
+                    .weak(),
+                );
+                if ui.small_button("Now").clicked() {
+                    clock.reset();
+                }
             }
-        }
-    });
+            date.clicked()
+        })
+        .inner;
+    if clicked {
+        control.out = !control.out;
+    }
+
+    if control.out {
+        clock_control(ui, clock, turn);
+    }
+}
+
+/// The smallest span the status slider runs the map on by, in seconds
+///
+/// The near end of a logarithmic rail has to stand at some span rather than
+/// at none, since no run of decades reaches zero. A minute: the clock is
+/// stepped in whole seconds, and the fastest thing the journal records comes
+/// round in hours, so a minute is a hundredth of the quickest turn there is
+/// and nothing slower stirs enough to see.
+///
+/// Zero itself is still the far near end of the rail, egui putting the value
+/// exactly at the range's start where the handle is run all the way down.
+const SPAN_FLOOR: f64 = 60.;
+
+/// A slider over the whole system's own turn, under the date
+///
+/// What the date opens. Geared to the widest orbit the system has on record,
+/// so its far end is that arrangement one turn of its outermost thing later
+/// and every arrangement the system passes through falls somewhere along it.
+/// The sliders under the bodies are the fine end of the same control -- a
+/// moon's covers a moon's turn -- and this is the one that needs no body
+/// picked out to reach, which is the whole reason it is here.
+///
+/// Logarithmic, because the spans worth asking for are not evenly spread: the
+/// widest orbit of a system takes a median eighteen years to come round and
+/// its fastest body a few hours, so a linear rail spends its whole length on
+/// spans that blur every inner body and cannot be nudged by an hour at all.
+/// A decade of span per stretch of rail instead, from a minute at the near
+/// end to the system's own turn at the far one.
+///
+/// No numbers of its own. What it comes to is a moment, and the moment is the
+/// line above it -- along with the span it stands past the present, which is
+/// what a number on the rail would have said and says it in the units a
+/// reader thinks in.
+///
+/// Nothing to drag where no orbit in the system has a period recorded: there
+/// is no turn to cover, and a slider over nothing would move the map by
+/// nothing however far it was dragged.
+fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
+    let turn = turn.unwrap_or(0.);
+    let mut past = clock.through(turn) * turn;
+    fill_width(ui, 0.);
+    let moved = ui
+        .add_enabled_ui(turn > 0., |ui| {
+            ui.add(
+                egui::Slider::new(&mut past, 0.0..=turn.max(SPAN_FLOOR))
+                    .logarithmic(true)
+                    .smallest_positive(SPAN_FLOOR)
+                    .show_value(false),
+            )
+        })
+        .inner;
+    let through = if turn > 0. { past / turn } else { 0. };
+    phase_dragged(&moved, clock, turn, through);
+}
+
+/// Carry a phase slider's gesture to the clock
+///
+/// The three moments of a drag, each of which means something here. The turn
+/// the slider set out from is taken hold of before anything is written, so
+/// that the whole of the drag measures from one place; the clock is written
+/// only where the slider moved, or every frame a panel stands open puts every
+/// body in the system back where it already is; and the hold is let go of at
+/// the end. See [`Clock::hold`].
+///
+/// One owner because there are two sliders: a body's own, under it in its
+/// panel, and the system's, under the date in the bar. Both are geared to a
+/// period and both set the one offset, and the anchoring is the half of that
+/// which is easy to get subtly wrong.
+pub(crate) fn phase_dragged(
+    moved: &Response,
+    clock: &mut Clock,
+    period: f64,
+    through: f64,
+) {
+    if moved.drag_started() {
+        clock.hold(period);
+    }
+    if moved.changed() {
+        clock.offset_to(period, through);
+    }
+    if moved.drag_stopped() {
+        clock.release();
+    }
 }
 
 /// How far ahead of ours the game's own calendar runs, in years
@@ -4819,10 +4963,125 @@ mod tests {
     /// counting from whenever.
     #[test]
     fn a_system_with_nothing_on_record_is_dated_at_no_moment() {
-        let said =
-            words(|ui| dated(ui, &mut Clock::default(), &Contents::default()));
+        let said = words(|ui| {
+            dated(
+                ui,
+                &mut Clock::default(),
+                None,
+                None,
+                &mut ClockControl::default(),
+            );
+        });
 
         assert!(said.is_empty(), "a system with no scans was dated: {said:?}");
+    }
+
+    /// Clicking the date opens the slider under it, and clicking it again
+    /// puts it away
+    ///
+    /// The reading is where a user meets the clock, so a reader who wants
+    /// another moment reaches for the moment on screen rather than hunting the
+    /// pane for a control they have never seen. Drawing the line opens
+    /// nothing on its own.
+    #[test]
+    fn clicking_the_date_opens_the_slider_under_it() {
+        let ctx = crate::tests::context();
+        let turn = 400. * 86_400.;
+        let mut clock = Clock::default();
+        let mut control = ClockControl::default();
+        let mut line = |input, control: &mut ClockControl| {
+            let mut at = egui::Rect::NOTHING;
+            ctx.run_ui(input, |ui| {
+                dated(
+                    ui,
+                    &mut clock,
+                    Some(ours("2014-12-16T13:45:00Z")),
+                    Some(turn),
+                    control,
+                );
+                at = ui.min_rect();
+            });
+            at
+        };
+
+        // Two passes with nothing happening, to place the line.
+        let _ = line(egui::RawInput::default(), &mut control);
+        let at = line(egui::RawInput::default(), &mut control);
+        assert!(!control.out, "the line opened the slider unbidden");
+
+        let date = at.left_center() + egui::vec2(4., 0.);
+        line(clicking(date), &mut control);
+        assert!(control.out, "a click on the date opened nothing");
+
+        line(clicking(date), &mut control);
+        assert!(!control.out, "a second click left the slider out");
+    }
+
+    /// The status slider runs the system on by one turn of its widest orbit
+    ///
+    /// Which is the whole point of gearing it to that one: a control over a
+    /// whole system has to reach every arrangement the system passes through,
+    /// and nothing past them. Run end to end it comes to exactly that turn,
+    /// however far the drag is carried on past the rail.
+    #[test]
+    fn the_status_slider_runs_the_system_on_by_its_widest_turn() {
+        let turn = 400. * 86_400.;
+        let clock = slid(turn, 2.);
+
+        assert_eq!(
+            clock.offset(),
+            turn,
+            "the slider ran the map on by something other than a turn"
+        );
+    }
+
+    /// And its near end is decades of span rather than a even share of one
+    ///
+    /// The spans worth asking for are not evenly spread: a system's widest
+    /// orbit takes a median eighteen years and its fastest body a few hours,
+    /// so half the rail spent on half of eighteen years is a control that
+    /// cannot be nudged by an hour at all. Halfway along a logarithmic rail
+    /// stands at the geometric middle instead, which is hours rather than
+    /// years.
+    #[test]
+    fn the_status_slider_is_finer_near_the_present() {
+        let turn = 400. * 86_400.;
+        let middle = slid(turn, 0.5).offset();
+
+        assert!(middle > 0., "halfway along the rail moved nothing");
+        assert!(
+            middle < turn / 100.,
+            "halfway along the rail stood at {middle} of {turn}, \
+             which is an even share of the turn"
+        );
+    }
+
+    /// The clock after the status slider is dragged `across` of the rail's own
+    /// width
+    ///
+    /// Past one is carried off the far end, which is where a drag that means
+    /// the whole turn ends up.
+    fn slid(turn: f64, across: f32) -> Clock {
+        let ctx = crate::tests::context();
+        let mut clock = Clock::default();
+        let mut control = |input| {
+            let mut at = egui::Rect::NOTHING;
+            ctx.run_ui(input, |ui| {
+                clock_control(ui, &mut clock, Some(turn));
+                at = ui.min_rect();
+            });
+            at
+        };
+
+        let _ = control(egui::RawInput::default());
+        let at = control(egui::RawInput::default());
+
+        let rail = at.left_center();
+        for input in dragged(rail, at.width() * across) {
+            control(input);
+        }
+
+        clock
     }
 
     /// The chrome, drawn with the pointer at `at`, once it stands still

@@ -404,6 +404,34 @@ impl Contents {
         self.rows().and_then(SystemBodies::recorded_at)
     }
 
+    /// The longest turn anything in the system being held takes, in seconds
+    ///
+    /// What the pane's one slider over the whole system is geared to: run the
+    /// map on by this and every arrangement the system passes through has been
+    /// passed through once, so its far end is where a control over the whole
+    /// of a system belongs. See [`crate::ui::clock_control`].
+    ///
+    /// Stars and barycentres count. In a multiple system they are the widest
+    /// thing there is, the bodies going round one of the stars well inside the
+    /// pair's own turn.
+    ///
+    /// Nothing where no orbit on record has a period, which is a system of one
+    /// star and nothing else: there is no turn for a slider to cover, and
+    /// nothing in it that a moment moves.
+    pub fn slowest_turn(&self) -> Option<f64> {
+        let stars = self.stars().iter().filter_map(|star| star.orbit.as_ref());
+        let bodies = self.bodies().iter().map(|body| &body.orbit);
+        let centers =
+            self.barycenters().iter().filter_map(|at| at.orbit.as_ref());
+
+        stars
+            .chain(bodies)
+            .chain(centers)
+            .map(|orbit| orbit.orbital_period as f64)
+            .filter(|turn| turn.is_finite() && *turn > 0.)
+            .max_by(f64::total_cmp)
+    }
+
     /// Where everything in the system stands, and how far it reaches
     ///
     /// Worked out from the rows by the same code the index's reach table is
@@ -932,6 +960,31 @@ mod tests {
         assert_eq!(contents.recorded_at(), Some(read(20_000)));
         // And a system with nothing on record has no moment to count from.
         assert_eq!(Contents::default().recorded_at(), None);
+    }
+
+    /// The turn a control over a whole system is geared to is its widest
+    ///
+    /// Run the map on by that and every arrangement the system passes through
+    /// has been passed through once, which is what a single slider over a
+    /// whole system has to cover. A thing whose period nobody recorded is not
+    /// a turn, and a system with none of them at all has nothing to cover.
+    #[test]
+    fn a_system_turns_as_slowly_as_its_widest_orbit() {
+        let mut contents = Contents::default();
+        let day = 86_400.;
+        let mut inner = body(1e9);
+        inner.orbit.orbital_period = day as f32;
+        let mut outer = body(2e9);
+        outer.id = 2;
+        outer.orbit.orbital_period = (400. * day) as f32;
+
+        contents.hold(holding(vec![inner, outer, body(3e9)]));
+
+        assert_eq!(contents.slowest_turn(), Some(400. * day));
+        // A system whose orbits carry no periods, and one with no rows at all.
+        contents.hold(holding(vec![body(1e9)]));
+        assert_eq!(contents.slowest_turn(), None);
+        assert_eq!(Contents::default().slowest_turn(), None);
     }
 
     /// A thing whose period nobody recorded has no turn to be a fraction of

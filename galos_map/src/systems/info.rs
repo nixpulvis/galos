@@ -1250,20 +1250,7 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
             )
         })
         .inner;
-    // The turn the drag sets out from is taken hold of before anything is
-    // written, so that the whole of the drag measures from one place. See
-    // [`crate::systems::bodies::Clock::hold`].
-    if moved.drag_started() {
-        clock.hold(period);
-    }
-    // Only on a change, or the clock is written every frame a panel is open and
-    // every body in the system is put back where it already stands.
-    if moved.changed() {
-        clock.offset_to(period, through / 100.);
-    }
-    if moved.drag_stopped() {
-        clock.release();
-    }
+    crate::ui::phase_dragged(&moved, clock, period, through / 100.);
     ui.end_row();
 }
 
@@ -1276,7 +1263,11 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
 /// body's turn about itself and a year is its turn about its star -- both of
 /// them things the panel is otherwise reporting, so `1.2 days` beside a
 /// rotation period is a real question about whose day is meant. An hour is
-/// nobody's, so it goes unremarked.
+/// nobody's, so it goes unremarked, and neither is anything under one.
+///
+/// Down to seconds, which no orbit on record is but a span the map has been
+/// run on by certainly can be: the status slider's near end is minutes, and a
+/// span of them read as `0.1 hours` is a number in the wrong unit.
 pub(crate) fn lasting(seconds: f32) -> String {
     if seconds <= 0. {
         return UNKNOWN.into();
@@ -1289,8 +1280,12 @@ pub(crate) fn lasting(seconds: f32) -> String {
         format!("{:.1} Earth years", days / YEAR)
     } else if days >= 1. {
         format!("{days:.1} Earth days")
-    } else {
+    } else if days * 24. >= 1. {
         format!("{:.1} hours", days * 24.)
+    } else if days * 24. * 60. >= 1. {
+        format!("{:.1} minutes", days * 24. * 60.)
+    } else {
+        format!("{:.0} seconds", seconds)
     }
 }
 
@@ -2250,6 +2245,9 @@ mod tests {
     fn a_span_of_time_is_read_in_the_unit_it_fills() {
         assert_eq!(lasting(3.6254802e6), "42.0 Earth days");
         assert_eq!(lasting(3600.), "1.0 hours");
+        // The short end, which only a span the map has been run on reaches.
+        assert_eq!(lasting(225.), "3.8 minutes");
+        assert_eq!(lasting(45.), "45 seconds");
         assert_eq!(lasting(0.), UNKNOWN);
         // The long end, which a system's outermost bodies live at. Six
         // thousand days is as unreadable as eight digits of seconds.
