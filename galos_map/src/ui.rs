@@ -3936,6 +3936,13 @@ const AHEAD_BY: i32 = 1286;
 ///
 /// The system's newest scan is where the clock counts from, so the scan and the
 /// reading together are the moment on screen.
+///
+/// In the game's own notation: the day before the month, the month named
+/// rather than numbered, the time to the second, and the whole of it in
+/// capitals. A reader comparing the map against the panel in front of them is
+/// comparing two of the same thing, and a named month cannot be read the
+/// American way round by mistake. The date leads, the line being read as a
+/// date that carries a time rather than as a clock.
 fn drawn_at(clock: &Clock, recorded: DateTime<Utc>) -> String {
     let drawn = recorded + chrono::TimeDelta::seconds(clock.at() as i64);
     let year = drawn.year() + AHEAD_BY;
@@ -3947,8 +3954,9 @@ fn drawn_at(clock: &Clock, recorded: DateTime<Utc>) -> String {
         // February, which is the nearest date there is to it.
         .or_else(|| drawn.with_day(28).and_then(|day| day.with_year(year)))
         .unwrap_or(drawn)
-        .format("%Y-%m-%d %H:%M")
+        .format("%d %b %Y %H:%M:%S")
         .to_string()
+        .to_uppercase()
 }
 
 /// Ask for a filter by how lately a system was updated
@@ -4770,7 +4778,7 @@ mod tests {
 
         assert_eq!(
             drawn_at(&clock, ours("2014-12-16T13:45:00Z")),
-            "3300-12-16 13:45"
+            "16 DEC 3300 13:45:00"
         );
     }
 
@@ -4785,7 +4793,7 @@ mod tests {
 
         assert_eq!(
             drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
-            "3302-01-01 00:00",
+            "01 JAN 3302 00:00:00",
             "a year on from a new year is the next one"
         );
     }
@@ -4800,7 +4808,7 @@ mod tests {
 
         assert_eq!(
             drawn_at(&clock, ours("2024-02-29T09:00:00Z")),
-            "3310-02-28 09:00"
+            "28 FEB 3310 09:00:00"
         );
     }
 
