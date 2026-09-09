@@ -1588,13 +1588,7 @@ fn main_bar(
                             contents.slowest_turn().map(Geared::System)
                         });
                     mark_if_moved(clock, |clock| {
-                        dated(
-                            ui,
-                            clock,
-                            contents.recorded_at(),
-                            geared,
-                            control,
-                        )
+                        dated(ui, clock, geared, control)
                     });
 
                     // Asking for a route out of the summary line is what opens
@@ -3940,7 +3934,7 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     response.gained_focus()
 }
 
-/// Say what moment the system is drawn at, under the bar
+/// Say what moment the map is standing at, under the bar
 ///
 /// A line of the same kind as the count of what is in reach beside it: what the
 /// map is doing, said where the user is already reading it, rather than a
@@ -3948,16 +3942,17 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 /// screen raises — when is this — and it is the only place the map ever says
 /// what day the game is on.
 ///
-/// The date alone while nothing has run the map on, which is how it opens on
-/// every system. A slider puts the map some span past where the game's clock
-/// has carried it, and then the span is named beside the date and can be let
-/// go of: the sliders each cover one turn of something, so none of them can
-/// reach back to nothing on its own.
+/// The date alone while nothing has run the map on, which is how it opens. A
+/// slider puts the map some span past the present, and then the span is named
+/// beside the date and can be let go of: the sliders each cover one turn of
+/// something, so none of them can reach back to nothing on its own.
 ///
-/// Nothing at all where no system is held. The moment is counted from the one a
-/// system was last heard from, so with no system there is nothing to count from
-/// and the line has nothing to say. Handed the two readings rather than the
-/// rows they come off, so that the line can be drawn without a system to hold.
+/// Said whether or not a system is held. The moment is the galaxy's and not a
+/// system's -- see [`Clock`] -- so there is a date to read out on the way
+/// between two of them, and `Now` is reachable from wherever a drag was left.
+/// It was drawn off the held system's newest scan to begin with, which meant
+/// no line at all out in the sky and an offset that could be set from a
+/// panel with no way to let go of it.
 ///
 /// Clicking the reading opens the slider that sets it, in the line below.
 /// What a reader wants to change is the thing they are reading, so the way to
@@ -3969,15 +3964,12 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 fn dated(
     ui: &mut Ui,
     clock: &mut Clock,
-    recorded: Option<DateTime<Utc>>,
     geared: Option<Geared>,
     control: &mut ClockControl,
 ) {
-    let Some(recorded) = recorded else { return };
-
     let clicked = ui
         .horizontal(|ui| {
-            let mut asked = reading(ui, drawn_at(clock, recorded));
+            let mut asked = reading(ui, drawn_at(clock));
             if clock.offset() != 0. {
                 asked |=
                     reading(ui, format!("+{}", lasting(clock.offset() as f32)));
@@ -4135,10 +4127,10 @@ fn clock_control(ui: &mut Ui, clock: &mut Clock, geared: Option<Geared>) {
 /// holds needs no converting at all and only the year it lands in does.
 const AHEAD_BY: i32 = 1286;
 
-/// The moment the held system is drawn at, by the game's calendar
+/// The moment the map is standing at, by the game's calendar
 ///
-/// The system's newest scan is where the clock counts from, so the scan and the
-/// reading together are the moment on screen.
+/// [`Clock::moment`] in our own, turned once here: the two calendars run
+/// together and only the year is 1286 apart.
 ///
 /// In the game's own notation: the day before the month, the month named
 /// rather than numbered, the time to the second, and the whole of it in
@@ -4154,8 +4146,8 @@ const AHEAD_BY: i32 = 1286;
 /// 1286 years on, and a system whose widest orbit is a wide pair's takes
 /// millennia to come round, so running the slider to the end of one lands
 /// there.
-fn drawn_at(clock: &Clock, recorded: DateTime<Utc>) -> String {
-    let drawn = recorded + chrono::TimeDelta::seconds(clock.at() as i64);
+fn drawn_at(clock: &Clock) -> String {
+    let drawn = clock.moment();
     let year = drawn.year() + AHEAD_BY;
     let dated = drawn
         .with_year(year)
@@ -4978,31 +4970,35 @@ mod tests {
             .with_timezone(&Utc)
     }
 
+    /// A clock standing at `text`, in our own time
+    fn standing(text: &str) -> Clock {
+        let mut clock = Clock::default();
+        clock.follows(ours(text));
+        clock
+    }
+
     /// The game's calendar runs 1286 years ahead of ours and otherwise with it
     ///
     /// The journal stamps its scans in our own time, so the span the clock
     /// holds needs no converting and only the year it lands in does.
     #[test]
     fn the_games_calendar_runs_1286_years_ahead() {
-        let clock = Clock::default();
+        let clock = standing("2014-12-16T13:45:00Z");
 
-        assert_eq!(
-            drawn_at(&clock, ours("2014-12-16T13:45:00Z")),
-            "16 DEC 3300 13:45:00"
-        );
+        assert_eq!(drawn_at(&clock), "16 DEC 3300 13:45:00");
     }
 
     /// And the run-on is carried into it
     ///
-    /// The scan is where the reading counts from, so the two together are the
-    /// moment on screen.
+    /// The moment on screen is the present the map is standing at plus
+    /// however far a slider has run it on.
     #[test]
     fn the_moment_shown_carries_how_far_the_map_has_run_on() {
-        let mut clock = Clock::default();
+        let mut clock = standing("2015-01-01T00:00:00Z");
         clock.offset_to(365. * 86_400., 1.);
 
         assert_eq!(
-            drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
+            drawn_at(&clock),
             "01 JAN 3302 00:00:00",
             "a year on from a new year is the next one"
         );
@@ -5014,12 +5010,9 @@ mod tests {
     /// and there is no such date to show. The 28th is the nearest there is.
     #[test]
     fn a_leap_day_reads_as_the_last_of_its_february() {
-        let clock = Clock::default();
+        let clock = standing("2024-02-29T09:00:00Z");
 
-        assert_eq!(
-            drawn_at(&clock, ours("2024-02-29T09:00:00Z")),
-            "28 FEB 3310 09:00:00"
-        );
+        assert_eq!(drawn_at(&clock), "28 FEB 3310 09:00:00");
     }
 
     /// A year past four digits is said as a year, without a sign
@@ -5031,33 +5024,27 @@ mod tests {
     /// of the system's widest orbit, which for a wide pair is millennia.
     #[test]
     fn a_year_past_four_digits_is_said_without_a_sign() {
-        let mut clock = Clock::default();
+        let mut clock = standing("2015-01-01T00:00:00Z");
         clock.offset_to(9000. * 365.25 * 86_400., 1.);
 
-        assert_eq!(
-            drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
-            "10 MAR 12301 00:00:00"
-        );
+        assert_eq!(drawn_at(&clock), "10 MAR 12301 00:00:00");
     }
 
-    /// A system nobody has scanned has no moment to be drawn at
+    /// The date is said with no system held at all
     ///
-    /// The reading counts from the newest of a system's scans, so with none
-    /// there is nothing to count from and the line says nothing rather than
-    /// counting from whenever.
+    /// The moment is the galaxy's rather than a system's, so there is one to
+    /// read out between systems as much as inside one -- and `Now`, the only
+    /// way to let go of a run-on, rides that line. Drawn off the held
+    /// system's newest scan, the line went out on the way between two systems
+    /// and took the way back with it.
     #[test]
-    fn a_system_with_nothing_on_record_is_dated_at_no_moment() {
+    fn the_date_is_said_without_a_system_held() {
+        let mut clock = standing("2015-01-01T00:00:00Z");
         let said = words(|ui| {
-            dated(
-                ui,
-                &mut Clock::default(),
-                None,
-                None,
-                &mut ClockControl::default(),
-            );
+            dated(ui, &mut clock, None, &mut ClockControl::default());
         });
 
-        assert!(said.is_empty(), "a system with no scans was dated: {said:?}");
+        assert!(said.contains(&"01 JAN 3301 00:00:00".to_owned()), "{said:?}");
     }
 
     /// Clicking the date opens the slider under it, and clicking it again
@@ -5076,13 +5063,7 @@ mod tests {
         let mut line = |input, control: &mut ClockControl| {
             let mut at = egui::Rect::NOTHING;
             let _ = ctx.run_ui(input, |ui| {
-                dated(
-                    ui,
-                    &mut clock,
-                    Some(ours("2014-12-16T13:45:00Z")),
-                    Some(Geared::System(turn)),
-                    control,
-                );
+                dated(ui, &mut clock, Some(Geared::System(turn)), control);
                 at = ui.min_rect();
             });
             at
@@ -5117,13 +5098,7 @@ mod tests {
             clock_.offset_at(offset);
             let mut at = egui::Rect::NOTHING;
             let _ = ctx.run_ui(input, |ui| {
-                dated(
-                    ui,
-                    &mut clock_,
-                    Some(ours("2014-12-16T13:45:00Z")),
-                    Some(Geared::System(turn)),
-                    control,
-                );
+                dated(ui, &mut clock_, Some(Geared::System(turn)), control);
                 at = ui.min_rect();
             });
             clock = clock_;
@@ -5160,13 +5135,13 @@ mod tests {
     #[test]
     fn a_rail_past_the_ceiling_stops_at_it() {
         let year = 365.25 * 86_400.;
-        let clock = slid(Geared::System(400_000. * year), &[(0., 2.)]);
+        let ran = slid(Geared::System(400_000. * year), &[(0., 2.)]);
 
-        assert_eq!(clock.offset(), Clock::CEILING);
-        assert_eq!(
-            drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
-            "19 FEB 253306 00:00:00"
-        );
+        assert_eq!(ran.offset(), Clock::CEILING);
+
+        let mut clock = standing("2015-01-01T00:00:00Z");
+        clock.offset_at(ran.offset());
+        assert_eq!(drawn_at(&clock), "19 FEB 253306 00:00:00");
     }
 
     /// The status slider runs the system on by one turn of its widest orbit
@@ -5256,7 +5231,6 @@ mod tests {
                 dated(
                     ui,
                     clock,
-                    Some(ours("2015-01-01T00:00:00Z")),
                     Some(Geared::System(Clock::CEILING)),
                     &mut ClockControl { out: true },
                 );

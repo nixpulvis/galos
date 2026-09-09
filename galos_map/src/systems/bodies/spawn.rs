@@ -888,6 +888,9 @@ fn draw(
 
     let grid = space::system_grid();
     let orbits = contents.orbits();
+    // How far after its own newest scan this system is being drawn, which is
+    // what every path in it is run on from.
+    let since = contents.since(&clock);
     // Where the camera stands, in the terms the orbits are worked out in,
     // which is what says which piece of a ring is worth laying out. Those are
     // measured from the point the system's stars go round and what is drawn is
@@ -915,14 +918,14 @@ fn draw(
     // system whose stars go round a point between them it was arriving at the
     // point: empty sky with the star it came for ten billion kilometres off to
     // one side.
-    let middle = contents.middle(&orbits, clock.at());
+    let middle = contents.middle(&orbits, since);
 
     // How far a star has to light, which is out to the far side of the
     // outermost thing going round it.
     let reach = contents.extent().unwrap_or_default();
     let primary = contents.primary();
     for star in contents.stars() {
-        let place = orbits.place(star.id, clock.at()) - middle;
+        let place = orbits.place(star.id, since) - middle;
         commands.with_child(drawn_star(
             star,
             primary == Some(star.id),
@@ -934,7 +937,7 @@ fn draw(
         ));
     }
     for body in contents.bodies() {
-        let place = orbits.place(body.id, clock.at()) - middle;
+        let place = orbits.place(body.id, since) - middle;
         commands
             .with_child(drawn_body(body, place, &grid, &roundness, &bodies));
     }
@@ -959,7 +962,7 @@ fn draw(
             parent,
             bare.contains(&id),
             middle,
-            clock.at(),
+            since,
             standing + middle,
             across,
             &orbits,
@@ -991,7 +994,7 @@ fn draw(
         let cross = meshes.add(LineList { points: CROSS.to_vec() });
         for (id, ridden) in marked {
             let (cell, offset) =
-                placed(orbits.place(id, clock.at()) - middle, &grid);
+                placed(orbits.place(id, since) - middle, &grid);
             commands.with_child((
                 Inside,
                 Unscanned { id, ridden },
@@ -1295,7 +1298,8 @@ fn redash(
 
     let across = seen_across(orbit, lens);
     let orbits = contents.orbits();
-    let middle = contents.middle(&orbits, clock.at());
+    let since = contents.since(&clock);
+    let middle = contents.middle(&orbits, since);
     let standing = space::metres(orbit.eye - system.position()) + middle;
 
     for (mut line, of, mesh, mut cell, mut at) in &mut lines {
@@ -1304,7 +1308,7 @@ fn redash(
 
         let about = line
             .about
-            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at()));
+            .map_or(DVec3::ZERO, |parent| orbits.place(parent, since));
         let spacing =
             laid(&orbits, id, orbits.nearest(id, standing - about), across);
 
@@ -1368,21 +1372,18 @@ fn dashed(path: &[Vec3], run: usize) -> Vec<Vec3> {
     points
 }
 
-/// Keep the map on the game's own clock
+/// Keep the map's own now on the present
 ///
-/// Every frame, since the game's clock steps on whether the map is being
-/// touched or not. A slider runs the map some span past this rather than off
-/// it, so there is nothing here to hand back.
+/// Every frame, since time passes whether the map is being touched or not. A
+/// slider runs the map some span past this rather than off it, so there is
+/// nothing here to hand back.
 ///
-/// Nothing until a system's rows are in. Which moment the reading counts from
-/// is the newest of that system's scans, so until there are scans there is
-/// nothing to count from and the reading stands wherever it was left.
-fn follow(mut clock: ResMut<Clock>, contents: Res<Contents>) {
-    let Some(recorded) = contents.recorded_at() else { return };
-
-    super::mark_if_moved(&mut clock, |clock| {
-        clock.follows(chrono::Utc::now(), recorded)
-    });
+/// Nothing about a system, which is the whole point: the map stands at one
+/// moment for the whole galaxy and each system answers from its own scans, so
+/// this runs while nothing at all is held and the reading holds still across a
+/// flight.
+fn follow(mut clock: ResMut<Clock>) {
+    super::mark_if_moved(&mut clock, |clock| clock.follows(chrono::Utc::now()));
 }
 
 /// Put everything inside a system where the clock says it stands
@@ -1421,7 +1422,8 @@ fn stand(
     }
 
     let orbits = contents.orbits();
-    let middle = contents.middle(&orbits, clock.at());
+    let since = contents.since(&clock);
+    let middle = contents.middle(&orbits, since);
 
     let put = |grid: &Grid,
                place: DVec3,
@@ -1434,20 +1436,20 @@ fn stand(
 
     for (body, of, mut cell, mut at) in &mut placed_bodies {
         let Ok(grid) = grids.get(of.parent()) else { continue };
-        put(grid, orbits.place(body.id, clock.at()), &mut cell, &mut at);
+        put(grid, orbits.place(body.id, since), &mut cell, &mut at);
     }
 
     for (line, of, mut cell, mut at) in &mut lines {
         let Ok(grid) = grids.get(of.parent()) else { continue };
         let about = line
             .about
-            .map_or(DVec3::ZERO, |parent| orbits.place(parent, clock.at()));
+            .map_or(DVec3::ZERO, |parent| orbits.place(parent, since));
         put(grid, about + line.pin, &mut cell, &mut at);
     }
 
     for (mark, of, mut cell, mut at) in &mut marks {
         let Ok(grid) = grids.get(of.parent()) else { continue };
-        put(grid, orbits.place(mark.id, clock.at()), &mut cell, &mut at);
+        put(grid, orbits.place(mark.id, since), &mut cell, &mut at);
     }
 }
 

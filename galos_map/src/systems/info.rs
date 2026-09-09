@@ -1226,11 +1226,14 @@ fn circling(
 /// however long that is: a system has no span that suits all of it, the slowest
 /// body of one taking a median 993 times as long to come round as its fastest.
 ///
-/// It moves the whole system, which is one moment and not an arrangement built
-/// body by body. So dragging this stirs everything else by the same span of
-/// time, which for something far slower is imperceptible and for something far
-/// faster is a blur -- and either is the truth about what a year of this body
-/// does to its neighbours.
+/// It moves the map's own moment, which is one moment for the whole galaxy
+/// and not an arrangement built body by body. So dragging this stirs
+/// everything else by the same span of time, which for something far slower
+/// is imperceptible and for something far faster is a blur -- and either is
+/// the truth about what a year of this body does to its neighbours. A panel
+/// outlives the camera leaving its system, so a slider dragged out there
+/// moves the moment all the same; what it does not do any more is measure
+/// that moment from a zero of its own.
 ///
 /// Nothing to drag where the period is unrecorded, there being no turn to be a
 /// fraction of.
@@ -2155,7 +2158,7 @@ mod tests {
         let mut clock = crate::systems::bodies::Clock::default();
         // A phase that is no round tenth of a percent of its own turn.
         clock.offset_to(period, 0.374_838_71);
-        let was = clock.at();
+        let was = clock.offset();
 
         for _ in 0..4 {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -2165,7 +2168,7 @@ mod tests {
             });
         }
 
-        assert_eq!(clock.at(), was, "an untouched slider moved the clock");
+        assert_eq!(clock.offset(), was, "an untouched slider moved the clock");
     }
 
     /// A body's panel reads in the units a body is talked about in
