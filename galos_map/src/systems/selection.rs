@@ -629,22 +629,29 @@ fn clear_not_drawn(
 /// it on both, so a press that landed on the bar is none of this system's
 /// business.
 ///
-/// And it puts the bar's form away, which is the one gesture doing two things
-/// on purpose. A press off the form used to shut it whatever it landed on,
-/// which took the click the map wanted for picking a system out; now the
-/// press reaches the map and this is what reads it. A click on a system means
-/// that system and leaves the form standing, since gathering what a route
-/// runs through is done with the form open. A click on nothing means nothing:
-/// let go of what is held, and put away the form asking about it.
+/// And it puts away whatever the chrome has open, which is the one gesture
+/// doing two things on purpose. A press off the form used to shut it whatever
+/// it landed on, which took the click the map wanted for picking a system
+/// out; now the press reaches the map and this is what reads it. A click on a
+/// system means that system and leaves the form standing, since gathering
+/// what a route runs through is done with the form open. A click on nothing
+/// means nothing: let go of what is held, and put away whatever was asking
+/// about it.
 ///
-/// The form is put away before the selection is looked at, since clicking
-/// empty sky with nothing held is still a click on nothing.
+/// Every pane rather than the bar's form alone, and through
+/// [`crate::ui::Panes`], which is the same code the escape key goes through.
+/// The gesture says nothing is wanted, and a clock's rail left standing over
+/// a map that has just been cleared is the one thing on screen still asking
+/// something.
+///
+/// They are put away before the selection is looked at, since clicking empty
+/// sky with nothing held is still a click on nothing.
 fn nothing_clicked(
     gesture: Gesture,
     dragged: Query<&DragDistance>,
     pointed_at: Query<(), With<PointedAt>>,
     mut selection: ResMut<Selection>,
-    mut bar: ResMut<crate::ui::BarFields>,
+    mut panes: crate::ui::Panes,
 ) {
     if !gesture.on_map() {
         return;
@@ -656,7 +663,7 @@ fn nothing_clicked(
         return;
     }
 
-    bar.shut();
+    panes.shut_all();
 
     if selection.is_empty() {
         return;
@@ -964,8 +971,9 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
         app.init_resource::<PressOwner>();
-        // Asked to put the form away by the same click that lets go.
+        // Asked to put its panes away by the same click that lets go.
         app.init_resource::<crate::ui::BarFields>();
+        app.init_resource::<crate::ui::ClockControl>();
 
         let mut selection = Selection::default();
         selection.set(picked(1));
@@ -1082,31 +1090,49 @@ mod tests {
         app.world().resource::<crate::ui::BarFields>().shutting
     }
 
-    /// And puts the bar's form away with it
+    /// Whether the clock's scrubber is out
+    fn scrubbing(app: &App) -> bool {
+        app.world().resource::<crate::ui::ClockControl>().out
+    }
+
+    /// Open everything the chrome opens, as a reader working would have it
+    fn opened(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<crate::ui::BarFields>()
+            .open(crate::ui::AskMode::System);
+        app.world_mut().resource_mut::<crate::ui::ClockControl>().out = true;
+    }
+
+    /// And puts every pane the chrome has open away with it
     ///
     /// Reported: the form stayed open whatever was clicked, once a press off
     /// it stopped being spent shutting it. A click on nothing is the gesture
-    /// that means nothing: let go of what is held, and put away the form
-    /// asking about it.
+    /// that means nothing: let go of what is held, and put away whatever was
+    /// asking about it — the bar's form and the clock's rail alike, through
+    /// the same [`crate::ui::Panes`] the escape key goes through.
     #[test]
-    fn a_click_on_nothing_puts_the_form_away() {
+    fn a_click_on_nothing_puts_the_panes_away() {
         let mut app = clicked_on();
+        opened(&mut app);
 
         frame(&mut app, false, |buttons| buttons.press(PRIMARY));
         assert!(!shutting(&app), "shut before the button came up");
+        assert!(scrubbing(&app), "shut before the button came up");
         frame(&mut app, false, |buttons| buttons.release(PRIMARY));
 
         assert!(shutting(&app));
+        assert!(!scrubbing(&app));
     }
 
-    /// A click on something leaves it standing
+    /// A click on something leaves them standing
     ///
     /// Which is what the form is open for: what a route runs through is
     /// gathered by picking systems out, so a form that shut itself on the
     /// first of them could never be given the second.
     #[test]
-    fn a_click_on_something_leaves_the_form_standing() {
+    fn a_click_on_something_leaves_the_panes_standing() {
         let mut app = clicked_on();
+        opened(&mut app);
         // Something under the pointer, as `pointing` marks it.
         app.world_mut().spawn(PointedAt::reached(0.));
 
@@ -1114,6 +1140,7 @@ mod tests {
         frame(&mut app, false, |buttons| buttons.release(PRIMARY));
 
         assert!(!shutting(&app));
+        assert!(scrubbing(&app));
         assert!(holding(&app), "let go of a selection over a system");
     }
 

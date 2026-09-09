@@ -495,20 +495,24 @@ fn open_search(
     }
 }
 
-/// Put away whatever was opened, and take the caret out of it
+/// Put away whatever the chrome has open, one thing at a time
 ///
 /// Escape, which is where a reader looks for the way out of something they
 /// have opened. What was typed is left standing for whenever the form is
 /// opened again, the form being shut rather than the question thrown out.
 ///
+/// Which pane goes is [`crate::ui::Panes`]'s to settle, and the same code
+/// answers a click on empty sky — see
+/// [`crate::systems::selection::nothing_clicked`]. A key that knew the bar
+/// from the clock would be a third place to teach about the fourth thing that
+/// drops out of the chrome.
+///
 /// One escape is the way out of one thing, and the thing it means is the last
-/// one opened. Three things can be out at once and they shut in that order:
-/// the bindings window is read over everything and takes itself down — see
-/// [`toggle_keys`], which is the other half of what this says about the one
-/// key — then the bar's form, which is the one that may be holding the caret,
-/// and then the clock's scrubber. Ungated, one press answered all of them:
-/// the form collapsed behind a window the user was only reading, and the
-/// scrubber went with a form the user was only typing in.
+/// one opened. The bindings window is read over everything and takes itself
+/// down — see [`toggle_keys`], which is the other half of what this says
+/// about the one key — and the panes follow in their own order. Ungated, one
+/// press answered all of them: the form collapsed behind a window the user
+/// was only reading.
 ///
 /// The one binding that answers while a field is being typed into, and it has
 /// to: a caret in a field is the state this exists to undo. Nothing is lost by
@@ -516,8 +520,7 @@ fn open_search(
 fn shut_search(
     keys: Res<ButtonInput<KeyCode>>,
     open: Res<crate::ui::KeysOpen>,
-    mut bar: ResMut<BarFields>,
-    mut clock: ResMut<crate::ui::ClockControl>,
+    mut panes: crate::ui::Panes,
 ) {
     if open.0 {
         return;
@@ -526,15 +529,7 @@ fn shut_search(
         return;
     }
 
-    // The form, whether or not one is out: asking for it to be put away is
-    // harmless where it already is, and only the pass that drew its fields
-    // can say which of them held the caret.
-    bar.shut();
-    // And the scrubber only where no form was out, so that one press does not
-    // put away two things.
-    if bar.asking.is_none() {
-        clock.shut();
-    }
+    panes.shut_one();
 }
 
 #[cfg(test)]
@@ -1340,10 +1335,16 @@ mod tests {
         assert!(!opening(&app));
     }
 
+    /// Ask a question of the box, as a click into it or a key does
+    fn ask(app: &mut App) {
+        app.world_mut().resource_mut::<BarFields>().open(AskMode::System);
+    }
+
     /// An escape asks for the form to be put away
     #[test]
     fn an_escape_puts_the_form_away() {
         let mut app = barred();
+        ask(&mut app);
 
         pressed(&mut app, &[KeyCode::Escape]);
 
@@ -1358,6 +1359,7 @@ mod tests {
     #[test]
     fn an_escape_answers_while_a_name_is_being_typed() {
         let mut app = barred();
+        ask(&mut app);
         type_a_name(&mut app);
 
         pressed(&mut app, &[KeyCode::Escape]);
@@ -1375,6 +1377,7 @@ mod tests {
     #[test]
     fn an_escape_meant_for_the_bindings_is_not_spent_on_the_form() {
         let mut app = barred();
+        ask(&mut app);
 
         pressed(&mut app, &[KeyCode::F1]);
         assert!(helping(&app), "the bindings did not open");
@@ -1423,7 +1426,7 @@ mod tests {
     fn an_escape_over_a_form_leaves_the_scrubber_out() {
         let mut app = barred();
         scrub(&mut app);
-        app.world_mut().resource_mut::<BarFields>().open(AskMode::System);
+        ask(&mut app);
 
         pressed(&mut app, &[KeyCode::Escape]);
 

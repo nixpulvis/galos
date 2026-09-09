@@ -191,18 +191,21 @@ pub(crate) struct ClockControl {
     to: GearedTo,
 }
 
-impl ClockControl {
+impl Pane for ClockControl {
+    fn showing(&self) -> bool {
+        self.out
+    }
+
     /// Put the scrubber away, the map left wherever it put it
     ///
-    /// What [`crate::keys`] does with an escape, and what clicking the
-    /// reading a second time does. The run-on is not let go of: `Now` is what
-    /// does that, and the span stands in the reading either way, so a reader
-    /// who shut the rail has not lost the moment they set with it.
+    /// The run-on is not let go of: `Now` is what does that, and the span
+    /// stands in the reading either way, so a reader who shut the rail has
+    /// not lost the moment they set with it.
     ///
-    /// Written straight rather than asked for, as the bar's form asks: there
+    /// Written straight rather than asked for, unlike the bar's form: there
     /// is no field here to take the caret out of, so nothing has to wait for
     /// the pass that drew it.
-    pub(crate) fn shut(&mut self) {
+    fn shut(&mut self) {
         self.out = false;
     }
 }
@@ -705,14 +708,19 @@ impl BarFields {
         self.asking = Some(mode);
         self.opening = true;
     }
+}
+
+impl Pane for BarFields {
+    fn showing(&self) -> bool {
+        self.asking.is_some()
+    }
 
     /// Ask for the form to be put away and the caret taken out of it
     ///
-    /// What [`crate::keys`] does with an escape. What was typed is left
-    /// standing, as it is when a press puts the form away: the form is shut
-    /// rather than the question thrown out, and the mark inside the box is what
-    /// takes the answer away.
-    pub(crate) fn shut(&mut self) {
+    /// What was typed is left standing, as it is when a press puts the form
+    /// away: the form is shut rather than the question thrown out, and the
+    /// mark inside the box is what takes the answer away.
+    fn shut(&mut self) {
         self.shutting = true;
     }
 }
@@ -1545,6 +1553,205 @@ fn gear(ctx: &Context, left: f32, middle: f32, open: &mut bool) {
     }
 }
 
+/// A piece of chrome the map opens, and how it is put away
+///
+/// The bar's form and the clock's scrubber are one thing twice over. Both are
+/// something always drawn — a field, a reading — with more of it out
+/// underneath while the user is working with it. Both are framed while that
+/// is out and drawn in nothing while it is not. And both are put away the
+/// same way: whatever opened them again, the escape a reader looks for, and a
+/// click on empty sky, which is the gesture that means nothing at all.
+///
+/// So neither says for itself what putting away means. [`Panes`] is what
+/// asks, and [`crate::keys`] and [`crate::systems::selection`] both go
+/// through it, so a fourth thing that drops out of the chrome is put away by
+/// the code that already puts away these two.
+///
+/// Not [`crate::systems::info::Panels`], which is the windows the map opens
+/// about what a row names. Those are moved and closed one at a time and
+/// belong to nothing.
+pub(crate) trait Pane {
+    /// Whether it is out
+    fn showing(&self) -> bool;
+
+    /// Ask for it to be put away
+    ///
+    /// Asked rather than done, where a pane has a field in it: only the pass
+    /// that drew the field can take the caret out of it. See
+    /// [`BarFields::shut`].
+    fn shut(&mut self);
+}
+
+/// Every pane the chrome opens, in the order they are put away
+///
+/// The bar's form leads, being the one that may be holding the caret, and the
+/// clock's scrubber follows. One gesture means one thing, so the two are
+/// asked in turn rather than together — but a click on empty sky means
+/// nothing at all, and takes the lot.
+#[derive(SystemParam)]
+pub(crate) struct Panes<'w> {
+    bar: ResMut<'w, BarFields>,
+    clock: ResMut<'w, ClockControl>,
+}
+
+impl Panes<'_> {
+    /// The panes, frontmost first
+    fn all(&mut self) -> [&mut dyn Pane; 2] {
+        [&mut *self.bar, &mut *self.clock]
+    }
+
+    /// Put away the frontmost pane that is out, and say whether one was
+    ///
+    /// What an escape means. The thing it puts away is the last one opened,
+    /// which is what the order stands for: a press over a form leaves the
+    /// rail below it standing, and the next press takes that.
+    pub(crate) fn shut_one(&mut self) -> bool {
+        for pane in self.all() {
+            if pane.showing() {
+                pane.shut();
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Put every one of them away
+    ///
+    /// What a click on empty sky means. The gesture says nothing is wanted:
+    /// let go of what is held, and put away whatever was asking about it.
+    pub(crate) fn shut_all(&mut self) {
+        for pane in self.all() {
+            if pane.showing() {
+                pane.shut();
+            }
+        }
+    }
+}
+
+/// Where a pane stands in the viewport
+enum Standing {
+    /// At a place of its own, as the bar stands in the corner
+    At(egui::Pos2),
+    /// In the middle of the top edge, held clear of `beside`
+    ///
+    /// Which is where the bar's own column ends. On a window wide enough the
+    /// two never meet and the pane stands in the middle; on a narrow one the
+    /// pane gives way, a reading standing over the field the user is typing
+    /// into being worse than one standing off center.
+    Middle { beside: f32 },
+}
+
+/// The chrome a pane is drawn in, framed while its body is out
+///
+/// What the bar and the strip share, which is everything about them but what
+/// is written inside: the layer they stand in, where they stand, how wide,
+/// and the frame that says whether anything is open. The body itself is the
+/// caller's, `out` being the same flag it built this with.
+///
+/// The frame is the same frame either way, drawn in nothing while the pane is
+/// shut rather than left out and put back: nothing shifts as it comes up,
+/// because nothing about the layout has changed.
+struct Dropping<'a> {
+    /// What its area is spelled under
+    id: &'a str,
+    /// Where it stands
+    standing: Standing,
+    /// Whether its body is out
+    out: bool,
+    /// How wide it stands with the body out
+    width: f32,
+    /// Whether it keeps that width with the body away
+    ///
+    /// The bar does: what stands there at rest is a field, and one that
+    /// changed width as the form came and went would be a box moving under
+    /// the pointer. The strip does not: what stands there is a line of text
+    /// over the sky, and an area laid out at the scrubber's width would claim
+    /// a band of the map for the pointer with nothing drawn in it — a wheel
+    /// turned up there would stop turning the map.
+    holds_width: bool,
+}
+
+impl Dropping<'_> {
+    /// Draw it, and answer where it stood and what its contents said
+    fn show<R>(
+        self,
+        ctx: &Context,
+        contents: impl FnOnce(&mut Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        let style = ctx.global_style();
+        let mut frame = egui::Frame::popup(&style)
+            .inner_margin(egui::Margin::same(PADDING));
+        if !self.out {
+            frame = frame
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(
+                    frame.stroke.width,
+                    egui::Color32::TRANSPARENT,
+                ))
+                .shadow(egui::Shadow::NONE);
+        }
+
+        let id = egui::Id::new(self.id);
+        let area = egui::Area::new(id)
+            // With the rest of the chrome; see `settings_pane`.
+            .order(egui::Order::Middle)
+            // A pane stands where it is put, off the edge and all, as the
+            // settings pane stands off the left while it is shut.
+            .constrain(false);
+        let area = match self.standing {
+            Standing::At(at) => area.fixed_pos(at),
+            // Worked out from the width the pane came out at last pass rather
+            // than from the width asked for inside it: what a frame adds in
+            // margins and stroke is the frame's own business, and said as a
+            // number the pane stood a few pixels off center and a few pixels
+            // into what it was to give way to.
+            //
+            // Not `constrain_to`, which anchors within whatever it is given:
+            // handed the room beside the bar, `CENTER_TOP` centers the pane
+            // in that room rather than on the viewport, so it sat well right
+            // of the middle on every window wide enough for there to be no
+            // question.
+            Standing::Middle { beside } => {
+                let room = ctx.content_rect();
+                match ctx.memory(|memory| memory.area_rect(id)) {
+                    Some(measured) => {
+                        let centered = (room.width() - measured.width()) / 2.;
+                        area.fixed_pos(egui::pos2(
+                            centered.max(beside + MARGIN),
+                            MARGIN,
+                        ))
+                    }
+                    // Nothing measured yet, which is the first pass and the
+                    // pass after the body has opened. Egui's own anchoring
+                    // stands in, and is what centering means before there is
+                    // a width to center.
+                    None => area.anchor(
+                        egui::Align2::CENTER_TOP,
+                        egui::vec2(0., MARGIN),
+                    ),
+                }
+            }
+        };
+
+        let width = self.width;
+        let holds_width = self.holds_width;
+        let out = self.out;
+        let shown = area.show(ctx, |ui| {
+            frame
+                .show(ui, |ui| {
+                    if out || holds_width {
+                        ui.set_width(width);
+                    }
+                    contents(ui)
+                })
+                .inner
+        });
+
+        egui::InnerResponse::new(shown.inner, shown.response)
+    }
+}
+
 /// Which of the three questions the bar's box is asking
 ///
 /// The bar has three questions and one box. They have nothing to say to each
@@ -1734,193 +1941,173 @@ fn ask_bar(
     searching: &Frontiers,
     filter: &mut FilterBar,
 ) -> Asked {
-    let style = ctx.global_style();
-    let mut frame =
-        egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
-    if search.asking.is_none() {
-        frame = frame
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(
-                frame.stroke.width,
-                egui::Color32::TRANSPARENT,
-            ))
-            .shadow(egui::Shadow::NONE);
+    let bar = Dropping {
+        id: "main-bar",
+        standing: Standing::At(egui::pos2(left + MARGIN, MARGIN)),
+        out: search.asking.is_some(),
+        // Fixed, so that the bar keeps its width and its place as the form
+        // drops out of it.
+        width: BAR_WIDTH,
+        holds_width: true,
     }
+    .show(ctx, |ui| {
+        let mut taken = false;
+        // Which question is being put. A system while the form is
+        // shut: the box at rest is the search box.
+        let mut mode = search.asking.unwrap_or_default();
+        // Whether whatever was last typed here is still being
+        // looked up. A range waits on nothing, being read rather
+        // than asked of anything.
+        let waiting = match mode {
+            AskMode::System => asking,
+            AskMode::Filter => filter.pending.waiting(),
+            AskMode::Route => false,
+        };
 
-    let bar = egui::Area::new(egui::Id::new("main-bar"))
-        // With the rest of the chrome; see `settings_pane`.
-        .order(egui::Order::Middle)
-        .fixed_pos(egui::pos2(left + MARGIN, MARGIN))
-        .show(ctx, |ui| {
-            frame
-                .show(ui, |ui| {
-                    // Fixed, so that the bar keeps its width and its place as
-                    // the form drops out of it.
-                    ui.set_width(BAR_WIDTH);
-                    let mut taken = false;
-                    // Which question is being put. A system while the form is
-                    // shut: the box at rest is the search box.
-                    let mut mode = search.asking.unwrap_or_default();
-                    // Whether whatever was last typed here is still being
-                    // looked up. A range waits on nothing, being read rather
-                    // than asked of anything.
-                    let waiting = match mode {
-                        AskMode::System => asking,
-                        AskMode::Filter => filter.pending.waiting(),
-                        AskMode::Route => false,
-                    };
+        // The one box, holding whichever of the three questions is
+        // out. What the mark takes with it differs by mode, every
+        // question leaving something different standing as its
+        // answer, so each says for itself what clearing means.
+        let (response, emptied) = match mode {
+            AskMode::System => ask_box(
+                ui,
+                &mut search.system,
+                mode.wants(),
+                !results.is_empty(),
+                waiting,
+            ),
+            AskMode::Filter => ask_box(
+                ui,
+                &mut filter.input,
+                mode.wants(),
+                !filter.found.is_empty(),
+                waiting,
+            ),
+            AskMode::Route => ask_box(
+                ui,
+                &mut search.route_range,
+                mode.wants(),
+                false,
+                waiting,
+            ),
+        };
+        taken |= response.gained_focus();
+        // Asked for by a key, and answered here because this is
+        // where the box is. Counted as the box having been taken,
+        // rather than left to `gained_focus` to report a frame
+        // later, so the form is out the moment it is asked for.
+        if std::mem::take(&mut search.opening) {
+            response.request_focus();
+            taken = true;
+        }
+        // Carried out so a press landing off the chrome can let go
+        // of it. See [`let_go_of`].
+        let box_id = response.id;
+        // Where the gear stands, the two of them being one row.
+        let middle = response.rect.center().y;
 
-                    // The one box, holding whichever of the three questions is
-                    // out. What the mark takes with it differs by mode, every
-                    // question leaving something different standing as its
-                    // answer, so each says for itself what clearing means.
-                    let (response, emptied) = match mode {
-                        AskMode::System => ask_box(
-                            ui,
-                            &mut search.system,
-                            mode.wants(),
-                            !results.is_empty(),
-                            waiting,
-                        ),
-                        AskMode::Filter => ask_box(
-                            ui,
-                            &mut filter.input,
-                            mode.wants(),
-                            !filter.found.is_empty(),
-                            waiting,
-                        ),
-                        AskMode::Route => ask_box(
-                            ui,
-                            &mut search.route_range,
-                            mode.wants(),
-                            false,
-                            waiting,
-                        ),
-                    };
-                    taken |= response.gained_focus();
-                    // Asked for by a key, and answered here because this is
-                    // where the box is. Counted as the box having been taken,
-                    // rather than left to `gained_focus` to report a frame
-                    // later, so the form is out the moment it is asked for.
-                    if std::mem::take(&mut search.opening) {
-                        response.request_focus();
-                        taken = true;
+        // What each mode makes of its own field. Return and
+        // nothing else asks the question: tab moves between the
+        // fields of a form, and a form that went off and asked the
+        // database something on the way past would be answering a
+        // question nobody had finished asking.
+        match mode {
+            AskMode::System => {
+                // Both answer a name, so neither is any answer at
+                // all once that name is being typed over.
+                if emptied {
+                    cleared(&mut search.system, note, results);
+                } else if response.changed() {
+                    note.0 = None;
+                    results.clear();
+                }
+                // The name as a name, since the room around one is
+                // not part of it and a field holding nothing but
+                // room is a field holding nothing. Both reach the
+                // database as letters to match otherwise, and a
+                // search for two spaces answers with every system
+                // that has two.
+                if entered(&response, ui)
+                    && let Some(name) = typed(&search.system).map(str::to_owned)
+                {
+                    searched.write(Search::System { name });
+                }
+            }
+            AskMode::Filter => {
+                if emptied {
+                    *filter.input = None;
+                    *filter.note = LookupNote::Nothing;
+                    filter.found.clear();
+                } else if response.changed() {
+                    *filter.note = LookupNote::Nothing;
+                    filter.found.clear();
+                }
+                if entered(&response, ui)
+                    && let Some(name) = typed(&filter.input).map(str::to_owned)
+                {
+                    filter.lookup.write(Lookup::Faction { name });
+                }
+            }
+            // Nothing standing under it to take away, and nothing
+            // to look up: what a return here asks for is the route
+            // itself, which is [`route_body`]'s, the button being
+            // the same question said in words.
+            AskMode::Route => {
+                if emptied {
+                    search.route_range = None;
+                }
+            }
+        }
+
+        if search.asking.is_some() {
+            if mode_strip(ui, &mut mode) {
+                // The caret follows the tab, a mode being chosen
+                // in order to type into it. Asked for rather than
+                // taken, since the field it belongs in is the next
+                // pass's to draw.
+                search.opening = true;
+            }
+            search.asking = Some(mode);
+
+            match mode {
+                AskMode::System => {
+                    // Both answer the name in the box, and neither
+                    // ever stands with the other: a search either
+                    // found systems to list or found nothing and
+                    // says so.
+                    if let Some(note) = &note.0 {
+                        ui.colored_label(egui::Color32::LIGHT_RED, note);
                     }
-                    // Carried out so a press landing off the chrome can let go
-                    // of it. See [`let_go_of`].
-                    let box_id = response.id;
-                    // Where the gear stands, the two of them being one row.
-                    let middle = response.rect.center().y;
-
-                    // What each mode makes of its own field. Return and
-                    // nothing else asks the question: tab moves between the
-                    // fields of a form, and a form that went off and asked the
-                    // database something on the way past would be answering a
-                    // question nobody had finished asking.
-                    match mode {
-                        AskMode::System => {
-                            // Both answer a name, so neither is any answer at
-                            // all once that name is being typed over.
-                            if emptied {
-                                cleared(&mut search.system, note, results);
-                            } else if response.changed() {
-                                note.0 = None;
-                                results.clear();
-                            }
-                            // The name as a name, since the room around one is
-                            // not part of it and a field holding nothing but
-                            // room is a field holding nothing. Both reach the
-                            // database as letters to match otherwise, and a
-                            // search for two spaces answers with every system
-                            // that has two.
-                            if entered(&response, ui)
-                                && let Some(name) =
-                                    typed(&search.system).map(str::to_owned)
-                            {
-                                searched.write(Search::System { name });
-                            }
-                        }
-                        AskMode::Filter => {
-                            if emptied {
-                                *filter.input = None;
-                                *filter.note = LookupNote::Nothing;
-                                filter.found.clear();
-                            } else if response.changed() {
-                                *filter.note = LookupNote::Nothing;
-                                filter.found.clear();
-                            }
-                            if entered(&response, ui)
-                                && let Some(name) =
-                                    typed(&filter.input).map(str::to_owned)
-                            {
-                                filter.lookup.write(Lookup::Faction { name });
-                            }
-                        }
-                        // Nothing standing under it to take away, and nothing
-                        // to look up: what a return here asks for is the route
-                        // itself, which is [`route_body`]'s, the button being
-                        // the same question said in words.
-                        AskMode::Route => {
-                            if emptied {
-                                search.route_range = None;
-                            }
-                        }
+                    let mut travelled = None;
+                    let mut described = None;
+                    found(
+                        ui,
+                        results,
+                        center,
+                        selection,
+                        &mut travelled,
+                        &mut described,
+                    );
+                    if let Some(position) = travelled {
+                        camera.write(MoveCamera {
+                            position: Some(position),
+                            framing: None,
+                        });
                     }
-
-                    if search.asking.is_some() {
-                        if mode_strip(ui, &mut mode) {
-                            // The caret follows the tab, a mode being chosen
-                            // in order to type into it. Asked for rather than
-                            // taken, since the field it belongs in is the next
-                            // pass's to draw.
-                            search.opening = true;
-                        }
-                        search.asking = Some(mode);
-
-                        match mode {
-                            AskMode::System => {
-                                // Both answer the name in the box, and neither
-                                // ever stands with the other: a search either
-                                // found systems to list or found nothing and
-                                // says so.
-                                if let Some(note) = &note.0 {
-                                    ui.colored_label(
-                                        egui::Color32::LIGHT_RED,
-                                        note,
-                                    );
-                                }
-                                let mut travelled = None;
-                                let mut described = None;
-                                found(
-                                    ui,
-                                    results,
-                                    center,
-                                    selection,
-                                    &mut travelled,
-                                    &mut described,
-                                );
-                                if let Some(position) = travelled {
-                                    camera.write(MoveCamera {
-                                        position: Some(position),
-                                        framing: None,
-                                    });
-                                }
-                                if let Some(system) = described {
-                                    panels.open_system(system);
-                                }
-                            }
-                            AskMode::Filter => filter_body(ui, filter),
-                            AskMode::Route => route_body(
-                                ui, &response, search, selection, searched,
-                                plot, how, drive, boosts, searching,
-                            ),
-                        }
+                    if let Some(system) = described {
+                        panels.open_system(system);
                     }
+                }
+                AskMode::Filter => filter_body(ui, filter),
+                AskMode::Route => route_body(
+                    ui, &response, search, selection, searched, plot, how,
+                    drive, boosts, searching,
+                ),
+            }
+        }
 
-                    (taken, middle, box_id)
-                })
-                .inner
-        });
+        (taken, middle, box_id)
+    });
 
     let (took_focus, middle, box_id) = bar.inner;
     Asked { middle, rect: bar.response.rect, box_id, took_focus }
@@ -2154,20 +2341,9 @@ const RAIL_WIDTH: f32 = STRIP_WIDTH;
 /// down the screen every time a form dropped out above it.
 ///
 /// Bare while the map stands at the present, which is how it opens: a weak
-/// line of text over the sky and nothing else. Clicking it opens the scrubber
-/// under it, and then it takes the frame every other form takes — a frame
-/// being what the map draws around something a press elsewhere can put away.
-///
-/// Centered on the viewport, and held clear of `chrome_right`, which is where
-/// the bar's own column ends. On a window wide enough the two never meet and
-/// the strip stands in the middle; on a narrow one the strip gives way, a
-/// reading standing over the field the user is typing into being worse than a
-/// reading standing off center.
-///
-/// Anchored rather than placed while it is shut, its width then being whatever
-/// the reading comes to. Placed at a width of its own it would claim a
-/// [`STRIP_WIDTH`] band of the sky for the pointer with nothing drawn in it,
-/// and a wheel turned up there would stop turning the map.
+/// line of text over the sky and nothing else. Clicking it drops the scrubber
+/// out under it, and then it takes the frame — the same [`Dropping`] the bar
+/// is drawn in, and put away by the same gestures: see [`Pane`].
 ///
 /// Answers where it stood, which is what
 /// `the_strip_gives_way_to_the_bar_on_a_narrow_window` reads. Change
@@ -2181,65 +2357,14 @@ fn time_strip(
     control: &mut ClockControl,
     turns: Turns,
 ) -> egui::Rect {
-    let style = ctx.global_style();
-    let mut frame =
-        egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
-    if !control.out {
-        frame = frame
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(
-                frame.stroke.width,
-                egui::Color32::TRANSPARENT,
-            ))
-            .shadow(egui::Shadow::NONE);
+    Dropping {
+        id: "time-strip",
+        standing: Standing::Middle { beside: chrome_right },
+        out: control.out,
+        width: STRIP_WIDTH,
+        holds_width: false,
     }
-
-    // Centered on the viewport, and held off the bar's column. Worked out
-    // from the width the strip came out at last pass rather than from the
-    // width asked for inside it: what a frame adds in margins and stroke is
-    // the frame's own business, and said as a number the strip stood a few
-    // pixels off center and a few pixels into the bar.
-    //
-    // Not `constrain_to`, which anchors within whatever it is given: handed
-    // the room right of the bar, `CENTER_TOP` centers the strip in that room
-    // rather than on the viewport, so the reading sat well right of the middle
-    // on every window wide enough for there to be no question.
-    //
-    // Where the two cannot both be had — a window narrower than the bar and
-    // the strip together — the bar wins and the rail runs off the right edge.
-    // The reading leads the strip, so what is lost is the far end of a
-    // scrubber rather than the moment it is set to.
-    let room = ctx.content_rect();
-    let strip = egui::Id::new("time-strip");
-    let width = ctx.memory(|memory| memory.area_rect(strip));
-    let area = egui::Area::new(strip)
-        // With the rest of the chrome; see `settings_pane`.
-        .order(egui::Order::Middle)
-        // The strip stands where it is put, off the right edge and all, as
-        // the settings pane stands off the left while it is shut.
-        .constrain(false);
-    let area = match width {
-        Some(measured) => {
-            let centered = (room.width() - measured.width()) / 2.;
-            area.fixed_pos(egui::pos2(
-                centered.max(chrome_right + MARGIN),
-                MARGIN,
-            ))
-        }
-        // Nothing measured yet, which is the first pass and the pass after a
-        // pointer has opened the scrubber. Egui's own anchoring stands in,
-        // and is what centering means before there is a width to center.
-        None => area.anchor(egui::Align2::CENTER_TOP, egui::vec2(0., MARGIN)),
-    };
-
-    area.show(ctx, |ui| {
-        frame.show(ui, |ui| {
-            if control.out {
-                ui.set_width(STRIP_WIDTH);
-            }
-            dated(ui, clock, turns, control);
-        });
-    })
+    .show(ctx, |ui| dated(ui, clock, turns, control))
     .response
     .rect
 }
@@ -6220,6 +6345,59 @@ mod tests {
             "a reading took {} of {STRIP_WIDTH}",
             shut.width()
         );
+    }
+
+    /// How wide a pane came out, holding one short word
+    ///
+    /// Several passes, an area being placed at the size it last came out at.
+    fn dropped(out: bool, holds_width: bool) -> egui::Rect {
+        let ctx = crate::tests::context();
+        let mut at = egui::Rect::NOTHING;
+        for _ in 0..4 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                at = Dropping {
+                    id: "a-pane",
+                    standing: Standing::At(egui::pos2(MARGIN, MARGIN)),
+                    out,
+                    width: STRIP_WIDTH,
+                    holds_width,
+                }
+                .show(ui.ctx(), |ui| ui.label("now"))
+                .response
+                .rect;
+            });
+        }
+
+        at
+    }
+
+    /// A pane keeps the width it is asked to keep, and no other
+    ///
+    /// Which is the whole of what the bar and the strip differ by in
+    /// [`Dropping`]. The bar keeps its width shut, so that what stands there
+    /// at rest is a field that does not change shape as the form comes and
+    /// goes. The strip does not: what stands there is a line of text over the
+    /// sky, and an area laid out at the scrubber's width would claim a band of
+    /// the map for the pointer with nothing drawn in it.
+    #[test]
+    fn a_pane_keeps_the_width_it_is_asked_to_keep() {
+        let holding = dropped(false, true);
+        assert!(
+            holding.width() >= STRIP_WIDTH,
+            "a pane holding its width came to {} of {STRIP_WIDTH}",
+            holding.width()
+        );
+
+        let letting_go = dropped(false, false);
+        assert!(
+            letting_go.width() < STRIP_WIDTH / 2.,
+            "a shut pane took {} of {STRIP_WIDTH} for one word",
+            letting_go.width()
+        );
+
+        // And takes the width up again the moment its body is out, whichever
+        // it was asked for.
+        assert!(dropped(true, false).width() >= STRIP_WIDTH);
     }
 
     /// Out, it is at least as wide as the rail it holds

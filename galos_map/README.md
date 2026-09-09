@@ -77,7 +77,7 @@ order they draw in [`src/camera.rs`](./src/camera.rs).
 | Wheel | Zoom in and out |
 | Click | Pick out the system or body under the pointer |
 | Ctrl, command or shift click | Pick one out alongside the rest, or let go of it |
-| Click on empty sky | Let go of everything picked out |
+| Click on empty sky | Let go of everything picked out, and put away what the chrome has open |
 | Double click | Fly to what was clicked |
 | Click the date at the top | Show or hide the slider that sets the moment |
 
@@ -89,6 +89,11 @@ nothing on a row about something already picked out.
 
 A drag belongs to whatever the press landed on for as long as it lasts, so one
 started on a slider goes on talking to the slider wherever the pointer wanders.
+
+The bar's form and the clock's scrubber are put away the same way, being the
+same kind of thing: whatever opened them again, a click on empty sky, and the
+escape key. Which of them an escape means is the last one opened; a click on
+nothing means all of them.
 
 ## Keys
 
