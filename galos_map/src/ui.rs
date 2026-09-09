@@ -759,6 +759,13 @@ pub(crate) struct Settings<'w> {
     show_picked: ResMut<'w, ShowPicked>,
     bright: ResMut<'w, Bright>,
     bounded: ResMut<'w, crate::systems::bounded::LodFetch>,
+    /// The commander's own journal, where the map was pointed at one
+    ///
+    /// The only optional thing in here, and the only one this pane reads
+    /// rather than owns: the layer exists or it does not, decided by the
+    /// environment before the window opened, and where it does not there is
+    /// nothing for a control to be about. See [`crate::journal`].
+    journal: Option<Res<'w, crate::journal::Journal>>,
 }
 
 /// The whole of the bar's filter section
@@ -1126,6 +1133,31 @@ pub(crate) fn chrome(
                     "Always light seconds",
                 );
             });
+        }
+
+        // The commander's own journal, where there is one to draw. Under
+        // General because it is about the whole sky rather than about either
+        // view of it, and drawn only where the map is reading a journal at
+        // all: a switch for a layer that does not exist is a switch that
+        // says the map could be showing something it has no way to show.
+        //
+        // Read through the toggle rather than a resource of its own, the
+        // transport being what acts on it and an atomic being what the
+        // transport reads. Written only on a change, as the brightness above
+        // is: the toggle is a republish of everything the map holds.
+        if let Some(journal) = &settings.journal {
+            ui.add_space(FIELD_GAP);
+            let mut on = journal.on.on();
+            if check(
+                ui,
+                &mut on,
+                "Your Own Journal",
+                "Draw the systems from your own journal files",
+            )
+            .changed()
+            {
+                journal.on.set(on);
+            }
         }
 
         // Which of the two ways the sky itself is drawn, and what each of
@@ -5575,7 +5607,7 @@ fn faction_list<'a>(
 /// Each is a key struck on its own, but for the four that want shift — the
 /// three that put a question in the bar's box and the `?` that opens this
 /// window — which is what [`crate::keys`] promises and the README says.
-const BINDINGS: [(&str, &str); 15] = [
+const BINDINGS: [(&str, &str); 16] = [
     ("W A S D", "Pan along the ruled plane"),
     ("Q E", "Pan down and up through it"),
     ("Z X", "Swing the camera round what it looks at"),
@@ -5586,6 +5618,7 @@ const BINDINGS: [(&str, &str); 15] = [
     ("L", "Show or hide the labels"),
     ("O", "Show or hide the orbit lines"),
     ("G", "Show or hide the grid"),
+    ("J", "Show or hide your own journal's systems"),
     ("/ or Shift-S", "Search the box for a system"),
     ("Shift-F", "Ask the box for a faction to filter on"),
     ("Shift-R", "Ask the box for systems to route between"),

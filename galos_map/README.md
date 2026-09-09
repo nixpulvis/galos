@@ -109,6 +109,7 @@ open rail takes both, rather than asking to be pressed twice.
 | `L` | Show or hide the labels |
 | `O` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
+| `J` | Show or hide your own journal's systems, where one is being read |
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for systems to route between |
