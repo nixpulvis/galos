@@ -54,8 +54,15 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<KeysOpen>();
     app.init_resource::<PressOwner>();
     app.init_resource::<BarFields>();
-    // The lettering leads, being what everything after it is drawn in.
-    app.add_systems(EguiPrimaryContextPass, (lettering, chrome).chain());
+    // The lettering leads, being what everything after it is drawn in. It is
+    // drawn while the index is still being read, since the loading screen is
+    // lettered the same way; the bar is not, holding tables that read does
+    // not deliver until it lands. See [`crate::loading`].
+    app.add_systems(
+        EguiPrimaryContextPass,
+        (lettering, chrome.run_if(in_state(crate::loading::Opening::Drawn)))
+            .chain(),
+    );
 }
 
 /// Set every style the chrome is drawn in

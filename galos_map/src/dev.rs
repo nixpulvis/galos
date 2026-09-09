@@ -53,9 +53,13 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, toggle);
     // After the lettering, so the panel is drawn in the map's own face rather
     // than egui's default.
+    // And only once the index is in hand: what the panel reports is what was
+    // read, which until then is nothing. See [`crate::loading`].
     app.add_systems(
         EguiPrimaryContextPass,
-        diagnostics.after(crate::ui::lettering),
+        diagnostics
+            .after(crate::ui::lettering)
+            .run_if(in_state(crate::loading::Opening::Drawn)),
     );
 }
 

@@ -1,84 +1,22 @@
 //! A 3D Galaxy Map
 
 use bevy::prelude::*;
-use bevy::tasks::futures_lite::future;
 use bevy_egui::{EguiGlobalSettings, EguiPlugin};
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use galos_index::{FsSource, Source as _};
-use galos_map::systems::route::graph::{JumpGraph, Jumps};
+use galos_index::FsSource;
 use galos_map::*;
 use std::sync::Arc;
 
 fn main() {
     // The built index directory the map draws from: the cell tree and the
-    // metadata sidecars beside it. Read once at startup, since the aggregates
-    // and the resident tables are a few megabytes and every walk reads them.
+    // metadata sidecars beside it. Named here and read by `loading`, which
+    // stands the window up first and reads it behind a loading screen: it runs
+    // to a hundred and thirty megabytes, and a window that waits on it is a
+    // launch that looks hung.
     let dir = std::env::var("GALOS_INDEX_DIR")
         .unwrap_or_else(|_| ".galos_index".to_string());
     let source = FsSource::new(&dir);
-    let (index, populated, names, reaches, boosts, factions, held) =
-        future::block_on(async {
-            // What each part is, before a byte of it is read: a publish
-            // landing during the read is then held under the older stamp and
-            // re-read on the first poll. Stamped afterwards, a part read
-            // before the publish would be filed under the stamp of the
-            // publish and never asked for again. See
-            // [`galos_map::refresh::Held::before_reading`].
-            let held = refresh::Held::before_reading(&source).await;
-            let index = source
-                .index()
-                .await
-                .unwrap_or_else(|e| panic!("reading the index at {dir}: {e}"));
-            let populated = source.populated().await.unwrap_or_default();
-            let names = source.names().await.unwrap_or_default();
-            let reaches = source.reaches().await.unwrap_or_default();
-            let boosts = source.boosts().await.unwrap_or_default();
-            let factions = source.factions().await.unwrap_or_default();
-            (index, populated, names, reaches, boosts, factions, held)
-        });
-
-    // Said before the log plugin is up, so plain stderr. What loaded is the
-    // first thing to check when the map draws but nothing is colored or named.
-    eprintln!(
-        "galos: index {} has {} cells, {} populated, {} names, \
-         {} reaches, {} supercharging, {} factions",
-        dir,
-        index.len(),
-        populated.len(),
-        names.len(),
-        reaches.len(),
-        boosts.as_ref().map_or(0, Vec::len),
-        factions.len(),
-    );
-    // A cell tree with no metadata beside it is a stale or half-written build:
-    // the map would draw every system uncolored and unnamed rather than say so.
-    // Loud here rather than a plausible-but-wrong sky.
-    if !index.is_empty() && (populated.is_empty() || names.is_empty()) {
-        eprintln!(
-            "galos: WARNING — {dir} has cells but no metadata sidecars; \
-             systems will be uncolored and unnamed. Rebuild the index with \
-             `cargo run -p galos_db --bin galos-db -- index {dir}`."
-        );
-    }
-
-    // Which systems can supercharge a drive, which the router plots by and
-    // the graph below is built against. Absent where the index publishes no
-    // such table, which is not a galaxy without jet cones: the form refuses a
-    // supercharged route rather than handing back the unaided one under its
-    // name. See [`Boosts::published`].
-    let boosts = boosts.map_or_else(Boosts::absent, Boosts::of);
-    if !index.is_empty() && !boosts.published() {
-        eprintln!(
-            "galos: NOTE — {dir} publishes no supercharge table, so routes \
-             for a supercharging drive cannot be plotted. Add it with \
-             `cargo run -p galos_db --bin galos-db -- index {dir} \
-             --only boosts`."
-        );
-    }
-
-    // The jump graph the router walks, bucketed once from the resident names.
-    let jumps = JumpGraph::new(&names, &boosts);
 
     let mut app = App::new();
     // `big_space` computes every `GlobalTransform` relative to the floating
@@ -117,21 +55,16 @@ fn main() {
         .auto_create_primary_context = false;
 
     app.insert_resource(ClearColor(Color::BLACK));
-    app.insert_resource(IndexDir(dir.clone()));
+    // The two the read itself needs: where to read from, and what to read
+    // through. Everything the read comes back with is handed over by
+    // `loading` when it lands.
+    app.insert_resource(IndexDir(dir));
     app.insert_resource(Transport(Arc::new(source)));
-    app.insert_resource(held);
-    app.insert_resource(ResidentIndex(index));
-    app.insert_resource(Populated(Arc::new(
-        populated.into_iter().map(|s| (s.address, s)).collect(),
-    )));
-    app.insert_resource(Jumps(Arc::new(jumps)));
-    app.insert_resource(boosts);
-    app.insert_resource(Names::reaching(names, reaches));
-    app.insert_resource(Factions(
-        factions.into_iter().map(|f| (f.id, f.name)).collect(),
-    ));
 
     app.add_plugins(schedule::plugin);
+    // Before the plugins it gates, so the state exists by the time their run
+    // conditions are built against it.
+    app.add_plugins(loading::plugin);
     app.add_plugins(space::plugin);
     app.add_plugins(camera::plugin);
     app.add_plugins(systems::plugin);

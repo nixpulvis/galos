@@ -20,7 +20,13 @@ pub fn plugin(app: &mut App) {
             MapSet::Camera,
             MapSet::Present,
         )
-            .chain(),
+            .chain()
+            // Nothing the map does means anything until the index is read,
+            // and every one of these reads a table the read delivers. One
+            // gate over the whole pipeline rather than a condition per
+            // system: what they have in common is exactly that they cannot
+            // run without it. See [`crate::loading`].
+            .run_if(in_state(crate::loading::Opening::Drawn)),
     );
 }
 
