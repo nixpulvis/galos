@@ -4757,7 +4757,15 @@ fn dated(
         control.out = !control.out;
     }
 
-    if control.out {
+    // From the state the pass began in, and not from what the click has just
+    // asked for. The pane around this is framed and sized before anything in
+    // it is drawn -- see [`Dropping`] -- so a rail drawn on the pass the
+    // click arrived is a rail drawn in a strip still the width of the
+    // reading, with no frame under it and no fill behind it: for one frame
+    // the slider hung outside its own panel. What a click asks for is the
+    // next pass's to draw, which is where the frame and the width will be
+    // waiting for it.
+    if out {
         clock_control(ui, clock, turns.geared(control.to));
     }
 }
@@ -6095,6 +6103,75 @@ mod tests {
 
         line(clicking(date), &mut control);
         assert!(!control.out, "a second click left the slider out");
+    }
+
+    /// Every word painted in `output`
+    ///
+    /// [`words`] runs a pass of its own, which is no use where what is wanted
+    /// is what one pass of several said.
+    fn spoken(output: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    into.push(text.galley.text().to_owned())
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut found = Vec::new();
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut found);
+        }
+        found
+    }
+
+    /// The pass that asks for the rail does not draw it
+    ///
+    /// Reported: opening the strip, the slider looked to be outside its own
+    /// panel for a moment. The pane is framed and sized before anything in it
+    /// is drawn — see [`Dropping`] — so a rail drawn on the pass the click
+    /// arrived is a rail drawn in a strip still the width of the reading,
+    /// with no frame under it and no fill behind it.
+    ///
+    /// The marks are how it shows: they are the only words the rail paints,
+    /// so a pass with `now` in it is a pass that drew a rail.
+    #[test]
+    fn the_pass_that_opens_the_rail_does_not_draw_it() {
+        let ctx = crate::tests::context();
+        let mut clock = Clock::default();
+        let mut control = ClockControl::default();
+        let mut line = |input, control: &mut ClockControl| {
+            let mut at = egui::Rect::NOTHING;
+            let output = ctx.run_ui(input, |ui| {
+                ui.set_width(STRIP_WIDTH);
+                dated(ui, &mut clock, system_turn(400. * DAY), control);
+                at = ui.min_rect();
+            });
+            (at, spoken(&output))
+        };
+
+        // Two passes with nothing happening, to place the line.
+        let _ = line(egui::RawInput::default(), &mut control);
+        let (at, said) = line(egui::RawInput::default(), &mut control);
+        assert!(!said.contains(&"now".to_owned()), "a rail unbidden: {said:?}");
+
+        let date = at.left_center() + egui::vec2(4., 0.);
+        let (_, asking) = line(clicking(date), &mut control);
+        assert!(control.out, "a click on the date opened nothing");
+        assert!(
+            !asking.contains(&"now".to_owned()),
+            "the rail was drawn on the pass that asked for it: {asking:?}"
+        );
+
+        // And the next pass has the frame and the width waiting for it.
+        let (_, drawn) = line(egui::RawInput::default(), &mut control);
+        assert!(drawn.contains(&"now".to_owned()), "{drawn:?}");
     }
 
     /// And so does clicking the span past the present
