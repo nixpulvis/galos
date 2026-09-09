@@ -3936,11 +3936,13 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 /// and the line has nothing to say. Handed the two readings rather than the
 /// rows they come off, so that the line can be drawn without a system to hold.
 ///
-/// Clicking the date opens the slider that sets it, in the line below. What a
-/// reader wants to change is the thing they are reading, so the way to it is
-/// the reading itself rather than a control filed away in the pane where
-/// nobody would find it. Clicked again it goes, the map being left wherever
-/// the slider put it -- `Now` is what lets go of that.
+/// Clicking the reading opens the slider that sets it, in the line below.
+/// What a reader wants to change is the thing they are reading, so the way to
+/// it is the reading itself rather than a control filed away in the pane
+/// where nobody would find it. The span past the present answers a click as
+/// the date does, the two being halves of one moment. Clicked again the
+/// slider goes, the map left wherever it put it -- `Now` is what lets go of
+/// that.
 fn dated(
     ui: &mut Ui,
     clock: &mut Clock,
@@ -3952,28 +3954,15 @@ fn dated(
 
     let clicked = ui
         .horizontal(|ui| {
-            let date = ui
-                .add(
-                    egui::Label::new(
-                        egui::RichText::new(drawn_at(clock, recorded)).weak(),
-                    )
-                    .sense(egui::Sense::click()),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Set what moment the system is drawn at");
+            let mut asked = reading(ui, drawn_at(clock, recorded));
             if clock.offset() != 0. {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "+{}",
-                        lasting(clock.offset() as f32)
-                    ))
-                    .weak(),
-                );
+                asked |=
+                    reading(ui, format!("+{}", lasting(clock.offset() as f32)));
                 if ui.small_button("Now").clicked() {
                     clock.reset();
                 }
             }
-            date.clicked()
+            asked
         })
         .inner;
     if clicked {
@@ -3983,6 +3972,23 @@ fn dated(
     if control.out {
         clock_control(ui, clock, turn);
     }
+}
+
+/// One weak word of the status line, and whether it was clicked
+///
+/// Every part of the reading answers a click, the date and the span past the
+/// present alike: they are two halves of the one moment, and a reader
+/// reaching for the number they mean to change should not have to know which
+/// half of it the control hangs off. `Now` is the exception, being a control
+/// already and one about the same thing.
+fn reading(ui: &mut Ui, said: String) -> bool {
+    ui.add(
+        egui::Label::new(egui::RichText::new(said).weak())
+            .sense(egui::Sense::click()),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    .on_hover_text("Set what moment the system is drawn at")
+    .clicked()
 }
 
 /// The smallest span the status slider runs the map on by, in seconds
@@ -5039,6 +5045,55 @@ mod tests {
 
         line(clicking(date), &mut control);
         assert!(!control.out, "a second click left the slider out");
+    }
+
+    /// And so does clicking the span past the present
+    ///
+    /// The date and the span are halves of the one moment. A reader who has
+    /// run the map on is reading the span, and that is the number they reach
+    /// for to change it.
+    #[test]
+    fn clicking_the_span_opens_the_slider_too() {
+        let ctx = crate::tests::context();
+        let turn = 400. * 86_400.;
+        let mut clock = Clock::default();
+        let mut control = ClockControl::default();
+        let mut line = |offset: f64, input, control: &mut ClockControl| {
+            let mut clock_ = Clock::default();
+            clock_.offset_at(offset);
+            let mut at = egui::Rect::NOTHING;
+            ctx.run_ui(input, |ui| {
+                dated(
+                    ui,
+                    &mut clock_,
+                    Some(ours("2014-12-16T13:45:00Z")),
+                    Some(turn),
+                    control,
+                );
+                at = ui.min_rect();
+            });
+            clock = clock_;
+            at
+        };
+
+        // The date alone, to measure how far along the row the span starts.
+        let _ = line(0., egui::RawInput::default(), &mut control);
+        let dateless = line(0., egui::RawInput::default(), &mut control);
+
+        // And again with the map run on, so the span stands beside it.
+        let span = 200. * 86_400.;
+        let _ = line(span, egui::RawInput::default(), &mut control);
+        let whole = line(span, egui::RawInput::default(), &mut control);
+        assert!(
+            whole.width() > dateless.width(),
+            "the span was not drawn beside the date"
+        );
+
+        let on = egui::pos2(dateless.right() + 8., dateless.center().y);
+        line(span, clicking(on), &mut control);
+
+        assert!(control.out, "a click on the span opened nothing");
+        assert_eq!(clock.offset(), span, "the click moved the map");
     }
 
     /// A rail geared past the ceiling stops where a date runs out
