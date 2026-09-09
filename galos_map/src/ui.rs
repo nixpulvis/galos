@@ -1636,9 +1636,12 @@ enum Standing {
     /// In the middle of the top edge, held clear of `beside`
     ///
     /// Which is where the bar's own column ends. On a window wide enough the
-    /// two never meet and the pane stands in the middle; on a narrow one the
-    /// pane gives way, a reading standing over the field the user is typing
-    /// into being worse than one standing off center.
+    /// two never meet and the pane stands in the middle. Where centering the
+    /// pane would put it into the bar, it stands where its head stood — where
+    /// it is centered shut, which is the reading in the middle of the top
+    /// edge — and grows out to the right instead. A reading that slid left
+    /// into the field the user is typing into every time the rail came out
+    /// under it is worse than a rail whose far end runs off the viewport.
     Middle { beside: f32 },
 }
 
@@ -1692,21 +1695,21 @@ impl Dropping<'_> {
                 .shadow(egui::Shadow::NONE);
         }
 
-        // How wide it is about to come out, which is what it has to be
-        // centered by. Known outright while the body is out: the width asked
-        // for inside the frame, and the frame's own margins and stroke around
-        // it. Shut, it is whatever the contents come to, so it is what the
-        // pane last came out at *while shut* — kept apart from the open width
-        // rather than read off the area's own rect, which is last pass's
-        // whatever state that was. Read from the rect, the pass a pane opened
-        // on was placed at the width it had just stopped being: it appeared,
-        // and then moved and grew a frame later.
+        // How wide it is about to come out, and how wide it comes out shut:
+        // it is centered by the first and gives way by the second.
+        //
+        // Open, the width is not a guess at all — what is asked for inside
+        // the frame, and the frame's own margins and stroke around it. Shut,
+        // it is whatever the contents come to, so it is what the pane last
+        // came out at *while shut*, kept under a key of its own rather than
+        // read off the area's rect: the rect is last pass's width whatever
+        // state that was, so the pass a pane opened on was placed by the
+        // width it had just stopped being, and it appeared and then moved a
+        // frame later.
+        let open_across = self.width + frame.total_margin().sum().x;
         let shut_at = egui::Id::new((self.id, "shut-width"));
-        let across = if self.out {
-            Some(self.width + frame.total_margin().sum().x)
-        } else {
-            ctx.data(|kept| kept.get_temp::<f32>(shut_at))
-        };
+        let shut_across = ctx.data(|kept| kept.get_temp::<f32>(shut_at));
+        let across = if self.out { Some(open_across) } else { shut_across };
 
         let id = egui::Id::new(self.id);
         let area = egui::Area::new(id)
@@ -1725,11 +1728,25 @@ impl Dropping<'_> {
             Standing::Middle { beside } => match across {
                 Some(across) => {
                     let room = ctx.content_rect();
+                    let clear = beside + MARGIN;
                     let centered = (room.width() - across) / 2.;
-                    area.fixed_pos(egui::pos2(
-                        centered.max(beside + MARGIN),
-                        MARGIN,
-                    ))
+                    // Centered on the viewport, until the body is wide enough
+                    // that centering it would reach the bar. Then the pane
+                    // stands where its head stood -- where it is centered
+                    // shut, which is the reading in the middle of the top
+                    // edge -- and the body grows out to the right, off the
+                    // viewport if it must. What is given up is the far end of
+                    // a rail; what is kept is the reading, which leads the
+                    // pane, and the room between it and the field the user is
+                    // typing into.
+                    let left = if centered >= clear {
+                        centered
+                    } else {
+                        shut_across
+                            .map_or(clear, |shut| (room.width() - shut) / 2.)
+                            .max(clear)
+                    };
+                    area.fixed_pos(egui::pos2(left, MARGIN))
                 }
                 // Nothing to go on, which is the first pass of the session.
                 // Egui's own anchoring stands in, and is what centering means
@@ -6622,6 +6639,85 @@ mod tests {
         // And is the wider of the two states by some way, the reading alone
         // being a fraction of it.
         assert!(out.width() > stripped(1600., 400., false).width() * 2.);
+    }
+
+    /// Where the reading stood, drawn over a viewport `across` wide
+    ///
+    /// Several passes, since an area paints nothing at all on the first of
+    /// them and is placed by what it last came to.
+    fn read_at(
+        ctx: &Context,
+        across: f32,
+        chrome_right: f32,
+        clock: &mut Clock,
+        control: &mut ClockControl,
+    ) -> egui::Rect {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(across, 800.),
+            )),
+            ..Default::default()
+        };
+        let said = drawn_at(clock);
+        let mut found = None;
+        for _ in 0..3 {
+            let output = ctx.run_ui(input.clone(), |ui| {
+                time_strip(
+                    ui.ctx(),
+                    chrome_right,
+                    clock,
+                    control,
+                    system_turn(400. * DAY),
+                );
+            });
+            found = spoken_at(&output, &said);
+        }
+
+        found.unwrap_or_else(|| panic!("the date was not drawn: {said}"))
+    }
+
+    /// Up against the bar, the reading holds still rather than sliding into it
+    ///
+    /// The pane is centered on the viewport, so a body wider than the head
+    /// grows to both sides of it and the reading slides left as the rail comes
+    /// out. There is room for that on a wide window and none on a narrow one,
+    /// where what it slides into is the bar: the rail arrived with its near
+    /// end against the search box and the date it was opened from had moved.
+    ///
+    /// So a pane that cannot be centered clear of the bar stands where its
+    /// head stood instead, and grows out to the right.
+    #[test]
+    fn a_strip_against_the_bar_does_not_slide_into_it() {
+        let chrome_right = MARGIN + GEAR_ROOM + MARGIN + BAR_WIDTH;
+        // Room for the reading in the middle, and none for the rail there.
+        let across = chrome_right * 2. + STRIP_WIDTH / 2.;
+        let ctx = crate::tests::context();
+        let mut clock = Clock::default();
+        let mut control = ClockControl::default();
+
+        let shut =
+            read_at(&ctx, across, chrome_right, &mut clock, &mut control);
+        assert!(
+            (shut.center().x - across / 2.).abs() < 4.,
+            "the reading stood at {} of {across} shut",
+            shut.center().x
+        );
+
+        control.out = true;
+        let out = read_at(&ctx, across, chrome_right, &mut clock, &mut control);
+
+        assert!(
+            (out.left() - shut.left()).abs() < 1.,
+            "the reading was at {} and opening took it to {}",
+            shut.left(),
+            out.left()
+        );
+        assert!(
+            out.left() > chrome_right + MARGIN,
+            "and it stood against the bar, at {}",
+            out.left()
+        );
     }
 
     /// Every word the pass painted, and where it was painted
