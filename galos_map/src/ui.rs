@@ -182,6 +182,12 @@ pub(crate) struct KeysOpen(pub(crate) bool);
 pub(crate) struct ClockControl {
     /// Whether the pane is showing it
     out: bool,
+    /// Which of the turns on offer the rail is asked to cover
+    ///
+    /// Held here rather than worked out from what is picked out, so that a
+    /// reader who asked for the system's own span keeps it while they click
+    /// about among its planets. See [`GearedTo`].
+    to: GearedTo,
 }
 
 /// Whether the moment is read out at all
@@ -1278,7 +1284,7 @@ pub(crate) fn chrome(
     // clock out sixty times a second is not sixty frames of every orbit being
     // run again. Which is why the strip is skipped rather than drawn and
     // hidden: what is not drawn cannot be dragged, and nothing is written.
-    let geared = geared_to(&selection, &contents);
+    let turns = turns_of(&selection, &contents);
     if settings.show_clock.0 {
         mark_if_moved(&mut settings.clock, |clock| {
             time_strip(
@@ -1286,7 +1292,7 @@ pub(crate) fn chrome(
                 chrome_right,
                 clock,
                 &mut settings.clock_control,
-                geared,
+                turns,
             )
         });
     } else if settings.clock.offset() != 0. || settings.clock_control.out {
@@ -1621,18 +1627,7 @@ struct Asked {
 /// field a mode is chosen in order to type into is the next mode's field, and
 /// only the next pass has one to put the caret in.
 fn mode_strip(ui: &mut Ui, mode: &mut AskMode) -> bool {
-    ui.scope(|ui| {
-        // A tab is not a selected system. Egui marks a chosen one in the color
-        // it marks a selection in, and in this chrome that color means picked
-        // out on the map: it is the ring around a star, the dot on a row, and
-        // nothing else. So the tab is filled in the grey the rest of the bar
-        // is drawn in and says which one it is by being filled at all.
-        let strong = ui.visuals().strong_text_color();
-        let filled = ui.visuals().widgets.active.weak_bg_fill;
-        let visuals = ui.visuals_mut();
-        visuals.selection.bg_fill = filled;
-        visuals.selection.stroke.color = strong;
-
+    greyed(ui, |ui| {
         ui.horizontal(|ui| {
             let mut chosen = false;
             for offered in AskMode::ALL {
@@ -1644,6 +1639,30 @@ fn mode_strip(ui: &mut Ui, mode: &mut AskMode) -> bool {
             chosen
         })
         .inner
+    })
+}
+
+/// Draw `contents` with what is chosen in it marked in grey
+///
+/// A tab, and the switch under the clock's reading, are not selected systems.
+/// Egui marks a chosen one in the color it marks a selection in, and in this
+/// chrome that color means picked out on the map: it is the ring around a
+/// star and the dot on a row, and nothing else. So a chosen one is filled in
+/// the grey the rest of the chrome is drawn in and says which it is by being
+/// filled at all.
+///
+/// Scoped, since a style set on a `Ui` is set on the rest of that `Ui`: the
+/// same color is what egui highlights selected text with, and a field typed
+/// into below would lose its own.
+fn greyed<R>(ui: &mut Ui, contents: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let strong = ui.visuals().strong_text_color();
+        let filled = ui.visuals().widgets.active.weak_bg_fill;
+        let visuals = ui.visuals_mut();
+        visuals.selection.bg_fill = filled;
+        visuals.selection.stroke.color = strong;
+
+        contents(ui)
     })
     .inner
 }
@@ -2143,7 +2162,7 @@ fn time_strip(
     chrome_right: f32,
     clock: &mut Clock,
     control: &mut ClockControl,
-    geared: Option<Geared>,
+    turns: Turns,
 ) -> egui::Rect {
     let style = ctx.global_style();
     let mut frame =
@@ -2201,26 +2220,108 @@ fn time_strip(
             if control.out {
                 ui.set_width(STRIP_WIDTH);
             }
-            dated(ui, clock, geared, control);
+            dated(ui, clock, turns, control);
         });
     })
     .response
     .rect
 }
 
-/// What the scrubber is geared to
+/// What the scrubber may be geared to
 ///
-/// One turn of whatever is being watched: the body picked out, where the map
-/// is holding the system it is in, and the widest orbit that system has
-/// otherwise. A rail over a planet's own year is the span that planet's phase
-/// slider covers, which is the only span that says anything about the planet.
-fn geared_to(selection: &Selection, contents: &Contents) -> Option<Geared> {
-    selection
-        .newest_body()
-        .filter(|(address, _)| contents.of() == Some(*address))
-        .and_then(|(_, id)| contents.turn_of(id))
-        .map(Geared::Body)
-        .or_else(|| contents.slowest_turn().map(Geared::System))
+/// Both turns rather than the better of them, since which is wanted is the
+/// reader's to say: a planet's own year is the span that says something about
+/// the planet, and the system's widest orbit is the span in which the whole
+/// arrangement has been through every shape it takes. See [`GearedTo`], which
+/// is what the strip asks and this answers.
+///
+/// Either may be missing. There is no body's turn without a body picked out
+/// in the system the map is holding, and no system's turn where no orbit in
+/// it has a period on record.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub(crate) struct Turns {
+    /// One turn of the body picked out
+    body: Option<f64>,
+    /// One turn of the widest orbit the system has on record
+    system: Option<f64>,
+}
+
+impl Turns {
+    /// What the rail covers, given which of the two is asked for
+    ///
+    /// The other where the one asked for is not on record, so that a rail is
+    /// offered wherever there is any turn to cover: the choice is which of
+    /// two spans to read, and it is nothing to do with whether the map can be
+    /// run on at all.
+    fn geared(self, to: GearedTo) -> Option<Geared> {
+        let body = self.body.map(Geared::Body);
+        let system = self.system.map(Geared::System);
+        match to {
+            GearedTo::Body => body.or(system),
+            GearedTo::System => system.or(body),
+        }
+    }
+
+    /// Whether there is a choice to offer
+    ///
+    /// Both, or there is nothing to choose between and a switch that reads as
+    /// two ways of asking for the same rail.
+    fn choice(self) -> bool {
+        self.body.is_some() && self.system.is_some()
+    }
+}
+
+/// Which turn the scrubber's rail is asked to cover
+///
+/// The body picked out by default, that being the narrower of the two and the
+/// one the reader said something about by picking it: a rail over the whole
+/// system's widest orbit moves a planet by whole years at a nudge.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) enum GearedTo {
+    /// One turn of the body picked out, laid evenly
+    #[default]
+    Body,
+    /// One turn of the system's widest orbit, laid by decades
+    System,
+}
+
+impl GearedTo {
+    /// The two, in the order the switch stands them in
+    ///
+    /// The narrower first, as the strip reads left to right and as the rails
+    /// themselves run.
+    const ALL: [GearedTo; 2] = [GearedTo::Body, GearedTo::System];
+
+    /// What the switch calls it
+    fn said(self) -> &'static str {
+        match self {
+            GearedTo::Body => "Body",
+            GearedTo::System => "System",
+        }
+    }
+
+    /// What choosing it does, said on hover. See [`check`].
+    fn hint(self) -> &'static str {
+        match self {
+            GearedTo::Body => "Cover one turn of the body picked out",
+            GearedTo::System => "Cover one turn of the system's widest orbit",
+        }
+    }
+}
+
+/// The turns the map has to offer, where the camera is standing
+///
+/// A body's turn is only a body's turn while the map is holding the system it
+/// is in: what is picked out survives a flight and its period does not follow
+/// it out of the system it was scanned in.
+fn turns_of(selection: &Selection, contents: &Contents) -> Turns {
+    Turns {
+        body: selection
+            .newest_body()
+            .filter(|(address, _)| contents.of() == Some(*address))
+            .and_then(|(_, id)| contents.turn_of(id)),
+        system: contents.slowest_turn(),
+    }
 }
 
 /// Let go of the box, the press that shut the form having not been a click
@@ -4442,38 +4543,52 @@ fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
 fn dated(
     ui: &mut Ui,
     clock: &mut Clock,
-    geared: Option<Geared>,
+    turns: Turns,
     control: &mut ClockControl,
 ) {
     let out = control.out;
+    let running_on = clock.offset() != 0.;
     let clicked = ui
         .horizontal(|ui| {
             let mut asked = reading(ui, drawn_at(clock));
-            if clock.offset() != 0. {
+            if running_on {
                 asked |=
                     reading(ui, format!("+{}", lasting(clock.offset() as f32)));
-                // At the far end of the strip while the scrubber is out,
-                // which is what fills a line the reading only half covers,
-                // and is a place the control keeps: read beside the span it
-                // undoes, it walks along the line as the span grows a digit.
-                //
-                // Beside the span while the strip is shut, there being no
-                // width to stand at the end of: the strip is then only as
-                // wide as what is written in it.
-                let let_go = |ui: &mut Ui| ui.small_button("Now").clicked();
-                let asked_for = if out {
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        let_go,
-                    )
-                    .inner
-                } else {
-                    let_go(ui)
-                };
-                if asked_for {
-                    clock.reset();
-                }
             }
+
+            // The controls stand at the far end of the strip while the
+            // scrubber is out, which is what fills a line the reading only
+            // half covers, and is a place they keep: read beside the span
+            // they are about, they walk along the line as it grows a digit.
+            //
+            // Beside the span while the strip is shut, there being no width
+            // to stand at the end of: the strip is then only as wide as what
+            // is written in it, and there is no rail to gear.
+            let mut let_go = false;
+            if out {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if running_on {
+                            let_go = ui.small_button("Now").clicked();
+                        }
+                        // Beside `Now` at the far end rather than beside the
+                        // reading: the span in the reading grows and shrinks
+                        // as the rail is dragged, and a switch that slid
+                        // along above the rail with it would be a control
+                        // moving under the hand using it.
+                        if turns.choice() {
+                            gearing(ui, &mut control.to);
+                        }
+                    },
+                );
+            } else if running_on {
+                let_go = ui.small_button("Now").clicked();
+            }
+            if let_go {
+                clock.reset();
+            }
+
             asked
         })
         .inner;
@@ -4482,8 +4597,31 @@ fn dated(
     }
 
     if control.out {
-        clock_control(ui, clock, geared);
+        clock_control(ui, clock, turns.geared(control.to));
     }
+}
+
+/// Which of the turns on offer the rail covers
+///
+/// Two words at the far end of the reading, with the rail they are about
+/// directly underneath. Only where there are two turns to choose between —
+/// see [`Turns::choice`] — a switch between one thing and the same thing
+/// being a control that does nothing.
+///
+/// Not in the settings pane, which is where what the map is drawn like is
+/// set. This is about the control beneath it and nothing else: it changes
+/// what one drag is worth and says so by changing the marks under the rail.
+///
+/// Drawn backwards, because the row it stands in runs from the right: `Body`
+/// last is `Body` leftmost, so the pair reads narrower first, in the order
+/// [`GearedTo::ALL`] holds and the rails themselves run.
+fn gearing(ui: &mut Ui, to: &mut GearedTo) {
+    greyed(ui, |ui| {
+        for offered in GearedTo::ALL.into_iter().rev() {
+            ui.selectable_value(to, offered, offered.said())
+                .on_hover_text(offered.hint());
+        }
+    });
 }
 
 /// One weak word of the status line, and whether it was clicked
@@ -5630,7 +5768,6 @@ fn singleline(
         );
         egui::Spinner::new().paint_at(ui, at);
     }
-
     response
 }
 
@@ -5744,7 +5881,12 @@ mod tests {
     fn the_date_is_said_without_a_system_held() {
         let mut clock = standing("2015-01-01T00:00:00Z");
         let said = words(|ui| {
-            dated(ui, &mut clock, None, &mut ClockControl::default());
+            dated(
+                ui,
+                &mut clock,
+                Turns::default(),
+                &mut ClockControl::default(),
+            );
         });
 
         assert!(said.contains(&"01 JAN 3301 00:00:00".to_owned()), "{said:?}");
@@ -5766,7 +5908,7 @@ mod tests {
         let mut line = |input, control: &mut ClockControl| {
             let mut at = egui::Rect::NOTHING;
             let _ = ctx.run_ui(input, |ui| {
-                dated(ui, &mut clock, Some(Geared::System(turn)), control);
+                dated(ui, &mut clock, system_turn(turn), control);
                 at = ui.min_rect();
             });
             at
@@ -5801,7 +5943,7 @@ mod tests {
             clock_.offset_at(offset);
             let mut at = egui::Rect::NOTHING;
             let _ = ctx.run_ui(input, |ui| {
-                dated(ui, &mut clock_, Some(Geared::System(turn)), control);
+                dated(ui, &mut clock_, system_turn(turn), control);
                 at = ui.min_rect();
             });
             clock = clock_;
@@ -5934,8 +6076,8 @@ mod tests {
                 dated(
                     ui,
                     clock,
-                    Some(Geared::System(Clock::CEILING)),
-                    &mut ClockControl { out: true },
+                    system_turn(Clock::CEILING),
+                    &mut ClockControl { out: true, ..Default::default() },
                 );
                 at = ui.min_rect();
             });
@@ -6002,7 +6144,7 @@ mod tests {
             ..Default::default()
         };
         let mut clock = Clock::default();
-        let mut control = ClockControl { out };
+        let mut control = ClockControl { out, ..Default::default() };
         let mut at = egui::Rect::NOTHING;
         for _ in 0..4 {
             let _ = ctx.run_ui(input.clone(), |ui| {
@@ -6011,7 +6153,7 @@ mod tests {
                     chrome_right,
                     &mut clock,
                     &mut control,
-                    Some(Geared::System(400. * 86_400.)),
+                    system_turn(400. * DAY),
                 );
             });
         }
@@ -6164,12 +6306,109 @@ mod tests {
     fn hiding_the_clock_puts_the_map_back_to_the_present() {
         let mut clock = Clock::default();
         clock.offset_at(3. * HOUR);
-        let mut control = ClockControl { out: true };
+        let mut control = ClockControl { out: true, ..Default::default() };
 
         hidden(&mut clock, &mut control);
 
         assert_eq!(clock.offset(), 0.);
         assert!(!control.out, "the scrubber was left out over nothing");
+    }
+
+    /// A system's turn on offer and no body's
+    fn system_turn(turn: f64) -> Turns {
+        Turns { body: None, system: Some(turn) }
+    }
+
+    /// Both turns on offer, the body's and the system's
+    fn both_turns(body: f64, system: f64) -> Turns {
+        Turns { body: Some(body), system: Some(system) }
+    }
+
+    /// The strip asks which turn the rail is to cover, and answers it
+    ///
+    /// A body's own year and the span its whole system takes to come round
+    /// are two questions, and which one a reader wants is not something the
+    /// map can work out from what they clicked: the body picked out says they
+    /// are looking at it, not what span they mean to drag over.
+    #[test]
+    fn the_rail_covers_whichever_turn_was_asked_for() {
+        let turns = both_turns(11.9 * YEAR, 14_990. * YEAR);
+
+        assert_eq!(
+            turns.geared(GearedTo::Body),
+            Some(Geared::Body(11.9 * YEAR))
+        );
+        assert_eq!(
+            turns.geared(GearedTo::System),
+            Some(Geared::System(14_990. * YEAR))
+        );
+    }
+
+    /// And falls back to whichever turn there is
+    ///
+    /// The choice is between two spans to read. Whether the map can be run on
+    /// at all is a different question, and a reader who last asked for a
+    /// body's turn should not lose the rail by flying out of the system.
+    #[test]
+    fn a_turn_that_is_not_on_record_gives_way_to_the_one_that_is() {
+        let system = system_turn(400. * DAY);
+
+        assert_eq!(
+            system.geared(GearedTo::Body),
+            Some(Geared::System(400. * DAY)),
+            "a body's turn was asked for where there is none"
+        );
+        assert_eq!(Turns::default().geared(GearedTo::System), None);
+    }
+
+    /// The switch stands only where there are two turns to choose between
+    #[test]
+    fn the_switch_is_offered_over_two_turns_and_not_one() {
+        assert!(both_turns(11.9 * YEAR, 14_990. * YEAR).choice());
+        assert!(!system_turn(400. * DAY).choice());
+        assert!(!Turns::default().choice());
+    }
+
+    /// What the strip says, geared to `turns` and asking `to`
+    fn strip_said(turns: Turns, to: GearedTo) -> Vec<String> {
+        let mut clock = Clock::default();
+        let mut control = ClockControl { out: true, to };
+        words(|ui| {
+            ui.set_width(STRIP_WIDTH);
+            dated(ui, &mut clock, turns, &mut control);
+        })
+    }
+
+    /// Both turns are named in the strip, and the marks follow the choice
+    ///
+    /// Which is what says the switch did anything: the rail is a grey bar
+    /// either way, and what changes under it is how far one drag carries the
+    /// map. Geared to a body of a dozen years the far mark is that dozen;
+    /// geared to the system it is the thousands the widest orbit takes.
+    #[test]
+    fn the_marks_follow_whichever_turn_was_asked_for() {
+        let turns = both_turns(12. * YEAR, 14_990. * YEAR);
+
+        let body = strip_said(turns, GearedTo::Body);
+        assert!(body.contains(&"Body".to_owned()), "{body:?}");
+        assert!(body.contains(&"System".to_owned()), "{body:?}");
+        assert!(body.contains(&"12 y".to_owned()), "{body:?}");
+
+        let system = strip_said(turns, GearedTo::System);
+        assert!(system.contains(&"14,990 y".to_owned()), "{system:?}");
+        assert!(
+            !system.contains(&"12 y".to_owned()),
+            "the body's turn was still marked: {system:?}"
+        );
+    }
+
+    /// And the switch is not drawn where there is nothing to switch to
+    #[test]
+    fn one_turn_is_read_without_a_switch() {
+        let said = strip_said(system_turn(400. * DAY), GearedTo::System);
+
+        assert!(!said.contains(&"Body".to_owned()), "{said:?}");
+        assert!(!said.contains(&"System".to_owned()), "{said:?}");
     }
 
     /// Geared to a body, the rail is that body's own turn laid evenly

@@ -36,16 +36,18 @@ with it: `16 DEC 3300 13:45:00`, whether or not the camera is inside a system.
 
 Clicking that reading opens a slider under it, and dragging one runs the map
 on past the present; the span it stands at is named beside the date, with a
-`Now` to let go of it. The slider covers one turn of whatever is being
-watched: the body picked out, laid evenly, or else the widest orbit the
-system has, laid by decades — a system's slowest body takes a median 993
-times as long to come round as its fastest, so there is no one span that
-suits a whole system. Its places are marked underneath in the spans a reader
-thinks in, `now` at the near end and how long the turn runs at the far one,
-since a logarithmic rail says nothing for itself about where along it a day
-is. The phase slider under a body's panel is the same control geared to that
-body alone, and the camera keeps a body picked out under itself while the
-moment moves.
+`Now` to let go of it. The slider covers one turn of whatever it is geared
+to, and `Body` and `System` beside the reading are which: one orbit of the
+body picked out, laid evenly, or one turn of the widest orbit the system has,
+laid by decades — a system's slowest body takes a median 993 times as long to
+come round as its fastest, so there is no one span that suits a whole system,
+and which of the two is wanted is not something the map can work out from
+what was clicked. The switch stands only where both turns are on record. Its
+places are marked underneath in the spans a reader thinks in, `now` at the
+near end and how long the turn runs at the far one, since a logarithmic rail
+says nothing for itself about where along it a day is. The phase slider under
+a body's panel is the same control geared to that body alone, and the camera
+keeps a body picked out under itself while the moment moves.
 
 The strip is turned off in the settings pane, under General with the names
 and the grid. Hiding it puts the map back to the present: the reading is the
