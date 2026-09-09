@@ -226,8 +226,7 @@ impl Clock {
 
     /// Let go of the offset
     ///
-    /// Back to where the game's clock has carried everything, which is where
-    /// the map stands untouched.
+    /// Back to the present, which is where the map stands untouched.
     pub fn reset(&mut self) {
         self.offset = 0.;
     }
@@ -275,9 +274,9 @@ impl Clock {
     /// Reaching for the first turn instead would throw the whole system back to
     /// the beginning every time a moon was nudged.
     ///
-    /// The map goes on standing where the game's clock puts it under this: an
-    /// offset is a span past that and not a place, so the whole system runs on
-    /// beneath it rather than it being overruled by them.
+    /// The present goes on stepping under this: an offset is a span past it
+    /// and not a place, so the map runs on beneath a slider rather than the
+    /// slider being overruled by it.
     ///
     /// Held at [`Self::CEILING`], which is what stops a slider geared to a
     /// wide pair's own turn from running the map somewhere no date can be
@@ -295,7 +294,7 @@ impl Clock {
         self.offset = ((whole + through) * period).clamp(0., Self::CEILING);
     }
 
-    /// Run the map on to `past` seconds past where the game's clock stands
+    /// Run the map on to `past` seconds past the present
     ///
     /// The span outright, which is what a rail over a whole system's turn
     /// sets: its near end is now, its far end is a turn from now, and where

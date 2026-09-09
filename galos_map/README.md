@@ -24,14 +24,25 @@ reaching them — is the code under
 
 What it draws is a moment rather than a pile of scans. A system's rows arrive
 from as many commanders as have ever flown there, so each orbit carries how
-long before that moment it was read and is run on from its own reading; the
-moment itself is kept on the game's own clock, which runs 1286 years ahead of
-ours and otherwise with it. So a planet is drawn where the game has carried it
-by now rather than where somebody once saw it. The settings pane takes the map
-off that clock and hands it back, and the phase slider under a body's panel
-winds the map on past it — the slider's near end is that body where it stands
-and its far end is one of its own turns later, there being no span that suits a
-whole system.
+long before that moment it was read and is run on from its own reading. So a
+planet is drawn where the game has carried it by now rather than where
+somebody once saw it.
+
+The moment is the galaxy's, not a system's: one now, the same on both sides
+of a flight, and each system answers it from its own newest scan. It is said
+under the bar in the game's own calendar, which runs 1286 years ahead of ours
+and otherwise with it — `16 DEC 3300 13:45:00`, whether or not the camera is
+inside a system.
+
+Clicking that reading opens a slider under it, and dragging one runs the map
+on past the present; the span it stands at is named beside the date, with a
+`Now` to let go of it. The slider covers one turn of whatever is being
+watched: the body picked out, laid evenly, or else the widest orbit the
+system has, laid by decades — a system's slowest body takes a median 993
+times as long to come round as its fastest, so there is no one span that
+suits a whole system. The phase slider under a body's panel is the same
+control geared to that body alone, and the camera keeps a body picked out
+under itself while the moment moves.
 
 The two meet in two places only: the sizing law's context scalar in
 [`src/systems/scale.rs`](./src/systems/scale.rs), and the photometric scale
@@ -59,6 +70,7 @@ order they draw in [`src/camera.rs`](./src/camera.rs).
 | Ctrl, command or shift click | Pick one out alongside the rest, or let go of it |
 | Click on empty sky | Let go of everything picked out |
 | Double click | Fly to what was clicked |
+| Click the date under the bar | Show or hide the slider that sets the moment |
 
 The bar's rows read the same way as the sky they name. A double click on the
 row for a selected system flies to it, as a double click on its star does, and

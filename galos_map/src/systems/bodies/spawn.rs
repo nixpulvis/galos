@@ -66,16 +66,11 @@ pub fn plugin(app: &mut App) {
         Update,
         draw.in_set(MapSet::Populate).after(super::fetch::collect),
     );
-    // And before them, since which moment the reading counts from is read off
-    // the same rows: a system arrives standing where the game's clock puts it
-    // rather than at its scans for the frame it lands on.
-    app.add_systems(
-        Update,
-        follow
-            .in_set(MapSet::Populate)
-            .after(super::fetch::collect)
-            .before(draw),
-    );
+    // And before it, so a system arriving is placed at the moment the map is
+    // standing at rather than at the one it was standing at last frame. It
+    // reads nothing off the rows any more -- the moment is the galaxy's -- so
+    // only the ordering against `draw` is load-bearing.
+    app.add_systems(Update, follow.in_set(MapSet::Populate).before(draw));
     // After the lines are spawned, so one drawn this frame is hidden on this
     // frame rather than being shown once and taken away.
     app.add_systems(Update, show_orbits.in_set(MapSet::Present));
