@@ -5021,7 +5021,7 @@ mod tests {
         let mut control = ClockControl::default();
         let mut line = |input, control: &mut ClockControl| {
             let mut at = egui::Rect::NOTHING;
-            ctx.run_ui(input, |ui| {
+            let _ = ctx.run_ui(input, |ui| {
                 dated(
                     ui,
                     &mut clock,
@@ -5062,7 +5062,7 @@ mod tests {
             let mut clock_ = Clock::default();
             clock_.offset_at(offset);
             let mut at = egui::Rect::NOTHING;
-            ctx.run_ui(input, |ui| {
+            let _ = ctx.run_ui(input, |ui| {
                 dated(
                     ui,
                     &mut clock_,
@@ -5196,7 +5196,7 @@ mod tests {
         let mut clock = Clock::default();
         let control = |input, clock: &mut Clock| {
             let mut at = egui::Rect::NOTHING;
-            ctx.run_ui(input, |ui| {
+            let _ = ctx.run_ui(input, |ui| {
                 ui.set_width(BAR_WIDTH);
                 dated(
                     ui,
@@ -5273,7 +5273,7 @@ mod tests {
         let mut clock = Clock::default();
         let control = |input, clock: &mut Clock| {
             let mut at = egui::Rect::NOTHING;
-            ctx.run_ui(input, |ui| {
+            let _ = ctx.run_ui(input, |ui| {
                 clock_control(ui, clock, Some(turn));
                 at = ui.min_rect();
             });
@@ -5309,7 +5309,7 @@ mod tests {
         let mut clock = Clock::default();
         let mut control = |input| {
             let mut at = egui::Rect::NOTHING;
-            ctx.run_ui(input, |ui| {
+            let _ = ctx.run_ui(input, |ui| {
                 clock_control(ui, &mut clock, Some(turn));
                 at = ui.min_rect();
             });

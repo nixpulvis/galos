@@ -91,10 +91,17 @@ pub enum Picked {
 
 /// A body picked out, as the map knew it at the moment it was picked
 ///
-/// Everything a row needs and nothing that has to be asked of the map again.
-/// A body does not move once it is placed, and where a row is drawn from has
-/// nothing to do with where the camera is, so its place is taken once here
-/// rather than worked out afresh every frame.
+/// Everything a row needs and nothing that has to be asked of the map again:
+/// where a row is drawn from has nothing to do with where the camera is, so
+/// its place is taken once here rather than worked out afresh every frame.
+///
+/// Which makes the place a reading and not a fact. The clock moves everything
+/// inside a system, so a body picked out and then left standing while the
+/// clock runs is somewhere else by now, and anything that wants where it is
+/// rather than where it was asks
+/// [`crate::systems::bodies::spawn::Places::of`] instead -- the ring drawn
+/// round it does, and so does the camera keeping it under itself. See
+/// [`crate::camera::Carried`].
 #[derive(Clone)]
 pub struct PickedBody {
     /// Which system it is in, and which of that system's numbering it is
@@ -373,6 +380,19 @@ impl Selection {
     pub fn position(&self, index: usize) -> Option<DVec3> {
         self.0.get(index).map(Picked::position)
     }
+
+    /// The body picked out most lately, by its system and its own id
+    ///
+    /// Which is the one the camera keeps under itself while the clock runs:
+    /// with several things picked out, the one reached for last is the one
+    /// being looked at. Named rather than placed, the place being the thing
+    /// that moves -- see [`crate::camera::Carried`].
+    pub fn newest_body(&self) -> Option<(i64, i16)> {
+        self.0.iter().rev().find_map(|one| match one {
+            Picked::Body(body) => Some((body.address, body.id)),
+            Picked::System(_) => None,
+        })
+    }
 }
 
 /// A picked out thing, once it is on the map
@@ -402,7 +422,9 @@ pub struct Selected;
 /// without the selection hearing of it. So a row that has changed is copied
 /// back, and what is picked out is the row the map holds rather than the one
 /// it held when the user pointed at it. Nothing does this for a body: what a
-/// body is was settled when it was drawn, and it does not change under one.
+/// body is beyond where it stands was settled when it was drawn, and what a
+/// body's row says about the place is a reading of one moment which nothing
+/// here is in a position to take again.
 ///
 /// A body with no entity is let go of, where a system with none is kept. That
 /// is the one place the two part company, and the reason is what can name

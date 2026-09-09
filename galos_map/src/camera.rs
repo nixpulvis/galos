@@ -19,6 +19,14 @@ use std::f32::consts::FRAC_PI_2;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<MoveCamera>();
+    app.init_resource::<Carried>();
+    // Before the moves are read, so a flight begun this frame is sent to
+    // where the body stands now rather than to where it stood and then
+    // carried on top of that.
+    app.add_systems(
+        Update,
+        carry_centre.in_set(MapSet::Camera).before(move_camera),
+    );
     app.add_systems(Update, move_camera.in_set(MapSet::Camera));
     // Reads what `move_camera` and the spyglass asked for, and is the only
     // thing that writes the camera's cell and transform.
@@ -421,6 +429,91 @@ pub(crate) struct MoveCamera {
     /// Nothing leaves the zoom where the user left it, which is what a move
     /// that only says where to look should do.
     pub(crate) framing: Option<f32>,
+}
+
+/// Where the body the camera is keeping under itself last stood
+///
+/// The clock moves everything inside a system, so a body the camera was
+/// pointed at walks out from under it: what was being looked at drifts off
+/// and the view is left aimed at the space it used to be in. Dragging the
+/// slider under the date is the whole reason this is worth having -- what a
+/// reader wants to see there is the same body a year on, not the sky it left.
+///
+/// So the camera is carried by whatever the body moved, and the system turns
+/// under a view that holds still. Kept rather than worked out again because
+/// what is wanted is the difference between two readings of the clock, and
+/// only ever one of them is in hand.
+#[derive(Resource, Default)]
+pub(crate) struct Carried {
+    /// Which body, by the system holding it and its own id
+    ///
+    /// Not the entity: a system's insides are despawned and drawn again
+    /// whenever its rows are republished, and the body that comes back is the
+    /// same body.
+    of: Option<(i64, i16)>,
+    /// Where it stood, in light years
+    at: DVec3,
+}
+
+/// Carry the camera by whatever the body picked out has moved
+///
+/// Only where the clock moved, which is the whole of why a drawn body moves:
+/// [`crate::systems::bodies::spawn::stand`] re-places a system's insides on
+/// exactly that, in `MapSet::Populate`, so the place read here is this
+/// frame's rather than last frame's. Carried on every frame instead, the
+/// metre or so of slack in reading a place back off the grid would nudge the
+/// camera forever and the view would never read as settled.
+///
+/// The centre, what it is heading for, and the flight under way if there is
+/// one all move together. This is not a move: it is a change in what the view
+/// is measured against, and easing it would let the body drag out from under
+/// the camera while a slider is dragged and catch up once it was let go --
+/// which is the drift this exists to stop.
+fn carry_centre(
+    clock: Res<crate::systems::bodies::Clock>,
+    selection: Res<crate::systems::selection::Selection>,
+    bodies: Query<(Entity, &Body)>,
+    places: crate::systems::bodies::spawn::Places,
+    mut carried: ResMut<Carried>,
+    mut cameras: Query<&mut OrbitCamera>,
+) {
+    let standing = selection.newest_body().and_then(|named| {
+        let (address, id) = named;
+        let (drawn, _) = bodies
+            .iter()
+            .find(|(_, body)| body.address == address && body.id == id)?;
+
+        Some((named, places.of(drawn)?))
+    });
+    // Nothing picked out, or nothing of it drawn: there is no body to keep
+    // under the camera, and the place held is about a body that is gone.
+    let Some((named, place)) = standing else {
+        *carried = Carried::default();
+        return;
+    };
+
+    let was = (carried.of == Some(named)).then_some(carried.at);
+    carried.of = Some(named);
+    carried.at = place;
+
+    if !clock.is_changed() {
+        return;
+    }
+    // The frame a body is taken up has no earlier place of its own to be
+    // measured from, and one that has not moved carries nothing.
+    let Some(was) = was.filter(|was| *was != place) else {
+        return;
+    };
+    let by = place - was;
+
+    for mut orbit in &mut cameras {
+        orbit.center += by;
+        orbit.target_center += by;
+        if let Some(travel) = &mut orbit.travel {
+            travel.from += by;
+            travel.to += by;
+        }
+    }
 }
 
 /// The half angle a camera sees across when nothing says otherwise
@@ -2109,5 +2202,98 @@ mod tests {
             settled,
             "wrote a projection that had not moved"
         );
+    }
+
+    /// A world with one body picked out and the camera centred on it
+    ///
+    /// The body is then moved `by` metres, as the clock moves everything
+    /// inside a system, and `ticked` says whether the clock moved with it.
+    /// Answers where the camera ends up looking, and what it is heading for.
+    fn watched(by: DVec3, ticked: bool) -> (DVec3, DVec3) {
+        use crate::space;
+        use crate::systems::bodies::Clock;
+        use crate::systems::selection::{Picked, PickedBody, Selection};
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Clock>();
+        app.init_resource::<Carried>();
+        let mut selection = Selection::default();
+        selection.set(Picked::Body(PickedBody::new(1, 1, "", DVec3::ZERO)));
+        app.insert_resource(selection);
+
+        let grid = space::system_grid();
+        let system = app
+            .world_mut()
+            .spawn((crate::systems::tests::at(1, 0.), grid.clone()))
+            .id();
+        let body = app
+            .world_mut()
+            .spawn((
+                Body {
+                    address: 1,
+                    name: String::new(),
+                    id: 1,
+                    radius: 1e6,
+                    ancestors: 1,
+                    primary: false,
+                    star: false,
+                },
+                CellCoord::default(),
+                Transform::default(),
+                ChildOf(system),
+            ))
+            .id();
+        // Centred on the body, which is where a flight to one leaves it.
+        app.world_mut().spawn(OrbitCamera::default());
+        app.add_systems(Update, carry_centre);
+
+        // The frame that takes the body up, which carries nothing: there is
+        // no earlier place of its own to be measured from.
+        app.update();
+
+        let (cell, offset) = grid.translation_to_grid(by);
+        app.world_mut().entity_mut(body).insert(cell);
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .expect("a transform")
+            .translation = offset;
+        if ticked {
+            app.world_mut().resource_mut::<Clock>().offset_at(1.);
+        }
+        app.update();
+
+        let mut cameras = app.world_mut().query::<&OrbitCamera>();
+        let orbit = cameras.single(app.world()).expect("a camera");
+
+        (orbit.center, orbit.target_center)
+    }
+
+    /// The camera goes with the body it is watching as the clock moves it
+    ///
+    /// Otherwise dragging the slider under the date walks the body out from
+    /// under the view and leaves it aimed at the space the body was in, which
+    /// is the one thing a reader watching a body does not want to see.
+    #[test]
+    fn the_camera_goes_with_the_body_it_is_watching() {
+        let by = DVec3::new(1e11, 0., 0.);
+        let (center, target) = watched(by, true);
+        let carried = crate::space::light_years(by);
+
+        assert_eq!(center, carried, "the view stayed where the body was");
+        assert_eq!(target, carried, "the view was heading somewhere else");
+    }
+
+    /// And stands still where the clock has not moved
+    ///
+    /// A place read back off the grid carries a metre or so of slack, and a
+    /// camera nudged by that every frame is a view that never reads as
+    /// settled — which is what the evictor and the diagnostics both go by.
+    #[test]
+    fn a_still_clock_leaves_the_camera_where_it_is() {
+        let (center, target) = watched(DVec3::new(1e11, 0., 0.), false);
+
+        assert_eq!(center, DVec3::ZERO, "the view moved on its own");
+        assert_eq!(target, DVec3::ZERO, "the view was sent somewhere");
     }
 }
