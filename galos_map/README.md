@@ -40,9 +40,16 @@ on past the present; the span it stands at is named beside the date, with a
 watched: the body picked out, laid evenly, or else the widest orbit the
 system has, laid by decades — a system's slowest body takes a median 993
 times as long to come round as its fastest, so there is no one span that
-suits a whole system. The phase slider under a body's panel is the same
-control geared to that body alone, and the camera keeps a body picked out
-under itself while the moment moves.
+suits a whole system. Its places are marked underneath in the spans a reader
+thinks in, `now` at the near end and how long the turn runs at the far one,
+since a logarithmic rail says nothing for itself about where along it a day
+is. The phase slider under a body's panel is the same control geared to that
+body alone, and the camera keeps a body picked out under itself while the
+moment moves.
+
+The strip is turned off in the settings pane, under General with the names
+and the grid. Hiding it puts the map back to the present: the reading is the
+only place a run-on is shown and the only way back from one.
 
 The two meet in two places only: the sizing law's context scalar in
 [`src/systems/scale.rs`](./src/systems/scale.rs), and the photometric scale

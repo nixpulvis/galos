@@ -64,6 +64,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<Keyboard>();
     app.init_resource::<SettingsOpen>();
     app.init_resource::<ClockControl>();
+    app.init_resource::<ShowClock>();
     app.init_resource::<KeysOpen>();
     app.init_resource::<PressOwner>();
     app.init_resource::<BarFields>();
@@ -181,6 +182,38 @@ pub(crate) struct KeysOpen(pub(crate) bool);
 pub(crate) struct ClockControl {
     /// Whether the pane is showing it
     out: bool,
+}
+
+/// Whether the moment is read out at all
+///
+/// On, the strip stands at the top of the viewport; off, nothing is drawn up
+/// there. A reading is what the map says about itself rather than something
+/// it draws, so it is a switch in the pane beside the names and the grid
+/// rather than a key.
+///
+/// Turning it off puts the map back to the present — see [`hidden`]. The
+/// reading is the only place the run-on is shown and the only way back from
+/// it, so a hidden strip over a map standing three hours on is a map drawing
+/// a moment nobody can see or undo.
+#[derive(Resource)]
+pub(crate) struct ShowClock(pub(crate) bool);
+
+impl Default for ShowClock {
+    fn default() -> ShowClock {
+        ShowClock(true)
+    }
+}
+
+/// Put the map back to the present, the reading of it having gone
+///
+/// What hiding the clock comes to besides drawing nothing: the offset is let
+/// go of and the scrubber shut, so that turning the strip off is the map at
+/// `now` and turning it back on is a strip that says so. Left standing, the
+/// offset would go on being drawn into every orbit with nothing on screen to
+/// say why the planets are where they are.
+fn hidden(clock: &mut Clock, control: &mut ClockControl) {
+    clock.reset();
+    control.out = false;
 }
 
 /// What the chrome has taken of the keyboard
@@ -680,6 +713,7 @@ pub(crate) struct Settings<'w> {
     show_orbits: ResMut<'w, ShowOrbits>,
     clock: ResMut<'w, Clock>,
     clock_control: ResMut<'w, ClockControl>,
+    show_clock: ResMut<'w, ShowClock>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
     unit: ResMut<'w, RulerUnit>,
@@ -965,6 +999,19 @@ pub(crate) fn chrome(
             "Body Names",
             "Show body names inside a system",
         );
+        // The one reading among the switches, and here because it is drawn
+        // over both views as the names and the ruling are: what the map is
+        // standing at is as true inside a system as out among the stars.
+        //
+        // Turning it off is the map at the present, which the hint says
+        // because the reading is the only place a run-on is shown and the
+        // only way back from one.
+        check(
+            ui,
+            &mut settings.show_clock.0,
+            "Clock",
+            "Show the date, and draw the map at the present",
+        );
         ui.add_space(FIELD_GAP);
         check(ui, &mut settings.show_grid.0, "Grid", "Show the measuring grid");
         if settings.show_grid.0 {
@@ -1226,19 +1273,31 @@ pub(crate) fn chrome(
 
     // The moment first. It stands at the top of the viewport whatever the bar
     // is doing, so nothing about it waits on how tall the bar has grown.
-    let geared = geared_to(&selection, &contents);
+    //
     // Marked as moved only where the scrubber moved it, so that reading the
     // clock out sixty times a second is not sixty frames of every orbit being
-    // run again.
-    mark_if_moved(&mut settings.clock, |clock| {
-        time_strip(
-            ctx,
-            chrome_right,
-            clock,
-            &mut settings.clock_control,
-            geared,
-        )
-    });
+    // run again. Which is why the strip is skipped rather than drawn and
+    // hidden: what is not drawn cannot be dragged, and nothing is written.
+    let geared = geared_to(&selection, &contents);
+    if settings.show_clock.0 {
+        mark_if_moved(&mut settings.clock, |clock| {
+            time_strip(
+                ctx,
+                chrome_right,
+                clock,
+                &mut settings.clock_control,
+                geared,
+            )
+        });
+    } else if settings.clock.offset() != 0. || settings.clock_control.out {
+        // Once, on the frame the switch goes off: the offset is the map's to
+        // draw and there would be nothing on screen to say it was standing
+        // anywhere but now. Asked about first so that a clock already at the
+        // present is not marked as moved every frame the strip is hidden.
+        mark_if_moved(&mut settings.clock, |clock| {
+            hidden(clock, &mut settings.clock_control)
+        });
+    }
 
     // Where distances in either column are measured from, and nothing where
     // the camera has yet to say.
@@ -2024,16 +2083,21 @@ fn state_bar(
 
 /// How wide the strip stands while the scrubber is out
 ///
-/// Wide enough that a rail covering one turn of a system is worth dragging: a
-/// logarithmic rail spends four decades of span over its own width, so every
-/// pixel taken off it is a coarser instrument. Nearly twice the bar, which is
-/// what the rail had when it was a line in the bar and is what
-/// [`clock_control`] documents the cost of.
+/// A little wider than the reading it is opened from, which comes to some
+/// 250 points with a span and a `Now` beside the date, and wide enough for
+/// the spans [`marks`] writes under the rail without them running together.
+/// It was drawn at 620 to begin with — nearly twice the bar — on the
+/// argument that a logarithmic rail spends its decades over its own width, so
+/// every pixel taken off it is a coarser instrument. True, and beside the
+/// point: at that width the reading sat in a third of a box and the rail was
+/// a bare grey bar across the top of the map. Exactness on the rail is not
+/// what the far end of it is for, and the marks are what make a coarse rail
+/// readable.
 ///
 /// A number rather than what the reading leaves over. The rail is scaled by
 /// the room it is in, and room measured off a line that grows with the value
 /// the rail last set is a control whose scale is a function of its own value.
-const STRIP_WIDTH: f32 = 620.;
+const STRIP_WIDTH: f32 = 420.;
 
 /// How wide the scrubber's rail runs
 ///
@@ -4381,13 +4445,32 @@ fn dated(
     geared: Option<Geared>,
     control: &mut ClockControl,
 ) {
+    let out = control.out;
     let clicked = ui
         .horizontal(|ui| {
             let mut asked = reading(ui, drawn_at(clock));
             if clock.offset() != 0. {
                 asked |=
                     reading(ui, format!("+{}", lasting(clock.offset() as f32)));
-                if ui.small_button("Now").clicked() {
+                // At the far end of the strip while the scrubber is out,
+                // which is what fills a line the reading only half covers,
+                // and is a place the control keeps: read beside the span it
+                // undoes, it walks along the line as the span grows a digit.
+                //
+                // Beside the span while the strip is shut, there being no
+                // width to stand at the end of: the strip is then only as
+                // wide as what is written in it.
+                let let_go = |ui: &mut Ui| ui.small_button("Now").clicked();
+                let asked_for = if out {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        let_go,
+                    )
+                    .inner
+                } else {
+                    let_go(ui)
+                };
+                if asked_for {
                     clock.reset();
                 }
             }
@@ -4521,10 +4604,17 @@ fn clock_control(ui: &mut Ui, clock: &mut Clock, geared: Option<Geared>) {
     // orbit; the rail then reads at its far end rather than wrapping round.
     let mut past = clock.offset().min(turn);
     ui.spacing_mut().slider_width = RAIL_WIDTH - ui.spacing().item_spacing.x;
+    // Thinner than the sliders in the pane, and shorter in its row. Those are
+    // read one to a line down a column of controls; this is one rail across
+    // the top of the map, and egui's own proportions drew it as a grey bar
+    // over the sky with a lozenge in it.
+    ui.spacing_mut().slider_rail_height = RAIL_HEIGHT;
+    ui.spacing_mut().interact_size.y = RAIL_ROOM;
     let moved = ui
         .add_enabled_ui(turn > 0., |ui| {
-            let mut rail =
-                egui::Slider::new(&mut past, 0.0..=turn).show_value(false);
+            let mut rail = egui::Slider::new(&mut past, 0.0..=turn)
+                .show_value(false)
+                .handle_shape(egui::style::HandleShape::Circle);
             if !geared.is_some_and(Geared::even) {
                 rail = rail.logarithmic(true).smallest_positive(SPAN_FLOOR);
             }
@@ -4533,6 +4623,200 @@ fn clock_control(ui: &mut Ui, clock: &mut Clock, geared: Option<Geared>) {
         .inner;
     if moved.changed() {
         clock.offset_at(past);
+    }
+
+    if let Some(geared) = geared {
+        marks(ui, moved.rect, geared);
+    }
+}
+
+/// How thick the rail is drawn
+const RAIL_HEIGHT: f32 = 4.;
+
+/// How tall a row the rail is given
+///
+/// The handle is sized off it — egui draws one at a fifth of the row either
+/// side of the rail — so this is what settles how big the thing under the
+/// pointer is. Enough to hit and no more.
+const RAIL_ROOM: f32 = 14.;
+
+/// How far apart the handle's circle stands from the rail's own ends
+///
+/// Egui shrinks the range the handle travels in by its own radius at either
+/// end, so a value's place along the rail is measured in what is left rather
+/// than in the whole of it. The same fifth of the row it draws the handle at.
+fn handle_radius(rail: egui::Rect) -> f32 {
+    rail.height() / 2.5
+}
+
+/// A minute, and the units built on it, in seconds
+const MINUTE: f64 = 60.;
+const HOUR: f64 = 60. * MINUTE;
+const DAY: f64 = 24. * HOUR;
+const YEAR: f64 = 365.25 * DAY;
+
+/// The spans a logarithmic rail is marked at
+///
+/// One or two to a decade, at the spans a reader thinks in rather than at
+/// round numbers of seconds: an hour, a day, a year. Which of them are drawn
+/// is what the rail covers and what fits — see [`marks`] — so this is every
+/// mark the map might make, from the rail's own near end at [`SPAN_FLOOR`] up
+/// past the ten thousand years a wide pair takes to come round.
+const MARKED: [f64; 12] = [
+    MINUTE,
+    10. * MINUTE,
+    HOUR,
+    6. * HOUR,
+    DAY,
+    7. * DAY,
+    30. * DAY,
+    YEAR,
+    10. * YEAR,
+    100. * YEAR,
+    1_000. * YEAR,
+    10_000. * YEAR,
+];
+
+/// Say how far along the rail `span` falls, as a fraction of its length
+///
+/// The same arithmetic egui lays the handle out by, so a mark stands under
+/// the place the handle stops at rather than near it: linear over a body's
+/// own turn, and over the decades from [`SPAN_FLOOR`] otherwise. Anything at
+/// or under the near end is the near end, which is where nothing and a minute
+/// both stand on a rail that runs to years.
+fn along(span: f64, turn: f64, even: bool) -> f32 {
+    if turn <= 0. {
+        return 0.;
+    }
+    if even {
+        return (span / turn).clamp(0., 1.) as f32;
+    }
+    if span <= SPAN_FLOOR {
+        return 0.;
+    }
+    let floor = SPAN_FLOOR.log10();
+    let ceiling = turn.log10();
+    if ceiling <= floor {
+        return 0.;
+    }
+    (((span.log10() - floor) / (ceiling - floor)) as f32).clamp(0., 1.)
+}
+
+/// Write what the rail's places come to, under it
+///
+/// A rail over one turn of a system runs from a minute to millennia and says
+/// nothing about where along it a day is. Named marks are what make a
+/// logarithmic rail readable: the handle stands over a word rather than a
+/// third of the way along nothing.
+///
+/// The near end is `now`, that being where the rail's own floor and no span
+/// at all both stand, and the far end is however long the turn is. Between
+/// them, the spans of [`MARKED`] the turn covers — or the quarters of it,
+/// where the rail is a body's own turn laid evenly and decades would mark one
+/// end of it.
+///
+/// Whatever will not fit is left out, left to right: a mark is drawn only
+/// where it stands clear of the last one written. The far end is written
+/// first for that reason, being the one a reader needs — it says what the
+/// rail covers — so a mark that would run into it is the one that goes.
+fn marks(ui: &mut Ui, rail: egui::Rect, geared: Geared) {
+    let turn = geared.turn().min(Clock::CEILING);
+    if turn <= 0. {
+        return;
+    }
+
+    let even = geared.even();
+    let mut wanted = vec![(0_f64, "now".to_owned())];
+    if even {
+        for quarter in 1..4 {
+            let span = turn * quarter as f64 / 4.;
+            wanted.push((span, briefly(span)));
+        }
+    } else {
+        for span in MARKED.into_iter().filter(|span| *span < turn) {
+            wanted.push((span, briefly(span)));
+        }
+    }
+    wanted.push((turn, briefly(turn)));
+
+    let gap = ui.spacing().item_spacing.x;
+    let inset = handle_radius(rail);
+    let ends = egui::Rangef::new(rail.left() + inset, rail.right() - inset);
+    let written: Vec<(f32, std::sync::Arc<egui::Galley>)> = wanted
+        .into_iter()
+        .map(|(span, said)| {
+            let at = egui::lerp(ends, along(span, turn, even));
+            let galley = egui::WidgetText::from(
+                egui::RichText::new(said).weak().small(),
+            )
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Small,
+            );
+            (at, galley)
+        })
+        .collect();
+
+    let row = ui
+        .allocate_exact_size(
+            egui::vec2(
+                rail.width(),
+                written.first().map_or(0., |(_, said)| said.size().y),
+            ),
+            egui::Sense::hover(),
+        )
+        .0;
+
+    // The far end first, then the rest from the near end up, so that what is
+    // dropped where the two meet is a mark in the middle rather than the one
+    // saying how far the rail goes.
+    let mut taken: Vec<egui::Rangef> = Vec::with_capacity(written.len());
+    let order = written.len().saturating_sub(1);
+    for index in std::iter::once(order).chain(0..order) {
+        let Some((at, said)) = written.get(index) else { continue };
+        let across = said.size().x;
+        // Centered on the mark, and held inside the row at either end: the
+        // near end's word would otherwise hang off the strip by half of
+        // itself.
+        let left = (at - across / 2.).clamp(row.left(), row.right() - across);
+        let stands = egui::Rangef::new(left - gap, left + across + gap);
+        if taken.iter().any(|held| held.intersects(stands)) {
+            continue;
+        }
+        taken.push(stands);
+        ui.painter().galley(
+            egui::pos2(left, row.top()),
+            said.clone(),
+            egui::Color32::PLACEHOLDER,
+        );
+    }
+}
+
+/// A span in the largest unit it fills, in as few characters as say it
+///
+/// For the marks under the rail, where a dozen of them stand side by side in
+/// the width of the strip: [`crate::systems::info::lasting`] writes
+/// `18.0 Earth years`, which is the right answer in a panel and four marks'
+/// worth of room here. Whole units only, the mark being a place on a rail
+/// rather than a measurement.
+fn briefly(span: f64) -> String {
+    if span < HOUR {
+        format!("{:.0} min", span / MINUTE)
+    } else if span < DAY {
+        format!("{:.0} h", span / HOUR)
+    } else if span < 60. * DAY {
+        format!("{:.0} d", span / DAY)
+    } else if span < 330. * DAY {
+        // Months only where a month is the largest unit filled. A year read
+        // as `12 mo` is the right number in the wrong unit, and the mark
+        // beside it says `10 y`.
+        format!("{:.0} mo", span / (30. * DAY))
+    } else {
+        // Grouped, the far end of a wide pair's rail running to five digits:
+        // `10000 y` is a length rather than a number.
+        format!("{} y", thousands((span / YEAR).round() as u64))
     }
 }
 
@@ -5800,6 +6084,92 @@ mod tests {
             "the strip stood at {} over a bar reaching {chrome_right}",
             narrow.left()
         );
+    }
+
+    /// The spans written under a rail geared to `turn`
+    ///
+    /// The whole of what the control letters: the rail itself shows no value,
+    /// so every word painted here is a mark.
+    fn marked(turn: f64) -> Vec<String> {
+        let mut clock = Clock::default();
+        words(|ui| {
+            ui.set_width(STRIP_WIDTH);
+            clock_control(ui, &mut clock, Some(Geared::System(turn)));
+        })
+    }
+
+    /// The rail says where both of its ends are
+    ///
+    /// Which is what a logarithmic rail cannot say for itself: it runs from a
+    /// minute to millennia and reads as a bare grey bar. The near end is the
+    /// present and the far end is what the rail covers, and a reader wanting
+    /// to know how far a drag will carry the map is asking about the second.
+    #[test]
+    fn the_rail_says_where_its_ends_are() {
+        let said = marked(18. * YEAR);
+
+        assert!(said.contains(&"now".to_owned()), "{said:?}");
+        assert!(said.contains(&"18 y".to_owned()), "{said:?}");
+        assert!(said.len() > 3, "nothing between the ends: {said:?}");
+    }
+
+    /// A mark stands where the handle stops, not near it
+    ///
+    /// The marks are laid out by [`along`] and the handle by egui, off the
+    /// same range and the same logarithm. Said twice, so it is worth holding
+    /// the two together: a rail whose words sit a tenth of the way off
+    /// wherever the handle lands is worse than one with no words at all.
+    #[test]
+    fn a_mark_stands_where_the_handle_stops() {
+        let turn = 400. * DAY;
+        for asked in [0.25_f32, 0.5, 0.75] {
+            let stood = slid(Geared::System(turn), &[(0., asked)]);
+            let mark = along(stood.offset(), turn, false);
+
+            assert!(
+                (mark - asked).abs() < 0.03,
+                "a drag to {asked} of the rail marked at {mark}"
+            );
+        }
+    }
+
+    /// A crowded rail drops marks rather than stacking them
+    ///
+    /// Every span [`MARKED`] holds falls inside ten thousand years, which is
+    /// a dozen words in the width of the strip. What goes is a mark in the
+    /// middle; the two ends stay, being what the rail is read by.
+    #[test]
+    fn a_crowded_rail_drops_marks_rather_than_stacking_them() {
+        let said = marked(10_000. * YEAR);
+
+        assert!(said.len() < MARKED.len(), "{said:?}");
+        assert!(said.contains(&"now".to_owned()), "{said:?}");
+        assert!(said.contains(&"10,000 y".to_owned()), "{said:?}");
+        let mut once = said.clone();
+        once.sort();
+        once.dedup();
+        assert_eq!(
+            once.len(),
+            said.len(),
+            "a mark was written twice: {said:?}"
+        );
+    }
+
+    /// Hiding the clock puts the map back to the present
+    ///
+    /// The reading is the only place a run-on is shown and the only way back
+    /// from one, so a hidden strip over a map standing three hours on is a map
+    /// drawing a moment nobody can see or undo.
+    #[test]
+    fn hiding_the_clock_puts_the_map_back_to_the_present() {
+        let mut clock = Clock::default();
+        clock.offset_at(3. * HOUR);
+        let mut control = ClockControl { out: true };
+
+        hidden(&mut clock, &mut control);
+
+        assert_eq!(clock.offset(), 0.);
+        assert!(!control.out, "the scrubber was left out over nothing");
     }
 
     /// Geared to a body, the rail is that body's own turn laid evenly
