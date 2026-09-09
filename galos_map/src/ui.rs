@@ -42,7 +42,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use chrono::{DateTime, Datelike, Utc};
+use chrono::Datelike;
 use galos_index::meta::{Faction as DbFaction, NameEntry};
 use galos_photometry::psf::ProfileKind;
 
@@ -4962,6 +4962,7 @@ mod tests {
     use crate::systems::filter::Filter;
     use crate::systems::selection::PickedBody;
     use crate::tests::{painted, words};
+    use chrono::{DateTime, Utc};
 
     /// A moment out in the galaxy, ours
     fn ours(text: &str) -> DateTime<Utc> {
