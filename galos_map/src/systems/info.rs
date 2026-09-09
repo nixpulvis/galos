@@ -1262,17 +1262,11 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
             )
         })
         .inner;
-    // The turn the drag sets out from is taken hold of before anything is
-    // written, so that the whole of the drag measures from one place. See
-    // [`crate::systems::bodies::Clock::hold`].
-    if moved.drag_started() {
-        clock.hold(period);
-    }
+    // The turn the phase is measured in is the clock's own to keep, so
+    // nothing here has to say when a drag begins or ends. See
+    // [`crate::systems::bodies::Clock::offset_to`].
     if moved.changed() {
         clock.offset_to(period, through / 100.);
-    }
-    if moved.drag_stopped() {
-        clock.release();
     }
     ui.end_row();
 }
@@ -2169,6 +2163,110 @@ mod tests {
         }
 
         assert_eq!(clock.offset(), was, "an untouched slider moved the clock");
+    }
+
+    /// One drag of the phase slider, from `from` to `to` along its own rail
+    ///
+    /// Where the rail stands is read off what the pass painted: the slider's
+    /// rail is the widest thin rectangle in it. Four passes to a drag — the
+    /// press, the move, the release, and an idle one, which is what a frame
+    /// nobody touches is — since egui knows where a widget stands only once
+    /// it has been drawn and reports a gesture on the pass it arrives.
+    fn dragged(
+        period: f64,
+        clock: &mut crate::systems::bodies::Clock,
+        drags: &[(f32, f32)],
+    ) {
+        let ctx = context();
+
+        let pass =
+            |input: egui::RawInput,
+             clock: &mut crate::systems::bodies::Clock| {
+                let mut widest = egui::Rect::NOTHING;
+                let output = ctx.run_ui(input, |ui| {
+                    ui.set_width(300.);
+                    egui::Grid::new("phase").show(ui, |ui| {
+                        turned(ui, period, clock);
+                    });
+                });
+                for shape in &output.shapes {
+                    if let egui::Shape::Rect(rect) = &shape.shape
+                        && rect.rect.width() > widest.width()
+                        && rect.rect.height() < 12.
+                    {
+                        widest = rect.rect;
+                    }
+                }
+                widest
+            };
+
+        // Twice: an area is drawn from what it last came to, and the first
+        // pass paints nothing to measure.
+        pass(egui::RawInput::default(), clock);
+        let rail = pass(egui::RawInput::default(), clock);
+
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let at = |along: f32| {
+            egui::pos2(rail.left() + rail.width() * along, rail.center().y)
+        };
+        let moved = |to: f32, events: Vec<egui::Event>| egui::RawInput {
+            events: [vec![egui::Event::PointerMoved(at(to))], events].concat(),
+            ..Default::default()
+        };
+
+        for (from, to) in drags {
+            pass(moved(*from, vec![button(at(*from), true)]), clock);
+            pass(moved(*to, Vec::new()), clock);
+            pass(moved(*to, vec![button(at(*to), false)]), clock);
+            pass(egui::RawInput::default(), clock);
+        }
+    }
+
+    /// A phase dragged to the far end stays there, and drags back from it
+    ///
+    /// Reported as the slider being broken, and it was, in two ways that were
+    /// the one fault: the handle jumped to the near end the moment a drag to
+    /// the far end was let go of, and the drag after that ran the map forward
+    /// when it was pulled back.
+    ///
+    /// The far end is a whole turn past where the body stood, which is the
+    /// same place on its orbit and the beginning of the next turn. Folded
+    /// back out of the offset, that reads as no phase at all -- so the
+    /// handle was drawn at the near end while the map stood a turn on, and
+    /// the next drag measured its fraction in the turn after the one the
+    /// handle looked to be in.
+    #[test]
+    fn a_phase_dragged_to_its_far_end_stays_there_and_comes_back() {
+        let period = 400. * DAY;
+        let mut clock = crate::systems::bodies::Clock::default();
+
+        dragged(period, &mut clock, &[(0., 1.)]);
+
+        assert_eq!(
+            clock.offset(),
+            period,
+            "a drag end to end did not run the map on by one turn"
+        );
+        assert_eq!(
+            clock.through(period),
+            1.,
+            "the handle went back to the near end when it was let go of"
+        );
+
+        // And back: the handle stands at the far end, so a drag from there to
+        // the middle is half a turn back rather than half a turn on.
+        dragged(period, &mut clock, &[(1., 0.5)]);
+
+        assert!(
+            (clock.offset() - period / 2.).abs() < period / 100.,
+            "dragging back from the far end left the map at {:.3} turns",
+            clock.offset() / period
+        );
     }
 
     /// A body's panel reads in the units a body is talked about in

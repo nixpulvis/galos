@@ -127,30 +127,42 @@ fn span(from: DateTime<Utc>, to: DateTime<Utc>) -> f64 {
     (to - from).num_milliseconds() as f64 / 1000.
 }
 
-/// The slider a drag has hold of
+/// The turn a phase is being read and written in
 ///
-/// The period is carried so that the anchor is only ever applied to the
-/// slider it was taken for. A drag that never sees its own end -- a panel shut
-/// while the pointer is down -- would otherwise leave the anchor standing, and
-/// the next slider touched would measure a turn of its own body from a count
-/// of somebody else's.
+/// A phase is cyclic and the offset is not, so a fraction on its own cannot
+/// say which turn it is a fraction of: the far end of a slider is the same
+/// place on the orbit as its near end, one turn later, and folding the offset
+/// back to a fraction reads that as no phase at all. So the turn is written
+/// down when a phase is set, and every reading and every write for that same
+/// period measures from it.
+///
+/// Kept past the drag that set it rather than let go of at its end. Let go
+/// of, a slider run to its far end reads back at its near end the moment the
+/// pointer lifts, and the next drag measures the turn after the one it looks
+/// like it is in -- dragging the handle back from the far end ran the map
+/// forward instead.
+///
+/// The period is carried so that the turn is only ever applied to the slider
+/// it was taken for: the next body's slider would otherwise measure a turn of
+/// its own from a count of somebody else's.
 struct Held {
     /// What the slider is geared to
     period: f64,
-    /// The whole turns it set out from
+    /// The whole turns it measures from
     turns: f64,
 }
 
 impl Held {
     /// Whether `offset` still stands in the turn this was taken for
     ///
-    /// Measured rather than trusted. A drag that never sees its own end leaves
-    /// the anchor standing, and the offset may have been set anywhere since by
-    /// another body's slider, so an anchor is only worth measuring from where
-    /// the reading could have come from it.
+    /// Measured rather than trusted. The offset may have been set anywhere
+    /// since -- by the rail under the date, or by another body's slider -- so
+    /// a turn is only worth measuring from where the reading could have come
+    /// from it.
     ///
-    /// The far end counts. A slider run to it lands exactly on the beginning of
-    /// the next turn and is held there, which is what the anchor is for.
+    /// Both ends count. A slider run to its far end lands exactly on the
+    /// beginning of the next turn and is held there, which is the whole of
+    /// what this is for.
     fn holds(&self, offset: f64) -> bool {
         offset >= self.turns * self.period
             && offset <= (self.turns + 1.) * self.period
@@ -231,6 +243,22 @@ impl Clock {
         self.offset = 0.;
     }
 
+    /// Which whole turn of `period` a phase is measured in
+    ///
+    /// The turn last written down for this period where the offset still
+    /// stands in it, and whichever turn the offset falls in otherwise. One
+    /// answer for the reading and the write both: a slider drawn from one
+    /// count and written from another is a slider whose handle is somewhere
+    /// its own drag did not put it. See [`Held`].
+    fn turn_in(&self, period: f64) -> f64 {
+        match &self.held {
+            Some(held) if held.period == period && held.holds(self.offset) => {
+                held.turns
+            }
+            _ => (self.offset / period).floor(),
+        }
+    }
+
     /// How far through `period`'s own turn the offset stands, from none of it
     /// to all
     ///
@@ -238,41 +266,37 @@ impl Clock {
     /// slider sets is a span past where its body already stands, so its near
     /// end is that body drawn where it is and its far end is the same place a
     /// turn later.
+    ///
+    /// All of it where a slider stands at its far end, rather than none of
+    /// the turn after: measured in the turn the phase was set in, which is
+    /// what [`Self::turn_in`] answers, so the reading agrees with what the
+    /// drag wrote.
     pub fn through(&self, period: f64) -> f64 {
         if period <= 0. {
             return 0.;
         }
-        let turns = self.offset / period;
-        turns - turns.floor()
-    }
-
-    /// Take hold of the turn a slider over `period` is setting out from
-    ///
-    /// Said when a drag begins, so that [`Self::offset_to`] measures from where
-    /// the slider started rather than from where it has since put the clock.
-    pub fn hold(&mut self, period: f64) {
-        if period > 0. {
-            self.held =
-                Some(Held { period, turns: (self.offset / period).floor() });
-        }
-    }
-
-    /// Let go of it, the drag being over
-    pub fn release(&mut self) {
-        self.held = None;
+        self.offset / period - self.turn_in(period)
     }
 
     /// Run on to `through` of the way round `period`'s own turn
     ///
-    /// Within the turn the slider set out from, so dragging one moves the map
-    /// by at most a single period of the body it is geared to, and moves it
-    /// evenly: a slider run from end to end runs the clock on by exactly one
-    /// turn of that body, with nothing anywhere in the system jumping on the
-    /// way, and that body left exactly where it was found.
+    /// Within the turn the phase is already being read in, so dragging a
+    /// slider moves the map by at most a single period of the body it is
+    /// geared to, and moves it evenly: a slider run from end to end runs the
+    /// clock on by exactly one turn of that body, with nothing anywhere in
+    /// the system jumping on the way, and that body left exactly where it was
+    /// found.
     ///
     /// A moon's slider therefore barely stirs the planet it goes round.
     /// Reaching for the first turn instead would throw the whole system back to
     /// the beginning every time a moon was nudged.
+    ///
+    /// The turn is written down as it is used, so the next reading and the
+    /// next drag measure from the same place this one did. Without it a slider
+    /// at its far end stands exactly on the beginning of the next turn, reads
+    /// back as no phase at all, and the drag after it runs the map on by
+    /// another whole turn -- which is a handle that jumps to the near end when
+    /// it is let go of, and a map that goes forward when it is dragged back.
     ///
     /// The present goes on stepping under this: an offset is a span past it
     /// and not a place, so the map runs on beneath a slider rather than the
@@ -285,13 +309,9 @@ impl Clock {
         if period <= 0. {
             return;
         }
-        let whole = match &self.held {
-            Some(held) if held.period == period && held.holds(self.offset) => {
-                held.turns
-            }
-            _ => (self.offset / period).floor(),
-        };
-        self.offset = ((whole + through) * period).clamp(0., Self::CEILING);
+        let turns = self.turn_in(period);
+        self.offset = ((turns + through) * period).clamp(0., Self::CEILING);
+        self.held = Some(Held { period, turns });
     }
 
     /// Run the map on to `past` seconds past the present
@@ -744,7 +764,6 @@ mod tests {
         clock.follows(read(3000));
 
         let before = clock.since(scanned);
-        clock.hold(period);
         clock.offset_to(period, 1.);
 
         assert_eq!(
@@ -827,20 +846,18 @@ mod tests {
         );
     }
 
-    /// A slider held at its far end leaves the map where it is
+    /// A slider standing at its far end leaves the map where it is
     ///
     /// A phase is cyclic, so the far end of a slider is the same place on the
-    /// orbit as its near end, one turn on. Worked out afresh from the clock
-    /// each frame, that reads back as no phase at all and asks for the turn
-    /// after it, and a slider held there ran the whole system on a period every
-    /// frame.
+    /// orbit as its near end, one turn on. Folded back out of the offset each
+    /// frame, that reads as no phase at all and asks for the turn after it,
+    /// and a slider held there ran the whole system on a period every frame.
     #[test]
     fn a_slider_held_at_its_far_end_stays_put() {
         let day = 86_400.;
         let period = 400. * day;
         let mut clock = Clock { offset: 500. * day, ..default() };
 
-        clock.hold(period);
         clock.offset_to(period, 1.);
         let once = clock.offset;
         for _ in 0..30 {
@@ -851,23 +868,26 @@ mod tests {
             clock.offset, once,
             "the clock ran away while the slider was held"
         );
+        // And reads as the whole turn it stands at rather than as none of the
+        // next one, which is what draws the handle where the drag left it.
+        assert_eq!(clock.through(period), 1.);
     }
 
-    /// An anchor left standing by a drag that never ended is not measured from
+    /// A turn the offset has since left is not measured from
     ///
-    /// `drag_stopped` may never arrive: a panel shut with the pointer down
-    /// leaves the anchor where it is. The offset can be set anywhere else
-    /// before that body's slider is touched again, and measuring from a turn
-    /// the system left long ago throws the whole of it back to that turn.
+    /// The turn a phase was set in is kept, and the offset can be set
+    /// anywhere else afterwards — by the rail under the date, or by another
+    /// body's slider. Measuring from a turn the system left long ago throws
+    /// the whole of it back to that turn.
     #[test]
-    fn an_anchor_from_a_drag_that_never_ended_is_let_go_of() {
+    fn a_turn_the_offset_has_left_is_let_go_of() {
         let day = 86_400.;
         let period = 400. * day;
         let mut clock = Clock { offset: 500. * day, ..default() };
 
-        // A drag that begins and never sees its own end.
-        clock.hold(period);
-        // And the offset moves on, set by some other body's slider.
+        // A phase set in this body's second turn.
+        clock.offset_to(period, 0.25);
+        // And the offset moves on, set by something else.
         clock.offset = 900. * day;
 
         clock.offset_to(period, 0.5);
@@ -875,7 +895,7 @@ mod tests {
         assert_eq!(
             clock.offset,
             2.5 * period,
-            "the anchor threw the system back to the turn it was taken in"
+            "the kept turn threw the system back to where it was taken"
         );
     }
 
@@ -913,21 +933,6 @@ mod tests {
         assert!(!written(&world), "an untouched slider moved the clock");
     }
 
-    /// Taking hold of the slider does not either, until it is dragged
-    ///
-    /// A drag begins on the press, and the turn it sets out from is worked out
-    /// then. Nothing has moved yet, so nothing needs redrawing.
-    #[test]
-    fn taking_hold_of_the_slider_does_not_move_the_clock() {
-        let mut world = holding_a_clock();
-
-        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
-            clock.hold(86_400.);
-        });
-
-        assert!(!written(&world), "holding the slider moved the clock");
-    }
-
     /// Dragging one does
     #[test]
     fn dragging_the_slider_moves_the_clock() {
@@ -952,7 +957,6 @@ mod tests {
         let day = 86_400.;
         let period = 400. * day;
         let mut clock = Clock { offset: 500. * day, ..default() };
-        clock.hold(period);
 
         let mut readings = Vec::new();
         for step in 0..=20 {
@@ -970,20 +974,19 @@ mod tests {
         }
     }
 
-    /// An anchor moves the slider it was taken for and no other
+    /// A kept turn moves the slider it was taken for and no other
     ///
-    /// A drag that never sees its own end leaves the anchor standing: a panel
-    /// shut with the pointer down draws no slider that frame, so nothing says
-    /// the drag is over. The next slider touched must measure its own body's
-    /// turn rather than a count of somebody else's, which for a moon holding a
-    /// planet's count is a clock thrown a long way from anywhere.
+    /// The turn a phase was set in is kept past the drag that set it, so the
+    /// next slider touched must measure its own body's turn rather than a
+    /// count of somebody else's — which for a moon holding a planet's count
+    /// is a clock thrown a long way from anywhere.
     #[test]
-    fn an_anchor_moves_only_the_slider_it_was_taken_for() {
+    fn a_kept_turn_moves_only_the_slider_it_was_taken_for() {
         let day = 86_400.;
         let mut clock = Clock { offset: 500. * day, ..default() };
 
-        // A drag of the planet's slider that never ends.
-        clock.hold(400. * day);
+        // The planet's slider, which leaves its own turn written down.
+        clock.offset_to(400. * day, 0.25);
         // Then the moon's slider is touched.
         clock.offset_to(day, 0.5);
 
