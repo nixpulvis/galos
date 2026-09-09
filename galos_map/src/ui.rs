@@ -4026,9 +4026,12 @@ const SPAN_FLOOR: f64 = 60.;
 /// measured from the turn after that. Where the turn was the ceiling itself
 /// there was nowhere further to go and the reading stuck until `Now`.
 ///
-/// Held at [`Clock::CEILING`], which is as far as the map runs at all. Only a
-/// pair whose turn is longer than that reaches it, and then the rail offers
-/// what there is.
+/// One range, and its far end is [`Clock::CEILING`] where a turn runs past
+/// that. The rail's end and the furthest the clock will go have to be the
+/// same number or the last stretch of the rail asks for spans the clock
+/// answers with the one it stopped at: the handle stands where the pointer
+/// put it, the reading stands at the ceiling, and the two disagree for as
+/// long as the drag lasts.
 ///
 /// Nothing to drag where no orbit in the system has a period recorded: there
 /// is no turn to cover, and a slider over nothing would move the map by
@@ -4043,7 +4046,7 @@ fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
     let moved = ui
         .add_enabled_ui(turn > 0., |ui| {
             ui.add(
-                egui::Slider::new(&mut past, 0.0..=turn.max(SPAN_FLOOR))
+                egui::Slider::new(&mut past, 0.0..=turn)
                     .logarithmic(true)
                     .smallest_positive(SPAN_FLOOR)
                     .show_value(false),
@@ -5105,6 +5108,50 @@ mod tests {
             back < turn / 100.,
             "a drag back to the middle of the rail left the map at {back} \
              of {turn}"
+        );
+    }
+
+    /// And a drag held out past the far end reads as one moment, not two
+    ///
+    /// Reported as a flicker at the handoff: the rail's far end and the
+    /// furthest the clock would go were different numbers, so the stretch
+    /// between them asked for spans the clock answered with the one it
+    /// stopped at. The handle stood where the pointer put it, the reading
+    /// stood at the ceiling, and the drag flicked between the two of them
+    /// frame after frame. One range now, ending exactly where the clock does.
+    #[test]
+    fn a_drag_held_past_the_far_end_stands_at_one_moment() {
+        let ctx = crate::tests::context();
+        let year = 365.25 * 86_400.;
+        // A pair whose own turn runs well past the ceiling, so the rail is
+        // the ceiling's rather than the turn's.
+        let turn = 400_000. * year;
+        let mut clock = Clock::default();
+        let control = |input, clock: &mut Clock| {
+            let mut at = egui::Rect::NOTHING;
+            ctx.run_ui(input, |ui| {
+                clock_control(ui, clock, Some(turn));
+                at = ui.min_rect();
+            });
+            at
+        };
+
+        let _ = control(egui::RawInput::default(), &mut clock);
+        let at = control(egui::RawInput::default(), &mut clock);
+        for input in dragged(at.left_center(), at.width() * 3.) {
+            control(input, &mut clock);
+        }
+
+        // Held there, hand still, while the frames go by.
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            control(egui::RawInput::default(), &mut clock);
+            seen.push(clock.offset());
+        }
+
+        assert!(
+            seen.iter().all(|offset| *offset == Clock::CEILING),
+            "the reading moved under a still hand: {seen:?}"
         );
     }
 
