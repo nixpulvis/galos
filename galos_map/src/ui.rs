@@ -36,7 +36,6 @@ use crate::systems::filter::{
     SPANS, Standstill, Watch,
 };
 use crate::systems::info::Panels;
-use crate::systems::info::lasting;
 use crate::systems::labels::ShowBodyNames;
 use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
@@ -181,13 +180,31 @@ pub(crate) struct KeysOpen(pub(crate) bool);
 #[derive(Resource, Default)]
 pub(crate) struct ClockControl {
     /// Whether the pane is showing it
-    out: bool,
+    ///
+    /// Read outside this module by [`crate::keys`], which puts it away.
+    pub(crate) out: bool,
     /// Which of the turns on offer the rail is asked to cover
     ///
     /// Held here rather than worked out from what is picked out, so that a
     /// reader who asked for the system's own span keeps it while they click
     /// about among its planets. See [`GearedTo`].
     to: GearedTo,
+}
+
+impl ClockControl {
+    /// Put the scrubber away, the map left wherever it put it
+    ///
+    /// What [`crate::keys`] does with an escape, and what clicking the
+    /// reading a second time does. The run-on is not let go of: `Now` is what
+    /// does that, and the span stands in the reading either way, so a reader
+    /// who shut the rail has not lost the moment they set with it.
+    ///
+    /// Written straight rather than asked for, as the bar's form asks: there
+    /// is no field here to take the caret out of, so nothing has to wait for
+    /// the pass that drew it.
+    pub(crate) fn shut(&mut self) {
+        self.out = false;
+    }
 }
 
 /// Whether the moment is read out at all
@@ -4552,8 +4569,13 @@ fn dated(
         .horizontal(|ui| {
             let mut asked = reading(ui, drawn_at(clock));
             if running_on {
+                // In the marks' own words rather than
+                // [`crate::systems::info::lasting`]'s. The two stand in one
+                // line with the switch and `Now` at the end of it, and
+                // `+14989.7 Earth years` -- which is what the far end of a
+                // wide pair's rail comes to -- ran clean through them.
                 asked |=
-                    reading(ui, format!("+{}", lasting(clock.offset() as f32)));
+                    reading(ui, format!("+{}", briefly(clock.offset(), true)));
             }
 
             // The controls stand at the far end of the strip while the
@@ -4868,14 +4890,14 @@ fn marks(ui: &mut Ui, rail: egui::Rect, geared: Geared) {
     if even {
         for quarter in 1..4 {
             let span = turn * quarter as f64 / 4.;
-            wanted.push((span, briefly(span)));
+            wanted.push((span, briefly(span, false)));
         }
     } else {
         for span in MARKED.into_iter().filter(|span| *span < turn) {
-            wanted.push((span, briefly(span)));
+            wanted.push((span, briefly(span, false)));
         }
     }
-    wanted.push((turn, briefly(turn)));
+    wanted.push((turn, briefly(turn, false)));
 
     let gap = ui.spacing().item_spacing.x;
     let inset = handle_radius(rail);
@@ -4934,26 +4956,35 @@ fn marks(ui: &mut Ui, rail: egui::Rect, geared: Geared) {
 
 /// A span in the largest unit it fills, in as few characters as say it
 ///
-/// For the marks under the rail, where a dozen of them stand side by side in
-/// the width of the strip: [`crate::systems::info::lasting`] writes
-/// `18.0 Earth years`, which is the right answer in a panel and four marks'
-/// worth of room here. Whole units only, the mark being a place on a rail
-/// rather than a measurement.
-fn briefly(span: f64) -> String {
+/// For the strip, where the reading, the switch and `Now` share one line and
+/// a dozen marks share the one under it:
+/// [`crate::systems::info::lasting`] writes `18.0 Earth years`, which is the
+/// right answer in a panel and four marks' worth of room here — and at the
+/// ceiling, `+14989.7 Earth years`, which ran clean through the switch.
+///
+/// `fine` asks for a tenth of the unit, which is what the reading wants and
+/// the marks do not: a mark stands at a span chosen to be a whole one, where
+/// a reading has to move as the rail is dragged. `+3 h` held for every drag
+/// across a stretch of the rail is a reading that looks stuck.
+///
+/// Years are whole and grouped either way. A tenth of a year is not
+/// something a reader is asking about out there, and `14989.7 y` is a length
+/// rather than a number; the date beside it is where the moment itself is
+/// read.
+fn briefly(span: f64, fine: bool) -> String {
+    let tenths = usize::from(fine);
     if span < HOUR {
-        format!("{:.0} min", span / MINUTE)
+        format!("{:.*} min", tenths, span / MINUTE)
     } else if span < DAY {
-        format!("{:.0} h", span / HOUR)
+        format!("{:.*} h", tenths, span / HOUR)
     } else if span < 60. * DAY {
-        format!("{:.0} d", span / DAY)
+        format!("{:.*} d", tenths, span / DAY)
     } else if span < 330. * DAY {
         // Months only where a month is the largest unit filled. A year read
         // as `12 mo` is the right number in the wrong unit, and the mark
         // beside it says `10 y`.
-        format!("{:.0} mo", span / (30. * DAY))
+        format!("{:.*} mo", tenths, span / (30. * DAY))
     } else {
-        // Grouped, the far end of a wide pair's rail running to five digits:
-        // `10000 y` is a length rather than a number.
         format!("{} y", thousands((span / YEAR).round() as u64))
     }
 }
@@ -5160,7 +5191,7 @@ const BINDINGS: [(&str, &str); 15] = [
     ("/ or Shift-S", "Search the box for a system"),
     ("Shift-F", "Ask the box for a faction to filter on"),
     ("Shift-R", "Ask the box for a route's jump range"),
-    ("Esc", "Put the form or the bindings away"),
+    ("Esc", "Put the form, the scrubber or the bindings away"),
     ("F1 or ?", "Show or hide these bindings"),
 ];
 
@@ -6208,6 +6239,85 @@ mod tests {
         // And is the wider of the two states by some way, the reading alone
         // being a fraction of it.
         assert!(out.width() > stripped(1600., 400., false).width() * 2.);
+    }
+
+    /// Every word the pass painted, and where it was painted
+    ///
+    /// [`words`] answers what was said and not where, and where is the whole
+    /// question when two things laid out from opposite ends share a line.
+    fn placed(contents: impl FnOnce(&mut Ui)) -> Vec<(String, egui::Rect)> {
+        let ctx = crate::tests::context();
+        let mut contents = Some(contents);
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            if let Some(contents) = contents.take() {
+                contents(ui);
+            }
+        });
+
+        fn walk(shape: &egui::Shape, into: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => into.push((
+                    text.galley.text().to_owned(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                )),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut found = Vec::new();
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut found);
+        }
+        found
+    }
+
+    /// The widest line the strip can hold does not run into itself
+    ///
+    /// Reported: run all the way out, the reading ran clean through the
+    /// switch. The line is a reading laid out from the left and controls laid
+    /// out from the right, and egui does not stop the two meeting in the
+    /// middle -- it widens the `Ui` and the words overlap.
+    ///
+    /// The widest of everything at once: the clock at its ceiling, which is
+    /// the longest date and the longest span the map can stand at, and both
+    /// turns on offer so that the switch is drawn beside `Now`.
+    #[test]
+    fn the_widest_reading_does_not_run_into_the_switch() {
+        let mut clock = Clock::default();
+        clock.offset_at(Clock::CEILING);
+        let mut control = ClockControl { out: true, to: GearedTo::System };
+        let said = placed(|ui| {
+            ui.set_width(STRIP_WIDTH);
+            dated(
+                ui,
+                &mut clock,
+                both_turns(12. * YEAR, Clock::CEILING),
+                &mut control,
+            );
+        });
+
+        let at = |word: &str| {
+            said.iter()
+                .find(|(text, _)| text == word)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{word} was not drawn: {said:?}"))
+        };
+        // The span past the present is the last of the reading, and the
+        // switch is the first of the controls at the other end.
+        let span = at(&format!("+{}", briefly(Clock::CEILING, true)));
+        let switch = at("Body");
+
+        assert!(
+            span.right() < switch.left(),
+            "the reading reached {} and the switch began at {}",
+            span.right(),
+            switch.left()
+        );
     }
 
     /// And on a narrow window it gives way to the bar

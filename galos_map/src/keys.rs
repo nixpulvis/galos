@@ -495,32 +495,45 @@ fn open_search(
     }
 }
 
-/// Put the form away and take the caret out of it
+/// Put away whatever was opened, and take the caret out of it
 ///
 /// Escape, which is where a reader looks for the way out of something they
 /// have opened. What was typed is left standing for whenever the form is
 /// opened again, the form being shut rather than the question thrown out.
 ///
+/// One escape is the way out of one thing, and the thing it means is the last
+/// one opened. Three things can be out at once and they shut in that order:
+/// the bindings window is read over everything and takes itself down — see
+/// [`toggle_keys`], which is the other half of what this says about the one
+/// key — then the bar's form, which is the one that may be holding the caret,
+/// and then the clock's scrubber. Ungated, one press answered all of them:
+/// the form collapsed behind a window the user was only reading, and the
+/// scrubber went with a form the user was only typing in.
+///
 /// The one binding that answers while a field is being typed into, and it has
 /// to: a caret in a field is the state this exists to undo. Nothing is lost by
 /// its doing so, an escape being no part of any name.
-///
-/// Stands down while the bindings window is up, which is the other half of
-/// what [`toggle_keys`] says about the same key. One escape is the way out of
-/// one thing, and the thing it means is the last one opened: the window is
-/// opened over the form and shuts first. Ungated, both answered the one press
-/// — the form collapsing behind a window the user was only reading — and
-/// there was no way to put away just the one.
 fn shut_search(
     keys: Res<ButtonInput<KeyCode>>,
     open: Res<crate::ui::KeysOpen>,
     mut bar: ResMut<BarFields>,
+    mut clock: ResMut<crate::ui::ClockControl>,
 ) {
     if open.0 {
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) && bare(&keys) {
-        bar.shut();
+    if !(keys.just_pressed(KeyCode::Escape) && bare(&keys)) {
+        return;
+    }
+
+    // The form, whether or not one is out: asking for it to be put away is
+    // harmless where it already is, and only the pass that drew its fields
+    // can say which of them held the caret.
+    bar.shut();
+    // And the scrubber only where no form was out, so that one press does not
+    // put away two things.
+    if bar.asking.is_none() {
+        clock.shut();
     }
 }
 
@@ -1210,6 +1223,7 @@ mod tests {
         let mut app = world();
         app.init_resource::<BarFields>();
         app.init_resource::<crate::ui::KeysOpen>();
+        app.init_resource::<crate::ui::ClockControl>();
         app.add_systems(
             Update,
             (open_search, shut_search, toggle_keys).chain(),
@@ -1372,6 +1386,49 @@ mod tests {
         // With the window down, the next one is the form's as it always was.
         pressed(&mut app, &[KeyCode::Escape]);
         assert!(shutting(&app), "the form no longer answers an escape");
+    }
+
+    /// Whether the scrubber is out
+    fn scrubbing(app: &App) -> bool {
+        app.world().resource::<crate::ui::ClockControl>().out
+    }
+
+    /// Put the scrubber out, as a click on the reading does
+    fn scrub(app: &mut App) {
+        app.world_mut().resource_mut::<crate::ui::ClockControl>().out = true;
+    }
+
+    /// An escape puts the scrubber away where no form is out
+    ///
+    /// The clock's rail is opened by a click on the reading and was shut only
+    /// by a second one. Everything else the map opens is put away by the key
+    /// a reader looks for, and a panel that is the one exception is a panel
+    /// nobody can dismiss without hunting for the thing they clicked.
+    #[test]
+    fn an_escape_puts_the_scrubber_away() {
+        let mut app = barred();
+        scrub(&mut app);
+
+        pressed(&mut app, &[KeyCode::Escape]);
+
+        assert!(!scrubbing(&app));
+    }
+
+    /// And puts away the form rather than both of them
+    ///
+    /// One escape is the way out of one thing. The form is the one that may
+    /// be holding the caret, so it goes first and the rail stands until the
+    /// next press.
+    #[test]
+    fn an_escape_over_a_form_leaves_the_scrubber_out() {
+        let mut app = barred();
+        scrub(&mut app);
+        app.world_mut().resource_mut::<BarFields>().open(AskMode::System);
+
+        pressed(&mut app, &[KeyCode::Escape]);
+
+        assert!(shutting(&app), "the form was left standing");
+        assert!(scrubbing(&app), "the scrubber went with the form");
     }
 
     /// A world where the bindings can be asked for

@@ -107,7 +107,7 @@ started on a slider goes on talking to the slider wherever the pointer wanders.
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for a route's jump range |
-| `Esc` | Put the form or the bindings away |
+| `Esc` | Put the form, the scrubber or the bindings away |
 | `F1` or `?` | Show or hide these bindings |
 
 Panning and zooming cover ground in proportion to how far out the camera is, so
@@ -119,5 +119,9 @@ three that put a question in the bar's box, and the `?` that opens the key
 list. Held with control, command or alt, a key is left alone. So is every one
 of them while a field is being typed into, apart from the escape that puts the
 field away.
+
+One escape is the way out of one thing, and the thing it means is the last
+one opened: the bindings window, then the bar's form, then the clock's
+scrubber.
 
 The map is quit by closing its window.
