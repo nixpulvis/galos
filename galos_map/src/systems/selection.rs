@@ -52,7 +52,7 @@ pub fn plugin(app: &mut App) {
     // selection by a frame.
     app.add_systems(
         Update,
-        (nothing_clicked, clear_not_drawn, follow_selection)
+        (nothing_clicked, clear_not_drawn, follow_selection, stand_bodies)
             .chain()
             .in_set(MapSet::Present)
             .after(super::pointing::point_at),
@@ -89,18 +89,19 @@ pub enum Picked {
     Body(PickedBody),
 }
 
-/// A body picked out, as the map knew it at the moment it was picked
+/// A body picked out, as the map knows it
 ///
 /// Everything a row needs and nothing that has to be asked of the map again:
 /// where a row is drawn from has nothing to do with where the camera is, so
-/// its place is taken once here rather than worked out afresh every frame.
+/// the place is carried here rather than looked up wherever it is wanted.
 ///
-/// Which makes the place a reading and not a fact. The clock moves everything
-/// inside a system, so a body picked out and then left standing while the
-/// clock runs is somewhere else by now, and anything that wants where it is
-/// rather than where it was asks
-/// [`crate::systems::bodies::spawn::Places::of`] instead -- the ring drawn
-/// round it does, and so does the camera keeping it under itself. See
+/// Which makes it a reading and not a fact, the clock moving everything
+/// inside a system. So [`stand_bodies`] tells it where the body now stands,
+/// once a frame and past change detection, and what reads it -- the row, the
+/// space bar, the bar's travel button -- reads where the body is. What is
+/// drawn asks the map directly instead, through
+/// [`crate::systems::bodies::spawn::Places::of`]: the ring round a body does,
+/// and so does the camera keeping one under itself. See
 /// [`crate::camera::Carried`].
 #[derive(Clone)]
 pub struct PickedBody {
@@ -421,10 +422,9 @@ pub struct Selected;
 /// have been fetched some time ago, and a later fetch replaces the row
 /// without the selection hearing of it. So a row that has changed is copied
 /// back, and what is picked out is the row the map holds rather than the one
-/// it held when the user pointed at it. Nothing does this for a body: what a
-/// body is beyond where it stands was settled when it was drawn, and what a
-/// body's row says about the place is a reading of one moment which nothing
-/// here is in a position to take again.
+/// it held when the user pointed at it. Nothing about a body but its place is
+/// copied back: what a body is was settled when it was drawn, and where it
+/// stands is [`stand_bodies`]'s, in the pass straight after this one.
 ///
 /// A body with no entity is let go of, where a system with none is kept. That
 /// is the one place the two part company, and the reason is what can name
@@ -527,6 +527,48 @@ fn follow_selection(
             at += 1;
             keep
         });
+    }
+}
+
+/// Keep a picked body's place where the body now stands
+///
+/// The clock moves everything inside a system, so the place taken when a body
+/// was picked out is out of date the moment the map is run on. What reads that
+/// place is what sends the camera to it -- the space bar, and the bar's own
+/// travel button -- and what says how far off it is, so a body picked out and
+/// then run on a year was flown to where it had been rather than to where it
+/// is. Reported of the space bar, which is where a reader meets it: fly to the
+/// planet you are watching and the camera goes to the empty sky it left.
+///
+/// Written past change detection. A body walking round its own orbit is not a
+/// change in what is picked out, and [`super::fetch::fetch_selected`] asks the
+/// database again on exactly that mark -- read the ordinary way, every second
+/// the game's clock steps would re-ask for every system picked out.
+///
+/// Only where it has moved, and only for a body the map is drawing. A body
+/// whose system the camera has left has no place to be told about, and
+/// [`follow_selection`] lets go of it in the same pass.
+fn stand_bodies(
+    mut selection: ResMut<Selection>,
+    bodies: Query<(Entity, &Body)>,
+    places: Places,
+) {
+    let picked = selection.bypass_change_detection();
+
+    for one in &mut picked.0 {
+        let Picked::Body(body) = one else { continue };
+        let standing = bodies
+            .iter()
+            .find(|(_, drawn)| {
+                drawn.address == body.address && drawn.id == body.id
+            })
+            .and_then(|(drawn, _)| places.of(drawn));
+
+        if let Some(place) = standing
+            && place != body.at
+        {
+            body.at = place;
+        }
     }
 }
 
@@ -959,6 +1001,68 @@ mod tests {
     /// Whether anything is still held
     fn holding(app: &App) -> bool {
         !app.world().resource::<Selection>().is_empty()
+    }
+
+    /// How many frames have found the selection written to
+    ///
+    /// What `fetch::fetch_selected` goes by, and the reason a body's place is
+    /// told past change detection.
+    #[derive(Resource, Default)]
+    struct Writes(usize);
+
+    fn count_writes(mut writes: ResMut<Writes>, selection: Res<Selection>) {
+        writes.0 += usize::from(selection.is_changed());
+    }
+
+    /// A body picked out is told where it now stands
+    ///
+    /// Reported of the space bar: fly to the body being watched after running
+    /// the clock on and the camera goes to the empty sky the body left. What
+    /// sends it there reads the place the selection carries, so that place has
+    /// to be the one the body is at rather than the one it was picked at.
+    #[test]
+    fn a_picked_body_is_told_where_it_stands() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Writes>();
+        let mut selection = Selection::default();
+        selection.set(picked_body(1, 1));
+        app.insert_resource(selection);
+
+        let grid = crate::space::system_grid();
+        let at = app
+            .world_mut()
+            .spawn((crate::systems::tests::at(1, 0.), grid.clone()))
+            .id();
+        let (cell, offset) = grid.translation_to_grid(DVec3::new(1e11, 0., 0.));
+        app.world_mut().spawn((
+            body(1, 1),
+            cell,
+            Transform::from_translation(offset),
+            ChildOf(at),
+        ));
+        app.add_systems(Update, (stand_bodies, count_writes).chain());
+
+        app.update();
+
+        let place = app.world().resource::<Selection>().position(0);
+        assert_eq!(
+            place,
+            Some(crate::space::light_years(DVec3::new(1e11, 0., 0.))),
+            "the place the body was picked at was kept"
+        );
+
+        // The selection arriving is a change of its own, so it is the second
+        // frame that says whether telling a body where it stands counts as
+        // one. It must not: what reads that mark asks the database again for
+        // every system picked out.
+        let counted = app.world().resource::<Writes>().0;
+        app.update();
+        assert_eq!(
+            app.world().resource::<Writes>().0,
+            counted,
+            "a body standing where it stands read as a new selection"
+        );
     }
 
     /// A click on empty sky lets go of the selection
