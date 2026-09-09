@@ -1116,11 +1116,6 @@ pub(crate) fn chrome(
             "Orbit Lines",
             "Show the orbit each body follows",
         );
-        // The control alone. What moment it comes to is a reading rather than a
-        // setting, and a reading belongs where the user is already looking:
-        // under the bar, beside what else the map is saying about where it
-        // stands. See [`dated`].
-        mark_if_moved(&mut settings.clock, |clock| game_clock(ui, clock));
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
@@ -3893,25 +3888,6 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     response.gained_focus()
 }
 
-/// Whether the map stands where the game's clock has carried a system
-///
-/// The one setting of the three parts. What moment that comes to is said under
-/// the bar by [`dated`], and how far past it a slider has run the map is set by
-/// the sliders themselves, under the bodies they are geared to.
-fn game_clock(ui: &mut Ui, clock: &mut Clock) {
-    let mut following = clock.following();
-    if check(
-        ui,
-        &mut following,
-        "Game Clock",
-        "Place every body where the game's own clock has carried it",
-    )
-    .changed()
-    {
-        clock.follow(following);
-    }
-}
-
 /// Say what moment the system is drawn at, under the bar
 ///
 /// A line of the same kind as the count of what is in reach beside it: what the
@@ -3920,11 +3896,11 @@ fn game_clock(ui: &mut Ui, clock: &mut Clock) {
 /// screen raises — when is this — and it is the only place the map ever says
 /// what day the game is on.
 ///
-/// The date alone while the map stands where the game's clock puts it, which is
-/// most of the time. A slider dragged under a body puts the map some span past
-/// that, and then the span is named beside the date and can be let go of: the
-/// sliders each cover one turn of their own body, so none of them can reach
-/// back to nothing on its own.
+/// The date alone while nothing has run the map on, which is how it opens on
+/// every system. A slider dragged under a body puts the map some span past
+/// where the game's clock has carried it, and then the span is named beside
+/// the date and can be let go of: the sliders each cover one turn of their own
+/// body, so none of them can reach back to nothing on its own.
 ///
 /// Nothing at all where no system is held. The moment is counted from the one a
 /// system was last heard from, so with no system there is nothing to count from
@@ -4826,17 +4802,6 @@ mod tests {
             drawn_at(&clock, ours("2024-02-29T09:00:00Z")),
             "3310-02-28 09:00"
         );
-    }
-
-    /// The pane offers the game's clock and nothing else about it
-    ///
-    /// What moment it comes to is a reading, and a reading belongs under the
-    /// bar where the user is already looking rather than behind the gear.
-    #[test]
-    fn the_pane_offers_the_games_clock_and_no_reading() {
-        let said = words(|ui| game_clock(ui, &mut Clock::default()));
-
-        assert_eq!(said, vec!["Game Clock".to_owned()]);
     }
 
     /// A system nobody has scanned has no moment to be drawn at

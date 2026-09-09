@@ -46,9 +46,9 @@ const WITHIN: f64 = 1.;
 /// What moment a system is drawn at
 ///
 /// Two numbers make it: where the game's own clock stands, and the offset past
-/// that a slider has been dragged to. The reading
-/// everything is placed from is the two together, and it is worked out rather
-/// than kept, so there is no third number to fall out of step with them.
+/// that a slider has been dragged to. The reading everything is placed from is
+/// the two together, and it is worked out rather than kept, so there is no
+/// third number to fall out of step with them.
 ///
 /// Seconds, and one reading for the whole system, so what is drawn is always a
 /// single moment rather than an arrangement composed body by body. Which moment
@@ -57,7 +57,7 @@ const WITHIN: f64 = 1.;
 /// how long before this reading's zero it was read, and the walk that places a
 /// moon runs each step of itself on from the scan that step actually has. See
 /// [`galos_index::orbit::Orbit::behind`].
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct Clock {
     /// Where the game's own clock stands, in seconds past the moment the system
     /// being held was last heard from
@@ -80,14 +80,6 @@ pub struct Clock {
     /// body of one takes a median 993 times as long to come round as its
     /// fastest, and in Sol it is four million times.
     offset: f64,
-    /// Whether the map stands at the game's own moment or at the scans
-    ///
-    /// The game's to begin with: a map of where things are is worth more than a
-    /// map of where they were seen, and the one thing the reading cannot be
-    /// read off the rows is which day it is. Turned off, the map stands where
-    /// the system was last heard from — which is what the rows actually
-    /// recorded — and the offset runs on from there instead.
-    following: bool,
     /// The whole turns the slider being dragged set out from, while one is
     ///
     /// A slider covers one turn of its own body, and a phase is cyclic: its
@@ -101,12 +93,6 @@ pub struct Clock {
     /// One of these for the map rather than one per slider, there being one
     /// pointer and so one slider ever being dragged.
     held: Option<Held>,
-}
-
-impl Default for Clock {
-    fn default() -> Self {
-        Clock { live: 0., offset: 0., following: true, held: None }
-    }
 }
 
 /// The slider a drag has hold of
@@ -143,39 +129,21 @@ impl Clock {
     /// The moment everything is placed at, in seconds past the one the system
     /// was last heard from
     ///
-    /// Where the game stands, plus the offset past it.
-    /// Worked out rather than kept: the two it is made of are what anything
-    /// sets, so there is nothing here to put back in step with them.
+    /// Where the game's clock stands, plus the offset past it. Worked out
+    /// rather than kept: the two it is made of are what anything sets, so
+    /// there is nothing here to put back in step with them.
     pub fn at(&self) -> f64 {
-        let standing = if self.following { self.live } else { 0. };
-
-        standing + self.offset
+        self.live + self.offset
     }
 
-    /// How far past where the map would otherwise stand it has been run on, in
+    /// How far past where the game's clock stands the map has been run on, in
     /// seconds
     pub fn offset(&self) -> f64 {
         self.offset
     }
 
-    /// Whether the map stands at the game's own moment rather than at the scans
-    pub fn following(&self) -> bool {
-        self.following
-    }
-
-    /// Stand at one or the other
-    ///
-    /// The offset is kept and goes on being measured from wherever this leaves
-    /// the map, an offset being a span rather than a place.
-    pub fn follow(&mut self, following: bool) {
-        self.following = following;
-    }
-
     /// Read where the game's own clock stands, `now` against a system last
     /// heard from at `recorded`
-    ///
-    /// Read whether the map is standing there or not, so that turning it back
-    /// on is the frame it happens on rather than the frame after.
     ///
     /// Stepped in whole [`WITHIN`] rather than followed exactly. Everything in
     /// a system is placed afresh whenever the reading moves, so following it to
@@ -194,8 +162,8 @@ impl Clock {
 
     /// Let go of the offset
     ///
-    /// Back to where the map would stand untouched, which under the game's
-    /// clock is where everything is now.
+    /// Back to where the game's clock has carried everything, which is where
+    /// the map stands untouched.
     pub fn reset(&mut self) {
         self.offset = 0.;
     }
@@ -269,9 +237,7 @@ impl Clock {
 ///
 /// The reading is what is compared, and not the turn a drag set out from: the
 /// places are worked out from the reading, and taking hold of the slider moves
-/// nothing until it is dragged. The reading rather than the two numbers behind
-/// it, so that the game's clock stepping on while the map is standing at the
-/// scans is not a system redrawn for a step nothing was placed from.
+/// nothing until it is dragged.
 pub(crate) fn mark_if_moved<T>(
     clock: &mut impl DetectChangesMut<Inner = Clock>,
     with: impl FnOnce(&mut Clock) -> T,
@@ -647,21 +613,22 @@ mod tests {
         assert_eq!(clock.through(period), 0.5, "the slider moved on its own");
     }
 
-    /// Standing at the scans instead keeps the offset
+    /// Letting go of the offset leaves the map on the game's clock
     ///
-    /// An offset is a span, so it is measured from wherever the map is left
-    /// standing rather than being thrown away with the moment it was set at.
+    /// An offset is a span past where the game has carried everything, so
+    /// dropping it drops the span rather than the moment it was measured
+    /// from.
     #[test]
-    fn standing_at_the_scans_keeps_the_offset() {
+    fn letting_go_of_the_offset_leaves_the_games_clock() {
         let day = 86_400.;
         let mut clock = Clock { live: 3000. * day, ..default() };
         clock.offset_to(400. * day, 0.5);
 
-        clock.follow(false);
+        assert_eq!(clock.at(), 3200. * day, "the offset missed the clock");
 
-        assert_eq!(clock.at(), 200. * day, "the map did not reach the scans");
         clock.reset();
-        assert_eq!(clock.at(), 0., "letting go of the offset left some of it");
+
+        assert_eq!(clock.at(), 3000. * day, "the map left the game's clock");
     }
 
     /// Dragging a slider stays in the turn its body is already in
@@ -856,7 +823,7 @@ mod tests {
         DateTime::UNIX_EPOCH + chrono::TimeDelta::days(days)
     }
 
-    /// The map opens on the game's clock rather than on the scans
+    /// The map opens where the game's clock has carried everything
     ///
     /// A map of where things are is worth more than a map of where they were
     /// seen, and which day it is is the one thing the reading cannot be read
@@ -865,8 +832,8 @@ mod tests {
     fn the_map_opens_on_the_games_clock() {
         let clock = Clock::default();
 
-        assert!(clock.following());
         assert_eq!(clock.offset(), 0., "the map opened already run on");
+        assert_eq!(clock.at(), clock.live, "the map opened off the clock");
     }
 
     /// Reading the game's clock puts the map however long it has been past the
@@ -877,22 +844,6 @@ mod tests {
 
         clock.follows(read(20_000), read(19_000));
 
-        assert_eq!(clock.at(), 1000. * 86_400.);
-    }
-
-    /// And is read whether the map is standing there or not
-    ///
-    /// So that standing back on it is the frame that happens on rather than the
-    /// frame after, which is a system drawn once at the scans on the way.
-    #[test]
-    fn the_game_is_read_even_while_the_map_stands_at_the_scans() {
-        let mut clock = Clock::default();
-        clock.follow(false);
-
-        clock.follows(read(20_000), read(19_000));
-        assert_eq!(clock.at(), 0., "the map left the scans on its own");
-
-        clock.follow(true);
         assert_eq!(clock.at(), 1000. * 86_400.);
     }
 
@@ -963,28 +914,7 @@ mod tests {
             clock.follows(read(20_000), read(19_000));
         });
 
-        assert!(written(&world), "the map stood at its scans");
-    }
-
-    /// The game's clock stepping on while the map stands at the scans is not a
-    /// redraw
-    ///
-    /// It is read either way, so that standing back on it is instant. Nothing
-    /// is placed from it while the map is at the scans, and a system rebuilt
-    /// once a second for a number nothing is drawing from is the whole of that
-    /// system's insides for nothing.
-    #[test]
-    fn the_game_stepping_on_behind_the_scans_is_not_a_redraw() {
-        let mut world = holding_a_clock();
-        world.resource_mut::<Clock>().bypass_change_detection().follow(false);
-        world.clear_trackers();
-        world.increment_change_tick();
-
-        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
-            clock.follows(read(20_000), read(19_000));
-        });
-
-        assert!(!written(&world), "a reading nothing draws from redrew it");
+        assert!(written(&world), "the clock was left where it was");
     }
 
     /// A system is counted from the newest of its scans

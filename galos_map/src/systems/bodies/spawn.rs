@@ -1368,11 +1368,11 @@ fn dashed(path: &[Vec3], run: usize) -> Vec<Vec3> {
     points
 }
 
-/// Keep the clock on the game's own
+/// Keep the map on the game's own clock
 ///
-/// Only while the map is following it. A slider dragged under a body takes the
-/// clock off it, that being what dragging one is for, and the settings pane is
-/// where it is handed back.
+/// Every frame, since the game's clock steps on whether the map is being
+/// touched or not. A slider runs the map some span past this rather than off
+/// it, so there is nothing here to hand back.
 ///
 /// Nothing until a system's rows are in. Which moment the reading counts from
 /// is the newest of that system's scans, so until there are scans there is
