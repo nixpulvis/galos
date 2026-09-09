@@ -126,6 +126,23 @@ impl Held {
 }
 
 impl Clock {
+    /// How far past the present the map will run a system, in seconds
+    ///
+    /// Ten thousand years, and three things want a bound of about this size.
+    /// A place worked out ten thousand years past the scan its elements were
+    /// read from is a story rather than a reading. A slider geared to the
+    /// widest orbit a system has can be geared to a wide pair's own turn,
+    /// which runs to hundreds of thousands of years, and a rail that long
+    /// spends its whole length out where nothing is recognisable. And a
+    /// moment has to be a date something can hold: the reported crash was
+    /// `DateTime + TimeDelta` overflowing, a slider having run the offset up
+    /// by one of those turns per frame.
+    ///
+    /// Reached rather than refused, so a drag that asks for more is answered
+    /// with as much of it as there is: the map stands ten thousand years on
+    /// and says so.
+    pub const CEILING: f64 = 10_000. * 365.25 * 86_400.;
+
     /// The moment everything is placed at, in seconds past the one the system
     /// was last heard from
     ///
@@ -214,6 +231,10 @@ impl Clock {
     /// The map goes on standing where the game's clock puts it under this: an
     /// offset is a span past that and not a place, so the whole system runs on
     /// beneath it rather than it being overruled by them.
+    ///
+    /// Held at [`Self::CEILING`], which is what stops a slider geared to a
+    /// wide pair's own turn from running the map somewhere no date can be
+    /// written for.
     pub fn offset_to(&mut self, period: f64, through: f64) {
         if period <= 0. {
             return;
@@ -224,7 +245,7 @@ impl Clock {
             }
             _ => (self.offset / period).floor(),
         };
-        self.offset = (whole + through) * period;
+        self.offset = ((whole + through) * period).clamp(0., Self::CEILING);
     }
 }
 

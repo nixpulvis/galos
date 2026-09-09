@@ -1234,6 +1234,16 @@ fn circling(
 ///
 /// Nothing to drag where the period is unrecorded, there being no turn to be a
 /// fraction of.
+///
+/// The percentage is formatted rather than rounded. Egui clamps and rounds
+/// the value it is handed before anything is drawn, and reports a slider
+/// nobody touched as changed when the rounding moved it -- so a rail that
+/// rounded to a tenth of a percent wrote that tenth back into the clock every
+/// frame the phase was anything else. With another slider under the date
+/// setting the same offset, the two fought over it frame by frame and the
+/// date flickered between them; a phase that rounded up to a whole 100% took
+/// the map on by one of this body's turns every frame, which is what ran the
+/// reading off the end of what a date can hold.
 fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
     ui.horizontal(|ui| {
         ui.add_space(NEST);
@@ -1245,8 +1255,7 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
         .add_enabled_ui(period > 0., |ui| {
             ui.add(
                 egui::Slider::new(&mut through, 0.0..=100.)
-                    .suffix("%")
-                    .max_decimals(1),
+                    .custom_formatter(|through, _| format!("{through:.1}%")),
             )
         })
         .inner;
@@ -2115,6 +2124,37 @@ mod tests {
             !said(None).iter().any(|word| word.starts_with("Guessed")),
             "a place nobody guessed at was called a guess"
         );
+    }
+
+    /// A phase slider nobody has touched leaves the clock exactly where it is
+    ///
+    /// Reported: holding the slider under the date left the reading flicking
+    /// between two moments, and a while later the map crashed dating one --
+    /// `DateTime + TimeDelta` overflowed. Egui clamps and rounds the value a
+    /// slider is handed before it draws it, and reports a slider nobody
+    /// touched as changed when the rounding moved it. So a rail that rounded
+    /// to a tenth of a percent wrote that tenth back into the clock every
+    /// frame the phase was anything else: it fought the slider that was
+    /// actually being dragged, and where the phase rounded up to a whole
+    /// 100% it took the map on by one of this body's turns per frame.
+    #[test]
+    fn an_untouched_phase_slider_leaves_the_clock_alone() {
+        let ctx = context();
+        let period = 400. * DAY;
+        let mut clock = crate::systems::bodies::Clock::default();
+        // A phase that is no round tenth of a percent of its own turn.
+        clock.offset_to(period, 0.374_838_71);
+        let was = clock.at();
+
+        for _ in 0..4 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::Grid::new("phase").show(ui, |ui| {
+                    turned(ui, period, &mut clock);
+                });
+            });
+        }
+
+        assert_eq!(clock.at(), was, "an untouched slider moved the clock");
     }
 
     /// A body's panel reads in the units a body is talked about in

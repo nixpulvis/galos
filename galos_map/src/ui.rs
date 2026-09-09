@@ -4018,11 +4018,16 @@ const SPAN_FLOOR: f64 = 60.;
 /// what a number on the rail would have said and says it in the units a
 /// reader thinks in.
 ///
+/// Held at [`Clock::CEILING`], which is the furthest the map runs at all. The
+/// widest orbit of a wide pair takes hundreds of thousands of years to come
+/// round, and a rail whose far end is that turn spends every stretch of
+/// itself out past where the clock will go.
+///
 /// Nothing to drag where no orbit in the system has a period recorded: there
 /// is no turn to cover, and a slider over nothing would move the map by
 /// nothing however far it was dragged.
 fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
-    let turn = turn.unwrap_or(0.);
+    let turn = turn.unwrap_or(0.).min(Clock::CEILING);
     let mut past = clock.through(turn) * turn;
     fill_width(ui, 0.);
     let moved = ui
@@ -5040,6 +5045,25 @@ mod tests {
 
         line(clicking(date), &mut control);
         assert!(!control.out, "a second click left the slider out");
+    }
+
+    /// A rail geared to a wide pair's turn stops where the clock does
+    ///
+    /// Reported as a crash: `DateTime + TimeDelta` overflowed. The widest
+    /// orbit a system has can be a pair's own, hundreds of thousands of years
+    /// round, and the far end of a rail geared to that is a moment no date
+    /// can be written for. Both ends of it are held: the clock will not run
+    /// past its ceiling, and the rail does not offer to.
+    #[test]
+    fn a_rail_past_the_ceiling_stops_at_it() {
+        let year = 365.25 * 86_400.;
+        let clock = slid(300_000. * year, 2.);
+
+        assert_eq!(clock.offset(), Clock::CEILING);
+        assert_eq!(
+            drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
+            "17 MAR 13301 00:00:00"
+        );
     }
 
     /// The status slider runs the system on by one turn of its widest orbit
