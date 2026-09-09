@@ -4705,53 +4705,66 @@ fn dated(
     let out = control.out;
     let running_on = clock.offset() != 0.;
     let clicked = ui
-        .horizontal(|ui| {
-            let mut asked = reading(ui, drawn_at(clock));
-            if running_on {
-                // In the marks' own words rather than
-                // [`crate::systems::info::lasting`]'s. The two stand in one
-                // line with the switch and `Now` at the end of it, and
-                // `+14989.7 Earth years` -- which is what the far end of a
-                // wide pair's rail comes to -- ran clean through them.
-                asked |=
-                    reading(ui, format!("+{}", briefly(clock.offset(), true)));
-            }
+        // To the height the bar's box comes to, and its contents laid
+        // level in it, so that the reading stands on the same line as the
+        // field and the gear hung on the field's own middle. Both panes are
+        // at the top of the viewport behind the same padding, so the one
+        // thing that had them out of true was that a field is padded inside
+        // and a line of text is not: the reading sat a few points high of
+        // the box beside it. See [`field_height`].
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), field_height(ui)),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                let mut asked = reading(ui, drawn_at(clock));
+                if running_on {
+                    // In the marks' own words rather than
+                    // [`crate::systems::info::lasting`]'s. The two stand in one
+                    // line with the switch and `Now` at the end of it, and
+                    // `+14989.7 Earth years` -- which is what the far end of a
+                    // wide pair's rail comes to -- ran clean through them.
+                    asked |= reading(
+                        ui,
+                        format!("+{}", briefly(clock.offset(), true)),
+                    );
+                }
 
-            // The controls stand at the far end of the strip while the
-            // scrubber is out, which is what fills a line the reading only
-            // half covers, and is a place they keep: read beside the span
-            // they are about, they walk along the line as it grows a digit.
-            //
-            // Beside the span while the strip is shut, there being no width
-            // to stand at the end of: the strip is then only as wide as what
-            // is written in it, and there is no rail to gear.
-            let mut let_go = false;
-            if out {
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        if running_on {
-                            let_go = ui.small_button("Now").clicked();
-                        }
-                        // Beside `Now` at the far end rather than beside the
-                        // reading: the span in the reading grows and shrinks
-                        // as the rail is dragged, and a switch that slid
-                        // along above the rail with it would be a control
-                        // moving under the hand using it.
-                        if turns.choice() {
-                            gearing(ui, &mut control.to);
-                        }
-                    },
-                );
-            } else if running_on {
-                let_go = ui.small_button("Now").clicked();
-            }
-            if let_go {
-                clock.reset();
-            }
+                // The controls stand at the far end of the strip while the
+                // scrubber is out, which is what fills a line the reading only
+                // half covers, and is a place they keep: read beside the span
+                // they are about, they walk along the line as it grows a digit.
+                //
+                // Beside the span while the strip is shut, there being no width
+                // to stand at the end of: the strip is then only as wide as what
+                // is written in it, and there is no rail to gear.
+                let mut let_go = false;
+                if out {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if running_on {
+                                let_go = ui.small_button("Now").clicked();
+                            }
+                            // Beside `Now` at the far end rather than beside the
+                            // reading: the span in the reading grows and shrinks
+                            // as the rail is dragged, and a switch that slid
+                            // along above the rail with it would be a control
+                            // moving under the hand using it.
+                            if turns.choice() {
+                                gearing(ui, &mut control.to);
+                            }
+                        },
+                    );
+                } else if running_on {
+                    let_go = ui.small_button("Now").clicked();
+                }
+                if let_go {
+                    clock.reset();
+                }
 
-            asked
-        })
+                asked
+            },
+        )
         .inner;
     if clicked {
         control.out = !control.out;
@@ -5834,6 +5847,23 @@ fn entered(response: &Response, ui: &Ui) -> bool {
 const FIELD_PADDING: egui::Margin =
     egui::Margin { left: 4, right: 4, top: 4, bottom: 4 };
 
+/// How tall a row holding one text field comes to
+///
+/// What [`singleline`] takes: one row of the face the chrome is lettered in,
+/// which is what a single line `TextEdit` asks for, and [`FIELD_PADDING`]
+/// above and below it. No floor at `interact_size`: egui puts one under a
+/// button and not under a field.
+///
+/// Read by [`dated`] as well, whose first row is a line of text rather than a
+/// field and which stands level with the bar's box. Worked out rather than
+/// measured off a drawn field, the pane that wants it being a different pane
+/// and drawn before the field is. Held to the field itself by
+/// `the_reading_stands_level_with_the_box`.
+fn field_height(ui: &Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Body)
+        + (FIELD_PADDING.top + FIELD_PADDING.bottom) as f32
+}
+
 /// The border a text field keeps while nothing is happening to it
 ///
 /// Egui draws a field at rest with no fill and no border, leaving nothing on
@@ -6625,6 +6655,100 @@ mod tests {
         let mut found = Vec::new();
         for shape in &output.shapes {
             walk(&shape.shape, &mut found);
+        }
+        found
+    }
+
+    /// The reading stands level with the search box
+    ///
+    /// The three things across the top of the map are one row: the gear, the
+    /// bar's box and the clock's reading. The gear is hung on the box's own
+    /// middle, so it follows wherever the box goes; the reading is in a pane
+    /// of its own and had to be put level by hand. It sat a few points high,
+    /// a field being padded inside where a line of text is not.
+    ///
+    /// Drawn as [`chrome`] draws them: two panes at the same top, in the same
+    /// frame, each holding its own first row.
+    #[test]
+    fn the_reading_stands_level_with_the_box() {
+        let ctx = crate::tests::context();
+        let mut clock = Clock::default();
+        let mut typed = None;
+        let mut box_at = egui::Rect::NOTHING;
+        let mut painted = None;
+        // Several passes: an area is placed at the size it last came out at,
+        // and the first of them paints nothing at all.
+        for _ in 0..4 {
+            painted = Some(ctx.run_ui(egui::RawInput::default(), |ui| {
+                let ctx = ui.ctx().clone();
+                Dropping {
+                    id: "a-bar",
+                    standing: Standing::At(egui::pos2(MARGIN, MARGIN)),
+                    out: false,
+                    width: BAR_WIDTH,
+                    holds_width: true,
+                }
+                .show(&ctx, |ui| {
+                    box_at =
+                        ask_box(ui, &mut typed, "Search", false, false).0.rect;
+                });
+                Dropping {
+                    id: "a-strip",
+                    standing: Standing::At(egui::pos2(600., MARGIN)),
+                    out: false,
+                    width: STRIP_WIDTH,
+                    holds_width: false,
+                }
+                .show(&ctx, |ui| {
+                    dated(
+                        ui,
+                        &mut clock,
+                        Turns::default(),
+                        &mut ClockControl::default(),
+                    );
+                });
+            }));
+        }
+
+        let output = painted.expect("a pass was drawn");
+        let said = drawn_at(&clock);
+        let reading = spoken_at(&output, &said)
+            .unwrap_or_else(|| panic!("the date was not drawn: {said}"));
+
+        assert!(
+            (reading.center().y - box_at.center().y).abs() < 1.,
+            "the reading stood at {} and the box at {}",
+            reading.center().y,
+            box_at.center().y
+        );
+    }
+
+    /// Where `word` was painted in `output`, if it was
+    fn spoken_at(output: &egui::FullOutput, word: &str) -> Option<egui::Rect> {
+        fn walk(
+            shape: &egui::Shape,
+            word: &str,
+            found: &mut Option<egui::Rect>,
+        ) {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == word => {
+                    *found = Some(egui::Rect::from_min_size(
+                        text.pos,
+                        text.galley.size(),
+                    ));
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, word, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut found = None;
+        for shape in &output.shapes {
+            walk(&shape.shape, word, &mut found);
         }
         found
     }
