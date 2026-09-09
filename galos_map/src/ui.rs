@@ -4087,19 +4087,26 @@ const AHEAD_BY: i32 = 1286;
 /// comparing two of the same thing, and a named month cannot be read the
 /// American way round by mistake. The date leads, the line being read as a
 /// date that carries a time rather than as a clock.
+///
+/// The year is written out here rather than by `%Y`, which puts a `+` in
+/// front of anything past four digits: that is ISO 8601 saying the year is an
+/// expanded one, and it reads on the map as a span rather than as a date. Five
+/// digits is reachable and not even far-fetched -- the calendar already stands
+/// 1286 years on, and a system whose widest orbit is a wide pair's takes
+/// millennia to come round, so running the slider to the end of one lands
+/// there.
 fn drawn_at(clock: &Clock, recorded: DateTime<Utc>) -> String {
     let drawn = recorded + chrono::TimeDelta::seconds(clock.at() as i64);
     let year = drawn.year() + AHEAD_BY;
-
-    drawn
+    let dated = drawn
         .with_year(year)
         // The one day of ours a game year may not hold: a leap day landing
         // 1286 years on in a year without one. Read as the last day of that
         // February, which is the nearest date there is to it.
         .or_else(|| drawn.with_day(28).and_then(|day| day.with_year(year)))
-        .unwrap_or(drawn)
-        .format("%d %b %Y %H:%M:%S")
-        .to_string()
+        .unwrap_or(drawn);
+
+    format!("{} {year} {}", dated.format("%d %b"), dated.format("%H:%M:%S"))
         .to_uppercase()
 }
 
@@ -4953,6 +4960,24 @@ mod tests {
         assert_eq!(
             drawn_at(&clock, ours("2024-02-29T09:00:00Z")),
             "28 FEB 3310 09:00:00"
+        );
+    }
+
+    /// A year past four digits is said as a year, without a sign
+    ///
+    /// Reported from the map: `18 MAR +10284 17:06:50`. `%Y` marks a year
+    /// outside the four-digit range as an expanded one the ISO way, and a `+`
+    /// in the middle of a date reads as a span. Reachable without trying: the
+    /// calendar already stands 1286 years on, and the slider covers one turn
+    /// of the system's widest orbit, which for a wide pair is millennia.
+    #[test]
+    fn a_year_past_four_digits_is_said_without_a_sign() {
+        let mut clock = Clock::default();
+        clock.offset_to(9000. * 365.25 * 86_400., 1.);
+
+        assert_eq!(
+            drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
+            "10 MAR 12301 00:00:00"
         );
     }
 
