@@ -14,7 +14,7 @@
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
-use crate::systems::bodies::mark_if_wound;
+use crate::systems::bodies::mark_if_moved;
 use crate::systems::filter::{Filter, Filters};
 use crate::systems::selection::{Picked, Selection};
 use crate::ui::MARGIN;
@@ -750,7 +750,7 @@ fn panels(
                 Subject::System(system) => {
                     described(ui, system, &names, eye, &mut moved, &mut wanted)
                 }
-                Subject::Star(star) => mark_if_wound(&mut clock, |clock| {
+                Subject::Star(star) => mark_if_moved(&mut clock, |clock| {
                     star_described(
                         ui,
                         star,
@@ -758,7 +758,7 @@ fn panels(
                         guessed(star.system_address, star.id),
                     )
                 }),
-                Subject::Body(body) => mark_if_wound(&mut clock, |clock| {
+                Subject::Body(body) => mark_if_moved(&mut clock, |clock| {
                     body_described(
                         ui,
                         body,
@@ -1259,7 +1259,7 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
     // Only on a change, or the clock is written every frame a panel is open and
     // every body in the system is put back where it already stands.
     if moved.changed() {
-        clock.wind_to(period, through / 100.);
+        clock.offset_to(period, through / 100.);
     }
     if moved.drag_stopped() {
         clock.release();

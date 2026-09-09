@@ -16,7 +16,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::systems::bodies::spawn::ShowOrbits;
-use crate::systems::bodies::{Clock, Contents, mark_if_wound};
+use crate::systems::bodies::{Clock, Contents, mark_if_moved};
 use crate::systems::fetch::Poll;
 use crate::systems::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
@@ -1116,9 +1116,11 @@ pub(crate) fn chrome(
             "Orbit Lines",
             "Show the orbit each body follows",
         );
-        mark_if_wound(&mut settings.clock, |clock| {
-            clock_readout(ui, clock, &contents)
-        });
+        // The control alone. What moment it comes to is a reading rather than a
+        // setting, and a reading belongs where the user is already looking:
+        // under the bar, beside what else the map is saying about where it
+        // stands. See [`dated`].
+        mark_if_moved(&mut settings.clock, |clock| game_clock(ui, clock));
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
@@ -1202,6 +1204,7 @@ pub(crate) fn chrome(
         &bar.boosts,
         &bar.searching,
         &mut filter,
+        &mut settings.clock,
     );
     gear(ctx, edge, middle, &mut open.0);
 
@@ -1379,6 +1382,8 @@ fn main_bar(
     boosts: &crate::Boosts,
     searching: &Frontiers,
     filter: &mut FilterBar,
+    // What moment the held system is drawn at, for the status under the rows.
+    clock: &mut ResMut<Clock>,
 ) -> f32 {
     // What the filter rows were asked, carried out of the closure they are
     // drawn in: acting on either inside it would want the bar's own state
@@ -1548,6 +1553,11 @@ fn main_bar(
                         filter.spawning.queued() > 0,
                         filter.evicting.queued() > 0,
                     );
+                    // What the map is standing at, beside what it is holding.
+                    // Under the count rather than over it: the count is about
+                    // the sky the camera is in and this is about the one system
+                    // it is inside, which is the narrower of the two.
+                    mark_if_moved(clock, |clock| dated(ui, clock, contents));
 
                     // Asking for a route out of the summary line is what opens
                     // the form, in the same pass, so that the section it asked
@@ -3883,15 +3893,12 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     response.gained_focus()
 }
 
-/// Say what moment the system is drawn at, and offer the ways on and off the
-/// game's clock
+/// Whether the map stands where the game's clock has carried a system
 ///
-/// The sliders that wind it are under the bodies themselves, each geared to its
-/// own orbit, there being no span that suits a whole system. What is left here
-/// is what they share: which moment they are winding on from, how far they have
-/// wound it, and the way back — a slider moves the map within the turn its body
-/// is already in, so no amount of dragging one ever lets go of the wind.
-fn clock_readout(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
+/// The one setting of the three parts. What moment that comes to is said under
+/// the bar by [`dated`], and how far past it a slider has run the map is set by
+/// the sliders themselves, under the bodies they are geared to.
+fn game_clock(ui: &mut Ui, clock: &mut Clock) {
     let mut following = clock.following();
     if check(
         ui,
@@ -3903,38 +3910,43 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
     {
         clock.follow(following);
     }
+}
 
-    ui.add_space(FIELD_GAP);
+/// Say what moment the system is drawn at, under the bar
+///
+/// A line of the same kind as the count of what is in reach beside it: what the
+/// map is doing, said where the user is already reading it, rather than a
+/// reading kept behind the gear. It answers the one question the arrangement on
+/// screen raises — when is this — and it is the only place the map ever says
+/// what day the game is on.
+///
+/// The date alone while the map stands where the game's clock puts it, which is
+/// most of the time. A slider dragged under a body puts the map some span past
+/// that, and then the span is named beside the date and can be let go of: the
+/// sliders each cover one turn of their own body, so none of them can reach
+/// back to nothing on its own.
+///
+/// Nothing at all where no system is held. The moment is counted from the one a
+/// system was last heard from, so with no system there is nothing to count from
+/// and the line has nothing to say.
+fn dated(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
+    let Some(recorded) = contents.recorded_at() else { return };
+
     ui.horizontal(|ui| {
-        titled(
-            ui,
-            "Wound on",
-            "How far the phase sliders have run the map past that",
-        );
-        if clock.wound() == 0. {
-            ui.label(egui::RichText::new("not at all").weak());
-        } else {
-            ui.label(lasting(clock.wound() as f32));
-            if ui.button("Reset").clicked() {
-                clock.unwind();
+        ui.label(egui::RichText::new(drawn_at(clock, recorded)).weak());
+        if clock.offset() != 0. {
+            ui.label(
+                egui::RichText::new(format!(
+                    "+{}",
+                    lasting(clock.offset() as f32)
+                ))
+                .weak(),
+            );
+            if ui.small_button("Now").clicked() {
+                clock.reset();
             }
         }
     });
-
-    // Which moment the two of them come to, said in the game's own calendar.
-    // A wind is a span and a span alone says nothing about what it is a span
-    // from; this is the one line that says the map is standing where the game
-    // is rather than somewhere plausible.
-    if let Some(recorded) = contents.recorded_at() {
-        ui.horizontal(|ui| {
-            titled(
-                ui,
-                "Showing",
-                "The moment the system is drawn at, by the game's calendar",
-            );
-            ui.label(drawn_at(clock, recorded));
-        });
-    }
 }
 
 /// How far ahead of ours the game's own calendar runs, in years
@@ -4793,7 +4805,7 @@ mod tests {
     #[test]
     fn the_moment_shown_carries_how_far_the_map_has_run_on() {
         let mut clock = Clock::default();
-        clock.wind_to(365. * 86_400., 1.);
+        clock.offset_to(365. * 86_400., 1.);
 
         assert_eq!(
             drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
@@ -4816,35 +4828,28 @@ mod tests {
         );
     }
 
-    /// The pane offers the game's clock, and says what it comes to
+    /// The pane offers the game's clock and nothing else about it
+    ///
+    /// What moment it comes to is a reading, and a reading belongs under the
+    /// bar where the user is already looking rather than behind the gear.
     #[test]
-    fn the_pane_offers_the_games_clock() {
-        let said = words(|ui| {
-            clock_readout(ui, &mut Clock::default(), &Contents::default())
-        });
+    fn the_pane_offers_the_games_clock_and_no_reading() {
+        let said = words(|ui| game_clock(ui, &mut Clock::default()));
 
-        assert!(
-            said.iter().any(|word| word == "Game Clock"),
-            "the pane said {said:?}"
-        );
-        assert!(said.iter().any(|word| word == "Wound on"));
+        assert_eq!(said, vec!["Game Clock".to_owned()]);
     }
 
     /// A system nobody has scanned has no moment to be drawn at
     ///
     /// The reading counts from the newest of a system's scans, so with none
-    /// there is nothing to count from and the row says nothing rather than
+    /// there is nothing to count from and the line says nothing rather than
     /// counting from whenever.
     #[test]
-    fn a_system_with_nothing_on_record_is_drawn_at_no_moment() {
-        let said = words(|ui| {
-            clock_readout(ui, &mut Clock::default(), &Contents::default())
-        });
+    fn a_system_with_nothing_on_record_is_dated_at_no_moment() {
+        let said =
+            words(|ui| dated(ui, &mut Clock::default(), &Contents::default()));
 
-        assert!(
-            !said.iter().any(|word| word == "Showing"),
-            "the pane dated a system with no scans: {said:?}"
-        );
+        assert!(said.is_empty(), "a system with no scans was dated: {said:?}");
     }
 
     /// The chrome, drawn with the pointer at `at`, once it stands still

@@ -81,7 +81,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, show_orbits.in_set(MapSet::Present));
     // After whatever it moves exists. A body spawned this frame is already
     // standing where the clock says, `draw` having read the same clock.
-    app.add_systems(Update, wind.in_set(MapSet::Populate).after(draw));
+    app.add_systems(Update, stand.in_set(MapSet::Populate).after(draw));
     // After the camera has settled where it is standing, that being what says
     // how much of a ring to lay out.
     app.add_systems(
@@ -109,7 +109,7 @@ pub struct OrbitLine {
     /// Which body the ellipse is drawn about, where it is not the middle
     ///
     /// An ellipse sits on whatever its thing goes round, so a moon's is drawn
-    /// at its planet and moves when the planet does. Carried because winding
+    /// at its planet and moves when the planet does. Carried because moving
     /// the clock on has to put the line back where its anchor has gone, and the
     /// line is a flat child of the system like everything else: nothing moves
     /// it by inheritance.
@@ -1380,7 +1380,7 @@ fn dashed(path: &[Vec3], run: usize) -> Vec<Vec3> {
 fn follow(mut clock: ResMut<Clock>, contents: Res<Contents>) {
     let Some(recorded) = contents.recorded_at() else { return };
 
-    super::mark_if_wound(&mut clock, |clock| {
+    super::mark_if_moved(&mut clock, |clock| {
         clock.follows(chrono::Utc::now(), recorded)
     });
 }
@@ -1399,7 +1399,7 @@ fn follow(mut clock: ResMut<Clock>, contents: Res<Contents>) {
 /// The paths themselves are left alone. Winding the clock on moves a thing
 /// along its orbit and does not change the orbit, so the mesh a line was built
 /// from is still the right shape wherever it has to be put.
-fn wind(
+fn stand(
     clock: Res<Clock>,
     contents: Res<Contents>,
     grids: Query<&Grid>,
@@ -1727,15 +1727,15 @@ mod tests {
     /// The one body's period is the system's year, it being the only thing here
     /// that goes round anything. `pin` is where the line's own points are
     /// measured from, which its anchor has to carry as well.
-    fn wound(out: f64, through: f64, pin: DVec3) -> (DVec3, DVec3) {
+    fn stood(out: f64, through: f64, pin: DVec3) -> (DVec3, DVec3) {
         use super::super::{Clock, Contents, FetchState};
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         // Wound on by hand rather than followed: nothing here reads the
-        // game's clock, and what is being watched is the winding.
+        // game's clock, and what is being watched is the offset.
         app.insert_resource(Clock {
-            wound: through * 400. * crate::systems::info::DAY,
+            offset: through * 400. * crate::systems::info::DAY,
             ..default()
         });
         app.insert_resource(Contents {
@@ -1745,7 +1745,7 @@ mod tests {
                 bodies: vec![{
                     // A period of its own. The shared row carries none, and a
                     // body with nothing to come round in has nowhere to be
-                    // wound to.
+                    // run on to.
                     let mut row = super::super::tests::body(out as f32);
                     row.orbit.orbital_period =
                         (400. * crate::systems::info::DAY) as f32;
@@ -1754,7 +1754,7 @@ mod tests {
                 ..default()
             }),
         });
-        app.add_systems(Update, wind);
+        app.add_systems(Update, stand);
 
         let grid = space::system_grid();
         let system = app
@@ -1808,8 +1808,8 @@ mod tests {
     /// Standing further through the year carries a body along its orbit
     #[test]
     fn moving_through_the_year_moves_a_body() {
-        let (still, _) = wound(1e11, 0., DVec3::ZERO);
-        let (later, _) = wound(1e11, 0.5, DVec3::ZERO);
+        let (still, _) = stood(1e11, 0., DVec3::ZERO);
+        let (later, _) = stood(1e11, 0.5, DVec3::ZERO);
 
         assert!(
             still.distance(later) > 1e10,
@@ -1827,8 +1827,8 @@ mod tests {
     fn a_line_is_hung_where_its_points_are_measured_from() {
         let pin = DVec3::new(3e9, -1e9, 7e8);
 
-        let (_, about) = wound(1e11, 0.25, DVec3::ZERO);
-        let (_, hung) = wound(1e11, 0.25, pin);
+        let (_, about) = stood(1e11, 0.25, DVec3::ZERO);
+        let (_, hung) = stood(1e11, 0.25, pin);
 
         assert!(
             (hung - about - pin).length() < 1.,
@@ -1845,7 +1845,7 @@ mod tests {
     /// point its planet set out from.
     #[test]
     fn moving_through_the_year_moves_a_line_with_its_anchor() {
-        let (body, line) = wound(1e11, 0.5, DVec3::ZERO);
+        let (body, line) = stood(1e11, 0.5, DVec3::ZERO);
 
         assert_eq!(body, line, "the line was left behind at {line}");
     }

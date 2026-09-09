@@ -45,9 +45,8 @@ const WITHIN: f64 = 1.;
 
 /// What moment a system is drawn at
 ///
-/// Two numbers make it. One is where the game's own clock stands, which is what
-/// a body is placed at when nobody has asked for anything else; the other is
-/// how far past that a slider has been dragged. The reading
+/// Two numbers make it: where the game's own clock stands, and the offset past
+/// that a slider has been dragged to. The reading
 /// everything is placed from is the two together, and it is worked out rather
 /// than kept, so there is no third number to fall out of step with them.
 ///
@@ -66,28 +65,28 @@ pub struct Clock {
     /// Stepped in whole [`WITHIN`], so a map nobody is touching is still rather
     /// than being rewritten every frame. See [`Self::follows`].
     live: f64,
-    /// How far past that the sliders have wound it, in seconds
+    /// How far past that the map has been run on, in seconds
     ///
-    /// Nothing to begin with and nothing until somebody drags one, so the map
+    /// Nothing to begin with and nothing until a slider is dragged, so the map
     /// opens on where the game has carried everything by now.
     ///
-    /// The whole of what a slider sets, which is why it is measured from where
-    /// the body already stands rather than from anything absolute: a slider
-    /// covers one turn of its own body, and running it end to end runs the map
-    /// on by exactly that turn and puts the body back where it started.
+    /// The whole of what a slider sets, which is why it is an offset rather
+    /// than a place: a slider covers one turn of its own body, so its near end
+    /// is that body drawn where it stands and its far end is the same place one
+    /// of its own turns later.
     ///
     /// Set from a body's own panel rather than from one control over the
     /// system, because a system has no span that suits all of it: the slowest
     /// body of one takes a median 993 times as long to come round as its
     /// fastest, and in Sol it is four million times.
-    wound: f64,
+    offset: f64,
     /// Whether the map stands at the game's own moment or at the scans
     ///
     /// The game's to begin with: a map of where things are is worth more than a
     /// map of where they were seen, and the one thing the reading cannot be
     /// read off the rows is which day it is. Turned off, the map stands where
     /// the system was last heard from — which is what the rows actually
-    /// recorded — and the sliders wind on from there instead.
+    /// recorded — and the offset runs on from there instead.
     following: bool,
     /// The whole turns the slider being dragged set out from, while one is
     ///
@@ -106,7 +105,7 @@ pub struct Clock {
 
 impl Default for Clock {
     fn default() -> Self {
-        Clock { live: 0., wound: 0., following: true, held: None }
+        Clock { live: 0., offset: 0., following: true, held: None }
     }
 }
 
@@ -125,18 +124,18 @@ struct Held {
 }
 
 impl Held {
-    /// Whether `wound` still stands in the turn this was taken for
+    /// Whether `offset` still stands in the turn this was taken for
     ///
     /// Measured rather than trusted. A drag that never sees its own end leaves
-    /// the anchor standing, and the clock may have been wound anywhere since by
+    /// the anchor standing, and the offset may have been set anywhere since by
     /// another body's slider, so an anchor is only worth measuring from where
     /// the reading could have come from it.
     ///
     /// The far end counts. A slider run to it lands exactly on the beginning of
     /// the next turn and is held there, which is what the anchor is for.
-    fn holds(&self, wound: f64) -> bool {
-        wound >= self.turns * self.period
-            && wound <= (self.turns + 1.) * self.period
+    fn holds(&self, offset: f64) -> bool {
+        offset >= self.turns * self.period
+            && offset <= (self.turns + 1.) * self.period
     }
 }
 
@@ -144,19 +143,19 @@ impl Clock {
     /// The moment everything is placed at, in seconds past the one the system
     /// was last heard from
     ///
-    /// Where the game stands, plus however far the sliders have wound it on.
+    /// Where the game stands, plus the offset past it.
     /// Worked out rather than kept: the two it is made of are what anything
     /// sets, so there is nothing here to put back in step with them.
     pub fn at(&self) -> f64 {
         let standing = if self.following { self.live } else { 0. };
 
-        standing + self.wound
+        standing + self.offset
     }
 
-    /// How far past where the map would otherwise stand the sliders have wound
-    /// it, in seconds
-    pub fn wound(&self) -> f64 {
-        self.wound
+    /// How far past where the map would otherwise stand it has been run on, in
+    /// seconds
+    pub fn offset(&self) -> f64 {
+        self.offset
     }
 
     /// Whether the map stands at the game's own moment rather than at the scans
@@ -166,8 +165,8 @@ impl Clock {
 
     /// Stand at one or the other
     ///
-    /// Whatever the sliders have wound is kept and goes on being measured from
-    /// wherever this leaves them, a wind being a span rather than a place.
+    /// The offset is kept and goes on being measured from wherever this leaves
+    /// the map, an offset being a span rather than a place.
     pub fn follow(&mut self, following: bool) {
         self.following = following;
     }
@@ -193,37 +192,37 @@ impl Clock {
         }
     }
 
-    /// Let go of whatever the sliders have wound on
+    /// Let go of the offset
     ///
     /// Back to where the map would stand untouched, which under the game's
     /// clock is where everything is now.
-    pub fn unwind(&mut self) {
-        self.wound = 0.;
+    pub fn reset(&mut self) {
+        self.offset = 0.;
     }
 
-    /// How far a slider geared to `period` has wound the map through its own
-    /// turn, from none of it to all
+    /// How far through `period`'s own turn the offset stands, from none of it
+    /// to all
     ///
-    /// Nothing until somebody drags one, whatever the reading is: what a slider
-    /// sets is a span past where its body already stands, so its near end is
-    /// that body drawn where it is and its far end is the same place a turn
-    /// later.
+    /// Nothing until a slider is dragged, whatever the reading is: what a
+    /// slider sets is a span past where its body already stands, so its near
+    /// end is that body drawn where it is and its far end is the same place a
+    /// turn later.
     pub fn through(&self, period: f64) -> f64 {
         if period <= 0. {
             return 0.;
         }
-        let turns = self.wound / period;
+        let turns = self.offset / period;
         turns - turns.floor()
     }
 
     /// Take hold of the turn a slider over `period` is setting out from
     ///
-    /// Said when a drag begins, so that [`Self::wind_to`] measures from where
+    /// Said when a drag begins, so that [`Self::offset_to`] measures from where
     /// the slider started rather than from where it has since put the clock.
     pub fn hold(&mut self, period: f64) {
         if period > 0. {
             self.held =
-                Some(Held { period, turns: (self.wound / period).floor() });
+                Some(Held { period, turns: (self.offset / period).floor() });
         }
     }
 
@@ -232,7 +231,7 @@ impl Clock {
         self.held = None;
     }
 
-    /// Wind on to `through` of the way round `period`'s own turn
+    /// Run on to `through` of the way round `period`'s own turn
     ///
     /// Within the turn the slider set out from, so dragging one moves the map
     /// by at most a single period of the body it is geared to, and moves it
@@ -244,21 +243,20 @@ impl Clock {
     /// Reaching for the first turn instead would throw the whole system back to
     /// the beginning every time a moon was nudged.
     ///
-    /// The map goes on standing where the game's clock puts it while this is
-    /// wound: what a slider sets is a span past that and not a place, so the
-    /// whole system runs on under the wind rather than the wind being overruled
-    /// by it.
-    pub fn wind_to(&mut self, period: f64, through: f64) {
+    /// The map goes on standing where the game's clock puts it under this: an
+    /// offset is a span past that and not a place, so the whole system runs on
+    /// beneath it rather than it being overruled by them.
+    pub fn offset_to(&mut self, period: f64, through: f64) {
         if period <= 0. {
             return;
         }
         let whole = match &self.held {
-            Some(held) if held.period == period && held.holds(self.wound) => {
+            Some(held) if held.period == period && held.holds(self.offset) => {
                 held.turns
             }
-            _ => (self.wound / period).floor(),
+            _ => (self.offset / period).floor(),
         };
-        self.wound = (whole + through) * period;
+        self.offset = (whole + through) * period;
     }
 }
 
@@ -274,14 +272,14 @@ impl Clock {
 /// nothing until it is dragged. The reading rather than the two numbers behind
 /// it, so that the game's clock stepping on while the map is standing at the
 /// scans is not a system redrawn for a step nothing was placed from.
-pub(crate) fn mark_if_wound<T>(
+pub(crate) fn mark_if_moved<T>(
     clock: &mut impl DetectChangesMut<Inner = Clock>,
     with: impl FnOnce(&mut Clock) -> T,
 ) -> T {
-    let winding = clock.bypass_change_detection();
-    let was = winding.at();
-    let drawn = with(&mut *winding);
-    let moved = winding.at() != was;
+    let clocking = clock.bypass_change_detection();
+    let was = clocking.at();
+    let drawn = with(&mut *clocking);
+    let moved = clocking.at() != was;
 
     if moved {
         clock.set_changed();
@@ -582,12 +580,12 @@ mod tests {
         assert_eq!(contents.bodies().len(), 2);
     }
 
-    /// A slider reads how far it has wound its own body's turn
+    /// A slider reads how far through its own body's turn the offset stands
     #[test]
     fn a_slider_reads_its_own_bodys_turn() {
         let day = 86_400.;
         // Wound a quarter through its second turn of a four hundred day orbit.
-        let clock = Clock { wound: 500. * day, ..default() };
+        let clock = Clock { offset: 500. * day, ..default() };
 
         assert_eq!(clock.through(400. * day), 0.25);
     }
@@ -612,7 +610,7 @@ mod tests {
     /// Which is the whole of what one is: the map is run on by exactly one turn
     /// of that body, from wherever the body actually stands, so the far end of
     /// the slider draws it in the same place as the near end. True whatever the
-    /// reading is when the drag begins, the wind being a span past it.
+    /// reading is when the drag begins, the offset being a span past it.
     #[test]
     fn a_slider_run_end_to_end_is_one_turn_of_its_own_body() {
         let day = 86_400.;
@@ -621,7 +619,7 @@ mod tests {
 
         let before = clock.at();
         clock.hold(period);
-        clock.wind_to(period, 1.);
+        clock.offset_to(period, 1.);
 
         assert_eq!(
             clock.at() - before,
@@ -632,38 +630,38 @@ mod tests {
 
     /// And the map goes on standing where the game's clock puts it under one
     ///
-    /// A wind is a span past the game's moment rather than a place, so the
-    /// system runs on beneath it: the body stays the span ahead it was wound
-    /// to, and the slider stays where the hand left it.
+    /// An offset is a span past the game's moment rather than a place, so the
+    /// system runs on beneath it: the body stays the span ahead it was set to,
+    /// and the slider stays where the hand left it.
     #[test]
-    fn the_game_runs_on_under_a_wound_slider() {
+    fn the_game_runs_on_under_an_offset_slider() {
         let day = 86_400.;
         let period = 400. * day;
         let mut clock = Clock { live: 3000. * day, ..default() };
-        clock.wind_to(period, 0.5);
+        clock.offset_to(period, 0.5);
 
         let ahead = clock.at() - clock.live;
         clock.live += 7. * day;
 
-        assert_eq!(clock.at() - clock.live, ahead, "the wind was overruled");
+        assert_eq!(clock.at() - clock.live, ahead, "the offset was overruled");
         assert_eq!(clock.through(period), 0.5, "the slider moved on its own");
     }
 
-    /// Standing at the scans instead keeps whatever was wound on
+    /// Standing at the scans instead keeps the offset
     ///
-    /// A wind is a span, so it is measured from wherever the map is left
+    /// An offset is a span, so it is measured from wherever the map is left
     /// standing rather than being thrown away with the moment it was set at.
     #[test]
-    fn standing_at_the_scans_keeps_the_wind() {
+    fn standing_at_the_scans_keeps_the_offset() {
         let day = 86_400.;
         let mut clock = Clock { live: 3000. * day, ..default() };
-        clock.wind_to(400. * day, 0.5);
+        clock.offset_to(400. * day, 0.5);
 
         clock.follow(false);
 
         assert_eq!(clock.at(), 200. * day, "the map did not reach the scans");
-        clock.unwind();
-        assert_eq!(clock.at(), 0., "letting go of the wind left some of it");
+        clock.reset();
+        assert_eq!(clock.at(), 0., "letting go of the offset left some of it");
     }
 
     /// Dragging a slider stays in the turn its body is already in
@@ -675,12 +673,12 @@ mod tests {
     #[test]
     fn dragging_a_moons_slider_barely_moves_the_map() {
         let day = 86_400.;
-        let mut clock = Clock { wound: 500. * day, ..default() };
+        let mut clock = Clock { offset: 500. * day, ..default() };
 
-        clock.wind_to(day, 0.5);
+        clock.offset_to(day, 0.5);
 
         assert_eq!(
-            clock.wound,
+            clock.offset,
             500.5 * day,
             "the map went back to the first turn"
         );
@@ -697,17 +695,17 @@ mod tests {
     fn a_slider_held_at_its_far_end_stays_put() {
         let day = 86_400.;
         let period = 400. * day;
-        let mut clock = Clock { wound: 500. * day, ..default() };
+        let mut clock = Clock { offset: 500. * day, ..default() };
 
         clock.hold(period);
-        clock.wind_to(period, 1.);
-        let once = clock.wound;
+        clock.offset_to(period, 1.);
+        let once = clock.offset;
         for _ in 0..30 {
-            clock.wind_to(period, 1.);
+            clock.offset_to(period, 1.);
         }
 
         assert_eq!(
-            clock.wound, once,
+            clock.offset, once,
             "the clock ran away while the slider was held"
         );
     }
@@ -715,24 +713,24 @@ mod tests {
     /// An anchor left standing by a drag that never ended is not measured from
     ///
     /// `drag_stopped` may never arrive: a panel shut with the pointer down
-    /// leaves the anchor where it is. The clock can be wound anywhere else
+    /// leaves the anchor where it is. The offset can be set anywhere else
     /// before that body's slider is touched again, and measuring from a turn
     /// the system left long ago throws the whole of it back to that turn.
     #[test]
     fn an_anchor_from_a_drag_that_never_ended_is_let_go_of() {
         let day = 86_400.;
         let period = 400. * day;
-        let mut clock = Clock { wound: 500. * day, ..default() };
+        let mut clock = Clock { offset: 500. * day, ..default() };
 
         // A drag that begins and never sees its own end.
         clock.hold(period);
-        // And the clock moves on, wound by some other body's slider.
-        clock.wound = 900. * day;
+        // And the offset moves on, set by some other body's slider.
+        clock.offset = 900. * day;
 
-        clock.wind_to(period, 0.5);
+        clock.offset_to(period, 0.5);
 
         assert_eq!(
-            clock.wound,
+            clock.offset,
             2.5 * period,
             "the anchor threw the system back to the turn it was taken in"
         );
@@ -755,21 +753,21 @@ mod tests {
         world.get_resource_ref::<Clock>().unwrap().is_changed()
     }
 
-    /// A panel that only reads the clock does not count as winding it
+    /// A panel that only reads the clock does not count as moving it
     ///
     /// A panel is handed the clock every frame it is open, and being handed a
     /// [`ResMut`] is what marks a resource written. What reads that mark
     /// rebuilds every star, body and orbit line in the held system, so a panel
     /// left standing open would rebuild the whole of it every frame.
     #[test]
-    fn a_panel_reading_the_clock_does_not_wind_it() {
+    fn a_panel_reading_the_clock_does_not_move_it() {
         let mut world = holding_a_clock();
 
-        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
             clock.through(86_400.);
         });
 
-        assert!(!written(&world), "an untouched slider wound the clock");
+        assert!(!written(&world), "an untouched slider moved the clock");
     }
 
     /// Taking hold of the slider does not either, until it is dragged
@@ -777,23 +775,23 @@ mod tests {
     /// A drag begins on the press, and the turn it sets out from is worked out
     /// then. Nothing has moved yet, so nothing needs redrawing.
     #[test]
-    fn taking_hold_of_the_slider_does_not_wind_the_clock() {
+    fn taking_hold_of_the_slider_does_not_move_the_clock() {
         let mut world = holding_a_clock();
 
-        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
             clock.hold(86_400.);
         });
 
-        assert!(!written(&world), "holding the slider wound the clock");
+        assert!(!written(&world), "holding the slider moved the clock");
     }
 
     /// Dragging one does
     #[test]
-    fn dragging_the_slider_winds_the_clock() {
+    fn dragging_the_slider_moves_the_clock() {
         let mut world = holding_a_clock();
 
-        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
-            clock.wind_to(86_400., 0.5);
+        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.offset_to(86_400., 0.5);
         });
 
         assert!(written(&world), "a dragged slider left the map where it was");
@@ -810,12 +808,12 @@ mod tests {
     fn a_slider_run_end_to_end_moves_the_map_evenly() {
         let day = 86_400.;
         let period = 400. * day;
-        let mut clock = Clock { wound: 500. * day, ..default() };
+        let mut clock = Clock { offset: 500. * day, ..default() };
         clock.hold(period);
 
         let mut readings = Vec::new();
         for step in 0..=20 {
-            clock.wind_to(period, step as f64 / 20.);
+            clock.offset_to(period, step as f64 / 20.);
             readings.push(clock.at());
         }
 
@@ -839,12 +837,12 @@ mod tests {
     #[test]
     fn an_anchor_moves_only_the_slider_it_was_taken_for() {
         let day = 86_400.;
-        let mut clock = Clock { wound: 500. * day, ..default() };
+        let mut clock = Clock { offset: 500. * day, ..default() };
 
         // A drag of the planet's slider that never ends.
         clock.hold(400. * day);
         // Then the moon's slider is touched.
-        clock.wind_to(day, 0.5);
+        clock.offset_to(day, 0.5);
 
         assert_eq!(
             clock.at(),
@@ -868,7 +866,7 @@ mod tests {
         let clock = Clock::default();
 
         assert!(clock.following());
-        assert_eq!(clock.wound(), 0., "the map opened already wound on");
+        assert_eq!(clock.offset(), 0., "the map opened already run on");
     }
 
     /// Reading the game's clock puts the map however long it has been past the
@@ -942,26 +940,26 @@ mod tests {
     /// resource unwritten or the whole of a system is written back sixty times
     /// a second.
     #[test]
-    fn a_frame_that_moves_nothing_does_not_wind_the_clock() {
+    fn a_frame_that_moves_nothing_does_not_move_the_clock() {
         let mut world = holding_a_clock();
         world.resource_mut::<Clock>().bypass_change_detection().live =
             1000. * 86_400.;
         world.clear_trackers();
         world.increment_change_tick();
 
-        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
             clock.follows(read(20_000), read(19_000));
         });
 
-        assert!(!written(&world), "a clock already right wound itself");
+        assert!(!written(&world), "a clock already right moved itself");
     }
 
     /// And one that finds it out of date does
     #[test]
-    fn a_frame_that_moves_it_winds_the_clock() {
+    fn a_frame_that_moves_it_moves_the_clock() {
         let mut world = holding_a_clock();
 
-        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
             clock.follows(read(20_000), read(19_000));
         });
 
@@ -982,7 +980,7 @@ mod tests {
         world.clear_trackers();
         world.increment_change_tick();
 
-        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+        mark_if_moved(&mut world.resource_mut::<Clock>(), |clock| {
             clock.follows(read(20_000), read(19_000));
         });
 
@@ -1009,10 +1007,10 @@ mod tests {
     /// A thing whose period nobody recorded has no turn to be a fraction of
     #[test]
     fn an_unrecorded_period_has_no_phase() {
-        let mut clock = Clock { wound: 500. * 86_400., ..default() };
+        let mut clock = Clock { offset: 500. * 86_400., ..default() };
 
         assert_eq!(clock.through(0.), 0.);
-        clock.wind_to(0., 0.5);
+        clock.offset_to(0., 0.5);
         assert_eq!(clock.at(), 500. * 86_400., "the map moved on nothing");
     }
 }
