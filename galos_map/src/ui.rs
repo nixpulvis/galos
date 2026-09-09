@@ -4036,13 +4036,23 @@ const SPAN_FLOOR: f64 = 60.;
 /// Nothing to drag where no orbit in the system has a period recorded: there
 /// is no turn to cover, and a slider over nothing would move the map by
 /// nothing however far it was dragged.
+///
+/// Its width is the bar's, taken as a number rather than as what the line
+/// above it left over. That line grows with the reading -- a fifth digit in
+/// the year, a longer span beside it -- and once it is wider than the bar the
+/// room left under it moves with what the rail last set. Which is a control
+/// whose scale is a function of its own value: at a span of some ten thousand
+/// years the two settled into a cycle, one width setting the span that asks
+/// for the other, and the reading flicked between two moments a log step
+/// apart under a hand holding still. Measured pixel by pixel along the rail:
+/// `11090.83y then 7922.02y`, over and over.
 fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
     let turn = turn.unwrap_or(0.).min(Clock::CEILING);
     // Where the map already stands, as much of it as this rail covers. A
     // body's own slider can have run the offset past a turn of the widest
     // orbit; the rail then reads at its far end rather than wrapping round.
     let mut past = clock.offset().min(turn);
-    fill_width(ui, 0.);
+    ui.spacing_mut().slider_width = BAR_WIDTH - ui.spacing().item_spacing.x;
     let moved = ui
         .add_enabled_ui(turn > 0., |ui| {
             ui.add(
@@ -5109,6 +5119,85 @@ mod tests {
             "a drag back to the middle of the rail left the map at {back} \
              of {turn}"
         );
+    }
+
+    /// And nowhere along it does the reading move under a still hand
+    ///
+    /// Reported: dragging out past some ten thousand years, the time flicked
+    /// between two numbers until the drag carried on past it, and again on
+    /// the way back down. The rail took its width from what the line above it
+    /// left over, and that line grows with the reading -- a fifth digit in
+    /// the year, a longer span beside it -- so the width the rail was
+    /// measured at moved with the span the rail had last set. One width asked
+    /// for the span that asked for the other, frame after frame.
+    ///
+    /// Walked pixel by pixel, every one of them held for two frames, because
+    /// the cycle only appears where the line's width crosses the bar's and no
+    /// single place along the rail would have found it.
+    #[test]
+    fn the_reading_holds_still_all_along_the_rail() {
+        let ctx = crate::tests::context();
+        let year = 365.25 * 86_400.;
+        let mut clock = Clock::default();
+        let control = |input, clock: &mut Clock| {
+            let mut at = egui::Rect::NOTHING;
+            ctx.run_ui(input, |ui| {
+                ui.set_width(BAR_WIDTH);
+                dated(
+                    ui,
+                    clock,
+                    Some(ours("2015-01-01T00:00:00Z")),
+                    Some(Clock::CEILING),
+                    &mut ClockControl { out: true },
+                );
+                at = ui.min_rect();
+            });
+            at
+        };
+
+        let _ = control(egui::RawInput::default(), &mut clock);
+        let at = control(egui::RawInput::default(), &mut clock);
+        let y = at.bottom() - 8.;
+        let start = egui::pos2(at.left() + 4., y);
+        control(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(start),
+                    egui::Event::PointerButton {
+                        pos: start,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            &mut clock,
+        );
+
+        let mut moved = Vec::new();
+        for step in 0..(at.width() as i32) {
+            let on = egui::pos2(start.x + step as f32, y);
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                control(
+                    egui::RawInput {
+                        events: vec![egui::Event::PointerMoved(on)],
+                        ..Default::default()
+                    },
+                    &mut clock,
+                );
+                held.push(clock.offset() / year);
+            }
+            if held[0] != held[1] {
+                moved.push(format!(
+                    "{step}px: {:.2}y then {:.2}y",
+                    held[0], held[1]
+                ));
+            }
+        }
+
+        assert!(moved.is_empty(), "the reading moved on its own: {moved:?}");
     }
 
     /// And a drag held out past the far end reads as one moment, not two
