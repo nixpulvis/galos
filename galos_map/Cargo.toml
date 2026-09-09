@@ -32,6 +32,10 @@ big_space = { git = "https://github.com/aevyrie/big_space", branch = "bevy-0.19"
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_index = { path = "../galos_index", default-features = false }
+# The commander's own journal as a second index layer, off `GALOS_JOURNAL_DIR`.
+# Default features off so the `galos-journal` command line and its clap do not
+# follow it into the map.
+galos_journal = { path = "../galos_journal", default-features = false }
 galos_photometry = { path = "../galos_photometry" }
 
 [dev-dependencies]

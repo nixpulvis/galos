@@ -10,6 +10,7 @@
 //! nothing else changes.
 
 use crate::camera::OrbitCamera;
+use crate::journal::Journal;
 use crate::systems::fetch::FetchTasks;
 use crate::systems::spawn::PendingSpawns;
 use crate::systems::{Evictions, InReach, PendingEvictions, Spyglass, System};
@@ -28,6 +29,10 @@ struct Loaded<'w> {
     populated: Res<'w, Populated>,
     names: Res<'w, Names>,
     factions: Res<'w, Factions>,
+    /// The second layer, where the map was pointed at a journal. Absent where
+    /// it was not, and the panel then says nothing about it rather than
+    /// reporting a layer of nothing.
+    journal: Option<Res<'w, Journal>>,
 }
 
 /// What the descent into a system is made of, bundled for the same reason
@@ -221,6 +226,56 @@ fn diagnostics(
                     );
                 },
             );
+            if let Some(journal) = &loaded.journal {
+                ui.separator();
+                row(
+                    ui,
+                    "journal",
+                    "The commander's own journal, read off this machine and \
+                     drawn over the published index. Set with \
+                     GALOS_JOURNAL_DIR; J takes it off and puts it back.",
+                    |ui| {
+                        pair(
+                            ui,
+                            "dir",
+                            &journal.dir,
+                            "The directory the game writes its logs to.",
+                        );
+                        pair(
+                            ui,
+                            "drawn",
+                            if journal.on.on() { "yes" } else { "no" },
+                            "Whether the layer is being served. Turned off, \
+                             the map reads the published index alone and \
+                             re-reads everything it holds to get back to it.",
+                        );
+                        pair(
+                            ui,
+                            "following",
+                            if journal.following() { "yes" } else { "no" },
+                            "Whether the directory is being watched yet. It \
+                             is not until the names table has been read, \
+                             which is what says which systems are already \
+                             published and so not this layer's to draw.",
+                        );
+                        pair(
+                            ui,
+                            "systems",
+                            &journal.len().to_string(),
+                            "Systems the journal has named. Those the \
+                             published index already carries are drawn from \
+                             it rather than from here, and keep their own \
+                             scans, reach and bodies from this side.",
+                        );
+                        pair(
+                            ui,
+                            "commander",
+                            &journal.source.commander(),
+                            "Who the journal says is flying.",
+                        );
+                    },
+                );
+            }
             ui.separator();
             row(
                 ui,

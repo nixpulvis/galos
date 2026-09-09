@@ -15,6 +15,14 @@ index is a snapshot of it and it is a file format. The map reads the index and
 never opens a database connection. That split is the load-bearing decision in
 the workspace, and most of what follows is a consequence of it.
 
+Elite's own dataset arrives two ways, and only one of them goes through
+Postgres. EDDN carries everyone else's game and is written to the database and
+baked out. The commander's *own* game is written to journal files on their own
+machine, and `galos_journal` reads that directory into the same index
+vocabulary with no database anywhere in it. The two are never merged into one
+directory: they are layered in the reader, and either can be turned off while
+the map runs.
+
 ## Which way the data runs
 
 ```mermaid
@@ -26,6 +34,8 @@ flowchart TD
 
     ES --> R["galos-sync: journal/record.rs"]
     ED --> R
+    J --> JI["galos_journal: the journal as a Source"]
+    JI -->|"layered, togglable"| MAP
     ES2 --> DBW
     ED2 --> DBW
     R --> DBW[galos_db: create]
@@ -61,11 +71,12 @@ itself a fact about the project: two thirds of it is one client.
 
 | Crate | Lines | What it is |
 |---|---|---|
-| `galos_map` | 48,022 | The 3D galaxy map. A bevy application, and a pure index client |
+| `galos_map` | 50,341 | The 3D galaxy map. A bevy application, and a pure index client |
 | `galos_db` | 10,052 | The database: one module per entity, plus the index builder |
-| `galos_index` | 8,326 | The octree, its on-disk format, and the walks that read it |
+| `galos_index` | 9,498 | The octree, its on-disk format, and the walks that read it |
 | `galos_catalog` | 2,353 | Earth-measured star catalogs, and comparing them to Elite's sky |
 | `galos_sky` | 2,284 | A CPU renderer for one patch of sky, to look at the physics |
+| `galos_journal` | 2,105 | A commander's own journal directory, followed and served as an index |
 | `galos_photometry` | 1,741 | Magnitudes, temperatures, colours, and the point spread |
 | `galos` (root `src/`) | 2,499 | The `galos` CLI and the `galos-sync` ingest binary |
 | `galos_server` | 315 | An axum + askama HTML front end over the database |
@@ -230,6 +241,8 @@ first because everything else leans on it.
   metadata, `FsSource` today and one HTTP implementation later, boxed so a
   client holds `Arc<dyn Source>` and swaps the whole transport at once. `Part`
   and `Stamp` are what makes a cheap change check possible.
+- **The layering.** `layer.rs`: `Layered`, one `Source` served over another,
+  with a `Toggle` a client flips while it runs. See §5.
 - **Residency.** `cache.rs`: `Resident` and the set arithmetic `missing()` /
   `evictable()` against a `Needed`.
 
@@ -241,7 +254,76 @@ precisely so the two answers cannot disagree.
 
 `galos-index info DIR` summarises a built directory.
 
-## 5. The physics
+## 5. The journal layer
+
+`galos_journal` is the other way Elite's dataset arrives. `galos-sync journal`
+already reads a journal directory *into Postgres*, whence the ordinary build
+picks it up; this reads one straight into the index vocabulary and serves it,
+so a scan taken in the game is on the map a second later with no database in
+the path at all. It is a peer of `galos_db/src/index/`, not of `galos_db`: it
+knows the tree only through `galos_index::System` and the metadata records.
+
+- `follow.rs` — the directory, tailed. A byte offset per file, whole lines
+  only (a poll lands mid-write often enough to matter), and a file shorter
+  than its offset is one that was replaced and is read again. `NavRoute.json`
+  is read beside the logs and handed back as the `NavRoute` event the log's
+  own is written without: it is the only place a journal names systems the
+  ship has not been to.
+- `galaxy.rs` — the events, accumulated. The same fan-out
+  `galos-sync`'s `record.rs` does, landing on `System`, `NameEntry`,
+  `SystemReach`, `SystemBoost`, `PopulatedSystem` and `SystemBodies` instead
+  of on fourteen tables. Merged rather than replaced, so a `Scan` arriving
+  after an `FSDJump` does not take the system's politics away. Its header
+  states the three things a journal cannot say — **factions have no ids**
+  (they are `galos_db`'s, minted on write, so no faction table is published
+  and `PopulatedSystem::factions` stays empty), a system's row is one
+  commander's visit, and there is no `primary_star_class` column to fall back
+  on.
+- `source.rs` — the tree over that. **Rebuilt, not edited**: the watch in
+  `galos_db` holds a `Tree` open and moves one system at a time because a full
+  build is an hour, where a commander's journal is thousands of systems and
+  `Snapshot::build` over it is milliseconds. So there is no incremental
+  insert, no dirty set, no checkpoint and no resume anywhere in the crate, and
+  the tree is never in a state a fresh build would not produce. Every part it
+  serves stamps as one generation number, bumped on rebuild.
+
+**The join is in the reader.** `galos_index::layer` holds it, and the module
+header argues the decision: baking a commander's journal into the published
+directory would put unshared readings into the artefact `galos-db index` owns
+and rewrites, the next full build would drop them, and there would be no way
+left to ask what the galaxy looks like without them. So two directories, whole
+and independently rebuildable, joined per call.
+
+Metadata composes by address with the overlay winning — for a system EDDN
+already has, what this commander scanned is the better reading of it. The cell
+tree composes because `Aggregate` merges exactly and a cell's rank range is
+"how many of my subtree my ancestors claimed", so two trees over **disjoint**
+sets add cell by cell into the tree their union would have built. Disjointness
+is `Claimed`: the overlay is told which addresses the layer below carries and
+leaves those systems out of its own tree, keeping every one of them in its
+tables. Nothing can take a system back out of a built tree from outside it, so
+an unanswered claim double-counts what both sides hold — recorded as a test
+(`an_unclaimed_overlap_is_counted_twice`) rather than hidden.
+
+The toggle rides the refresh that already exists. A layered `Stamp` folds both
+sides' stamps *and the toggle's state*, so flipping it is a republish of every
+part the client holds and `galos_map/src/refresh.rs` re-reads the lot. Nothing
+in the map knows what a layer is.
+
+In the map it is `journal.rs`, off `GALOS_JOURNAL_DIR`, and `J`. The one piece
+of order that matters is written down there: the claim is answered from
+`Names::by_address` on the frame the index lands, and the journal is not
+followed until it has been — because the map reads its names *through* the
+layered transport, and a source nobody has read yet holds nothing, so what
+comes back is the published table alone.
+
+`galos-journal info | build | watch DIR` reads a journal on its own, and
+`build`/`watch` write the same layout `galos-db index` writes, so the result
+is readable by `galos-index info` and can be handed to the map as
+`GALOS_INDEX_DIR`: the sky one commander has personally seen, and nothing
+else.
+
+## 6. The physics
 
 `galos_photometry` is the vocabulary: `Magnitude`, `Flux`, `Temperature`,
 `Color`, `Luminance`, `Distance` (unit-carrying), and `ClassLight::of`, which
@@ -258,7 +340,7 @@ a sharp core or a broad halo but not both.
 
 Nothing here knows about the database or a renderer.
 
-## 6. The map
+## 7. The map
 
 `galos_map` is a bevy 0.19 + bevy_egui client. It links `galos_index`,
 `galos_photometry` and `elite_journal`, and **not `galos_db`** — routing used
@@ -337,7 +419,7 @@ patched according to what a publish costs to write.
 `dev.rs` is a read-only diagnostics window on F3, and is stated as droppable
 by dropping the plugin.
 
-## 7. The other programs
+## 8. The other programs
 
 - **`galos`** (root `src/bin/galos/`) — `search` and `route` against the
   database. The interactive TUI sketched in `src/lib.rs:22-33` is not built;

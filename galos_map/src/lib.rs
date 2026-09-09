@@ -26,6 +26,7 @@ use std::sync::Arc;
 pub mod camera;
 pub mod dev;
 pub mod grid;
+pub mod journal;
 pub mod keys;
 pub mod loading;
 pub mod refresh;

@@ -10,7 +10,13 @@ galaxy from that index alone, with no database. Beside them sits the sky as it
 is measured from Earth, read from published star catalogs and compared against
 what the game says.
 
-[ARCHITECTURE.md](./ARCHITECTURE.md) is the map of it: what each of the eight
+The galaxy the index is built from is everyone else's game, forwarded through
+EDDN. A commander's own is written to a directory of journal files on their own
+machine, and [`galos_journal`](./galos_journal) reads that directory into the
+same index vocabulary — no database — so the map can draw both at once and turn
+either off.
+
+[ARCHITECTURE.md](./ARCHITECTURE.md) is the map of it: what each of the nine
 crates is for, which way the data runs, what crosses the seam between the
 database and the index, and which module header to open for a given decision.
 
@@ -82,6 +88,16 @@ cargo run --bin galos -- --help
 
 # Open the 3D map. See galos_map/README.md.
 cargo run --release -p galos_map
+
+# And with the commander's own journal drawn over the published index. `J`
+# takes that layer off and puts it back while the map runs.
+GALOS_JOURNAL_DIR="$HOME/Saved Games/Frontier Developments/Elite Dangerous" \
+    cargo run --release -p galos_map
+
+# What a journal directory holds on its own, and the same written out as an
+# index directory the map can be pointed at with nothing else running.
+cargo run -p galos_journal -- info "$HOME/Saved Games/.../Elite Dangerous"
+cargo run -p galos_journal -- watch "$HOME/Saved Games/.../Elite Dangerous"
 ```
 
 `RUST_LOG` selects what the tools log (e.g. `RUST_LOG=debug`), info and above

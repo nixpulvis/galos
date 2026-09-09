@@ -20,6 +20,7 @@ pub mod cache;
 pub mod checkpoint;
 pub mod geometry;
 pub mod inside;
+pub mod layer;
 pub mod meta;
 pub mod moments;
 pub mod names;
@@ -38,6 +39,7 @@ pub use cache::{Point, Resident, ResidentCell};
 pub use checkpoint::Checkpoint;
 pub use geometry::{Aabb, CellId};
 pub use inside::STAND_IN;
+pub use layer::{Claimed, Layered, Toggle};
 pub use meta::{
     Barycenter, Body, Boost, Economies, Faction, NameEntry, Parent,
     PopulatedSystem, Star, Surface, SystemBodies, SystemBoost, SystemReach,
