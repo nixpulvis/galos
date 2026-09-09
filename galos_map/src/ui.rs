@@ -1573,12 +1573,26 @@ fn main_bar(
                     // Under the count rather than over it: the count is about
                     // the sky the camera is in and this is about the one system
                     // it is inside, which is the narrower of the two.
+                    // One turn of whatever is being watched: the body picked
+                    // out, where the map is holding the system it is in, and
+                    // the widest orbit that system has otherwise. A rail over
+                    // a planet's own year is the span that planet's phase
+                    // slider covers, which is the only span that says
+                    // anything about the planet.
+                    let geared = selection
+                        .newest_body()
+                        .filter(|(address, _)| contents.of() == Some(*address))
+                        .and_then(|(_, id)| contents.turn_of(id))
+                        .map(Geared::Body)
+                        .or_else(|| {
+                            contents.slowest_turn().map(Geared::System)
+                        });
                     mark_if_moved(clock, |clock| {
                         dated(
                             ui,
                             clock,
                             contents.recorded_at(),
-                            contents.slowest_turn(),
+                            geared,
                             control,
                         )
                     });
@@ -3956,7 +3970,7 @@ fn dated(
     ui: &mut Ui,
     clock: &mut Clock,
     recorded: Option<DateTime<Utc>>,
-    turn: Option<f64>,
+    geared: Option<Geared>,
     control: &mut ClockControl,
 ) {
     let Some(recorded) = recorded else { return };
@@ -3979,7 +3993,7 @@ fn dated(
     }
 
     if control.out {
-        clock_control(ui, clock, turn);
+        clock_control(ui, clock, geared);
     }
 }
 
@@ -4012,21 +4026,52 @@ fn reading(ui: &mut Ui, said: String) -> bool {
 /// exactly at the range's start where the handle is run all the way down.
 const SPAN_FLOOR: f64 = 60.;
 
-/// A slider over the whole system's own turn, under the date
+/// What the status rail is geared to
 ///
-/// What the date opens. Geared to the widest orbit the system has on record,
-/// so its far end is that arrangement one turn of its outermost thing later
-/// and every arrangement the system passes through falls somewhere along it.
-/// The sliders under the bodies are the fine end of the same control -- a
-/// moon's covers a moon's turn -- and this is the one that needs no body
-/// picked out to reach, which is the whole reason it is here.
+/// One turn of something either way, and which thing settles both how long
+/// the rail is and how it is laid out.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Geared {
+    /// One turn of the body picked out
+    ///
+    /// Laid evenly, as that body's own phase slider is: the rail is one orbit
+    /// of the one thing being watched, every stretch of it is the same span,
+    /// and halfway along is half a turn. Nothing about the span asked for is
+    /// lopsided, so nothing about the rail should be.
+    Body(f64),
+    /// The widest orbit the system has on record
+    ///
+    /// Laid by decades, because with nothing picked out the spans worth
+    /// asking for are not evenly spread: the widest orbit of a system takes a
+    /// median eighteen years to come round and its fastest body a few hours,
+    /// so an even rail over the whole of that spends its length on spans that
+    /// blur every inner body and cannot be nudged by an hour anywhere.
+    System(f64),
+}
+
+impl Geared {
+    /// How long the rail runs, in seconds
+    fn turn(self) -> f64 {
+        match self {
+            Geared::Body(turn) | Geared::System(turn) => turn,
+        }
+    }
+
+    /// Whether every stretch of the rail is the same span
+    fn even(self) -> bool {
+        matches!(self, Geared::Body(_))
+    }
+}
+
+/// A slider over one turn, under the date
 ///
-/// Logarithmic, because the spans worth asking for are not evenly spread: the
-/// widest orbit of a system takes a median eighteen years to come round and
-/// its fastest body a few hours, so a linear rail spends its whole length on
-/// spans that blur every inner body and cannot be nudged by an hour at all.
-/// A decade of span per stretch of rail instead, from a minute at the near
-/// end to the system's own turn at the far one.
+/// What the date opens. Geared to the body picked out where there is one, and
+/// to the widest orbit the system has otherwise, so its far end is that thing
+/// one turn on: watching a planet, the rail is that planet's year, and with
+/// nothing picked out it is the span in which the whole system has been
+/// through every arrangement it takes. The sliders under the bodies do the
+/// same for a body whose panel is open, and this is the one that needs no
+/// panel, which is the whole reason it is here.
 ///
 /// No numbers of its own. What it comes to is a moment, and the moment is the
 /// line above it -- along with the span it stands past the present, which is
@@ -4061,8 +4106,8 @@ const SPAN_FLOOR: f64 = 60.;
 /// for the other, and the reading flicked between two moments a log step
 /// apart under a hand holding still. Measured pixel by pixel along the rail:
 /// `11090.83y then 7922.02y`, over and over.
-fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
-    let turn = turn.unwrap_or(0.).min(Clock::CEILING);
+fn clock_control(ui: &mut Ui, clock: &mut Clock, geared: Option<Geared>) {
+    let turn = geared.map_or(0., Geared::turn).min(Clock::CEILING);
     // Where the map already stands, as much of it as this rail covers. A
     // body's own slider can have run the offset past a turn of the widest
     // orbit; the rail then reads at its far end rather than wrapping round.
@@ -4070,12 +4115,12 @@ fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
     ui.spacing_mut().slider_width = BAR_WIDTH - ui.spacing().item_spacing.x;
     let moved = ui
         .add_enabled_ui(turn > 0., |ui| {
-            ui.add(
-                egui::Slider::new(&mut past, 0.0..=turn)
-                    .logarithmic(true)
-                    .smallest_positive(SPAN_FLOOR)
-                    .show_value(false),
-            )
+            let mut rail =
+                egui::Slider::new(&mut past, 0.0..=turn).show_value(false);
+            if !geared.is_some_and(Geared::even) {
+                rail = rail.logarithmic(true).smallest_positive(SPAN_FLOOR);
+            }
+            ui.add(rail)
         })
         .inner;
     if moved.changed() {
@@ -5035,7 +5080,7 @@ mod tests {
                     ui,
                     &mut clock,
                     Some(ours("2014-12-16T13:45:00Z")),
-                    Some(turn),
+                    Some(Geared::System(turn)),
                     control,
                 );
                 at = ui.min_rect();
@@ -5076,7 +5121,7 @@ mod tests {
                     ui,
                     &mut clock_,
                     Some(ours("2014-12-16T13:45:00Z")),
-                    Some(turn),
+                    Some(Geared::System(turn)),
                     control,
                 );
                 at = ui.min_rect();
@@ -5115,7 +5160,7 @@ mod tests {
     #[test]
     fn a_rail_past_the_ceiling_stops_at_it() {
         let year = 365.25 * 86_400.;
-        let clock = slid(400_000. * year, &[(0., 2.)]);
+        let clock = slid(Geared::System(400_000. * year), &[(0., 2.)]);
 
         assert_eq!(clock.offset(), Clock::CEILING);
         assert_eq!(
@@ -5133,7 +5178,7 @@ mod tests {
     #[test]
     fn the_status_slider_runs_the_system_on_by_its_widest_turn() {
         let turn = 400. * 86_400.;
-        let clock = slid(turn, &[(0., 2.)]);
+        let clock = slid(Geared::System(turn), &[(0., 2.)]);
 
         assert_eq!(
             clock.offset(),
@@ -5153,7 +5198,7 @@ mod tests {
     #[test]
     fn the_status_slider_is_finer_near_the_present() {
         let turn = 400. * 86_400.;
-        let middle = slid(turn, &[(0., 0.5)]).offset();
+        let middle = slid(Geared::System(turn), &[(0., 0.5)]).offset();
 
         assert!(middle > 0., "halfway along the rail moved nothing");
         assert!(
@@ -5175,7 +5220,8 @@ mod tests {
     #[test]
     fn the_status_slider_comes_back_from_its_far_end() {
         let turn = 400. * 86_400.;
-        let back = slid(turn, &[(0., 2.), (0.98, 0.5)]).offset();
+        let back =
+            slid(Geared::System(turn), &[(0., 2.), (0.98, 0.5)]).offset();
 
         assert!(back > 0., "the map came back further than it was dragged");
         assert!(
@@ -5211,7 +5257,7 @@ mod tests {
                     ui,
                     clock,
                     Some(ours("2015-01-01T00:00:00Z")),
-                    Some(Clock::CEILING),
+                    Some(Geared::System(Clock::CEILING)),
                     &mut ClockControl { out: true },
                 );
                 at = ui.min_rect();
@@ -5264,6 +5310,26 @@ mod tests {
         assert!(moved.is_empty(), "the reading moved on its own: {moved:?}");
     }
 
+    /// Geared to a body, the rail is that body's own turn laid evenly
+    ///
+    /// The span asked for while a body is being watched is one orbit of it,
+    /// and nothing about an orbit is lopsided: halfway along the rail is half
+    /// a turn, as it is on that body's own phase slider. Which is the whole
+    /// difference from the rail over a system, where the spans run from hours
+    /// to millennia and only decades of them fit on one rail.
+    #[test]
+    fn a_rail_geared_to_a_body_is_laid_evenly() {
+        let turn = 400. * 86_400.;
+        let middle = slid(Geared::Body(turn), &[(0., 0.5)]).offset();
+
+        assert!(
+            (middle - turn / 2.).abs() < turn / 50.,
+            "halfway along stood at {middle} of {turn}"
+        );
+        // And its far end is still that one turn, as the system's rail's is.
+        assert_eq!(slid(Geared::Body(turn), &[(0., 2.)]).offset(), turn);
+    }
+
     /// And a drag held out past the far end reads as one moment, not two
     ///
     /// Reported as a flicker at the handoff: the rail's far end and the
@@ -5283,7 +5349,7 @@ mod tests {
         let control = |input, clock: &mut Clock| {
             let mut at = egui::Rect::NOTHING;
             let _ = ctx.run_ui(input, |ui| {
-                clock_control(ui, clock, Some(turn));
+                clock_control(ui, clock, Some(Geared::System(turn)));
                 at = ui.min_rect();
             });
             at
@@ -5313,13 +5379,13 @@ mod tests {
     ///
     /// Past one is carried off the far end, which is where a drag that means
     /// the whole turn ends up.
-    fn slid(turn: f64, gestures: &[(f32, f32)]) -> Clock {
+    fn slid(geared: Geared, gestures: &[(f32, f32)]) -> Clock {
         let ctx = crate::tests::context();
         let mut clock = Clock::default();
         let mut control = |input| {
             let mut at = egui::Rect::NOTHING;
             let _ = ctx.run_ui(input, |ui| {
-                clock_control(ui, &mut clock, Some(turn));
+                clock_control(ui, &mut clock, Some(geared));
                 at = ui.min_rect();
             });
             at

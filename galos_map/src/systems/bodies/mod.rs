@@ -458,17 +458,45 @@ impl Contents {
     /// star and nothing else: there is no turn for a slider to cover, and
     /// nothing in it that a moment moves.
     pub fn slowest_turn(&self) -> Option<f64> {
-        let stars = self.stars().iter().filter_map(|star| star.orbit.as_ref());
-        let bodies = self.bodies().iter().map(|body| &body.orbit);
-        let centers =
-            self.barycenters().iter().filter_map(|at| at.orbit.as_ref());
+        self.turns().map(|(_, turn)| turn).max_by(f64::total_cmp)
+    }
+
+    /// How long the thing numbered `id` takes to come round, in seconds
+    ///
+    /// What the rail under the date is geared to while a body is picked out:
+    /// one turn of the thing being watched, which is the span its own phase
+    /// slider covers and the only one that says anything about it. See
+    /// [`crate::ui::clock_control`].
+    ///
+    /// Nothing for a thing whose period nobody recorded, and nothing for an
+    /// id this system has no row for -- a selection outlives the system it
+    /// was made in.
+    pub fn turn_of(&self, id: i16) -> Option<f64> {
+        self.turns().find_map(|(each, turn)| (each == id).then_some(turn))
+    }
+
+    /// How long each thing on record takes to come round, in seconds
+    ///
+    /// Stars and barycentres among the bodies: in a multiple system they are
+    /// the widest thing there is, the bodies going round one of the stars
+    /// well inside the pair's own turn. A thing whose period nobody recorded
+    /// is not a turn and is left out.
+    fn turns(&self) -> impl Iterator<Item = (i16, f64)> {
+        let stars = self
+            .stars()
+            .iter()
+            .filter_map(|star| Some((star.id, star.orbit.as_ref()?)));
+        let bodies = self.bodies().iter().map(|body| (body.id, &body.orbit));
+        let centers = self
+            .barycenters()
+            .iter()
+            .filter_map(|at| Some((at.id, at.orbit.as_ref()?)));
 
         stars
             .chain(bodies)
             .chain(centers)
-            .map(|orbit| orbit.orbital_period as f64)
-            .filter(|turn| turn.is_finite() && *turn > 0.)
-            .max_by(f64::total_cmp)
+            .map(|(id, orbit)| (id, orbit.orbital_period as f64))
+            .filter(|(_, turn)| turn.is_finite() && *turn > 0.)
     }
 
     /// Where everything in the system stands, and how far it reaches
@@ -1024,6 +1052,33 @@ mod tests {
         contents.hold(holding(vec![body(1e9)]));
         assert_eq!(contents.slowest_turn(), None);
         assert_eq!(Contents::default().slowest_turn(), None);
+    }
+
+    /// And one body's turn is its own, whatever the rest of the system does
+    ///
+    /// What the rail under the date is geared to while that body is picked
+    /// out. A body the system has no row for is nothing rather than the
+    /// nearest thing to it: a selection outlives the system it was made in,
+    /// and the id it names is another body's in the next system along.
+    #[test]
+    fn a_bodys_turn_is_the_one_it_was_recorded_with() {
+        let mut contents = Contents::default();
+        let day = 86_400.;
+        let mut inner = body(1e9);
+        inner.orbit.orbital_period = day as f32;
+        let mut outer = body(2e9);
+        outer.id = 2;
+        outer.orbit.orbital_period = (400. * day) as f32;
+        // A third whose period nobody recorded.
+        let mut bare = body(3e9);
+        bare.id = 3;
+
+        contents.hold(holding(vec![inner, outer, bare]));
+
+        assert_eq!(contents.turn_of(1), Some(day));
+        assert_eq!(contents.turn_of(2), Some(400. * day));
+        assert_eq!(contents.turn_of(3), None, "a bare period read as a turn");
+        assert_eq!(contents.turn_of(9), None, "a body not held read as one");
     }
 
     /// A thing whose period nobody recorded has no turn to be a fraction of
