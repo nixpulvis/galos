@@ -1,0 +1,46 @@
+[package]
+name = "galos_journal"
+version = "0.0.1"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2024"
+rust-version.workspace = true
+
+# The commander's own journal as an index: the `.log` files the game writes
+# while it is played, followed as they are written and served through the same
+# `galos_index::Source` the published directory is read through. A peer of
+# `galos_db::index` — that one derives the index from Postgres, this one from a
+# directory of journal files — and, like it, it knows the tree only through
+# `galos_index::System` and the metadata records.
+#
+# No database anywhere in it, which is the point: a commander runs the map
+# against a published index and their own journal, with no server of their own.
+[dependencies]
+# The format both halves agree on: the tree, the metadata records, the
+# transport seam this implements, and the layering this is served through.
+galos_index = { path = "../galos_index", default-features = false }
+# The photometry fallback chain a system's brightness and colour come out of,
+# the same one the database build reads its stars through.
+galos_photometry = { path = "../galos_photometry" }
+# The journal's own event model. The whole crate is a fan-out over it.
+elite_journal = { path = "../elite_journal" }
+chrono = "0.4"
+serde_json = "1"
+tracing = "0.1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[dev-dependencies]
+pollster = "0.3"
+
+[features]
+default = ["cli"]
+# The `galos-journal` command-line tool, on by default so `cargo run -p
+# galos_journal` just works. A library consumer — the map — drops it with
+# `default-features = false`, and then clap is never pulled.
+cli = ["dep:clap", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "galos-journal"
+path = "src/main.rs"
+required-features = ["cli"]

@@ -27,6 +27,7 @@ use crate::camera::{
     move_camera, opening_radius, orbit_camera,
 };
 use crate::grid::ShowGrid;
+use crate::journal::Journal;
 use crate::schedule::MapSet;
 use crate::systems::Spyglass;
 use crate::systems::bodies::spawn::ShowOrbits;
@@ -394,6 +395,12 @@ fn home(
 /// drawn over the galaxy rather than in it, which is what a key is worth
 /// having for: they are what stands between the user and a clear look at what
 /// they are pointed at.
+///
+/// And `J`, which is not an annotation and is here anyway: it takes the
+/// commander's own journal off the sky, which is the one way to see what the
+/// published galaxy says about a place without their own readings over the
+/// top of it. Nothing happens where no journal was named, there being no
+/// layer to take off; see [`crate::journal`].
 fn toggle(
     keys: Res<ButtonInput<KeyCode>>,
     keyboard: Res<Keyboard>,
@@ -401,6 +408,7 @@ fn toggle(
     mut show_body_names: ResMut<ShowBodyNames>,
     mut show_orbits: ResMut<ShowOrbits>,
     mut show_grid: ResMut<ShowGrid>,
+    journal: Option<Res<Journal>>,
 ) {
     if keyboard.typing || !bare(&keys) {
         return;
@@ -423,6 +431,17 @@ fn toggle(
 
     if keys.just_pressed(KeyCode::KeyG) {
         show_grid.0 = !show_grid.0;
+    }
+
+    if keys.just_pressed(KeyCode::KeyJ)
+        && let Some(journal) = journal
+    {
+        let showing = journal.flip();
+        info!(
+            dir = %journal.dir,
+            showing,
+            "the journal layer was turned over",
+        );
     }
 }
 

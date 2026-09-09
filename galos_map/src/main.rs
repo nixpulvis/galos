@@ -59,7 +59,18 @@ fn main() {
     // through. Everything the read comes back with is handed over by
     // `loading` when it lands.
     app.insert_resource(IndexDir(dir));
-    app.insert_resource(Transport(Arc::new(source)));
+
+    // And the second layer, where one was asked for: the commander's own
+    // journal directory, read on this machine and served over the published
+    // index. Named here beside the index directory, the two being what the
+    // map is pointed at, and assembled by `journal` which is where the
+    // argument for the layering is written down. Unset is the ordinary case
+    // and stands nothing up at all.
+    let journal = std::env::var(journal::DIR).ok().map(journal::layer);
+    app.insert_resource(journal::transport(Arc::new(source), journal.as_ref()));
+    if let Some(journal) = journal {
+        app.insert_resource(journal);
+    }
 
     app.add_plugins(schedule::plugin);
     // Before the plugins it gates, so the state exists by the time their run
@@ -74,6 +85,9 @@ fn main() {
     // After the systems, whose descent into a star is what carries the ruled
     // plane from light years to light seconds.
     app.add_plugins(grid::plugin);
+    // After `loading`, whose state says when the names have been read: the
+    // journal cannot be followed until the claim has been answered from them.
+    app.add_plugins(journal::plugin);
     app.add_plugins(ui::plugin);
     app.add_plugins(search::plugin);
     app.add_plugins(keys::plugin);

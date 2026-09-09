@@ -95,6 +95,7 @@ started on a slider goes on talking to the slider wherever the pointer wanders.
 | `L` | Show or hide the labels |
 | `O` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
+| `J` | Show or hide your own journal's systems, where one is being read |
 | `/` or `Shift-S` | Put the caret in the search box |
 | `Esc` | Put the search form or the bindings away |
 | `F1` or `?` | Show or hide these bindings |
