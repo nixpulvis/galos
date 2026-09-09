@@ -29,8 +29,9 @@ moment itself is kept on the game's own clock, which runs 1286 years ahead of
 ours and otherwise with it. So a planet is drawn where the game has carried it
 by now rather than where somebody once saw it. The settings pane takes the map
 off that clock and hands it back, and the phase slider under a body's panel
-winds it by hand — one turn of that body end to end, there being no span that
-suits a whole system.
+winds the map on past it — the slider's near end is that body where it stands
+and its far end is one of its own turns later, there being no span that suits a
+whole system.
 
 The two meet in two places only: the sizing law's context scalar in
 [`src/systems/scale.rs`](./src/systems/scale.rs), and the photometric scale

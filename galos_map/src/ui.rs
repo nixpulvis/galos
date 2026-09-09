@@ -3886,20 +3886,18 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
 /// Say what moment the system is drawn at, and offer the ways on and off the
 /// game's clock
 ///
-/// The sliders that wind it by hand are under the bodies themselves, each
-/// geared to its own orbit, there being no span that suits a whole system. What
-/// is left here is the reading they share and the two things none of them can
-/// do: a slider moves the map within the turn its body is already in, so no
-/// amount of dragging one ever comes back to the moment the scans were taken,
-/// and dragging one is what took the map off the game's clock in the first
-/// place.
+/// The sliders that wind it are under the bodies themselves, each geared to its
+/// own orbit, there being no span that suits a whole system. What is left here
+/// is what they share: which moment they are winding on from, how far they have
+/// wound it, and the way back — a slider moves the map within the turn its body
+/// is already in, so no amount of dragging one ever lets go of the wind.
 fn clock_readout(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
     let mut following = clock.following();
     if check(
         ui,
         &mut following,
         "Game Clock",
-        "Run every orbit on to where the game stands now",
+        "Place every body where the game's own clock has carried it",
     )
     .changed()
     {
@@ -3910,22 +3908,21 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
     ui.horizontal(|ui| {
         titled(
             ui,
-            "Run on",
-            "How far the orbits have advanced since this system was last \
-             heard from",
+            "Wound on",
+            "How far the phase sliders have run the map past that",
         );
-        if clock.at == 0. {
+        if clock.wound() == 0. {
             ui.label(egui::RichText::new("not at all").weak());
         } else {
-            ui.label(lasting(clock.at as f32));
+            ui.label(lasting(clock.wound() as f32));
             if ui.button("Reset").clicked() {
-                clock.rewind();
+                clock.unwind();
             }
         }
     });
 
-    // Which moment that comes to, said in the game's own calendar. The reading
-    // above is a span and a span alone says nothing about what it is a span
+    // Which moment the two of them come to, said in the game's own calendar.
+    // A wind is a span and a span alone says nothing about what it is a span
     // from; this is the one line that says the map is standing where the game
     // is rather than somewhere plausible.
     if let Some(recorded) = contents.recorded_at() {
@@ -3952,7 +3949,7 @@ const AHEAD_BY: i32 = 1286;
 /// The system's newest scan is where the clock counts from, so the scan and the
 /// reading together are the moment on screen.
 fn drawn_at(clock: &Clock, recorded: DateTime<Utc>) -> String {
-    let drawn = recorded + chrono::TimeDelta::seconds(clock.at as i64);
+    let drawn = recorded + chrono::TimeDelta::seconds(clock.at() as i64);
     let year = drawn.year() + AHEAD_BY;
 
     drawn
@@ -4796,7 +4793,7 @@ mod tests {
     #[test]
     fn the_moment_shown_carries_how_far_the_map_has_run_on() {
         let mut clock = Clock::default();
-        clock.at = 365. * 86_400.;
+        clock.wind_to(365. * 86_400., 1.);
 
         assert_eq!(
             drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
@@ -4830,7 +4827,7 @@ mod tests {
             said.iter().any(|word| word == "Game Clock"),
             "the pane said {said:?}"
         );
-        assert!(said.iter().any(|word| word == "Run on"));
+        assert!(said.iter().any(|word| word == "Wound on"));
     }
 
     /// A system nobody has scanned has no moment to be drawn at
