@@ -562,7 +562,7 @@ pub(crate) fn world_per_pixel(
 /// this is one painter list, not a window — is drained after every area of
 /// its own order, so while the chrome shared `Background` a ring and a name
 /// were painted over the settings pane. The chrome is `Order::Middle` and the
-/// panels `Order::Foreground`; see `crate::ui::settings_pane`.
+/// panels `Order::Foreground`; see `crate::ui::zone`.
 pub(crate) fn annotations_layer() -> egui::LayerId {
     egui::LayerId::new(
         egui::Order::Background,

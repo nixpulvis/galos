@@ -111,7 +111,7 @@ open rail takes both, rather than asking to be pressed twice.
 | `G` | Show or hide the grid |
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
-| `Shift-R` | Ask the box for a route's jump range |
+| `Shift-R` | Ask the box for systems to route between |
 | `Esc` | Put away the bindings, or everything the chrome has open |
 | `F1` or `?` | Show or hide these bindings |
 

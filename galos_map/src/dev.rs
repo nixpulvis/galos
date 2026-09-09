@@ -118,10 +118,9 @@ fn diagnostics(
 
     // A button, always drawn, to open the panel; F3 and the window's own close
     // do the same. Top-right, clear of the search bar and the settings gear on
-    // the left, and on the chrome's layer under the windows like the rest of
-    // it; see `crate::ui::settings_pane` for why that layer is `Middle`.
-    let toggle = egui::Area::new(egui::Id::new("diagnostics-toggle"))
-        .order(egui::Order::Middle)
+    // the left, and in the chrome's own zone under the windows like the rest
+    // of it; see `crate::ui::zone` for why that layer is `Middle`.
+    let toggle = crate::ui::zone("diagnostics-toggle")
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-MARGIN, MARGIN))
         .show(ctx, |ui| ui.button("diagnostics"));
     if toggle.inner.clicked() {
