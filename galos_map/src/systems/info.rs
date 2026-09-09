@@ -1271,6 +1271,12 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
 ///
 /// Days for anything that turns slowly, which is most of what is scanned, and
 /// hours for the rest. A period in seconds is eight digits nobody reads.
+///
+/// Earth's, and said so for the two units a body has of its own. A day is a
+/// body's turn about itself and a year is its turn about its star -- both of
+/// them things the panel is otherwise reporting, so `1.2 days` beside a
+/// rotation period is a real question about whose day is meant. An hour is
+/// nobody's, so it goes unremarked.
 pub(crate) fn lasting(seconds: f32) -> String {
     if seconds <= 0. {
         return UNKNOWN.into();
@@ -1280,13 +1286,9 @@ pub(crate) fn lasting(seconds: f32) -> String {
     // slowest body of a system takes a median eighteen years to come round, and
     // six thousand days is a number nobody reads either.
     if days >= YEAR {
-        // Earth years, said so. Every unit here is Earth's and the rest go
-        // unremarked, but a year is the one that reads as a thing a system might
-        // have of its own, and beside an orbit measured in them it would be
-        // saying that an orbit lasts an orbit.
         format!("{:.1} Earth years", days / YEAR)
     } else if days >= 1. {
-        format!("{days:.1} days")
+        format!("{days:.1} Earth days")
     } else {
         format!("{:.1} hours", days * 24.)
     }
@@ -2232,7 +2234,7 @@ mod tests {
     fn what_turns_slowly_is_read_in_days() {
         let said = body_said();
 
-        assert!(said.contains(&"42.0 days".to_owned()), "{said:?}");
+        assert!(said.contains(&"42.0 Earth days".to_owned()), "{said:?}");
         assert!(said.contains(&"21.4°".to_owned()), "{said:?}");
     }
 
@@ -2246,7 +2248,7 @@ mod tests {
     /// And how long it takes, likewise
     #[test]
     fn a_span_of_time_is_read_in_the_unit_it_fills() {
-        assert_eq!(lasting(3.6254802e6), "42.0 days");
+        assert_eq!(lasting(3.6254802e6), "42.0 Earth days");
         assert_eq!(lasting(3600.), "1.0 hours");
         assert_eq!(lasting(0.), UNKNOWN);
         // The long end, which a system's outermost bodies live at. Six
