@@ -1692,6 +1692,22 @@ impl Dropping<'_> {
                 .shadow(egui::Shadow::NONE);
         }
 
+        // How wide it is about to come out, which is what it has to be
+        // centered by. Known outright while the body is out: the width asked
+        // for inside the frame, and the frame's own margins and stroke around
+        // it. Shut, it is whatever the contents come to, so it is what the
+        // pane last came out at *while shut* — kept apart from the open width
+        // rather than read off the area's own rect, which is last pass's
+        // whatever state that was. Read from the rect, the pass a pane opened
+        // on was placed at the width it had just stopped being: it appeared,
+        // and then moved and grew a frame later.
+        let shut_at = egui::Id::new((self.id, "shut-width"));
+        let across = if self.out {
+            Some(self.width + frame.total_margin().sum().x)
+        } else {
+            ctx.data(|kept| kept.get_temp::<f32>(shut_at))
+        };
+
         let id = egui::Id::new(self.id);
         let area = egui::Area::new(id)
             // With the rest of the chrome; see `settings_pane`.
@@ -1701,37 +1717,26 @@ impl Dropping<'_> {
             .constrain(false);
         let area = match self.standing {
             Standing::At(at) => area.fixed_pos(at),
-            // Worked out from the width the pane came out at last pass rather
-            // than from the width asked for inside it: what a frame adds in
-            // margins and stroke is the frame's own business, and said as a
-            // number the pane stood a few pixels off center and a few pixels
-            // into what it was to give way to.
-            //
             // Not `constrain_to`, which anchors within whatever it is given:
             // handed the room beside the bar, `CENTER_TOP` centers the pane
             // in that room rather than on the viewport, so it sat well right
             // of the middle on every window wide enough for there to be no
             // question.
-            Standing::Middle { beside } => {
-                let room = ctx.content_rect();
-                match ctx.memory(|memory| memory.area_rect(id)) {
-                    Some(measured) => {
-                        let centered = (room.width() - measured.width()) / 2.;
-                        area.fixed_pos(egui::pos2(
-                            centered.max(beside + MARGIN),
-                            MARGIN,
-                        ))
-                    }
-                    // Nothing measured yet, which is the first pass and the
-                    // pass after the body has opened. Egui's own anchoring
-                    // stands in, and is what centering means before there is
-                    // a width to center.
-                    None => area.anchor(
-                        egui::Align2::CENTER_TOP,
-                        egui::vec2(0., MARGIN),
-                    ),
+            Standing::Middle { beside } => match across {
+                Some(across) => {
+                    let room = ctx.content_rect();
+                    let centered = (room.width() - across) / 2.;
+                    area.fixed_pos(egui::pos2(
+                        centered.max(beside + MARGIN),
+                        MARGIN,
+                    ))
                 }
-            }
+                // Nothing to go on, which is the first pass of the session.
+                // Egui's own anchoring stands in, and is what centering means
+                // before there is a width to center.
+                None => area
+                    .anchor(egui::Align2::CENTER_TOP, egui::vec2(0., MARGIN)),
+            },
         };
 
         let width = self.width;
@@ -1747,6 +1752,15 @@ impl Dropping<'_> {
                 })
                 .inner
         });
+
+        // What it came to while shut, for the next pass to place it by. Only
+        // while shut: the open width is worked out rather than remembered,
+        // and a pane that wrote its open width here would place the next shut
+        // pass by it.
+        if !out {
+            let across = shown.response.rect.width();
+            ctx.data_mut(|kept| kept.insert_temp(shut_at, across));
+        }
 
         egui::InnerResponse::new(shown.inner, shown.response)
     }
@@ -6369,6 +6383,90 @@ mod tests {
         }
 
         at
+    }
+
+    /// A pane in the middle stands where it belongs the first pass it is out
+    ///
+    /// Reported as opening badly: it appeared, then moved and grew, all
+    /// inside a frame or two. A pane is placed before it is drawn, so it has
+    /// to be placed by a width it does not have yet; taken off the area's own
+    /// rect that is last pass's width, which on the pass a pane opens on is
+    /// the width of the reading it has just stopped being — a strip half the
+    /// width, centered as though it were still shut, and then a jump.
+    ///
+    /// So the width the body is about to take is worked out rather than
+    /// remembered, and this is what holds it to that: shut for a few passes,
+    /// then one pass out, and the strip is where it will still be on the
+    /// next.
+    #[test]
+    fn a_pane_opens_where_it_will_stand() {
+        let across = 1600.;
+        let ctx = crate::tests::context();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(across, 800.),
+            )),
+            ..Default::default()
+        };
+        let mut clock = Clock::default();
+        let mut control = ClockControl::default();
+        let mut stood = |ctx: &Context, control: &mut ClockControl| {
+            let mut at = egui::Rect::NOTHING;
+            let _ = ctx.run_ui(input.clone(), |ui| {
+                at = time_strip(
+                    ui.ctx(),
+                    400.,
+                    &mut clock,
+                    control,
+                    system_turn(400. * DAY),
+                );
+            });
+            at
+        };
+
+        for _ in 0..4 {
+            stood(&ctx, &mut control);
+        }
+
+        // The pass it opens on, and the pass after it, which is where the
+        // strip settles.
+        control.out = true;
+        let opened = stood(&ctx, &mut control);
+        let settled = stood(&ctx, &mut control);
+
+        assert!(
+            (opened.center().x - settled.center().x).abs() < 1.,
+            "it opened at {} and settled at {}",
+            opened.center().x,
+            settled.center().x
+        );
+        assert!(
+            (opened.width() - settled.width()).abs() < 1.,
+            "it opened {} wide and settled at {}",
+            opened.width(),
+            settled.width()
+        );
+        assert!(
+            (settled.center().x - across / 2.).abs() < 2.,
+            "and settled off center, at {}",
+            settled.center().x
+        );
+
+        // And the same on the way back, which is the other half of the same
+        // report: the pass it shuts on is placed by what it came to the last
+        // time it stood shut rather than by the open width it has just
+        // stopped being.
+        control.out = false;
+        let shut = stood(&ctx, &mut control);
+        let resting = stood(&ctx, &mut control);
+
+        assert!(
+            (shut.center().x - resting.center().x).abs() < 1.,
+            "it shut at {} and came to rest at {}",
+            shut.center().x,
+            resting.center().x
+        );
     }
 
     /// A pane keeps the width it is asked to keep, and no other
