@@ -128,20 +128,22 @@ impl Held {
 impl Clock {
     /// How far past the present the map will run a system, in seconds
     ///
-    /// Ten thousand years, and three things want a bound of about this size.
-    /// A place worked out ten thousand years past the scan its elements were
-    /// read from is a story rather than a reading. A slider geared to the
-    /// widest orbit a system has can be geared to a wide pair's own turn,
-    /// which runs to hundreds of thousands of years, and a rail that long
-    /// spends its whole length out where nothing is recognisable. And a
-    /// moment has to be a date something can hold: the reported crash was
-    /// `DateTime + TimeDelta` overflowing, a slider having run the offset up
-    /// by one of those turns per frame.
+    /// A quarter of a million years, which is not a judgement about how far
+    /// it is worth running a system on. Every orbit on record is meant to be
+    /// reachable whole, and the widest of them are wide pairs taking hundreds
+    /// of thousands of years to come round; a bound tight enough to be an
+    /// opinion is a bound that stops a slider halfway round something real.
+    ///
+    /// What is left is the one hard limit: a moment has to be a date
+    /// something can hold. Chrono's own calendar ends in 262142, the game's
+    /// stands 1286 years past ours, and the reported crash was
+    /// `DateTime + TimeDelta` overflowing on the way out there. So this is
+    /// the room between now and that end, less a few thousand years of slack
+    /// for the years still to pass.
     ///
     /// Reached rather than refused, so a drag that asks for more is answered
-    /// with as much of it as there is: the map stands ten thousand years on
-    /// and says so.
-    pub const CEILING: f64 = 10_000. * 365.25 * 86_400.;
+    /// with as much of it as there is.
+    pub const CEILING: f64 = 250_000. * 365.25 * 86_400.;
 
     /// The moment everything is placed at, in seconds past the one the system
     /// was last heard from
@@ -246,6 +248,22 @@ impl Clock {
             _ => (self.offset / period).floor(),
         };
         self.offset = ((whole + through) * period).clamp(0., Self::CEILING);
+    }
+
+    /// Run the map on to `past` seconds past where the game's clock stands
+    ///
+    /// The span outright, which is what a rail over a whole system's turn
+    /// sets: its near end is now, its far end is a turn from now, and where
+    /// the map already stood has no bearing on what a place along it means.
+    /// So it can be dragged back as readily as forward, and the far end is
+    /// the far end rather than the beginning of the next turn.
+    ///
+    /// [`Self::offset_to`] is the other kind, and a body's own slider wants
+    /// that one: a turn of a moon is a phase and not a span anybody asked for
+    /// in seconds, and its near end has to be that moon where it stands
+    /// however far the map has already run.
+    pub fn offset_at(&mut self, past: f64) {
+        self.offset = past.clamp(0., Self::CEILING);
     }
 }
 

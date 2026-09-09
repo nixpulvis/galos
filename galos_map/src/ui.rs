@@ -4018,17 +4018,27 @@ const SPAN_FLOOR: f64 = 60.;
 /// what a number on the rail would have said and says it in the units a
 /// reader thinks in.
 ///
-/// Held at [`Clock::CEILING`], which is the furthest the map runs at all. The
-/// widest orbit of a wide pair takes hundreds of thousands of years to come
-/// round, and a rail whose far end is that turn spends every stretch of
-/// itself out past where the clock will go.
+/// The span outright rather than a phase, which is the difference between a
+/// rail and a body's slider. Dragged to the far end it stands at a turn from
+/// now and stays there; dragged back it comes back. Read as a phase it wrapped
+/// instead -- a whole turn reads as none of one -- so the far end put the
+/// handle back at the near end with the map a turn out, and the next drag
+/// measured from the turn after that. Where the turn was the ceiling itself
+/// there was nowhere further to go and the reading stuck until `Now`.
+///
+/// Held at [`Clock::CEILING`], which is as far as the map runs at all. Only a
+/// pair whose turn is longer than that reaches it, and then the rail offers
+/// what there is.
 ///
 /// Nothing to drag where no orbit in the system has a period recorded: there
 /// is no turn to cover, and a slider over nothing would move the map by
 /// nothing however far it was dragged.
 fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
     let turn = turn.unwrap_or(0.).min(Clock::CEILING);
-    let mut past = clock.through(turn) * turn;
+    // Where the map already stands, as much of it as this rail covers. A
+    // body's own slider can have run the offset past a turn of the widest
+    // orbit; the rail then reads at its far end rather than wrapping round.
+    let mut past = clock.offset().min(turn);
     fill_width(ui, 0.);
     let moved = ui
         .add_enabled_ui(turn > 0., |ui| {
@@ -4040,37 +4050,8 @@ fn clock_control(ui: &mut Ui, clock: &mut Clock, turn: Option<f64>) {
             )
         })
         .inner;
-    let through = if turn > 0. { past / turn } else { 0. };
-    phase_dragged(&moved, clock, turn, through);
-}
-
-/// Carry a phase slider's gesture to the clock
-///
-/// The three moments of a drag, each of which means something here. The turn
-/// the slider set out from is taken hold of before anything is written, so
-/// that the whole of the drag measures from one place; the clock is written
-/// only where the slider moved, or every frame a panel stands open puts every
-/// body in the system back where it already is; and the hold is let go of at
-/// the end. See [`Clock::hold`].
-///
-/// One owner because there are two sliders: a body's own, under it in its
-/// panel, and the system's, under the date in the bar. Both are geared to a
-/// period and both set the one offset, and the anchoring is the half of that
-/// which is easy to get subtly wrong.
-pub(crate) fn phase_dragged(
-    moved: &Response,
-    clock: &mut Clock,
-    period: f64,
-    through: f64,
-) {
-    if moved.drag_started() {
-        clock.hold(period);
-    }
     if moved.changed() {
-        clock.offset_to(period, through);
-    }
-    if moved.drag_stopped() {
-        clock.release();
+        clock.offset_at(past);
     }
 }
 
@@ -5047,22 +5028,22 @@ mod tests {
         assert!(!control.out, "a second click left the slider out");
     }
 
-    /// A rail geared to a wide pair's turn stops where the clock does
+    /// A rail geared past the ceiling stops where a date runs out
     ///
-    /// Reported as a crash: `DateTime + TimeDelta` overflowed. The widest
-    /// orbit a system has can be a pair's own, hundreds of thousands of years
-    /// round, and the far end of a rail geared to that is a moment no date
-    /// can be written for. Both ends of it are held: the clock will not run
-    /// past its ceiling, and the rail does not offer to.
+    /// Reported as a crash: `DateTime + TimeDelta` overflowed. The ceiling is
+    /// the room left between now and the end of chrono's calendar once the
+    /// game's 1286 years are added, so the far end of even an absurd rail is
+    /// a moment that can still be written. Only a turn longer than that
+    /// reaches it, which is a wide pair's and nothing a body has.
     #[test]
     fn a_rail_past_the_ceiling_stops_at_it() {
         let year = 365.25 * 86_400.;
-        let clock = slid(300_000. * year, 2.);
+        let clock = slid(400_000. * year, &[(0., 2.)]);
 
         assert_eq!(clock.offset(), Clock::CEILING);
         assert_eq!(
             drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
-            "17 MAR 13301 00:00:00"
+            "19 FEB 253306 00:00:00"
         );
     }
 
@@ -5075,7 +5056,7 @@ mod tests {
     #[test]
     fn the_status_slider_runs_the_system_on_by_its_widest_turn() {
         let turn = 400. * 86_400.;
-        let clock = slid(turn, 2.);
+        let clock = slid(turn, &[(0., 2.)]);
 
         assert_eq!(
             clock.offset(),
@@ -5095,7 +5076,7 @@ mod tests {
     #[test]
     fn the_status_slider_is_finer_near_the_present() {
         let turn = 400. * 86_400.;
-        let middle = slid(turn, 0.5).offset();
+        let middle = slid(turn, &[(0., 0.5)]).offset();
 
         assert!(middle > 0., "halfway along the rail moved nothing");
         assert!(
@@ -5105,12 +5086,34 @@ mod tests {
         );
     }
 
-    /// The clock after the status slider is dragged `across` of the rail's own
-    /// width
+    /// And the far end is a place to come back from
+    ///
+    /// Reported: dragged to the right end, the rail broke and the reading
+    /// stuck at the ceiling until `Now`. It set a phase, and a whole turn
+    /// reads as none of one, so the far end put the handle back at the near
+    /// end with the map a turn out and the next drag measured from the turn
+    /// after that -- which, where the turn was the ceiling, had nowhere to
+    /// go. The rail sets the span outright, so a second drag means what it
+    /// says wherever the first one left the map.
+    #[test]
+    fn the_status_slider_comes_back_from_its_far_end() {
+        let turn = 400. * 86_400.;
+        let back = slid(turn, &[(0., 2.), (0.98, 0.5)]).offset();
+
+        assert!(back > 0., "the map came back further than it was dragged");
+        assert!(
+            back < turn / 100.,
+            "a drag back to the middle of the rail left the map at {back} \
+             of {turn}"
+        );
+    }
+
+    /// The clock after the status slider is dragged from `from` to `to` of the
+    /// rail's own width, gesture after gesture
     ///
     /// Past one is carried off the far end, which is where a drag that means
     /// the whole turn ends up.
-    fn slid(turn: f64, across: f32) -> Clock {
+    fn slid(turn: f64, gestures: &[(f32, f32)]) -> Clock {
         let ctx = crate::tests::context();
         let mut clock = Clock::default();
         let mut control = |input| {
@@ -5125,9 +5128,11 @@ mod tests {
         let _ = control(egui::RawInput::default());
         let at = control(egui::RawInput::default());
 
-        let rail = at.left_center();
-        for input in dragged(rail, at.width() * across) {
-            control(input);
+        for &(from, to) in gestures {
+            let rail = egui::pos2(at.left() + at.width() * from, at.center().y);
+            for input in dragged(rail, at.width() * (to - from)) {
+                control(input);
+            }
         }
 
         clock

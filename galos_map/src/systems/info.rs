@@ -1259,7 +1259,18 @@ fn turned(ui: &mut Ui, period: f64, clock: &mut crate::systems::bodies::Clock) {
             )
         })
         .inner;
-    crate::ui::phase_dragged(&moved, clock, period, through / 100.);
+    // The turn the drag sets out from is taken hold of before anything is
+    // written, so that the whole of the drag measures from one place. See
+    // [`crate::systems::bodies::Clock::hold`].
+    if moved.drag_started() {
+        clock.hold(period);
+    }
+    if moved.changed() {
+        clock.offset_to(period, through / 100.);
+    }
+    if moved.drag_stopped() {
+        clock.release();
+    }
     ui.end_row();
 }
 
