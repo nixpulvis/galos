@@ -3911,7 +3911,8 @@ fn clock_readout(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
         titled(
             ui,
             "Run on",
-            "How far the orbits have advanced since this system was scanned",
+            "How far the orbits have advanced since this system was last \
+             heard from",
         );
         if clock.at == 0. {
             ui.label(egui::RichText::new("not at all").weak());
