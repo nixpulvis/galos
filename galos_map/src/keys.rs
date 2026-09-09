@@ -33,7 +33,7 @@ use crate::systems::bodies::spawn::ShowOrbits;
 use crate::systems::labels::ShowBodyNames;
 use crate::systems::selection::Selection;
 use crate::systems::spawn::ShowNames;
-use crate::ui::{BarFields, Keyboard};
+use crate::ui::{AskMode, BarFields, Keyboard};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 
@@ -459,11 +459,20 @@ fn toggle_keys(
     }
 }
 
-/// Put the caret in the search box
+/// Put the caret in the bar's box, asking whichever question was reached for
 ///
-/// Two ways in. `/` is where a reader who came from a browser or an editor
-/// will look for it, and shift-S is under a hand already resting on the pan
-/// keys. Neither is the bare S, which pans the map back.
+/// One box puts three questions and a key reaches each of them, so that a
+/// mode is not something only a tab knows about: `/` searches for a system,
+/// shift-F filters, shift-R plots a route. See [`crate::ui::AskMode`].
+///
+/// The search has two ways in. `/` is where a reader who came from a browser
+/// or an editor will look for it, and shift-S is under a hand already resting
+/// on the pan keys. Neither is the bare S, which pans the map back.
+///
+/// The other two are shifted for the same reason: bare F and R zoom the map,
+/// and every letter under that hand is spoken for. Shift is the modifier the
+/// map already reads on its own — see [`shifted`] — and F and R are the
+/// letters of the things they open.
 fn open_search(
     keys: Res<ButtonInput<KeyCode>>,
     keyboard: Res<Keyboard>,
@@ -476,7 +485,13 @@ fn open_search(
     let slashed = keys.just_pressed(KeyCode::Slash) && bare(&keys);
     let spelled = keys.just_pressed(KeyCode::KeyS) && shifted(&keys);
     if slashed || spelled {
-        bar.open();
+        bar.open(AskMode::System);
+    }
+    if keys.just_pressed(KeyCode::KeyF) && shifted(&keys) {
+        bar.open(AskMode::Filter);
+    }
+    if keys.just_pressed(KeyCode::KeyR) && shifted(&keys) {
+        bar.open(AskMode::Route);
     }
 }
 
@@ -1212,6 +1227,11 @@ mod tests {
         app.world().resource::<BarFields>().shutting
     }
 
+    /// Which question the box has been asked to put
+    fn asking(app: &App) -> Option<AskMode> {
+        app.world().resource::<BarFields>().asking
+    }
+
     /// `/` asks for the search box
     #[test]
     fn a_slash_asks_for_the_search_box() {
@@ -1250,6 +1270,46 @@ mod tests {
         pressed(&mut app, &[KeyCode::ShiftLeft, KeyCode::Slash]);
 
         assert!(!opening(&app));
+    }
+
+    /// Each key asks its own question of the one box
+    ///
+    /// The mode has to be settled by the key rather than waited for, since
+    /// the pass that puts the caret in draws the field the caret belongs in:
+    /// one frame asking the wrong question is a keystroke typed into the
+    /// wrong field.
+    #[test]
+    fn each_key_asks_its_own_question() {
+        for (chord, meant) in [
+            (&[KeyCode::Slash][..], AskMode::System),
+            (&[KeyCode::ShiftLeft, KeyCode::KeyS], AskMode::System),
+            (&[KeyCode::ShiftLeft, KeyCode::KeyF], AskMode::Filter),
+            (&[KeyCode::ShiftLeft, KeyCode::KeyR], AskMode::Route),
+        ] {
+            let mut app = barred();
+
+            pressed(&mut app, chord);
+
+            assert_eq!(asking(&app), Some(meant), "{chord:?}");
+            assert!(opening(&app), "{chord:?} asked for no caret");
+        }
+    }
+
+    /// Bare F and R are the zoom, not the two questions
+    ///
+    /// Which is why those two want shift. Every letter under that hand is
+    /// spoken for, and a key that opened a form mid-zoom would take the
+    /// keyboard away from the map.
+    #[test]
+    fn a_bare_f_or_r_asks_nothing_of_the_box() {
+        for key in [KeyCode::KeyF, KeyCode::KeyR] {
+            let mut app = barred();
+
+            pressed(&mut app, &[key]);
+
+            assert_eq!(asking(&app), None, "{key:?}");
+            assert!(!opening(&app), "{key:?}");
+        }
     }
 
     /// Nor does a slash typed into a field

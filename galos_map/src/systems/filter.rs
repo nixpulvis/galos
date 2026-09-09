@@ -558,6 +558,14 @@ impl FactionResults {
         self.0.iter()
     }
 
+    /// Whether anything was found
+    ///
+    /// What the box's clearing mark asks: the mark stands while there is an
+    /// answer under the field to take away with what was typed.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Stop offering whatever was found
     pub fn clear(&mut self) {
         self.0.clear();

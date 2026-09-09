@@ -29,10 +29,10 @@ planet is drawn where the game has carried it by now rather than where
 somebody once saw it.
 
 The moment is the galaxy's, not a system's: one now, the same on both sides
-of a flight, and each system answers it from its own newest scan. It is said
-under the bar in the game's own calendar, which runs 1286 years ahead of ours
-and otherwise with it — `16 DEC 3300 13:45:00`, whether or not the camera is
-inside a system.
+of a flight, and each system answers it from its own newest scan. It is read
+in a strip of its own, at the top of the viewport and in the middle of it, in
+the game's own calendar — which runs 1286 years ahead of ours and otherwise
+with it: `16 DEC 3300 13:45:00`, whether or not the camera is inside a system.
 
 Clicking that reading opens a slider under it, and dragging one runs the map
 on past the present; the span it stands at is named beside the date, with a
@@ -70,7 +70,7 @@ order they draw in [`src/camera.rs`](./src/camera.rs).
 | Ctrl, command or shift click | Pick one out alongside the rest, or let go of it |
 | Click on empty sky | Let go of everything picked out |
 | Double click | Fly to what was clicked |
-| Click the date under the bar | Show or hide the slider that sets the moment |
+| Click the date at the top | Show or hide the slider that sets the moment |
 
 The bar's rows read the same way as the sky they name. A double click on the
 row for a selected system flies to it, as a double click on its star does, and
@@ -95,18 +95,20 @@ started on a slider goes on talking to the slider wherever the pointer wanders.
 | `L` | Show or hide the labels |
 | `O` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
-| `/` or `Shift-S` | Put the caret in the search box |
-| `Esc` | Put the search form or the bindings away |
+| `/` or `Shift-S` | Search the box for a system |
+| `Shift-F` | Ask the box for a faction to filter on |
+| `Shift-R` | Ask the box for a route's jump range |
+| `Esc` | Put the form or the bindings away |
 | `F1` or `?` | Show or hide these bindings |
 
 Panning and zooming cover ground in proportion to how far out the camera is, so
 a key moves the map at about the same rate whether it is looking at the whole
 galaxy or at one planet.
 
-Every binding is a key struck on its own, but for the two that want shift: the
-one that opens the search, and the `?` that opens the key list.
-Held with control, command or alt, a key is left alone. So is every one of them
-while a field is being typed into, apart from the escape that puts the field
-away.
+Every binding is a key struck on its own, but for the four that want shift: the
+three that put a question in the bar's box, and the `?` that opens the key
+list. Held with control, command or alt, a key is left alone. So is every one
+of them while a field is being typed into, apart from the escape that puts the
+field away.
 
 The map is quit by closing its window.

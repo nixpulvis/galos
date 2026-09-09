@@ -5,12 +5,25 @@
 //! user picked out is drawn by `crate::systems::selection`, which owns the
 //! fields it reads.
 //!
-//! The bar leads with a search box, which is what it is asked for most, but it
-//! is not a search bar: three sections drop out of it, and search is one of
-//! them. Filters are another and have nothing to say to the other two, so they
-//! keep their own state in `FilterBar` and are reached through that alone. A
-//! route is the third, and asks only what it may be flown in: which systems it
-//! runs between is what is picked out on the map.
+//! Three zones, one job each, because one column doing all three grew until
+//! it was most of the viewport:
+//!
+//! - **Asking** is `ask_bar`, in the corner: one box, and one of `AskMode`'s
+//!   three questions out under it at a time. A system is searched for, a
+//!   faction is filtered on, a route is costed; the three have nothing to say
+//!   to each other, so they are tabs rather than sections and the filters keep
+//!   their own state in `FilterBar`, reached through that alone.
+//! - **Holding** is `state_bar`, directly under it and in no frame: the
+//!   filters being applied, what is picked out, how much of the sky is getting
+//!   through. All of it outlives the asking, so none of it is put away with a
+//!   form.
+//! - **When** is `time_strip`, at the top of the viewport and in the middle of
+//!   it. The moment is the galaxy's and is true whatever is being asked, so it
+//!   is not filed inside a card that comes and goes.
+//!
+//! A frame is what the map draws around something transient. The bar takes one
+//! while a form is out and the strip while the scrubber is; the rows never do,
+//! being a readout.
 
 use crate::camera::{MoveCamera, OrbitCamera};
 use crate::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
@@ -563,10 +576,10 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
     response
 }
 
-/// What the user has typed into the bar, and how much of it is out
+/// What the user has typed into the bar, and which question it is asking
 ///
-/// The search box and the route's jump range, which are the fields the bar
-/// itself owns. The filters are drawn between them and keep their own in
+/// The system searched for and the route's jump range, which are the fields
+/// the bar itself owns. A faction is typed into the same box and kept in
 /// [`FilterBar`], so that nothing about a filter is reachable from here.
 ///
 /// A resource rather than a local, so that what is typed outlives any one
@@ -596,23 +609,25 @@ pub(crate) struct BarFields {
     /// picked first unless it is let go of. What the pane shows is the other
     /// way round, since what the user is choosing is to hold it.
     any_start: bool,
-    /// Whether the rest of the form is out below the input
+    /// Which of the three questions the box is asking, where it is out at all
     ///
-    /// Turned on when a field takes focus, which [`main_bar`] settles at the
-    /// end of a frame from what it has just drawn. So this is one frame
-    /// behind, which is as close as an immediate mode UI gets: a field cannot
-    /// report that it has been clicked until it has been drawn, and whether
-    /// to draw it is the question being asked.
+    /// Nothing while the form is shut, and then the box is the search box:
+    /// see [`AskMode`]. Turned on when the field takes focus, which
+    /// [`chrome`] settles at the end of a frame from what it has just drawn.
+    /// So this is one frame behind, which is as close as an immediate mode UI
+    /// gets: a field cannot report that it has been clicked until it has been
+    /// drawn, and whether to draw it is the question being asked.
     ///
     /// Off again only on an escape. A press on the map does not put the form
     /// away: what a route runs through is gathered by picking systems out,
     /// and a form that shut itself the moment the user reached for one of its
     /// own answers would be in the way of its own question.
-    expanded: bool,
-    /// Whether the search box has been asked for and not yet given the caret
+    pub(crate) asking: Option<AskMode>,
+    /// Whether the box has been asked for and not yet given the caret
     ///
-    /// Set by a key and taken by the next pass over the bar, since only the
-    /// pass that drew the box has a box to put the caret in.
+    /// Set by a key or by a tab being chosen, and taken by the next pass over
+    /// the bar, since only the pass that drew the box has a box to put the
+    /// caret in.
     pub(crate) opening: bool,
     /// Whether the form has been asked to be put away
     ///
@@ -623,11 +638,15 @@ pub(crate) struct BarFields {
 }
 
 impl BarFields {
-    /// Ask for the caret to be put in the search box
+    /// Ask for the caret to be put in the box, asking `mode`'s question
     ///
-    /// What [`crate::keys`] does with a slash. The form drops out below it as
-    /// it does for a click into the box, the focus being what opens it.
-    pub(crate) fn open(&mut self) {
+    /// What [`crate::keys`] does with a slash, and with the two shifted keys
+    /// that reach the other two questions. The form drops out below the box as
+    /// it does for a click into it, the focus being what opens it, and the
+    /// mode is set here rather than waited for so that the pass which puts
+    /// the caret in draws the field the caret belongs in.
+    pub(crate) fn open(&mut self, mode: AskMode) {
+        self.asking = Some(mode);
         self.opening = true;
     }
 
@@ -1199,12 +1218,37 @@ pub(crate) fn chrome(
     // is about.
     keys_window(ctx, &mut keys.0);
 
-    // The bar next, in the room the gear is not standing in, and the gear
-    // last: it stands level with the search box, which is not known until the
-    // bar has drawn it.
-    let middle = main_bar(
+    // Where the bar's own column stands: past the pane, past the gear, and
+    // as wide as the bar. Read by the strip, which is centered on the
+    // viewport and gives way to this.
+    let left = edge + MARGIN + GEAR_ROOM;
+    let chrome_right = left + MARGIN + BAR_WIDTH;
+
+    // The moment first. It stands at the top of the viewport whatever the bar
+    // is doing, so nothing about it waits on how tall the bar has grown.
+    let geared = geared_to(&selection, &contents);
+    // Marked as moved only where the scrubber moved it, so that reading the
+    // clock out sixty times a second is not sixty frames of every orbit being
+    // run again.
+    mark_if_moved(&mut settings.clock, |clock| {
+        time_strip(
+            ctx,
+            chrome_right,
+            clock,
+            &mut settings.clock_control,
+            geared,
+        )
+    });
+
+    // Where distances in either column are measured from, and nothing where
+    // the camera has yet to say.
+    let center = orbit.single().map(|camera| camera.center).ok();
+    // The bar next, in the room the gear is not standing in. Then the rows
+    // under where it reached, and the gear last of the three: it stands level
+    // with the field, which is not known until the bar has drawn it.
+    let asked = ask_bar(
         ctx,
-        edge + MARGIN + GEAR_ROOM,
+        left,
         // Whether the search box's answer is late enough to say so. Settled
         // where the clock is, which is the system that put the question; the
         // bar draws during egui's own pass and has no clock of its own.
@@ -1214,20 +1258,82 @@ pub(crate) fn chrome(
         &mut bar.note,
         &mut bar.results,
         &mut selection,
-        &contents,
-        &mut camera,
-        orbit.single().map(|camera| camera.center).ok(),
+        center,
         &mut panels,
+        &mut camera,
         &mut bar.plot,
         &mut bar.how,
         &mut bar.drive,
         &bar.boosts,
         &bar.searching,
         &mut filter,
-        &mut settings.clock,
-        &mut settings.clock_control,
     );
-    gear(ctx, edge, middle, &mut open.0);
+    let (rows, routing) = state_bar(
+        ctx,
+        left,
+        asked.rect.bottom(),
+        &mut selection,
+        &contents,
+        center,
+        &mut panels,
+        &mut camera,
+        &mut filter,
+    );
+    gear(ctx, edge, asked.middle, &mut open.0);
+
+    // A press that landed on neither of the bar's two zones. Never spent: the
+    // map is free to answer every one of them, which is what lets a user pick
+    // systems out with the form still open. What a route runs through is
+    // gathered on the map, and the form is where the range is typed and where
+    // the trip is asked for, so a press that answered one by closing the
+    // other would be the form standing in the way of its own question.
+    //
+    // Both zones, since the rows are what a route is gathered from: a press
+    // on one of them is a press on the chrome, and the caret stays where it
+    // was.
+    let over = ctx
+        .pointer_latest_pos()
+        .is_some_and(|at| asked.rect.contains(at) || rows.contains(at));
+    let off_the_bar = !over && ctx.input(|i| i.pointer.any_pressed());
+    // Two moments, and nothing else: the field takes focus, or an escape asks
+    // for the form to be put away. Moments rather than states, so that
+    // neither can undo the other. Asking whether the field holds focus would
+    // open the form again the very next frame.
+    //
+    // Whichever question was last being asked, where one was: taking the
+    // caret opens the form and says nothing about which mode it opens in. A
+    // system where the form was shut, the box at rest being the search box.
+    if asked.took_focus {
+        let _ = search.asking.get_or_insert(AskMode::System);
+    }
+    // The caret goes even though the form stays. A press on the map means the
+    // map, and a box left holding the caret takes the keys the map pans and
+    // flies with.
+    if off_the_bar {
+        let_go_of(ctx, asked.box_id);
+    }
+    // An escape lets go of whichever field held the caret, where a press lets
+    // go of the box alone. A press lands somewhere, and what it lands on is
+    // entitled to the focus it has just taken; an escape lands on nothing and
+    // means the form, whichever of its fields was being typed into.
+    //
+    // Egui lets go of a bare escape's focus itself, in the pass the key
+    // arrives. Said here as well because it is what holds the two together:
+    // the form must not be shut over a field still holding the caret, which is
+    // the state [`let_go_of`] exists to keep the map out of.
+    if std::mem::take(&mut search.shutting) {
+        search.asking = None;
+        ctx.memory_mut(|memory| memory.stop_text_input());
+    }
+    // Asking for a route out of the summary line opens the mode that costs
+    // one, with the caret in the range: that is the one thing left to say, so
+    // the gesture reads as one move rather than as a form appearing somewhere
+    // to go and find. A frame later than the click, the rows being drawn
+    // after the bar they open — which is as close as an immediate mode UI
+    // gets, and the same lateness `opening` already carries.
+    if routing {
+        search.open(AskMode::Route);
+    }
 
     // `egui_wants_pointer_input` covers a drag that began on a control and
     // has since been pulled off it, which being over one does not.
@@ -1357,34 +1463,164 @@ fn gear(ctx: &Context, left: f32, middle: f32, open: &mut bool) {
     }
 }
 
-/// Ask for a system, and for whatever else the user unfolds
+/// Which of the three questions the bar's box is asking
 ///
-/// One field at the top of the viewport, since it is the one question the map
-/// is asked over and over. Focusing it brings a pane up behind it and drops
-/// the rest of the form out below, and a press landing off the form puts it
-/// away again.
+/// The bar has three questions and one box. They have nothing to say to each
+/// other — a system is searched for, a faction is filtered on, a route is
+/// costed — and stacked out together they made a form three quarters of the
+/// viewport tall, most of it about whatever the user was not doing. So one is
+/// out at a time, and this is which.
+///
+/// A system by default, that being what the map is asked for most: the box at
+/// rest is the search box, and it is the one mode reachable without knowing
+/// the other two are there.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) enum AskMode {
+    /// Find a system by name
+    #[default]
+    System,
+    /// Dim the sky down to what a name or a span admits
+    Filter,
+    /// Cost a route between what is picked out
+    Route,
+}
+
+impl AskMode {
+    /// The three, in the order the strip stands them in
+    ///
+    /// Search first, being what the box is at rest. The filters next, since
+    /// what they add shows up in the rows directly below. The route last: it
+    /// is asked of systems those rows are already holding, so it reads as the
+    /// end of that column rather than the start of it.
+    const ALL: [AskMode; 3] =
+        [AskMode::System, AskMode::Filter, AskMode::Route];
+
+    /// What the tab is called, and the key that reaches it
+    ///
+    /// The key stands in the tab because a mode reached by clicking a tab is
+    /// a mode reached once and then hunted for. [`BINDINGS`] says the same
+    /// three at length, in the window a reader opens to learn the keyboard;
+    /// this says them where the hand already is.
+    fn said(self) -> &'static str {
+        match self {
+            AskMode::System => "System /",
+            AskMode::Filter => "Filter ⇧F",
+            AskMode::Route => "Route ⇧R",
+        }
+    }
+
+    /// What the box is asking for in this mode
+    ///
+    /// Standing in the field as its placeholder, so the one box says which of
+    /// its three questions it is putting. It keys the field as well — see
+    /// [`singleline`] — so each mode keeps its own caret and its own text.
+    fn wants(self) -> &'static str {
+        match self {
+            AskMode::System => "Search",
+            AskMode::Filter => "Faction Name",
+            AskMode::Route => "Jump Range (Ly)",
+        }
+    }
+
+    /// What choosing it does, said on hover. See [`check`].
+    fn hint(self) -> &'static str {
+        match self {
+            AskMode::System => "Find a system by name",
+            AskMode::Filter => "Draw only what a faction or a span admits",
+            AskMode::Route => "Plot a route through what is picked out",
+        }
+    }
+}
+
+/// What the pass over the ask bar came to
+///
+/// Everything about the bar that something drawn after it needs: the gear
+/// stands level with the field, the state bar stands under the whole card,
+/// and the press bookkeeping at the end of [`chrome`] weighs both against
+/// where the pointer was.
+struct Asked {
+    /// Where the field sits, which is the height the gear is hung at
+    middle: f32,
+    /// The whole card, for weighing a press that landed off it
+    rect: egui::Rect,
+    /// The field itself, which a press off the chrome lets go of
+    box_id: egui::Id,
+    /// Whether the field has just taken the caret, which is what opens the
+    /// form
+    took_focus: bool,
+}
+
+/// The three questions the box can put, and which it is putting
+///
+/// Under the field rather than over it. The field is the one thing that
+/// stands whether or not the form is out, so everything that comes and goes
+/// comes and goes below it: a row appearing above would carry the box — and
+/// the gear lined up with it — down the screen the moment it was clicked
+/// into, out from under the pointer that had just clicked it.
+///
+/// Answers whether a tab was clicked, which is the caller's to act on: the
+/// field a mode is chosen in order to type into is the next mode's field, and
+/// only the next pass has one to put the caret in.
+fn mode_strip(ui: &mut Ui, mode: &mut AskMode) -> bool {
+    ui.scope(|ui| {
+        // A tab is not a selected system. Egui marks a chosen one in the color
+        // it marks a selection in, and in this chrome that color means picked
+        // out on the map: it is the ring around a star, the dot on a row, and
+        // nothing else. So the tab is filled in the grey the rest of the bar
+        // is drawn in and says which one it is by being filled at all.
+        let strong = ui.visuals().strong_text_color();
+        let filled = ui.visuals().widgets.active.weak_bg_fill;
+        let visuals = ui.visuals_mut();
+        visuals.selection.bg_fill = filled;
+        visuals.selection.stroke.color = strong;
+
+        ui.horizontal(|ui| {
+            let mut chosen = false;
+            for offered in AskMode::ALL {
+                chosen |= ui
+                    .selectable_value(mode, offered, offered.said())
+                    .on_hover_text(offered.hint())
+                    .clicked();
+            }
+            chosen
+        })
+        .inner
+    })
+    .inner
+}
+
+/// Ask the map for one thing, in the corner it is always asked from
+///
+/// One field at the top of the viewport, since the map is asked one question
+/// over and over. Focusing it brings a pane up behind it, drops the tabs out
+/// below it and the mode's own form under those, and a press landing off the
+/// chrome puts the caret away again.
 ///
 /// It keeps its box while the bar is at rest, so that what stands at the top
 /// of the viewport reads as somewhere to type rather than as a word painted
-/// on the map.
-///
-/// The pane is the input's own frame drawn in nothing while the bar is at
-/// rest, rather than a frame left out and put back. Nothing shifts as it
-/// comes up, because nothing about the layout has changed.
+/// on the map. The pane is that same box's frame drawn in nothing while the
+/// bar is at rest, rather than a frame left out and put back: nothing shifts
+/// as it comes up, because nothing about the layout has changed.
 ///
 /// It stands beside the gear, in the room past `left`, and rides the settings
-/// pane's edge as the gear does, so that the whole of the chrome is gathered
-/// into one corner. Down the middle it would stand over the sky the spyglass
+/// pane's edge as the gear does, so that the corner holds the whole of what
+/// the map is asked. Down the middle it would stand over the sky the spyglass
 /// fills, which is drawn about the middle of the viewport and is what the map
 /// is for.
 ///
-/// The note is not part of what drops down. It answers the name in the input,
-/// and is worth reading whether or not the rest is out.
+/// Only what is being asked is drawn here. What the map is holding — the
+/// filters, the selection, how much of the sky is getting through — is
+/// [`state_bar`], and the moment is [`time_strip`]. The three were one column
+/// and read as one thing that would not stop growing: a reading that is
+/// always true sat between two forms that are usually not out, and the rows
+/// saying what the map holds sat inside the frame of a form asking about
+/// something else.
 ///
-/// Answers where the search box came out, that being the height the gear is
-/// hung at. Nothing about the press: one that lands off the bar is the map's,
-/// whether or not the form is open.
-fn main_bar(
+/// `asking` is whether the search box's answer is late enough to say so,
+/// which the clock the question was put by settles: the bar draws during
+/// egui's own pass and has no clock of its own.
+#[allow(clippy::too_many_arguments)]
+fn ask_bar(
     ctx: &Context,
     left: f32,
     asking: bool,
@@ -1393,29 +1629,20 @@ fn main_bar(
     note: &mut SearchNote,
     results: &mut SearchResults,
     selection: &mut Selection,
-    contents: &Contents,
-    camera: &mut MessageWriter<MoveCamera>,
     center: Option<DVec3>,
     panels: &mut Panels,
+    camera: &mut MessageWriter<MoveCamera>,
     plot: &mut Plot,
     how: &mut Routing,
     drive: &mut Drive,
     boosts: &crate::Boosts,
     searching: &Frontiers,
     filter: &mut FilterBar,
-    // What moment the held system is drawn at, for the status under the rows,
-    // and whether the slider that sets it is out under the date.
-    clock: &mut ResMut<Clock>,
-    control: &mut ClockControl,
-) -> f32 {
-    // What the filter rows were asked, carried out of the closure they are
-    // drawn in: acting on either inside it would want the bar's own state
-    // while egui still holds it.
-    let mut row_ask = RowAsk::default();
+) -> Asked {
     let style = ctx.global_style();
     let mut frame =
         egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
-    if !search.expanded {
+    if search.asking.is_none() {
         frame = frame
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::new(
@@ -1424,11 +1651,6 @@ fn main_bar(
             ))
             .shadow(egui::Shadow::NONE);
     }
-
-    // Whether a gesture is still under way anywhere, which is what says a
-    // control held mid-drag is still being held. Read before the bar is drawn,
-    // the control that took the hold being drawn well below the rows it holds.
-    let dragging = ctx.egui_is_using_pointer();
 
     let bar = egui::Area::new(egui::Id::new("main-bar"))
         // With the rest of the chrome; see `settings_pane`.
@@ -1441,14 +1663,45 @@ fn main_bar(
                     // the form drops out of it.
                     ui.set_width(BAR_WIDTH);
                     let mut taken = false;
+                    // Which question is being put. A system while the form is
+                    // shut: the box at rest is the search box.
+                    let mut mode = search.asking.unwrap_or_default();
+                    // Whether whatever was last typed here is still being
+                    // looked up. A range waits on nothing, being read rather
+                    // than asked of anything.
+                    let waiting = match mode {
+                        AskMode::System => asking,
+                        AskMode::Filter => filter.pending.waiting(),
+                        AskMode::Route => false,
+                    };
 
-                    let (response, cleared) = search_box(
-                        ui,
-                        &mut search.system,
-                        note,
-                        results,
-                        asking,
-                    );
+                    // The one box, holding whichever of the three questions is
+                    // out. What the mark takes with it differs by mode, every
+                    // question leaving something different standing as its
+                    // answer, so each says for itself what clearing means.
+                    let (response, emptied) = match mode {
+                        AskMode::System => ask_box(
+                            ui,
+                            &mut search.system,
+                            mode.wants(),
+                            !results.is_empty(),
+                            waiting,
+                        ),
+                        AskMode::Filter => ask_box(
+                            ui,
+                            &mut filter.input,
+                            mode.wants(),
+                            !filter.found.is_empty(),
+                            waiting,
+                        ),
+                        AskMode::Route => ask_box(
+                            ui,
+                            &mut search.route_range,
+                            mode.wants(),
+                            false,
+                            waiting,
+                        ),
+                    };
                     taken |= response.gained_focus();
                     // Asked for by a key, and answered here because this is
                     // where the box is. Counted as the box having been taken,
@@ -1458,67 +1711,183 @@ fn main_bar(
                         response.request_focus();
                         taken = true;
                     }
-                    // Carried out so a press landing off the bar can let go
+                    // Carried out so a press landing off the chrome can let go
                     // of it. See [`let_go_of`].
                     let box_id = response.id;
                     // Where the gear stands, the two of them being one row.
                     let middle = response.rect.center().y;
-                    // Both answer a name, so neither is any answer at all
-                    // once that name is being typed over. The mark has
-                    // already taken all three where it was the one asked.
-                    if response.changed() && !cleared {
-                        note.0 = None;
-                        results.clear();
-                    }
-                    // Return and nothing else. Tab moves between the
-                    // fields of a form, and a form that went off and asked
-                    // the database something on the way past would be
-                    // answering a question nobody had finished asking.
-                    // The name as a name, since the room around one is not
-                    // part of it and a field holding nothing but room is a
-                    // field holding nothing. Both reach the database as
-                    // letters to match otherwise, and a search for two
-                    // spaces answers with every system that has two.
-                    if entered(&response, ui)
-                        && let Some(name) =
-                            typed(&search.system).map(str::to_owned)
-                    {
-                        searched.write(Search::System { name });
+
+                    // What each mode makes of its own field. Return and
+                    // nothing else asks the question: tab moves between the
+                    // fields of a form, and a form that went off and asked the
+                    // database something on the way past would be answering a
+                    // question nobody had finished asking.
+                    match mode {
+                        AskMode::System => {
+                            // Both answer a name, so neither is any answer at
+                            // all once that name is being typed over.
+                            if emptied {
+                                cleared(&mut search.system, note, results);
+                            } else if response.changed() {
+                                note.0 = None;
+                                results.clear();
+                            }
+                            // The name as a name, since the room around one is
+                            // not part of it and a field holding nothing but
+                            // room is a field holding nothing. Both reach the
+                            // database as letters to match otherwise, and a
+                            // search for two spaces answers with every system
+                            // that has two.
+                            if entered(&response, ui)
+                                && let Some(name) =
+                                    typed(&search.system).map(str::to_owned)
+                            {
+                                searched.write(Search::System { name });
+                            }
+                        }
+                        AskMode::Filter => {
+                            if emptied {
+                                *filter.input = None;
+                                *filter.note = LookupNote::Nothing;
+                                filter.found.clear();
+                            } else if response.changed() {
+                                *filter.note = LookupNote::Nothing;
+                                filter.found.clear();
+                            }
+                            if entered(&response, ui)
+                                && let Some(name) =
+                                    typed(&filter.input).map(str::to_owned)
+                            {
+                                filter.lookup.write(Lookup::Faction { name });
+                            }
+                        }
+                        // Nothing standing under it to take away, and nothing
+                        // to look up: what a return here asks for is the route
+                        // itself, which is [`route_body`]'s, the button being
+                        // the same question said in words.
+                        AskMode::Route => {
+                            if emptied {
+                                search.route_range = None;
+                            }
+                        }
                     }
 
-                    // Both, and in this order: the note answers the query
-                    // in the input above it, and the status below says what
-                    // is picked out, which after a search that failed is
-                    // some other system entirely.
-                    if let Some(note) = &note.0 {
-                        ui.colored_label(egui::Color32::LIGHT_RED, note);
+                    if search.asking.is_some() {
+                        if mode_strip(ui, &mut mode) {
+                            // The caret follows the tab, a mode being chosen
+                            // in order to type into it. Asked for rather than
+                            // taken, since the field it belongs in is the next
+                            // pass's to draw.
+                            search.opening = true;
+                        }
+                        search.asking = Some(mode);
+
+                        match mode {
+                            AskMode::System => {
+                                // Both answer the name in the box, and neither
+                                // ever stands with the other: a search either
+                                // found systems to list or found nothing and
+                                // says so.
+                                if let Some(note) = &note.0 {
+                                    ui.colored_label(
+                                        egui::Color32::LIGHT_RED,
+                                        note,
+                                    );
+                                }
+                                let mut travelled = None;
+                                let mut described = None;
+                                found(
+                                    ui,
+                                    results,
+                                    center,
+                                    selection,
+                                    &mut travelled,
+                                    &mut described,
+                                );
+                                if let Some(position) = travelled {
+                                    camera.write(MoveCamera {
+                                        position: Some(position),
+                                        framing: None,
+                                    });
+                                }
+                                if let Some(system) = described {
+                                    panels.open_system(system);
+                                }
+                            }
+                            AskMode::Filter => filter_body(ui, filter),
+                            AskMode::Route => route_body(
+                                ui, &response, search, selection, searched,
+                                plot, how, drive, boosts, searching,
+                            ),
+                        }
                     }
-                    // Between the two, since it answers the query above it
-                    // as the note does, and what is picked out of it shows up
-                    // in the status below.
-                    let mut travelled = None;
-                    let mut described = None;
-                    found(
-                        ui,
-                        results,
-                        search.expanded,
-                        center,
-                        selection,
-                        &mut travelled,
-                        &mut described,
-                    );
-                    if let Some(position) = travelled {
-                        camera.write(MoveCamera {
-                            position: Some(position),
-                            framing: None,
-                        });
-                    }
-                    if let Some(system) = described {
-                        panels.open_system(system);
-                    }
-                    // One count for the whole column rather than one per
-                    // kind of row. The rows are the same height and stand one
-                    // after another, so letting go of a filter row moves every
+
+                    (taken, middle, box_id)
+                })
+                .inner
+        });
+
+    let (took_focus, middle, box_id) = bar.inner;
+    Asked { middle, rect: bar.response.rect, box_id, took_focus }
+}
+
+/// Say what the map is holding, under the bar that asked for it
+///
+/// The filters being applied, what is picked out, and how much of the sky is
+/// getting through them. All of it outlives the asking: a filter changes what
+/// the whole map looks like and a selection is what the next question will be
+/// about, so none of it is put away with the form. A sky gone dim with
+/// nothing to say why is a map that looks broken.
+///
+/// Its own zone for that reason, and drawn in no frame at all. A frame is
+/// what the map draws around a form that is out — something transient, that a
+/// press elsewhere puts away — and these are a readout. They stood inside the
+/// bar's popup frame, which put what the map holds inside the box asking
+/// about something else.
+///
+/// It stands at `top`, which is where the bar above it ended, so the column
+/// reads down the corner as one thing. Handed in rather than measured here,
+/// the two being separate areas: egui hands back where an area reached once
+/// it has been drawn, and the bar is drawn first.
+///
+/// Answers whether a route between what is picked out was asked for, which is
+/// [`whole_selection`]'s to say and the caller's to act on: what answers it is
+/// a mode of the bar above.
+#[allow(clippy::too_many_arguments)]
+fn state_bar(
+    ctx: &Context,
+    left: f32,
+    top: f32,
+    selection: &mut Selection,
+    contents: &Contents,
+    center: Option<DVec3>,
+    panels: &mut Panels,
+    camera: &mut MessageWriter<MoveCamera>,
+    filter: &mut FilterBar,
+) -> (egui::Rect, bool) {
+    // What the filter rows were asked, carried out of the closure they are
+    // drawn in: acting on either inside it would want the bar's own state
+    // while egui still holds it.
+    let mut row_ask = RowAsk::default();
+    // Whether a gesture is still under way anywhere, which is what says a
+    // control held mid-drag is still being held. Read before the rows are
+    // drawn, the control that took the hold standing well below them.
+    let dragging = ctx.egui_is_using_pointer();
+
+    let rows = egui::Area::new(egui::Id::new("state-bar"))
+        // With the rest of the chrome; see `settings_pane`.
+        .order(egui::Order::Middle)
+        .fixed_pos(egui::pos2(left + MARGIN, top))
+        .show(ctx, |ui| {
+            // The same margin the bar's frame keeps, so a row lines up under
+            // the field that asked for it rather than standing out past it.
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(PADDING))
+                .show(ui, |ui| {
+                    ui.set_width(BAR_WIDTH);
+                    // One count for the whole column rather than one per kind
+                    // of row. The rows are the same height and stand one after
+                    // another, so letting go of a filter row moves every
                     // selection row up into a rectangle a filter row was drawn
                     // in. Numbered apart, the two would put a fresh id at a
                     // rectangle that kept its place, which is what egui reads
@@ -1576,83 +1945,11 @@ fn main_bar(
                         filter.spawning.queued() > 0,
                         filter.evicting.queued() > 0,
                     );
-                    // What the map is standing at, beside what it is holding.
-                    // Under the count rather than over it: the count is about
-                    // the sky the camera is in and this is about the one system
-                    // it is inside, which is the narrower of the two.
-                    // One turn of whatever is being watched: the body picked
-                    // out, where the map is holding the system it is in, and
-                    // the widest orbit that system has otherwise. A rail over
-                    // a planet's own year is the span that planet's phase
-                    // slider covers, which is the only span that says
-                    // anything about the planet.
-                    let geared = selection
-                        .newest_body()
-                        .filter(|(address, _)| contents.of() == Some(*address))
-                        .and_then(|(_, id)| contents.turn_of(id))
-                        .map(Geared::Body)
-                        .or_else(|| {
-                            contents.slowest_turn().map(Geared::System)
-                        });
-                    mark_if_moved(clock, |clock| {
-                        dated(ui, clock, geared, control)
-                    });
 
-                    // Asking for a route out of the summary line is what opens
-                    // the form, in the same pass, so that the section it asked
-                    // for is under the control that asked the moment it is
-                    // clicked rather than a frame later.
-                    search.expanded |= routing;
-                    if search.expanded {
-                        taken |= filter_section(ui, filter);
-                        taken |= route_section(
-                            ui, search, selection, searched, plot, how, drive,
-                            boosts, searching, routing,
-                        );
-                    }
-
-                    (taken, middle, box_id)
+                    routing
                 })
                 .inner
         });
-
-    let over = ctx
-        .pointer_latest_pos()
-        .is_some_and(|at| bar.response.rect.contains(at));
-    // A press that landed anywhere but on the bar. Never spent: the map is
-    // free to answer every one of them, which is what lets a user pick
-    // systems out with the form still open. What a route runs through is
-    // gathered on the map, and the form is where the range is typed and
-    // where the trip is asked for, so a press that answered one by closing
-    // the other would be the form standing in the way of its own question.
-    let off_the_bar = !over && ctx.input(|i| i.pointer.any_pressed());
-    // Two moments, and nothing else: a field in the form takes focus, or an
-    // escape asks for it to be put away. Moments rather than states, so that
-    // neither can undo the other. Asking whether a field holds focus would
-    // open the form again the very next frame.
-    let (took_focus, middle, box_id) = bar.inner;
-    if took_focus {
-        search.expanded = true;
-    }
-    // The caret goes even though the form stays. A press on the map means the
-    // map, and a box left holding the caret takes the keys the map pans and
-    // flies with.
-    if off_the_bar {
-        let_go_of(ctx, box_id);
-    }
-    // An escape lets go of whichever field held the caret, where a press lets
-    // go of the search box alone. A press lands somewhere, and what it lands on
-    // is entitled to the focus it has just taken; an escape lands on nothing
-    // and means the form, whichever of its fields was being typed into.
-    //
-    // Egui lets go of a bare escape's focus itself, in the pass the key
-    // arrives. Said here as well because it is what holds the two together:
-    // the form must not be shut over a field still holding the caret, which is
-    // the state [`let_go_of`] exists to keep the map out of.
-    if std::mem::take(&mut search.shutting) {
-        search.expanded = false;
-        ctx.memory_mut(|memory| memory.stop_text_input());
-    }
 
     // Clicking a route picks out what it was plotted between: a plot is an
     // answer to a question about two systems, and the question is what the
@@ -1722,7 +2019,144 @@ fn main_bar(
         }
     }
 
-    middle
+    (rows.response.rect, rows.inner)
+}
+
+/// How wide the strip stands while the scrubber is out
+///
+/// Wide enough that a rail covering one turn of a system is worth dragging: a
+/// logarithmic rail spends four decades of span over its own width, so every
+/// pixel taken off it is a coarser instrument. Nearly twice the bar, which is
+/// what the rail had when it was a line in the bar and is what
+/// [`clock_control`] documents the cost of.
+///
+/// A number rather than what the reading leaves over. The rail is scaled by
+/// the room it is in, and room measured off a line that grows with the value
+/// the rail last set is a control whose scale is a function of its own value.
+const STRIP_WIDTH: f32 = 620.;
+
+/// How wide the scrubber's rail runs
+///
+/// The strip's own width, which is what [`time_strip`] sets the row the rail
+/// stands in to: the frame's margins are outside that, so the rail fills the
+/// row rather than stopping short of it. A number for the reason
+/// [`clock_control`] gives at length — a rail scaled by the room a growing
+/// reading leaves is a rail scaled by its own value — so it is written down
+/// beside the width it comes from rather than measured where it is used.
+const RAIL_WIDTH: f32 = STRIP_WIDTH;
+
+/// When the map is standing, at the top of the viewport
+///
+/// Its own zone, in the middle of the top edge. The moment is the galaxy's:
+/// it is true whatever the bar is being asked and whether or not the camera is
+/// inside a system, so it is read where a reading of that kind belongs rather
+/// than filed inside the corner card that comes and goes. In the bar it moved
+/// down the screen every time a form dropped out above it.
+///
+/// Bare while the map stands at the present, which is how it opens: a weak
+/// line of text over the sky and nothing else. Clicking it opens the scrubber
+/// under it, and then it takes the frame every other form takes — a frame
+/// being what the map draws around something a press elsewhere can put away.
+///
+/// Centered on the viewport, and held clear of `chrome_right`, which is where
+/// the bar's own column ends. On a window wide enough the two never meet and
+/// the strip stands in the middle; on a narrow one the strip gives way, a
+/// reading standing over the field the user is typing into being worse than a
+/// reading standing off center.
+///
+/// Anchored rather than placed while it is shut, its width then being whatever
+/// the reading comes to. Placed at a width of its own it would claim a
+/// [`STRIP_WIDTH`] band of the sky for the pointer with nothing drawn in it,
+/// and a wheel turned up there would stop turning the map.
+///
+/// Answers where it stood, which is what
+/// `the_strip_gives_way_to_the_bar_on_a_narrow_window` reads. Change
+/// detection is the caller's: what the scrubber writes is a moment, and
+/// whether the clock moved has nothing to do with where the reading of it is
+/// drawn.
+fn time_strip(
+    ctx: &Context,
+    chrome_right: f32,
+    clock: &mut Clock,
+    control: &mut ClockControl,
+    geared: Option<Geared>,
+) -> egui::Rect {
+    let style = ctx.global_style();
+    let mut frame =
+        egui::Frame::popup(&style).inner_margin(egui::Margin::same(PADDING));
+    if !control.out {
+        frame = frame
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(
+                frame.stroke.width,
+                egui::Color32::TRANSPARENT,
+            ))
+            .shadow(egui::Shadow::NONE);
+    }
+
+    // Centered on the viewport, and held off the bar's column. Worked out
+    // from the width the strip came out at last pass rather than from the
+    // width asked for inside it: what a frame adds in margins and stroke is
+    // the frame's own business, and said as a number the strip stood a few
+    // pixels off center and a few pixels into the bar.
+    //
+    // Not `constrain_to`, which anchors within whatever it is given: handed
+    // the room right of the bar, `CENTER_TOP` centers the strip in that room
+    // rather than on the viewport, so the reading sat well right of the middle
+    // on every window wide enough for there to be no question.
+    //
+    // Where the two cannot both be had — a window narrower than the bar and
+    // the strip together — the bar wins and the rail runs off the right edge.
+    // The reading leads the strip, so what is lost is the far end of a
+    // scrubber rather than the moment it is set to.
+    let room = ctx.content_rect();
+    let strip = egui::Id::new("time-strip");
+    let width = ctx.memory(|memory| memory.area_rect(strip));
+    let area = egui::Area::new(strip)
+        // With the rest of the chrome; see `settings_pane`.
+        .order(egui::Order::Middle)
+        // The strip stands where it is put, off the right edge and all, as
+        // the settings pane stands off the left while it is shut.
+        .constrain(false);
+    let area = match width {
+        Some(measured) => {
+            let centered = (room.width() - measured.width()) / 2.;
+            area.fixed_pos(egui::pos2(
+                centered.max(chrome_right + MARGIN),
+                MARGIN,
+            ))
+        }
+        // Nothing measured yet, which is the first pass and the pass after a
+        // pointer has opened the scrubber. Egui's own anchoring stands in,
+        // and is what centering means before there is a width to center.
+        None => area.anchor(egui::Align2::CENTER_TOP, egui::vec2(0., MARGIN)),
+    };
+
+    area.show(ctx, |ui| {
+        frame.show(ui, |ui| {
+            if control.out {
+                ui.set_width(STRIP_WIDTH);
+            }
+            dated(ui, clock, geared, control);
+        });
+    })
+    .response
+    .rect
+}
+
+/// What the scrubber is geared to
+///
+/// One turn of whatever is being watched: the body picked out, where the map
+/// is holding the system it is in, and the widest orbit that system has
+/// otherwise. A rail over a planet's own year is the span that planet's phase
+/// slider covers, which is the only span that says anything about the planet.
+fn geared_to(selection: &Selection, contents: &Contents) -> Option<Geared> {
+    selection
+        .newest_body()
+        .filter(|(address, _)| contents.of() == Some(*address))
+        .and_then(|(_, id)| contents.turn_of(id))
+        .map(Geared::Body)
+        .or_else(|| contents.slowest_turn().map(Geared::System))
 }
 
 /// Let go of the box, the press that shut the form having not been a click
@@ -1770,29 +2204,35 @@ pub(crate) struct SearchBar<'w> {
     searching: Res<'w, Frontiers>,
 }
 
-/// The search box, and the mark that empties it
+/// The bar's one box, and the mark that empties it
+///
+/// One field asks all three of the bar's questions, whichever of them is out:
+/// see [`AskMode`]. `wants` is what it is asking for, which names the field
+/// as well as standing in it, and is what tells one mode's box from another's
+/// — [`singleline`] keys the field on it, so each mode keeps its own caret
+/// and what was typed into one is not typed into the next.
 ///
 /// The mark stands inside the box at its right hand end, and only while there
-/// is something to clear. A search leaves three things behind that answer the
-/// name typed into it: the query itself, the note about a name that resolved
-/// to nothing, and the list of what it might have meant. All three are the
-/// one answer and the mark takes all three, since clearing the query and
-/// leaving the list standing under it would leave the answer to a question
-/// that is no longer on screen.
+/// is something to clear. `answered` is whether anything is standing under
+/// the box as an answer to what is in it, since the mark takes that with it:
+/// clearing the query and leaving the list standing under it would leave the
+/// answer to a question that is no longer on screen.
 ///
-/// Answers whether the box was cleared, which is a change to what is typed
-/// there and reads as one everywhere that watches for it.
-fn search_box(
+/// What clearing means is the caller's, every mode leaving something
+/// different behind. So this answers whether the mark was clicked and takes
+/// nothing away itself — which is a change to what is typed there and reads
+/// as one everywhere that watches for it.
+fn ask_box(
     ui: &mut Ui,
     value: &mut Option<String>,
-    note: &mut SearchNote,
-    results: &mut SearchResults,
+    wants: &str,
+    answered: bool,
     waiting: bool,
 ) -> (Response, bool) {
     // Laid out first, since the room it wants is room the field cannot have.
     // In nothing, so the color can be chosen once the pointer has been asked
     // about, which cannot happen until the field has been placed.
-    let showing = typed(value).is_some() || !results.is_empty();
+    let showing = typed(value).is_some() || answered;
     let mark = showing.then(|| {
         egui::WidgetText::from(
             egui::RichText::new(CLOSE).color(egui::Color32::PLACEHOLDER),
@@ -1807,7 +2247,7 @@ fn search_box(
 
     let gap = ui.spacing().item_spacing.x;
     let reserved = mark.as_ref().map_or(0., |mark| mark.size().x + gap);
-    let response = singleline(ui, value, "Search", reserved, waiting);
+    let response = singleline(ui, value, wants, reserved, waiting);
 
     let Some(mark) = mark else { return (response, false) };
     let rect = response.rect;
@@ -1822,7 +2262,7 @@ fn search_box(
     // two overlap. Under it a click would land in the text and put the caret
     // somewhere instead.
     let clearing =
-        ui.interact(at, ui.id().with("clear-search"), egui::Sense::click());
+        ui.interact(at, ui.id().with("clear-box"), egui::Sense::click());
     let lit = clearing.hovered() || clearing.has_focus();
     let size = mark.size();
     ui.painter().galley(
@@ -1837,7 +2277,6 @@ fn search_box(
     let clearing = clearing.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if clearing.clicked() {
-        cleared(value, note, results);
         return (response, true);
     }
 
@@ -1968,25 +2407,25 @@ fn act_on(
 /// than this: a message writer cannot be had outside a system, and a list that
 /// reports what it was asked for can be drawn in a test.
 ///
-/// `showing` is whether the form is out. The list is put away with it and not
-/// let go of: it answers a name the user is in the middle of asking about, and
-/// a list standing under a shut form is an answer to a question that is no
+/// Drawn only while the box is asking for a system, which is [`ask_bar`]'s to
+/// say: the list answers a name the user is in the middle of asking about, and
+/// one left standing under a shut form — or under a box that has since been
+/// turned to asking for a faction — is an answer to a question that is no
 /// longer on screen. What was found is kept, so opening the form again is
 /// where they left off rather than a search to do a second time.
 ///
-/// Unlike the rows below it, which stand whether or not the form is out. A
-/// selection and a filter outlive the asking and go on saying what the map is
-/// doing; a list of candidates is the asking itself.
+/// Unlike the rows in the state bar, which stand whether or not the form is
+/// out. A selection and a filter outlive the asking and go on saying what the
+/// map is doing; a list of candidates is the asking itself.
 fn found(
     ui: &mut Ui,
     results: &SearchResults,
-    showing: bool,
     center: Option<DVec3>,
     selection: &mut Selection,
     travelled: &mut Option<DVec3>,
     described: &mut Option<crate::systems::System>,
 ) {
-    if !showing || results.is_empty() {
+    if results.is_empty() {
         return;
     }
 
@@ -2740,24 +3179,25 @@ fn apart_said(away: f64, stops: usize) -> String {
     }
 }
 
-/// Ask what a route may be flown in, and say where it would run
+/// What the box asks in [`AskMode::Route`], under the field
 ///
-/// Answers whether its field has just taken focus. Which systems a route runs
+/// The field itself is the bar's one box, which is asking for a jump range
+/// while this mode is out: see [`ask_bar`]. Which systems a route runs
 /// through is what is picked out on the map, which [`stops_of`] settles, so
-/// the only thing left to ask is the jump range.
+/// the range is the only thing about a route that is typed and everything
+/// here is what surrounds it.
 ///
-/// How it is getting on is said between the field and the button, where
-/// what it is about is on either side of it. The note under the search input
-/// answers a name typed into the search input, and a route's answer read out
-/// up there would sit a long way from its question.
+/// `box_` is that field, handed down rather than drawn here, because two of
+/// the things below it answer what the field did: the button is the return
+/// key said in words, and what came back of the last route asked for is no
+/// answer at all once the range it was asked at is being typed over.
 ///
-/// `asked_for` is the control up in the selection's summary line having just
-/// been pressed, which is how a user who has picked two systems out on the map
-/// reaches this. The range takes the caret, that being the one thing left to
-/// say, so the gesture reads as one move rather than as a section appearing
-/// somewhere for the user to go and find.
-fn route_section(
+/// How it is getting on is said between the settings and the button, where
+/// what it is about is on either side of it.
+#[allow(clippy::too_many_arguments)]
+fn route_body(
     ui: &mut Ui,
+    box_: &Response,
     search: &mut BarFields,
     selection: &Selection,
     searched: &mut MessageWriter<Search>,
@@ -2766,15 +3206,11 @@ fn route_section(
     drive: &mut Drive,
     boosts: &crate::Boosts,
     searching: &Frontiers,
-    asked_for: bool,
-) -> bool {
-    heading(ui, "Route", true);
-    let mut taken = false;
-
+) {
     // Which systems it runs through is not said here. They are the rows in
-    // the bar above, named there and in that order, and a form that spelled
-    // them out again would say the same thing twice -- at six stops, in a
-    // line of names longer than the bar is wide.
+    // the state bar below, named there and in that order, and a form that
+    // spelled them out again would say the same thing twice -- at six stops,
+    // in a line of names longer than the bar is wide.
     let stops = stops_of(selection);
     if let Err(why) = &stops {
         // Weakly. Nothing has gone wrong: the user is part way through
@@ -2794,18 +3230,6 @@ fn route_section(
     // Where the trip may set out from, which only the cheapest order has a
     // say in. Read here so the ask below and the box further down agree.
     let start = if search.any_start { Start::Anywhere } else { Start::First };
-
-    // The range is typed rather than looked up, so it never waits on
-    // anything.
-    let range =
-        singleline(ui, &mut search.route_range, "Jump Range (Ly)", 0., false);
-    if asked_for {
-        range.request_focus();
-    }
-    taken |= range.gained_focus();
-    // Return in the range asks for the route, as pressing the button does. It
-    // is the one thing a route waits on, and a form with one thing left to do
-    // should not have to be reached for.
     // How hard the map should work at it. Two of the three are the fewest
     // jumps and differ in whether the map may spend the time proving the
     // shortest of them; the third declines to prove anything and comes back
@@ -2875,11 +3299,14 @@ fn route_section(
             }
         });
 
-    let submitted = entered(&range, ui);
+    // Return in the field asks for the route, as pressing the button does. It
+    // is the one thing a route waits on, and a form with one thing left to do
+    // should not have to be reached for.
+    let submitted = entered(box_, ui);
     // What came back of the last route asked for answers the field as it was
     // then, so it goes as soon as it is not. Work still under way is not an
     // answer to anything yet, and stays.
-    if range.changed() && matches!(*plot, Plot::Failed(_)) {
+    if box_.changed() && matches!(*plot, Plot::Failed(_)) {
         *plot = Plot::Nothing;
     }
 
@@ -2994,8 +3421,6 @@ fn route_section(
             Err(trouble) => Plot::Failed(trouble.to_owned()),
         };
     }
-
-    taken
 }
 
 /// Say which filters are being applied, and how much is getting through
@@ -3875,41 +4300,22 @@ fn whole_set(
     asked
 }
 
-/// Ask for a filter by naming a faction
+/// What the box asks in [`AskMode::Filter`], under the field
 ///
-/// Answers whether its field has just taken focus. Above the route's section
-/// because what it adds shows up above it, in the rows under the search box,
-/// and a control should sit near what it does.
+/// The field itself is the bar's one box, which is asking for a faction while
+/// this mode is out: see [`ask_bar`]. What is left is what a name cannot say
+/// — which of the factions holding it was meant, and how lately a system
+/// must have been heard from — so this is the answer to the name and the one
+/// filter that is not a name at all.
 ///
 /// The field empties once a faction has been asked for. What was typed is a
 /// row by then, and the field's next job is the next filter.
 ///
-/// What went wrong is said under the field that went wrong, as a route's
-/// trouble is said between its fields and its button. The note under the
-/// search input answers a name typed into the search input, and a faction
-/// read out up there would sit a long way from its question.
-fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
-    heading(ui, "Filters", true);
-
-    let response = singleline(
-        ui,
-        &mut filter.input,
-        "Faction Name",
-        0.,
-        filter.pending.waiting(),
-    );
-    // Both answer a name, so neither is any answer at all once that name is
-    // being typed over.
-    if response.changed() {
-        *filter.note = LookupNote::Nothing;
-        filter.found.clear();
-    }
-    if entered(&response, ui)
-        && let Some(name) = typed(&filter.input).map(str::to_owned)
-    {
-        filter.lookup.write(Lookup::Faction { name });
-    }
-
+/// What went wrong is said here rather than beside the box, so that a name
+/// that resolved to nothing is read under the name that did it, and the
+/// search's own note cannot be mistaken for it: one box asks all three
+/// questions, and only one of them is being asked at a time.
+fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
     if let LookupNote::Failed(why) = &*filter.note {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, why);
@@ -3937,15 +4343,16 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
         filter.active.bypass_change_detection(),
         &mut filter.standstill,
     );
-
-    response.gained_focus()
 }
 
-/// Say what moment the map is standing at, under the bar
+/// Say what moment the map is standing at
 ///
-/// A line of the same kind as the count of what is in reach beside it: what the
-/// map is doing, said where the user is already reading it, rather than a
-/// reading kept behind the gear. It answers the one question the arrangement on
+/// Drawn in [`time_strip`], at the top of the viewport and in the middle of
+/// it. What the map is doing, said where a reader is looking rather than kept
+/// behind the gear, and its own zone rather than a line in the bar: the
+/// moment is the galaxy's and holds whatever the bar is being asked, so a
+/// reading filed under the asking moved down the screen every time a form
+/// dropped out above it. It answers the one question the arrangement on
 /// screen raises — when is this — and it is the only place the map ever says
 /// what day the game is on.
 ///
@@ -4062,7 +4469,7 @@ impl Geared {
     }
 }
 
-/// A slider over one turn, under the date
+/// A slider over one turn, under the reading
 ///
 /// What the date opens. Geared to the body picked out where there is one, and
 /// to the widest orbit the system has otherwise, so its far end is that thing
@@ -4096,22 +4503,24 @@ impl Geared {
 /// is no turn to cover, and a slider over nothing would move the map by
 /// nothing however far it was dragged.
 ///
-/// Its width is the bar's, taken as a number rather than as what the line
+/// Its width is the strip's, taken as a number rather than as what the line
 /// above it left over. That line grows with the reading -- a fifth digit in
-/// the year, a longer span beside it -- and once it is wider than the bar the
-/// room left under it moves with what the rail last set. Which is a control
-/// whose scale is a function of its own value: at a span of some ten thousand
-/// years the two settled into a cycle, one width setting the span that asks
-/// for the other, and the reading flicked between two moments a log step
-/// apart under a hand holding still. Measured pixel by pixel along the rail:
-/// `11090.83y then 7922.02y`, over and over.
+/// the year, a longer span beside it -- and egui widens a `Ui` to hold a row
+/// too wide for it, so once the line is wider than the strip the room left
+/// under it moves with what the rail last set. Which is a control whose scale
+/// is a function of its own value: at a span of some ten thousand years the
+/// two settled into a cycle, one width setting the span that asks for the
+/// other, and the reading flicked between two moments a log step apart under
+/// a hand holding still. Measured pixel by pixel along the rail:
+/// `11090.83y then 7922.02y`, over and over. Held to
+/// `the_reading_holds_still_all_along_the_rail`.
 fn clock_control(ui: &mut Ui, clock: &mut Clock, geared: Option<Geared>) {
     let turn = geared.map_or(0., Geared::turn).min(Clock::CEILING);
     // Where the map already stands, as much of it as this rail covers. A
     // body's own slider can have run the offset past a turn of the widest
     // orbit; the rail then reads at its far end rather than wrapping round.
     let mut past = clock.offset().min(turn);
-    ui.spacing_mut().slider_width = BAR_WIDTH - ui.spacing().item_spacing.x;
+    ui.spacing_mut().slider_width = RAIL_WIDTH - ui.spacing().item_spacing.x;
     let moved = ui
         .add_enabled_ui(turn > 0., |ui| {
             let mut rail =
@@ -4312,10 +4721,10 @@ fn faction_list<'a>(
 /// wrote it. Held to the README's table by
 /// `the_pane_and_the_readme_list_the_same_keys`, so the two cannot drift.
 ///
-/// Each is a key struck on its own, but for the two that want shift — the
-/// one that opens the search and the `?` that opens this window — which is
-/// what [`crate::keys`] promises and the README says.
-const BINDINGS: [(&str, &str); 13] = [
+/// Each is a key struck on its own, but for the four that want shift — the
+/// three that put a question in the bar's box and the `?` that opens this
+/// window — which is what [`crate::keys`] promises and the README says.
+const BINDINGS: [(&str, &str); 15] = [
     ("W A S D", "Pan along the ruled plane"),
     ("Q E", "Pan down and up through it"),
     ("Z X", "Swing the camera round what it looks at"),
@@ -4326,8 +4735,10 @@ const BINDINGS: [(&str, &str); 13] = [
     ("L", "Show or hide the labels"),
     ("O", "Show or hide the orbit lines"),
     ("G", "Show or hide the grid"),
-    ("/ or Shift-S", "Put the caret in the search box"),
-    ("Esc", "Put the search form or the bindings away"),
+    ("/ or Shift-S", "Search the box for a system"),
+    ("Shift-F", "Ask the box for a faction to filter on"),
+    ("Shift-R", "Ask the box for a route's jump range"),
+    ("Esc", "Put the form or the bindings away"),
     ("F1 or ?", "Show or hide these bindings"),
 ];
 
@@ -5292,6 +5703,105 @@ mod tests {
         assert!(moved.is_empty(), "the reading moved on its own: {moved:?}");
     }
 
+    /// Where the strip stood, drawn over a viewport `across` wide
+    ///
+    /// Several frames, since a strip that has just been opened is measured
+    /// from the pass before it: an area is placed at the size it last came
+    /// out at.
+    fn stripped(across: f32, chrome_right: f32, out: bool) -> egui::Rect {
+        let ctx = crate::tests::context();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(across, 800.),
+            )),
+            ..Default::default()
+        };
+        let mut clock = Clock::default();
+        let mut control = ClockControl { out };
+        let mut at = egui::Rect::NOTHING;
+        for _ in 0..4 {
+            let _ = ctx.run_ui(input.clone(), |ui| {
+                at = time_strip(
+                    ui.ctx(),
+                    chrome_right,
+                    &mut clock,
+                    &mut control,
+                    Some(Geared::System(400. * 86_400.)),
+                );
+            });
+        }
+
+        at
+    }
+
+    /// The reading stands in the middle of the top edge
+    #[test]
+    fn the_strip_stands_in_the_middle_of_the_top() {
+        let wide = stripped(1600., 400., false);
+
+        assert!(
+            (wide.center().x - 800.).abs() < 2.,
+            "the reading stood at {}, not the middle of 1600",
+            wide.center().x
+        );
+        assert!(wide.top() >= MARGIN, "{wide:?} stood against the top edge");
+    }
+
+    /// Shut, it claims no more of the sky than the words take
+    ///
+    /// It is drawn over the map, and an area is the pointer's wherever it
+    /// reaches. Laid out at the width the scrubber wants, a shut strip would
+    /// take a band across the top of the viewport for a line of text, and a
+    /// wheel turned up there would stop turning the map.
+    #[test]
+    fn a_shut_strip_takes_only_the_room_the_reading_wants() {
+        let shut = stripped(1600., 400., false);
+
+        assert!(
+            shut.width() < STRIP_WIDTH / 2.,
+            "a reading took {} of {STRIP_WIDTH}",
+            shut.width()
+        );
+    }
+
+    /// Out, it is at least as wide as the rail it holds
+    ///
+    /// The rail is scaled to [`RAIL_WIDTH`] whatever room it is given — see
+    /// [`clock_control`] for why it is a number — so a strip narrower than
+    /// that is a rail painted out past its own frame.
+    #[test]
+    fn an_open_strip_holds_its_rail() {
+        let out = stripped(1600., 400., true);
+
+        assert!(
+            out.width() >= RAIL_WIDTH,
+            "{} against a rail of {RAIL_WIDTH}",
+            out.width()
+        );
+        // And is the wider of the two states by some way, the reading alone
+        // being a fraction of it.
+        assert!(out.width() > stripped(1600., 400., false).width() * 2.);
+    }
+
+    /// And on a narrow window it gives way to the bar
+    ///
+    /// The two are drawn from opposite rules — the bar from the left edge,
+    /// the strip from the middle — so on a window narrow enough they meet.
+    /// A reading standing over the field being typed into is worse than a
+    /// reading standing off center.
+    #[test]
+    fn the_strip_gives_way_to_the_bar_on_a_narrow_window() {
+        let chrome_right = MARGIN + GEAR_ROOM + MARGIN + BAR_WIDTH;
+        let narrow = stripped(chrome_right + STRIP_WIDTH, chrome_right, true);
+
+        assert!(
+            narrow.left() >= chrome_right + MARGIN,
+            "the strip stood at {} over a bar reaching {chrome_right}",
+            narrow.left()
+        );
+    }
+
     /// Geared to a body, the rail is that body's own turn laid evenly
     ///
     /// The span asked for while a body is being watched is one orbit of it,
@@ -5479,7 +5989,6 @@ mod tests {
             found(
                 ui,
                 results,
-                true,
                 center,
                 &mut selection,
                 &mut travelled,
@@ -5528,68 +6037,43 @@ mod tests {
         assert_eq!(said.iter().filter(|line| *line == INFO).count(), 2);
     }
 
-    /// A shut form puts the list away without letting go of it
-    ///
-    /// It answers a name the user is in the middle of asking about, and a
-    /// list standing under a shut form is an answer to a question that is no
-    /// longer on screen. What was found is kept, so opening the form again is
-    /// where they left off rather than a search to do a second time.
-    #[test]
-    fn a_shut_form_puts_the_list_away_without_clearing_it() {
-        let held = results(&["SOL", "SOLATI"], true);
-
-        let out = listed(&held, None);
-        let away = words(|ui| {
-            let mut selection = Selection::default();
-            let mut travelled = None;
-            let mut described = None;
-            found(
-                ui,
-                &held,
-                false,
-                None,
-                &mut selection,
-                &mut travelled,
-                &mut described,
-            );
-        });
-
-        assert!(out.iter().any(|line| line == "SOL"), "{out:?}");
-        assert!(away.is_empty(), "{away:?}");
-        assert_eq!(held.iter().count(), 2, "the list let go of what it found");
-    }
-
     /// A faction the search found, by id, called after it
     fn faction_row(id: i32, name: &str) -> DbFaction {
         DbFaction { id, name: name.to_owned() }
     }
 
-    /// The lists drawn at once do not take each other's scroll area
+    /// One mode's list does not take the place of the last mode's
     ///
-    /// Egui works a scroll area's id out from where it sits unless it is
-    /// told, and says so in red over the map when two land on the same one.
-    /// The bar draws two at once: what a search found, and the factions a
-    /// name typed into the filter's field might mean.
+    /// The box puts three questions from one place, so what a search found
+    /// and what a faction lookup found are drawn into the same rectangle one
+    /// pass after the other. Egui reads a rect that kept its place while what
+    /// stands in it changed identity as one widget taking another's state,
+    /// says so in red across the bar, and these two lists are the pair most
+    /// likely to do it: both hang directly under the field, and a tab is a
+    /// click.
     #[test]
-    fn the_lists_do_not_share_a_scroll_area() {
+    fn one_modes_list_does_not_take_the_last_modes_place() {
         let systems = results(&["SOL", "SOLATI"], true);
         let factions = [faction_row(1, "The Dukes of Mikunn")];
 
-        let said = crate::tests::complaints(|ui| {
-            let mut selection = Selection::default();
-            let mut travelled = None;
-            let mut described = None;
-            found(
-                ui,
-                &systems,
-                true,
-                None,
-                &mut selection,
-                &mut travelled,
-                &mut described,
-            );
-            faction_list(ui, factions.iter());
-        });
+        let said = crate::tests::between_passes(
+            |ui| {
+                let mut selection = Selection::default();
+                let mut travelled = None;
+                let mut described = None;
+                found(
+                    ui,
+                    &systems,
+                    None,
+                    &mut selection,
+                    &mut travelled,
+                    &mut described,
+                );
+            },
+            |ui| {
+                faction_list(ui, factions.iter());
+            },
+        );
 
         assert!(said.is_empty(), "{said:?}");
     }
@@ -6185,7 +6669,6 @@ mod tests {
             found(
                 ui,
                 &results(names, true),
-                true,
                 None,
                 &mut selection,
                 &mut travelled,
@@ -6225,8 +6708,7 @@ mod tests {
     fn the_whole_bar_does_not_clash_with_itself() {
         let said = crate::tests::complaints(|ui| {
             let mut query = Some("SOL".to_owned());
-            let mut note = SearchNote(None);
-            let mut offers = results(&["SOL", "SOLATI", "SOLLARO"], true);
+            let offers = results(&["SOL", "SOLATI", "SOLLARO"], true);
             let mut selection = holding(&["SOL"]);
             let mut filters = Filters::default();
             filters.add(Filter::Systems {
@@ -6239,11 +6721,10 @@ mod tests {
             // One count for the whole column, as the bar keeps.
             let mut place = 0;
 
-            search_box(ui, &mut query, &mut note, &mut offers, false);
+            ask_box(ui, &mut query, "Search", !offers.is_empty(), false);
             found(
                 ui,
                 &offers,
-                true,
                 None,
                 &mut selection,
                 &mut travelled,
@@ -6348,7 +6829,6 @@ mod tests {
     ) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
             let mut query = Some("SOL".to_owned());
-            let mut note = SearchNote(None);
             let mut offers = SearchResults::default();
             if !results.is_empty() {
                 offers = results_of(results);
@@ -6367,16 +6847,8 @@ mod tests {
             // One count for the whole column, as the bar keeps.
             let mut place = 0;
 
-            search_box(ui, &mut query, &mut note, &mut offers, false);
-            found(
-                ui,
-                &offers,
-                true,
-                None,
-                &mut held,
-                &mut travelled,
-                &mut described,
-            );
+            ask_box(ui, &mut query, "Search", !offers.is_empty(), false);
+            found(ui, &offers, None, &mut held, &mut travelled, &mut described);
             // In the bar's own order: the filters, and the selection under
             // them. Which is the whole point of drawing them together here —
             // a harness that stacked them the other way round would clear
@@ -7449,13 +7921,12 @@ mod tests {
         assert!(shorter.is_empty(), "{shorter:?}");
     }
 
-    /// What the search box says, holding `query` against `results`
+    /// What the bar's box says, holding `query` against `results`
     fn box_said(query: Option<&str>, results: &[&str]) -> Vec<String> {
         words(|ui| {
             let mut value = query.map(str::to_owned);
-            let mut note = SearchNote::default();
-            let mut results = results_of(results);
-            search_box(ui, &mut value, &mut note, &mut results, false);
+            let results = results_of(results);
+            ask_box(ui, &mut value, "Search", !results.is_empty(), false);
         })
     }
 
@@ -7527,7 +7998,6 @@ mod tests {
             found(
                 ui,
                 &results(&["SOL", "NOWHERE"], false),
-                true,
                 Some(DVec3::ZERO),
                 &mut selection,
                 &mut travelled,
@@ -7546,7 +8016,6 @@ mod tests {
             found(
                 ui,
                 &results(&["SOL", "SOLATI", "SOLLARO"], true),
-                true,
                 None,
                 &mut selection,
                 &mut travelled,
