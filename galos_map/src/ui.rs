@@ -3643,6 +3643,11 @@ fn section_rows(
 /// - Filters, and what they exclude drawn not at all: `8 in spyglass`, the
 ///   rest being neither on screen nor fetched
 ///
+/// Nothing at all for a sky of one system or none. A count of one is not a
+/// reading anybody wants: it says less than the system's own name beside it
+/// does, and it is what the line stands at for the whole of a descent, where
+/// the reach holds the system the camera is inside and nothing else.
+///
 /// Said in as few words as it can be. The bar is [`BAR_WIDTH`] wide and the
 /// numbers are what grow: the sky runs to millions of systems, and a line
 /// that has to wrap to hold two of them is a line that moves the rows under
@@ -3655,7 +3660,11 @@ fn reaching(
     evicting: bool,
 ) {
     let InReach { admitted, total } = *in_reach;
-    if total == 0 {
+    // Nothing to count where the sky in reach is one system or none. A count
+    // of one says less than the system's own name does, and it is what the
+    // line reads as for the whole of a descent: the camera inside a system
+    // with the reach drawn in behind it has that system and nothing else.
+    if total <= 1 {
         return;
     }
 
@@ -7973,6 +7982,27 @@ mod tests {
         });
 
         assert!(!said.iter().any(|line| line.contains("spyglass")), "{said:?}");
+    }
+
+    /// And so does a sky of one, however it comes to be one
+    ///
+    /// Which is every descent: the camera inside a system holds that system
+    /// and nothing else, and `1 in spyglass` beside the system's own name is
+    /// a number saying less than the word next to it.
+    #[test]
+    fn a_reach_of_one_system_says_nothing() {
+        for reach in [
+            InReach { admitted: 1, total: 1 },
+            InReach { admitted: 0, total: 1 },
+        ] {
+            let dimming = reach.admitted != reach.total;
+            let said = words(|ui| reaching(ui, &reach, dimming, false, false));
+
+            assert!(
+                !said.iter().any(|line| line.contains("spyglass")),
+                "{said:?}"
+            );
+        }
     }
 
     /// The filter rows come out in colors something can draw
