@@ -22,6 +22,16 @@ The **near field** — a system's own stars and planets at real geometry, and
 reaching them — is the code under
 [`src/systems/bodies`](./src/systems/bodies).
 
+What it draws is a moment rather than a pile of scans. A system's rows arrive
+from as many commanders as have ever flown there, so each orbit carries how
+long before that moment it was read and is run on from its own reading; the
+moment itself is kept on the game's own clock, which runs 1286 years ahead of
+ours and otherwise with it. So a planet is drawn where the game has carried it
+by now rather than where somebody once saw it. The settings pane takes the map
+off that clock and hands it back, and the phase slider under a body's panel
+winds it by hand — one turn of that body end to end, there being no span that
+suits a whole system.
+
 The two meet in two places only: the sizing law's context scalar in
 [`src/systems/scale.rs`](./src/systems/scale.rs), and the photometric scale
 the local star is lit by.

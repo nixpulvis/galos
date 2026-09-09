@@ -19,6 +19,7 @@
 
 use crate::meta::{Barycenter, Body, Parent, Star, SystemBodies};
 use crate::orbit::{Orbit, Orbits, made_up_direction};
+use chrono::{DateTime, Utc};
 use elite_journal::body::Orbit as JournalOrbit;
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
@@ -373,12 +374,58 @@ impl SystemBodies {
     /// lose the planet's own place about its sun in a system that has more
     /// than one.
     pub fn orbits(&self, address: i64) -> Orbits {
+        self.arranged(address, None)
+    }
+
+    /// The same, asked about the moment `at` rather than about the scans
+    ///
+    /// Each path is dated against `at`, so a walk up a chain runs every step
+    /// of it on from the reading that step actually has. Which is what a
+    /// system needs before a real clock can be put to it: the rows arrive
+    /// from as many scans as there were commanders who flew there, and a body
+    /// rescanned last week sits beside one nobody has looked at in years.
+    ///
+    /// The builder asks [`SystemBodies::orbits`] instead. What it writes is
+    /// the reach a system is drawn at from light years off, which is a fact
+    /// about the arrangement rather than about the day it is read on, and a
+    /// table that moved with the clock would have every shell in the sky
+    /// waiting on one.
+    pub fn orbits_at(&self, address: i64, at: DateTime<Utc>) -> Orbits {
+        self.arranged(address, Some(at))
+    }
+
+    /// When the system was last heard from, if anything in it has been
+    ///
+    /// The newest of its scans, which is the moment [`Self::orbits_at`] is
+    /// worth asking about where nothing else is on offer: everything on record
+    /// was read at or before it, so nothing has to be run backwards to meet
+    /// it.
+    pub fn recorded_at(&self) -> Option<DateTime<Utc>> {
+        let stars = self.stars.iter().map(|star| star.updated_at);
+        let bodies = self.bodies.iter().map(|body| body.updated_at);
+        let centers = self.barycenters.iter().map(|center| center.updated_at);
+
+        stars.chain(bodies).chain(centers).max()
+    }
+
+    fn arranged(&self, address: i64, at: Option<DateTime<Utc>>) -> Orbits {
+        let read = |orbit: Orbit, recorded: DateTime<Utc>| {
+            orbit.read_behind(behind(at, recorded))
+        };
         let mut orbits = Orbits::default();
         for star in &self.stars {
-            orbits.insert(star.id, star.parent_id(), recorded_star(star));
+            orbits.insert(
+                star.id,
+                star.parent_id(),
+                read(recorded_star(star), star.updated_at),
+            );
         }
         for body in &self.bodies {
-            orbits.insert(body.id, body.parent_id(), recorded_body(body));
+            orbits.insert(
+                body.id,
+                body.parent_id(),
+                read(recorded_body(body), body.updated_at),
+            );
         }
         // The barycenters go in as well. A close pair names its center and the
         // center names the star, so leaving them out breaks the chain at its
@@ -401,7 +448,7 @@ impl SystemBodies {
             orbits.insert(
                 center.id,
                 self.goes_round(center.id),
-                recorded_center(center),
+                read(recorded_center(center), center.updated_at),
             );
         }
 
@@ -440,6 +487,18 @@ impl SystemBodies {
         }
         orbits
     }
+}
+
+/// How long before `at` something read at `recorded` was read, in seconds
+///
+/// Nothing where no moment was named, which is what the builder asks and what
+/// leaves every path answering from its own scan as it always has.
+///
+/// Whole seconds. What this feeds is a body run on by years, and the fastest
+/// bodies the journal records come round in hours, so a second of one is some
+/// ten-thousandth of a turn.
+fn behind(at: Option<DateTime<Utc>>, recorded: DateTime<Utc>) -> f64 {
+    at.map_or(0., |at| (at - recorded).num_seconds() as f64)
 }
 
 /// The orbit a body was recorded on
@@ -1009,6 +1068,86 @@ mod tests {
             "the binary reached {reaches}m, not the 3e13 out to the far side \
              of the outer star's orbit"
         );
+    }
+
+    /// A system of two bodies read a year apart, one ring between them
+    ///
+    /// Both go round the arrival star on the same four hundred day circle and
+    /// were seen at the same place on it. The second was read `apart` seconds
+    /// before the first, so asked about at one moment they stand that much of
+    /// the ring apart and nowhere else.
+    fn read_apart(apart: i64) -> SystemBodies {
+        let year = 400. * 86_400.;
+        let ringed = |id, at: DateTime<Utc>| {
+            let mut row = body(1e11);
+            row.id = id;
+            row.parents = vec![parent("Star", 1)];
+            row.orbit.orbital_period = year;
+            row.updated_at = at;
+            row
+        };
+        let read = DateTime::UNIX_EPOCH + chrono::TimeDelta::days(20_000);
+
+        SystemBodies {
+            stars: vec![star(1, 0., 0., vec![])],
+            bodies: vec![
+                ringed(11, read),
+                ringed(12, read - chrono::TimeDelta::seconds(apart)),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Two things read at different times are drawn at one moment
+    ///
+    /// The rows of a system arrive from as many scans as there were commanders
+    /// who flew there, so an arrangement drawn from the scans alone is several
+    /// moments laid over one another. Asked about a moment instead, each is run
+    /// on from the reading it actually has, and the older of two identical
+    /// bodies stands where its own year has carried it.
+    #[test]
+    fn a_body_read_earlier_is_run_on_to_the_moment_asked_about() {
+        let year = 400. * 86_400.;
+        let rows = read_apart((year / 4.) as i64);
+        let at = rows.recorded_at().expect("the rows were read somewhen");
+        let orbits = rows.orbits_at(ADDRESS, at);
+
+        // A quarter of a circle apart is the radius times root two.
+        let apart = orbits.place(11, 0.).distance(orbits.place(12, 0.));
+        assert!(
+            (apart - 1e11 * 2f64.sqrt()).abs() < 1e11 * 1e-3,
+            "a quarter turn apart they stood {apart}m from each other"
+        );
+
+        // And the scans alone say nothing about it: read as recorded, the two
+        // sit on top of one another with a quarter of a year between them.
+        let scanned = rows.orbits(ADDRESS);
+        assert!(
+            scanned.place(11, 0.).distance(scanned.place(12, 0.)) < 1.,
+            "the builder's arrangement moved with the clock"
+        );
+    }
+
+    /// A system is last heard from at the newest of its scans
+    #[test]
+    fn a_system_is_last_heard_from_at_its_newest_scan() {
+        let rows = read_apart(3600);
+        let newest = rows.bodies.iter().map(|body| body.updated_at).max();
+
+        assert_eq!(rows.recorded_at(), newest);
+        assert_eq!(SystemBodies::default().recorded_at(), None);
+    }
+
+    /// What the builder writes is the same whenever it is asked
+    ///
+    /// The reach a system is drawn at from light years off is a fact about the
+    /// arrangement and not about the day it is read on. A table that moved with
+    /// the clock would have every shell in the sky waiting on one.
+    #[test]
+    fn the_reach_a_system_is_drawn_at_does_not_move_with_the_clock() {
+        let rows = read_apart(400 * 86_400 / 4);
+
+        assert_eq!(rows.extent(ADDRESS), read_apart(0).extent(ADDRESS));
     }
 
     /// Nothing drawn in a system stands outside the extent

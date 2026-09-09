@@ -66,6 +66,16 @@ pub fn plugin(app: &mut App) {
         Update,
         draw.in_set(MapSet::Populate).after(super::fetch::collect),
     );
+    // And before them, since which moment the reading counts from is read off
+    // the same rows: a system arrives standing where the game's clock puts it
+    // rather than at its scans for the frame it lands on.
+    app.add_systems(
+        Update,
+        follow
+            .in_set(MapSet::Populate)
+            .after(super::fetch::collect)
+            .before(draw),
+    );
     // After the lines are spawned, so one drawn this frame is hidden on this
     // frame rather than being shown once and taken away.
     app.add_systems(Update, show_orbits.in_set(MapSet::Present));
@@ -1356,6 +1366,23 @@ fn dashed(path: &[Vec3], run: usize) -> Vec<Vec3> {
         }
     }
     points
+}
+
+/// Keep the clock on the game's own
+///
+/// Only while the map is following it. A slider dragged under a body takes the
+/// clock off it, that being what dragging one is for, and the settings pane is
+/// where it is handed back.
+///
+/// Nothing until a system's rows are in. Which moment the reading counts from
+/// is the newest of that system's scans, so until there are scans there is
+/// nothing to count from and the reading stands wherever it was left.
+fn follow(mut clock: ResMut<Clock>, contents: Res<Contents>) {
+    let Some(recorded) = contents.recorded_at() else { return };
+
+    super::mark_if_wound(&mut clock, |clock| {
+        clock.follows(chrono::Utc::now(), recorded)
+    });
 }
 
 /// Put everything inside a system where the clock says it stands

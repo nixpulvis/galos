@@ -12,6 +12,7 @@
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use chrono::{DateTime, Utc};
 // Re-exported: the floor under a reach is read all over the map — the zoom
 // floor, the shell, the ruled plane — and it belongs beside the reach it
 // floors, which is `galos_index::inside`.
@@ -32,27 +33,48 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(spawn::plugin);
 }
 
-/// How long the map has run a system on from when its things were scanned
+/// How far the reading may drift from the game's own clock, in seconds
+///
+/// The clock is followed by being put right rather than by being stepped on, so
+/// this is the whole of what the map is ever out by. A second: the fastest
+/// bodies the journal records come round in hours, so a second of one is some
+/// ten-thousandth of its turn, and everything in a system is written back where
+/// it stands whenever the reading moves — a bound any tighter is the whole of a
+/// system's insides rewritten every frame to move nothing anybody can see.
+const WITHIN: f64 = 1.;
+
+/// How long the map has run a system on from when it was last heard from
 ///
 /// Seconds, and one reading for the whole system, so what is drawn is always a
-/// single moment rather than an arrangement composed body by body.
+/// single moment rather than an arrangement composed body by body. Which
+/// moment each thing is run on from is its own business: a system's rows
+/// arrive from as many scans as there were commanders who flew there, so every
+/// path carries how long before this reading's zero it was read, and the walk
+/// that places a moon runs each step of itself on from the scan that step
+/// actually has. See [`galos_index::orbit::Orbit::behind`].
 ///
-/// Set from a body's own panel rather than from one control over the system,
-/// because a system has no span that suits all of it: the slowest body of one
-/// takes a median 993 times as long to come round as its fastest, and in Sol it
-/// is four million times. Each panel gears this to its own body's period, so
-/// a slider is one orbit of the body it stands under whatever that body's
-/// orbit is worth in seconds.
+/// Zero is therefore the moment the system was last heard from, and the map
+/// follows the game's own clock from there: [`Self::follows`] puts the reading
+/// on however long it has been since, so what is drawn is where the game has
+/// carried everything by now rather than where it stood when somebody looked.
 ///
-/// Zero draws every thing where its own scan put it. The bodies of one system
-/// are scanned a median one minute forty-five apart against periods mostly over
-/// a year, so zero is very nearly one moment rather than a smear -- which is
-/// also why one reading serves the whole system instead of each body being
-/// advanced from an epoch of its own.
-#[derive(Resource, Default)]
+/// Set by hand from a body's own panel rather than from one control over the
+/// system, because a system has no span that suits all of it: the slowest body
+/// of one takes a median 993 times as long to come round as its fastest, and in
+/// Sol it is four million times. Each panel gears this to its own body's
+/// period, so a slider is one orbit of the body it stands under whatever that
+/// body's orbit is worth in seconds. Dragging one takes the clock off the
+/// game's, there being no point in a control the next frame overrules.
+#[derive(Resource)]
 pub struct Clock {
     /// The seconds themselves
     pub at: f64,
+    /// Whether the reading is kept on the game's own clock
+    ///
+    /// On to begin with: a map of where things are is worth more than a map of
+    /// where they were seen, and the one thing the reading cannot be read off
+    /// the rows is which day it is.
+    following: bool,
     /// The whole turns the slider being dragged set out from, while one is
     ///
     /// A slider covers one turn of its own body, and a phase is cyclic: its
@@ -66,6 +88,12 @@ pub struct Clock {
     /// One of these for the map rather than one per slider, there being one
     /// pointer and so one slider ever being dragged.
     held: Option<Held>,
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Clock { at: 0., following: true, held: None }
+    }
 }
 
 /// The slider a drag has hold of
@@ -98,6 +126,51 @@ impl Held {
 }
 
 impl Clock {
+    /// Whether the reading is being kept on the game's own clock
+    pub fn following(&self) -> bool {
+        self.following
+    }
+
+    /// Follow it, or stop
+    ///
+    /// Taking it up moves nothing here: [`Self::follows`] is what reads which
+    /// day it is, and it runs on the next frame.
+    pub fn follow(&mut self, following: bool) {
+        self.following = following;
+    }
+
+    /// Put the reading where `now` stands against a system last heard from at
+    /// `recorded`
+    ///
+    /// Nothing where the map is not following, and nothing where the reading is
+    /// already within [`WITHIN`] of where it belongs: the whole of a system's
+    /// insides is written back wherever this moves, so putting it right by a
+    /// sixtieth of a second sixty times a second is a system rewritten every
+    /// frame to move nothing anybody can see.
+    ///
+    /// Put right rather than stepped on, so a map left running for an hour is
+    /// an hour on rather than however much of one the frames added up to.
+    pub fn follows(&mut self, now: DateTime<Utc>, recorded: DateTime<Utc>) {
+        if !self.following {
+            return;
+        }
+
+        let since = (now - recorded).num_milliseconds() as f64 / 1000.;
+        if (since - self.at).abs() >= WITHIN {
+            self.at = since;
+        }
+    }
+
+    /// Go back to the moment the system was last heard from
+    ///
+    /// And stay there: what is being asked for is the arrangement the scans
+    /// recorded, and following the game's clock is what carries it away from
+    /// that.
+    pub fn rewind(&mut self) {
+        self.at = 0.;
+        self.following = false;
+    }
+
     /// Where `period` stands in its own turn, from none of it to all
     ///
     /// What a slider geared to one body reads.
@@ -133,6 +206,9 @@ impl Clock {
     /// turn of that body, with nothing anywhere in the system jumping on the
     /// way.
     ///
+    /// Takes the clock off the game's own, which the settings pane is where
+    /// the user hands back.
+    ///
     /// A moon's slider therefore barely stirs the planet it goes round.
     /// Reaching for the first turn instead would throw the whole system back to
     /// the beginning every time a moon was nudged.
@@ -140,6 +216,8 @@ impl Clock {
         if period <= 0. {
             return;
         }
+        // A slider the next frame overrules is no control at all.
+        self.following = false;
         let whole = match &self.held {
             Some(held) if held.period == period && held.holds(self.at) => {
                 held.turns
@@ -314,6 +392,18 @@ impl Contents {
         self.rows().map_or(DVec3::ZERO, |rows| rows.middle(orbits, since))
     }
 
+    /// When the system being held was last heard from
+    ///
+    /// The newest of its scans, which is what [`Clock`]'s zero stands at:
+    /// everything on record was read at or before it, so no path has to be run
+    /// backwards to meet it, and how far the map has run the system on reads as
+    /// how long it has been since anybody looked.
+    ///
+    /// Nothing until the rows are in, and nothing for a system with none.
+    pub fn recorded_at(&self) -> Option<DateTime<Utc>> {
+        self.rows().and_then(SystemBodies::recorded_at)
+    }
+
     /// Where everything in the system stands, and how far it reaches
     ///
     /// Worked out from the rows by the same code the index's reach table is
@@ -321,9 +411,22 @@ impl Contents {
     /// it drew it at from light years off cannot disagree. The address goes in
     /// because a place the map has to stand up itself is pointed in a
     /// direction taken from it; see `galos_index::orbit::made_up_direction`.
+    ///
+    /// Dated against the moment the system was last heard from, so that one
+    /// reading of the clock places rows read years apart: each path is run on
+    /// from its own scan and they meet at the moment being asked about. The
+    /// builder asks the undated question instead — what it writes is a reach,
+    /// which is a fact about the arrangement rather than about the day.
     pub fn orbits(&self) -> Orbits {
+        let address = self.of.unwrap_or_default();
+
         self.rows()
-            .map(|rows| rows.orbits(self.of.unwrap_or_default()))
+            .map(|rows| match rows.recorded_at() {
+                Some(at) => rows.orbits_at(address, at),
+                // Nothing was ever read, so there is nothing to date against
+                // and nothing held to date.
+                None => rows.orbits(address),
+            })
             .unwrap_or_default()
     }
 
@@ -638,6 +741,158 @@ mod tests {
             500.5 * day,
             "the moon's slider measured from the planet's turn",
         );
+    }
+
+    /// A moment out in the galaxy, `days` after the epoch
+    fn read(days: i64) -> DateTime<Utc> {
+        DateTime::UNIX_EPOCH + chrono::TimeDelta::days(days)
+    }
+
+    /// The map opens on the game's clock rather than on the scans
+    ///
+    /// A map of where things are is worth more than a map of where they were
+    /// seen, and which day it is is the one thing the reading cannot be read
+    /// off the rows.
+    #[test]
+    fn the_map_opens_on_the_games_clock() {
+        assert!(Clock::default().following());
+    }
+
+    /// Following puts the reading on however long it has been
+    #[test]
+    fn following_reads_how_long_it_has_been_since_the_scans() {
+        let mut clock = Clock::default();
+
+        clock.follows(read(20_000), read(19_000));
+
+        assert_eq!(clock.at, 1000. * 86_400.);
+    }
+
+    /// A reading already near enough is left exactly as it was
+    ///
+    /// What reads the mark writes every star, body and orbit line in the held
+    /// system back where it stands, and this is asked every frame. Nothing on
+    /// screen moves a pixel in a second, so a reading put right that often is
+    /// a system's insides rewritten sixty times over to move nothing.
+    #[test]
+    fn a_reading_near_enough_is_left_alone() {
+        // A hair under the second the clock is held within.
+        let drifted = 1000. * 86_400. - WITHIN / 2.;
+        let mut clock = Clock { at: drifted, ..default() };
+
+        clock.follows(read(20_000), read(19_000));
+
+        assert_eq!(
+            clock.at, drifted,
+            "the clock was put right for a drift nobody could see"
+        );
+    }
+
+    /// And is put right rather than stepped on, so a drift is not carried
+    ///
+    /// The reading is worked out from the two moments every time rather than
+    /// added to, so a map left running for an hour is an hour on rather than
+    /// however much of one its frames added up to.
+    #[test]
+    fn a_reading_left_far_behind_is_put_right() {
+        let mut clock = Clock { at: 5., ..default() };
+
+        clock.follows(read(20_000), read(19_000));
+
+        assert_eq!(clock.at, 1000. * 86_400.);
+    }
+
+    /// Dragging a slider takes the map off the game's clock
+    ///
+    /// A control the next frame overrules is no control at all.
+    #[test]
+    fn dragging_a_slider_takes_the_map_off_the_games_clock() {
+        let day = 86_400.;
+        let mut clock = Clock { at: 500. * day, ..default() };
+
+        clock.wind_to(400. * day, 0.5);
+        let wound = clock.at;
+        clock.follows(read(20_000), read(19_000));
+
+        assert!(!clock.following(), "a drag left the map following");
+        assert_eq!(clock.at, wound, "the game's clock overruled the drag");
+    }
+
+    /// And going back to the scans stays there
+    ///
+    /// What is being asked for is the arrangement the scans recorded, and
+    /// following the game's clock is the thing that carries it away from that.
+    #[test]
+    fn going_back_to_the_scans_stays_there() {
+        let mut clock = Clock { at: 500. * 86_400., ..default() };
+
+        clock.rewind();
+        clock.follows(read(20_000), read(19_000));
+
+        assert_eq!(clock.at, 0.);
+    }
+
+    /// Handing the clock back moves it again
+    #[test]
+    fn handing_the_clock_back_puts_it_on_the_game_again() {
+        let mut clock = Clock::default();
+        clock.rewind();
+
+        clock.follow(true);
+        clock.follows(read(20_000), read(19_000));
+
+        assert_eq!(clock.at, 1000. * 86_400.);
+    }
+
+    /// A frame that finds the clock where it belongs does not count as winding
+    /// it
+    ///
+    /// The clock is put right every frame, and what reads the mark rebuilds
+    /// every place in the held system. A frame that moved nothing has to leave
+    /// the resource unwritten or the whole of a system is written back sixty
+    /// times a second.
+    #[test]
+    fn a_frame_that_moves_nothing_does_not_wind_the_clock() {
+        let mut world = holding_a_clock();
+        world.resource_mut::<Clock>().bypass_change_detection().at =
+            1000. * 86_400.;
+        world.clear_trackers();
+        world.increment_change_tick();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.follows(read(20_000), read(19_000));
+        });
+
+        assert!(!written(&world), "a clock already right wound itself");
+    }
+
+    /// And one that finds it out of date does
+    #[test]
+    fn a_frame_that_moves_it_winds_the_clock() {
+        let mut world = holding_a_clock();
+
+        mark_if_wound(&mut world.resource_mut::<Clock>(), |clock| {
+            clock.follows(read(20_000), read(19_000));
+        });
+
+        assert!(written(&world), "the map stood at its scans");
+    }
+
+    /// A system is counted from the newest of its scans
+    ///
+    /// Which is what every path in it is dated against, so nothing has to be
+    /// run backwards to meet the reading.
+    #[test]
+    fn a_system_is_counted_from_its_newest_scan() {
+        let mut contents = Contents::default();
+        let mut newer = body(2e9);
+        newer.id = 2;
+        newer.updated_at = read(20_000);
+        contents.hold(holding(vec![body(1e9), newer]));
+
+        assert_eq!(contents.recorded_at(), Some(read(20_000)));
+        // And a system with nothing on record has no moment to count from.
+        assert_eq!(Contents::default().recorded_at(), None);
     }
 
     /// A thing whose period nobody recorded has no turn to be a fraction of

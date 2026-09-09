@@ -14,10 +14,11 @@
 //!
 //! # Time
 //!
-//! Every position is asked for at some number of seconds after the epoch its
-//! elements were recorded at. Nothing passes anything but zero yet, so the map
-//! stands still, and a knob that lets it turn is a different number rather
-//! than a different shape.
+//! Every position is asked for at some number of seconds after one moment,
+//! and each path carries how long before that moment its own elements were
+//! read. So a system whose things were scanned years apart is still asked
+//! about at a single instant, and each of them is run on from the reading it
+//! actually has. See [`Orbit::behind`].
 //!
 //! # The frame
 //!
@@ -62,6 +63,18 @@ pub struct Orbit {
     pub ascending_node: f64,
     /// Where the body stood when it was looked at
     pub mean_anomaly: f64,
+    /// How long before the moment a time is counted from it was looked at, in
+    /// seconds
+    ///
+    /// Nothing where the two are the same moment, which is what a path read on
+    /// its own is given and what the index works its reach table out from.
+    ///
+    /// It is what lets one number stand for the whole of a system. The rows of
+    /// one arrive from as many scans as there are commanders who flew there,
+    /// and a body rescanned last week sits beside one nobody has looked at
+    /// since 3303: asked about at a single moment, each has to be run on from
+    /// its own reading, and this is the distance between the two.
+    pub behind: f64,
     /// How long it takes to come round, in seconds
     ///
     /// Nothing for a body that does not go round anything, which is what a
@@ -83,6 +96,7 @@ impl Orbit {
             periapsis: 0.,
             ascending_node: 0.,
             mean_anomaly: 0.,
+            behind: 0.,
             period: None,
         }
     }
@@ -115,6 +129,7 @@ impl Orbit {
             periapsis: std::f64::consts::FRAC_PI_2,
             ascending_node: (-place.x).atan2(place.z),
             mean_anomaly: 0.,
+            behind: 0.,
             period: None,
         }
     }
@@ -142,12 +157,27 @@ impl Orbit {
             periapsis: (periapsis as f64).to_radians(),
             ascending_node: (ascending_node as f64).to_radians(),
             mean_anomaly: (mean_anomaly as f64).to_radians(),
+            // Read at the moment times are counted from until somebody says
+            // otherwise, which is what `Orbit::behind` is for.
+            behind: 0.,
             period: (orbital_period.is_finite() && orbital_period > 0.)
                 .then_some(orbital_period as f64),
         }
     }
 
-    /// Where the body is, `since` seconds after the epoch it was recorded at
+    /// The same path, read [`Orbit::behind`] seconds before the moment times
+    /// are counted from
+    ///
+    /// Said of a path rather than passed to whoever asks where it stands,
+    /// because a moon is placed by walking up to its planet and every step of
+    /// that walk carries a reading of its own. One `since` goes in and each
+    /// step answers from its own scan.
+    pub fn read_behind(self, behind: f64) -> Orbit {
+        Orbit { behind, ..self }
+    }
+
+    /// Where the body is, `since` seconds after the moment times are counted
+    /// from
     ///
     /// Relative to whatever it goes round, which is the parent's problem
     /// rather than this one's.
@@ -160,14 +190,19 @@ impl Orbit {
     }
 
     /// How far round the ellipse the body stands, `since` seconds after the
-    /// epoch it was recorded at
+    /// moment times are counted from
     ///
     /// The eccentric anomaly, which is the angle [`Orbit::place`] is written
     /// in and the one [`Orbit::path`] is stepped through.
+    ///
+    /// Run on from the reading rather than from `since`, so the span is
+    /// however long it has been since somebody actually looked: `since` plus
+    /// [`Orbit::behind`].
     pub fn anomaly(&self, since: f64) -> f64 {
         let mean = match self.period {
             Some(period) => {
-                self.mean_anomaly + std::f64::consts::TAU * since / period
+                self.mean_anomaly
+                    + std::f64::consts::TAU * (since + self.behind) / period
             }
             // Nothing to turn it, so it stands where it was seen.
             None => self.mean_anomaly,
@@ -622,7 +657,8 @@ impl Orbits {
         self.0.get(&id).map_or(0., |held| held.orbit.nearest(to))
     }
 
-    /// How far round `id`'s ring it stands, `since` seconds after the epoch
+    /// How far round `id`'s ring it stands, `since` seconds after the moment
+    /// times are counted from
     pub fn anomaly(&self, id: i16, since: f64) -> f64 {
         self.0.get(&id).map_or(0., |held| held.orbit.anomaly(since))
     }
@@ -698,6 +734,7 @@ mod tests {
             periapsis: 0.,
             ascending_node: 0.,
             mean_anomaly: 0.,
+            behind: 0.,
             period: Some(1000.),
         }
     }
@@ -817,14 +854,65 @@ mod tests {
 
     /// A body with no period stands where it was seen, whenever it is asked
     ///
-    /// Which is what a system's primary comes back as, and what the map draws
-    /// today for everything, since nothing yet passes a time but zero.
+    /// Which is what a system's primary comes back as. Nothing turns it, so
+    /// neither the span asked for nor how long ago it was read moves it.
     #[test]
     fn an_orbit_with_no_period_stands_still() {
         let mut orbit = circle(1e11);
         orbit.period = None;
 
         assert_eq!(orbit.at(0.), orbit.at(1e9));
+        assert_eq!(orbit.at(0.), orbit.read_behind(1e9).at(0.));
+    }
+
+    /// A path read earlier is run on from its own reading
+    ///
+    /// The whole of what [`Orbit::behind`] is for. One moment is asked about
+    /// and each thing answers from the scan it actually has, so a path read a
+    /// quarter of a turn ago stands a quarter of a turn on from where that
+    /// scan left it.
+    #[test]
+    fn a_path_read_earlier_is_run_on_from_its_own_reading() {
+        let mut orbit = circle(1e11);
+        orbit.eccentricity = 0.3;
+        orbit.periapsis = 0.8;
+
+        let earlier = orbit.read_behind(250.);
+
+        assert!(
+            earlier.at(0.).distance(orbit.at(250.)) < 1e11 * 1e-12,
+            "a path read 250s ago stood {} metres from where it belongs",
+            earlier.at(0.).distance(orbit.at(250.))
+        );
+        // And the span asked for is still measured from the one moment, so
+        // running the map on carries it the same distance as anything else.
+        assert!(
+            earlier.at(100.).distance(orbit.at(350.)) < 1e11 * 1e-12,
+            "running the map on left the reading behind"
+        );
+    }
+
+    /// Two things read at different times meet at the moment they are asked
+    /// about
+    ///
+    /// A system's rows arrive from as many scans as there were commanders, and
+    /// what is drawn has to be one instant rather than an arrangement composed
+    /// out of several. Two bodies on the same ring, read a third of a turn
+    /// apart, stand a third of a turn apart whenever they are asked.
+    #[test]
+    fn things_read_at_different_times_are_asked_about_at_one_moment() {
+        let ring = circle(1e11);
+        let (early, late) = (ring.read_behind(1000. / 3.), ring);
+
+        for since in [0., 137., 1e5] {
+            let apart = early.at(since).distance(late.at(since));
+            let wanted = ring.at(1000. / 3.).distance(ring.at(0.));
+
+            assert!(
+                (apart - wanted).abs() < 1e11 * 1e-9,
+                "{since}s on they stood {apart}m apart, not {wanted}m"
+            );
+        }
     }
 
     /// Degrees at the door become radians inside

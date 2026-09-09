@@ -42,6 +42,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use chrono::{DateTime, Datelike, Utc};
 use galos_index::meta::{Faction as DbFaction, NameEntry};
 use galos_photometry::psf::ProfileKind;
 
@@ -1115,7 +1116,9 @@ pub(crate) fn chrome(
             "Orbit Lines",
             "Show the orbit each body follows",
         );
-        mark_if_wound(&mut settings.clock, |clock| clock_readout(ui, clock));
+        mark_if_wound(&mut settings.clock, |clock| {
+            clock_readout(ui, clock, &contents)
+        });
 
         // How the filters answer, rather than which they are: the filters
         // themselves are asked for in the bar, and this is the one thing
@@ -3880,27 +3883,86 @@ fn filter_section(ui: &mut Ui, filter: &mut FilterBar) -> bool {
     response.gained_focus()
 }
 
-/// Say how far the system has been run on, and offer the way back
+/// Say what moment the system is drawn at, and offer the ways on and off the
+/// game's clock
 ///
-/// The sliders that move it are under the bodies themselves, each geared to
-/// its own orbit, there being no span that suits a whole system. What is left
-/// here is the reading they share and the one thing none of them can do: a
-/// slider moves
-/// the map within the turn its body is already in, so no amount of dragging one
-/// ever comes back to the moment the scans were taken.
-fn clock_readout(ui: &mut Ui, clock: &mut Clock) {
+/// The sliders that wind it by hand are under the bodies themselves, each
+/// geared to its own orbit, there being no span that suits a whole system. What
+/// is left here is the reading they share and the two things none of them can
+/// do: a slider moves the map within the turn its body is already in, so no
+/// amount of dragging one ever comes back to the moment the scans were taken,
+/// and dragging one is what took the map off the game's clock in the first
+/// place.
+fn clock_readout(ui: &mut Ui, clock: &mut Clock, contents: &Contents) {
+    let mut following = clock.following();
+    if check(
+        ui,
+        &mut following,
+        "Game Clock",
+        "Run every orbit on to where the game stands now",
+    )
+    .changed()
+    {
+        clock.follow(following);
+    }
+
     ui.add_space(FIELD_GAP);
     ui.horizontal(|ui| {
-        titled(ui, "Run on", "How far the orbits have advanced");
+        titled(
+            ui,
+            "Run on",
+            "How far the orbits have advanced since this system was scanned",
+        );
         if clock.at == 0. {
             ui.label(egui::RichText::new("not at all").weak());
         } else {
             ui.label(lasting(clock.at as f32));
             if ui.button("Reset").clicked() {
-                clock.at = 0.;
+                clock.rewind();
             }
         }
     });
+
+    // Which moment that comes to, said in the game's own calendar. The reading
+    // above is a span and a span alone says nothing about what it is a span
+    // from; this is the one line that says the map is standing where the game
+    // is rather than somewhere plausible.
+    if let Some(recorded) = contents.recorded_at() {
+        ui.horizontal(|ui| {
+            titled(
+                ui,
+                "Showing",
+                "The moment the system is drawn at, by the game's calendar",
+            );
+            ui.label(drawn_at(clock, recorded));
+        });
+    }
+}
+
+/// How far ahead of ours the game's own calendar runs, in years
+///
+/// The two run together otherwise: an hour out there is an hour here, and the
+/// journal stamps its scans in our own time. Which is why the span the clock
+/// holds needs no converting at all and only the year it lands in does.
+const AHEAD_BY: i32 = 1286;
+
+/// The moment the held system is drawn at, by the game's calendar
+///
+/// The system's newest scan is where the clock counts from, so the scan and the
+/// reading together are the moment on screen.
+fn drawn_at(clock: &Clock, recorded: DateTime<Utc>) -> String {
+    let drawn = recorded + chrono::TimeDelta::seconds(clock.at as i64);
+    let year = drawn.year() + AHEAD_BY;
+
+    drawn
+        .with_year(year)
+        // The one day of ours a game year may not hold: a leap day landing
+        // 1286 years on in a year without one. Read as the last day of that
+        // February, which is the nearest date there is to it.
+        .or_else(|| drawn.with_day(28).and_then(|day| day.with_year(year)))
+        .unwrap_or(drawn)
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
 }
 
 /// Ask for a filter by how lately a system was updated
@@ -4704,6 +4766,88 @@ mod tests {
     use crate::systems::filter::Filter;
     use crate::systems::selection::PickedBody;
     use crate::tests::{painted, words};
+
+    /// A moment out in the galaxy, ours
+    fn ours(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text)
+            .expect("the fixture is a moment")
+            .with_timezone(&Utc)
+    }
+
+    /// The game's calendar runs 1286 years ahead of ours and otherwise with it
+    ///
+    /// The journal stamps its scans in our own time, so the span the clock
+    /// holds needs no converting and only the year it lands in does.
+    #[test]
+    fn the_games_calendar_runs_1286_years_ahead() {
+        let clock = Clock::default();
+
+        assert_eq!(
+            drawn_at(&clock, ours("2014-12-16T13:45:00Z")),
+            "3300-12-16 13:45"
+        );
+    }
+
+    /// And the run-on is carried into it
+    ///
+    /// The scan is where the reading counts from, so the two together are the
+    /// moment on screen.
+    #[test]
+    fn the_moment_shown_carries_how_far_the_map_has_run_on() {
+        let mut clock = Clock::default();
+        clock.at = 365. * 86_400.;
+
+        assert_eq!(
+            drawn_at(&clock, ours("2015-01-01T00:00:00Z")),
+            "3302-01-01 00:00",
+            "a year on from a new year is the next one"
+        );
+    }
+
+    /// A leap day reads as the last day of its own February
+    ///
+    /// 1286 years on from one of ours is not always a year with a 29th in it,
+    /// and there is no such date to show. The 28th is the nearest there is.
+    #[test]
+    fn a_leap_day_reads_as_the_last_of_its_february() {
+        let clock = Clock::default();
+
+        assert_eq!(
+            drawn_at(&clock, ours("2024-02-29T09:00:00Z")),
+            "3310-02-28 09:00"
+        );
+    }
+
+    /// The pane offers the game's clock, and says what it comes to
+    #[test]
+    fn the_pane_offers_the_games_clock() {
+        let said = words(|ui| {
+            clock_readout(ui, &mut Clock::default(), &Contents::default())
+        });
+
+        assert!(
+            said.iter().any(|word| word == "Game Clock"),
+            "the pane said {said:?}"
+        );
+        assert!(said.iter().any(|word| word == "Run on"));
+    }
+
+    /// A system nobody has scanned has no moment to be drawn at
+    ///
+    /// The reading counts from the newest of a system's scans, so with none
+    /// there is nothing to count from and the row says nothing rather than
+    /// counting from whenever.
+    #[test]
+    fn a_system_with_nothing_on_record_is_drawn_at_no_moment() {
+        let said = words(|ui| {
+            clock_readout(ui, &mut Clock::default(), &Contents::default())
+        });
+
+        assert!(
+            !said.iter().any(|word| word == "Showing"),
+            "the pane dated a system with no scans: {said:?}"
+        );
+    }
 
     /// The chrome, drawn with the pointer at `at`, once it stands still
     ///
