@@ -447,12 +447,22 @@ fn contents_center(cell: &Cell) -> [f64; 3] {
 
 /// The mean spacing of a cell's own magnitude slice, in light years.
 ///
-/// A slice's systems are a spatially uniform sample of the cell's subtree, so
-/// they are spread across its whole [`contents_extent`] however few they are.
-/// Their spacing is that extent shared among the slice's count, and it decides
-/// whether the slice draws as separate marks: a coarse slice holds a handful of
-/// bright systems spread galaxy-wide and separates from far off, while a leaf's
-/// dense slice only separates up close.
+/// The slice's systems are spaced by the cell's whole [`contents_extent`]
+/// shared among their count, and that spacing decides whether the slice draws
+/// as separate marks: a coarse slice holds a handful of bright systems spread
+/// galaxy-wide and separates from far off, while a leaf's dense slice only
+/// separates up close.
+///
+/// That figure takes the slice to be spread across the whole extent however
+/// few of it there are, and the build does not enforce it. `tree::assign_slices`
+/// sorts by absolute magnitude alone and gives each system the shallowest cell
+/// on its path with room, so a slice is the brightest of a subtree and not a
+/// sample of its volume. The two coincide in expectation, brightness not
+/// following position within a cell, and they come apart where the subtree is
+/// lumpy: a slice drawn from a cluster on one side of a cell is spaced by that
+/// cluster and spread by the cell, and the prefix reads as a clump. A
+/// spatial-uniformity quota in the build is what would make this hold by
+/// construction rather than on average.
 fn slice_spacing(cell: &Cell) -> f64 {
     let slice = cell.slice_len().max(1) as f64;
     contents_extent(cell) / slice.cbrt()
@@ -566,6 +576,12 @@ mod tests {
 
     /// A connected tree: ROOT down to a 16 ly parent at level 13 with its two
     /// low children at level 14.
+    ///
+    /// The slice length asked for here is the cell's own, and `cell` leaves the
+    /// aggregate's `count` standing for the whole subtree, so these cells have
+    /// `slice_len != count` — which is what a real cell looks like and is worth
+    /// remembering when reading a spacing: [`slice_spacing`] divides by the
+    /// slice while [`contents_extent`] is measured over the count.
     fn small_tree(
         parent_slice: u64,
         child_slice: u64,

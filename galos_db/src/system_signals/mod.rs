@@ -21,7 +21,7 @@ pub struct SystemSignal {
     pub updated_by: String,
 
     pub signal_type: Option<String>,
-    /// Permanent where [`Some(true)`]
+    /// Permanent where `Some(true)`
     pub is_station: Option<bool>,
     pub uss_type: Option<String>,
     pub spawning_state: Option<String>,
