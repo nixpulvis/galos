@@ -46,22 +46,25 @@
 //! writing one each pass costs more than everything else a pass does put
 //! together.
 //!
-//! ## What it costs, said plainly
+//! ## Where the scanned bodies live
 //!
-//! [`Galaxy`] holds every system it has been told about and every body
-//! scanned in one, and nothing here drops any of it. For a journal that is a
-//! commander's own flying and is megabytes. For EDDN it grows for as long as
-//! the process runs, and a session left on it for days will be measured in
-//! gigabytes — the feed carries the whole galaxy's scans and this keeps them
-//! all so that a reach can be recomputed when the next body in a system
-//! arrives.
+//! Not here. A reach is the far edge over every body of a system together, so
+//! one more scan means recomputing from all of them, and the published body
+//! file is written whole for the same reason — which for a while meant
+//! [`Galaxy`] holding every body the feed had ever carried. A `meta::Body` is
+//! 376 bytes before its four strings, its parents and its materials, so that
+//! was a process growing for as long as it ran.
 //!
-//! `galos-sync db --to index` does not have that problem, because the bodies
-//! live in Postgres and it reads back only the systems a pass touched. That
-//! is the trade the two sides of this program are: a database is the thing
-//! that holds a galaxy, and an index sink with no database under it holds
-//! whatever it has heard. Fine for a journal, fine for an evening of EDDN,
-//! and not what to leave running for a week.
+//! It keeps them in `bodies/<address>.bin` instead — the files it was writing
+//! anyway, and the ones the map fetches when a click opens a system. See
+//! `galos_journal::bodies`. What is in memory is what has been scanned and
+//! not yet written, which [`Sink::flush`] clears on the same beat it
+//! publishes on.
+//!
+//! Which leaves the tree and the names table, and those are what
+//! `galos-sync db --to index` holds too. The two sides of this program cost
+//! the same thing now; what differs is only where the bodies are read back
+//! from, Postgres there and the directory here.
 
 use crate::sink::tables::{Tables, Wrote};
 use crate::sink::{Row, Sink};
@@ -72,7 +75,7 @@ use elite_journal::entry::{Entry, Event};
 use elite_journal::system::Coordinate;
 use galos_index::{BuildParams, Checkpoint, Index as ServedIndex, Tree};
 use galos_journal::galaxy::Politics;
-use galos_journal::Galaxy;
+use galos_journal::{Galaxy, Published};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -203,7 +206,14 @@ impl Index {
         Ok(Index {
             dir: dir.to_owned(),
             checkpoint: checkpoint.to_owned(),
-            galaxy: Galaxy::default(),
+            // The published body files are the store, not a second copy in
+            // memory beside them. That is the whole of why a feed into an
+            // index does not grow for as long as it runs; see
+            // `galos_journal::bodies`.
+            galaxy: Galaxy::keeping(
+                chrono::Utc::now(),
+                Box::new(Published::new(dir)),
+            ),
             tree,
             tables,
             touched: HashSet::new(),
@@ -339,9 +349,15 @@ impl Sink for Index {
         self.tree
             .publish(&self.dir)
             .map_err(failed("the cell tree could not be published"))?;
+        // The body files first: the store has been holding what the pass
+        // scanned, and the tables' reaches are read back through it.
+        let bodies = self
+            .galaxy
+            .settle_bodies()
+            .map_err(failed("the body files could not be written"))?;
         let moved = self
             .tables
-            .patch(&self.dir, &self.galaxy, &touched)
+            .patch(&self.galaxy, &touched)
             .map_err(failed("the metadata could not be published"))?;
         let wrote = self
             .tables
@@ -375,7 +391,7 @@ impl Sink for Index {
             placed = placed,
             systems = self.tree.len(),
             chunks = wrote.name_chunks,
-            bodies = wrote.body_files,
+            bodies = bodies,
             checkpointed = resumable,
             elapsed = ?start.elapsed(),
             "index published",
@@ -414,12 +430,16 @@ impl Index {
         self.touched.clear();
         self.galaxy.settle();
 
+        let bodies = self
+            .galaxy
+            .settle_bodies()
+            .map_err(failed("the body files could not be written"))?;
         self.tree
             .write(&self.dir)
             .map_err(failed("the cell tree could not be written"))?;
-        let moved = self
+        let _moved = self
             .tables
-            .patch(&self.dir, &self.galaxy, &all)
+            .patch(&self.galaxy, &all)
             .map_err(failed("the metadata could not be written"))?;
         let wrote = self
             .tables
@@ -437,7 +457,7 @@ impl Index {
         info!(
             systems = self.tree.len(),
             chunks = wrote.name_chunks,
-            bodies = moved.body_files,
+            bodies = bodies,
             dir = %self.dir.display(),
             "index written",
         );
@@ -625,6 +645,95 @@ mod tests {
             pollster::block_on(read.populated()).expect("the table reads");
         assert_eq!(populated.len(), 1);
         assert_eq!(populated[0].population, 1000);
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// A scan of a star, as the game writes one.
+    fn scan(address: i64, body: i16, class: &str) -> Entry<Event> {
+        let json = format!(
+            r#"{{"timestamp":"2026-08-08T12:01:00Z","event":"Scan",
+            "ScanType":"Detailed","StarSystem":"Sol","SystemAddress":{address},
+            "StarPos":[0.0,0.0,0.0],"BodyName":"Sol {body}","BodyID":{body},
+            "StarType":"{class}","Subclass":2,"StellarMass":1.0,
+            "Radius":696000000.0,"AbsoluteMagnitude":4.83,"Age_MY":4600,
+            "SurfaceTemperature":5778.0,"Luminosity":"V",
+            "RotationPeriod":2000000.0,"AxialTilt":0.0,
+            "DistanceFromArrivalLS":{body}.0,
+            "WasDiscovered":true,"WasMapped":false}}"#
+        );
+        serde_json::from_str(&json).expect("the scan should parse")
+    }
+
+    /// A scan after a flush joins what is already on the disk
+    ///
+    /// The one thing keeping the bodies in the published files rather than in
+    /// memory could have broken. A system is scanned body by body over
+    /// minutes and the file is written whole, so the second scan has to read
+    /// back what the first wrote and add to it. Replacing instead would leave
+    /// every system holding only whatever was scanned since the last publish,
+    /// and the reach — the far edge over all of them — wrong with it.
+    #[test]
+    fn a_scan_after_a_flush_joins_what_is_on_the_disk() {
+        let (dir, checkpoint) = scratch("merged");
+        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+
+        pollster::block_on(async {
+            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(&scan(10477373803, 0, "G"), "cmdr").await;
+            sink.flush().await.expect("the first flush");
+
+            // Minutes later, the next body of the same system.
+            sink.entry(&scan(10477373803, 4, "M"), "cmdr").await;
+            sink.flush().await.expect("the second flush");
+        });
+
+        let read = FsSource::new(&dir);
+        let inside = pollster::block_on(read.bodies(10477373803))
+            .expect("the body file reads");
+        assert_eq!(
+            inside.stars.len(),
+            2,
+            "the second scan replaced the file rather than joining it",
+        );
+
+        // And the reach is over both, which is what a replaced file would
+        // have got wrong without the count ever looking wrong.
+        let reaches =
+            pollster::block_on(read.reaches()).expect("the table reads");
+        let reach = reaches
+            .iter()
+            .find(|it| it.address == 10477373803)
+            .expect("a scanned system should have a reach");
+        assert!(reach.reach > 0.0);
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// Nothing is held once a flush has been asked for
+    ///
+    /// What the whole exercise was for. Asserted through the store rather
+    /// than by measuring memory: what a feed grows by is the systems it has
+    /// scanned and not yet written, and after a flush that is none of them.
+    #[test]
+    fn a_flush_leaves_no_bodies_held() {
+        let (dir, checkpoint) = scratch("unheld");
+        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        pollster::block_on(async {
+            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            for body in 0..8 {
+                sink.entry(&scan(10477373803, body, "G"), "cmdr").await;
+            }
+            sink.flush().await.expect("the flush");
+        });
+
+        assert_eq!(
+            sink.galaxy.settle_bodies().expect("a second settle"),
+            0,
+            "the store was still holding what it had already written",
+        );
+        // And what it let go of is still there to be read.
+        assert_eq!(sink.galaxy.bodies(10477373803).stars.len(), 8);
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
