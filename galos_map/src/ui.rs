@@ -42,7 +42,7 @@ use crate::systems::pointing::PRIMARY;
 use crate::systems::route::SelectedFilter;
 use crate::systems::route::frontier::Frontiers;
 use crate::systems::route::graph::{Drive, Routing};
-use crate::systems::route::tour::Start;
+use crate::systems::route::tour::Shape;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
 use crate::systems::spawn::{
@@ -668,6 +668,13 @@ pub(crate) struct BarFields {
     /// picked first unless it is let go of. What the pane shows is the other
     /// way round, since what the user is choosing is to hold it.
     any_start: bool,
+    /// Whether the trip comes home to the system it set out from
+    ///
+    /// A run flown out and back rather than a line that ends where the last
+    /// stop is: the leg home is plotted, drawn and costed with the others,
+    /// and the cheapest order weighs it. Only offered where there is a trip
+    /// to close — see [`route_body`].
+    looping: bool,
     /// Which of the three questions the box is asking, where it is out at all
     ///
     /// Nothing while the form is shut, and then the box is the search box:
@@ -3583,20 +3590,24 @@ fn across(selection: &Selection) -> Option<f64> {
 /// The order the trip will be flown in, as indices into what is picked out
 ///
 /// The order they were picked, or the cheapest order to reach them all in
-/// where that was asked for and a range is in hand to cost a leg with. The
-/// ordering itself is [`crate::systems::route::tour`]'s.
+/// where that was asked for and a range is in hand to cost a leg with —
+/// which is what `cheapest` carries. The ordering itself is
+/// [`crate::systems::route::tour`]'s, and `shape` is what it is told about
+/// the trip: which end is held, and whether the leg home is costed with the
+/// rest.
 ///
 /// One place decides it, so what the form says the trip comes to and what the
 /// trip is actually asked for cannot disagree.
 fn flown_order(
     selection: &Selection,
-    tour: Option<(f64, Start)>,
+    shape: Shape,
+    cheapest: Option<f64>,
 ) -> Vec<usize> {
     let places: Vec<DVec3> =
         selection.systems().map(|system| system.position()).collect();
-    match tour {
-        Some((range, start)) => {
-            crate::systems::route::tour::ordered(&places, range, start)
+    match cheapest {
+        Some(range) => {
+            crate::systems::route::tour::ordered(&places, range, shape)
         }
         None => (0..places.len()).collect(),
     }
@@ -3608,20 +3619,68 @@ fn flown_order(
 /// where that was asked for and a range is in hand to cost a leg with. The
 /// ordering is [`crate::systems::route::tour`]'s; this is only the naming.
 ///
+/// A ring names its first stop twice, at both ends. The stops are what the
+/// legs are cut from — a leg to each name from the one before it — so the
+/// leg home is a leg like any other: asked for, walked, drawn and costed.
+/// Nothing else about a trip has to know a ring from a line.
+///
 /// Handed back as names rather than as an order, since names are what a trip
 /// is asked for with and what the legs are keyed by.
 fn asked_in_order(
     stops: &[&str],
     selection: &Selection,
-    tour: Option<(f64, Start)>,
+    shape: Shape,
+    cheapest: Option<f64>,
 ) -> Vec<String> {
     // The systems `stops_of` named, in the same order, so an index into one
     // is an index into the other.
-    flown_order(selection, tour)
+    let mut named: Vec<String> = flown_order(selection, shape, cheapest)
         .into_iter()
         .filter_map(|at| stops.get(at))
         .map(|stop| stop.to_string())
-        .collect()
+        .collect();
+
+    if shape.loops()
+        && let Some(home) = named.first().cloned()
+    {
+        named.push(home);
+    }
+    named
+}
+
+/// How many legs a trip through `stops` is flown in
+///
+/// The gaps between the stops, which is one fewer than there are of them —
+/// and one apiece for a ring, which has the leg home as well.
+fn legs_flown(stops: usize, shape: Shape) -> usize {
+    match shape.loops() {
+        true => stops,
+        false => stops.saturating_sub(1),
+    }
+}
+
+/// What shape a trip through `stops` is asked for in
+///
+/// The form holds two flags and they come to one shape, which is what
+/// [`crate::systems::route::tour`] is told and what says how many legs the
+/// trip is. One reading of them, so the count the form says, the order the
+/// stops go out in, and the legs actually plotted cannot disagree.
+///
+/// A ring only where there is a trip to close. Two stops flown out and back
+/// is the one leg twice over, drawn on top of itself, so [`route_body`] does
+/// not offer the control — and a flag left standing from a wider set is not
+/// obeyed here either, a control nobody can see being no way to let go of
+/// one.
+///
+/// A ring holds its start whatever the other flag says: every way round one
+/// costs the same, so a free start is not a choice about cost, and the form
+/// puts that control away while a loop is asked for. See [`Shape`].
+fn shape_of(fields: &BarFields, stops: usize) -> Shape {
+    match (fields.looping && stops > 2, fields.any_start) {
+        (true, _) => Shape::Loop,
+        (false, true) => Shape::Anywhere,
+        (false, false) => Shape::FromFirst,
+    }
 }
 
 /// What the form says of the systems picked out, before a route is asked for
@@ -3631,12 +3690,13 @@ fn asked_in_order(
 /// there.
 ///
 /// More than two is said as how many legs it will be and how wide they
-/// stand. Not how far the route will run: that turns on the order they are
-/// reached in, and the order may turn on a range not yet typed. How much sky
-/// they cover is knowable before anything is walked, and is what a set of
-/// destinations raises.
-fn apart_said(away: f64, stops: usize) -> String {
-    match stops.saturating_sub(1) {
+/// stand — [`legs_flown`], so a ring counts the leg home among them. Not how
+/// far the route will run: that turns on the order they are reached in, and
+/// the order may turn on a range not yet typed. How much sky they cover is
+/// knowable before anything is walked, and is what a set of destinations
+/// raises.
+fn apart_said(away: f64, legs: usize) -> String {
+    match legs {
         0 | 1 => format!("{away:.1} Ly apart"),
         legs => format!("{legs} legs, {away:.1} Ly across"),
     }
@@ -3691,12 +3751,19 @@ fn route_body(
         // scolding whoever fills it in.
         ui.label(egui::RichText::new(*why).weak());
     }
+    // What shape the trip is flown in: which end is held, and whether it
+    // comes home. Read here rather than beside the controls that set it, so
+    // that what the form says the trip comes to, what the ordering is asked
+    // for, and what is actually plotted are the one answer.
+    let shape = shape_of(search, stops.as_ref().map_or(0, Vec::len));
+
     // What the map can say about them before a route is asked for: how many
     // legs it will be, and how wide they stand. Nothing about the order they
     // will be reached in, which is what the range settles and what nothing
     // here waits on.
     if let (Ok(stops), Some(away)) = (&stops, across(selection)) {
-        ui.label(egui::RichText::new(apart_said(away, stops.len())).weak());
+        let legs = legs_flown(stops.len(), shape);
+        ui.label(egui::RichText::new(apart_said(away, legs)).weak());
     }
     ui.add_space(FIELD_GAP);
 
@@ -3710,9 +3777,6 @@ fn route_body(
     }
     ui.add_space(FIELD_GAP);
 
-    // Where the trip may set out from, which only the cheapest order has a
-    // say in. Read here so the ask below and the box further down agree.
-    let start = if search.any_start { Start::Anywhere } else { Start::First };
     // How hard the map should work at it. Two of the three are the fewest
     // jumps and differ in whether the map may spend the time proving the
     // shortest of them; the third declines to prove anything and comes back
@@ -3802,19 +3866,28 @@ fn route_body(
         ui.colored_label(egui::Color32::LIGHT_RED, trouble);
     }
 
-    // Whose order the stops are reached in. Only where there is an order to
-    // settle: two stops have one, and three or more picked out are as likely
-    // to be a set of destinations as an itinerary.
+    // What shape the trip takes. Only where there is a trip to shape: two
+    // stops have one order and one leg between them either way round, and
+    // three or more picked out are as likely to be a set of destinations as
+    // an itinerary.
     if stops.as_ref().is_ok_and(|stops| stops.len() > 2) {
+        check(
+            ui,
+            &mut search.looping,
+            "Loop",
+            "Fly home to the first stop at the end",
+        );
         check(
             ui,
             &mut search.tour,
             "Cheapest order",
             "Reorder the stops to fly the least",
         );
-        // Only under the box it qualifies. Where the order is the user's own
-        // there is nothing to hold the start against.
-        if search.tour {
+        // Only under the box it qualifies, and not under a ring: where the
+        // order is the user's own there is nothing to hold the start
+        // against, and a ring has no free end to hold — every way round one
+        // costs the same, so where it is entered is not a choice about cost.
+        if search.tour && !search.looping {
             ui.indent("start", |ui| {
                 let mut from_first = !search.any_start;
                 if check(
@@ -3891,7 +3964,8 @@ fn route_body(
                     stops: asked_in_order(
                         &stops,
                         selection,
-                        search.tour.then_some((range, start)),
+                        shape,
+                        search.tour.then_some(range),
                     ),
                     // Back to text, since a route is fetched under a key
                     // made of what was asked for and a float is no kind of
@@ -8223,15 +8297,15 @@ mod tests {
         assert_eq!(wide(&[3.]), None);
     }
 
-    /// And how it is said turns on whether there is more than one leg
+    /// A trip of several says how many legs it is
     ///
     /// Two systems are apart. More stand across a span, and are said as how
     /// many legs the trip will be as well: the figure is no longer a gap
-    /// between two things.
+    /// between two things. The legs are [`legs_flown`]'s to count.
     #[test]
     fn a_longer_route_is_said_in_legs() {
-        assert_eq!(apart_said(12., 2), "12.0 Ly apart");
-        assert_eq!(apart_said(30., 4), "3 legs, 30.0 Ly across");
+        assert_eq!(apart_said(12., 1), "12.0 Ly apart");
+        assert_eq!(apart_said(30., 3), "3 legs, 30.0 Ly across");
         assert_eq!(apart_said(4., 0), "4.0 Ly apart");
     }
 
@@ -10685,7 +10759,7 @@ mod tests {
         let stops: Vec<&str> = stops_of(&picked).expect("stops");
 
         assert_eq!(
-            asked_in_order(&stops, &picked, None),
+            asked_in_order(&stops, &picked, Shape::FromFirst, None),
             vec!["Test 0", "Test 1", "Test 2", "Test 3"]
         );
     }
@@ -10699,10 +10773,62 @@ mod tests {
         let picked = strung_out(&[20., 0., 10., 30.]);
         let stops: Vec<&str> = stops_of(&picked).expect("stops");
 
-        let asked = asked_in_order(&stops, &picked, Some((10., Start::First)));
+        let asked =
+            asked_in_order(&stops, &picked, Shape::FromFirst, Some(10.));
 
         assert_eq!(asked[0], "Test 0");
         assert_eq!(asked, vec!["Test 0", "Test 3", "Test 2", "Test 1"]);
+    }
+
+    /// A trip asked for as a loop is asked for the leg home as well
+    ///
+    /// The stops are what the legs are cut from, so the way to ask for the
+    /// flight home is to name the first stop again at the end. Which is what
+    /// makes a loop nothing special to anything downstream: the leg home is
+    /// walked, drawn, rowed and costed as the others are.
+    ///
+    /// In the order picked here, since a loop is a shape rather than an
+    /// ordering: closing a trip the user ordered themselves is a run out and
+    /// back the way they asked for.
+    #[test]
+    fn a_looping_trip_comes_home_to_where_it_set_out() {
+        let picked = strung_out(&[20., 0., 10., 30.]);
+        let stops: Vec<&str> = stops_of(&picked).expect("stops");
+
+        assert_eq!(
+            asked_in_order(&stops, &picked, Shape::Loop, None),
+            vec!["Test 0", "Test 1", "Test 2", "Test 3", "Test 0"]
+        );
+    }
+
+    /// The two flags the form holds come to one shape
+    ///
+    /// A loop is only asked for where there is a trip to close: the control
+    /// is not offered under two stops, and a flag left standing from a wider
+    /// set is not obeyed either — nobody could see the control to let go of
+    /// it. And a loop holds its start whatever the free-start flag says,
+    /// every way round a ring costing the same.
+    #[test]
+    fn a_loop_is_asked_for_only_where_there_is_a_trip_to_close() {
+        let asking = |looping, any_start, stops| {
+            let fields = BarFields { looping, any_start, ..default() };
+            shape_of(&fields, stops)
+        };
+
+        assert_eq!(asking(true, false, 3), Shape::Loop);
+        assert_eq!(asking(true, true, 3), Shape::Loop);
+        assert_eq!(asking(true, false, 2), Shape::FromFirst);
+        assert_eq!(asking(true, true, 2), Shape::Anywhere);
+        assert_eq!(asking(false, false, 3), Shape::FromFirst);
+        assert_eq!(asking(false, true, 3), Shape::Anywhere);
+    }
+
+    /// And the legs it is flown in count the leg home
+    #[test]
+    fn a_loop_is_a_leg_longer_than_the_line_through_the_same_stops() {
+        assert_eq!(legs_flown(3, Shape::FromFirst), 2);
+        assert_eq!(legs_flown(3, Shape::Loop), 3);
+        assert_eq!(legs_flown(0, Shape::Loop), 0);
     }
 
     /// A route runs through the systems picked out on the map

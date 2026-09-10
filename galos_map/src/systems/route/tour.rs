@@ -6,6 +6,11 @@
 //! salesman problem: no returning to the start, every destination visited
 //! once.
 //!
+//! Unless the trip is asked for as a ring, which is the closed one: the last
+//! stop is flown home to the first, and the leg home is costed with the rest.
+//! It is the same solve either way and the same two solvers, told whether
+//! the order they are settling is a line or a ring. See [`Shape`].
+//!
 //! The cost is estimated rather than routed. A leg's real cost is the jumps
 //! the router comes back with, and asking for those first would mean walking
 //! the graph between every pair before anything is drawn -- `n(n-1)/2` walks,
@@ -58,38 +63,62 @@ fn and(one: Cost, other: Cost) -> Cost {
     (one.0 + other.0, one.1 + other.1)
 }
 
-/// Where a trip is allowed to set out from
+/// What shape a trip is flown in
+///
+/// Where it may set out from, and whether it comes home. The three are one
+/// choice rather than two because a ring has no free end: every rotation of
+/// one costs the same, so where a ring is entered says which system the
+/// flying begins at and nothing at all about what it costs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum Start {
-    /// The first place picked out
+pub(crate) enum Shape {
+    /// A line through every stop, out from the first place picked
     ///
     /// A trip has to set out from somewhere and nothing on the map says where
     /// the ship is, so the one named first is where it starts. Holding it
     /// still also means the same set picked again gives the same answer.
     #[default]
-    First,
-    /// Wherever costs least
+    FromFirst,
+    /// A line through every stop, out from wherever costs least
     ///
     /// For a set gathered with no thought to which is reached first: the trip
     /// is then a line through all of them with both ends free, and holding
     /// one end still can only cost jumps.
     Anywhere,
+    /// A ring: out from the first place picked, through the rest, and home
+    ///
+    /// For a run flown from somewhere and back to it. The leg home is costed
+    /// with the others, which is the whole of the difference: a line's last
+    /// stop is wherever is cheapest to finish on, and a ring's is wherever is
+    /// cheapest to finish on *and fly home from*.
+    Loop,
+}
+
+impl Shape {
+    /// Whether the last stop is flown back to the first
+    pub(crate) fn loops(self) -> bool {
+        self == Shape::Loop
+    }
 }
 
 /// The order to reach every one of `places` in, as indices into it
 ///
-/// The first place stays first. A trip has to set out from somewhere and
-/// nothing on the map says where the ship is; the first thing picked out is
-/// the one the user named first, and holding it still also means picking the
-/// same set again gives the same answer.
+/// The first place stays first, but for [`Shape::Anywhere`]. A trip has to
+/// set out from somewhere and nothing on the map says where the ship is; the
+/// first thing picked out is the one the user named first, and holding it
+/// still also means picking the same set again gives the same answer.
+///
+/// A ring is the same order with the leg home costed as well; the place it
+/// comes home to is the first and is not said twice, the answer being an
+/// order of the places rather than the legs flown between them.
 ///
 /// Every place exactly once, so the answer is always a permutation of the
 /// input however it was reached. Fewer than three places have only one order
-/// and are handed straight back.
+/// and are handed straight back — a ring through two of them is the one leg
+/// out and the same leg back, whichever way round it is flown.
 pub(crate) fn ordered(
     places: &[DVec3],
     range: f64,
-    start: Start,
+    shape: Shape,
 ) -> Vec<usize> {
     if places.len() < 3 || range <= 0. {
         return (0..places.len()).collect();
@@ -100,14 +129,15 @@ pub(crate) fn ordered(
         .map(|from| places.iter().map(|to| leg(*from, *to, range)).collect())
         .collect();
 
-    match start {
-        Start::First => settled(&legs, places.len()),
+    match shape {
+        Shape::FromFirst => settled(&legs, places.len(), false),
+        Shape::Loop => settled(&legs, places.len(), true),
         // Every place is a candidate to set out from. Standing a place that
         // costs nothing to leave in front of them turns the free start into a
         // fixed one, which is the only kind the solve below has: the trip it
         // finds sets out from whichever real place is cheapest to begin at,
         // and the nothing-place is dropped off the front of the answer.
-        Start::Anywhere => {
+        Shape::Anywhere => {
             let mut anywhere = vec![vec![(0u32, 0f64); places.len() + 1]];
             for from in &legs {
                 let mut row = vec![(0u32, 0f64)];
@@ -115,7 +145,7 @@ pub(crate) fn ordered(
                 anywhere.push(row);
             }
 
-            settled(&anywhere, places.len())
+            settled(&anywhere, places.len(), false)
                 .into_iter()
                 .skip(1)
                 .map(|at| at - 1)
@@ -131,8 +161,16 @@ pub(crate) fn ordered(
 /// its table is a doubling larger than a held start's over the same set. The
 /// count rather than `legs.len()` so that both are exact over the same
 /// destinations, and neither quietly turns approximate one sooner.
-fn settled(legs: &[Vec<Cost>], places: usize) -> Vec<usize> {
-    if places <= EXACTLY { exactly(legs) } else { improved(grown(legs), legs) }
+///
+/// `closed` says the order is a ring rather than a line, which is what puts
+/// the leg home into what an order costs. Both solvers are told, so the
+/// approximate answer is about the same trip the exact one would have been.
+fn settled(legs: &[Vec<Cost>], places: usize, closed: bool) -> Vec<usize> {
+    if places <= EXACTLY {
+        exactly(legs, closed)
+    } else {
+        improved(grown(legs), legs, closed)
+    }
 }
 
 /// The cheapest order there is, by Held-Karp
@@ -143,7 +181,12 @@ fn settled(legs: &[Vec<Cost>], places: usize) -> Vec<usize> {
 ///
 /// Read back by walking the mask apart, which is why each entry keeps what it
 /// came from.
-fn exactly(legs: &[Vec<Cost>]) -> Vec<usize> {
+///
+/// `closed` puts the leg home into what finishing somewhere costs. The table
+/// itself is the same either way — every way of reaching every place is a
+/// way of reaching them whether or not the ship flies home afterwards — so
+/// it is only the choice of where to finish that hears about it.
+fn exactly(legs: &[Vec<Cost>], closed: bool) -> Vec<usize> {
     let rest = legs.len() - 1;
     let masks = 1usize << rest;
     // Cost, and which place it came from, per set and per place last stood
@@ -183,15 +226,23 @@ fn exactly(legs: &[Vec<Cost>]) -> Vec<usize> {
     }
 
     let whole = masks - 1;
-    // Any of them may be where the trip ends: nothing returns to the start,
-    // so the last place is whichever is cheapest to finish on.
-    let Some(mut last) = (0..rest)
-        .filter(|last| best[whole][*last].is_some())
-        .min_by(|one, other| {
-            let (one, other) =
-                (best[whole][*one].unwrap().0, best[whole][*other].unwrap().0);
-            one.partial_cmp(&other).unwrap_or(std::cmp::Ordering::Equal)
+    // What finishing on a place comes to: the trip up to it, and the leg home
+    // as well where there is one to fly.
+    let finishing = |last: usize| {
+        best[whole][last].map(|(so_far, _)| match closed {
+            true => and(so_far, legs[last + 1][0]),
+            false => so_far,
         })
+    };
+    // Any of them may be where the trip ends: a line finishes on whichever is
+    // cheapest to reach last, and a ring on whichever is cheapest to reach
+    // last and fly home from.
+    let Some(mut last) = (0..rest)
+        .filter_map(|last| finishing(last).map(|cost| (last, cost)))
+        .min_by(|(_, one), (_, other)| {
+            one.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(last, _)| last)
     else {
         return (0..legs.len()).collect();
     };
@@ -242,7 +293,16 @@ fn grown(legs: &[Vec<Cost>]) -> Vec<usize> {
 ///
 /// The start is held still, as [`ordered`] promises, so the stretches
 /// considered begin at the second place.
-fn improved(mut order: Vec<usize>, legs: &[Vec<Cost>]) -> Vec<usize> {
+///
+/// `closed` is what the leg home is heard through: on a ring the stretch
+/// reaching the last stop is followed by the leg back to the start, so
+/// reversing it changes two legs as any other stretch does. On a line it is
+/// followed by nothing and only the leg into it changes.
+fn improved(
+    mut order: Vec<usize>,
+    legs: &[Vec<Cost>],
+    closed: bool,
+) -> Vec<usize> {
     let mut again = true;
     while again {
         again = false;
@@ -250,7 +310,10 @@ fn improved(mut order: Vec<usize>, legs: &[Vec<Cost>]) -> Vec<usize> {
             for other in one + 1..order.len() {
                 let (before, from) = (order[one - 1], order[one]);
                 let to = order[other];
-                let after = order.get(other + 1).copied();
+                let after = order
+                    .get(other + 1)
+                    .copied()
+                    .or_else(|| closed.then(|| order[0]));
 
                 let held = match after {
                     Some(after) => and(legs[before][from], legs[to][after]),
@@ -279,6 +342,18 @@ fn costing(order: &[usize], places: &[DVec3], range: f64) -> Cost {
     order.windows(2).fold((0, 0.), |so_far, step| {
         and(so_far, leg(places[step[0]], places[step[1]], range))
     })
+}
+
+/// What an order costs flown as a ring: the whole of it, and the leg home
+///
+/// Only the tests ask, as [`costing`] is only asked.
+#[cfg(test)]
+fn ringing(order: &[usize], places: &[DVec3], range: f64) -> Cost {
+    let Some((&first, &last)) = order.first().zip(order.last()) else {
+        return (0, 0.);
+    };
+
+    and(costing(order, places, range), leg(places[last], places[first], range))
 }
 
 #[cfg(test)]
@@ -320,7 +395,7 @@ mod tests {
     fn a_line_of_destinations_is_walked_in_order() {
         let places = along(&[0., 30., 10., 20.]);
 
-        assert_eq!(ordered(&places, 10., Start::First), vec![0, 2, 3, 1]);
+        assert_eq!(ordered(&places, 10., Shape::FromFirst), vec![0, 2, 3, 1]);
     }
 
     /// The first picked stays first
@@ -335,7 +410,7 @@ mod tests {
         let places = along(&[20., 0., 10., 30.]);
         let range = 10.;
 
-        let order = ordered(&places, range, Start::First);
+        let order = ordered(&places, range, Shape::FromFirst);
 
         assert_eq!(order[0], 0);
         assert_eq!(order, vec![0, 3, 2, 1]);
@@ -357,17 +432,18 @@ mod tests {
                 })
                 .collect();
 
-            // Both ways of choosing a start: an answer that dropped a
+            // Every shape a trip is asked for in: an answer that dropped a
             // place or said one twice would be a trip to somewhere else,
-            // whichever end it was free to begin at.
-            for start in [Start::First, Start::Anywhere] {
-                let mut order = ordered(&places, 10., start);
+            // whichever end it was free to begin at and whether or not it
+            // comes home.
+            for shape in [Shape::FromFirst, Shape::Anywhere, Shape::Loop] {
+                let mut order = ordered(&places, 10., shape);
                 order.sort();
 
                 assert_eq!(
                     order,
                     (0..count).collect::<Vec<_>>(),
-                    "{count} places from {start:?}"
+                    "{count} places as {shape:?}"
                 );
             }
         }
@@ -389,7 +465,7 @@ mod tests {
         let range = 8.;
 
         let mine =
-            costing(&ordered(&places, range, Start::First), &places, range);
+            costing(&ordered(&places, range, Shape::FromFirst), &places, range);
         let best = every(places.len())
             .into_iter()
             .map(|order| costing(&order, &places, range))
@@ -424,7 +500,91 @@ mod tests {
             .collect();
         let started = costing(&grown(&legs), &places, range);
         let mine =
-            costing(&ordered(&places, range, Start::First), &places, range);
+            costing(&ordered(&places, range, Shape::FromFirst), &places, range);
+
+        assert!(mine <= started, "{mine:?} against {started:?}");
+    }
+
+    /// A ring is the cheapest ring there is
+    ///
+    /// Held against every order of the same places flown as a ring, the leg
+    /// home costed with the rest, and the first held still — every rotation
+    /// of a ring costs the same, so where it is entered is not what is being
+    /// chosen here.
+    #[test]
+    fn a_ring_is_the_cheapest_way_round() {
+        let places = vec![
+            DVec3::new(0., 0., 0.),
+            DVec3::new(14., 3., 0.),
+            DVec3::new(4., 19., 2.),
+            DVec3::new(21., 17., 5.),
+            DVec3::new(9., 8., 11.),
+            DVec3::new(30., 2., 7.),
+        ];
+        let range = 8.;
+
+        let mine =
+            ringing(&ordered(&places, range, Shape::Loop), &places, range);
+        let best = every(places.len())
+            .into_iter()
+            .map(|order| ringing(&order, &places, range))
+            .min_by(|one, other| {
+                one.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("an order");
+
+        assert_eq!(mine, best);
+    }
+
+    /// And is not the line flown home
+    ///
+    /// The cheapest line through a set and the cheapest ring through it are
+    /// different trips: a line may finish anywhere it likes, and a ring pays
+    /// for finishing far from where it set out. Ordered as a line and flown
+    /// home, this set costs a jump more than ordering it as a ring does.
+    #[test]
+    fn a_ring_is_not_the_cheapest_line_flown_home() {
+        let places = vec![
+            DVec3::new(7., 1., 0.),
+            DVec3::new(17., 27., 0.),
+            DVec3::new(4., 9., 0.),
+            DVec3::new(13., 4., 0.),
+            DVec3::new(17., 3., 0.),
+        ];
+        let range = 8.;
+
+        let line = ordered(&places, range, Shape::FromFirst);
+        let ring = ordered(&places, range, Shape::Loop);
+
+        assert_eq!(line, vec![0, 3, 4, 2, 1]);
+        assert_eq!(ringing(&line, &places, range).0, 11);
+        assert_eq!(ringing(&ring, &places, range).0, 10);
+    }
+
+    /// A ring past the exact limit is still no worse than where it started
+    ///
+    /// The same claim the line makes, held over the ring's own cost: the
+    /// order two-opt is handed is the order it must not lose to, and the leg
+    /// home is part of what it is weighing.
+    #[test]
+    fn a_large_ring_is_no_worse_than_where_it_started() {
+        let places: Vec<DVec3> = (0..14)
+            .map(|at| {
+                let at = at as f64;
+                DVec3::new(at * 11. % 37., at * 5. % 29., at * 17. % 41.)
+            })
+            .collect();
+        let range = 9.;
+
+        let legs: Vec<Vec<Cost>> = places
+            .iter()
+            .map(|from| {
+                places.iter().map(|to| leg(*from, *to, range)).collect()
+            })
+            .collect();
+        let started = ringing(&grown(&legs), &places, range);
+        let mine =
+            ringing(&ordered(&places, range, Shape::Loop), &places, range);
 
         assert!(mine <= started, "{mine:?} against {started:?}");
     }
@@ -439,8 +599,8 @@ mod tests {
         let places = along(&[20., 0., 10., 30.]);
         let range = 10.;
 
-        let held = ordered(&places, range, Start::First);
-        let free = ordered(&places, range, Start::Anywhere);
+        let held = ordered(&places, range, Shape::FromFirst);
+        let free = ordered(&places, range, Shape::Anywhere);
 
         assert_eq!(costing(&held, &places, range), (4, 40.));
         // Either end of the line, the two walks costing the same.
@@ -470,10 +630,13 @@ mod tests {
                 .collect();
             let range = 6.;
 
-            let held =
-                costing(&ordered(&places, range, Start::First), &places, range);
+            let held = costing(
+                &ordered(&places, range, Shape::FromFirst),
+                &places,
+                range,
+            );
             let free = costing(
-                &ordered(&places, range, Start::Anywhere),
+                &ordered(&places, range, Shape::Anywhere),
                 &places,
                 range,
             );
@@ -485,9 +648,12 @@ mod tests {
     /// Two of them have one order, and are handed back in it
     #[test]
     fn a_pair_has_nothing_to_order() {
-        assert_eq!(ordered(&along(&[10., 0.]), 10., Start::First), vec![0, 1]);
-        assert_eq!(ordered(&along(&[0.]), 10., Start::First), vec![0]);
-        assert_eq!(ordered(&[], 10., Start::First), Vec::<usize>::new());
+        assert_eq!(
+            ordered(&along(&[10., 0.]), 10., Shape::FromFirst),
+            vec![0, 1]
+        );
+        assert_eq!(ordered(&along(&[0.]), 10., Shape::FromFirst), vec![0]);
+        assert_eq!(ordered(&[], 10., Shape::FromFirst), Vec::<usize>::new());
     }
 
     /// A range that says nothing orders nothing
@@ -499,7 +665,7 @@ mod tests {
     fn a_ship_that_reaches_nowhere_leaves_the_set_alone() {
         let places = along(&[0., 30., 10.]);
 
-        assert_eq!(ordered(&places, 0., Start::First), vec![0, 1, 2]);
+        assert_eq!(ordered(&places, 0., Shape::FromFirst), vec![0, 1, 2]);
     }
 
     /// Jumps decide before distance

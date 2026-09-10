@@ -589,14 +589,17 @@ fn fetch(populated: &Populated, names: &Names, filter: &Filter) -> Vec<System> {
     // and drops any the names table cannot place.
     let mut found: Vec<System> = filter.systems(populated, names);
 
-    // In the filter's own order where it has one, which for a route is the
-    // order it is travelled. Where it has none, by name: what comes back is
-    // in no order at all, and a list has to be in some order to hold still.
-    if filter.ordered() {
-        found.sort_by_key(|system| {
-            filter.place_of(system.address).unwrap_or(usize::MAX)
-        });
-    } else {
+    // A filter with an order of its own has already answered in it: a route's
+    // systems are the hops it is flown through, in the order they are flown.
+    // Sorting them by where each falls in the route said the same thing until
+    // a system stood in one twice — which is what a trip flown home to where
+    // it set out from is — and then the last hop, being also the first, was
+    // sorted to the front and the leg home was lost from the list and from
+    // what the panel says the flying comes to.
+    //
+    // Where there is no order of its own, by name: what comes back is in no
+    // order at all, and a list has to be in some order to hold still.
+    if !filter.ordered() {
         found.sort_unstable_by(|one, other| one.name.cmp(&other.name));
     }
     found
@@ -2441,6 +2444,44 @@ mod tests {
         assert_eq!(color("Primary"), color("Economy"));
         assert_ne!(color("Low"), color("Economy"));
         assert_ne!(color("Military"), color("Economy"));
+    }
+
+    /// A trip flown home is listed in the order it is flown
+    ///
+    /// A route answers in its own order and a panel leaves it there. Sorted
+    /// by where each system falls in the route, the stop a loop sets out
+    /// from and comes back to — one system standing in the route twice —
+    /// had its second standing sorted up beside its first, which lost the
+    /// leg home from the list and from what the panel says the flying comes
+    /// to.
+    #[test]
+    fn a_trip_flown_home_is_listed_in_the_order_flown() {
+        let placed = |address: i64, at: f32| galos_index::meta::NameEntry {
+            address,
+            name: format!("STOP {address}"),
+            position: [at, 0., 0.],
+        };
+        let names = Names::reaching(
+            vec![placed(1, 0.), placed(2, 10.), placed(3, 20.)],
+            Vec::new(),
+        );
+        // Out through the three and home again, which is the same system at
+        // both ends.
+        let ring = Filter::Route {
+            label: "STOP 1 -> STOP 3 -> STOP 1".to_owned(),
+            systems: vec![1, 2, 3, 1],
+            range: "10".to_owned(),
+            trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
+        };
+
+        let listed: Vec<i64> = fetch(&Populated::default(), &names, &ring)
+            .iter()
+            .map(|system| system.address)
+            .collect();
+
+        assert_eq!(listed, vec![1, 2, 3, 1]);
     }
 
     /// A system with no factions lists none
