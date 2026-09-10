@@ -10,6 +10,9 @@ default-run = "galos"
 [dependencies]
 async-std = "*"
 structopt = "*"
+# `galos-sync` is clap 4 derive, as every command line written since is.
+# `structopt` stays for `galos`, the query CLI, which has not been moved.
+clap = { version = "4", features = ["derive"] }
 itertools = "*"
 indicatif = "*"
 chrono = "*"
@@ -17,13 +20,26 @@ eddb = { path = "./eddb" }
 eddn = { path = "./eddn" }
 edsm = { path = "./edsm" }
 galos_db = { path = "./galos_db" }
+# The index format, and the journal read into it. `galos-sync` writes to either
+# a database or an index directory, and the second of those needs both: the
+# tree and its metadata records from one, the event accumulator from the other.
+# Default features off on both, so neither command line follows them in here.
+galos_index = { path = "./galos_index", default-features = false }
+galos_journal = { path = "./galos_journal", default-features = false }
 elite_journal = { path = "./elite_journal" }
 prettytable-rs = "*"
 serde_json = "*"
+serde = "1"
+# `galos-sync`'s `Sink` is a boxed trait with async methods on it.
+async-trait = "0.1"
 tui = "*"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 galos_map = { path = "./galos_map", optional = true }
+
+[dev-dependencies]
+# Driving the async `Sink` methods from a `#[test]`, which has no runtime.
+pollster = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 termion = "*"

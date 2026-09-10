@@ -133,6 +133,39 @@ pub struct Galaxy {
     touched: HashSet<i64>,
 }
 
+/// The political columns a system carries.
+///
+/// Named as a group because two very different things hand them over: an
+/// arrival event, where the commander is standing in the system reading them
+/// off, and a published dump, where somebody else read them off months ago.
+/// Both say the same six things and neither says any of them reliably, so
+/// every one is optional and every one merges the same way — a reading wins
+/// where it is a reading, and where it is blank what already stands is not
+/// contradicted by it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Politics {
+    pub population: Option<u64>,
+    pub security: Option<Security>,
+    pub government: Option<Government>,
+    pub allegiance: Option<Allegiance>,
+    pub primary_economy: Option<Economy>,
+    pub secondary_economy: Option<Economy>,
+}
+
+impl Politics {
+    /// What an arrival event says about the system it names.
+    fn of(system: &JournalSystem) -> Politics {
+        Politics {
+            population: system.population,
+            security: system.security,
+            government: system.government,
+            allegiance: system.allegiance,
+            primary_economy: system.economy,
+            secondary_economy: system.second_economy,
+        }
+    }
+}
+
 impl Default for Galaxy {
     fn default() -> Galaxy {
         Galaxy::new(Utc::now())
@@ -280,15 +313,51 @@ impl Galaxy {
     /// one.
     fn visit(&mut self, at: DateTime<Utc>, system: &JournalSystem) -> bool {
         self.seen(at, system.address, &system.name, system.pos);
-        let visit = self.visit_mut(system.address);
-        visit.population = system.population.unwrap_or(visit.population);
-        visit.security = system.security.or(visit.security);
-        visit.government = system.government.or(visit.government);
-        visit.allegiance = system.allegiance.or(visit.allegiance);
-        visit.primary_economy = system.economy.or(visit.primary_economy);
-        visit.secondary_economy =
-            system.second_economy.or(visit.secondary_economy);
+        self.govern(system.address, Politics::of(system));
         true
+    }
+
+    /// A system as a published dump gives it: named, placed, and with the
+    /// columns somebody else read off it, and nothing below system level.
+    ///
+    /// Not an event and never was — nobody flew anywhere, a file was
+    /// published — so it does not touch a scan, a body or a star class. What
+    /// it does is exactly what an arrival does minus the visit: it puts a
+    /// system on the map with its politics, which for two thirds of the
+    /// galaxy is everything anyone knows.
+    ///
+    /// `at` is when the dump says the reading was taken, not when it was
+    /// read. That is what the Recency axis wants and it is why an EDDB dump
+    /// lands in the oldest bucket where it belongs rather than looking like
+    /// news.
+    pub fn place(
+        &mut self,
+        at: DateTime<Utc>,
+        address: i64,
+        name: &str,
+        position: Coordinate,
+        politics: Politics,
+    ) -> bool {
+        self.seen(at, address, name, Some(position));
+        self.govern(address, politics);
+        true
+    }
+
+    /// Merge political columns into what a system already carries.
+    ///
+    /// A reading wins where it is one; a blank leaves what stands. The rule
+    /// the database's own write path states, kept here because the two have
+    /// to agree about what a `Scan` arriving after an `FSDJump` does to a
+    /// system's population, which is nothing.
+    fn govern(&mut self, address: i64, said: Politics) {
+        let visit = self.visit_mut(address);
+        visit.population = said.population.unwrap_or(visit.population);
+        visit.security = said.security.or(visit.security);
+        visit.government = said.government.or(visit.government);
+        visit.allegiance = said.allegiance.or(visit.allegiance);
+        visit.primary_economy = said.primary_economy.or(visit.primary_economy);
+        visit.secondary_economy =
+            said.secondary_economy.or(visit.secondary_economy);
     }
 
     /// A stop on the route the ship last plotted.
@@ -370,12 +439,69 @@ impl Galaxy {
     /// it is one the map has nothing to draw for anyway.
     pub fn systems(&self) -> Vec<System> {
         self.systems
-            .iter()
-            .filter_map(|(&address, visit)| {
-                let position = visit.position?;
-                Some(self.system(address, visit, position))
-            })
+            .keys()
+            .filter_map(|&address| self.system_of(address))
             .collect()
+    }
+
+    /// One system as the tree takes it, where it has been placed.
+    ///
+    /// What a sink following a feed asks, against the handful of addresses a
+    /// pass touched, rather than deriving the whole galaxy to publish fifty
+    /// systems. [`Self::systems`] is this over everything.
+    pub fn system_of(&self, address: i64) -> Option<System> {
+        let visit = self.systems.get(&address)?;
+        let position = visit.position?;
+        Some(self.system(address, visit, position))
+    }
+
+    /// One system's name and place, where it has been placed.
+    pub fn name_of(&self, address: i64) -> Option<NameEntry> {
+        let visit = self.systems.get(&address)?;
+        let at = visit.position?;
+        Some(NameEntry {
+            address,
+            name: visit.name.clone(),
+            position: [at[0] as f32, at[1] as f32, at[2] as f32],
+        })
+    }
+
+    /// How far one system reaches, where anything in it has been scanned.
+    pub fn reach_of(&self, address: i64) -> Option<f32> {
+        self.inside.get(&address)?.extent(address)
+    }
+
+    /// What one system's arrival star can supercharge, if anything.
+    pub fn boost_of(&self, address: i64) -> Option<Boost> {
+        Boost::of(&self.arrival_class(address)?)
+    }
+
+    /// One system's political columns, where anybody lives in it.
+    pub fn populated_of(&self, address: i64) -> Option<PopulatedSystem> {
+        let visit = self.systems.get(&address)?;
+        if visit.population == 0 {
+            return None;
+        }
+        let at = visit.position?;
+        Some(PopulatedSystem {
+            address,
+            name: visit.name.clone(),
+            position: [at[0] as f32, at[1] as f32, at[2] as f32],
+            population: visit.population,
+            security: visit.security,
+            government: visit.government,
+            allegiance: visit.allegiance,
+            primary_economy: visit.primary_economy,
+            secondary_economy: visit.secondary_economy,
+            factions: Vec::new(),
+            body_count: visit.body_count,
+            non_body_count: visit.non_body_count,
+        })
+    }
+
+    /// Whether anything at all is known about the system at `address`.
+    pub fn holds(&self, address: i64) -> bool {
+        self.systems.contains_key(&address)
     }
 
     /// One system's photometry and place, by the same fallback chain the
@@ -448,18 +574,8 @@ impl Galaxy {
 
     /// Every placed system's name and where it sits.
     pub fn names(&self) -> Vec<NameEntry> {
-        let mut table: Vec<NameEntry> = self
-            .systems
-            .iter()
-            .filter_map(|(&address, visit)| {
-                let at = visit.position?;
-                Some(NameEntry {
-                    address,
-                    name: visit.name.clone(),
-                    position: [at[0] as f32, at[1] as f32, at[2] as f32],
-                })
-            })
-            .collect();
+        let mut table: Vec<NameEntry> =
+            self.systems.keys().filter_map(|&a| self.name_of(a)).collect();
         table.sort_by_key(|entry| entry.address);
         table
     }
@@ -473,9 +589,9 @@ impl Galaxy {
     pub fn reaches(&self) -> Vec<SystemReach> {
         let mut table: Vec<SystemReach> = self
             .inside
-            .iter()
-            .filter_map(|(&address, inside)| {
-                Some(SystemReach { address, reach: inside.extent(address)? })
+            .keys()
+            .filter_map(|&address| {
+                Some(SystemReach { address, reach: self.reach_of(address)? })
             })
             .collect();
         table.sort_by_key(|it| it.address);
@@ -494,8 +610,7 @@ impl Galaxy {
             .systems
             .keys()
             .filter_map(|&address| {
-                let class = self.arrival_class(address)?;
-                Some(SystemBoost { address, boost: Boost::of(&class)? })
+                Some(SystemBoost { address, boost: self.boost_of(address)? })
             })
             .collect();
         table.sort_by_key(|it| it.address);
@@ -523,28 +638,8 @@ impl Galaxy {
     ///
     /// `factions` is empty here and always will be; see the module header.
     pub fn populated(&self) -> Vec<PopulatedSystem> {
-        let mut table: Vec<PopulatedSystem> = self
-            .systems
-            .iter()
-            .filter(|(_, visit)| visit.population > 0)
-            .filter_map(|(&address, visit)| {
-                let at = visit.position?;
-                Some(PopulatedSystem {
-                    address,
-                    name: visit.name.clone(),
-                    position: [at[0] as f32, at[1] as f32, at[2] as f32],
-                    population: visit.population,
-                    security: visit.security,
-                    government: visit.government,
-                    allegiance: visit.allegiance,
-                    primary_economy: visit.primary_economy,
-                    secondary_economy: visit.secondary_economy,
-                    factions: Vec::new(),
-                    body_count: visit.body_count,
-                    non_body_count: visit.non_body_count,
-                })
-            })
-            .collect();
+        let mut table: Vec<PopulatedSystem> =
+            self.systems.keys().filter_map(|&a| self.populated_of(a)).collect();
         table.sort_by_key(|it| it.address);
         table
     }

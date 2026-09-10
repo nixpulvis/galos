@@ -425,9 +425,12 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 /// Build the index once, then keep it current as the feed writes to the
 /// database, publishing what each round of changes touched.
 ///
-/// This rides on top of the sync rather than inside it: `galos-sync` writes
-/// systems to the database in real time, and this follows the rows those writes
-/// leave behind. It applies whatever is waiting since the cursor at once, then
+/// This rides on top of the other sources rather than beside them: `galos-sync
+/// eddn` writes systems to the database in real time, and `galos-sync db
+/// --watch` follows the rows those writes leave behind. Two processes, or two
+/// machines — the database is the only thing between them. The subcommands sit
+/// in one program because they are the same sentence, not because a run of one
+/// is a run of the other. It applies whatever is waiting since the cursor at once, then
 /// every `interval` reads those changed since the previous pass, moves each in
 /// the live [`Tree`] (a handful of cells apiece, not a rebuild), and writes only
 /// the cells that changed. The clock is read before each query, so a write

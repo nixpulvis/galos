@@ -1,120 +1,146 @@
-use crate::{bar, Run};
-use async_std::task;
-use chrono::offset::Utc;
-use galos_db::systems::{Economies, System};
-use galos_db::Database;
-use std::collections::HashMap;
-use structopt::StructOpt;
+//! EDSM's nightly dumps and its web API
+//!
+//! Both hand over the same shape: a system, where it is, and the political
+//! columns somebody read off it. Nothing below system level, so nothing here
+//! ever produces a scan, a station or a body — which is why it goes through
+//! [`Sink::system`](crate::sink::Sink::system) and not through the event path
+//! the journal and EDDN share.
+//!
+//! Stamped `Utc::now()` rather than with a time from the dump, which is what
+//! this has always done: EDSM's files say when a system was last *updated in
+//! EDSM* and not when the reading was taken, and the two are far enough apart
+//! that using it would push year-old readings over fresh ones. The cost is
+//! that an EDSM import lands in the newest Recency bucket. Worth knowing when
+//! reading the map right after one.
 
-#[derive(StructOpt, Debug)]
-pub enum Cli {
+use crate::bar;
+use crate::sink::{Row, Sink, To};
+use chrono::offset::Utc;
+use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
+
+/// Sync from EDSM.
+#[derive(Parser)]
+pub struct Cli {
+    #[command(subcommand)]
+    from: From,
+}
+
+#[derive(Subcommand)]
+enum From {
+    /// Read a nightly dump already on disk.
     File(FileCli),
+    /// Ask the web API about one system and its neighbourhood.
     Api(ApiCli),
 }
 
-#[derive(StructOpt, Debug)]
-pub struct FileCli {
-    // TODO: Type as a path.
-    #[structopt(name = "PATH")]
-    pub path: String,
+/// Where what is read goes, shared by both ways in.
+#[derive(Args, Clone)]
+pub struct Into {
+    /// Where to write what is read: `db`, or `index=DIR`.
+    #[arg(long = "to", value_name = "SINK", default_value = "db")]
+    pub to: To,
+
+    /// Resume file for an index sink, kept outside the served directory.
+    #[arg(long, value_name = "FILE", default_value = crate::sink::to::CHECKPOINT)]
+    pub checkpoint: PathBuf,
 }
 
-#[derive(StructOpt, Debug)]
-pub struct ApiCli {
-    #[structopt(name = "NAME")]
-    pub name: String,
+#[derive(Args)]
+struct FileCli {
+    /// The dump JSON to read.
+    #[arg(name = "PATH")]
+    path: String,
+    #[command(flatten)]
+    into: Into,
+}
 
-    #[structopt(name = "cube", long, short)]
-    pub cube: Option<u32>,
-    #[structopt(name = "sphere", long, short)]
-    pub sphere: Option<u32>,
+#[derive(Args)]
+struct ApiCli {
+    /// The system to ask about.
+    #[arg(name = "NAME")]
+    name: String,
+
+    /// Take everything in a cube this many light years across.
+    #[arg(long, short)]
+    cube: Option<u32>,
+    /// Take everything within this many light years.
+    #[arg(long, short)]
+    sphere: Option<u32>,
+    #[command(flatten)]
+    into: Into,
 }
 
 impl Cli {
-    fn create_vec(
-        db: &Database,
-        updated_by: &str,
-        systems: Vec<edsm::system::System>,
-    ) {
-        let mut imported = 0;
-        let mut errors = HashMap::new();
+    /// Which sink was named, whichever way in was used.
+    pub fn to(&self) -> &To {
+        match &self.from {
+            From::File(cli) => &cli.into.to,
+            From::Api(cli) => &cli.into.to,
+        }
+    }
+
+    /// Where the resume point goes, likewise.
+    pub fn checkpoint(&self) -> &std::path::Path {
+        match &self.from {
+            From::File(cli) => &cli.into.checkpoint,
+            From::Api(cli) => &cli.into.checkpoint,
+        }
+    }
+
+    /// Read what was asked for, answering whether it could be read.
+    pub async fn read(&self, sink: &mut dyn Sink) -> bool {
+        let (systems, by) = match &self.from {
+            From::File(cli) => {
+                (edsm::json(&cli.path), format!("EDSM file: {}", cli.path))
+            }
+            From::Api(cli) => {
+                let asked = if let Some(n) = cli.sphere {
+                    edsm::api::systems_sphere(&cli.name, Some(n as f64), None)
+                } else if let Some(n) = cli.cube {
+                    edsm::api::systems_cube(&cli.name, Some(n as f64))
+                } else {
+                    edsm::api::systems(&cli.name)
+                };
+                match asked {
+                    Ok(systems) => (systems, "EDSM API".to_string()),
+                    Err(err) => {
+                        tracing::warn!(
+                            system = %cli.name,
+                            error = %err,
+                            "the API would not answer",
+                        );
+                        return false;
+                    }
+                }
+            }
+        };
+
         let bar = bar::progress(systems.len() as u64);
         let drawing = bar::under(&bar);
         for system in bar.wrap_iter(systems.into_iter()) {
-            if system.id.is_none() || system.coords.is_none() {
+            // No id is nothing to key by; no coordinates is nothing to place.
+            let (Some(id), Some(coords)) = (system.id, system.coords) else {
                 continue;
-            }
-            let result = task::block_on(async {
-                let r = System::create(
-                    db,
-                    system.id.unwrap() as i64,
-                    &system.name,
-                    Some(system.coords.unwrap()),
-                    None,
-                    system.information.population,
-                    system.information.security,
-                    system.information.government,
-                    system.information.allegiance,
-                    Economies::new(
-                        system.information.economy,
-                        system.information.second_economy,
-                    ),
-                    Utc::now(),
-                    updated_by,
-                )
-                .await;
-                r
-            });
-            match result {
-                Ok(_) => {
-                    bar.set_message(format!("[EDSM] {}", system.name));
-                    imported += 1;
-                }
-                Err(err) => {
-                    bar.set_message(format!("[EDSM ERROR] {}", err));
-                    errors
-                        .entry(err.to_string())
-                        .and_modify(|ns: &mut Vec<String>| {
-                            ns.push(system.name.clone())
-                        })
-                        .or_insert(vec![system.name]);
-                }
-            }
+            };
+            bar.set_message(format!("[EDSM] {}", system.name));
+            sink.system(&Row {
+                address: id as i64,
+                name: system.name,
+                position: Some(coords),
+                population: system.information.population,
+                security: system.information.security,
+                government: system.information.government,
+                allegiance: system.information.allegiance,
+                primary_economy: system.information.economy,
+                secondary_economy: system.information.second_economy,
+                updated_at: Utc::now(),
+                updated_by: by.clone(),
+            })
+            .await;
         }
         bar.finish();
         drop(drawing);
-
-        println!("Imported {} systems.", imported);
-        for (err, system_names) in errors {
-            println!(
-                "Failed to import {} systems:\n{}: {}",
-                system_names.len(),
-                err,
-                system_names.join(", ")
-            );
-        }
-    }
-}
-
-impl Run for Cli {
-    fn run(&self, db: &Database) {
-        match self {
-            Cli::File(fc) => {
-                let systems = edsm::json(&fc.path);
-                let updated_by = format!("EDSM file: {}", fc.path);
-                Cli::create_vec(db, &updated_by, systems);
-            }
-            Cli::Api(ac) => {
-                let systems = if let Some(n) = ac.sphere {
-                    edsm::api::systems_sphere(&ac.name, Some(n as f64), None)
-                        .unwrap()
-                } else if let Some(n) = ac.cube {
-                    edsm::api::systems_cube(&ac.name, Some(n as f64)).unwrap()
-                } else {
-                    edsm::api::systems(&ac.name).unwrap()
-                };
-                Cli::create_vec(db, "EDSM API", systems);
-            }
-        }
+        true
     }
 }

@@ -10,7 +10,7 @@
 //!
 //! Catalog-only and file-only: nothing here reaches a database. Comparing a
 //! catalog against the Elite dataset needs one, so that lives where the
-//! database does, as `galos-db catalog` — the same split `galos-db index` sits
+//! database does, as `galos-db catalog` — the same split `galos-sync db` sits
 //! on, where the tree belongs to `galos_index` and the build to whoever can
 //! read the rows.
 

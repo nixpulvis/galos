@@ -25,18 +25,19 @@
 // and `odyssey` flags off `LoadGame`, a schema and a header wrapped around
 // each message, and the gateway's rules about how much and how often.
 
-use crate::{bar, Run};
-use async_std::task;
+use crate::bar;
+use crate::sink::{Sink, To};
+use clap::Parser;
 use elite_journal::entry::{Entry, Event, NavRoute};
 use elite_journal::system::Coordinate;
-use galos_db::Database;
+use galos_journal::Follower;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
-use structopt::StructOpt;
-use tracing::{info, warn};
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 pub mod record;
 
@@ -55,17 +56,34 @@ const COMMANDER: &str = ".galos-commander";
 /// journal and that is all this claims about them.
 const UNKNOWN: &str = "unknown";
 
-#[derive(StructOpt, Debug)]
+/// Import local journal files.
+#[derive(Parser)]
 pub struct Cli {
-    #[structopt(name = "PATH")]
+    /// The journal directory, or one file in one.
+    #[arg(name = "PATH")]
     pub path: String,
 
-    #[structopt(
-        short = "u",
-        long = "user",
-        help = "Whose journal this is, overriding what the files say"
-    )]
+    /// Whose journal this is, overriding what the files say.
+    #[arg(short = 'u', long = "user", value_name = "NAME")]
     pub user: Option<String>,
+
+    /// Keep following the directory, reading what the game writes every
+    /// SECS seconds rather than exiting.
+    ///
+    /// A second by default, which is the beat the game writes at: an arrival
+    /// is one line and a full system scan is a few dozen. Faster buys nothing
+    /// anybody can see; slower is a jump that shows up late on the map they
+    /// are flying by.
+    #[arg(long, value_name = "SECS", num_args = 0..=1, default_missing_value = "1")]
+    pub watch: Option<u64>,
+
+    /// Where to write what is read: `db`, or `index=DIR`.
+    #[arg(long = "to", value_name = "SINK", default_value = "db")]
+    pub to: To,
+
+    /// Resume file for an index sink, kept outside the served directory.
+    #[arg(long, value_name = "FILE", default_value = crate::sink::to::CHECKPOINT)]
+    pub checkpoint: PathBuf,
     // TODO: `Market.json`, `Shipyard.json` and `Outfitting.json`, which the
     // game keeps beside its logs and rewrites at every station. Nothing reads
     // them yet: `elite_journal` models these three on the shape EDDN sends,
@@ -75,22 +93,142 @@ pub struct Cli {
     // convert into the ones `record::market` and its neighbors already take.
 }
 
-impl Run for Cli {
-    /// Import what the path names, ending the process where any of it was not
+impl Cli {
+    /// Import what the path names, and follow it where asked.
     ///
-    /// The status is the whole of what cron reads, so a run that lost a
-    /// journal to the filesystem must not look like one with nothing left to
-    /// do. What could be read is written either way.
-    fn run(&self, db: &Database) {
-        if !self.import(db) {
-            std::process::exit(1);
+    /// Answers whether all of it could be read. The status is the whole of
+    /// what cron reads, so a run that lost a journal to the filesystem must
+    /// not look like one with nothing left to do. What could be read is
+    /// written either way.
+    pub async fn read(&self, sink: &mut dyn Sink) -> bool {
+        // Seeded before the import and not after. The offsets are fixed here,
+        // so a line the game writes while the import is running is read by
+        // both and written twice, which every write downstream is built to
+        // survive. Seeded afterwards, that same line would fall in the gap
+        // between the two reads and be seen by neither.
+        let mut following = self.watch.map(|secs| {
+            let dir = Path::new(&self.path);
+            let dir = if dir.is_dir() {
+                dir.to_owned()
+            } else {
+                dir.parent().unwrap_or(Path::new(".")).to_owned()
+            };
+            let mut follower = Follower::new(&dir);
+            match follower.caught_up() {
+                Ok(skipped) => debug!(
+                    dir = %dir.display(),
+                    bytes = skipped,
+                    "the import will cover what is already written",
+                ),
+                Err(err) => warn!(
+                    dir = %dir.display(),
+                    error = %err,
+                    "the directory would not be sized; it will be read twice",
+                ),
+            }
+            (follower, Duration::from_secs(secs.max(1)))
+        });
+
+        let imported = self.import(sink).await;
+
+        if let Some((follower, every)) = &mut following {
+            // Everything the import wrote is durable before the first poll,
+            // so a follower that never finds anything has still published
+            // what it was asked to import.
+            if let Err(said) = sink.flush().await {
+                warn!(error = %said, "could not publish the import");
+            }
+            self.follow(sink, follower, *every).await;
+        }
+
+        imported
+    }
+
+    /// Read what the game writes, for as long as it writes it.
+    ///
+    /// Never returns. Each poll is a small import: the entries are put in the
+    /// order they happened, the systems they name are recorded ahead of
+    /// anything pointing at one, and then they are written. That last part is
+    /// what a live sender cannot do and this can — the batch is in hand, so
+    /// the same pre-pass the whole-directory import runs works over it. What
+    /// it cannot do is look forward past the poll, so a signal arriving in
+    /// one poll for a system named in the next is still a write refused, as
+    /// it is on EDDN.
+    async fn follow(
+        &self,
+        sink: &mut dyn Sink,
+        follower: &mut Follower,
+        every: Duration,
+    ) {
+        info!(
+            dir = %follower.dir().display(),
+            secs = every.as_secs(),
+            "following the journal",
+        );
+        // Who is flying, carried between polls: a session names its commander
+        // once, at the top of the file it opened, which may have been read by
+        // the import hours ago.
+        let mut known =
+            self.user.clone().or_else(|| remembered(follower.dir()));
+
+        loop {
+            let read = match follower.poll() {
+                Ok(read) => read,
+                Err(err) => {
+                    warn!(
+                        dir = %follower.dir().display(),
+                        error = %err,
+                        "the journal could not be read",
+                    );
+                    async_std::task::sleep(every).await;
+                    continue;
+                }
+            };
+            if read.unread > 0 {
+                warn!(lines = read.unread, "entries this cannot read");
+            }
+            if read.entries.is_empty() {
+                async_std::task::sleep(every).await;
+                continue;
+            }
+
+            let mut entries = read.entries;
+            entries.sort_by_key(|entry| entry.timestamp);
+            if self.user.is_none() {
+                if let Some(name) = commander(&entries) {
+                    known = Some(name);
+                }
+            }
+            let user = known.as_deref().unwrap_or(UNKNOWN);
+
+            // The same pre-pass the import runs, over the batch in hand.
+            let journals = [(follower.dir().to_owned(), entries)];
+            for (address, (_, entry, name, pos)) in gather_names(&journals) {
+                sink.ensure_system(
+                    entry.timestamp,
+                    user,
+                    address,
+                    Some(name),
+                    pos,
+                    "system named",
+                )
+                .await;
+            }
+
+            let [(_, entries)] = &journals;
+            for entry in entries {
+                sink.entry(entry, user).await;
+            }
+            info!(entries = entries.len(), user = %user, "followed");
+
+            if let Err(said) = sink.flush().await {
+                warn!(error = %said, "could not publish");
+            }
+            async_std::task::sleep(every).await;
         }
     }
-}
-
-impl Cli {
     /// Write what the path holds, answering whether all of it could be read
-    fn import(&self, db: &Database) -> bool {
+    async fn import(&self, sink: &mut dyn Sink) -> bool {
         let path = Path::new(&self.path);
         let Ok(meta) = fs::metadata(path) else {
             warn!(path = %path.display(), "nothing to import at this path");
@@ -176,21 +314,18 @@ impl Cli {
         // and the game writes them ahead of the arrival that would have made
         // the row, so without this the foreign key turns them all away.
         let names = gather_names(&journals);
-        task::block_on(async {
-            for (address, (journal, entry, name, pos)) in &names {
-                let user = users[*journal].as_deref().unwrap_or(UNKNOWN);
-                record::ensure_system(
-                    db,
-                    entry.timestamp,
-                    user,
-                    *address,
-                    Some(name),
-                    *pos,
-                    "system named",
-                )
-                .await;
-            }
-        });
+        for (address, (journal, entry, name, pos)) in &names {
+            let user = users[*journal].as_deref().unwrap_or(UNKNOWN);
+            sink.ensure_system(
+                entry.timestamp,
+                user,
+                *address,
+                Some(name),
+                *pos,
+                "system named",
+            )
+            .await;
+        }
 
         let bar =
             bar::progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
@@ -210,12 +345,10 @@ impl Cli {
                     .to_string_lossy()
                     .into_owned(),
             );
-            task::block_on(async {
-                for (_, entry) in run {
-                    record::entry(db, entry, user).await;
-                    bar.inc(1);
-                }
-            });
+            for (_, entry) in run {
+                sink.entry(entry, user).await;
+                bar.inc(1);
+            }
         }
         bar.finish();
         drop(drawing);
@@ -224,7 +357,7 @@ impl Cli {
         // were asked for. The route is where the ship is going now and there
         // is one copy of it, so the directory holding a single file carries
         // it just as much as the directory does.
-        sidecars(db, &dir, known.as_deref().unwrap_or(UNKNOWN));
+        sidecars(sink, &dir, known.as_deref().unwrap_or(UNKNOWN)).await;
 
         // Only a whole directory gets to say whose it is, and only what the
         // logs said. A name given on the command line is for the run it was
@@ -447,7 +580,7 @@ fn entries(journal: impl BufRead, path: &Path) -> Option<Vec<Entry<Event>>> {
 /// looked for; the rest -- `Status.json`, `Cargo.json`, `ShipLocker.json` and
 /// their like -- describe a ship and a commander rather than a galaxy, and
 /// there is nowhere to put them.
-fn sidecars(db: &Database, dir: &Path, user: &str) {
+async fn sidecars(sink: &mut dyn Sink, dir: &Path, user: &str) {
     let route = dir.join("NavRoute.json");
     if !route.is_file() {
         return;
@@ -466,12 +599,22 @@ fn sidecars(db: &Database, dir: &Path, user: &str) {
     };
 
     match serde_json::from_str::<Entry<NavRoute>>(&json) {
-        Ok(entry) => task::block_on(record::nav_route(
-            db,
-            entry.timestamp,
-            user,
-            &entry.event.destinations,
-        )),
+        // Through the event path rather than through a call of its own: the
+        // game writes a `NavRoute` event into the log beside this file, so a
+        // sink already knows what one means and there is nothing here it has
+        // to be told separately.
+        Ok(entry) => {
+            sink.entry(
+                &Entry {
+                    timestamp: entry.timestamp,
+                    event: Event::NavRoute(entry.event),
+                    horizons: entry.horizons,
+                    odyssey: entry.odyssey,
+                },
+                user,
+            )
+            .await
+        }
         Err(err) => {
             warn!(file = %route.display(), error = %err, "unreadable nav route")
         }
