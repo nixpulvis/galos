@@ -34,8 +34,7 @@ use galos_index::meta::{
     Boost, Faction, PopulatedSystem, SystemBoost, SystemReach,
 };
 use galos_index::source::{
-    self, bodies_path, boosts_path, factions_path, populated_path,
-    reaches_path, write_meta,
+    self, boosts_path, factions_path, populated_path, reaches_path, write_meta,
 };
 use galos_index::NameTable;
 use galos_journal::Galaxy;
@@ -49,8 +48,6 @@ use tracing::debug;
 pub struct Wrote {
     /// Chunks of the names table rewritten, of however many it holds.
     pub name_chunks: usize,
-    /// Per-system body files written.
-    pub body_files: usize,
     /// Whether each of the whole-file tables was rewritten.
     pub populated: bool,
     pub reaches: bool,
@@ -63,7 +60,6 @@ impl Wrote {
     /// Every table, whatever has changed.
     pub const EVERYTHING: Wrote = Wrote {
         name_chunks: 0,
-        body_files: 0,
         populated: true,
         reaches: true,
         boosts: true,
@@ -147,11 +143,10 @@ impl Tables {
 
     /// Take what `galaxy` now says about `touched`, answering what moved.
     ///
-    /// In memory, but for the body files: those are one file per system,
-    /// written whole and written here, so a scan rewrites the system it was
-    /// in and nothing else. The tables that are single files are left for
+    /// In memory. The tables that are single files are left for
     /// [`Self::write`], which is what decides between "what moved" and "all
-    /// of it".
+    /// of it", and the per-system body files belong to the galaxy's own store
+    /// (`galos_journal::bodies`), which is what writes them.
     ///
     /// A system the galaxy has nothing to say about is left exactly as the
     /// directory has it. Nothing here removes an entry for want of hearing
@@ -159,7 +154,6 @@ impl Tables {
     /// that shrank.
     pub fn patch(
         &mut self,
-        dir: &Path,
         galaxy: &Galaxy,
         touched: &HashSet<i64>,
     ) -> io::Result<Wrote> {
@@ -206,12 +200,6 @@ impl Tables {
                     self.boosts.insert(address, boost);
                     wrote.boosts = true;
                 }
-            }
-
-            let inside = galaxy.bodies(address);
-            if !inside.stars.is_empty() || !inside.bodies.is_empty() {
-                write_meta(&bodies_path(dir, address), &inside)?;
-                wrote.body_files += 1;
             }
         }
         Ok(wrote)

@@ -21,16 +21,22 @@
 //! - [`galaxy`] — the events, accumulated into [`galos_index::System`] and the
 //!   metadata records. The peer of `galos_db::index`, and where the three
 //!   things a journal cannot say are written down.
+//! - [`bodies`] — where what a scan found is kept between one scan and the
+//!   next: in memory, or in the index directory's own body files. The one
+//!   thing worth choosing about a galaxy, and the difference between a feed
+//!   that runs for an hour and one that runs for a week.
 //! - [`source`] — the tree over that, rebuilt on change, and the
 //!   [`galos_index::Source`] over the tree.
 //!
 //! Nothing here knows how the galaxy is drawn, and nothing here opens a
 //! database.
 
+pub mod bodies;
 pub mod follow;
 pub mod galaxy;
 pub mod source;
 
+pub use bodies::{Bodies, Kept, Published};
 pub use follow::{Follower, Read};
 pub use galaxy::Galaxy;
 pub use source::{JournalSource, Watch};

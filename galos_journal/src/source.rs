@@ -451,8 +451,11 @@ impl JournalSource {
         write_meta(&boosts_path(dir), &held.boosts)?;
         write_meta(&factions_path(dir), &Vec::<Faction>::new())?;
         NameTable::from_entries(held.names.clone()).publish(dir)?;
-        for (address, inside) in held.galaxy.scanned() {
-            write_meta(&bodies_path(dir, address), inside)?;
+        for address in held.galaxy.scanned() {
+            write_meta(
+                &bodies_path(dir, address),
+                &held.galaxy.bodies(address),
+            )?;
         }
         Ok(())
     }
