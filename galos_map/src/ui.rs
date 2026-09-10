@@ -5972,16 +5972,27 @@ pub(crate) fn system_line(
 ///
 /// Grows to `height` and no further, and no taller than what is in it, so a
 /// list of three lines is three lines rather than one with room going spare.
+///
+/// The room is asked for rather than read off the `Ui`. A scroll area holds
+/// itself to whatever height it is offered, and inside an [`egui::Area`] what
+/// is on offer is the height the area came out at *last* frame: egui lays an
+/// area's contents out in the rectangle the last pass left behind. So a list
+/// that came back under a bar which had been shut was offered the shut bar's
+/// height — three lines of the five — and it stayed three, the area coming
+/// out that tall again on the strength of it and offering no more the frame
+/// after. Asked for, the room is the room whatever the area last was; the
+/// rectangle is allocated at the height wanted and the space actually taken
+/// is what the caller is charged, so a short list is still short.
 pub(crate) fn scrolling<R>(
     ui: &mut Ui,
     height: f32,
     salt: impl std::hash::Hash,
     contents: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    // In a scope of its own, since a style set on a `Ui` is set on the rest
-    // of that `Ui`, and this is asked for by the list rather than by whatever
+    // In a ui of its own, since a style set on a `Ui` is set on the rest of
+    // that `Ui`, and this is asked for by the list rather than by whatever
     // follows it.
-    ui.scope(|ui| {
+    ui.allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
         ui.spacing_mut().scroll.floating = false;
         egui::ScrollArea::vertical()
             // Named by the caller, since the bar holds several of these at
@@ -7464,6 +7475,111 @@ mod tests {
             .expect("the pane was painted");
 
         assert!(ring < pane, "the ring was painted over the pane");
+    }
+
+    /// How many of `names` were painted whole, rather than clipped away
+    fn shown_whole(output: &egui::FullOutput, names: &[String]) -> usize {
+        fn seen(
+            clip: egui::Rect,
+            shape: &egui::Shape,
+            into: &mut Vec<(String, egui::Rect, egui::Rect)>,
+        ) {
+            match shape {
+                egui::Shape::Text(text) => into.push((
+                    text.galley.text().into(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    clip,
+                )),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        seen(clip, shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut painted = Vec::new();
+        for clipped in &output.shapes {
+            seen(clipped.clip_rect, &clipped.shape, &mut painted);
+        }
+        painted
+            .iter()
+            .filter(|(said, at, clip)| {
+                names.iter().any(|name| name == said) && clip.contains_rect(*at)
+            })
+            .count()
+    }
+
+    /// A list that comes back under a bar which had been shut stands its
+    /// whole height
+    ///
+    /// Reported: the search's results came back three lines tall rather than
+    /// five once the form had been put away and opened again. The route's
+    /// form was right, and stayed right when the box was turned from the
+    /// route to the search, so it showed in the search alone.
+    ///
+    /// Egui lays an area's contents out in the rectangle the pass before left
+    /// behind, and a scroll area holds itself to the height it is offered. So
+    /// a list coming back under a bar that had been shut was offered the shut
+    /// bar's height, took three lines of it, and the bar then came out three
+    /// lines tall — which is the same short offer next pass, for good. The
+    /// route's form stands under the list and is tall enough that the offer
+    /// was never short, which is why the route never showed it.
+    #[test]
+    fn a_list_that_comes_back_stands_its_whole_height() {
+        let names: Vec<String> = (0..25).map(|n| format!("COL {n}")).collect();
+        let listed: Vec<&str> = names.iter().map(String::as_str).collect();
+        let offers = results_of(&listed);
+
+        let ctx = crate::tests::context();
+        let mut selection = Selection::default();
+        let mut shown = 0;
+        // Out, away, and out again. Two passes apiece, so that what egui kept
+        // of the pass before is a pass in the same state.
+        for out in [true, true, false, false, true, true] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0., 0.),
+                    egui::vec2(1440., 900.),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                let ctx = ui.ctx().clone();
+                Dropping {
+                    id: "main-bar",
+                    standing: Standing::At(egui::pos2(MARGIN, MARGIN)),
+                    out,
+                    width: BAR_WIDTH,
+                    holds_width: true,
+                }
+                .show(&ctx, |ui| {
+                    let mut query = Some("COL".to_owned());
+                    ask_box(ui, &mut query, "Search", true, false);
+                    if !out {
+                        return;
+                    }
+                    ui.add_space(FIELD_GAP);
+                    mode_strip(ui, &mut AskMode::System);
+                    found(
+                        ui,
+                        &offers,
+                        None,
+                        Picking::Asked,
+                        &mut selection,
+                        &mut None,
+                        &mut None,
+                    );
+                });
+            });
+            shown = shown_whole(&output, &names);
+        }
+
+        assert_eq!(
+            shown, OFFERED,
+            "the list came back {shown} lines tall of the {OFFERED} it holds"
+        );
     }
 
     /// A results list holding `names`
