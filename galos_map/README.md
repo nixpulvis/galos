@@ -2,11 +2,21 @@
 ![Galos Starmap Demo](./demo.gif)
 ![Galos Galaxy Zoom](./galaxy.png)
 
+The map is pointed at two directories, and reads no database of its own.
+`GALOS_INDEX_DIR` is the published index `galos-sync db` bakes, which is
+everyone else's galaxy; unset, the map reads `.galos_index` under wherever it
+was run from. `GALOS_JOURNAL_DIR` is where this game writes its own logs, and
+naming it draws the commander's own systems over the published ones; unset —
+the ordinary case — there is no journal layer at all, and `J` has nothing to
+show or hide.
+
 ```sh
 cargo run --release
-# Connect to a remote postgresql.
-DATABASE_URL postgresql://postgres@10.0.1.32/galos_development \
-cargo run --release
+# The published index somewhere other than beside the working directory.
+GALOS_INDEX_DIR="$HOME/.galos_index" cargo run --release
+# And this commander's own journal drawn over it.
+GALOS_JOURNAL_DIR="$HOME/Saved Games/Frontier Developments/Elite Dangerous" \
+  cargo run --release
 ```
 
 ## How it draws
@@ -115,6 +125,7 @@ open rail takes both, rather than asking to be pressed twice.
 | `Shift-R` | Ask the box for systems to route between |
 | `Esc` | Put away the bindings, or everything the chrome has open |
 | `F1` or `?` | Show or hide these bindings |
+| `F3` | Show or hide the diagnostics window |
 
 Panning and zooming cover ground in proportion to how far out the camera is, so
 a key moves the map at about the same rate whether it is looking at the whole

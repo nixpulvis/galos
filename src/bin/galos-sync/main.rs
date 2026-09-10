@@ -78,8 +78,9 @@ pub struct DbSource {
     #[arg(long = "to", value_name = "SINK", default_value = "index")]
     to: To,
     /// Resume file for --watch, kept outside the served index directory.
-    #[arg(long, value_name = "FILE", default_value = sink::to::CHECKPOINT)]
-    checkpoint: PathBuf,
+    /// `DIR.checkpoint` beside the index directory by default.
+    #[arg(long, value_name = "FILE")]
+    checkpoint: Option<PathBuf>,
     /// Follow the feed, republishing every SECS seconds rather than exiting.
     #[arg(long, value_name = "SECS", num_args = 0..=1, default_missing_value = "5")]
     watch: Option<u64>,
@@ -153,14 +154,17 @@ impl Source {
         }
     }
 
-    /// Where the resume point goes, for a source writing to an index.
-    fn checkpoint(&self) -> &std::path::Path {
+    /// What `--checkpoint` named, where anything did.
+    ///
+    /// Where nothing did, the resume point is derived from the directory
+    /// being written: see [`To::checkpoint`].
+    fn checkpoint(&self) -> Option<&std::path::Path> {
         match self {
-            Source::Journal(cli) => &cli.checkpoint,
-            Source::Eddn(cli) => &cli.checkpoint,
+            Source::Journal(cli) => cli.checkpoint.as_deref(),
+            Source::Eddn(cli) => cli.checkpoint.as_deref(),
             Source::Edsm(cli) => cli.checkpoint(),
-            Source::Eddb(cli) => &cli.checkpoint,
-            Source::Db(cli) => &cli.checkpoint,
+            Source::Eddb(cli) => cli.checkpoint.as_deref(),
+            Source::Db(cli) => cli.checkpoint.as_deref(),
         }
     }
 
@@ -235,12 +239,14 @@ async fn run(source: Source) -> Result<bool, String> {
             Ok(read)
         }
         To::Index(dir) => {
-            let mut sink = Index::open(&dir, source.checkpoint())?;
+            let checkpoint = To::checkpoint(&dir, source.checkpoint());
+            let mut sink = Index::open(&dir, &checkpoint)?;
             let read = source.read(&mut sink).await;
             // Whole rather than a delta: a directory written from nothing
             // would otherwise be missing every table the run did not happen
-            // to change. A follower has been flushing deltas all along and
-            // this is what closes it out.
+            // to change. What reaches this is a one-shot run finishing --
+            // an import, a dump, a build -- since a follower never returns
+            // to be closed out and is durable by its own flushes instead.
             sink.publish_whole()?;
             info!("{}", sink.said());
             Ok(read)
@@ -260,7 +266,8 @@ async fn index_from_database(cli: &DbSource) -> Result<(), String> {
 
     match cli.watch {
         Some(secs) => {
-            index::watch(&db, dir, &cli.checkpoint, Duration::from_secs(secs))
+            let checkpoint = To::checkpoint(dir, cli.checkpoint.as_deref());
+            index::watch(&db, dir, &checkpoint, Duration::from_secs(secs))
                 .await
                 .map_err(|err| format!("{err}"))
         }

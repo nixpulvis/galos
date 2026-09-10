@@ -71,14 +71,14 @@ itself a fact about the project: two thirds of it is one client.
 
 | Crate | Lines | What it is |
 |---|---|---|
-| `galos_map` | 50,341 | The 3D galaxy map. A bevy application, and a pure index client |
-| `galos_db` | 10,052 | The database: one module per entity, plus the index builder |
-| `galos_index` | 9,498 | The octree, its on-disk format, and the walks that read it |
+| `galos_map` | 50,804 | The 3D galaxy map. A bevy application, and a pure index client |
+| `galos_index` | 9,636 | The octree, its on-disk format, and the walks that read it |
+| `galos_db` | 9,808 | The database: one module per entity, plus the index builder |
+| `galos` (root `src/`) | 4,712 | The `galos` CLI and the `galos-sync` ingest binary |
+| `galos_journal` | 2,946 | A commander's own journal directory, followed and served as an index |
 | `galos_catalog` | 2,353 | Earth-measured star catalogs, and comparing them to Elite's sky |
-| `galos_sky` | 2,284 | A CPU renderer for one patch of sky, to look at the physics |
-| `galos_journal` | 2,105 | A commander's own journal directory, followed and served as an index |
-| `galos_photometry` | 1,741 | Magnitudes, temperatures, colours, and the point spread |
-| `galos` (root `src/`) | 2,499 | The `galos` CLI and the `galos-sync` ingest binary |
+| `galos_sky` | 2,349 | A CPU renderer for one patch of sky, to look at the physics |
+| `galos_photometry` | 1,743 | Magnitudes, temperatures, colours, and the point spread |
 | `galos_server` | 315 | An axum + askama HTML front end over the database |
 
 Four more are git submodules with their own release cycles, patched in by path
@@ -97,8 +97,9 @@ moves from a publisher into somewhere it can be read. Its subcommands are the
 sources — `journal` (a local journal directory, optionally followed with
 `--watch`), `eddn` (the live feed, never returns), `edsm` (nightly dumps or
 the web API), `eddb` (a saved dump; the site is gone), and `db`, this
-project's own database. `--to` is the sink: `db` (the default) or
-`index=DIR`.
+project's own database. `--to` is the sink: `db` or `index=DIR`. `db` is the
+default everywhere except the `db` source itself, which defaults to `index`
+and refuses `--to db` — the database cannot be its own sink.
 
 `src/bin/galos-sync/sink/` is the seam, and its header says what shaped it —
 not what either sink wants, but what the sources have to say. There turn out
@@ -132,7 +133,11 @@ The two sinks:
 - `sink/index.rs` is the DB-free half: `galos_journal::Galaxy` accumulating
   events into the index's vocabulary, a `galos_index::Tree` held open and
   edited, `sink/tables.rs` keeping the metadata sidecars, and a `Checkpoint`
-  to resume from. See §5.
+  to resume from. The resume point carries the whole editable tree of one
+  directory, so it is named after one: `--checkpoint` where it is said, and
+  `<dir>.checkpoint` beside the directory where it is not. Two indexes
+  followed at once — a journal into one, EDDN into another — would otherwise
+  each be rebuilt from the other's tree. See §5.
 
 The `db` source is the one that is not like the others — it reads rows rather
 than events, so there is no `Sink` in it — and it is here anyway because it
@@ -294,12 +299,13 @@ so a scan taken in the game is on the map a second later with no database in
 the path at all. It is a peer of `galos_db/src/index/`, not of `galos_db`: it
 knows the tree only through `galos_index::System` and the metadata records.
 
-- `follow.rs` — the directory, tailed. A byte offset per file, whole lines
-  only (a poll lands mid-write often enough to matter), and a file shorter
-  than its offset is one that was replaced and is read again. `NavRoute.json`
-  is read beside the logs and handed back as the `NavRoute` event the log's
-  own is written without: it is the only place a journal names systems the
-  ship has not been to.
+- `follow.rs` — the directory, tailed. A byte offset per file and whole lines
+  only (a poll lands mid-write often enough to matter), with the length and
+  mtime seen beside the offset: a file shorter than it was, or one whose
+  mtime moved backwards, was replaced and is read again from the top.
+  `NavRoute.json` is read beside the logs and handed back as the `NavRoute`
+  event the log's own is written without: it is the only place a journal
+  names systems the ship has not been to.
 - `galaxy.rs` — the events, accumulated. The same fan-out
   `galos-sync`'s `record.rs` does, landing on `System`, `NameEntry`,
   `SystemReach`, `SystemBoost`, `PopulatedSystem` and `SystemBodies` instead
@@ -329,12 +335,20 @@ Metadata composes by address with the overlay winning — for a system EDDN
 already has, what this commander scanned is the better reading of it. The cell
 tree composes because `Aggregate` merges exactly and a cell's rank range is
 "how many of my subtree my ancestors claimed", so two trees over **disjoint**
-sets add cell by cell into the tree their union would have built. Disjointness
-is `Claimed`: the overlay is told which addresses the layer below carries and
-leaves those systems out of its own tree, keeping every one of them in its
-tables. Nothing can take a system back out of a built tree from outside it, so
-an unanswered claim double-counts what both sides hold — recorded as a test
-(`an_unclaimed_overlap_is_counted_twice`) rather than hidden.
+sets add cell by cell: the totals are the union's and every system is owned by
+exactly one cell's slice, which is what the walk draws by. What does not
+compose is depth — where one side refined a region into children and the other
+held it whole in a leaf, the leaf's systems are in none of those children's
+aggregates, because nothing outside a built tree can share them out among cells
+that side never raised. A journal's thousands against EDDN's millions makes
+that the usual case deep in the tree, and it costs a little glow counted a
+level up, never a system drawn twice or missed.
+
+Disjointness is `Claimed`: the overlay is told which addresses the layer below
+carries and leaves those systems out of its own tree, keeping every one of them
+in its tables. Nothing can take a system back out of a built tree from outside
+it, so an unanswered claim double-counts what both sides hold — recorded as a
+test (`an_unclaimed_overlap_is_counted_twice`) rather than hidden.
 
 The toggle rides the refresh that already exists. A layered `Stamp` folds both
 sides' stamps *and the toggle's state*, so flipping it is a republish of every
@@ -354,9 +368,10 @@ directory, `--watch` for either. What is left in `galos-journal` is `info`,
 which writes nothing and says what the accumulator made of a directory —
 this crate's own smoke test against a real journal.
 
-The map's `journal.rs` is the third way in and the one that needs no
-directory at all: it holds a `JournalSource` in memory and layers it, so what
-the game writes is on the map without anything having been published.
+The map's `journal.rs` is the third way in, and the one that publishes
+nothing: pointed at `GALOS_JOURNAL_DIR`, it holds a `JournalSource` in memory
+and layers it, so what the game writes is on the map without an index
+directory having been written at all.
 
 ## 6. The physics
 
@@ -500,7 +515,7 @@ index over HTTP would take — a plan, not built), `galos_catalog/docs/name_mapp
 Two files are much larger than their stated scope, and the seams are already
 visible in the source:
 
-- **`galos_map/src/ui.rs`, 7,874 lines** for a header describing "a gear, the
+- **`galos_map/src/ui.rs`, 8,610 lines** for a header describing "a gear, the
   bar beside it, and the settings pane". It is at least four concerns:
   typography and metrics (pure functions, already consumed by `info.rs` and
   `grid.rs`); input arbitration (`PointerOverUi`, `Keyboard`, `PressOwner`,
@@ -510,7 +525,7 @@ visible in the source:
   bindings window. Those bundles exist to dodge bevy's sixteen-parameter limit,
   which is itself the size signal. A split has to preserve the pinned order
   `lettering → (panels, names, rings, readouts) → chrome`.
-- **`galos_map/src/systems/info.rs`, 3,692 lines** — about 600 lines of panel
+- **`galos_map/src/systems/info.rs`, 3,746 lines** — about 600 lines of panel
   machinery and 3,000 of a description library (`&DbBody` → `String`) with no
   panel logic in it. The sharper seam of the two, and it is already leaking:
   `lasting` is `pub(crate)` and consumed by `ui.rs`.

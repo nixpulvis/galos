@@ -42,8 +42,9 @@ pub struct Into {
     pub to: To,
 
     /// Resume file for an index sink, kept outside the served directory.
-    #[arg(long, value_name = "FILE", default_value = crate::sink::to::CHECKPOINT)]
-    pub checkpoint: PathBuf,
+    /// `DIR.checkpoint` beside the index directory by default.
+    #[arg(long, value_name = "FILE")]
+    pub checkpoint: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -62,7 +63,7 @@ struct ApiCli {
     name: String,
 
     /// Take everything in a cube this many light years across.
-    #[arg(long, short)]
+    #[arg(long, short, conflicts_with = "sphere")]
     cube: Option<u32>,
     /// Take everything within this many light years.
     #[arg(long, short)]
@@ -81,10 +82,10 @@ impl Cli {
     }
 
     /// Where the resume point goes, likewise.
-    pub fn checkpoint(&self) -> &std::path::Path {
+    pub fn checkpoint(&self) -> Option<&std::path::Path> {
         match &self.from {
-            From::File(cli) => &cli.into.checkpoint,
-            From::Api(cli) => &cli.into.checkpoint,
+            From::File(cli) => cli.into.checkpoint.as_deref(),
+            From::Api(cli) => cli.into.checkpoint.as_deref(),
         }
     }
 
@@ -92,7 +93,23 @@ impl Cli {
     pub async fn read(&self, sink: &mut dyn Sink) -> bool {
         let (systems, by) = match &self.from {
             From::File(cli) => {
-                (edsm::json(&cli.path), format!("EDSM file: {}", cli.path))
+                // `edsm::json` unwraps both of these. A path typed wrong is
+                // not a thing to take the program down over: every other
+                // source here says what it could not read and answers that
+                // it read nothing.
+                match dump(&cli.path) {
+                    Ok(systems) => {
+                        (systems, format!("EDSM file: {}", cli.path))
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            file = %cli.path,
+                            error = %err,
+                            "unreadable dump",
+                        );
+                        return false;
+                    }
+                }
             }
             From::Api(cli) => {
                 let asked = if let Some(n) = cli.sphere {
@@ -143,4 +160,16 @@ impl Cli {
         drop(drawing);
         true
     }
+}
+
+/// A nightly dump read off the disk, saying what stopped it.
+///
+/// The reading `edsm::json` does, with the two failures it unwraps answered
+/// instead: a path that is not there and a file that is not one of these.
+/// Both are things a command line gets wrong, and neither is worth a
+/// backtrace.
+fn dump(path: &str) -> Result<Vec<edsm::System>, String> {
+    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
+    serde_json::from_reader(std::io::BufReader::new(file))
+        .map_err(|err| err.to_string())
 }

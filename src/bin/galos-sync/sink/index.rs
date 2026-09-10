@@ -164,9 +164,11 @@ pub struct Index {
     touched: HashSet<i64>,
     /// Entries and rows taken, for the line at the end of a run.
     took: u64,
-    /// Systems published, for the same.
+    /// Systems written into the tree, counted once per pass each moved in:
+    /// a feed reporting the same system twice is two writes.
     published: u64,
-    checkpointed: Instant,
+    /// When this run last wrote a resume point, and [`None`] until it has.
+    checkpointed: Option<Instant>,
 }
 
 impl Index {
@@ -182,13 +184,15 @@ impl Index {
         let tables = Tables::resume(dir)
             .map_err(|err| format!("{}: {err}", dir.display()))?;
 
-        // What the directory currently serves, which is what the resume point
-        // has to agree with. Absent where there is no directory yet, which is
-        // the ordinary first run.
-        let served = ServedIndex::read(dir)
-            .ok()
-            .and_then(|it| it.root().map(|root| root.aggregate.count()))
-            .unwrap_or(0);
+        // What the directory currently serves, which is what the resume
+        // point has to agree with. A directory that is not there serves
+        // nothing, which is the ordinary first run; anything else that
+        // stopped the read is a directory this must not publish over.
+        let served = match ServedIndex::read(dir) {
+            Ok(index) => index.root().map_or(0, |root| root.aggregate.count()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(err) => return Err(format!("{}: {err}", dir.display())),
+        };
         agrees(dir, checkpoint, served, tables.names(), tree.len())?;
 
         if tree.len() > 0 {
@@ -219,7 +223,7 @@ impl Index {
             touched: HashSet::new(),
             took: 0,
             published: 0,
-            checkpointed: Instant::now(),
+            checkpointed: None,
         })
     }
 
@@ -232,6 +236,39 @@ impl Index {
         self.took += 1;
         self.touched.extend(self.galaxy.touched().iter().copied());
         self.galaxy.settle();
+    }
+
+    /// Whether this pass owes a resume point.
+    ///
+    /// The first flush of a run always does. A run killed before it had
+    /// written one leaves a directory serving systems with nothing to edit
+    /// them from, which [`agrees`] then refuses for good — the same reason
+    /// `galos_db::index` writes one the moment its initial build lands.
+    /// After that it is the timer, for the reason [`CHECKPOINT_EVERY`]
+    /// gives.
+    fn owes_a_resume_point(&self) -> bool {
+        self.checkpointed
+            .map_or(true, |at| at.elapsed() >= CHECKPOINT_EVERY)
+    }
+
+    /// Write where the run has got to, saying so where it could not be.
+    ///
+    /// Not fatal. The directory is published either way; what a failed
+    /// checkpoint costs is a restart that starts over, and taking the run
+    /// down would cost the same and the rest of the session besides.
+    fn resume_point(&mut self) {
+        let at = Checkpoint {
+            cursor: Utc::now().naive_utc(),
+            inputs: self.tree.to_inputs(),
+        };
+        if let Err(err) = at.write(&self.checkpoint) {
+            warn!(
+                file = %self.checkpoint.display(),
+                error = %err,
+                "the resume point could not be written",
+            );
+        }
+        self.checkpointed = Some(Instant::now());
     }
 }
 
@@ -326,18 +363,41 @@ impl Sink for Index {
     /// tree, and the tables are patched to match. `Tree::publish` then writes
     /// the index file and exactly the cells whose payloads differ.
     ///
-    /// A pass that touched nothing writes nothing at all, which is what lets
-    /// a follower call this on every beat.
+    /// A pass that touched nothing publishes nothing at all, which is what
+    /// lets a follower call this on every beat. What it still does is the
+    /// resume point, since a run that has been quiet for an hour has got
+    /// somewhere all the same and a run killed before its first one leaves
+    /// a directory nothing can edit.
     async fn flush(&mut self) -> Result<(), String> {
-        if self.touched.is_empty() {
+        // Recency is against now, not against whenever the process started.
+        // A `--watch` run left up for a week would otherwise be dating every
+        // system it hears by a week-old clock.
+        self.galaxy.dated(Utc::now());
+
+        let resumable = self.owes_a_resume_point();
+        // What the directory can name as well as draw. `Galaxy::name_of`
+        // answers nothing for a system nothing named -- a nav beacon
+        // carries a place and an optional name -- and a blank row is worse
+        // than no row in a table the map searches. A cell tree standing
+        // over a system the names table has no row for is the disagreement
+        // [`agrees`] refuses to reopen a directory over, so a nameless
+        // system waits for whatever names it, exactly as a placeless one
+        // waits for whatever places it.
+        let touched: HashSet<i64> = std::mem::take(&mut self.touched)
+            .into_iter()
+            .filter(|&address| self.galaxy.name_of(address).is_some())
+            .collect();
+        if touched.is_empty() {
+            if resumable {
+                self.resume_point();
+            }
             return Ok(());
         }
         let start = Instant::now();
-        let touched = std::mem::take(&mut self.touched);
 
-        // Only the systems that have been placed. One named by an event that
-        // carried no `StarPos` is in the galaxy and not in the tree, and will
-        // join it when something places it.
+        // Only the systems that have been placed. One named by an event
+        // that carried no `StarPos` is in the galaxy and not in the tree,
+        // and will join it when something places it.
         let mut placed = 0;
         for &address in &touched {
             if let Some(system) = self.galaxy.system_of(address) {
@@ -365,24 +425,8 @@ impl Sink for Index {
             .map_err(failed("the metadata could not be published"))?;
 
         // On a timer, not per publish: see [`CHECKPOINT_EVERY`].
-        let resumable = self.checkpointed.elapsed() >= CHECKPOINT_EVERY;
         if resumable {
-            let at = Checkpoint {
-                cursor: Utc::now().naive_utc(),
-                inputs: self.tree.to_inputs(),
-            };
-            if let Err(err) = at.write(&self.checkpoint) {
-                // Not fatal. The directory is published either way; what a
-                // failed checkpoint costs is a restart that starts over, and
-                // taking the run down would cost the same and the rest of the
-                // session besides.
-                warn!(
-                    file = %self.checkpoint.display(),
-                    error = %err,
-                    "the resume point could not be written",
-                );
-            }
-            self.checkpointed = Instant::now();
+            self.resume_point();
         }
 
         self.published += placed as u64;
@@ -401,7 +445,8 @@ impl Sink for Index {
 
     fn said(&self) -> String {
         format!(
-            "{} messages read, {} systems published to {} ({} in the tree)",
+            "{} messages read, {} system writes to {} ({} systems in the \
+             tree)",
             self.took,
             self.published,
             self.dir.display(),
@@ -419,9 +464,24 @@ impl Index {
     /// whole-file tables would never be written at all if nothing in them
     /// happened to change during the run.
     pub fn publish_whole(&mut self) -> Result<(), String> {
-        // Everything the galaxy has placed, whether or not a flush has
-        // already taken it: a whole publish is not a delta.
-        let placed = self.galaxy.systems();
+        // Against now, as [`Sink::flush`] dates its own pass: a run that
+        // took an hour to import a journal directory would otherwise file
+        // every system in it by the clock it started on.
+        self.galaxy.dated(Utc::now());
+
+        // Everything the galaxy has placed and named, whether or not a
+        // flush has already taken it: a whole publish is not a delta. The
+        // name is asked for the reason [`Sink::flush`] asks it -- a tree
+        // standing over a system the names table has no row for is a
+        // directory that will not reopen.
+        let placed: Vec<_> = self
+            .galaxy
+            .systems()
+            .into_iter()
+            .filter(|system| {
+                self.galaxy.name_of(system.id64 as i64).is_some()
+            })
+            .collect();
         let all: HashSet<i64> =
             placed.iter().map(|system| system.id64 as i64).collect();
         for system in placed {
@@ -437,13 +497,13 @@ impl Index {
         self.tree
             .write(&self.dir)
             .map_err(failed("the cell tree could not be written"))?;
-        let _moved = self
+        let _ = self
             .tables
             .patch(&self.galaxy, &all)
             .map_err(failed("the metadata could not be written"))?;
         let wrote = self
             .tables
-            .write(&self.dir, Wrote { factions: true, ..Wrote::EVERYTHING })
+            .write(&self.dir, Wrote::EVERYTHING)
             .map_err(failed("the metadata could not be written"))?;
         self.published = self.tree.len() as u64;
 
@@ -453,6 +513,7 @@ impl Index {
         };
         at.write(&self.checkpoint)
             .map_err(failed("the resume point could not be written"))?;
+        self.checkpointed = Some(Instant::now());
 
         info!(
             systems = self.tree.len(),
@@ -597,6 +658,70 @@ mod tests {
             before,
             "a pass that read nothing republished the index",
         );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// A run killed after one flush leaves a directory that reopens
+    ///
+    /// A `--watch` run publishes on every beat and checkpoints on a timer,
+    /// so for the first minute of it the directory serves systems the
+    /// resume point does not know about. Killed there with no checkpoint at
+    /// all, that directory is one [`agrees`] refuses for good and nothing
+    /// can re-derive: the first flush of a run has to write one.
+    #[test]
+    fn a_run_killed_after_one_flush_reopens() {
+        let (dir, checkpoint) = scratch("killed");
+        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        pollster::block_on(async {
+            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.flush().await.expect("the first flush");
+        });
+        drop(sink);
+
+        assert_eq!(published(&dir), 1);
+        if let Err(said) = Index::open(&dir, &checkpoint) {
+            panic!("a directory flushed once was orphaned: {}", said);
+        }
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// A nav beacon that named nothing, which is a place and no name.
+    fn beacon(address: i64, at: [f64; 3]) -> Entry<Event> {
+        let json = format!(
+            r#"{{"timestamp":"2026-08-08T12:02:00Z","event":"NavBeaconScan",
+            "SystemAddress":{},"StarPos":[{},{},{}],"NumBodies":5}}"#,
+            address, at[0], at[1], at[2],
+        );
+        serde_json::from_str(&json).expect("the beacon should parse")
+    }
+
+    /// A system nothing named is left out of the tree, not published nameless
+    ///
+    /// `NavBeaconScan` carries a place and an optional name, so a system can
+    /// be placed and nameless, and `galos_journal::Galaxy::name_of` answers
+    /// nothing for one rather than the blank row the map's search would
+    /// list. A tree standing over a system the names table has no row for is
+    /// the disagreement [`agrees`] refuses to reopen a directory over, so
+    /// the point waits until something names it.
+    #[test]
+    fn a_system_nothing_named_is_not_published() {
+        let (dir, checkpoint) = scratch("nameless");
+        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        pollster::block_on(async {
+            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(&beacon(42, [1.0, 2.0, 3.0]), "cmdr").await;
+            sink.flush().await.expect("the flush");
+        });
+        sink.publish_whole().expect("the run should write");
+        drop(sink);
+
+        assert_eq!(published(&dir), 1, "a system with no name was published");
+        assert_eq!(names(&dir), vec!["Sol"]);
+        if let Err(said) = Index::open(&dir, &checkpoint) {
+            panic!("the directory disagreed with itself: {}", said);
+        }
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
@@ -763,11 +888,13 @@ mod tests {
         };
         assert!(
             said.contains("no way to edit"),
-            "the refusal should say why: {said}",
+            "the refusal should say why: {}",
+            said,
         );
         assert!(
             said.contains("--to index=DIR"),
-            "the refusal should say what to do: {said}",
+            "the refusal should say what to do: {}",
+            said,
         );
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));

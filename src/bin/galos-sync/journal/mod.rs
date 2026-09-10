@@ -1,8 +1,10 @@
 //! Importing what the game wrote while it was being played
 //!
-//! A journal directory read once, in the order it happened, and written to
-//! the database through [`record`] -- the same thing the EDDN subscriber
-//! writes through, the events being the same events.
+//! A journal directory read once, in the order it happened, and handed to
+//! whatever `--to` names -- the database through [`record`], or an index
+//! directory, which the events reach without going near a row. The same
+//! events the EDDN subscriber carries, read from the files rather than off
+//! the wire.
 //
 // TODO: Publishing, which is the direction this does not go yet. Everything
 // read here is something EDDN wants and is not getting from this commander,
@@ -82,8 +84,9 @@ pub struct Cli {
     pub to: To,
 
     /// Resume file for an index sink, kept outside the served directory.
-    #[arg(long, value_name = "FILE", default_value = crate::sink::to::CHECKPOINT)]
-    pub checkpoint: PathBuf,
+    /// `DIR.checkpoint` beside the index directory by default.
+    #[arg(long, value_name = "FILE")]
+    pub checkpoint: Option<PathBuf>,
     // TODO: `Market.json`, `Shipyard.json` and `Outfitting.json`, which the
     // game keeps beside its logs and rewrites at every station. Nothing reads
     // them yet: `elite_journal` models these three on the shape EDDN sends,

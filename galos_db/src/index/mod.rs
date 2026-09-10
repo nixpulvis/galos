@@ -430,14 +430,14 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 /// --watch` follows the rows those writes leave behind. Two processes, or two
 /// machines — the database is the only thing between them. The subcommands sit
 /// in one program because they are the same sentence, not because a run of one
-/// is a run of the other. It applies whatever is waiting since the cursor at once, then
-/// every `interval` reads those changed since the previous pass, moves each in
-/// the live [`Tree`] (a handful of cells apiece, not a rebuild), and writes only
-/// the cells that changed. The clock is read before each query, so a write
-/// racing the query is asked for again next pass rather than missed, and each
-/// pass reads back a further [`CURSOR_OVERLAP`] to catch a write that committed
-/// after the cursor was taken. Applying one twice is idempotent, so the overlap
-/// costs a little work and no correctness.
+/// is a run of the other. It applies whatever is waiting since the cursor at
+/// once, then every `interval` reads those changed since the previous pass,
+/// moves each in the live [`Tree`] (a handful of cells apiece, not a rebuild),
+/// and writes only the cells that changed. The clock is read before each
+/// query, so a write racing the query is asked for again next pass rather than
+/// missed, and each pass reads back a further [`CURSOR_OVERLAP`] to catch a
+/// write that committed after the cursor was taken. Applying one twice is
+/// idempotent, so the overlap costs a little work and no correctness.
 ///
 /// The metadata beside the cells is kept current the same pass the cells are,
 /// and the same way: `Metadata` holds the three tables open, a pass patches in

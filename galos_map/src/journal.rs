@@ -58,6 +58,18 @@ pub const DIR: &str = "GALOS_JOURNAL_DIR";
 /// Absent as a resource where `GALOS_JOURNAL_DIR` was not set, which is what
 /// every reader of it tests: there is no such thing as a map with a journal
 /// layer that is not reading a journal.
+///
+/// Nothing the source can be asked is held here. The diagnostics panel asks
+/// [`len`](Self::len) and [`JournalSource::commander`] once a frame while it
+/// is open, and each takes the source's lock for read — the same lock the
+/// watch thread holds for write across a tail and a rebuild — with the
+/// second allocating the commander's name again each time. Holding either
+/// here would not save the lock: what says a cached answer is still good is
+/// the generation, which is read under that same lock, so the panel would
+/// take it as often as it does now and save one short allocation, for state
+/// that has to be given up correctly and a `ResMut` on a panel that
+/// otherwise writes nothing. The panel is a developer's window and pays
+/// only while it is open.
 #[derive(Resource)]
 pub struct Journal {
     /// The directory being followed, for the diagnostics panel to say.
@@ -88,6 +100,11 @@ impl Journal {
 
     /// Whether the journal has named nothing at all, which a directory that
     /// has not been read yet also answers.
+    ///
+    /// Nothing in the map asks it. It stands beside [`len`](Self::len)
+    /// because a public length with no emptiness beside it is a thing every
+    /// reader has to work out by hand, which is what clippy says about it
+    /// too.
     pub fn is_empty(&self) -> bool {
         self.source.is_empty()
     }

@@ -30,16 +30,27 @@
 //! because the two sides describe disjoint sets of systems. An
 //! [`Aggregate`](crate::Aggregate) merges exactly and a cell's rank range is
 //! "how many of my subtree my ancestors claimed", so two trees over disjoint
-//! sets add cell by cell into the tree their union would have built — same
-//! counts, same flux, same
-//! `m_min`, same slice widths. Over sets that *overlap* it adds a system to
-//! the sky twice, which is what [`Claimed`] is for: the overlay is told which
-//! addresses the layer below already carries and leaves those systems out of
-//! its own tree, keeping every one of them in its metadata. Nothing here can
-//! do that job on the overlay's behalf — a system cannot be taken back out of
-//! a built tree from outside it — so an overlay that ignores its [`Claimed`]
-//! double-counts whatever both sides hold, and the error is a commander's own
-//! systems counted twice in cells that are otherwise right.
+//! sets add cell by cell: the totals come out as the union's — same count,
+//! same flux, same `m_min` — and every system is owned by exactly one cell's
+//! slice, which is what the walk draws by.
+//!
+//! What does not add up is depth. Where one side refined a region into
+//! children and the other held it whole in a leaf, the leaf's systems are in
+//! none of those children's aggregates, because nothing outside a built tree
+//! can share them out among cells that side never raised. A journal's few
+//! thousand systems against EDDN's millions makes that the usual case deep
+//! in the tree, and what it costs is a deep cell's aggregate standing for
+//! one side alone with the rest counted a level up — a little glow in the
+//! wrong cell, never a system drawn twice or missed.
+//!
+//! Over sets that *overlap* it adds a system to the sky twice, which is what
+//! [`Claimed`] is for: the overlay is told which addresses the layer below
+//! already carries and leaves those systems out of its own tree, keeping
+//! every one of them in its metadata. Nothing here can do that job on the
+//! overlay's behalf — a system cannot be taken back out of a built tree from
+//! outside it — so an overlay that ignores its [`Claimed`] double-counts
+//! whatever both sides hold, and the error is a commander's own systems
+//! counted twice in cells that are otherwise right.
 //!
 //! ## How a client finds out
 //!
@@ -128,8 +139,8 @@ impl Default for Toggle {
 /// systems with no second copy of anything.
 ///
 /// A predicate rather than a set for that reason. The map hands over a
-/// closure onto the table it already holds; a tool with no table builds one
-/// with [`Claimed::of`].
+/// closure onto the table it already holds, and a caller that has only a
+/// set of addresses hands over one that asks it.
 ///
 /// Empty until it is set, which is the honest starting state: a client that
 /// has not read the base's names yet does not know what the base carries, and
@@ -155,11 +166,6 @@ impl Claimed {
         let claimed = Claimed::none();
         claimed.set(of);
         claimed
-    }
-
-    /// A claim over exactly `addresses`.
-    pub fn of(addresses: HashSet<i64>) -> Claimed {
-        Claimed::by(move |address| addresses.contains(&address))
     }
 
     /// Answer the claim with `of` from now on.
@@ -206,7 +212,7 @@ pub struct Layered {
     overlay: Arc<dyn Source>,
     on: Toggle,
     /// Where the base's names numbering last ended, so the common case costs
-    /// a load rather than a walk. See [`Layered::base_chunks`].
+    /// one stamp rather than a walk. See [`Layered::base_chunks`].
     chunks: AtomicUsize,
 }
 
@@ -220,45 +226,55 @@ impl Layered {
         Layered { base, overlay, on, chunks: AtomicUsize::new(0) }
     }
 
-    /// Whether the overlay is being served.
-    pub fn showing(&self) -> bool {
-        self.on.on()
-    }
-
-    /// The toggle, for whoever flips it.
-    pub fn toggle(&self) -> Toggle {
-        self.on.clone()
-    }
-
     /// How many chunks the base's names table runs to, at or past `chunk`
     ///
     /// The layout's own contract read back: numbered from zero with no gaps,
     /// so the first number the base has nothing for is the end of it.
     ///
-    /// Remembered, and asked again only about a number at or past where it
-    /// last ended. A client walks the numbering from zero on every poll and
-    /// asks about each, so working the end out afresh each time is the walk
-    /// squared — thirty-odd chunks over a published galaxy, so a thousand
-    /// stats a poll to answer what one load answers. The base only ever grows
-    /// a chunk, and a growth shows up exactly where it matters: at the number
-    /// the overlay was filed under, which is at or past the remembered end
-    /// and is therefore the one case that walks.
+    /// Remembered, because a client walks the numbering from zero on every
+    /// poll and asks about each number in it, so working the end out afresh
+    /// for each is the walk squared — thirty-odd chunks over a published
+    /// galaxy, a thousand stats a poll to answer what one load answers.
+    ///
+    /// Remembered is not trusted, though. A table grows a chunk and it also
+    /// loses one: [`crate::NameTable::remove`] withdrawing the last entries
+    /// of the tail chunk unlinks the file, and an end remembered from before
+    /// that files the overlay past a number nothing serves, which is a
+    /// client's walk stopping before it and the overlay's names gone. So the
+    /// remembered end is confirmed by the chunk below it before it is
+    /// answered from — one stamp rather than the walk — and a boundary that
+    /// no longer stands is walked for again from zero.
     async fn base_chunks(&self, chunk: usize) -> usize {
         let held = self.chunks.load(Ordering::Relaxed);
-        if chunk < held {
+        let standing = held > 0
+            && matches!(
+                self.base.stamp(Part::NamesChunk(held - 1)).await,
+                Ok(Some(_))
+            );
+        if standing && chunk < held {
             return held;
         }
-        let mut end = held;
+
+        let mut end = if standing { held } else { 0 };
+        let mut certain = true;
         while end < CHUNK_CEILING {
             match self.base.stamp(Part::NamesChunk(end)).await {
                 Ok(Some(_)) => end += 1,
-                // A base that cannot say is a base whose table ends here as
-                // far as this can tell. Reading on would file the overlay
-                // over a chunk that does exist.
-                Ok(None) | Err(_) => break,
+                Ok(None) => break,
+                // A base that cannot say is not a base that has ended. This
+                // pass has to answer something and answers what it reached,
+                // but an end an error stopped short of was never established
+                // and is not worth coming back to: remembering it files the
+                // overlay over a chunk that is being renamed into place.
+                Err(_) => {
+                    certain = false;
+                    break;
+                }
             }
         }
-        self.chunks.store(end, Ordering::Relaxed);
+        if certain {
+            self.chunks.store(end, Ordering::Relaxed);
+        }
         end
     }
 }
@@ -309,8 +325,11 @@ impl Source for Layered {
     /// A cell either side holds alone is carried through as it stands. A cell
     /// both hold is the union of what each says about it: the aggregates
     /// merge, the child masks are the cells that exist in either, and the
-    /// rank range is both ancestors' claims and both slices. Exact where the
-    /// two sets are disjoint, which is [`Claimed`]'s job to arrange.
+    /// rank range is both ancestors' claims and both slices. Every system
+    /// ends up owned by exactly one slice where the two sets are disjoint,
+    /// which is [`Claimed`]'s job to arrange; a cell one side stopped at and
+    /// the other refined past keeps the stopped side's systems above the
+    /// children rather than in them, as the module header describes.
     async fn index(&self) -> io::Result<Index> {
         let base = self.base.index().await?;
         if !self.on.on() {
@@ -513,12 +532,12 @@ impl Source for Layered {
                 // The overlay's table is served whole as one chunk, so what
                 // moves it is the overlay moving at all. Its index stamp is
                 // that: a journal source stamps every part it serves by the
-                // generation it is on.
-                Ok(self
-                    .overlay
-                    .stamp(Part::Index)
-                    .await?
-                    .map(|over| folded(true, None, Some(over))))
+                // generation it is on. Present whatever that stamp says,
+                // because `names_chunk` serves this number either way, and a
+                // client walking by stamps would otherwise stop one short of
+                // a chunk it can read.
+                let over = self.overlay.stamp(Part::Index).await?;
+                Ok(Some(folded(true, None, over)))
             } else {
                 Ok(None)
             };
@@ -539,6 +558,18 @@ mod tests {
     use crate::meta::Boost;
     use crate::tree::{BuildParams, Snapshot, System};
 
+    /// The cuts every fixture here is built under.
+    ///
+    /// Far below the published ones: [`BuildParams::default`] holds four
+    /// thousand systems in a leaf, so a fixture of a few hundred would be a
+    /// single root cell and the whole of what this module tests — two cells
+    /// at the same address merged, their `rank_lo` added, their child masks
+    /// unioned, a cell one side holds alone carried through — would never
+    /// run. Cut this small the same few hundred raise a tree several levels
+    /// deep, which is what the arithmetic is arithmetic over. `tree.rs`'s
+    /// own stress tests cut the same way for the same reason.
+    const CUTS: BuildParams = BuildParams { internal_slice: 8, leaf_cap: 32 };
+
     /// A source over a tree and a set of tables held in memory.
     ///
     /// Enough of one to compose: what [`Layered`] does is arithmetic over
@@ -557,13 +588,16 @@ mod tests {
         /// What every part this holds stamps as, or [`None`] to hold nothing.
         stamp: Option<Stamp>,
         /// How many chunks the names table is served in, one by default.
-        chunks: usize,
+        ///
+        /// Shared and settable, so a test can publish a chunk or withdraw
+        /// one under a [`Layered`] that has already read the numbering.
+        chunks: Arc<AtomicUsize>,
     }
 
     impl Held {
         fn over(systems: &[System]) -> Held {
             Held {
-                built: Snapshot::build(systems, &BuildParams::default()),
+                built: Snapshot::build(systems, &CUTS),
                 names: systems
                     .iter()
                     .map(|it| NameEntry {
@@ -577,7 +611,7 @@ mod tests {
                     })
                     .collect(),
                 stamp: Some(1),
-                chunks: 1,
+                chunks: Arc::new(AtomicUsize::new(1)),
                 ..Held::default()
             }
         }
@@ -607,10 +641,11 @@ mod tests {
             &self,
             chunk: usize,
         ) -> io::Result<Vec<NameEntry>> {
-            if chunk >= self.chunks {
+            let chunks = self.chunks.load(Ordering::Relaxed);
+            if chunk >= chunks {
                 return Ok(Vec::new());
             }
-            let each = self.names.len().div_ceil(self.chunks.max(1));
+            let each = self.names.len().div_ceil(chunks.max(1));
             Ok(self
                 .names
                 .iter()
@@ -633,14 +668,19 @@ mod tests {
         }
         async fn stamp(&self, part: Part) -> io::Result<Option<Stamp>> {
             Ok(match part {
-                Part::NamesChunk(chunk) if chunk >= self.chunks => None,
+                Part::NamesChunk(chunk)
+                    if chunk >= self.chunks.load(Ordering::Relaxed) =>
+                {
+                    None
+                }
                 Part::Cell(id) if self.built.payload(id).is_empty() => None,
                 _ => self.stamp,
             })
         }
     }
 
-    /// A system placed by its id, spread far enough to reach several cells.
+    /// A system placed by its id, along a line long enough that a few dozen
+    /// of them reach several cells under [`CUTS`].
     fn system(id: u64) -> System {
         let at = id as f64;
         System {
@@ -658,12 +698,23 @@ mod tests {
     }
 
     /// Every cell's rank range says what its ancestors claimed, and the
-    /// subtree's slices add up to its count
+    /// slices under it add up to what they left it
     ///
-    /// The two structural facts the walk reads a cell by: `rank_lo` is how
-    /// many of the subtree the ancestors already own, and the slices under a
-    /// cell partition its aggregate. Merged trees have to keep both or the
-    /// resolvable prefix is measured against a total nothing holds.
+    /// The two structural facts the builder in [`crate::tree`] states, read
+    /// back off a composed tree. `rank_lo` is how many of a cell's *own*
+    /// subtree its ancestors already own, so the slices in that subtree add
+    /// up to the count less that claim rather than to the count; and the
+    /// claim a cell hands down is shared out among its children, so what the
+    /// children say was claimed of them adds up to what was claimed of the
+    /// cell plus what the cell took itself.
+    ///
+    /// The first holds of every cell, and it is the one that says every
+    /// system is drawn exactly once. The second holds wherever the children
+    /// hold the whole of the cell, which is every cell of a built tree and
+    /// every composed cell the two sides resolved alike; where one side
+    /// stopped at a leaf the other refined past, its systems are in no
+    /// child's aggregate and there is nobody to have claimed them. See
+    /// [`a_side_that_stopped_shallower_holds_above_the_children`].
     fn well_formed(index: &Index) {
         fn under(index: &Index, id: CellId) -> u64 {
             let Some(cell) = index.get(id) else { return 0 };
@@ -679,19 +730,23 @@ mod tests {
 
         for cell in index.cells() {
             assert_eq!(
-                under(index, cell.id),
+                under(index, cell.id) + cell.rank_lo,
                 cell.aggregate.count(),
                 "the slices under {:?} do not add to its count",
                 cell.id,
             );
-            for child in index.children(cell) {
-                assert_eq!(
-                    child.rank_lo,
-                    cell.rank_lo + cell.slice_len(),
-                    "{:?} disagrees with its parent about what was claimed",
-                    child.id,
-                );
+            let held: u64 =
+                index.children(cell).map(|it| it.aggregate.count()).sum();
+            if held != cell.aggregate.count() {
+                continue;
             }
+            let handed: u64 = index.children(cell).map(|it| it.rank_lo).sum();
+            assert_eq!(
+                handed,
+                cell.rank_lo + cell.slice_len(),
+                "{:?}'s children disagree with it about what was claimed",
+                cell.id,
+            );
         }
     }
 
@@ -711,7 +766,11 @@ mod tests {
 
         let source = layered(Held::over(&below), Held::over(&above), true);
         let index = pollster::block_on(source.index()).expect("an index");
-        let union = Snapshot::build(&both, &BuildParams::default()).index;
+        let union = Snapshot::build(&both, &CUTS).index;
+        assert!(
+            index.len() > 1 && union.len() > 1,
+            "the fixtures fit in one cell, so nothing was added cell by cell",
+        );
 
         let count = |index: &Index| {
             index.root().map_or(0, |root| root.aggregate.count())
@@ -734,6 +793,60 @@ mod tests {
             "the brightest star came out differently",
         );
 
+        well_formed(&index);
+    }
+
+    /// Where one side stopped at a leaf, its systems stay above the other's
+    /// children
+    ///
+    /// Recorded rather than fixed, like the unclaimed overlap, and for the
+    /// same reason: nothing outside a built tree can share a side's systems
+    /// out among cells that side never raised. A cell one side resolved into
+    /// children and the other held whole comes out internal, its own count
+    /// the two sides added, and the children carrying only the side that
+    /// raised them — a journal's few thousand systems against EDDN's
+    /// millions makes that the common case as soon as the tree gets deep.
+    ///
+    /// What it costs is a deep cell's aggregate standing for one side alone,
+    /// the rest counted one level up. What it does not cost is a system
+    /// drawn twice or not at all: the slices still partition the sky, which
+    /// is [`well_formed`]'s first fact and is asserted here too.
+    #[test]
+    fn a_side_that_stopped_shallower_holds_above_the_children() {
+        let below: Vec<System> = (1..400).map(system).collect();
+        let above: Vec<System> = (400..460).map(system).collect();
+        let base = Snapshot::build(&below, &CUTS).index;
+        let overlay = Snapshot::build(&above, &CUTS).index;
+
+        let source = layered(Held::over(&below), Held::over(&above), true);
+        let index = pollster::block_on(source.index()).expect("an index");
+
+        let mut shallower = 0;
+        for cell in index.cells().filter(|it| !it.is_leaf()) {
+            let held: u64 =
+                index.children(cell).map(|it| it.aggregate.count()).sum();
+            if held == cell.aggregate.count() {
+                continue;
+            }
+            // Exactly the sides that stopped at this cell, whole.
+            let stopped: u64 = [&base, &overlay]
+                .iter()
+                .filter_map(|side| side.get(cell.id))
+                .filter(|side| side.is_leaf())
+                .map(|side| side.aggregate.count())
+                .sum();
+            assert_eq!(
+                cell.aggregate.count() - held,
+                stopped,
+                "{:?} lost more than the side that stopped at it",
+                cell.id,
+            );
+            shallower += 1;
+        }
+        assert!(
+            shallower > 0,
+            "the two trees never differ in depth, so this note is untested",
+        );
         well_formed(&index);
     }
 
@@ -835,8 +948,8 @@ mod tests {
     #[test]
     fn the_overlay_names_past_the_base() {
         let below: Vec<System> = (1..40).map(system).collect();
-        let mut base = Held::over(&below);
-        base.chunks = 3;
+        let base = Held::over(&below);
+        base.chunks.store(3, Ordering::Relaxed);
         let overlay = Held::over(&[system(100), system(101)]);
 
         let source = layered(base, overlay, true);
@@ -862,15 +975,91 @@ mod tests {
         assert_eq!(names.len(), 41);
     }
 
+    /// A base that loses its tail chunk takes the overlay down with it
+    ///
+    /// Where the base's numbering ends is remembered, because a client asks
+    /// about every chunk on every poll and working it out afresh for each is
+    /// the walk squared. A published table mostly grows, but
+    /// [`crate::NameTable`] withdrawing the last entries of the tail chunk
+    /// unlinks the file, and an end remembered from before that leaves the
+    /// overlay filed past a number nothing serves: the client's walk stops
+    /// at the hole and the commander's own systems are gone for as long as
+    /// the process runs.
+    #[test]
+    fn a_base_that_loses_a_chunk_takes_the_overlay_down_with_it() {
+        let below: Vec<System> = (1..40).map(system).collect();
+        let base = Held::over(&below);
+        let chunks = Arc::clone(&base.chunks);
+        chunks.store(3, Ordering::Relaxed);
+        let source = layered(base, Held::over(&[system(100)]), true);
+        let chunk = |n| {
+            pollster::block_on(source.names_chunk(n)).expect("a chunk reads")
+        };
+
+        assert_eq!(chunk(3).len(), 1, "the overlay is not the fourth chunk");
+
+        // The tail withdrawn, its file unlinked: two chunks left, and the
+        // overlay is the third.
+        chunks.store(2, Ordering::Relaxed);
+        assert_eq!(
+            chunk(2).len(),
+            1,
+            "the overlay stayed filed past the base's new end",
+        );
+        assert!(
+            pollster::block_on(source.stamp(Part::NamesChunk(2)))
+                .expect("a stamp answers")
+                .is_some(),
+            "the overlay's new number stamps as absent",
+        );
+        assert!(chunk(3).is_empty(), "the numbering outlived the table");
+    }
+
+    /// The overlay's chunk stamps present however the overlay stamps
+    ///
+    /// A client walks the numbering by the stamps, and `names_chunk` serves
+    /// the overlay's table at that number whatever the overlay says about
+    /// itself. A source answering [`None`] for a part it holds nothing for —
+    /// which is what [`Source::stamp`] asks of it — would otherwise end the
+    /// walk one number short of a chunk that reads perfectly well.
+    #[test]
+    fn the_overlay_chunk_stamps_by_what_is_served() {
+        let below: Vec<System> = (1..40).map(system).collect();
+        let mut overlay = Held::over(&[system(100), system(101)]);
+        overlay.stamp = None;
+        let source = layered(Held::over(&below), overlay, true);
+
+        assert_eq!(
+            pollster::block_on(source.names_chunk(1))
+                .expect("a chunk reads")
+                .len(),
+            2,
+            "the overlay is not the chunk after the base's one",
+        );
+        assert!(
+            pollster::block_on(source.stamp(Part::NamesChunk(1)))
+                .expect("a stamp answers")
+                .is_some(),
+            "the chunk the composition serves stamped as absent",
+        );
+    }
+
     /// A cell's payload comes back brightest first, and no system twice
     ///
-    /// The walk draws a prefix of a payload and calls it the resolvable part,
-    /// which is the brightest systems only if the payload is ordered. Two
-    /// ordered runs concatenated are not one.
+    /// The walk draws a prefix of a payload and calls it the resolvable
+    /// part, which is the brightest systems only if the payload is ordered.
+    /// Two ordered runs concatenated are not one, which needs the two runs
+    /// to interleave: `system` reads a magnitude off the id modulo
+    /// seventeen, so ids a hundred apart give the merge two runs it has to
+    /// weave rather than append.
     #[test]
     fn a_payload_is_ordered_and_holds_nothing_twice() {
         let below: Vec<System> = (1..80).map(system).collect();
-        let above: Vec<System> = (1..80).rev().map(system).collect();
+        // Disjoint but for one address, which both sides' root slices hold:
+        // zero is the brightest magnitude `system` gives out, and there are
+        // fewer than a slice's worth of them on either side.
+        let above: Vec<System> =
+            (100..180).map(system).chain([system(17)]).collect();
         let source = layered(Held::over(&below), Held::over(&above), true);
 
         let points = pollster::block_on(source.payload(CellId::ROOT))
@@ -881,6 +1070,11 @@ mod tests {
             "the joined payload is not in magnitude order",
         );
 
+        assert_eq!(
+            points.iter().filter(|it| it.id64 == 17).count(),
+            1,
+            "the address both sides hold was drawn twice",
+        );
         let mut seen: Vec<u64> = points.iter().map(|it| it.id64).collect();
         let held = seen.len();
         seen.sort_unstable();
