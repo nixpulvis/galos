@@ -44,6 +44,7 @@
 //! itself — and here it is simpler, the events carrying their own timestamps
 //! and no upsert standing between them and the reading.
 
+use crate::bodies::{Bodies, Kept};
 use chrono::{DateTime, Utc};
 use elite_journal::body::{
     Body as JournalBody, Star as JournalStar, Surface as JournalSurface,
@@ -120,7 +121,7 @@ struct Visit {
 /// that costs nothing worth measuring — which is why the source over this
 /// rebuilds rather than editing, and why there is no checkpoint, no cursor
 /// and no incremental publish anywhere in this crate.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Galaxy {
     /// What dates the Recency reading. Set once by the caller per pass, so
     /// every system in one publish is aged against the same moment.
@@ -128,7 +129,12 @@ pub struct Galaxy {
     /// Who is flying, as the last `Commander` or `LoadGame` said.
     commander: String,
     systems: HashMap<i64, Visit>,
-    inside: HashMap<i64, SystemBodies>,
+    /// Where the things scanned inside a system are kept.
+    ///
+    /// Behind a trait because the answer differs by who is asking, and the
+    /// difference is a gigabyte: see [`crate::bodies`]. Nothing in here knows
+    /// which store it has.
+    inside: Box<dyn Bodies>,
     /// Systems touched since the last [`Galaxy::settle`].
     touched: HashSet<i64>,
 }
@@ -173,15 +179,34 @@ impl Default for Galaxy {
 }
 
 impl Galaxy {
-    /// An empty galaxy, aged against `now`.
+    /// An empty galaxy, aged against `now`, keeping what it scans in memory.
     pub fn new(now: DateTime<Utc>) -> Galaxy {
+        Galaxy::keeping(now, Box::new(Kept::new()))
+    }
+
+    /// An empty galaxy that keeps what it scans in `inside`.
+    ///
+    /// The one thing worth choosing about a galaxy. A feed carries everyone's
+    /// scans and holding them all is a process that grows for as long as it
+    /// runs; a directory-backed store makes the published body files the only
+    /// copy. See [`crate::bodies`].
+    pub fn keeping(now: DateTime<Utc>, inside: Box<dyn Bodies>) -> Galaxy {
         Galaxy {
             now,
             commander: UNKNOWN.to_string(),
             systems: HashMap::new(),
-            inside: HashMap::new(),
+            inside,
             touched: HashSet::new(),
         }
+    }
+
+    /// Make durable whatever the store is holding, answering how many systems
+    /// moved.
+    ///
+    /// Nothing where the store is memory. Called on the beat whoever owns the
+    /// galaxy publishes on.
+    pub fn settle_bodies(&mut self) -> std::io::Result<usize> {
+        self.inside.flush()
     }
 
     /// Date the Recency reading from `now` from here on.
@@ -246,11 +271,12 @@ impl Galaxy {
                     updated_by: self.commander.clone(),
                     orbit: center.orbit.clone(),
                 };
-                put(
-                    &mut self.inside.entry(address).or_default().barycenters,
-                    barycenter,
-                    |it| it.id,
-                );
+                let mut barycenter = Some(barycenter);
+                self.inside.edit(address, &mut |inside| {
+                    if let Some(it) = barycenter.take() {
+                        put(&mut inside.barycenters, it, |it| it.id);
+                    }
+                });
                 true
             }
             Event::FssDiscoveryScan(honk) => {
@@ -379,23 +405,33 @@ impl Galaxy {
         let address = scan.system_address;
         let by = self.commander.clone();
         let found = discovered_at(scan, at);
-        let inside = self.inside.entry(address).or_default();
-        match &scan.target {
-            ScanTarget::Star(star) => put(
-                &mut inside.stars,
-                star_of(address, star, at, &by, found),
-                |it| it.id,
-            ),
-            ScanTarget::Body(body) => put(
-                &mut inside.bodies,
-                body_of(address, body, at, &by, found),
-                |it| it.id,
-            ),
+        // Built before the store is asked, and taken by the closure, so the
+        // record is made once however the store answers. `edit` takes an
+        // `FnMut` and may in principle call it more than once; taking the
+        // value out is what makes that harmless rather than a second star.
+        let mut scanned = match &scan.target {
+            ScanTarget::Star(star) => {
+                Some(Scanned::Star(star_of(address, star, at, &by, found)))
+            }
+            ScanTarget::Body(body) => {
+                Some(Scanned::Body(body_of(address, body, at, &by, found)))
+            }
             // A belt cluster and a ring are numbered bodies of the system and
             // neither has a record in [`SystemBodies`], which carries what the
             // map draws inside a system. The scan still counts as having been
             // in the system, which `seen` has already recorded.
-            ScanTarget::Cluster(_) | ScanTarget::Ring(_) => {}
+            ScanTarget::Cluster(_) | ScanTarget::Ring(_) => None,
+        };
+        if scanned.is_some() {
+            self.inside.edit(address, &mut |inside| match scanned.take() {
+                Some(Scanned::Star(star)) => {
+                    put(&mut inside.stars, star, |it| it.id)
+                }
+                Some(Scanned::Body(body)) => {
+                    put(&mut inside.bodies, body, |it| it.id)
+                }
+                None => {}
+            });
         }
         true
     }
@@ -468,7 +504,7 @@ impl Galaxy {
 
     /// How far one system reaches, where anything in it has been scanned.
     pub fn reach_of(&self, address: i64) -> Option<f32> {
-        self.inside.get(&address)?.extent(address)
+        self.inside.read(address).extent(address)
     }
 
     /// What one system's arrival star can supercharge, if anything.
@@ -557,19 +593,15 @@ impl Galaxy {
     /// that would be easy to leave out and impossible to see the absence of.
     fn lit(&self, address: i64) -> Vec<(f64, f64)> {
         self.inside
-            .get(&address)
-            .map(|inside| {
-                inside
-                    .stars
-                    .iter()
-                    .map(|star| {
-                        let t = star.temperature as f64;
-                        let m = Magnitude(star.absolute_magnitude as f64);
-                        (m.visual(Temperature(t)).0, t)
-                    })
-                    .collect()
+            .read(address)
+            .stars
+            .iter()
+            .map(|star| {
+                let t = star.temperature as f64;
+                let m = Magnitude(star.absolute_magnitude as f64);
+                (m.visual(Temperature(t)).0, t)
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// Every placed system's name and where it sits.
@@ -589,8 +621,9 @@ impl Galaxy {
     pub fn reaches(&self) -> Vec<SystemReach> {
         let mut table: Vec<SystemReach> = self
             .inside
-            .keys()
-            .filter_map(|&address| {
+            .scanned()
+            .into_iter()
+            .filter_map(|address| {
                 Some(SystemReach { address, reach: self.reach_of(address)? })
             })
             .collect();
@@ -619,17 +652,17 @@ impl Galaxy {
 
     /// The class of the star a ship drops in at, as far as the journal says.
     fn arrival_class(&self, address: i64) -> Option<String> {
-        let scanned = self.inside.get(&address).and_then(|inside| {
-            inside
-                .stars
-                .iter()
-                .min_by(|a, b| {
-                    a.distance_from_arrival_ls
-                        .total_cmp(&b.distance_from_arrival_ls)
-                        .then(a.id.cmp(&b.id))
-                })
-                .map(|star| star.star_class.clone())
-        });
+        let scanned = self
+            .inside
+            .read(address)
+            .stars
+            .iter()
+            .min_by(|a, b| {
+                a.distance_from_arrival_ls
+                    .total_cmp(&b.distance_from_arrival_ls)
+                    .then(a.id.cmp(&b.id))
+            })
+            .map(|star| star.star_class.clone());
         scanned.or_else(|| self.systems.get(&address)?.routed_class.clone())
     }
 
@@ -646,13 +679,22 @@ impl Galaxy {
 
     /// What has been scanned inside a system, empty where nothing has.
     pub fn bodies(&self, address: i64) -> SystemBodies {
-        self.inside.get(&address).cloned().unwrap_or_default()
+        self.inside.read(address).into_owned()
     }
 
     /// Every system with anything scanned in it.
-    pub fn scanned(&self) -> impl Iterator<Item = (i64, &SystemBodies)> {
-        self.inside.iter().map(|(&address, inside)| (address, inside))
+    pub fn scanned(&self) -> Vec<i64> {
+        self.inside.scanned()
     }
+}
+
+/// One thing a scan looked at, of the two kinds [`SystemBodies`] records.
+///
+/// Built before the store is asked so that reading the store and making the
+/// record are not tangled together.
+enum Scanned {
+    Star(Star),
+    Body(Body),
 }
 
 /// Put `it` in `table`, replacing whatever was already filed under its key.
