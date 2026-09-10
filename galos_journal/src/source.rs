@@ -429,7 +429,7 @@ impl Source for JournalSource {
 impl JournalSource {
     /// Write what has been read as a plain index directory.
     ///
-    /// The same layout `galos-db index` publishes, so a journal can be looked
+    /// The same layout `galos-sync db` publishes, so a journal can be looked
     /// at through `galos-index info`, or handed to the map on its own as
     /// `GALOS_INDEX_DIR` — which is the sky one commander has personally seen
     /// and nothing else, and is a useful thing to look at once.

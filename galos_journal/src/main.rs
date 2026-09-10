@@ -1,33 +1,30 @@
-//! Reading a commander's journal directory into an index.
+//! Saying what a journal directory holds.
 //!
 //! ```sh
-//! # What is in it
 //! cargo run -p galos_journal -- info ~/Saved\ Games/Frontier\ Developments/Elite\ Dangerous
-//!
-//! # Write it out as an index directory the map can be pointed at
-//! cargo run -p galos_journal -- build ~/Saved\ Games/.../Elite\ Dangerous .galos_journal_index
-//!
-//! # And keep it current while the game is running
-//! cargo run -p galos_journal -- watch ~/Saved\ Games/.../Elite\ Dangerous .galos_journal_index
 //! ```
 //!
-//! Database-free, as everything reading a journal into the index vocabulary
-//! is. `build` and `watch` write the same layout `galos-db index` writes, so
-//! the result is readable by `galos-index info` and by the map — though the
-//! map does not need either of them, holding a
-//! [`JournalSource`](galos_journal::JournalSource) directly and layering it
-//! over the published index instead. These exist to look at what a journal
-//! says on its own, and to keep a directory current for something that can
-//! only read a directory.
+//! One subcommand, and it writes nothing. Reading a journal *into* something
+//! — a database, or an index directory kept current while the game runs — is
+//! `galos-sync`, which is where every other publisher is read from and where
+//! the flags for choosing between the two live:
+//!
+//! ```sh
+//! galos-sync journal ~/Saved\ Games/…/Elite\ Dangerous --watch
+//! galos-sync journal ~/Saved\ Games/…/Elite\ Dangerous --to index=.galos_journal_index --watch
+//! ```
+//!
+//! What is left here is the thing that belongs to this crate rather than to
+//! that program: point it at a directory and it says what the accumulator
+//! made of it, without a database, an index directory or a byte written
+//! anywhere. It is how you find out whether a journal directory is the one
+//! you meant, and it is this crate's own smoke test against a real one.
 
 use clap::{Parser, Subcommand};
 use galos_journal::JournalSource;
-use galos_journal::source::EVERY;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tracing::info;
 
-/// Read an Elite: Dangerous journal directory as a galaxy index.
+/// Read an Elite: Dangerous journal directory and say what is in it.
 #[derive(Parser)]
 #[command(name = "galos-journal", version, about)]
 struct Cli {
@@ -42,25 +39,6 @@ enum Command {
         /// The journal directory the game writes its `.log` files to.
         journal: PathBuf,
     },
-    /// Read a journal directory once and write an index directory from it.
-    Build {
-        /// The journal directory the game writes its `.log` files to.
-        journal: PathBuf,
-        /// Where to write the index.
-        #[arg(default_value = ".galos_journal_index")]
-        dir: PathBuf,
-    },
-    /// Follow a journal directory, republishing the index as the game writes.
-    Watch {
-        /// The journal directory the game writes its `.log` files to.
-        journal: PathBuf,
-        /// Where to write the index.
-        #[arg(default_value = ".galos_journal_index")]
-        dir: PathBuf,
-        /// Seconds between passes over the directory.
-        #[arg(long, default_value_t = EVERY.as_secs())]
-        every: u64,
-    },
 }
 
 fn main() {
@@ -72,21 +50,7 @@ fn main() {
         .init();
 
     match Cli::parse().command {
-        Command::Info { journal } => {
-            let source = read(&journal);
-            say(&source);
-        }
-        Command::Build { journal, dir } => {
-            let source = read(&journal);
-            say(&source);
-            publish(&source, &dir);
-        }
-        Command::Watch { journal, dir, every } => {
-            let source = read(&journal);
-            say(&source);
-            publish(&source, &dir);
-            watch(&source, &dir, Duration::from_secs(every.max(1)));
-        }
+        Command::Info { journal } => say(&read(&journal)),
     }
 }
 
@@ -121,35 +85,4 @@ fn say(source: &JournalSource) {
         of("boosts"),
         of("populated"),
     );
-}
-
-/// Write the index directory, ending the process where it could not be.
-fn publish(source: &JournalSource, dir: &Path) {
-    if let Err(err) = source.publish(dir) {
-        eprintln!("cannot write the index at {}: {err}", dir.display());
-        std::process::exit(1);
-    }
-    info!(dir = %dir.display(), "published");
-}
-
-/// Follow the journal, republishing whenever it says something new.
-///
-/// Republished on change rather than on the beat: the directory is written
-/// whole, so a pass that read nothing would otherwise rewrite the lot every
-/// second for the good of nobody. Never returns; stopped with a signal, as
-/// `galos-db index --watch` is.
-fn watch(source: &JournalSource, dir: &Path, every: Duration) {
-    loop {
-        std::thread::sleep(every);
-        match source.pass() {
-            Ok(pass) if pass.rebuilt => {
-                publish(source, dir);
-                say(source);
-            }
-            Ok(_) => {}
-            Err(err) => {
-                eprintln!("the journal could not be read: {err}");
-            }
-        }
-    }
 }

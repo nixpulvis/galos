@@ -101,6 +101,43 @@ impl Follower {
         &self.dir
     }
 
+    /// Take the directory as already read, without reading any of it.
+    ///
+    /// For a caller that has another way of reading the whole directory and
+    /// wants to follow it afterwards — `galos-sync journal --watch`, which
+    /// imports the lot in timestamp order across every file and then tails
+    /// what arrives. Without this the first poll would hand the importer's
+    /// work back to it a second time, which is a gigabyte of finished logs
+    /// re-parsed and re-written for nothing.
+    ///
+    /// Call it **before** the other read, not after. The offsets are fixed at
+    /// the moment this is called, so anything the game writes while the other
+    /// read is running is read by both — which costs a duplicate write, and
+    /// every write downstream is idempotent. Called afterwards it would be
+    /// the other way about: whatever arrived during the read would fall in
+    /// the gap between the two and be seen by neither.
+    ///
+    /// Answers how many bytes were passed over.
+    pub fn caught_up(&mut self) -> io::Result<u64> {
+        let mut skipped = 0;
+        for path in logs(&self.dir)? {
+            let Ok(meta) = path.metadata() else { continue };
+            skipped += meta
+                .len()
+                .saturating_sub(self.read.get(&path).copied().unwrap_or(0));
+            self.read.insert(path, meta.len());
+        }
+        // The route file is the whole of what it says rather than a tail, so
+        // "already read" is the reading it stands at now.
+        let route = self.dir.join(ROUTE_FILE);
+        if let Ok(meta) = route.metadata()
+            && let Ok(at) = meta.modified()
+        {
+            self.route = Some((meta.len(), at));
+        }
+        Ok(skipped)
+    }
+
     /// Everything written to the directory since the last poll.
     ///
     /// The first poll reads every file whole, which is the import. Errors

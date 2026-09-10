@@ -1,7 +1,7 @@
 //! A commander's own journal, served as an index.
 //!
 //! The map draws from a directory of index files, baked out of Postgres by
-//! `galos-db index` from what EDDN carries. That is everyone else's game, and
+//! `galos-sync db` from what EDDN carries. That is everyone else's game, and
 //! it is missing exactly one commander's: the systems they have been to that
 //! nobody has reported, the bodies only they have scanned, and the jump they
 //! made thirty seconds ago. The game already writes all of it, to a directory

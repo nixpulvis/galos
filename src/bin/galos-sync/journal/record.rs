@@ -657,7 +657,7 @@ async fn record_visit(
 /// writes its star regardless: the system may already be on record from
 /// something else, and a write refused here is not the same as no row to hang
 /// off.
-pub(super) async fn ensure_system(
+pub async fn ensure_system(
     db: &Database,
     timestamp: DateTime<Utc>,
     user: &str,
