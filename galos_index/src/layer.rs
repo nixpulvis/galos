@@ -1,7 +1,7 @@
 //! Two indices served as one, either of them turned off without a restart.
 //!
 //! The galaxy the map draws comes from EDDN: everyone else's game, forwarded,
-//! written to Postgres and baked into a directory by `galos-db index`. A
+//! written to Postgres and baked into a directory by `galos-sync db`. A
 //! commander's own journal is the other half of the same sky and never
 //! reaches that directory — the systems nobody has reported, the bodies only
 //! this commander has scanned, the arrival that happened thirty seconds ago.
@@ -10,7 +10,7 @@
 //!
 //! **They meet here and not on disk.** Baking a commander's journal into the
 //! published index would put private, unshared readings into the artefact
-//! `galos-db index` owns and rewrites: the next full build would drop them,
+//! `galos-sync db` owns and rewrites: the next full build would drop them,
 //! a `--only` pass would drop half of them, and there would be no way left to
 //! ask what the galaxy looks like without them. So the two directories stay
 //! separate, whole, and independently rebuildable, and the join is made in

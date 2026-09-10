@@ -77,12 +77,35 @@ SQLX_OFFLINE=true cargo build
 
 ## Running
 
+`galos-sync` moves the galaxy from a publisher into somewhere it can be read.
+Five sources — `journal`, `eddn`, `edsm`, `eddb` and `db`, this project's own
+database — and two sinks, chosen with `--to`: the database (the default), or a
+`galos_index` directory the map draws from with no server at all.
+
 ```sh
 # Populate the database. `galos-sync --help` lists the sources.
 cargo run --release --bin galos-sync -- eddn      # live feed from EDDN
 cargo run --release --bin galos-sync -- edsm      # EDSM nightly dumps
-cargo run --release --bin galos-sync -- journal   # local journal files
+cargo run --release --bin galos-sync -- journal "$JOURNAL"   # local journal files
 
+# Keep reading the journal while the game writes it.
+cargo run --release --bin galos-sync -- journal "$JOURNAL" --watch
+
+# Build the index out of the database, or follow it and republish as it moves.
+cargo run --release --bin galos-sync -- db
+cargo run --release --bin galos-sync -- db --watch 5
+cargo run --release --bin galos-sync -- db --only reaches
+
+# The same sources into an index directory instead, with no database anywhere.
+cargo run --release --bin galos-sync -- journal "$JOURNAL" \
+    --to index=.galos_journal_index --watch
+cargo run --release --bin galos-sync -- eddn --to index=.galos_index
+```
+
+`$JOURNAL` is where the game writes its logs, typically
+`~/Saved Games/Frontier Developments/Elite Dangerous`.
+
+```sh
 # Query from the CLI.
 cargo run --bin galos -- --help
 
@@ -91,13 +114,10 @@ cargo run --release -p galos_map
 
 # And with the commander's own journal drawn over the published index. `J`
 # takes that layer off and puts it back while the map runs.
-GALOS_JOURNAL_DIR="$HOME/Saved Games/Frontier Developments/Elite Dangerous" \
-    cargo run --release -p galos_map
+GALOS_JOURNAL_DIR="$JOURNAL" cargo run --release -p galos_map
 
-# What a journal directory holds on its own, and the same written out as an
-# index directory the map can be pointed at with nothing else running.
-cargo run -p galos_journal -- info "$HOME/Saved Games/.../Elite Dangerous"
-cargo run -p galos_journal -- watch "$HOME/Saved Games/.../Elite Dangerous"
+# What a journal directory holds, without writing anything anywhere.
+cargo run -p galos_journal -- info "$JOURNAL"
 ```
 
 `RUST_LOG` selects what the tools log (e.g. `RUST_LOG=debug`), info and above

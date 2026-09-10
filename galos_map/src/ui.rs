@@ -2645,7 +2645,7 @@ fn plotting(
     let range = jump_range(asked)?;
     if drive.named().is_some() && !boosts.published() {
         return Err("No supercharge table in the index. Add it with \
-             `galos-db index --only boosts`, or plot unaided.");
+             `galos-sync db --only boosts`, or plot unaided.");
     }
     Ok(range)
 }

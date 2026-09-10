@@ -92,23 +92,52 @@ workspace members list.
 
 ## 1. Ingest
 
-Four upstream formats, one write path. `galos-sync`'s four subcommands
-(`src/bin/galos-sync/main.rs:13-25`) are `journal` (a local journal
-directory), `eddn` (the live feed, never returns), `edsm` (nightly dumps or the
-web API) and `eddb` (a saved dump; the site is gone).
+**Five sources, two sinks, one program.** `galos-sync` is where the galaxy
+moves from a publisher into somewhere it can be read. Its subcommands are the
+sources — `journal` (a local journal directory, optionally followed with
+`--watch`), `eddn` (the live feed, never returns), `edsm` (nightly dumps or
+the web API), `eddb` (a saved dump; the site is gone), and `db`, this
+project's own database. `--to` is the sink: `db` (the default) or
+`index=DIR`.
 
-The convergence point is `src/bin/galos-sync/journal/record.rs`. Its header
-states the invariant: journal files and EDDN carry the same events, so "a scan
-is a scan either way", and this is the one place that says how an event becomes
-rows. It fans out on `Event::*` into fourteen `galos_db` entity modules
-(`record.rs:29-35`). `edsm` and `eddb` bypass it, their dumps carrying nothing
-below system level.
+`src/bin/galos-sync/sink/` is the seam, and its header says what shaped it —
+not what either sink wants, but what the sources have to say. There turn out
+to be exactly two shapes:
 
-Two rules are recorded there and worth knowing before reading any of it: a
-refused write is warned and the loop continues, "since a feed that stopped at
-the first system it could not place would stop for good" (`record.rs:41-42`);
-and `ensure_system` writes the system row before anything that references it
-(`record.rs:46-56`).
+- **An event.** `Sink::entry`, one `elite_journal::Entry<Event>` and whoever
+  wrote it. Journal files and EDDN carry the same events, so this is the
+  whole of both. Four EDDN schemas carry a payload with no `event` key and
+  get a method apiece.
+- **A system row.** `Sink::system`, a name, a place and the political
+  columns, which is what the EDSM and EDDB dumps hold and all they hold.
+  Nobody flew anywhere; a file was published.
+
+`Sink::ensure_system` is the one method about a sink's own constraints rather
+than about a source: Postgres has a foreign key onto `systems` and the game
+writes events naming a system before the arrival that would have created it,
+so an importer says "this address is this place" first. An index has no keys,
+so its impl does nothing — stated there rather than guessed at each call site.
+
+The two sinks:
+
+- `sink/db.rs` is the write path this program has always had.
+  `journal/record.rs` is unchanged behind it and its header still states the
+  invariant: journal files and EDDN carry the same events, so "a scan is a
+  scan either way", and this is the one place that says how an event becomes
+  rows, fanning out on `Event::*` into fourteen `galos_db` entity modules.
+  Two rules are recorded there: a refused write is warned and the loop
+  continues, "since a feed that stopped at the first system it could not
+  place would stop for good", and `ensure_system` writes the system row
+  before anything that references it.
+- `sink/index.rs` is the DB-free half: `galos_journal::Galaxy` accumulating
+  events into the index's vocabulary, a `galos_index::Tree` held open and
+  edited, `sink/tables.rs` keeping the metadata sidecars, and a `Checkpoint`
+  to resume from. See §5.
+
+The `db` source is the one that is not like the others — it reads rows rather
+than events, so there is no `Sink` in it — and it is here anyway because it
+is the same sentence as the rest. What it runs is `galos_db::index`,
+unchanged; `galos-sync main.rs` only unpacks the arguments.
 
 ## 2. The database
 
@@ -157,8 +186,10 @@ values to the builder. "Nothing about the tree lives here; this crate knows the
 database and the builder knows the tree, and they meet at `System`"
 (`index/mod.rs:7-9`).
 
-`galos-db index [DIR] [--watch SECS] [--only PART,…]`. Full build, or a watch
-loop that publishes deltas every few seconds. `Parts` is
+`galos-sync db [--to index=DIR] [--watch SECS] [--only PART,…]` (this was
+`galos-db index`, and moved because reading the database into an index is the
+same sentence as reading a journal into one). Full build, or a watch loop
+that publishes deltas every few seconds. `Parts` is
 `{cells, names, populated, reaches, boosts, factions, bodies}`, and `--only`
 exists because when reach arithmetic moved into `galos_index::inside`, every
 published reach table went stale while everything beside it was fine —
@@ -289,7 +320,7 @@ knows the tree only through `galos_index::System` and the metadata records.
 
 **The join is in the reader.** `galos_index::layer` holds it, and the module
 header argues the decision: baking a commander's journal into the published
-directory would put unshared readings into the artefact `galos-db index` owns
+directory would put unshared readings into the artefact `galos-sync db` owns
 and rewrites, the next full build would drop them, and there would be no way
 left to ask what the galaxy looks like without them. So two directories, whole
 and independently rebuildable, joined per call.
@@ -317,11 +348,15 @@ followed until it has been — because the map reads its names *through* the
 layered transport, and a source nobody has read yet holds nothing, so what
 comes back is the published table alone.
 
-`galos-journal info | build | watch DIR` reads a journal on its own, and
-`build`/`watch` write the same layout `galos-db index` writes, so the result
-is readable by `galos-index info` and can be handed to the map as
-`GALOS_INDEX_DIR`: the sky one commander has personally seen, and nothing
-else.
+Reading a journal *into* something is `galos-sync journal`, which is where
+every other publisher is read from: `--to db` for rows, `--to index=DIR` for a
+directory, `--watch` for either. What is left in `galos-journal` is `info`,
+which writes nothing and says what the accumulator made of a directory —
+this crate's own smoke test against a real journal.
+
+The map's `journal.rs` is the third way in and the one that needs no
+directory at all: it holds a `JournalSource` in memory and layers it, so what
+the game writes is on the map without anything having been published.
 
 ## 6. The physics
 
