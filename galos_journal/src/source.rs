@@ -108,12 +108,23 @@ impl Held {
     /// — a fresher reach, the bodies they mapped, the class they saw — and
     /// putting the system itself into a second tree over the first would draw
     /// the same star twice.
+    ///
+    /// Nothing the names table cannot name, either. A `NavBeaconScan` places
+    /// a system without necessarily naming it (see
+    /// [`Galaxy::name_of`](crate::Galaxy::name_of)), and a tree standing over
+    /// one is a star the search cannot reach and a published directory whose
+    /// two counts disagree, which `galos-sync` refuses to reopen. So a system
+    /// nothing has named waits for whatever names it, exactly as a system
+    /// nothing has placed waits for whatever places it.
     fn raise(&mut self, claimed: &Claimed) {
+        let named = |address: i64| self.galaxy.name_of(address).is_some();
         let systems: Vec<_> = self
             .galaxy
             .systems()
             .into_iter()
-            .filter(|system| !claimed.holds(system.id64 as i64))
+            .filter(|system| {
+                !claimed.holds(system.id64 as i64) && named(system.id64 as i64)
+            })
             .collect();
         self.snapshot = Snapshot::build(&systems, &BuildParams::default());
         self.names = self.galaxy.names();
@@ -151,12 +162,6 @@ pub struct Pass {
     pub unread: usize,
     /// Whether the tree and the tables were raised again.
     pub rebuilt: bool,
-    /// How many systems the tree now stands over, where it was rebuilt.
-    ///
-    /// The ones this layer draws, which is every system the journal has
-    /// placed less whatever the layer below already carries. Fewer than
-    /// [`JournalSource::len`] by exactly the systems both hold.
-    pub drawn: u64,
 }
 
 impl JournalSource {
@@ -212,11 +217,6 @@ impl JournalSource {
         self.read().galaxy.commander().to_string()
     }
 
-    /// The tree as it stands, for a caller writing an index directory out.
-    pub fn snapshot(&self) -> Snapshot {
-        self.read().snapshot.clone()
-    }
-
     /// Read whatever has arrived and rebuild if anything did.
     ///
     /// The one operation. A watch is this on a timer, and a one-shot build is
@@ -263,11 +263,6 @@ impl JournalSource {
         if said || claim_moved || held.generation == 0 {
             held.raise(&self.claimed);
             pass.rebuilt = true;
-            pass.drawn = held
-                .snapshot
-                .index
-                .root()
-                .map_or(0, |root| root.aggregate.count());
             debug!(
                 entries = pass.entries,
                 kept = pass.kept,
@@ -395,7 +390,9 @@ impl Source for JournalSource {
     ///
     /// Always a table and never [`None`]: a journal that has been read knows
     /// what it has scanned, and an empty table from it means "none of the
-    /// systems in here" rather than "this index cannot say".
+    /// systems in here" rather than "this index cannot say". Which is a
+    /// different question from whether there is anything here to read at
+    /// all — that is [`Self::stamp`], and an empty table has no stamp.
     async fn boosts(&self) -> io::Result<Option<Vec<SystemBoost>>> {
         Ok(Some(self.read().boosts.clone()))
     }
@@ -404,23 +401,37 @@ impl Source for JournalSource {
         Ok(self.read().galaxy.bodies(address))
     }
 
-    /// The generation, for every part this has anything to say about.
+    /// The generation, for every part this actually holds something for.
     ///
     /// One number for the lot, since a rebuild rewrites the lot. [`None`]
-    /// where this holds nothing for the part — a cell it owns no systems in, a
-    /// names chunk past the only one — which is the trait's own meaning of
-    /// "not there" and is what keeps a client from re-reading an absence
-    /// forever.
+    /// where this holds nothing for the part — a cell it owns no systems in,
+    /// a names chunk past the only one, a table that came out empty — which
+    /// is the trait's own meaning of "not there" and is what keeps a client
+    /// from re-reading an absence forever.
+    ///
+    /// The empty tables are where that earns its keep.
+    /// [`Layered`](galos_index::Layered) folds the two sides' stamps
+    /// together, so a part this answers for moves the composed stamp on
+    /// every rebuild — once a jump, once a scan — and has the client re-read
+    /// and re-merge the whole of the published table it is layered over.
+    /// Factions are empty for good (see [`Self::factions`]) and the other
+    /// three are empty until the commander has flown somewhere that fills
+    /// them: a journal of pure exploration never populates a system and a
+    /// journal with nothing scanned reaches nowhere.
+    ///
+    /// The index is the exception that is always answered for. A build over
+    /// an empty journal still raises a root, and a client reads that as an
+    /// empty sky rather than as a layer that cannot say.
     async fn stamp(&self, part: Part) -> io::Result<Option<Stamp>> {
         let held = self.read();
         let here = match part {
             Part::Cell(id) => !held.snapshot.payload(id).is_empty(),
             Part::NamesChunk(chunk) => chunk == 0 && !held.names.is_empty(),
-            Part::Index
-            | Part::Populated
-            | Part::Reaches
-            | Part::Factions
-            | Part::Boosts => true,
+            Part::Index => true,
+            Part::Populated => !held.populated.is_empty(),
+            Part::Reaches => !held.reaches.is_empty(),
+            Part::Boosts => !held.boosts.is_empty(),
+            Part::Factions => false,
         };
         Ok(here.then_some(held.generation))
     }
@@ -646,6 +657,89 @@ mod tests {
             None,
             "a cell this owns nothing in",
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A table that came out empty stamps as absent, and a filled one does
+    /// not
+    ///
+    /// [`Layered`](galos_index::Layered) folds the two sides' stamps, so a
+    /// part this answers for moves the composed stamp on every rebuild —
+    /// once a jump — and has the map re-read and re-merge the whole of the
+    /// published table underneath. A journal that has scanned nothing,
+    /// found no jet cone and named no populated system holds nothing for
+    /// three of those tables, and never holds anything for the fourth.
+    #[test]
+    fn an_empty_table_has_no_stamp() {
+        let dir = journal("tables", &[jump("Sol", 10477373803, [0.0; 3])]);
+        let source = JournalSource::new(&dir);
+        source.pass().expect("a pass");
+
+        let stamp = |source: &JournalSource, part| {
+            pollster::block_on(source.stamp(part)).expect("a stamp answers")
+        };
+        assert_eq!(
+            stamp(&source, Part::Factions),
+            None,
+            "a journal numbers no faction and never will",
+        );
+        assert_eq!(stamp(&source, Part::Reaches), None, "nothing was scanned");
+        assert_eq!(stamp(&source, Part::Boosts), None, "no star was scanned");
+        assert_eq!(
+            stamp(&source, Part::Populated),
+            None,
+            "an unpopulated system was published as a populated table",
+        );
+
+        // The same jump, with the column the game writes where anybody lives
+        // in the system. That table is then held, so it is stamped.
+        let lived_in = journal(
+            "tables_populated",
+            &[r#"{"timestamp":"2026-08-08T12:00:00Z","event":"FSDJump","StarSystem":"Sol","SystemAddress":10477373803,"StarPos":[0.0,0.0,0.0],"Population":22780919531}"#
+                .to_owned()],
+        );
+        let source = JournalSource::new(&lived_in);
+        source.pass().expect("a pass");
+        assert!(
+            stamp(&source, Part::Populated).is_some(),
+            "a populated system was not stamped",
+        );
+        assert_eq!(stamp(&source, Part::Factions), None, "still no factions");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&lived_in);
+    }
+
+    /// A system nothing named is not drawn either
+    ///
+    /// The cell tree and the names table are two readings of one set of
+    /// systems, and a published directory whose counts disagree is one
+    /// `galos-sync` refuses to reopen. A nav beacon scan can place a system
+    /// without naming it, which is the one event that can pull the two
+    /// apart.
+    #[test]
+    fn a_nameless_system_is_not_drawn() {
+        let dir = journal(
+            "nameless",
+            &[
+                jump("Sol", 10477373803, [0.0; 3]),
+                r#"{"timestamp":"2026-08-08T12:00:00Z","event":"NavBeaconScan","SystemAddress":42,"StarPos":[1.0,2.0,3.0],"NumBodies":5}"#
+                    .to_owned(),
+            ],
+        );
+        let source = JournalSource::new(&dir);
+        source.pass().expect("a pass");
+        assert_eq!(source.len(), 2, "the beacon's system was not recorded");
+
+        let index = pollster::block_on(source.index()).expect("an index");
+        let names = pollster::block_on(source.names()).expect("the names");
+        assert_eq!(
+            index.root().map(|root| root.aggregate.count()),
+            Some(names.len() as u64),
+            "the tree draws what the names table cannot name",
+        );
+        assert_eq!(names.len(), 1, "the nameless system was named anyway");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

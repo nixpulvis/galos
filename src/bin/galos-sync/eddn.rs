@@ -52,8 +52,9 @@ pub struct Cli {
     pub to: To,
 
     /// Resume file for an index sink, kept outside the served directory.
-    #[arg(long, value_name = "FILE", default_value = crate::sink::to::CHECKPOINT)]
-    pub checkpoint: PathBuf,
+    /// `DIR.checkpoint` beside the index directory by default.
+    #[arg(long, value_name = "FILE")]
+    pub checkpoint: Option<PathBuf>,
     // TODO: Filters?
 }
 
@@ -111,9 +112,9 @@ async fn place(
         Message::Journal(entry) => sink.entry(&entry, user).await,
         Message::Commodity(e) => sink.market(e.timestamp, user, &e.event).await,
 
-        // The three schemas whose payload carries no `event` key, and so
-        // could not be reached at all until messages were placed by their
-        // `$schemaRef`.
+        // These three and the market above: the four schemas whose payload
+        // carries no `event` key, and so could not be reached at all until
+        // messages were placed by their `$schemaRef`.
         Message::Outfitting(e) => {
             sink.outfitting(e.timestamp, user, &e.event).await
         }

@@ -11,10 +11,11 @@
 //! [`galos_index::Source`]. No database, no builder, no published directory:
 //! the tree is raised in memory from the journal and rebuilt when the journal
 //! moves, and [`galos_index::Layered`] serves it over the published one with
-//! a toggle. `galos-journal` will also write a plain index directory out of a
-//! journal, for looking at one on its own.
+//! a toggle. What has been read can also be written out as a plain index
+//! directory — [`JournalSource::publish`], which is what `galos-sync journal
+//! --to index=DIR` does — for looking at one commander's own sky on its own.
 //!
-//! Three modules, in the order the data runs:
+//! Four modules, in the order the data runs:
 //!
 //! - [`follow`] — the directory, tailed. Which files, how far into each, and
 //!   what to do when one is replaced under you.

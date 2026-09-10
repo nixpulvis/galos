@@ -17,11 +17,21 @@
 //! never an event.
 //!
 //! **A file may be replaced.** The commander clears their journal directory,
-//! restores a backup, or points the map at a different one. The offsets are
-//! kept per path and a file shorter than the offset held for it has been
-//! rewritten rather than appended to, so it is read again from the start.
-//! Applying an event twice is free — everything downstream is keyed by
+//! restores a backup, or points the map at a different one. What is kept per
+//! path is the offset read out of the file and how the file looked when that
+//! offset was taken — its length and when it was last written — because the
+//! offset alone cannot say. It stops at the last newline, so it is short of
+//! the length whenever the game was mid-line, and a file rewritten to a
+//! length between the two would read as one appended to. Shorter than it
+//! was, or dated before the reading was taken, and it is read again from the
+//! start. Applying an event twice is free — everything downstream is keyed by
 //! address and body id — so re-reading is always the safe answer.
+//!
+//! What that misses is a file replaced by one at least as long whose
+//! modification time moved forward, which is exactly what an append looks
+//! like and cannot be told from one without reading the whole file back. A
+//! copied-in log longer than the one it replaced is the case, and it costs
+//! whatever the two files do not have in common.
 //!
 //! **The directory grows.** A new session opens a new file, which is a path
 //! with no offset held for it and is therefore read whole. That is also what
@@ -44,8 +54,9 @@ use elite_journal::entry::{Entry, Event};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tracing::{debug, warn};
 
 /// A journal directory and how far into each of its files has been read.
@@ -57,19 +68,65 @@ use tracing::{debug, warn};
 #[derive(Debug)]
 pub struct Follower {
     dir: PathBuf,
-    /// How many bytes of each file have been turned into entries, by path.
+    /// How far into each file has been read, and what the file looked like
+    /// then, by path.
     ///
     /// Bytes and not lines: a line count cannot be seeked to, and the point of
     /// holding anything is not to read a gigabyte of finished logs on every
     /// poll.
-    read: HashMap<PathBuf, u64>,
+    read: HashMap<PathBuf, At>,
     /// The length and modification time `NavRoute.json` was last read at.
     ///
     /// Not an offset: the file is rewritten whole rather than appended to, so
     /// there is no tail of it to follow and the question is only whether it is
-    /// the same file it was. Both halves, since a route replotted inside one
-    /// second onto a list of the same length moves neither on its own.
-    route: Option<(u64, std::time::SystemTime)>,
+    /// the same file it was. Both halves, because a route replotted onto a
+    /// list of the same length leaves the length where it was.
+    ///
+    /// Neither half is proof. A filesystem that dates writes to the second
+    /// gives two rewrites inside one tick the same time, so a replot onto the
+    /// same number of stops in that tick is missed — until the route changes
+    /// length or is plotted again. That is systems named ahead of a ship that
+    /// has not flown to them yet, which is the least of what a journal says.
+    route: Option<(u64, SystemTime)>,
+}
+
+/// How far into one log has been read, and what the file was when it was.
+///
+/// The offset alone cannot say whether the file that is there now is the file
+/// it came out of. A read stops at the last newline, so the offset is short
+/// of the length whenever the game was mid-line, and a file rewritten to a
+/// length between the two reads as one that has been appended to. Holding
+/// the length as well as the offset is what tells those apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct At {
+    /// The offset entries have been made out of, which lands on a newline.
+    read: u64,
+    /// How long the file was then, which is at or past `read`.
+    len: u64,
+    /// When it was last written, where the filesystem says. [`None`] on one
+    /// that does not, which leaves the length as the whole of the answer.
+    modified: Option<SystemTime>,
+}
+
+impl At {
+    /// Whether a file now `len` long and last written at `modified` is a
+    /// different file from the one this offset came out of.
+    ///
+    /// Shorter than it was, or written before this reading was taken. An
+    /// append can do neither.
+    fn replaced(&self, len: u64, modified: Option<SystemTime>) -> bool {
+        len < self.len
+            || matches!(
+                (modified, self.modified),
+                (Some(now), Some(then)) if now < then
+            )
+    }
+
+    /// Whether the file is the same length and the same age it was, which is
+    /// a file nothing has been written to since it was read.
+    fn quiet(&self, len: u64, modified: Option<SystemTime>) -> bool {
+        self.len == len && self.modified == modified
+    }
 }
 
 /// What one poll found.
@@ -86,8 +143,6 @@ pub struct Read {
     pub unread: usize,
     /// Files that were read from the start because they had been replaced.
     pub restarted: usize,
-    /// Whether the route file was read this pass.
-    pub routed: bool,
 }
 
 impl Follower {
@@ -122,10 +177,24 @@ impl Follower {
         let mut skipped = 0;
         for path in logs(&self.dir)? {
             let Ok(meta) = path.metadata() else { continue };
-            skipped += meta
-                .len()
-                .saturating_sub(self.read.get(&path).copied().unwrap_or(0));
-            self.read.insert(path, meta.len());
+            // The end of the last whole line rather than the length. The
+            // game may be a few bytes into writing the next one, and an
+            // offset inside a line has the next poll read that line from its
+            // middle: the entry is parsed as garbage and lost, which is the
+            // one thing following is supposed never to do.
+            let read = match last_line_end(&path, meta.len()) {
+                Ok(read) => read,
+                Err(err) => {
+                    warn!(file = %path.display(), error = %err, "unreadable");
+                    continue;
+                }
+            };
+            let held = self.read.get(&path).map_or(0, |at| at.read);
+            skipped += read.saturating_sub(held);
+            self.read.insert(
+                path,
+                At { read, len: meta.len(), modified: meta.modified().ok() },
+            );
         }
         // The route file is the whole of what it says rather than a tail, so
         // "already read" is the reading it stands at now.
@@ -147,30 +216,35 @@ impl Follower {
     pub fn poll(&mut self) -> io::Result<Read> {
         let mut found = Read::default();
         for path in logs(&self.dir)? {
-            let len = match path.metadata() {
-                Ok(meta) => meta.len(),
+            let (len, modified) = match path.metadata() {
+                Ok(meta) => (meta.len(), meta.modified().ok()),
                 Err(err) => {
                     warn!(file = %path.display(), error = %err, "unstattable");
                     continue;
                 }
             };
-            let held = self.read.get(&path).copied().unwrap_or(0);
 
-            // Shorter than what has been read out of it: this is not the file
-            // whose offset that was. Read it again from the top.
-            let from = if len < held {
-                found.restarted += 1;
-                debug!(file = %path.display(), "journal rewritten, rereading");
-                0
-            } else if len == held {
-                continue;
-            } else {
-                held
+            let from = match self.read.get(&path) {
+                // Not the file that offset came out of. Read it again from
+                // the top.
+                Some(held) if held.replaced(len, modified) => {
+                    found.restarted += 1;
+                    debug!(
+                        file = %path.display(),
+                        "journal rewritten, rereading",
+                    );
+                    0
+                }
+                // Nothing has been written to it since it was read, so
+                // whatever the last poll left unread is still all there is.
+                Some(held) if held.quiet(len, modified) => continue,
+                Some(held) => held.read,
+                None => 0,
             };
 
             match self.since(&path, from, &mut found) {
-                Ok(at) => {
-                    self.read.insert(path, at);
+                Ok(read) => {
+                    self.read.insert(path, At { read, len, modified });
                 }
                 Err(err) => {
                     warn!(file = %path.display(), error = %err, "unreadable");
@@ -208,7 +282,6 @@ impl Follower {
         match serde_json::from_str::<Entry<NavRoute>>(&text) {
             Ok(entry) => {
                 self.route = Some(now);
-                found.routed = true;
                 found.entries.push(Entry {
                     timestamp: entry.timestamp,
                     event: Event::NavRoute(entry.event),
@@ -291,6 +364,36 @@ fn logs(dir: &Path) -> io::Result<Vec<PathBuf>> {
         .collect();
     logs.sort();
     Ok(logs)
+}
+
+/// The offset just past the last newline in the first `len` bytes of `path`,
+/// or zero where there is no whole line in them at all.
+///
+/// What taking a directory as read has to record, and the length is not it: a
+/// journal caught mid-write ends inside a line, and an offset there is that
+/// line read from its middle on the next poll — one entry parsed as garbage
+/// and dropped.
+///
+/// Read backwards a block at a time from the end, so a finished log of a
+/// gigabyte costs one read of a few kilobytes: a journal line is hundreds of
+/// bytes, so the newline is in the first block looked at unless the game is
+/// writing something far longer than it has ever written.
+fn last_line_end(path: &Path, len: u64) -> io::Result<u64> {
+    const BLOCK: u64 = 8 * 1024;
+    let mut file = File::open(path)?;
+    let mut block = vec![0u8; BLOCK as usize];
+    let mut end = len;
+    while end > 0 {
+        let from = end.saturating_sub(BLOCK);
+        let want = (end - from) as usize;
+        file.seek(SeekFrom::Start(from))?;
+        file.read_exact(&mut block[..want])?;
+        if let Some(found) = block[..want].iter().rposition(|&b| b == b'\n') {
+            return Ok(from + found as u64 + 1);
+        }
+        end = from;
+    }
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -397,6 +500,79 @@ mod tests {
         let found = follower.poll().expect("a second poll");
         assert_eq!(found.restarted, 1, "the shorter file was taken as a tail");
         assert_eq!(found.entries.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file replaced by one longer than the offset held is read again
+    ///
+    /// The offset is not the length. A poll that lands mid-line records the
+    /// newline before it and leaves the rest, so a file rewritten to a length
+    /// past that offset and short of the length seen is a file the offset
+    /// says nothing about — and read from there it is a line parsed from its
+    /// middle with everything before it gone.
+    #[test]
+    fn a_file_replaced_past_the_offset_is_read_again() {
+        let dir = scratch("rewritten");
+        let path = dir.join("Journal.2026-08-08T120000.01.log");
+        // One whole line and the beginning of a second, which is the game
+        // caught in the middle of writing.
+        let torn = jump("Barnard's Star", 3, [-3.03, -0.09, -3.16]);
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}",
+                jump("Sol", 1, [0.0; 3]),
+                &torn[..torn.len() / 2]
+            ),
+        )
+        .expect("a log caught mid-line");
+
+        let mut follower = Follower::new(&dir);
+        assert_eq!(follower.poll().expect("a poll").entries.len(), 1);
+
+        // A file put in its place, longer than the offset held and shorter
+        // than the length that was seen.
+        std::fs::write(
+            &path,
+            format!("{}\n", jump("Alpha Centauri", 2, [3.03, -0.09, 3.16])),
+        )
+        .expect("one line in its place");
+
+        let found = follower.poll().expect("a second poll");
+        assert_eq!(found.restarted, 1, "the new file was taken as a tail");
+        assert_eq!(found.entries.len(), 1, "the new file's one line was lost");
+        assert_eq!(found.unread, 0, "a line was read from its middle");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Taking a directory as read stops at the last whole line
+    ///
+    /// The importer this is for reads the whole directory its own way, and
+    /// the game goes on writing while it does. Taken as read to the length,
+    /// the next poll starts inside whatever line was half written and parses
+    /// its tail: one entry lost, and the only one the commander was there
+    /// for.
+    #[test]
+    fn catching_up_stops_at_the_last_whole_line() {
+        let dir = scratch("caught_up");
+        let path = dir.join("Journal.2026-08-08T120000.01.log");
+        let whole = jump("Alpha Centauri", 2, [3.03, -0.09, 3.16]);
+        let (head, tail) = whole.split_at(whole.len() / 2);
+        std::fs::write(&path, format!("{}\n{head}", jump("Sol", 1, [0.0; 3])))
+            .expect("a log caught mid-line");
+
+        let mut follower = Follower::new(&dir);
+        follower.caught_up().expect("the directory is taken as read");
+
+        let mut file =
+            File::options().append(true).open(&path).expect("the log opens");
+        writeln!(file, "{tail}").expect("the rest of the line");
+
+        let found = follower.poll().expect("a poll");
+        assert_eq!(found.unread, 0, "a line was read from its middle");
+        assert_eq!(found.entries.len(), 1, "the torn line was skipped over");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

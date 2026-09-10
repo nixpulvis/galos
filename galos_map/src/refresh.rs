@@ -81,6 +81,17 @@ pub struct Held {
     /// The chunks of the names table, by number, as far as the table went when
     /// it was last read. A chunk appearing past the end is a chunk to read.
     chunks: Vec<Option<Stamp>>,
+    /// Which chunk each entry in [`Names::fresh`] came out of.
+    ///
+    /// What lets an arrival be taken back out again. A chunk the table
+    /// stops serving is a chunk whose systems the map no longer has any
+    /// business naming — the journal layer's whole table is served as the
+    /// one chunk past the base's last, so turning that layer off is exactly
+    /// this — and the overlay it was merged into is keyed by address, which
+    /// says nothing about where an entry came from. So it is filed here as
+    /// it goes in. Keyed the same as the overlay and the same size as it:
+    /// the arrivals of one session.
+    filed: HashMap<i64, usize>,
     /// The payloads held, by cell. Kept here rather than beside the payload so
     /// that [`ResidentCells`] stays the walk's set arithmetic and nothing else.
     cells: HashMap<CellId, Option<Stamp>>,
@@ -124,6 +135,7 @@ impl Held {
             boosts: stamp(Part::Boosts).await,
             factions: stamp(Part::Factions).await,
             chunks,
+            filed: HashMap::new(),
             cells: HashMap::new(),
         }
     }
@@ -366,46 +378,73 @@ fn apply(
     // size of the whole session's arrivals, to take in the one system that
     // actually moved. A correction that puts an entry back to what the base
     // says still differs from the overlay's answer, so it is still taken.
+    //
+    // Each arrival is filed under the chunk it came out of, which is what
+    // lets it be taken back out if that chunk stops being served.
+    //
+    // The lowest chunk the transport had nothing for, if any: a table that
+    // has shrunk. Taken before the merge rather than folded up inside it, so
+    // that nothing is filed under a chunk this same pass is about to drop.
+    let gone = found
+        .chunks
+        .iter()
+        .filter(|(_, _, stamp)| stamp.is_none())
+        .map(|(chunk, _, _)| *chunk)
+        .min();
     let mut arrived: Vec<NameEntry> = Vec::new();
-    // The lowest chunk the transport had nothing for, if any: a table that has
-    // shrunk. Cut back to it once, after the loop, since the loop resizes as
-    // it goes and truncating inside it would be undone by the next chunk.
-    let mut gone: Option<usize> = None;
     for (chunk, entries, stamp) in found.chunks {
-        for entry in entries {
-            if names.get(entry.address) != Some(&entry) {
-                arrived.push(entry);
+        if gone.is_none_or(|gone| chunk < gone) {
+            for entry in entries {
+                if names.get(entry.address) != Some(&entry) {
+                    held.filed.insert(entry.address, chunk);
+                    arrived.push(entry);
+                }
             }
         }
         if held.chunks.len() <= chunk {
             held.chunks.resize(chunk + 1, None);
         }
         held.chunks[chunk] = stamp;
-        if stamp.is_none() {
-            gone = Some(gone.unwrap_or(chunk).min(chunk));
-        }
     }
-    // Or every poll would stat and read files that are not there for as long
-    // as the map runs: a missing stamp reads as moved.
+    // Cut back once, after the loop, since the loop resizes as it goes and
+    // truncating inside it would be undone by the next chunk. Or every poll
+    // would stat and read files that are not there for as long as the map
+    // runs: a missing stamp reads as moved.
+    //
+    // And what those chunks named goes with them. The journal layer's whole
+    // names table is served as the one chunk past the base's last, so `J`
+    // taking the layer off is a table that has shrunk by that chunk, and its
+    // systems have to leave the search box, the router and the count along
+    // with the sky that no longer draws them. Turning the layer back on
+    // makes the chunk answer again, and the next pass reads it as an arrival
+    // like any other.
+    let mut departed = false;
     if let Some(gone) = gone {
         held.chunks.truncate(gone);
+        let filed = held.filed.len();
+        held.filed.retain(|_, chunk| *chunk < gone);
+        departed = held.filed.len() != filed;
     }
     let named = !arrived.is_empty();
-    if named {
+    if named || departed {
         let mut fresh = HashMap::clone(&names.fresh);
+        if departed {
+            fresh.retain(|address, _| held.filed.contains_key(address));
+        }
         fresh.extend(arrived.into_iter().map(|entry| (entry.address, entry)));
         names.fresh = Arc::new(fresh);
     }
 
     // The router reads places and what they can supercharge, and has just been
-    // handed either some places it did not have or a new table of the second.
+    // handed either some places it did not have, some it no longer has, or a
+    // new table of the second.
     //
     // Rebuilt from the whole overlay rather than added to, which is the same
     // work and no bookkeeping: the base is a handle clone, the overlay is the
     // arrivals of one session, and the supercharge table is another handle. A
     // route already searching holds the graph it started on and finishes
     // against that.
-    if named || found_boosts {
+    if named || departed || found_boosts {
         jumps.0 = Arc::new(jumps.0.extended(names.fresh.values(), &boosts));
     }
 
@@ -435,8 +474,8 @@ mod tests {
     use super::*;
     use crate::systems::route::graph::{Drive, JumpGraph, Routing};
     use galos_index::{
-        BuildParams, FsSource, NameEntry, NameTable, Snapshot,
-        Source as IndexSource,
+        BuildParams, FsSource, Layered, NameEntry, NameTable, Snapshot,
+        Source as IndexSource, Toggle,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -485,12 +524,19 @@ mod tests {
     /// A map holding what `dir` published, with the refresh wired as the app
     /// wires it and the poll wide open
     fn watching(dir: &std::path::Path, built: &Snapshot) -> App {
-        let source = FsSource::new(dir);
+        through(Arc::new(FsSource::new(dir)), built)
+    }
+
+    /// The same map, reading through whatever transport it is handed
+    ///
+    /// Which is what `main` does: the published directory on its own, or the
+    /// journal layered over it. `built` is the base's own tree, the payloads
+    /// being what the walk would have fetched by the time the map is up.
+    fn through(source: Arc<dyn IndexSource>, built: &Snapshot) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_systems(Update, (apply, poll).chain());
-        let transport: Arc<dyn IndexSource> = Arc::new(FsSource::new(dir));
-        app.insert_resource(block_on(Held::before_reading(&*transport)));
+        app.insert_resource(block_on(Held::before_reading(&*source)));
         app.init_resource::<Refreshing>();
         app.init_resource::<ResidentCells>();
         app.init_resource::<PointOrders>();
@@ -511,7 +557,7 @@ mod tests {
         app.insert_resource(ResidentIndex(
             block_on(source.index()).expect("a published index"),
         ));
-        app.insert_resource(Transport(Arc::new(FsSource::new(dir))));
+        app.insert_resource(Transport(Arc::clone(&source)));
         app.insert_resource(Poll(Some(0.)));
 
         // Every cell that owns systems, held as the walk's fetch holds it,
@@ -885,6 +931,101 @@ mod tests {
             holding(&app).is_empty(),
             "a payload was taken back for a cell the map had let go: {:?}",
             holding(&app),
+        );
+    }
+
+    /// The journal layer's systems go off the map with the layer
+    ///
+    /// `J` takes the layer off, and every part the map holds stamps
+    /// differently and is read again — but the overlay the arrivals were
+    /// merged into was only ever added to. Left there, the systems nobody
+    /// but this commander has been to went on answering the search box,
+    /// routing jumps and counting in the diagnostics for the rest of the
+    /// session, over a sky that had already stopped drawing them.
+    #[test]
+    fn the_journal_layers_names_go_with_the_layer() {
+        let published = Scratch::new();
+        let journal = Scratch::new();
+        let named = |address: i64, at: f32| NameEntry {
+            address,
+            name: format!("S{address}"),
+            position: [at, 0.0, 0.0],
+        };
+        let built = publish(&published.0, &[input(1, 0.0)]);
+        NameTable::from_entries(vec![named(1, 0.0)])
+            .publish(&published.0)
+            .expect("the names should publish");
+        // The journal as the map opens: a source that has read nothing yet
+        // and holds nothing, which is the state the watch is started from.
+        publish(&journal.0, &[]);
+
+        let on = Toggle::new(true);
+        let source: Arc<dyn IndexSource> = Arc::new(Layered::new(
+            Arc::new(FsSource::new(&published.0)),
+            Arc::new(FsSource::new(&journal.0)),
+            on.clone(),
+        ));
+        let mut app = through(Arc::clone(&source), &built);
+        assert_eq!(
+            app.world().resource::<Names>().len(),
+            1,
+            "the published table alone, the journal having said nothing yet"
+        );
+
+        // The commander flies somewhere nobody has reported. The layer
+        // serves its whole table as the one chunk past the published
+        // table's last, so the refresh finds a chunk it has never seen.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        publish(&journal.0, &[input(7, 32.0)]);
+        NameTable::from_entries(vec![named(7, 32.0)])
+            .publish(&journal.0)
+            .expect("the journal's names should publish");
+        assert!(
+            pump(&mut app, |app| app
+                .world()
+                .resource::<Names>()
+                .get(7)
+                .is_some()),
+            "the journal's own system was never picked up",
+        );
+        assert_eq!(
+            app.world().resource::<Jumps>().0.len(),
+            2,
+            "and the router has it as a place to jump from"
+        );
+
+        // `J`.
+        on.set(false);
+        assert!(
+            pump(&mut app, |app| app
+                .world()
+                .resource::<Names>()
+                .get(7)
+                .is_none()),
+            "the journal's system is still named with the layer off",
+        );
+        let names = app.world().resource::<Names>();
+        assert_eq!(names.address("S7"), None, "the search cannot reach it");
+        assert_eq!(names.len(), 1, "and it is not counted");
+        assert_eq!(
+            app.world().resource::<Jumps>().0.len(),
+            1,
+            "and the router has let go of it"
+        );
+        assert!(
+            names.get(1).is_some(),
+            "the published system is named throughout"
+        );
+
+        // And back on again, which is a chunk that answers once more.
+        on.set(true);
+        assert!(
+            pump(&mut app, |app| app
+                .world()
+                .resource::<Names>()
+                .get(7)
+                .is_some()),
+            "the layer put back never brought its systems with it",
         );
     }
 }

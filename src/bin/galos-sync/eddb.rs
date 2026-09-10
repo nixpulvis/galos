@@ -27,8 +27,9 @@ pub struct Cli {
     pub to: To,
 
     /// Resume file for an index sink, kept outside the served directory.
-    #[arg(long, value_name = "FILE", default_value = crate::sink::to::CHECKPOINT)]
-    pub checkpoint: PathBuf,
+    /// `DIR.checkpoint` beside the index directory by default.
+    #[arg(long, value_name = "FILE")]
+    pub checkpoint: Option<PathBuf>,
 }
 
 impl Cli {

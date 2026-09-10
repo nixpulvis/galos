@@ -15,6 +15,17 @@
 //! metadata records — and skips the round trip. So a body scanned in the game
 //! is on the map a second later without a database having been asked.
 //!
+//! Narrower, too. `record.rs` also records dockings, settlements, body
+//! signals and codex entries, and the index has a column for none of them: a
+//! signal is what is written on a surface and a settlement is a station, and
+//! the map draws neither. `Docked` is the near miss, being the one of them
+//! that names a system — but it carries no `StarPos`, which is what a system
+//! has to have to be drawn at all, and its government and allegiance are the
+//! station's rather than the system's. A carrier reads as a government of
+//! its own, and taking that for the system's would colour the sky by where
+//! the commander parked. Every system a ship can dock in was arrived in
+//! first, and an arrival states all six columns.
+//!
 //! ## What a journal cannot say
 //!
 //! Three gaps, all of them stated here rather than papered over, because a
@@ -491,9 +502,18 @@ impl Galaxy {
         Some(self.system(address, visit, position))
     }
 
-    /// One system's name and place, where it has been placed.
+    /// One system's name and place, where it has been named and placed.
+    ///
+    /// Nothing for a system nothing named. A `NavBeaconScan` carries a
+    /// position and an optional name, so a system known only from one may be
+    /// placed and nameless — and a blank name in this table is a blank row
+    /// in whatever searches it, which the map does. The tree still draws it
+    /// out of the position it did carry.
     pub fn name_of(&self, address: i64) -> Option<NameEntry> {
         let visit = self.systems.get(&address)?;
+        if visit.name.is_empty() {
+            return None;
+        }
         let at = visit.position?;
         Some(NameEntry {
             address,
@@ -1072,5 +1092,28 @@ mod tests {
         galaxy.settle();
         assert!(galaxy.touched().is_empty());
         assert_eq!(galaxy.len(), 1, "settling forgot the system itself");
+    }
+
+    /// A system placed by an event that did not name it publishes no name
+    ///
+    /// A nav beacon scan is the one arrival-shaped event whose system name is
+    /// optional, and it carries a position. Published as a blank name it is a
+    /// blank row in the map's search: a system the user can neither look up
+    /// nor recognise, standing in the list between two they can. The tree
+    /// draws it either way, out of the position the beacon did carry.
+    #[test]
+    fn a_nameless_system_is_not_named() {
+        let mut galaxy = galaxy();
+        assert!(galaxy.read(&entry(
+            r#"{
+                "timestamp": "2026-08-08T12:00:00Z",
+                "event": "NavBeaconScan",
+                "SystemAddress": 42,
+                "StarPos": [1.0, 2.0, 3.0],
+                "NumBodies": 5
+            }"#,
+        )));
+        assert_eq!(galaxy.systems().len(), 1, "the beacon's place was lost");
+        assert!(galaxy.names().is_empty(), "a system was named blank");
     }
 }

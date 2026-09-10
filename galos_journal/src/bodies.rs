@@ -42,8 +42,14 @@
 //! sometimes. A store is asked and answers, and the only thing held in memory
 //! is what has been changed and not yet written — which the sink flushes on
 //! the same beat it publishes on. Between flushes that is the systems scanned
-//! in the last few seconds, and [`Published::CARRIED`] bounds even that for a
-//! caller that never flushes at all.
+//! in the last few seconds, and [`Published::CARRIED`] forces a flush for a
+//! caller that never asks for one.
+//!
+//! That bound holds as long as the disk takes the writes. A forced flush the
+//! disk refuses is warned and the held systems go on accumulating, the
+//! alternative being to drop a commander's scans to keep a number down. So a
+//! disk that has stopped taking writes is a process that grows, and that
+//! warning is the only place it is said.
 
 use galos_index::meta::SystemBodies;
 use galos_index::source::{bodies_path, read_meta, write_meta};

@@ -79,8 +79,10 @@ SQLX_OFFLINE=true cargo build
 
 `galos-sync` moves the galaxy from a publisher into somewhere it can be read.
 Five sources — `journal`, `eddn`, `edsm`, `eddb` and `db`, this project's own
-database — and two sinks, chosen with `--to`: the database (the default), or a
-`galos_index` directory the map draws from with no server at all.
+database — and two sinks, chosen with `--to`: the database, or a `galos_index`
+directory the map draws from with no server at all. `--to db` is the default
+for every source but `db` itself, which reads the database into an index and
+cannot write back to it.
 
 ```sh
 # Populate the database. `galos-sync --help` lists the sources.
@@ -105,12 +107,20 @@ cargo run --release --bin galos-sync -- eddn --to index=.galos_index
 `$JOURNAL` is where the game writes its logs, typically
 `~/Saved Games/Frontier Developments/Elite Dangerous`.
 
+An index sink resumes from `<dir>.checkpoint` beside the directory it writes,
+unless `--checkpoint` names one. The resume point holds the whole editable
+tree of that one directory, so two indexes can be followed at once without
+either being rebuilt from the other.
+
 ```sh
 # Query from the CLI.
 cargo run --bin galos -- --help
 
-# Open the 3D map. See galos_map/README.md.
+# Open the 3D map. See galos_map/README.md. `GALOS_INDEX_DIR` names the
+# directory it draws from, `.galos_index` under the working directory
+# unless it is set.
 cargo run --release -p galos_map
+GALOS_INDEX_DIR=/srv/galos_index cargo run --release -p galos_map
 
 # And with the commander's own journal drawn over the published index. `J`
 # takes that layer off and puts it back while the map runs.
