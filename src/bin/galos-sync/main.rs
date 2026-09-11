@@ -218,6 +218,17 @@ impl Shutdown {
     }
 }
 
+/// What is listened for when `RUST_LOG` says nothing.
+///
+/// Info upwards from everything, less one line `sqlx` writes on every
+/// connection: that it could not open `~/.pgpass`. Not having a password
+/// file is the ordinary case — a `DATABASE_URL` carries what it needs, or
+/// the socket trusts the user — and it is said at `warn` once per pool, so
+/// a run that opens one for collecting and one for deriving greets a
+/// commander with two warnings about a file they were never expected to
+/// have. `RUST_LOG` overrides all of this, including the silence.
+const HEARD: &str = "info,sqlx_postgres::options::pgpass=off";
+
 #[async_std::main]
 async fn main() -> ExitCode {
     // Nothing a crate traces goes anywhere until something is listening for
@@ -232,7 +243,7 @@ async fn main() -> ExitCode {
         .with_ansi(stderr().is_terminal())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+                .unwrap_or_else(|_| HEARD.into()),
         )
         .init();
 
