@@ -853,7 +853,7 @@ fn panels(
     // panel at all: the press says which window is being worked with, and the
     // name inside it says which of the routes drawn there is meant.
     if let Some(filter) = worked.or(chosen) {
-        selected.0 = Some(filter);
+        selected.0 = vec![filter];
     }
 
     // Nothing while every panel is rolled up into its title bar, which is

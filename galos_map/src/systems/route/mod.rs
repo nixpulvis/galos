@@ -416,13 +416,14 @@ fn hops(
     systems: Query<(Entity, &System, Option<&Hop>)>,
     mut commands: Commands,
 ) {
-    // The route in front asked first, so that where two of them reach the same
-    // system in opposite directions the one being worked with says which way
-    // it lies.
+    // The routes in front asked first, so that where two of them reach the
+    // same system in opposite directions the one being worked with says which
+    // way it lies.
     let front = active(&filters, &selected.0);
     let routes = front
-        .into_iter()
-        .chain(shown(&filters).filter(|route| Some(*route) != front));
+        .iter()
+        .copied()
+        .chain(shown(&filters).filter(|route| !front.contains(route)));
     let reached = reaching(routes, contents.of(), standing(&holding, &marks));
 
     for (entity, system, held) in &systems {
@@ -580,8 +581,8 @@ fn plotted(
         // A route just asked for is the one being looked at, so whichever was
         // picked out before it stands down. Cleared rather than set to this
         // one, the last route held being what [`active`] falls back to.
-        if selected.0.is_some() {
-            selected.0 = None;
+        if !selected.0.is_empty() {
+            selected.0.clear();
         }
 
         // Beside whatever is already plotted rather than in place of it. Each
@@ -605,6 +606,11 @@ fn plotted(
 /// route from some earlier trip -- is left where it is: the trip orders its
 /// own legs and says nothing about anyone else's.
 ///
+/// The same trip plotted again for another ship is another trip, and its legs
+/// are nobody else's to order: a leg is one of these where the stops and the
+/// ship both agree. Weighing the stops alone laid the second plot's legs in
+/// among the first's, and the bar drew the two as one trip.
+///
 /// The end of the list for a route belonging to no trip, which is what
 /// [`Filters::add`] would have done with it: a route asked for on its own has
 /// nothing to be in order with.
@@ -619,8 +625,9 @@ fn placed_at(leg: &Filter, filters: &Filters) -> usize {
     filters
         .iter()
         .position(|entry| {
-            leg_of(&entry.filter)
-                .is_some_and(|(held, after)| held == trip && after > at)
+            entry.filter.ship() == leg.ship()
+                && leg_of(&entry.filter)
+                    .is_some_and(|(held, after)| held == trip && after > at)
         })
         .unwrap_or(last)
 }
@@ -694,45 +701,53 @@ fn asked(filters: &Filters, route: &Filter) -> Option<bool> {
         .map(|active| active.enabled)
 }
 
-/// The route the user picked out of the ones on screen, if they picked one
+/// The routes the user picked out of the ones on screen, if they picked any
 ///
-/// Written when a route's panel is pressed, which is how the user says which
-/// of several they are working with. Cleared by plotting, a route just asked
-/// for being the one they are looking at.
+/// Written when a route's row or panel is pressed, which is how the user says
+/// which of several they are working with. Cleared by plotting, a route just
+/// asked for being the one they are looking at.
+///
+/// Several rather than one, because a trip is several routes and is picked
+/// out as one thing: a press on its row means the whole of it, and a trip
+/// with one leg in front and the rest held back would be the map drawing a
+/// trip nobody asked for over the trip they did.
 ///
 /// An override rather than the answer itself. What it stands in front of is
 /// the last route plotted, and [`active`] puts the two together.
 #[derive(Resource, Default)]
-pub(crate) struct SelectedFilter(pub(crate) Option<Filter>);
+pub(crate) struct SelectedFilter(pub(crate) Vec<Filter>);
 
-/// Which route is the one being worked with
+/// Which routes are the ones being worked with
 ///
-/// The one whose panel was last pressed, and failing that the last one
-/// plotted, which is the last route filter held: they are added in the order
-/// they land, so the end of the list is the newest.
+/// The ones last picked out, and failing those the last one plotted, which is
+/// the last route filter held: they are added in the order they land, so the
+/// end of the list is the newest.
 ///
 /// `selected` is weighed against the filters rather than trusted. A route
-/// picked out and then closed would otherwise go on being the active one with
-/// nothing on screen standing for it, and nothing left to hand the emphasis
-/// back to.
+/// picked out and then closed would otherwise go on being active with nothing
+/// on screen standing for it, and nothing left to hand the emphasis back to.
+/// A trip whose legs are picked out and one of them closed keeps the rest:
+/// what is left of it is still what the user is working with.
 ///
 /// Only among the routes being shown. A row turned off takes its line off the
 /// map, and a route nobody can see cannot be the one in front: the rest would
 /// be held back for it and the map would have every route drawn faintly and
 /// none of them picked out.
 ///
-/// Nothing where no route is being shown at all, there being nothing to be
+/// Empty where no route is being shown at all, there being nothing to be
 /// active.
-fn active<'a>(
-    filters: &'a Filters,
-    selected: &'a Option<Filter>,
-) -> Option<&'a Filter> {
-    selected
-        .as_ref()
+fn active<'a>(filters: &'a Filters, selected: &'a [Filter]) -> Vec<&'a Filter> {
+    let picked: Vec<&Filter> = selected
+        .iter()
         .filter(|picked| shown(filters).any(|filter| filter == *picked))
-        // The last route held, which is the last one plotted: they are added
-        // in the order they land.
-        .or_else(|| shown(filters).last())
+        .collect();
+    if !picked.is_empty() {
+        return picked;
+    }
+
+    // The last route held, which is the last one plotted: they are added in
+    // the order they land.
+    shown(filters).last().into_iter().collect()
 }
 
 /// Every route the map is showing, in the order they were plotted
@@ -791,7 +806,7 @@ fn emphasise(
             continue;
         };
         let wanted =
-            spawn::line_color(strength(Some(&line.0) == active) * standing);
+            spawn::line_color(strength(active.contains(&&line.0)) * standing);
         // Written only where it changed. Touching a material marks the asset
         // changed, which re-uploads it, and this runs every frame.
         if material.base_color != wanted {
@@ -1262,6 +1277,62 @@ mod tests {
         assert_eq!(rows, vec!["SOL -> LAVE", "LAVE -> DISO", "DISO -> REORTE"]);
     }
 
+    /// And a second plot of the same trip keeps its legs to itself
+    ///
+    /// The reported trouble. Two trips asked for back to back through the
+    /// same stops, the second for a ship reaching further. A trip is named
+    /// for its stops and nothing else, so the second answered to the first's
+    /// name and its legs were laid in among the first's rows: two plots read
+    /// as one trip of four legs, in an order neither of them is flown in.
+    #[test]
+    fn a_second_plot_of_a_trip_keeps_its_legs_to_itself() {
+        let stops = ["SOL", "LAVE", "DISO"];
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_message::<PlottedRoute>();
+        app.init_resource::<Filters>();
+        app.init_resource::<SelectedFilter>();
+        app.add_systems(Update, plotted);
+        let trip = stops.join(crate::ui::ARROW);
+
+        for range in ["10", "20"] {
+            // Backwards again: what decides the order they land in is which
+            // walk finished first, and neither plot is asked in order.
+            for leg in [1, 0] {
+                app.world_mut().write_message(PlottedRoute {
+                    label: format!(
+                        "{}{}{}",
+                        stops[leg],
+                        crate::ui::ARROW,
+                        stops[leg + 1]
+                    ),
+                    systems: vec![leg as i64],
+                    range: range.to_owned(),
+                    trip: Some(trip.clone()),
+                    drive: Drive::Unaided,
+                    how: Routing::default(),
+                });
+                app.update();
+            }
+        }
+
+        let rows: Vec<(&str, Option<&str>)> = app
+            .world()
+            .resource::<Filters>()
+            .iter()
+            .map(|entry| (entry.filter.name(), entry.filter.range()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("SOL -> LAVE", Some("10")),
+                ("LAVE -> DISO", Some("10")),
+                ("SOL -> LAVE", Some("20")),
+                ("LAVE -> DISO", Some("20")),
+            ]
+        );
+    }
+
     /// And a route that is no leg of it is left at the end
     ///
     /// A faction, a hand-picked set, a route from some earlier trip: the trip
@@ -1451,7 +1522,7 @@ mod tests {
     /// With nothing plotted there is no active route
     #[test]
     fn nothing_plotted_is_nothing_to_put_forward() {
-        assert_eq!(active(&Filters::default(), &None), None);
+        assert!(active(&Filters::default(), &[]).is_empty());
     }
 
     /// The last route plotted is the active one
@@ -1463,7 +1534,7 @@ mod tests {
         let (first, second) = (asking(&[1, 2]), asking(&[8, 9]));
         let filters = holding(&[first, second.clone()]);
 
-        assert_eq!(active(&filters, &None), Some(&second));
+        assert_eq!(active(&filters, &[]), vec![&second]);
     }
 
     /// Picking one out puts it in front of the last plotted
@@ -1475,7 +1546,27 @@ mod tests {
         let (first, second) = (asking(&[1, 2]), asking(&[8, 9]));
         let filters = holding(&[first.clone(), second]);
 
-        assert_eq!(active(&filters, &Some(first.clone())), Some(&first));
+        assert_eq!(
+            active(&filters, std::slice::from_ref(&first)),
+            vec![&first]
+        );
+    }
+
+    /// And every route picked out stands in front, not one of them
+    ///
+    /// A trip is picked out as the one thing it was plotted as and is several
+    /// routes: one leg in front with the rest held back would be the map
+    /// drawing part of a trip nobody asked for.
+    #[test]
+    fn every_route_picked_out_stands_in_front() {
+        let (first, second, other) =
+            (asking(&[1, 2]), asking(&[2, 3]), asking(&[8, 9]));
+        let filters = holding(&[first.clone(), second.clone(), other]);
+
+        assert_eq!(
+            active(&filters, &[first.clone(), second.clone()]),
+            vec![&first, &second]
+        );
     }
 
     /// One picked out and then closed hands the emphasis back
@@ -1488,7 +1579,7 @@ mod tests {
         let (closed, held) = (asking(&[1, 2]), asking(&[8, 9]));
         let filters = holding(std::slice::from_ref(&held));
 
-        assert_eq!(active(&filters, &Some(closed)), Some(&held));
+        assert_eq!(active(&filters, &[closed]), vec![&held]);
     }
 
     /// A route turned off is not the one put in front
@@ -1502,7 +1593,7 @@ mod tests {
         // The last plotted, which is the one it would otherwise fall to.
         filters.toggle(1);
 
-        assert_eq!(active(&filters, &None), Some(&older));
+        assert_eq!(active(&filters, &[]), vec![&older]);
     }
 
     /// Nor when it was the one picked out
@@ -1512,7 +1603,7 @@ mod tests {
         let mut filters = holding(&[held.clone(), hidden.clone()]);
         filters.toggle(1);
 
-        assert_eq!(active(&filters, &Some(hidden)), Some(&held));
+        assert_eq!(active(&filters, &[hidden]), vec![&held]);
     }
 
     /// With every route turned off there is none in front
@@ -1521,7 +1612,7 @@ mod tests {
         let mut filters = holding(&[asking(&[1, 2]), asking(&[8, 9])]);
         filters.toggle_all(&[0, 1]);
 
-        assert_eq!(active(&filters, &None), None);
+        assert!(active(&filters, &[]).is_empty());
     }
 
     /// A faction is never the active route
@@ -1534,7 +1625,7 @@ mod tests {
         filters.add(asking(&[1, 2]));
         filters.add(Filter::Faction { id: 7, name: "Some Lot".to_owned() });
 
-        assert_eq!(active(&filters, &None), Some(&asking(&[1, 2])));
+        assert_eq!(active(&filters, &[]), vec![&asking(&[1, 2])]);
     }
 
     /// Plotting takes back whatever was picked out
@@ -1554,7 +1645,7 @@ mod tests {
             lock_camera: false,
             follow_camera: false,
         });
-        app.insert_resource(SelectedFilter(Some(asking(&[1, 2]))));
+        app.insert_resource(SelectedFilter(vec![asking(&[1, 2])]));
         app.add_systems(Update, plotted);
 
         app.world_mut().write_message(PlottedRoute {
@@ -1567,7 +1658,7 @@ mod tests {
         });
         app.update();
 
-        assert!(app.world().resource::<SelectedFilter>().0.is_none());
+        assert!(app.world().resource::<SelectedFilter>().0.is_empty());
     }
 
     /// The active route is drawn at full strength and the rest behind it

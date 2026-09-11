@@ -201,9 +201,11 @@ pub enum Filter {
     /// them. [`None`] for a route asked for on its own, which is a trip of
     /// one leg and has nothing to be grouped with.
     ///
-    /// The trip's name rather than a number, so that two trips between the
-    /// same ends read apart in the bar and a leg says which trip it is a leg
-    /// of without anything else being asked.
+    /// The trip's name rather than a number, so that a leg says which trip
+    /// it is a leg of without anything else being asked. Its stops and
+    /// nothing else, though: the same stops plotted again for a ship that
+    /// reaches further are another trip through them, and what says so is
+    /// the range, the drive and the mode beside it. See [`Self::ship`].
     Route {
         label: String,
         systems: Vec<i64>,
@@ -311,15 +313,15 @@ impl Filter {
         !matches!(self, Filter::Recency { .. })
     }
 
-    /// Whether this is a route
-    ///
-    /// What the bar groups its rows by and what the map draws a line for. Its
-    /// own question rather than a reading of [`Self::ordered`] or of
-    /// [`Self::range`], which happen to answer the same today and are about
-    /// what a route is like rather than about what it is.
     /// The trip this filter is a leg of, where it is one
     ///
     /// Only a route can be, and only one asked for as part of a longer trip.
+    ///
+    /// Its stops and nothing else, so it is not on its own which trip this
+    /// is: the same stops asked for again for a ship that reaches further is
+    /// another trip through them, and a different set of lines. What tells
+    /// those apart is [`Self::ship`], and whoever groups legs into trips has
+    /// to weigh both.
     pub fn trip(&self) -> Option<&str> {
         match self {
             Filter::Route { trip, .. } => trip.as_deref(),
@@ -327,6 +329,31 @@ impl Filter {
         }
     }
 
+    /// What this was plotted for: the range, the drive and how it was asked
+    ///
+    /// Everything a route was asked for that its name does not say, in one
+    /// value, since they are only ever weighed together: two routes between
+    /// the same ends are the same route when all three agree and are two
+    /// answers to two questions when any of them differs.
+    ///
+    /// Nothing for a filter that was never plotted. See [`Self::range`],
+    /// [`Self::drive`] and [`Self::how`], which are these one at a time for
+    /// whoever wants only one.
+    pub fn ship(&self) -> Option<(&str, Drive, Routing)> {
+        match self {
+            Filter::Route { range, drive, how, .. } => {
+                Some((range, *drive, *how))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this is a route
+    ///
+    /// What the bar groups its rows by and what the map draws a line for. Its
+    /// own question rather than a reading of [`Self::ordered`] or of
+    /// [`Self::range`], which happen to answer the same today and are about
+    /// what a route is like rather than about what it is.
     pub fn is_route(&self) -> bool {
         matches!(self, Filter::Route { .. })
     }
