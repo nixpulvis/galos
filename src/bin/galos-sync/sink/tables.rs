@@ -220,18 +220,24 @@ impl Tables {
                         wrote.populated = true;
                     }
                 }
-                // A system that has stopped being populated. The game does
-                // report a population falling to nothing, and a row left
-                // behind would colour an empty system as inhabited. Only
-                // where the galaxy knows the system at all — otherwise every
-                // address it has never heard of would clear a good row.
-                None => {
-                    if galaxy.holds(address)
-                        && self.populated.remove(&address).is_some()
-                    {
-                        wrote.populated = true;
-                    }
-                }
+                // Nothing. This cannot tell a system that has emptied from
+                // one nobody has said anything about, so it withdraws
+                // neither.
+                //
+                // `Population` is absent from an arrival in an unpopulated
+                // system and `zero_is_none` turns a reported zero into the
+                // same absence (`elite_journal::system`), so "no population
+                // in hand" is the answer for a system that never had one,
+                // one that has emptied, and one merely named by a passing
+                // route. Withdrawing on that took the politics off every
+                // system anybody plotted through, in a directory the
+                // database had built.
+                //
+                // A row that really should go is withdrawn by the
+                // derivation that can tell: `galos_db::index` re-reads
+                // `population > 0` from the row itself, on a catch-up or
+                // on `--only populated`.
+                None => {}
             }
 
             if let Some(reach) = galaxy.reach_of(address) {
