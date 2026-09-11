@@ -5,12 +5,16 @@
 .env
 galos_db/backups/*
 .galos_index
-# An index written under another name, which is what `--to index=DIR`
-# invites. A built directory is derived and large; none of it belongs here.
-# Named one at a time on purpose: a glob over `*_index` would take the
-# `galos_index` crate with it.
+# An index written under another name, which is what `--index DIR`
+# invites, and the lock a run takes beside whichever it writes. A built
+# directory is derived and large, and a lock is one process's claim on it;
+# none of it belongs here. Named one at a time on purpose: a glob over
+# `*.lock` would take `Cargo.lock` with it.
+.galos_index.lock
 .galos_journal_index
+.galos_journal_index.lock
 /my_index
+/my_index.lock
 # A resume point is named after the directory it resumes, so an index
 # written anywhere but the default carries its own. The bare
 # `.galos_checkpoint` is what runs older than that wrote.
