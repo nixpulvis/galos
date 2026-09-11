@@ -587,11 +587,6 @@ impl Galaxy {
         })
     }
 
-    /// Whether anything at all is known about the system at `address`.
-    pub fn holds(&self, address: i64) -> bool {
-        self.systems.contains_key(&address)
-    }
-
     /// One system's photometry and place, by the same fallback chain the
     /// published build uses.
     ///

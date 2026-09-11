@@ -852,6 +852,119 @@ mod tests {
         said
     }
 
+    /// A jump that names who runs a system, as the game writes one.
+    fn settled(system: &str, address: i64, at: [f64; 3]) -> Arc<Entry<Event>> {
+        let json = format!(
+            r#"{{"timestamp":"2026-08-08T12:00:00Z","event":"FSDJump",
+                "StarSystem":"{}","SystemAddress":{},"StarPos":[{},{},{}],
+                "Population":22780919531,"SystemAllegiance":"Federation",
+                "SystemGovernment":"$government_Democracy;",
+                "SystemSecurity":"$SYSTEM_SECURITY_high;",
+                "SystemEconomy":"$economy_Refinery;"}}"#,
+            system, address, at[0], at[1], at[2],
+        );
+        Arc::new(serde_json::from_str(&json).expect("the entry should parse"))
+    }
+
+    /// A route plotted through `system`, which says nothing about it but
+    /// where it is and what burns in the middle of it.
+    fn routed(system: &str, address: i64, at: [f64; 3]) -> Arc<Entry<Event>> {
+        let json = format!(
+            r#"{{"timestamp":"2026-08-08T12:05:00Z","event":"NavRoute",
+                "Route":[{{"StarSystem":"{}","SystemAddress":{},
+                "StarPos":[{},{},{}],"StarClass":"G"}}]}}"#,
+            system, address, at[0], at[1], at[2],
+        );
+        Arc::new(serde_json::from_str(&json).expect("the entry should parse"))
+    }
+
+    /// What the directory says about who runs a system.
+    fn politics(
+        dir: &Path,
+        address: i64,
+    ) -> Option<galos_index::meta::PopulatedSystem> {
+        let read = FsSource::new(dir);
+        pollster::block_on(read.populated())
+            .expect("the populated table reads")
+            .into_iter()
+            .find(|it| it.address == address)
+    }
+
+    /// A system named by a passing route keeps the politics it had
+    ///
+    /// Reported from a map: systems losing their allegiance, government and
+    /// population as a feed ran. A `NavRoute` names systems the ship has
+    /// not been to and says nothing about who lives in them, and the
+    /// accumulator's answer to "who runs this?" for such a system is
+    /// nothing — which the patch read as "nobody does" and withdrew the row
+    /// the database's own build had published. Every system anybody plotted
+    /// through lost its colour.
+    ///
+    /// Withdrawing is for a system that has *stopped* being populated,
+    /// which is a thing an arrival says and a route cannot.
+    #[test]
+    fn a_route_through_a_system_does_not_empty_it() {
+        let (dir, checkpoint) = scratch("routed");
+        let mut sink = Index::open(&dir, &checkpoint, None).expect("it opens");
+        pollster::block_on(
+            sink.entry(settled("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        sink.publish_whole(None).expect("the first run writes");
+        drop(sink);
+        let stood = politics(&dir, 10477373803).expect("Sol is populated");
+        assert_eq!(stood.population, 22780919531);
+
+        // A second run, which knows nothing of Sol until a route names it —
+        // the shape of a directory the database built and a feed then runs
+        // into. The politics are on disk and not in the accumulator.
+        let mut sink = Index::open(&dir, &checkpoint, None).expect("resumed");
+        pollster::block_on(
+            sink.entry(routed("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        pollster::block_on(sink.flush()).expect("the publish lands");
+        assert_eq!(
+            politics(&dir, 10477373803),
+            Some(stood),
+            "a passing route took the politics off a populated system",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// Nor does an arrival that says nothing about it
+    ///
+    /// The other half of the same rule, and why the withdrawal is gone
+    /// rather than narrowed: `Population` is absent from an arrival in an
+    /// unpopulated system, and `zero_is_none` turns a reported zero into
+    /// that same absence, so this side cannot tell a system that has
+    /// emptied from one that never had anybody or one nobody has mentioned.
+    /// A row that really should go is withdrawn by the derivation that can
+    /// tell, reading `population > 0` off the row.
+    #[test]
+    fn an_arrival_that_says_nothing_leaves_the_politics_alone() {
+        let (dir, checkpoint) = scratch("silent");
+        let mut sink = Index::open(&dir, &checkpoint, None).expect("it opens");
+        pollster::block_on(
+            sink.entry(settled("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        sink.publish_whole(None).expect("the first run writes");
+        drop(sink);
+        let stood = politics(&dir, 10477373803).expect("Sol is populated");
+
+        let mut sink = Index::open(&dir, &checkpoint, None).expect("resumed");
+        pollster::block_on(
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        pollster::block_on(sink.flush()).expect("the publish lands");
+        assert_eq!(
+            politics(&dir, 10477373803),
+            Some(stood),
+            "a bare arrival took the politics off a populated system",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
     /// One read fills every sink it was given
     ///
     /// `--to db --index DIR` is the invocation this is for; two index
