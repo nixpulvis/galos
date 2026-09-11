@@ -18,9 +18,11 @@
 pub mod aggregate;
 pub mod cache;
 pub mod checkpoint;
+pub mod derive;
 pub mod geometry;
 pub mod inside;
 pub mod layer;
+pub mod lock;
 pub mod meta;
 pub mod moments;
 pub mod names;
@@ -36,10 +38,11 @@ pub mod walk;
 // stay public for everything past the core.
 pub use aggregate::{Aggregate, Cell};
 pub use cache::{Point, Resident, ResidentCell};
-pub use checkpoint::{Checkpoint, Pending};
+pub use checkpoint::{By, Checkpoint, Pending};
 pub use geometry::{Aabb, CellId};
 pub use inside::STAND_IN;
 pub use layer::{Claimed, Layered, Toggle};
+pub use lock::Lock;
 pub use meta::{
     Barycenter, Body, Boost, Economies, Faction, NameEntry, Parent,
     PopulatedSystem, Star, Surface, SystemBodies, SystemBoost, SystemReach,

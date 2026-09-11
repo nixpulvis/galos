@@ -32,6 +32,14 @@ serde_json = "*"
 serde = "1"
 # `galos-sync`'s `Sink` is a boxed trait with async methods on it.
 async-trait = "0.1"
+# The EDDN subscription parks the OS thread it runs on, so it runs on one of
+# its own and hands what it read to the async side through a channel. The
+# same channel carries what the index worker derives from.
+async-channel = "2"
+# Nothing in the workspace handled a signal before this. `galos-sync` is a
+# supervisor now: Ctrl-C has to end in a last publish, a whole-directory
+# `finish()` and a resume point rather than in a killed process.
+ctrlc = "3"
 tui = "*"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }

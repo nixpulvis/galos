@@ -28,8 +28,8 @@
 // each message, and the gateway's rules about how much and how often.
 
 use crate::bar;
-use crate::sink::{Sink, To};
-use clap::Parser;
+use crate::sink::Sink;
+use crate::Shutdown;
 use elite_journal::entry::{Entry, Event, NavRoute};
 use elite_journal::system::Coordinate;
 use galos_journal::Follower;
@@ -38,6 +38,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -58,36 +59,21 @@ const COMMANDER: &str = ".galos-commander";
 /// journal and that is all this claims about them.
 const UNKNOWN: &str = "unknown";
 
-/// Import local journal files.
-#[derive(Parser)]
-pub struct Cli {
-    /// The journal directory, or one file in one.
-    #[arg(name = "PATH")]
-    pub path: String,
+/// A journal directory, or one file in one: `--from journal=PATH`.
+pub struct Journal {
+    pub path: PathBuf,
 
-    /// Whose journal this is, overriding what the files say.
-    #[arg(short = 'u', long = "user", value_name = "NAME")]
+    /// Whose journal this is, overriding what the files say. `--user`.
     pub user: Option<String>,
 
-    /// Keep following the directory, reading what the game writes every
-    /// SECS seconds rather than exiting.
+    /// How often the directory is read again, where the run was told to
+    /// follow it with `--watch`.
     ///
-    /// A second by default, which is the beat the game writes at: an arrival
-    /// is one line and a full system scan is a few dozen. Faster buys nothing
-    /// anybody can see; slower is a jump that shows up late on the map they
-    /// are flying by.
-    #[arg(long, value_name = "SECS", num_args = 0..=1, default_missing_value = "1")]
-    pub watch: Option<u64>,
-
-    /// Where to write what is read: `db`, or `index=DIR`. Repeatable,
-    /// and `db` where it is not said at all.
-    #[arg(long = "to", value_name = "SINK")]
-    pub to: Vec<To>,
-
-    /// Resume file for an index sink, kept outside the served directory.
-    /// `DIR.checkpoint` beside the index directory by default.
-    #[arg(long, value_name = "FILE")]
-    pub checkpoint: Option<PathBuf>,
+    /// A second is what the flag defaults to, which is the beat the game
+    /// writes at: an arrival is one line and a full system scan is a few
+    /// dozen. Faster buys nothing anybody can see; slower is a jump that
+    /// shows up late on the map they are flying by.
+    pub watch: Option<Duration>,
     // TODO: `Market.json`, `Shipyard.json` and `Outfitting.json`, which the
     // game keeps beside its logs and rewrites at every station. Nothing reads
     // them yet: `elite_journal` models these three on the shape EDDN sends,
@@ -97,25 +83,24 @@ pub struct Cli {
     // convert into the ones `record::market` and its neighbors already take.
 }
 
-impl Cli {
+impl Journal {
     /// Import what the path names, and follow it where asked.
     ///
     /// Answers whether all of it could be read. The status is the whole of
     /// what cron reads, so a run that lost a journal to the filesystem must
     /// not look like one with nothing left to do. What could be read is
     /// written either way.
-    pub async fn read(&self, sink: &mut dyn Sink) -> bool {
+    pub async fn read(&self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
         // Seeded before the import and not after. The offsets are fixed here,
         // so a line the game writes while the import is running is read by
         // both and written twice, which every write downstream is built to
         // survive. Seeded afterwards, that same line would fall in the gap
         // between the two reads and be seen by neither.
-        let mut following = self.watch.map(|secs| {
-            let dir = Path::new(&self.path);
-            let dir = if dir.is_dir() {
-                dir.to_owned()
+        let mut following = self.watch.map(|every| {
+            let dir = if self.path.is_dir() {
+                self.path.clone()
             } else {
-                dir.parent().unwrap_or(Path::new(".")).to_owned()
+                self.path.parent().unwrap_or(Path::new(".")).to_owned()
             };
             let mut follower = Follower::new(&dir);
             match follower.caught_up() {
@@ -130,19 +115,13 @@ impl Cli {
                     "the directory would not be sized; it will be read twice",
                 ),
             }
-            (follower, Duration::from_secs(secs.max(1)))
+            (follower, every.max(Duration::from_millis(1)))
         });
 
-        let imported = self.import(sink).await;
+        let imported = self.import(sink, shutdown).await;
 
         if let Some((follower, every)) = &mut following {
-            // Everything the import wrote is durable before the first poll,
-            // so a follower that never finds anything has still published
-            // what it was asked to import.
-            if let Err(said) = sink.flush().await {
-                warn!(error = %said, "could not publish the import");
-            }
-            self.follow(sink, follower, *every).await;
+            self.follow(sink, follower, *every, shutdown).await;
         }
 
         imported
@@ -150,19 +129,20 @@ impl Cli {
 
     /// Read what the game writes, for as long as it writes it.
     ///
-    /// Never returns. Each poll is a small import: the entries are put in the
-    /// order they happened, the systems they name are recorded ahead of
-    /// anything pointing at one, and then they are written. That last part is
-    /// what a live sender cannot do and this can — the batch is in hand, so
-    /// the same pre-pass the whole-directory import runs works over it. What
-    /// it cannot do is look forward past the poll, so a signal arriving in
-    /// one poll for a system named in the next is still a write refused, as
-    /// it is on EDDN.
+    /// Returns only when the run is asked to stop. Each poll is a small
+    /// import: the entries are put in the order they happened, the systems
+    /// they name are recorded ahead of anything pointing at one, and then
+    /// they are written. That last part is what a live sender cannot do and
+    /// this can — the batch is in hand, so the same pre-pass the
+    /// whole-directory import runs works over it. What it cannot do is look
+    /// forward past the poll, so a signal arriving in one poll for a system
+    /// named in the next is still a write refused, as it is on EDDN.
     async fn follow(
         &self,
         sink: &mut dyn Sink,
         follower: &mut Follower,
         every: Duration,
+        shutdown: &Shutdown,
     ) {
         info!(
             dir = %follower.dir().display(),
@@ -175,7 +155,7 @@ impl Cli {
         let mut known =
             self.user.clone().or_else(|| remembered(follower.dir()));
 
-        loop {
+        while !shutdown.asked() {
             let read = match follower.poll() {
                 Ok(read) => read,
                 Err(err) => {
@@ -196,7 +176,10 @@ impl Cli {
                 continue;
             }
 
-            let mut entries = read.entries;
+            // Shared rather than copied: the same entry is written to
+            // Postgres and handed to the index worker.
+            let mut entries: Vec<Arc<Entry<Event>>> =
+                read.entries.into_iter().map(Arc::new).collect();
             entries.sort_by_key(|entry| entry.timestamp);
             if self.user.is_none() {
                 if let Some(name) = commander(&entries) {
@@ -221,19 +204,17 @@ impl Cli {
 
             let [(_, entries)] = &journals;
             for entry in entries {
-                sink.entry(entry, user).await;
+                sink.entry(Arc::clone(entry), user).await;
             }
             info!(entries = entries.len(), user = %user, "followed");
 
-            if let Err(said) = sink.flush().await {
-                warn!(error = %said, "could not publish");
-            }
             async_std::task::sleep(every).await;
         }
     }
+
     /// Write what the path holds, answering whether all of it could be read
-    async fn import(&self, sink: &mut dyn Sink) -> bool {
-        let path = Path::new(&self.path);
+    async fn import(&self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
+        let path = self.path.as_path();
         let Ok(meta) = fs::metadata(path) else {
             warn!(path = %path.display(), "nothing to import at this path");
             return false;
@@ -265,11 +246,18 @@ impl Cli {
         // order they happened or an import lands differently every time. A
         // file's own first entry is what says where the file belongs, which
         // is the order a commander's name carries forward in.
-        let mut journals = Vec::new();
+        let mut journals: Vec<(PathBuf, Vec<Arc<Entry<Event>>>)> = Vec::new();
         let mut refused = 0;
         for path in &paths {
             match read(path) {
-                Some(mut entries) => {
+                Some(entries) => {
+                    // Shared rather than copied, and sorted as pointers
+                    // rather than as entries: the same reading is written to
+                    // Postgres and handed to the index worker, and an
+                    // `Entry<Event>` is a few hundred bytes to move where a
+                    // refcount is eight.
+                    let mut entries: Vec<Arc<Entry<Event>>> =
+                        entries.into_iter().map(Arc::new).collect();
                     entries.sort_by_key(|entry| entry.timestamp);
                     journals.push((path.to_owned(), entries));
                 }
@@ -333,9 +321,6 @@ impl Cli {
 
         let bar =
             bar::progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
-        // Every line the log prints from here goes above the bar, so the bar
-        // keeps the bottom line for the length of the import.
-        let drawing = bar::under(&bar);
 
         for run in replay(&journals).chunk_by(|(a, _), (b, _)| a == b) {
             let journal = run[0].0;
@@ -350,12 +335,18 @@ impl Cli {
                     .into_owned(),
             );
             for (_, entry) in run {
-                sink.entry(entry, user).await;
+                // A directory of years is millions of entries, so the run
+                // is asked here rather than once a file: what has been
+                // written stands, and the next import re-reads the rest.
+                if shutdown.asked() {
+                    bar.abandon_with_message("stopped");
+                    return refused == 0;
+                }
+                sink.entry(Arc::clone(entry), user).await;
                 bar.inc(1);
             }
         }
         bar.finish();
-        drop(drawing);
 
         // Whatever is beside the logs, whether one of them or all of them
         // were asked for. The route is where the ship is going now and there
@@ -395,7 +386,7 @@ impl Cli {
 /// The first naming of an address wins, which is the earliest, so the row is
 /// stamped at the first the import knows of the place rather than the last.
 fn gather_names<'a>(
-    journals: &'a [(PathBuf, Vec<Entry<Event>>)],
+    journals: &'a [(PathBuf, Vec<Arc<Entry<Event>>>)],
 ) -> BTreeMap<i64, (usize, &'a Entry<Event>, &'a str, Option<Coordinate>)> {
     let mut names = BTreeMap::new();
 
@@ -432,7 +423,12 @@ fn gather_names<'a>(
         };
 
         if let Some((address, name, pos)) = said {
-            names.entry(address).or_insert((journal, entry, name, pos));
+            names.entry(address).or_insert((
+                journal,
+                entry.as_ref(),
+                name,
+                pos,
+            ));
         }
     }
 
@@ -451,8 +447,8 @@ fn gather_names<'a>(
 /// from an update. Sorting is stable, so entries stamped the same second are
 /// left in the order their files stand in.
 fn replay(
-    journals: &[(PathBuf, Vec<Entry<Event>>)],
-) -> Vec<(usize, &Entry<Event>)> {
+    journals: &[(PathBuf, Vec<Arc<Entry<Event>>>)],
+) -> Vec<(usize, &Arc<Entry<Event>>)> {
     let mut replayed: Vec<_> = journals
         .iter()
         .enumerate()
@@ -609,12 +605,12 @@ async fn sidecars(sink: &mut dyn Sink, dir: &Path, user: &str) {
         // to be told separately.
         Ok(entry) => {
             sink.entry(
-                &Entry {
+                Arc::new(Entry {
                     timestamp: entry.timestamp,
                     event: Event::NavRoute(entry.event),
                     horizons: entry.horizons,
                     odyssey: entry.odyssey,
-                },
+                }),
                 user,
             )
             .await
@@ -631,7 +627,7 @@ async fn sidecars(sink: &mut dyn Sink, dir: &Path, user: &str) {
 /// `LoadGame`, and once more by `NewCommander` for the first file a journal
 /// ever held. Any of them answers it. A file continued from an earlier session
 /// names nobody and is left to whatever the directory remembers.
-fn commander(entries: &[Entry<Event>]) -> Option<String> {
+fn commander(entries: &[Arc<Entry<Event>>]) -> Option<String> {
     entries.iter().find_map(|entry| match &entry.event {
         Event::Commander(commander) => Some(commander.name.clone()),
         Event::NewCommander(new) => Some(new.commander.name.clone()),
@@ -679,10 +675,14 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn parse(lines: &[&str]) -> Vec<Entry<Event>> {
+    fn parse(lines: &[&str]) -> Vec<Arc<Entry<Event>>> {
         lines
             .iter()
-            .map(|line| serde_json::from_str(line).expect("entry should parse"))
+            .map(|line| {
+                Arc::new(
+                    serde_json::from_str(line).expect("entry should parse"),
+                )
+            })
             .collect()
     }
 
@@ -895,16 +895,18 @@ mod tests {
     }
 
     /// An entry that is nothing but the moment it happened
-    fn at(minute: &str) -> Entry<Event> {
-        serde_json::from_str(&format!(
-            r#"{{ "timestamp": "2026-08-08T{}:00Z", "event": "NavRoute" }}"#,
-            minute,
-        ))
-        .expect("entry should parse")
+    fn at(minute: &str) -> Arc<Entry<Event>> {
+        Arc::new(
+            serde_json::from_str(&format!(
+                r#"{{ "timestamp": "2026-08-08T{}:00Z", "event": "NavRoute" }}"#,
+                minute,
+            ))
+            .expect("entry should parse"),
+        )
     }
 
     /// The minute each entry of a replay happened, in the order it is written
-    fn minutes(journals: &[(PathBuf, Vec<Entry<Event>>)]) -> Vec<String> {
+    fn minutes(journals: &[(PathBuf, Vec<Arc<Entry<Event>>>)]) -> Vec<String> {
         replay(journals)
             .iter()
             .map(|(_, entry)| entry.timestamp.format("%H:%M").to_string())

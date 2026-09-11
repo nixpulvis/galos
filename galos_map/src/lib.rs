@@ -151,7 +151,7 @@ impl Boosts {
     /// Whether the index published a supercharge table at all
     ///
     /// False is "the map cannot say where a jet cone is", not "there are
-    /// none". Rebuilt with `galos-sync db --only boosts`.
+    /// none". Rebuilt with `galos-sync --db --index DIR --only boosts`.
     pub fn published(&self) -> bool {
         self.published
     }

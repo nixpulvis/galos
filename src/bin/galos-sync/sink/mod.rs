@@ -16,12 +16,15 @@
 //! Not by what a database wants, and not by what an index wants: by what the
 //! *sources* have to say. There are exactly two shapes of thing arriving
 //! here, and the trait is those two and nothing else.
-//!
 //! - **An event.** [`Sink::entry`] — one `elite_journal` [`Entry<Event>`] and
 //!   whoever wrote it. Journal files and EDDN carry the same events, which is
 //!   the invariant `journal::record`'s header states, so this is the whole of
 //!   both of those sources. Four EDDN schemas carry a payload with no `event`
 //!   key and get a method apiece, since there is no `Event` to hand over.
+//!   Behind an [`Arc`] rather than a reference, because one reading is now
+//!   written to Postgres *and* handed across a thread to the index worker,
+//!   and `Entry` is not `Clone` — the whole galaxy of the event tree would
+//!   have to derive it. A refcount is what two sinks share instead.
 //! - **A system row.** [`Sink::system`] — a name, a place and the political
 //!   columns, which is what the EDSM and EDDB dumps hold and all they hold.
 //!   Not an event and never was: nobody flew anywhere, a file was published.
@@ -56,15 +59,16 @@ use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
 use elite_journal::system::Coordinate;
+use std::sync::Arc;
 
 pub mod db;
 pub mod index;
+pub mod relay;
 pub mod tables;
-pub mod to;
 
 pub use db::Db;
 pub use index::Index;
-pub use to::To;
+pub use relay::Relay;
 
 /// A system as a published dump gives it, which is not an event.
 ///
@@ -102,7 +106,7 @@ pub struct Row {
 #[async_trait]
 pub trait Sink: Send {
     /// One journal entry, and whoever wrote it.
-    async fn entry(&mut self, entry: &Entry<Event>, user: &str);
+    async fn entry(&mut self, entry: Arc<Entry<Event>>, user: &str);
 
     /// A system named and placed, ahead of anything that points at it.
     ///
@@ -173,21 +177,25 @@ pub trait Sink: Send {
 }
 
 /// Several sinks, written to as one.
+/// What `--db --index=DIR` is: one read of a publisher filling both, rather
+/// than two runs of this program over the same feed, which for EDDN means
+/// two subscriptions and twice the messages for the same galaxy.
 ///
-/// What `--to db --to index=DIR` is: one read of a publisher filling both,
-/// rather than two runs of this program over the same feed, which for EDDN
-/// means two subscriptions and twice the messages for the same galaxy.
+/// Nothing here borrows: [`Db`] owns its `Database` and [`Relay`] owns a
+/// channel sender, so a fan is `'static` and a source reading into one can
+/// be spawned. That is what lets several sources run at once, each with a
+/// fan of its own over the same pool and the same channel.
 ///
 /// In order and one after another, never concurrently. The order a source
 /// reads in is what the guarded writes downstream turn on, and a sink that
 /// is slow is slow for the run rather than for its neighbour.
-pub struct Fan<'a> {
-    sinks: Vec<Box<dyn Sink + 'a>>,
+pub struct Fan {
+    sinks: Vec<Box<dyn Sink>>,
 }
 
-impl<'a> Fan<'a> {
+impl Fan {
     /// A sink over all of these.
-    pub fn of(sinks: Vec<Box<dyn Sink + 'a>>) -> Fan<'a> {
+    pub fn of(sinks: Vec<Box<dyn Sink>>) -> Fan {
         Fan { sinks }
     }
 
@@ -215,10 +223,12 @@ impl<'a> Fan<'a> {
 }
 
 #[async_trait]
-impl Sink for Fan<'_> {
-    async fn entry(&mut self, entry: &Entry<Event>, user: &str) {
+impl Sink for Fan {
+    /// The same reading to each, which is one refcount apiece rather than
+    /// one copy of the event apiece.
+    async fn entry(&mut self, entry: Arc<Entry<Event>>, user: &str) {
         for sink in &mut self.sinks {
-            sink.entry(entry, user).await;
+            sink.entry(Arc::clone(&entry), user).await;
         }
     }
 

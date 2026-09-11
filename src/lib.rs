@@ -65,12 +65,13 @@
 //!
 //! TODO: Incorperate queries for both `+` and `|` nodes in the route.
 //!
-//! ### `galos-sync <provider>`
+//! ### `galos-sync --from SOURCE... [--db] [--index DIR]`
 //!
-//! Syncs the DB with EDDN, EDSM and/or EDDB.
+//! Syncs the database and an index directory from EDDN, EDSM, EDDB and the
+//! game's own journal files, in one process.
 //!
-//! Syncing from the `eddn` provider will subscribe to its ZMQ service and
-//! continue to process events until the process is killed.
+//! `--from` repeats, and `--from eddn` subscribes to its ZMQ service and
+//! processes events until the run is asked to stop.
 
 use galos_db::Database;
 

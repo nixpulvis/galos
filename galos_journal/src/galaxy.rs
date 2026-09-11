@@ -84,28 +84,25 @@ use elite_journal::entry::{Entry, Event};
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
 use elite_journal::system::{Coordinate, System as JournalSystem};
 use galos_index::System;
+// The Recency edges and the bucketing over them are kept once, in
+// [`galos_index::derive`], rather than named again here. How many buckets
+// there are is part of the published format — a cell aggregate is a count
+// per bucket and the client's Recency control indexes straight into them —
+// so this derivation and the database's must read the same edges or one
+// galaxy bins itself two ways.
+use galos_index::derive;
 use galos_index::meta::{
     Barycenter, Body, Boost, NameEntry, Parent, PopulatedSystem, Star, Surface,
     SystemBodies, SystemBoost, SystemReach,
 };
-use galos_photometry::{ClassLight, Magnitude, Temperature};
+use galos_photometry::{Magnitude, Temperature};
 use std::collections::{BTreeMap, HashMap, HashSet};
-
-/// The edges between the eight Recency buckets, in days since a system was
-/// last heard from. The published build's own edges, named again rather than
-/// shared: they are a property of the format, and the two must agree.
-const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
 
 /// Who a journal's readings are filed under when nothing in it says.
 ///
 /// `galos-sync journal` files them under the same word, and for the same
 /// reason: these came from a journal and that is the whole of the claim.
 pub const UNKNOWN: &str = "unknown";
-
-/// Which Recency bucket an age in days falls in, `0..8`.
-fn age_bucket(days: i64) -> usize {
-    AGE_EDGES.iter().filter(|&&edge| days >= edge).count()
-}
 
 /// A system as the journal has described it, over however many events.
 ///
@@ -598,65 +595,41 @@ impl Galaxy {
     /// One system's photometry and place, by the same fallback chain the
     /// published build uses.
     ///
-    /// Its scanned stars if it has any: their visual magnitudes combine into
-    /// one figure and the tint is the brightest of them, which dominates it.
-    /// Failing that the arrival star's class, which only a plotted route
-    /// states here. Failing that the default M dwarf, which is what the
-    /// galaxy is mostly made of.
+    /// [`derive::lit`]'s chain, which is the one both derivations of the
+    /// index answer with: its scanned stars if it has any, failing that the
+    /// arrival star's class, which only a plotted route states here, failing
+    /// that the default M dwarf the galaxy is mostly made of.
     fn system(
         &self,
         address: i64,
         visit: &Visit,
         position: [f64; 3],
     ) -> System {
-        let stars = self.lit(address);
-        let (absolute_magnitude, temperature) = match Magnitude::combine(
-            stars.iter().map(|&(m, _)| Magnitude(m)),
-        ) {
-            Some(combined) => {
-                let tint = stars
-                    .iter()
-                    .copied()
-                    .min_by(|a, b| a.0.total_cmp(&b.0))
-                    .map(|(_, temperature)| temperature)
-                    .expect("a combined magnitude means at least one star");
-                (combined.0, tint)
-            }
-            None => {
-                let light =
-                    ClassLight::of(visit.routed_class.as_deref().unwrap_or(""));
-                (light.absolute_magnitude.0, light.temperature.0)
-            }
-        };
+        let inside = self.inside.read(address);
+        // The scanned magnitude is bolometric — the star's whole output as
+        // one figure — so it is turned into the visual magnitude the sky
+        // sees before anything sums it. That is where a white dwarf keeps
+        // its faint scanned brightness and a neutron star falls to nothing,
+        // and it is the one step that would be easy to leave out and
+        // impossible to see the absence of.
+        let stars = inside.stars.iter().map(|star| {
+            let t = star.temperature as f64;
+            let m = Magnitude(star.absolute_magnitude as f64);
+            (m.visual(Temperature(t)).0, t)
+        });
+        let (absolute_magnitude, temperature) =
+            derive::lit(stars, visit.routed_class.as_deref().unwrap_or(""));
         let at = visit.updated_at.unwrap_or(self.now);
+        let (age_bucket, updated_at) =
+            derive::updated(at.naive_utc(), self.now.naive_utc());
         System {
             id64: address as u64,
             position,
             absolute_magnitude,
             temperature,
-            age_bucket: age_bucket((self.now - at).num_days()),
-            updated_at: at.timestamp().clamp(0, u32::MAX as i64) as u32,
+            age_bucket,
+            updated_at,
         }
-    }
-
-    /// A system's scanned stars as `(visual absolute magnitude, temperature)`.
-    ///
-    /// The scanned magnitude is bolometric — the star's whole output as one
-    /// figure — so it is turned into the visual magnitude the sky sees before
-    /// anything sums it. That is where a white dwarf keeps its faint scanned
-    /// brightness and a neutron star falls to nothing, and it is the one step
-    /// that would be easy to leave out and impossible to see the absence of.
-    fn lit(&self, address: i64) -> Vec<(f64, f64)> {
-        self.inside
-            .read(address)
-            .stars
-            .iter()
-            .map(|star| {
-                let t = star.temperature as f64;
-                let m = Magnitude(star.absolute_magnitude as f64);
-                (m.visual(Temperature(t)).0, t)
-            })
-            .collect()
     }
 
     /// Every placed system's name and where it sits.
@@ -706,19 +679,15 @@ impl Galaxy {
     }
 
     /// The class of the star a ship drops in at, as far as the journal says.
+    ///
+    /// [`derive::arrival_class`] over what has been scanned, and where
+    /// nothing has been the class a plotted route named, that being this
+    /// crate's only other statement about the same star.
     fn arrival_class(&self, address: i64) -> Option<String> {
-        let scanned = self
-            .inside
-            .read(address)
-            .stars
-            .iter()
-            .min_by(|a, b| {
-                a.distance_from_arrival_ls
-                    .total_cmp(&b.distance_from_arrival_ls)
-                    .then(a.id.cmp(&b.id))
-            })
-            .map(|star| star.star_class.clone());
-        scanned.or_else(|| self.systems.get(&address)?.routed_class.clone())
+        let inside = self.inside.read(address);
+        derive::arrival_class(&inside)
+            .map(str::to_owned)
+            .or_else(|| self.systems.get(&address)?.routed_class.clone())
     }
 
     /// The systems anybody lives in, with the political columns a colour and a
@@ -1012,6 +981,7 @@ fn surface_of(surface: &JournalSurface, held: Option<&Surface>) -> Surface {
 mod tests {
     use super::*;
     use elite_journal::entry::Entry;
+    use galos_photometry::ClassLight;
 
     /// One entry, read the way the follower hands it over: tag and all.
     fn entry(json: &str) -> Entry<Event> {

@@ -4003,10 +4003,12 @@ dependencies = [
 name = "galos"
 version = "0.0.4"
 dependencies = [
+ "async-channel 2.5.0",
  "async-std",
  "async-trait",
  "chrono",
  "clap 4.6.6",
+ "ctrlc",
  "eddb",
  "eddn",
  "edsm",

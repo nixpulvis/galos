@@ -16,13 +16,24 @@
 //! The tree is here; the metadata that rides beside it — the populated table,
 //! the names table, the factions and the body files — is `metadata`, which is
 //! also where a watch's incremental publishing of it lives.
+//!
+//! What a pass reads is paged, in chunks of [`CHANGED_CHUNK`] addresses. A
+//! cold catch-up over a million changed addresses is a hundred chunks of nine
+//! bounded queries apiece, where it was nine queries each binding a
+//! million-element array and holding everything they matched at once. It is
+//! more round trips for a bound on what any one of them costs, which is what
+//! a directory a week stale and a nightly dump that re-stamps every row it
+//! read both need. The three tables written whole are written once for the
+//! pass and not once per chunk, so the paging does not multiply the hundred
+//! megabytes a publish rewrites.
 
 use crate::{Database, Result};
 use galos_index::{
-    meta, BuildParams, Checkpoint, Index, Snapshot, System, Tree,
+    derive, meta, BuildParams, By, Checkpoint, Index, Pending, Snapshot,
+    System, Tree,
 };
-use galos_photometry::{ClassLight, Magnitude, Temperature};
-use metadata::Metadata;
+use galos_photometry::{Magnitude, Temperature};
+use metadata::{Metadata, Moved};
 use sqlx::Row;
 use std::collections::HashMap;
 use std::fmt;
@@ -106,10 +117,18 @@ impl Parts {
 
     /// Whether a read of every scanned thing is wanted
     ///
-    /// The rows the body files are written from and the reaches are measured
-    /// over, which is one read for both.
+    /// The rows the body files are written from, the reaches are measured
+    /// over and the arrival star is picked out of, which is one read for all
+    /// three. The boosts joined it when the arrival star stopped being a
+    /// `DISTINCT ON` of its own and became
+    /// [`galos_index::derive::arrival_class`] over these same rows, so
+    /// `--only boosts` now pays for the whole scanned read where it used to
+    /// pay for one ordered pass over `stars`. That is the price of the rule
+    /// being written once: a repair of the boost table is the rarest build
+    /// there is, and a table derived by a second copy of the rule is what it
+    /// would be repairing.
     fn wants_bodies(&self) -> bool {
-        self.reaches || self.bodies
+        self.reaches || self.bodies || self.boosts
     }
 }
 
@@ -135,83 +154,26 @@ const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
 /// still moves to the clock the pass read, so it does not compound.
 const CURSOR_OVERLAP: Duration = Duration::from_secs(2);
 
-/// The edges between the eight Recency buckets, in days since a system was last
-/// written. Updated today lands in bucket 0, untouched for a decade in bucket 7.
-const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
-
-/// Which Recency bucket an age in days falls in, `0..8`.
-fn age_bucket(days: i64) -> usize {
-    AGE_EDGES.iter().filter(|&&edge| days >= edge).count()
-}
-
-/// One system's photometry, by the fallback chain: its scanned stars summed if
-/// it has any, else the class it is named for, else a default.
+/// How many changed addresses one read of a pass covers.
 ///
-/// `stars` is the `(absolute magnitude, temperature)` of every scanned star.
-/// Their light adds, so the magnitudes combine to one figure and the tint is
-/// the brightest star's, which dominates it. With no stars the primary class
-/// stands in, and with no class the default M dwarf does.
+/// The changed set is unbounded. A directory a week stale is a million
+/// addresses, and one nightly EDSM dump is several million, since the import
+/// stamps `received_at` on every row it read whether or not anything about
+/// that row changed. Everything a pass does with the set binds it whole to
+/// `= ANY($1)` — the systems and the stars behind [`inputs_for`], the names,
+/// the populated rows, the bodies and the boosts behind
+/// [`Metadata::patch`] — so the set unpaged is a bind parameter of millions,
+/// a plan built over it, and every row any of those queries matches held in
+/// memory at once.
 ///
-/// `age_bucket` and `updated_at` are the two forms of one fact, as [`updated`]
-/// settles them: the binned one the cell aggregates count by and the exact one
-/// the payload carries.
-fn system_input(
-    address: i64,
-    position: [f64; 3],
-    primary_star_class: Option<&str>,
-    stars: &[(f64, f64)],
-    (age_bucket, updated_at): (usize, u32),
-) -> System {
-    let (absolute_magnitude, temperature) =
-        match Magnitude::combine(stars.iter().map(|&(m, _)| Magnitude(m))) {
-            Some(combined) => {
-                let tint = stars
-                    .iter()
-                    .copied()
-                    .min_by(|a, b| a.0.total_cmp(&b.0))
-                    .map(|(_, temperature)| temperature)
-                    .expect("a combined magnitude means at least one star");
-                (combined.0, tint)
-            }
-            None => {
-                let light = ClassLight::of(primary_star_class.unwrap_or(""));
-                (light.absolute_magnitude.0, light.temperature.0)
-            }
-        };
-    System {
-        id64: address as u64,
-        position,
-        absolute_magnitude,
-        temperature,
-        age_bucket,
-        updated_at,
-    }
-}
-
-/// How lately a system was updated, in the two forms the index wants it: the
-/// Recency bucket the cell aggregates count by and the Unix second the payload
-/// carries.
-///
-/// One reading of `updated_at`, so the two cannot disagree about a system. The
-/// bucket alone was what the index carried and the buckets are days wide, which
-/// answers a Recency span of thirty days and none of the five spans shorter
-/// than a day — the end of the control the map is actually used at. So the
-/// second goes on the payload point beside it.
-///
-/// `u32`, which is Unix seconds to 2106 and four bytes rather than eight on a
-/// record of thirty-five. Clamped rather than wrapped: `updated_at` is a
-/// timestamp off a journal entry and a client can write whatever it likes
-/// there, and a year outside the `u32` range should read as the far end of the
-/// axis rather than fold back into the middle of it.
-fn updated(
-    updated_at: chrono::NaiveDateTime,
-    now: chrono::NaiveDateTime,
-) -> (usize, u32) {
-    (
-        age_bucket((now - updated_at).num_days()),
-        updated_at.and_utc().timestamp().clamp(0, u32::MAX as i64) as u32,
-    )
-}
+/// Ten thousand is chosen for what one chunk holds rather than for the round
+/// trips it costs. The body rows are the heavy read: a scanned system is tens
+/// of them, each carrying its materials, so a chunk is on the order of a
+/// hundred thousand rows at its worst and that is the high-water mark a
+/// catch-up of any length runs against. Smaller pays for a plan and a round
+/// trip more often without lowering the mark that matters; larger walks back
+/// towards the unbounded case a chunk at a time.
+const CHANGED_CHUNK: usize = 10_000;
 
 /// Every scanned star grouped under its system: its visual `(absolute
 /// magnitude, temperature)`, for the given addresses, or all systems when
@@ -271,6 +233,15 @@ async fn stars_by_system(
 /// The row carries `address`, the three `ST_?` coordinates, `primary_star_class`
 /// and `updated_at`; `now` dates the Recency reading and `stars` supplies any
 /// scan.
+///
+/// Both derived facts are [`galos_index::derive`]'s and neither is this
+/// crate's to decide: the photometry fallback chain, which is the scanned
+/// stars' light added and the brightest one's tint, or the class the system
+/// is named for where nothing has been scanned; and the two forms of one
+/// reading of `updated_at`, the Recency bucket the cell aggregates count by
+/// and the Unix second the payload carries. A system built from a row and
+/// the same system built from a journal entry land in the same place because
+/// both go through those.
 fn input_from_row(
     row: &sqlx::postgres::PgRow,
     stars: &HashMap<i64, Vec<(f64, f64)>>,
@@ -281,15 +252,19 @@ fn input_from_row(
     let y: f64 = row.try_get("y")?;
     let z: f64 = row.try_get("z")?;
     let class: Option<String> = row.try_get("primary_star_class")?;
-    let updated_at: chrono::NaiveDateTime = row.try_get("updated_at")?;
-    let system_stars = stars.get(&address).map(Vec::as_slice).unwrap_or(&[]);
-    Ok(system_input(
-        address,
-        [x, y, z],
-        class.as_deref(),
-        system_stars,
-        updated(updated_at, now),
-    ))
+    let at: chrono::NaiveDateTime = row.try_get("updated_at")?;
+    let scanned = stars.get(&address).map(Vec::as_slice).unwrap_or(&[]);
+    let (absolute_magnitude, temperature) =
+        derive::lit(scanned.iter().copied(), class.as_deref().unwrap_or(""));
+    let (age_bucket, updated_at) = derive::updated(at, now);
+    Ok(System {
+        id64: address as u64,
+        position: [x, y, z],
+        absolute_magnitude,
+        temperature,
+        age_bucket,
+        updated_at,
+    })
 }
 
 /// The addresses of systems reported since `since`: those whose own row
@@ -376,13 +351,13 @@ async fn read_galaxy(
 /// directory exactly as it stands.
 ///
 /// A build that read the whole galaxy writes `checkpoint` beside it, as
-/// [`watch`] does after its own initial build. The directory is otherwise a
-/// published index nothing can edit: the served payloads carry a downcast
-/// magnitude and a bucketed temperature, so the full-precision inputs are
-/// here or nowhere, and neither `galos-sync db --watch` nor an event sink
-/// following the same directory can resume onto one without them. A
-/// narrowed build writes none: it never read the systems a resume point is
-/// made of, and a short one would be worse than an absent one.
+/// [`catch_up`] does after its own initial build, and says the database
+/// derived it: the directory is otherwise a published index nothing can
+/// edit, since the served payloads carry a downcast magnitude and a bucketed
+/// temperature, so the full-precision inputs are here or nowhere and nothing
+/// following the same directory can resume onto one without them. A narrowed
+/// build writes none: it never read the systems a resume point is made of,
+/// and a short one would be worse than an absent one.
 pub async fn build_to_dir(
     db: &Database,
     dir: &Path,
@@ -406,7 +381,7 @@ pub async fn build_to_dir(
 
     if cells.is_some() {
         if let Some((inputs, _)) = &galaxy {
-            Checkpoint::write_from(checkpoint, since, inputs)?;
+            record(checkpoint, since, inputs)?;
         }
     }
 
@@ -439,47 +414,129 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
     rows.iter().map(|row| input_from_row(row, &stars, now)).collect()
 }
 
-/// Build the index once, then keep it current as the feed writes to the
-/// database, publishing what each round of changes touched.
+/// Bring `dir` level with the database and answer the clock it is level at.
 ///
-/// This rides on top of the other sources rather than beside them: `galos-sync
-/// eddn` writes systems to the database in real time, and `galos-sync db
-/// --watch` follows the rows those writes leave behind. Two processes, or two
-/// machines — the database is the only thing between them. The subcommands sit
-/// in one program because they are the same sentence, not because a run of one
-/// is a run of the other. It applies whatever is waiting since the cursor at
-/// once, then every `interval` reads those changed since the previous pass,
+/// This is what a directory needs before anything else can maintain it: it is
+/// missing, or it is a week behind, and either way the index has to stand for
+/// the database before it starts taking live events beside it. It resumes
+/// from `checkpoint`, or builds the whole galaxy afresh where it cannot, and
+/// then runs delta passes until one has little enough left to hand over.
+///
+/// The clock is read before each pass reads what changed, never after, so the
+/// cursor answered is one nothing can hide behind: a write racing a pass's
+/// read is asked for again by whoever follows the cursor rather than missed
+/// by everyone. That discipline is the whole of what makes the handoff sound,
+/// and each pass reads back a further [`CURSOR_OVERLAP`] to catch a write
+/// that committed after the cursor was taken. Applying a system twice is
+/// idempotent, since every patch is rebuilt from the current row rather than
+/// edited in place, so the overlap costs a little work and no correctness.
+///
+/// A pass ends the catch-up when what it found is smaller than one
+/// [`CHANGED_CHUNK`], which an empty set is the floor of. Waiting on an empty
+/// one is waiting for a quiet database, and the caller wanting this is
+/// usually the same process writing to it — thirty messages a second of its
+/// own feed, which a pass would chase forever and never go live. The residue
+/// is not rows at risk: everything received since that process started is
+/// already in its handoff buffer, so the systems between "under a chunk" and
+/// "nothing" are applied again from there, which is duplicate work and
+/// idempotent.
+///
+/// What it leaves on disk is a whole resume point standing for exactly the
+/// systems the directory now serves. The throttle that keeps a long watch
+/// from writing the galaxy every pass does not apply to the last word: the
+/// caller opens this directory for editing against the checkpoint beside it,
+/// and one short of what is served cannot be opened at all.
+///
+/// `parts` narrower than [`Parts::ALL`] is the repair case — one part derived
+/// by a rule that has since changed — and is a one-shot [`build_to_dir`] of
+/// those parts rather than a catch-up. There is nothing to resume onto when
+/// the parts of a directory disagree about when each was derived, and nothing
+/// to follow afterwards. The cursor answered is the clock read before the
+/// build read anything, which is behind the one the build wrote and so asks
+/// whoever follows it for a little more than it has to.
+pub async fn catch_up(
+    db: &Database,
+    dir: &Path,
+    checkpoint: &Path,
+    parts: Parts,
+) -> Result<chrono::NaiveDateTime> {
+    if parts != Parts::ALL {
+        let since = db.now().await?.naive_utc();
+        let report = build_to_dir(db, dir, checkpoint, parts).await?;
+        info!(dir = %dir.display(), %report, "index parts derived");
+        return Ok(since);
+    }
+    Ok(bring_level(db, dir, checkpoint).await?.cursor)
+}
+
+/// Bring `dir` level with the database, then keep it there as the feed writes,
+/// publishing what each round of changes touched.
+///
+/// This rides on top of the collection rather than beside it: a sync writes
+/// systems to the database in real time and this follows the rows those
+/// writes leave behind, two processes or two machines with the database the
+/// only thing between them. It is [`catch_up`] and then a poll every
+/// `interval`, which reads those systems changed since the previous pass,
 /// moves each in the live [`Tree`] (a handful of cells apiece, not a rebuild),
-/// and writes only the cells that changed. The clock is read before each
-/// query, so a write racing the query is asked for again next pass rather than
-/// missed, and each pass reads back a further [`CURSOR_OVERLAP`] to catch a
-/// write that committed after the cursor was taken. Applying one twice is
-/// idempotent, so the overlap costs a little work and no correctness.
+/// and writes only the cells that changed.
 ///
 /// The metadata beside the cells is kept current the same pass the cells are,
-/// and the same way: `Metadata` holds the three tables open, a pass patches in
+/// and the same way: `Metadata` holds the four tables open, a pass patches in
 /// the systems that changed, and only what that moved is written — the names
 /// chunks the arrivals landed in, the populated table when a political column
-/// really did change, the factions when a new one is named, and a body file per
-/// changed system. Nothing here reads the whole database twice.
+/// really did change, the factions when a new one is named, and a body file
+/// per changed system. Nothing here reads the whole database twice.
 ///
-/// On start it resumes from `checkpoint` when one is present and still reads as
-/// the served directory's: the tree is rebuilt in memory from the checkpoint's
-/// inputs and the cursor followed from there, so a restart costs a rebuild in
-/// memory rather than a fresh read of the whole database and a rewrite of every
-/// file. A missing, unreadable, or stale checkpoint falls back to a full build.
-/// The checkpoint rides outside `dir`, is never served, and is written after the
-/// initial build and every `CHECKPOINT_EVERY` thereafter — not every pass,
-/// which would cost more than the publishing does.
+/// The checkpoint rides outside `dir`, is never served, and is written after
+/// the initial build and every [`CHECKPOINT_EVERY`] thereafter — not every
+/// pass, which would cost more than the publishing does.
 pub async fn watch(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
     interval: Duration,
 ) -> Result<()> {
+    let mut level = bring_level(db, dir, checkpoint).await?;
+    info!(
+        dir = %dir.display(),
+        interval_secs = interval.as_secs(),
+        "watching for changes"
+    );
+    loop {
+        async_std::task::sleep(interval).await;
+        pass(db, dir, checkpoint, &mut level).await?;
+    }
+}
+
+/// A directory level with the database, and everything following it further
+/// asks for: the tree and the tables as they stand in the directory, the
+/// clock the last pass covered, when the last resume point was written, and
+/// whether the directory has moved past it since.
+///
+/// Held together because a pass moves all of it at once, and because a
+/// catch-up handing over to a watch hands over exactly this — the tables are
+/// derived once at the start and then only ever patched.
+struct Level {
+    tree: Tree,
+    meta: Metadata,
+    cursor: chrono::NaiveDateTime,
+    checkpointed: Instant,
+    /// Whether a pass has published something the resume point on disk does
+    /// not stand for. Set by every pass the throttle skipped, cleared by
+    /// every write, and what [`bring_level`] settles before it hands over.
+    unrecorded: bool,
+}
+
+/// Resume `dir` or build it whole, then run delta passes until one finds
+/// little enough left to hand over. The one copy of the build-or-resume that
+/// both [`catch_up`] and [`watch`] start from.
+async fn bring_level(
+    db: &Database,
+    dir: &Path,
+    checkpoint: &Path,
+) -> Result<Level> {
     let params = BuildParams::default();
-    let (mut tree, mut meta, mut since) = match resume(dir, checkpoint, &params)
-    {
+    let mut level = match resume(dir, checkpoint, &params) {
         Some((tree, meta, cursor)) => {
             info!(
                 systems = tree.len(),
@@ -487,7 +544,13 @@ pub async fn watch(
                 checkpoint = %checkpoint.display(),
                 "resumed from checkpoint"
             );
-            (tree, meta, cursor)
+            Level {
+                tree,
+                meta,
+                cursor,
+                checkpointed: Instant::now(),
+                unrecorded: false,
+            }
         }
         None => {
             let since = db.now().await?.naive_utc();
@@ -497,53 +560,125 @@ pub async fn watch(
             let mut tree = Tree::build(&inputs, &params);
             tree.write(dir)?;
             let (meta, report) = Metadata::build(db, dir, names).await?;
-            Checkpoint { cursor: since, inputs }.write(checkpoint)?;
+            record(checkpoint, since, &inputs)?;
             info!(
                 systems = tree.len(),
                 chunks = report.name_chunks,
                 elapsed = ?start.elapsed(),
                 "initial index built"
             );
-            (tree, meta, since)
+            Level {
+                tree,
+                meta,
+                cursor: since,
+                checkpointed: Instant::now(),
+                unrecorded: false,
+            }
         }
     };
-    info!(
-        dir = %dir.display(),
-        interval_secs = interval.as_secs(),
-        "watching for changes"
-    );
+    while pass(db, dir, checkpoint, &mut level).await? >= CHANGED_CHUNK {}
 
-    let mut checkpointed = Instant::now();
-    loop {
-        let now = db.now().await?.naive_utc();
-        let touched = changed_addresses(db, since - CURSOR_OVERLAP).await?;
-        if touched.is_empty() {
-            debug!(since = %since, "polled, no changes");
-        } else {
-            let start = Instant::now();
-            let changed = inputs_for(db, &touched).await?;
-            tree.apply(&changed);
-            tree.publish(dir)?;
-            let report = meta.follow(db, dir, &touched).await?;
-            let resumed_from = checkpointed.elapsed() >= CHECKPOINT_EVERY;
-            if resumed_from {
-                Checkpoint { cursor: now, inputs: tree.to_inputs() }
-                    .write(checkpoint)?;
-                checkpointed = Instant::now();
-            }
-            info!(
-                changed = changed.len(),
-                systems = tree.len(),
-                chunks = report.name_chunks,
-                bodies = report.body_files,
-                checkpointed = resumed_from,
-                elapsed = ?start.elapsed(),
-                "index updated"
-            );
-        }
-        since = now;
-        async_std::task::sleep(interval).await;
+    // What the passes published since the last throttled write. The caller is
+    // about to hand this directory to something that opens it against the
+    // resume point beside it, and a directory serving more than its
+    // checkpoint stands for is one that cannot be opened for editing at all —
+    // so the timer, which exists to keep a long watch from writing the galaxy
+    // every pass, does not get to decide what is on disk when a catch-up
+    // returns.
+    if level.unrecorded {
+        let start = Instant::now();
+        record(checkpoint, level.cursor, &level.tree.to_inputs())?;
+        level.checkpointed = Instant::now();
+        level.unrecorded = false;
+        info!(
+            systems = level.tree.len(),
+            cursor = %level.cursor,
+            checkpoint = %checkpoint.display(),
+            elapsed = ?start.elapsed(),
+            "caught up, resume point written"
+        );
     }
+    Ok(level)
+}
+
+/// Write the resume point for a directory this crate has just published, and
+/// drop any pending log beside it.
+///
+/// Every checkpoint this crate writes is the database's own derivation, read
+/// up to `cursor`, and is whole: it stands for every system in the directory
+/// rather than for a difference. The event side's [`Pending`] log is the
+/// difference since the last whole one, so a whole one supersedes it — and a
+/// log left beside a checkpoint that already holds what it holds would be
+/// replayed over the directory at the next open, publishing systems twice or,
+/// worse, systems this build never read.
+fn record(
+    checkpoint: &Path,
+    cursor: chrono::NaiveDateTime,
+    inputs: &[System],
+) -> Result<()> {
+    Checkpoint::write_from(checkpoint, Some(cursor), By::Database, inputs)?;
+    Pending::clear(checkpoint)?;
+    Ok(())
+}
+
+/// One pass: read what has changed since the cursor, apply it a chunk at a
+/// time, publish what that moved, and move the cursor on to the clock the
+/// read covered. Answers how many addresses it found.
+///
+/// The clock comes first, before the read, so a write that commits while the
+/// pass runs is asked for by the next one rather than passed over by both.
+///
+/// The chunks are what keeps a pass over a million addresses from being one
+/// query per table with a million-element array in it; see [`CHANGED_CHUNK`].
+/// The cells and the three tables written whole are written once, after the
+/// last chunk, since each is a file rewritten entire and a chunk of ten
+/// thousand addresses has no more claim on when that happens than the pass
+/// does. Only the body files and the names chunks are written as the chunks
+/// go, being per system and per neighbourhood of systems respectively.
+async fn pass(
+    db: &Database,
+    dir: &Path,
+    checkpoint: &Path,
+    level: &mut Level,
+) -> Result<usize> {
+    let now = db.now().await?.naive_utc();
+    let touched = changed_addresses(db, level.cursor - CURSOR_OVERLAP).await?;
+    if touched.is_empty() {
+        debug!(since = %level.cursor, "polled, no changes");
+        level.cursor = now;
+        return Ok(0);
+    }
+
+    let start = Instant::now();
+    let mut changed = 0;
+    let mut moved = Moved::default();
+    for chunk in touched.chunks(CHANGED_CHUNK) {
+        let inputs = inputs_for(db, chunk).await?;
+        changed += inputs.len();
+        level.tree.apply(&inputs);
+        moved.absorb(level.meta.patch(db, dir, chunk).await?);
+    }
+    level.tree.publish(dir)?;
+    let report = level.meta.publish_pass(db, dir, moved).await?;
+
+    let resumed_from = level.checkpointed.elapsed() >= CHECKPOINT_EVERY;
+    if resumed_from {
+        record(checkpoint, now, &level.tree.to_inputs())?;
+        level.checkpointed = Instant::now();
+    }
+    level.unrecorded = !resumed_from;
+    info!(
+        changed,
+        pages = touched.len().div_ceil(CHANGED_CHUNK),
+        systems = level.tree.len(),
+        chunks = report.name_chunks,
+        bodies = report.body_files,
+        checkpointed = resumed_from,
+        elapsed = ?start.elapsed(),
+        "index updated"
+    );
+    level.cursor = now;
+    Ok(touched.len())
 }
 
 /// Rebuild the live tree and the metadata tables from a checkpoint and the
@@ -558,18 +693,44 @@ pub async fn watch(
 /// of those is read and applied again on the first pass, so the publishes that
 /// follow rewrite exactly what the lag left behind.
 ///
-/// Hence the two gates. The directory must be internally consistent, its cell
-/// tree and its names table standing for exactly the same systems, which is
-/// what [`read_galaxy`] reading both out of one row makes an invariant and what
-/// a half-written or older-layout directory fails. And it must be at or ahead
-/// of the checkpoint, since a delta publish repairs only what the next changes
-/// touch, not what is already wrong.
+/// Hence the three gates. The checkpoint has to be the database's own. An
+/// event-derived directory stands for what the feed reported since it was
+/// opened and not for the galaxy — a few thousand systems where the database
+/// holds a hundred million — and adopting one as the tree to follow from
+/// leaves a catch-up patching changes into an index that was never the
+/// dataset, passing both counting gates below because the directory really is
+/// internally consistent about the little it holds. It is refused outright,
+/// and the full build that follows is what makes the directory the database's
+/// again.
+///
+/// Then the directory must be internally consistent, its cell tree and its
+/// names table standing for exactly the same systems, which is what
+/// [`read_galaxy`] reading both out of one row makes an invariant and what a
+/// half-written or older-layout directory fails. And it must be at or ahead
+/// of the checkpoint, since a delta publish repairs only what the next
+/// changes touch, not what is already wrong.
 fn resume(
     dir: &Path,
     path: &Path,
     params: &BuildParams,
 ) -> Option<(Tree, Metadata, chrono::NaiveDateTime)> {
     let checkpoint = Checkpoint::read(path).ok()?;
+    if checkpoint.by != By::Database {
+        info!(
+            by = ?checkpoint.by,
+            checkpoint = %path.display(),
+            "checkpoint was written from the event feed, which stands for \
+             what the feed reported and not for the galaxy; building afresh"
+        );
+        return None;
+    }
+    let Some(cursor) = checkpoint.cursor else {
+        debug!(
+            checkpoint = %path.display(),
+            "checkpoint carries no cursor to follow from; building afresh"
+        );
+        return None;
+    };
     let tree = Tree::build(&checkpoint.inputs, params);
     let count = Index::read(dir).ok()?.root()?.aggregate.count();
     let meta = Metadata::resume(dir).ok()?;
@@ -582,7 +743,7 @@ fn resume(
         );
         return None;
     }
-    Some((tree, meta, checkpoint.cursor))
+    Some((tree, meta, cursor))
 }
 
 /// What a build of the cell tree came to, for the binary to print and check.
@@ -688,78 +849,26 @@ mod tests {
     /// same time against one database.
     const WATCHED: i64 = 900_001_000;
 
-    /// Scanned stars sum to one magnitude and take the brightest's tint.
-    #[test]
-    fn scanned_stars_combine_and_take_the_brightest_tint() {
-        // Two equal stars are about 0.75 mag brighter together than either.
-        let stars = [(4.83, 5772.0), (4.83, 3000.0)];
-        let s = system_input(42, [0.0; 3], Some("G"), &stars, (0, 0));
-        assert!((s.absolute_magnitude - (4.83 - 0.7526)).abs() < 0.01);
-        assert_eq!(s.id64, 42);
+    /// The address the catch-up below owns, which nothing else here writes
+    const CAUGHT: i64 = 900_001_001;
 
-        // A distinct brightest star pins the tint to its temperature.
-        let stars = [(2.0, 9000.0), (5.0, 3000.0)];
-        let s = system_input(42, [0.0; 3], Some("G"), &stars, (0, 0));
-        assert_eq!(s.temperature, 9000.0);
-    }
+    /// The address the resume point test below owns
+    const RECORDED: i64 = 900_001_002;
 
-    /// A starless system takes its named class.
-    #[test]
-    fn a_starless_system_falls_back_to_its_class() {
-        let s = system_input(1, [0.0; 3], Some("M"), &[], (0, 0));
-        let m = ClassLight::of("M");
-        assert_eq!(s.absolute_magnitude, m.absolute_magnitude.0);
-        assert_eq!(s.temperature, m.temperature.0);
-    }
-
-    /// No stars and no class is the default dwarf.
-    #[test]
-    fn no_stars_and_no_class_is_the_default_dwarf() {
-        let s = system_input(1, [0.0; 3], None, &[], (0, 0));
-        assert_eq!(
-            s.absolute_magnitude,
-            galos_photometry::ClassLight::DEFAULT.absolute_magnitude.0
-        );
-    }
-
-    /// The Recency bucket climbs with the days since an update.
-    #[test]
-    fn age_buckets_climb_with_the_days() {
-        assert_eq!(age_bucket(0), 0);
-        assert_eq!(age_bucket(1), 1);
-        assert_eq!(age_bucket(6), 1);
-        assert_eq!(age_bucket(7), 2);
-        assert_eq!(age_bucket(10_000), 7);
-    }
-
-    /// An update is carried to the second as well as binned
-    ///
-    /// The second is what the Recency filter tests, and its spans run from a
-    /// minute to thirty days: five of the eight are shorter than the finest
-    /// bucket, so the bucket cannot stand in for the stamp. Both come out of one
-    /// reading of one column, so the cell aggregates and the payload cannot say
-    /// different things about the same system.
-    #[test]
-    fn an_update_is_kept_to_the_second_as_well_as_binned() {
-        let now = chrono::DateTime::from_timestamp(1_757_260_000, 0)
-            .expect("a moment")
-            .naive_utc();
-
-        // Five minutes ago and now are the same bucket, and the stamp is the
-        // whole of what tells them apart.
-        let live = now - chrono::TimeDelta::minutes(5);
-        assert_eq!(updated(live, now), (0, live.and_utc().timestamp() as u32));
-
-        let week = now - chrono::TimeDelta::days(8);
-        assert_eq!(updated(week, now), (2, week.and_utc().timestamp() as u32));
-
-        // A journal entry can carry any timestamp its client cared to write.
-        // Beyond the range of the stamp it reads as the far end of the axis
-        // rather than folding back into the middle of it.
-        let absurd = chrono::DateTime::from_timestamp(1i64 << 40, 0)
-            .expect("a moment")
-            .naive_utc();
-        assert_eq!(updated(absurd, now), (0, u32::MAX));
+    /// A system at `position`, lit as the class `G` names rather than by a
+    /// scan, which is what the two tests below want a [`System`] for and
+    /// neither of them is about.
+    fn input(address: i64, position: [f64; 3]) -> System {
+        let (absolute_magnitude, temperature) =
+            derive::lit(std::iter::empty(), "G");
+        System {
+            id64: address as u64,
+            position,
+            absolute_magnitude,
+            temperature,
+            age_bucket: 0,
+            updated_at: 0,
+        }
     }
 
     /// A report whose event timestamp is a year old still reads as newly
@@ -830,5 +939,315 @@ mod tests {
             "a system reported now is changed since a cursor taken before it, \
              whatever the age of the event it reports",
         );
+    }
+
+    /// A resume point the event feed wrote is refused, whatever it counts up
+    /// to
+    ///
+    /// The two derivations publish the same directory and write the same kind
+    /// of resume point, and only one of them stands for the galaxy. An
+    /// event-derived directory is what a sink saw reported since it was
+    /// opened — a few thousand systems against a hundred million — and it is
+    /// internally consistent about exactly that, so it passes the counting
+    /// gates a half-written directory fails. Adopted, it would be followed
+    /// from its cursor forever and the database would never be read: the
+    /// index would be the feed's recent memory published as the galaxy. So
+    /// what wrote a checkpoint is read before anything is counted.
+    ///
+    /// No database: the directory is two systems written by hand through the
+    /// same writers a build uses, and the only thing that differs between the
+    /// two halves of the test is which derivation the checkpoint names.
+    #[test]
+    fn a_resume_point_written_from_events_is_refused() {
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_by_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.with_extension("checkpoint");
+
+        // A directory that is every gate's idea of consistent: the cell tree
+        // and the names table standing for the same two systems.
+        let params = BuildParams::default();
+        let inputs: Vec<System> = [(1i64, 0.0f64), (2, 10.0)]
+            .iter()
+            .map(|&(address, x)| input(address, [x, 0.0, 0.0]))
+            .collect();
+        let mut tree = Tree::build(&inputs, &params);
+        tree.write(&dir).expect("the tree should write");
+        galos_index::NameTable::from_entries(
+            inputs
+                .iter()
+                .map(|system| meta::NameEntry {
+                    address: system.id64 as i64,
+                    name: format!("TEST {}", system.id64),
+                    position: [system.position[0] as f32, 0.0, 0.0],
+                })
+                .collect(),
+        )
+        .publish(&dir)
+        .expect("the names should write");
+        let empty: Vec<u8> = Vec::new();
+        for table in [
+            galos_index::source::populated_path(&dir),
+            galos_index::source::reaches_path(&dir),
+            galos_index::source::factions_path(&dir),
+        ] {
+            galos_index::source::write_meta(&table, &empty)
+                .expect("a table should write");
+        }
+
+        let cursor = chrono::DateTime::from_timestamp(1_757_260_000, 0)
+            .expect("a moment")
+            .naive_utc();
+        Checkpoint::write_from(&path, Some(cursor), By::Database, &inputs)
+            .expect("a resume point should write");
+        assert!(
+            resume(&dir, &path, &params).is_some(),
+            "a directory the database derived, matching its own resume point, \
+             was refused",
+        );
+
+        Checkpoint::write_from(&path, Some(cursor), By::Events, &inputs)
+            .expect("a resume point should write");
+        assert!(
+            resume(&dir, &path, &params).is_none(),
+            "a resume point the event feed wrote was adopted as the galaxy's",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A catch-up levels a directory and answers a cursor to follow from, and
+    /// a second one finds the directory it left with nothing to do
+    ///
+    /// The two halves of the handoff. The cursor has to be at or past the
+    /// moment the systems it read were written, since whoever follows it asks
+    /// only for what came after; and the directory has to be one a catch-up
+    /// will adopt, since a catch-up that refused its own work would read the
+    /// whole galaxy every time a process started and the handoff would never
+    /// be worth taking.
+    ///
+    /// `populated.bin` is the witness for the second half. It is written
+    /// whole or not at all: a full build writes it always, and a resumed pass
+    /// writes it only where a political column really moved. So a file left
+    /// exactly as the first call wrote it says the second call resumed and
+    /// published nothing, and a file rewritten says it built the galaxy
+    /// afresh. Any system another test writes meanwhile is unpopulated and
+    /// moves the names and the cells rather than this table, so the witness
+    /// holds with the rest of the suite running beside it.
+    ///
+    /// This needs a database of its own, named by `TEST_DATABASE_URL`, and
+    /// stands down without one exactly as the test above does.
+    #[async_std::test]
+    async fn a_catch_up_levels_a_directory_and_leaves_one_to_resume() {
+        dotenv::dotenv().ok();
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("no TEST_DATABASE_URL: standing down");
+            return;
+        };
+        let db = Database::from_url(&url)
+            .await
+            .expect("TEST_DATABASE_URL should connect");
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_catch_up_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let checkpoint = dir.with_extension("checkpoint");
+        let _ = std::fs::remove_file(&checkpoint);
+
+        // A system written before the catch-up looks, which is what the
+        // catch-up owes the directory.
+        for statement in [
+            "DELETE FROM stars WHERE system_address = $1",
+            "DELETE FROM system_factions WHERE system_address = $1",
+            "DELETE FROM systems WHERE address = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(CAUGHT)
+                .execute(&db.pool)
+                .await
+                .expect("the address should be clearable");
+        }
+        let before = db.now().await.expect("the clock should read").naive_utc();
+        let system = elite_journal::system::System {
+            pos: Some(elite_journal::system::Coordinate {
+                x: 4.0,
+                y: 5.0,
+                z: 6.0,
+            }),
+            ..elite_journal::system::System::new(CAUGHT, "TEST CAUGHT SYSTEM")
+        };
+        crate::systems::System::from_journal(
+            &db,
+            chrono::Utc::now(),
+            "test",
+            &system,
+        )
+        .await
+        .expect("the system should write");
+
+        let cursor = catch_up(&db, &dir, &checkpoint, Parts::ALL)
+            .await
+            .expect("the catch-up should run");
+        assert!(
+            cursor > before,
+            "a cursor at {} is behind the write at {} it covered, so whoever \
+             follows it would ask for the write again and nothing before it",
+            cursor,
+            before,
+        );
+        let served = Index::read(&dir)
+            .expect("the index should read")
+            .root()
+            .expect("the tree should have a root")
+            .aggregate
+            .count();
+        assert!(served >= 1, "the catch-up published an empty directory");
+
+        // Past the look-back, so a pass has nothing to ask for rather than the
+        // overlap's worth of what it just read.
+        let published =
+            std::fs::metadata(galos_index::source::populated_path(&dir))
+                .expect("the populated table should stand")
+                .modified()
+                .expect("a modification time");
+        async_std::task::sleep(CURSOR_OVERLAP + Duration::from_secs(1)).await;
+
+        let again = catch_up(&db, &dir, &checkpoint, Parts::ALL)
+            .await
+            .expect("the second catch-up should run");
+        assert!(again >= cursor, "the cursor went backwards");
+        let after =
+            std::fs::metadata(galos_index::source::populated_path(&dir))
+                .expect("the populated table should stand")
+                .modified()
+                .expect("a modification time");
+        assert_eq!(
+            published, after,
+            "a catch-up rebuilt a directory it had just brought level, so its \
+             own resume point was refused",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&checkpoint);
+    }
+
+    /// A catch-up leaves a resume point standing for what the directory
+    /// serves, whatever the throttle says
+    ///
+    /// The throttle is there so a watch running for a week does not write a
+    /// hundred megabytes of full-precision systems every pass; a restart pays
+    /// for the lag by replaying from the cursor. Nothing replays for the
+    /// caller of a catch-up. It opens the directory for editing against the
+    /// checkpoint beside it, and a checkpoint short of what is served is not
+    /// a resume that costs a little extra work — the directory cannot be
+    /// opened at all, since there is no way to say what the systems it
+    /// already serves were built from. A cold start is exactly this: the
+    /// initial build wrote a checkpoint for an empty galaxy, the delta pass
+    /// that followed published the systems written since, and the timer had
+    /// not come round.
+    ///
+    /// The pending log goes with it. It is the event side's difference since
+    /// the last whole checkpoint, and one written here holds everything it
+    /// held, so a log left standing would be replayed over a directory that
+    /// already has it.
+    ///
+    /// `TEST_DATABASE_URL`-gated like the two above.
+    #[async_std::test]
+    async fn a_catch_up_leaves_a_checkpoint_for_what_it_serves() {
+        dotenv::dotenv().ok();
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("no TEST_DATABASE_URL: standing down");
+            return;
+        };
+        let db = Database::from_url(&url)
+            .await
+            .expect("TEST_DATABASE_URL should connect");
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_recorded_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let checkpoint = dir.with_extension("checkpoint");
+        let _ = std::fs::remove_file(&checkpoint);
+        let _ = Pending::clear(&checkpoint);
+
+        // The address is cleared first, so the build below cannot already
+        // hold it and the pass that publishes it really does grow the tree
+        // past what the build's resume point stands for.
+        for statement in [
+            "DELETE FROM stars WHERE system_address = $1",
+            "DELETE FROM system_factions WHERE system_address = $1",
+            "DELETE FROM systems WHERE address = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(RECORDED)
+                .execute(&db.pool)
+                .await
+                .expect("the address should be clearable");
+        }
+
+        // A directory brought level, and then a system written after it was:
+        // the pass that publishes this one is well inside CHECKPOINT_EVERY,
+        // so it is the pass the throttle skips.
+        catch_up(&db, &dir, &checkpoint, Parts::ALL)
+            .await
+            .expect("the first catch-up should run");
+        let system = elite_journal::system::System {
+            pos: Some(elite_journal::system::Coordinate {
+                x: 7.0,
+                y: 8.0,
+                z: 9.0,
+            }),
+            ..elite_journal::system::System::new(
+                RECORDED,
+                "TEST RECORDED SYSTEM",
+            )
+        };
+        crate::systems::System::from_journal(
+            &db,
+            chrono::Utc::now(),
+            "test",
+            &system,
+        )
+        .await
+        .expect("the system should write");
+
+        // A log from an earlier event run, which the whole checkpoint below
+        // supersedes.
+        Pending::append(&checkpoint, &[input(RECORDED, [7.0, 8.0, 9.0])])
+            .expect("a pending log should write");
+
+        catch_up(&db, &dir, &checkpoint, Parts::ALL)
+            .await
+            .expect("the second catch-up should run");
+
+        let served = Index::read(&dir)
+            .expect("the index should read")
+            .root()
+            .expect("the tree should have a root")
+            .aggregate
+            .count();
+        let written = Checkpoint::read(&checkpoint)
+            .expect("the resume point should read");
+        assert_eq!(
+            written.inputs.len() as u64,
+            served,
+            "the directory serves {} systems and its resume point stands for \
+             {}, so nothing can open it to edit what it holds",
+            served,
+            written.inputs.len(),
+        );
+        assert!(written.cursor.is_some(), "a resume point with no cursor");
+        assert!(
+            !Pending::path(&checkpoint).exists(),
+            "a pending log outlived the whole checkpoint that holds it, and \
+             would be replayed over a directory that already has it",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&checkpoint);
     }
 }

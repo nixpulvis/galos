@@ -14,153 +14,117 @@
 //! reading the map right after one.
 
 use crate::bar;
-use crate::sink::{Row, Sink, To};
+use crate::sink::{Row, Sink};
+use crate::Shutdown;
 use chrono::offset::Utc;
-use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Sync from EDSM.
-#[derive(Parser)]
-pub struct Cli {
-    #[command(subcommand)]
-    from: From,
+/// A nightly dump already on disk: `--from edsm=PATH`.
+pub struct Dump {
+    pub path: PathBuf,
 }
 
-#[derive(Subcommand)]
-enum From {
-    /// Read a nightly dump already on disk.
-    File(FileCli),
-    /// Ask the web API about one system and its neighbourhood.
-    Api(ApiCli),
+/// The web API, asked about one system: `--from edsm-api=NAME`.
+pub struct Api {
+    pub name: String,
+    /// Everything in a cube this many light years across, from `--cube`.
+    pub cube: Option<u32>,
+    /// Everything within this many light years, from `--sphere`.
+    pub sphere: Option<u32>,
 }
 
-/// Where what is read goes, shared by both ways in.
-#[derive(Args, Clone)]
-pub struct Into {
-    /// Where to write what is read: `db`, or `index=DIR`. Repeatable,
-    /// and `db` where it is not said at all.
-    #[arg(long = "to", value_name = "SINK")]
-    pub to: Vec<To>,
-
-    /// Resume file for an index sink, kept outside the served directory.
-    /// `DIR.checkpoint` beside the index directory by default.
-    #[arg(long, value_name = "FILE")]
-    pub checkpoint: Option<PathBuf>,
-}
-
-#[derive(Args)]
-struct FileCli {
-    /// The dump JSON to read.
-    #[arg(name = "PATH")]
-    path: String,
-    #[command(flatten)]
-    into: Into,
-}
-
-#[derive(Args)]
-struct ApiCli {
-    /// The system to ask about.
-    #[arg(name = "NAME")]
-    name: String,
-
-    /// Take everything in a cube this many light years across.
-    #[arg(long, short, conflicts_with = "sphere")]
-    cube: Option<u32>,
-    /// Take everything within this many light years.
-    #[arg(long, short)]
-    sphere: Option<u32>,
-    #[command(flatten)]
-    into: Into,
-}
-
-impl Cli {
-    /// Which sinks were named, whichever way in was used.
-    pub fn to(&self) -> &[To] {
-        match &self.from {
-            From::File(cli) => &cli.into.to,
-            From::Api(cli) => &cli.into.to,
-        }
-    }
-
-    /// Where the resume point goes, likewise.
-    pub fn checkpoint(&self) -> Option<&std::path::Path> {
-        match &self.from {
-            From::File(cli) => cli.into.checkpoint.as_deref(),
-            From::Api(cli) => cli.into.checkpoint.as_deref(),
-        }
-    }
-
-    /// Read what was asked for, answering whether it could be read.
-    pub async fn read(&self, sink: &mut dyn Sink) -> bool {
-        let (systems, by) = match &self.from {
-            From::File(cli) => {
-                // `edsm::json` unwraps both of these. A path typed wrong is
-                // not a thing to take the program down over: every other
-                // source here says what it could not read and answers that
-                // it read nothing.
-                match dump(&cli.path) {
-                    Ok(systems) => {
-                        (systems, format!("EDSM file: {}", cli.path))
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            file = %cli.path,
-                            error = %err,
-                            "unreadable dump",
-                        );
-                        return false;
-                    }
-                }
-            }
-            From::Api(cli) => {
-                let asked = if let Some(n) = cli.sphere {
-                    edsm::api::systems_sphere(&cli.name, Some(n as f64), None)
-                } else if let Some(n) = cli.cube {
-                    edsm::api::systems_cube(&cli.name, Some(n as f64))
-                } else {
-                    edsm::api::systems(&cli.name)
-                };
-                match asked {
-                    Ok(systems) => (systems, "EDSM API".to_string()),
-                    Err(err) => {
-                        tracing::warn!(
-                            system = %cli.name,
-                            error = %err,
-                            "the API would not answer",
-                        );
-                        return false;
-                    }
-                }
+impl Dump {
+    /// Read the file, answering whether it could be read at all.
+    pub async fn read(&self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
+        // `edsm::json` unwraps both of these. A path typed wrong is not a
+        // thing to take the program down over: every other source here says
+        // what it could not read and answers that it read nothing.
+        let systems = match dump(&self.path) {
+            Ok(systems) => systems,
+            Err(err) => {
+                tracing::warn!(
+                    file = %self.path.display(),
+                    error = %err,
+                    "unreadable dump",
+                );
+                return false;
             }
         };
 
-        let bar = bar::progress(systems.len() as u64);
-        let drawing = bar::under(&bar);
-        for system in bar.wrap_iter(systems.into_iter()) {
-            // No id is nothing to key by; no coordinates is nothing to place.
-            let (Some(id), Some(coords)) = (system.id, system.coords) else {
-                continue;
-            };
-            bar.set_message(format!("[EDSM] {}", system.name));
-            sink.system(&Row {
-                address: id as i64,
-                name: system.name,
-                position: Some(coords),
-                population: system.information.population,
-                security: system.information.security,
-                government: system.information.government,
-                allegiance: system.information.allegiance,
-                primary_economy: system.information.economy,
-                secondary_economy: system.information.second_economy,
-                updated_at: Utc::now(),
-                updated_by: by.clone(),
-            })
-            .await;
-        }
-        bar.finish();
-        drop(drawing);
+        let by = format!("EDSM file: {}", self.path.display());
+        place(sink, shutdown, systems, &by).await;
         true
     }
+}
+
+impl Api {
+    /// Ask the API, answering whether it answered.
+    pub async fn read(&self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
+        let asked = if let Some(n) = self.sphere {
+            edsm::api::systems_sphere(&self.name, Some(n as f64), None)
+        } else if let Some(n) = self.cube {
+            edsm::api::systems_cube(&self.name, Some(n as f64))
+        } else {
+            edsm::api::systems(&self.name)
+        };
+        let systems = match asked {
+            Ok(systems) => systems,
+            Err(err) => {
+                tracing::warn!(
+                    system = %self.name,
+                    error = %err,
+                    "the API would not answer",
+                );
+                return false;
+            }
+        };
+
+        place(sink, shutdown, systems, "EDSM API").await;
+        true
+    }
+}
+
+/// Write what was read, saying which reading it was.
+///
+/// The same loop either way in, which is the whole reason the two ways in
+/// are two structs and one reader: a dump and an API answer differ in how
+/// they are asked and not at all in what comes back.
+async fn place(
+    sink: &mut dyn Sink,
+    shutdown: &Shutdown,
+    systems: Vec<edsm::System>,
+    by: &str,
+) {
+    let bar = bar::progress(systems.len() as u64);
+    for system in bar.wrap_iter(systems.into_iter()) {
+        // A dump is millions of rows and the run may have been asked to
+        // stop an hour into one. What has been written stands: every write
+        // is its own guarded upsert and the next run re-reads the file.
+        if shutdown.asked() {
+            bar.abandon_with_message("stopped");
+            return;
+        }
+        // No id is nothing to key by; no coordinates is nothing to place.
+        let (Some(id), Some(coords)) = (system.id, system.coords) else {
+            continue;
+        };
+        bar.set_message(format!("[EDSM] {}", system.name));
+        sink.system(&Row {
+            address: id as i64,
+            name: system.name,
+            position: Some(coords),
+            population: system.information.population,
+            security: system.information.security,
+            government: system.information.government,
+            allegiance: system.information.allegiance,
+            primary_economy: system.information.economy,
+            secondary_economy: system.information.second_economy,
+            updated_at: Utc::now(),
+            updated_by: by.to_string(),
+        })
+        .await;
+    }
+    bar.finish();
 }
 
 /// A nightly dump read off the disk, saying what stopped it.
@@ -169,7 +133,7 @@ impl Cli {
 /// instead: a path that is not there and a file that is not one of these.
 /// Both are things a command line gets wrong, and neither is worth a
 /// backtrace.
-fn dump(path: &str) -> Result<Vec<edsm::System>, String> {
+fn dump(path: &Path) -> Result<Vec<edsm::System>, String> {
     let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
     serde_json::from_reader(std::io::BufReader::new(file))
         .map_err(|err| err.to_string())

@@ -1,64 +1,74 @@
-//! A progress bar that keeps the bottom line, and a log drawn above it
+//! The bars a run is drawing, and a log drawn above all of them
 //!
 //! Both want the same terminal. A bar is one line rewritten in place, and
 //! anything else printed to that line lands on top of it, so a sync that logs
 //! while a bar is drawing leaves the two shuffled together and the bar
 //! wherever it was last overwritten.
 //!
-//! So the log goes through the bar. `indicatif` redraws the bar under
-//! whatever it is asked to print, which is what keeps the bar at the bottom
-//! and every line of the log above it in the order it was written. What that
-//! costs is a lock and a redraw a line, paid only while a bar is drawing.
+//! So the log goes through the bars. `indicatif` redraws them under whatever
+//! it is asked to print, which is what keeps them at the bottom and every
+//! line of the log above them in the order it was written. What that costs is
+//! a lock and a redraw a line, paid only where a terminal is there to draw
+//! on.
 //!
-//! Where a bar is not drawing -- redirected output, or a command that has no
-//! bar -- the log goes straight to stderr. It has to: a hidden draw target
+//! ## Why it is a `MultiProgress` and not a bar
+//!
+//! Because a run draws more than one now. `--from eddb=… --from edsm=…` is
+//! two dumps read at once, each with a bar of its own, and the arrangement
+//! this replaced held exactly one: a single-slot static that the second
+//! drawer overwrote and whose `Drop` cleared it while the first was still
+//! drawing, which left that bar's lines landing on top of the log for the
+//! rest of the run. A [`MultiProgress`] owns the terminal for all of them and
+//! there is nothing to hand back.
+//!
+//! Where nothing would be seen -- redirected output, or a run with no bar at
+//! all -- the log goes straight to stderr. It has to: a hidden draw target
 //! swallows what it is asked to print, so routing through one would lose the
 //! log exactly where there is nothing else to read.
 
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{
+    MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
+};
 use std::io::{self, stderr, IsTerminal, Write};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::LazyLock;
 use tracing_subscriber::fmt::MakeWriter;
 
-/// The bar the log is being drawn above, where one is drawing
-static DRAWING: Mutex<Option<ProgressBar>> = Mutex::new(None);
-
-/// What is drawing, however the thread before left it
+/// Every bar this run is drawing, and what the log is printed through.
 ///
-/// Taken without asking whether a panic poisoned it. What is behind the lock
-/// is one handle, no worse for a thread having died holding it, and this is
-/// read from inside a `Drop` on the logging path: refusing to hand it over
-/// would turn any panic anywhere into a second panic while unwinding.
-fn drawing() -> MutexGuard<'static, Option<ProgressBar>> {
-    DRAWING.lock().unwrap_or_else(|held| held.into_inner())
-}
-
-/// Draw the log above this bar until the guard is dropped
-///
-/// Answers nothing where the bar is hidden, since a hidden bar cannot print
-/// and the log belongs on stderr instead.
-pub fn under(bar: &ProgressBar) -> Drawing {
-    if !bar.is_hidden() {
-        *drawing() = Some(bar.clone());
+/// One per process, built the first time anything asks for a bar or writes a
+/// line. Hidden where there is no terminal, which is what leaves the log on
+/// stderr: see [`above`].
+static BARS: LazyLock<MultiProgress> = LazyLock::new(|| {
+    let bars = MultiProgress::new();
+    if !worth_drawing() {
+        bars.set_draw_target(ProgressDrawTarget::hidden());
     }
+    bars
+});
 
-    Drawing
+/// Where a line of the log goes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Above {
+    /// Through the bars, which redraw themselves underneath it.
+    Bars,
+    /// Straight out, because nothing is drawing and nothing would be.
+    Stderr,
 }
 
-/// What holds the log above a bar, and puts it back on stderr when dropped
+/// Whether a line printed through the bars would be seen.
 ///
-/// A guard rather than a pair of calls, so a bar that goes away while the
-/// sync goes on cannot leave the log printing into a bar nobody is drawing.
-#[must_use = "the log is held above the bar only until this is dropped"]
-pub struct Drawing;
-
-impl Drop for Drawing {
-    fn drop(&mut self) {
-        *drawing() = None;
+/// The one way this arrangement can lose data. A draw target that is hidden
+/// swallows what it is asked to print, so the log must never be routed
+/// through one: it would go nowhere, and nowhere is where a log matters
+/// most.
+fn above() -> Above {
+    match worth_drawing() {
+        true => Above::Bars,
+        false => Above::Stderr,
     }
 }
 
-/// Where the log goes: above the bar, or to stderr where there is none
+/// Where the log goes: above the bars, or to stderr where none are drawn
 #[derive(Clone, Copy)]
 pub struct Log;
 
@@ -72,7 +82,7 @@ impl<'a> MakeWriter<'a> for Log {
 
 /// One event of the log, held until it is whole
 ///
-/// The bar prints a line at a time and the formatter writes an event in
+/// The bars print a line at a time and the formatter writes an event in
 /// several pieces, so the pieces are gathered here and printed when the
 /// writer is dropped, which is the end of the event.
 pub struct Line {
@@ -92,29 +102,25 @@ impl Write for Line {
 
 impl Drop for Line {
     fn drop(&mut self) {
-        // Taken out of the lock before anything is printed. Printing is a
-        // draw on a terminal and another thread's log line is waiting behind
-        // it, and a `ProgressBar` is a handle rather than the bar itself, so
-        // holding it costs nothing.
-        let bar = drawing().clone();
-
         let said = String::from_utf8_lossy(&self.said);
         let said = said.trim_end_matches('\n');
 
-        match bar {
-            Some(bar) => bar.println(said),
-            None => {
+        match above() {
+            Above::Bars => {
+                let _ = BARS.println(said);
+            }
+            Above::Stderr => {
                 let _ = writeln!(stderr(), "{}", said);
             }
         }
     }
 }
 
-/// How far along a sync is, where there is someone to show
+/// How far along one feed is, where there is someone to show
 ///
-/// One bar for every feed, so what one says it is saying holds whichever
-/// drew it. Hidden where there is no terminal, which is what leaves the log
-/// on stderr: `under` answers nothing for a hidden bar.
+/// Added to the run's bars rather than owning the terminal itself, so two
+/// sources reading at once each keep a line of their own and the log keeps
+/// the ones above them.
 pub fn progress(steps: u64) -> ProgressBar {
     let bar = ProgressBar::new(steps);
     bar.set_style(ProgressStyle::default_bar()
@@ -122,11 +128,7 @@ pub fn progress(steps: u64) -> ProgressBar {
         .unwrap()
         .progress_chars("##-"));
 
-    if !worth_drawing() {
-        bar.set_draw_target(ProgressDrawTarget::hidden());
-    }
-
-    bar
+    BARS.add(bar)
 }
 
 /// Whether a bar drawn now would be seen
@@ -137,23 +139,19 @@ fn worth_drawing() -> bool {
     stderr().is_terminal()
 }
 
-/// A hidden bar takes nothing, which is what keeps a redirected log readable
-///
-/// The one way this arrangement can lose data. A draw target that is hidden
-/// swallows what it is asked to print, so a bar that is not being drawn must
-/// never be given the log: it would go nowhere, and nowhere is where a log
-/// matters most. The other way round wants a terminal to be true, so it is
-/// left to running the thing.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A hidden draw target is never given the log
+    ///
+    /// A test process has no terminal, so this is the redirected case: the
+    /// bars are hidden, printing through them would swallow the line, and
+    /// the log has to go to stderr instead. The other way round wants a
+    /// terminal to be true, so it is left to running the thing.
     #[test]
-    fn a_hidden_bar_is_not_given_the_log() {
-        let held = under(&ProgressBar::hidden());
-
-        assert!(drawing().is_none());
-
-        drop(held);
+    fn the_log_is_not_printed_through_a_hidden_target() {
+        assert_eq!(above(), Above::Stderr);
+        assert!(BARS.is_hidden(), "the bars would swallow the log");
     }
 }

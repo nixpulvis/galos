@@ -9,44 +9,42 @@
 //! site look like news.
 
 use crate::bar;
-use crate::sink::{Row, Sink, To};
-use clap::Parser;
+use crate::sink::{Row, Sink};
+use crate::Shutdown;
 use elite_journal::system::Coordinate;
 use std::path::PathBuf;
 use tracing::warn;
 
-/// Sync from a saved EDDB dump.
-#[derive(Parser)]
-pub struct Cli {
-    /// The dump CSV to read.
-    #[arg(name = "PATH")]
-    pub path: String,
-
-    /// Where to write what is read: `db`, or `index=DIR`. Repeatable,
-    /// and `db` where it is not said at all.
-    #[arg(long = "to", value_name = "SINK")]
-    pub to: Vec<To>,
-
-    /// Resume file for an index sink, kept outside the served directory.
-    /// `DIR.checkpoint` beside the index directory by default.
-    #[arg(long, value_name = "FILE")]
-    pub checkpoint: Option<PathBuf>,
+/// A saved dump on disk: `--from eddb=PATH`.
+pub struct Eddb {
+    pub path: PathBuf,
 }
 
-impl Cli {
+impl Eddb {
     /// Read the dump, answering whether it could be opened at all.
-    pub async fn read(&self, sink: &mut dyn Sink) -> bool {
+    pub async fn read(&self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
         let mut dump = match eddb::Dump::csv(&self.path) {
             Ok(dump) => dump,
             Err(err) => {
-                warn!(file = %self.path, error = %err, "unreadable dump");
+                warn!(
+                    file = %self.path.display(),
+                    error = %err,
+                    "unreadable dump",
+                );
                 return false;
             }
         };
 
         let bar = bar::progress(dump.len());
-        let _drawing = bar::under(&bar);
         for result in bar.wrap_iter(dump.into_iter()) {
+            // Stopped part way through is a dump half written, which is
+            // exactly what an interrupted run of this always was: every
+            // write is its own guarded upsert and the next run re-reads
+            // the file from the top.
+            if shutdown.asked() {
+                bar.abandon_with_message("stopped");
+                return true;
+            }
             let Ok(system) = result else { continue };
             // A row with no address is one nothing can be keyed by, here or
             // in a tree.

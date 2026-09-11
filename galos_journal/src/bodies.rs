@@ -28,13 +28,13 @@
 //!   durable copy already exists and holding a second one in memory bought
 //!   nothing.
 //!
-//! The second is what a feed needs. `galos-sync eddn --to index` carries
-//! everyone's scans, and holding them all is a process that grows for as long
-//! as it runs — a `meta::Body` is 376 bytes before its four strings, its
-//! parents and its materials, so a million of them is about a gigabyte.
-//! `galos-sync db --to index` never had the problem because Postgres is its
-//! body store; this gives the database-free path the same answer, with the
-//! directory standing in for the database.
+//! The second is what a feed needs. `galos-sync --from eddn --index DIR`
+//! carries everyone's scans, and holding them all is a process that grows for
+//! as long as it runs — a `meta::Body` is 376 bytes before its four strings,
+//! its parents and its materials, so a million of them is about a gigabyte.
+//! `galos-sync --db --index DIR` never had the problem because Postgres is
+//! its body store; this gives the database-free path the same answer, with
+//! the directory standing in for the database.
 //!
 //! ## Why a store rather than a cache
 //!

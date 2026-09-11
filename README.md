@@ -77,52 +77,56 @@ SQLX_OFFLINE=true cargo build
 
 ## Running
 
-`galos-sync` moves the galaxy from a publisher into somewhere it can be read.
-Five sources — `journal`, `eddn`, `edsm`, `eddb` and `db`, this project's own
-database — and two sinks, chosen with `--to`: the database, or a `galos_index`
-directory the map draws from with no server at all. `--to db` is the default
-for every source but `db` itself, which reads the database into an index and
-cannot write back to it.
+`galos-sync` moves the galaxy from its publishers into somewhere it can be
+read, in one process. Sources are named with `--from`, which repeats:
+`eddn`, `journal=PATH`, `edsm=PATH`, `edsm-api=NAME` and `eddb=PATH`. Sinks
+are named with `--db` and `--index DIR`: Postgres, and a `galos_index`
+directory the map draws from with no server at all. Naming neither is
+refused; naming both reads each publisher once into the pair.
 
 ```sh
-# Populate the database. `galos-sync --help` lists the sources.
-cargo run --release --bin galos-sync -- eddn      # live feed from EDDN
-cargo run --release --bin galos-sync -- edsm      # EDSM nightly dumps
-cargo run --release --bin galos-sync -- journal "$JOURNAL"   # local journal files
+# Populate the database. `galos-sync --help` lists the flags.
+cargo run --release --bin galos-sync -- --from eddn --db
+cargo run --release --bin galos-sync -- --from edsm=systems.json --db
+cargo run --release --bin galos-sync -- --from journal="$JOURNAL" --db
 
 # Keep reading the journal while the game writes it.
-cargo run --release --bin galos-sync -- journal "$JOURNAL" --watch
+cargo run --release --bin galos-sync -- --from journal="$JOURNAL" --db --watch
 
 # Build the index out of the database, or follow it and republish as it moves.
-cargo run --release --bin galos-sync -- db
-cargo run --release --bin galos-sync -- db --watch 5
-cargo run --release --bin galos-sync -- db --only reaches
+cargo run --release --bin galos-sync -- --db --index .galos_index
+cargo run --release --bin galos-sync -- --db --index .galos_index --watch 5
+cargo run --release --bin galos-sync -- --db --index .galos_index --only reaches
 
 # The same sources into an index directory instead, with no database anywhere.
-cargo run --release --bin galos-sync -- journal "$JOURNAL" \
-    --to index=.galos_journal_index --watch
-cargo run --release --bin galos-sync -- eddn --to index=.galos_index
+cargo run --release --bin galos-sync -- \
+    --from journal="$JOURNAL" --index .galos_journal_index --watch
+cargo run --release --bin galos-sync -- --from eddn --index .galos_index
 
 # Or both at once: one read of the feed, written to the database and to a
-# directory. `--to` repeats, and the same sink cannot be named twice.
-cargo run --release --bin galos-sync -- eddn --to db --to index=.galos_index
+# directory, with the directory brought level with the database first.
+cargo run --release --bin galos-sync -- --from eddn --db --index .galos_index
 ```
 
 `$JOURNAL` is where the game writes its logs, typically
 `~/Saved Games/Frontier Developments/Elite Dangerous`.
 
-An index sink resumes from `<dir>.checkpoint` beside the directory it writes,
+The index resumes from `<dir>.checkpoint` beside the directory it writes,
 unless `--checkpoint` names one. The resume point holds the whole editable
-tree of that one directory, so two indexes can be followed at once without
-either being rebuilt from the other.
+tree of that directory, and says which derivation wrote it: a directory built
+from the database and one written from a feed are not the same artefact, and
+neither is resumed onto the other's work.
 
-Two ways to keep a directory current, and they are not the same artefact.
-`galos-sync db --watch` derives it from every row the database holds, which
-is every source ever imported into it; `eddn --to index` writes what the feed
-says while it runs, onto whatever the directory already had. Baking once with
-`db` and then following with `--to db --to index=DIR` keeps both — but never
-point two processes at one directory: there is no lock, and the second
-publishes over the first.
+With `--db --index` the directory is brought level with the database before
+it takes live events, and everything read in the meantime is buffered and
+applied after — the overlap is duplicate work, and applying an event twice
+lands exactly where applying it once did. Without `--db` the
+directory is whatever the feed has said since somebody started it. One
+process per directory: the run takes `<dir>.lock` and a second is refused.
+
+Ctrl-C asks the run to stop rather than killing it, so the last publish, the
+whole directory and its resume point are written before it exits. A second
+Ctrl-C stops it where it stands.
 
 ```sh
 # Query from the CLI.

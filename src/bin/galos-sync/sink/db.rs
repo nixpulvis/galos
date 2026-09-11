@@ -21,29 +21,34 @@ use elite_journal::entry::{Entry, Event};
 use elite_journal::system::Coordinate;
 use galos_db::systems::{Economies, System};
 use galos_db::Database;
+use std::sync::Arc;
 use tracing::warn;
 
 /// A [`Sink`] onto an open database.
 ///
-/// Borrows rather than owns: the connection is opened once in `main` and the
-/// pool behind it is what every write shares.
-pub struct Db<'a> {
-    db: &'a Database,
+/// Owns its handle rather than borrowing one. [`Database`] is a clone over
+/// an `Arc<PgPool>`, so what this holds is a refcount onto the pool `main`
+/// opened and every write still shares the same five connections — and a
+/// sink that owns what it writes through is `'static`, which is what lets a
+/// source reading into it be spawned. Several sources run at once now, each
+/// with a sink of its own.
+pub struct Db {
+    db: Database,
     /// Entries and rows written, for the line at the end of a run.
     wrote: u64,
 }
 
-impl<'a> Db<'a> {
+impl Db {
     /// A sink onto `db`.
-    pub fn new(db: &'a Database) -> Db<'a> {
+    pub fn new(db: Database) -> Db {
         Db { db, wrote: 0 }
     }
 }
 
 #[async_trait]
-impl Sink for Db<'_> {
-    async fn entry(&mut self, entry: &Entry<Event>, user: &str) {
-        record::entry(self.db, entry, user).await;
+impl Sink for Db {
+    async fn entry(&mut self, entry: Arc<Entry<Event>>, user: &str) {
+        record::entry(&self.db, &entry, user).await;
         self.wrote += 1;
     }
 
@@ -56,13 +61,13 @@ impl Sink for Db<'_> {
         position: Option<Coordinate>,
         why: &str,
     ) -> bool {
-        record::ensure_system(self.db, at, user, address, name, position, why)
+        record::ensure_system(&self.db, at, user, address, name, position, why)
             .await
     }
 
     async fn system(&mut self, row: &Row) {
         let wrote = System::create(
-            self.db,
+            &self.db,
             row.address,
             &row.name,
             row.position,
@@ -85,7 +90,7 @@ impl Sink for Db<'_> {
     }
 
     async fn market(&mut self, at: DateTime<Utc>, user: &str, it: &Market) {
-        record::market(self.db, at, user, it).await;
+        record::market(&self.db, at, user, it).await;
         self.wrote += 1;
     }
 
@@ -95,12 +100,12 @@ impl Sink for Db<'_> {
         user: &str,
         it: &Outfitting,
     ) {
-        record::outfitting(self.db, at, user, it).await;
+        record::outfitting(&self.db, at, user, it).await;
         self.wrote += 1;
     }
 
     async fn shipyard(&mut self, at: DateTime<Utc>, user: &str, it: &Shipyard) {
-        record::shipyard(self.db, at, user, it).await;
+        record::shipyard(&self.db, at, user, it).await;
         self.wrote += 1;
     }
 
@@ -110,7 +115,7 @@ impl Sink for Db<'_> {
         user: &str,
         it: &BlackMarket,
     ) {
-        record::black_market(self.db, at, user, it).await;
+        record::black_market(&self.db, at, user, it).await;
         self.wrote += 1;
     }
 

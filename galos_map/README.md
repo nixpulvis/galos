@@ -3,12 +3,12 @@
 ![Galos Galaxy Zoom](./galaxy.png)
 
 The map is pointed at two directories, and reads no database of its own.
-`GALOS_INDEX_DIR` is the published index `galos-sync db` bakes, which is
-everyone else's galaxy; unset, the map reads `.galos_index` under wherever it
-was run from. `GALOS_JOURNAL_DIR` is where this game writes its own logs, and
-naming it draws the commander's own systems over the published ones; unset —
-the ordinary case — there is no journal layer at all, and `J` has nothing to
-show or hide.
+`GALOS_INDEX_DIR` is the published index `galos-sync --db --index DIR` bakes,
+which is everyone else's galaxy; unset, the map reads `.galos_index` under
+wherever it was run from. `GALOS_JOURNAL_DIR` is where this game writes its
+own logs, and naming it draws the commander's own systems over the published
+ones; unset — the ordinary case — there is no journal layer at all, and `J`
+has nothing to show or hide.
 
 ```sh
 cargo run --release
