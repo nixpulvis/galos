@@ -19,6 +19,7 @@ galos_db/backups/*
 # written anywhere but the default carries its own. The bare
 # `.galos_checkpoint` is what runs older than that wrote.
 *.checkpoint
+*.checkpoint.pending
 .galos_checkpoint*
 # Catalogs are downloaded and handed to `galos-catalog` as a path, not
 # vendored. `bright.csv` is the exception: it is `include_str!`d as the
