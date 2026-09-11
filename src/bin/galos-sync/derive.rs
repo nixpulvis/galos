@@ -148,10 +148,16 @@ impl Derive {
             // Cleared before the round rather than after it, so what is
             // counted is what was dropped while this round ran.
             self.dropped.clear();
-            let cursor =
-                index::catch_up(db, &self.dir, &self.checkpoint, Parts::ALL)
-                    .await
-                    .map_err(|err| format!("{err}"))?;
+            let stop = || self.shutdown.asked();
+            let cursor = index::catch_up(
+                db,
+                &self.dir,
+                &self.checkpoint,
+                Parts::ALL,
+                &stop,
+            )
+            .await
+            .map_err(|err| format!("{err}"))?;
             let dropped = self.dropped.count();
             info!(
                 round = round,
@@ -289,13 +295,18 @@ pub async fn from_database(
     checkpoint: &Path,
     parts: Parts,
     watch: Option<Duration>,
+    shutdown: &Shutdown,
 ) -> Result<(), String> {
+    // Asked between chunks and between passes. Without it a `--watch` run
+    // has no way out but being killed, and a catch-up over a galaxy is an
+    // hour of not hearing the question.
+    let stop = || shutdown.asked();
     match watch {
-        Some(every) => index::watch(db, dir, checkpoint, every)
+        Some(every) => index::watch(db, dir, checkpoint, every, &stop)
             .await
             .map_err(|err| format!("{err}")),
         None => {
-            let cursor = index::catch_up(db, dir, checkpoint, parts)
+            let cursor = index::catch_up(db, dir, checkpoint, parts, &stop)
                 .await
                 .map_err(|err| format!("{err}"))?;
             info!(cursor = %cursor, dir = %dir.display(), "the index is level");

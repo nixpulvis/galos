@@ -459,6 +459,7 @@ pub async fn catch_up(
     dir: &Path,
     checkpoint: &Path,
     parts: Parts,
+    stop: &Stop<'_>,
 ) -> Result<chrono::NaiveDateTime> {
     if parts != Parts::ALL {
         let since = db.now().await?.naive_utc();
@@ -466,7 +467,26 @@ pub async fn catch_up(
         info!(dir = %dir.display(), %report, "index parts derived");
         return Ok(since);
     }
-    Ok(bring_level(db, dir, checkpoint).await?.cursor)
+    Ok(bring_level(db, dir, checkpoint, stop).await?.cursor)
+}
+
+/// Whether whoever asked for this has stopped wanting it.
+///
+/// A catch-up over a galaxy is an hour and a watch never ends at all, so a
+/// caller that can be asked to stop — a Ctrl-C on the sync — needs a way to
+/// say so that does not involve killing the process and leaving the
+/// directory wherever the last write left it. Asked between chunks and
+/// between passes, which is as often as there is a whole thing to leave
+/// behind; a single query is not interrupted, so the longest this can take
+/// to be obeyed is the longest read a pass makes.
+///
+/// A borrowed predicate rather than a token type of its own, since the only
+/// thing this crate does with it is ask.
+pub type Stop<'a> = dyn Fn() -> bool + Send + Sync + 'a;
+
+/// Nothing ever asks this to stop, which is what a one-shot caller wants.
+pub fn never() -> &'static Stop<'static> {
+    &|| false
 }
 
 /// Bring `dir` level with the database, then keep it there as the feed writes,
@@ -495,16 +515,34 @@ pub async fn watch(
     dir: &Path,
     checkpoint: &Path,
     interval: Duration,
+    stop: &Stop<'_>,
 ) -> Result<()> {
-    let mut level = bring_level(db, dir, checkpoint).await?;
+    let mut level = bring_level(db, dir, checkpoint, stop).await?;
     info!(
         dir = %dir.display(),
         interval_secs = interval.as_secs(),
         "watching for changes"
     );
-    loop {
-        async_std::task::sleep(interval).await;
+    while !stop() {
+        // In ticks rather than one sleep: `--watch 3600` is a poll an hour
+        // apart, and a stop that waited for the next one would be a run
+        // nobody could stop.
+        waited(interval, stop).await;
+        if stop() {
+            break;
+        }
         pass(db, dir, checkpoint, &mut level).await?;
+    }
+    info!(dir = %dir.display(), "asked to stop watching");
+    Ok(())
+}
+
+/// Sleep `interval`, or until asked to stop.
+async fn waited(interval: Duration, stop: &Stop<'_>) {
+    const TICK: Duration = Duration::from_millis(200);
+    let until = Instant::now() + interval;
+    while Instant::now() < until && !stop() {
+        async_std::task::sleep(TICK.min(until - Instant::now())).await;
     }
 }
 
@@ -534,6 +572,7 @@ async fn bring_level(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    stop: &Stop<'_>,
 ) -> Result<Level> {
     let params = BuildParams::default();
     let mut level = match resume(dir, checkpoint, &params) {
@@ -576,7 +615,9 @@ async fn bring_level(
             }
         }
     };
-    while pass(db, dir, checkpoint, &mut level).await? >= CHANGED_CHUNK {}
+    while !stop()
+        && pass(db, dir, checkpoint, &mut level).await? >= CHANGED_CHUNK
+    {}
 
     // What the passes published since the last throttled write. The caller is
     // about to hand this directory to something that opens it against the
@@ -1018,6 +1059,32 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A poll an hour away is still a poll a run can be stopped between
+    ///
+    /// `watch` sleeps the interval between passes, and a run asked to stop
+    /// has to be obeyed before the next one: `--watch 3600` slept as one
+    /// call meant a Ctrl-C the process answered an hour later, which is a
+    /// run nobody can stop. It waits in ticks now, and this is that.
+    #[async_std::test]
+    async fn a_long_wait_ends_the_moment_it_is_asked_to() {
+        let start = Instant::now();
+        waited(Duration::from_secs(3600), &|| true).await;
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "an hour's sleep outlasted the question: {:?}",
+            start.elapsed(),
+        );
+
+        // And it still waits where nothing is asking.
+        let start = Instant::now();
+        waited(Duration::from_millis(300), &|| false).await;
+        assert!(
+            start.elapsed() >= Duration::from_millis(300),
+            "the wait was skipped: {:?}",
+            start.elapsed(),
+        );
+    }
+
     /// A catch-up levels a directory and answers a cursor to follow from, and
     /// a second one finds the directory it left with nothing to do
     ///
@@ -1088,7 +1155,7 @@ mod tests {
         .await
         .expect("the system should write");
 
-        let cursor = catch_up(&db, &dir, &checkpoint, Parts::ALL)
+        let cursor = catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
             .await
             .expect("the catch-up should run");
         assert!(
@@ -1115,7 +1182,7 @@ mod tests {
                 .expect("a modification time");
         async_std::task::sleep(CURSOR_OVERLAP + Duration::from_secs(1)).await;
 
-        let again = catch_up(&db, &dir, &checkpoint, Parts::ALL)
+        let again = catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
             .await
             .expect("the second catch-up should run");
         assert!(again >= cursor, "the cursor went backwards");
@@ -1192,7 +1259,7 @@ mod tests {
         // A directory brought level, and then a system written after it was:
         // the pass that publishes this one is well inside CHECKPOINT_EVERY,
         // so it is the pass the throttle skips.
-        catch_up(&db, &dir, &checkpoint, Parts::ALL)
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
             .await
             .expect("the first catch-up should run");
         let system = elite_journal::system::System {
@@ -1220,7 +1287,7 @@ mod tests {
         Pending::append(&checkpoint, &[input(RECORDED, [7.0, 8.0, 9.0])])
             .expect("a pending log should write");
 
-        catch_up(&db, &dir, &checkpoint, Parts::ALL)
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
             .await
             .expect("the second catch-up should run");
 
