@@ -44,7 +44,28 @@ impl Checkpoint {
     /// then rename it over `path`. An interrupted write leaves the previous
     /// checkpoint intact, since the rename is the only step that touches `path`.
     pub fn write(&self, path: &Path) -> io::Result<()> {
-        let bytes = rmp_serde::to_vec(self)
+        Checkpoint::write_from(path, self.cursor, &self.inputs)
+    }
+
+    /// The same write, for a caller that still needs its inputs.
+    ///
+    /// A full build holds the only copy of a hundred and twenty-nine
+    /// million systems and goes on to write the metadata out of them.
+    /// Handing them over to be written would mean cloning gigabytes to
+    /// serialize them once, so the borrowed shape is serialized instead —
+    /// the same two fields in the same order, which is the same bytes.
+    pub fn write_from(
+        path: &Path,
+        cursor: NaiveDateTime,
+        inputs: &[System],
+    ) -> io::Result<()> {
+        #[derive(Serialize)]
+        struct Borrowed<'a> {
+            cursor: NaiveDateTime,
+            inputs: &'a [System],
+        }
+
+        let bytes = rmp_serde::to_vec(&Borrowed { cursor, inputs })
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -206,6 +227,35 @@ mod tests {
 
         assert_eq!(Checkpoint::read(&path).unwrap(), second);
         assert!(!path.with_extension("tmp").exists(), "temp file left behind");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The borrowed write is the owned one, byte for byte
+    ///
+    /// A full build keeps its inputs and writes them through
+    /// [`Checkpoint::write_from`] rather than cloning a galaxy to hand
+    /// them over; everything else reads them back through
+    /// [`Checkpoint::read`]. The two are one format or a build's resume
+    /// point is one nothing can resume from.
+    #[test]
+    fn a_borrowed_write_is_the_same_file() {
+        let dir = scratch("borrowed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("checkpoint.bin");
+
+        let held = Checkpoint {
+            cursor: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
+            inputs: (1..40).map(system).collect(),
+        };
+        held.write(&path).unwrap();
+        let owned = std::fs::read(&path).unwrap();
+
+        Checkpoint::write_from(&path, held.cursor, &held.inputs).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), owned);
+        assert_eq!(Checkpoint::read(&path).unwrap(), held);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

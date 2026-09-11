@@ -334,9 +334,11 @@ async fn index_from_database(cli: &DbSource) -> Result<(), String> {
                 .map_err(|err| format!("{err}"))
         }
         None => {
-            let report = index::build_to_dir(&db, dir, parts_of(&cli.only))
-                .await
-                .map_err(|err| format!("{err}"))?;
+            let checkpoint = To::checkpoint(dir, cli.checkpoint.as_deref());
+            let report =
+                index::build_to_dir(&db, dir, &checkpoint, parts_of(&cli.only))
+                    .await
+                    .map_err(|err| format!("{err}"))?;
             println!("{report}");
             if !report.is_consistent() {
                 eprintln!("warning: system count and placed points differ");
