@@ -31,7 +31,7 @@ const STALL: Duration = Duration::from_secs(120);
 /// publishes on — the same order as `galos-sync db --watch`, and for the same
 /// reason: a publish rewrites the index file whole, so doing it per message
 /// at thirty a second would be thirty rewrites a second to move one system.
-/// `--publish` moves it where five seconds is the wrong trade.
+/// `--publish` says otherwise.
 const PUBLISH_EVERY: u64 = 5;
 
 /// Subscribe to EDDN and sync until killed.
@@ -48,14 +48,8 @@ pub struct Cli {
     #[arg(long = "stall", value_name = "SECS")]
     pub stall: Option<u64>,
 
-    /// Seconds between publishes, for a sink that holds its writes.
-    ///
-    /// An index sink edits a tree in memory and writes it out on this beat;
-    /// a database sink has already written every message and does nothing
-    /// with it. Longer is fewer whole rewrites of the index file and a map
-    /// that hears about an arrival later; shorter is the other trade. A
-    /// second is the floor, the game and the feed both writing at about
-    /// that rate.
+    /// Seconds between publishes, one at least. Nothing to a database
+    /// sink, which has written every message already.
     #[arg(long = "publish", value_name = "SECS", default_value_t = PUBLISH_EVERY)]
     pub publish: u64,
 

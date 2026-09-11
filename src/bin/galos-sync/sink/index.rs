@@ -73,10 +73,12 @@ use chrono::{DateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
 use elite_journal::system::Coordinate;
-use galos_index::{BuildParams, Checkpoint, Index as ServedIndex, Tree};
+use galos_index::{
+    BuildParams, Checkpoint, Index as ServedIndex, Pending, System, Tree,
+};
 use galos_journal::galaxy::Politics;
 use galos_journal::{Galaxy, Published};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -89,54 +91,38 @@ use tracing::{debug, info, warn};
 /// applying an event twice lands exactly where applying it once did.
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(60);
 
-/// Whether the directory and the resume point still stand for each other.
+/// Whether there is anything to edit a published directory from.
 ///
-/// Two gates, and `galos_db::index::resume`'s own, because it is the same
-/// question. The directory must be internally consistent — its cell tree and
-/// its names table standing for the same systems — and it must be at or ahead
-/// of the resume point, since a delta publish repairs what the next changes
-/// touch and not what is already wrong.
+/// The one thing a run cannot repair. Everything a directory serves is a
+/// lossy projection — a payload point carries a downcast magnitude and a
+/// bucketed temperature — so the full-precision inputs live in the resume
+/// point and nowhere else, and a directory serving systems with no resume
+/// point beside it can only be started over. `galos_db::index` answers the
+/// same question by rebuilding, which it can: every row is still in
+/// Postgres.
 ///
-/// What differs is the answer to a mismatch. The database-side builder starts
-/// afresh, which it can: every row is still in Postgres. This has nowhere to
-/// re-derive from, so starting afresh would publish a cell tree of whatever
-/// this run happened to hear beside a names table describing a galaxy — a
-/// directory that reads as valid and is not, which is the one failure the
-/// format has no way to notice. So it refuses, and says what to do about it.
+/// Everything else *is* repairable and is repaired rather than refused.
+/// A resume point short of the directory (a run killed between whole
+/// checkpoints, which [`Pending`] now keeps from happening), one ahead of
+/// it (a publish that did not land), or two halves of a directory standing
+/// for different systems: [`Index::open`] trims them to what both hold and
+/// writes the directory whole. What that costs is the systems the trim
+/// dropped, which the feed reports again; what a refusal cost was the
+/// directory.
 fn agrees(
     dir: &Path,
     checkpoint: &Path,
     served: u64,
-    names: usize,
-    checkpointed: usize,
+    resumable: usize,
 ) -> Result<(), String> {
-    let start_over = format!(
-        "delete {} and {} to start the directory over, or write to a \
-         different one with --to index=DIR",
-        dir.display(),
-        checkpoint.display(),
-    );
-
-    if served > 0 && checkpointed == 0 {
+    if served > 0 && resumable == 0 {
         return Err(format!(
             "{} already serves {served} systems and {} is missing or \
-             unreadable, so there is no way to edit what it holds: {start_over}",
+             unreadable, so there is no way to edit what it holds: delete \
+             {} and {} to start the directory over, or write to a different \
+             one with --to index=DIR",
             dir.display(),
             checkpoint.display(),
-        ));
-    }
-    if served != names as u64 {
-        return Err(format!(
-            "{} disagrees with itself: {served} systems in the cell tree \
-             against {names} in the names table. {start_over}",
-            dir.display(),
-        ));
-    }
-    if served < checkpointed as u64 {
-        return Err(format!(
-            "{} serves {served} systems and {} resumes {checkpointed}, so \
-             the directory is behind its own resume point and a delta \
-             publish cannot repair it: {start_over}",
             dir.display(),
             checkpoint.display(),
         ));
@@ -179,9 +165,21 @@ impl Index {
     /// on a machine that has never run this is the ordinary first use.
     pub fn open(dir: &Path, checkpoint: &Path) -> Result<Index, String> {
         let resumed = Checkpoint::read(checkpoint).ok();
-        let inputs = resumed.map(|it| it.inputs).unwrap_or_default();
-        let tree = Tree::build(&inputs, &BuildParams::default());
-        let tables = Tables::resume(dir)
+        let mut held: HashMap<u64, System> = resumed
+            .map(|it| it.inputs)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|system| (system.id64, system))
+            .collect();
+        // What was published after that checkpoint was written, which the
+        // directory holds and the checkpoint does not. Later wins, as an
+        // upsert does: these are appended in the order they were published.
+        let replayed = Pending::read(checkpoint);
+        for system in &replayed {
+            held.insert(system.id64, *system);
+        }
+
+        let mut tables = Tables::resume(dir)
             .map_err(|err| format!("{}: {err}", dir.display()))?;
 
         // What the directory currently serves, which is what the resume
@@ -193,13 +191,58 @@ impl Index {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
             Err(err) => return Err(format!("{}: {err}", dir.display())),
         };
-        agrees(dir, checkpoint, served, tables.names(), tree.len())?;
+        agrees(dir, checkpoint, served, held.len())?;
+
+        // The two halves of the directory, trimmed to what they agree on. A
+        // system the names table has no row for cannot be drawn and asked
+        // about; a name whose system is not in the tree is a row the map
+        // finds and never draws. Both are what a run killed mid-publish
+        // leaves, and both are re-derivable from the feed, where the
+        // directory is not.
+        let named = tables.named();
+        let unnamed = held.len();
+        held.retain(|&id64, _| named.contains(&(id64 as i64)));
+        let unnamed = unnamed - held.len();
+        let drawn: HashSet<i64> = held.keys().map(|&id| id as i64).collect();
+        let orphaned = tables.forget_names(&drawn);
+
+        let inputs: Vec<System> = held.into_values().collect();
+        let mut tree = Tree::build(&inputs, &BuildParams::default());
+
+        // A directory whose halves had to be trimmed, or which serves what
+        // no resume point can edit, is written whole here rather than left
+        // for the first publish: the run that reads it next is entitled to
+        // find the two halves standing for the same systems.
+        if unnamed > 0 || orphaned > 0 || served != tree.len() as u64 {
+            warn!(
+                systems = tree.len(),
+                served = served,
+                unnamed = unnamed,
+                orphaned = orphaned,
+                dir = %dir.display(),
+                "the directory's halves stood for different systems; \
+                 trimmed to what both hold",
+            );
+            tree.write(dir)
+                .map_err(failed("the cell tree could not be repaired"))?;
+            tables
+                .write(dir, Wrote::EVERYTHING)
+                .map_err(failed("the metadata could not be repaired"))?;
+            let at = Checkpoint {
+                cursor: Utc::now().naive_utc(),
+                inputs: tree.to_inputs(),
+            };
+            at.write(checkpoint)
+                .map_err(failed("the resume point could not be repaired"))?;
+            let _ = Pending::clear(checkpoint);
+        }
 
         if tree.len() > 0 {
             info!(
                 systems = tree.len(),
                 names = tables.names(),
                 served = served,
+                replayed = replayed.len(),
                 checkpoint = %checkpoint.display(),
                 "resumed the index",
             );
@@ -255,17 +298,30 @@ impl Index {
     /// Not fatal. The directory is published either way; what a failed
     /// checkpoint costs is a restart that starts over, and taking the run
     /// down would cost the same and the rest of the session besides.
+    ///
+    /// The whole checkpoint holds everything [`Pending`] was carrying, so
+    /// the log goes with it — and only where the checkpoint was written, or
+    /// the next run would resume short of what the directory serves.
     fn resume_point(&mut self) {
         let at = Checkpoint {
             cursor: Utc::now().naive_utc(),
             inputs: self.tree.to_inputs(),
         };
-        if let Err(err) = at.write(&self.checkpoint) {
-            warn!(
+        match at.write(&self.checkpoint) {
+            Ok(()) => {
+                if let Err(err) = Pending::clear(&self.checkpoint) {
+                    warn!(
+                        file = %Pending::path(&self.checkpoint).display(),
+                        error = %err,
+                        "the published log could not be cleared",
+                    );
+                }
+            }
+            Err(err) => warn!(
                 file = %self.checkpoint.display(),
                 error = %err,
                 "the resume point could not be written",
-            );
+            ),
         }
         self.checkpointed = Some(Instant::now());
     }
@@ -397,13 +453,14 @@ impl Sink for Index {
         // Only the systems that have been placed. One named by an event
         // that carried no `StarPos` is in the galaxy and not in the tree,
         // and will join it when something places it.
-        let mut placed = 0;
+        let mut moving = Vec::with_capacity(touched.len());
         for &address in &touched {
             if let Some(system) = self.galaxy.system_of(address) {
                 self.tree.upsert(system);
-                placed += 1;
+                moving.push(system);
             }
         }
+        let placed = moving.len();
 
         self.tree
             .publish(&self.dir)
@@ -422,6 +479,19 @@ impl Sink for Index {
             .tables
             .write(&self.dir, moved)
             .map_err(failed("the metadata could not be published"))?;
+
+        // What this publish put in the directory, kept at full precision
+        // beside the resume point until a whole one is written. Without it
+        // a restart rebuilds the tree short of what the directory serves
+        // and publishes the shortfall over it; see [`Pending`].
+        if let Err(err) = Pending::append(&self.checkpoint, &moving) {
+            warn!(
+                file = %Pending::path(&self.checkpoint).display(),
+                error = %err,
+                "what this publish wrote could not be logged; a restart \
+                 before the next resume point would not see it",
+            );
+        }
 
         // On a timer, not per publish: see [`CHECKPOINT_EVERY`].
         if resumable {
@@ -510,6 +580,7 @@ impl Index {
         };
         at.write(&self.checkpoint)
             .map_err(failed("the resume point could not be written"))?;
+        let _ = Pending::clear(&self.checkpoint);
         self.checkpointed = Some(Instant::now());
 
         info!(
@@ -897,31 +968,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
 
-    /// The gates themselves, without a directory to build one
+    /// The gate itself, without a directory to build one
     #[test]
-    fn a_resume_point_must_match_what_is_served() {
+    fn a_directory_needs_something_to_edit_it_from() {
         let (dir, checkpoint) = (Path::new("d"), Path::new("c"));
         assert!(
-            agrees(dir, checkpoint, 0, 0, 0).is_ok(),
+            agrees(dir, checkpoint, 0, 0).is_ok(),
             "a first run has nothing to disagree with",
         );
         assert!(
-            agrees(dir, checkpoint, 100, 100, 100).is_ok(),
+            agrees(dir, checkpoint, 100, 100).is_ok(),
             "a directory that matches its resume point resumes",
         );
         assert!(
-            agrees(dir, checkpoint, 120, 120, 100).is_ok(),
-            "a directory ahead of its resume point is the ordinary lag: \
-             the checkpoint rides a timer and every pass publishes",
+            agrees(dir, checkpoint, 100, 0).is_err(),
+            "a directory serving systems with no resume point was accepted",
         );
-        assert!(
-            agrees(dir, checkpoint, 100, 90, 100).is_err(),
-            "a directory disagreeing with itself was accepted",
+    }
+
+    /// A publish between two whole checkpoints survives a kill
+    ///
+    /// The resume point rides a minute's timer and a follower publishes
+    /// every few seconds, so all but the first publish of a minute is in
+    /// the directory and not in the checkpoint. Rebuilding from the
+    /// checkpoint alone brought the tree back short of the names table
+    /// beside it, the next publish wrote the shortfall over the directory,
+    /// and nothing could open it again. [`Pending`] is what closes that.
+    #[test]
+    fn a_publish_after_the_last_checkpoint_is_not_lost() {
+        let (dir, checkpoint) = scratch("lagging");
+        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+
+        // The first flush of a run writes a resume point and clears the log.
+        pollster::block_on(
+            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
         );
-        assert!(
-            agrees(dir, checkpoint, 90, 90, 100).is_err(),
-            "a directory behind its own resume point was accepted",
+        pollster::block_on(sink.flush()).expect("the first publish lands");
+        assert!(!Pending::path(&checkpoint).exists(), "a whole one clears it");
+
+        // The second does not: the timer has not come round, so what it
+        // publishes lives in the log until the next whole checkpoint.
+        pollster::block_on(sink.entry(
+            &jump("Alpha Centauri", 3161824266978, [3.0, 0.0, 3.0]),
+            "cmdr",
+        ));
+        pollster::block_on(sink.flush()).expect("the second publish lands");
+        assert_eq!(sink.tree.len(), 2, "both systems are in the tree");
+        assert!(Pending::path(&checkpoint).exists(), "the log has the second");
+        drop(sink);
+
+        let reopened = Index::open(&dir, &checkpoint).expect("it reopens");
+        assert_eq!(
+            reopened.tree.len(),
+            2,
+            "the system published after the last checkpoint came back",
         );
+        assert_eq!(
+            reopened.tables.names(),
+            2,
+            "and the names table was not trimmed to make the halves agree",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
 
     /// An index has nothing to ensure, and says so by answering yes

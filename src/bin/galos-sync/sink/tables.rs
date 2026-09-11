@@ -141,6 +141,31 @@ impl Tables {
         self.names.len()
     }
 
+    /// Every address the names table holds.
+    pub fn named(&self) -> HashSet<i64> {
+        self.names.addresses().collect()
+    }
+
+    /// Drop the names of systems the cell tree does not hold, answering how
+    /// many went.
+    ///
+    /// A repair and not an ordinary patch. The two halves of a directory
+    /// stand for the same systems or it does not reopen, and a name whose
+    /// system is not in the tree is a row the map can find and never draw.
+    /// The feed publishes the system again soon enough; the row cannot be
+    /// turned back into one.
+    pub fn forget_names(&mut self, drawn: &HashSet<i64>) -> usize {
+        let orphans: Vec<i64> = self
+            .names
+            .addresses()
+            .filter(|address| !drawn.contains(address))
+            .collect();
+        for address in &orphans {
+            self.names.remove(*address);
+        }
+        orphans.len()
+    }
+
     /// Take what `galaxy` now says about `touched`, answering what moved.
     ///
     /// In memory. The tables that are single files are left for
