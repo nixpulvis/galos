@@ -80,6 +80,16 @@ pub struct Tables {
     boosts: HashMap<i64, Boost>,
     /// Read back and written out untouched; nothing here can derive one.
     factions: Vec<Faction>,
+    /// Which whole-file tables the directory has no file for at all.
+    ///
+    /// A table nothing in a run happened to move is a table never written,
+    /// and a directory a follower has been filling for an hour can be
+    /// missing one that way. To a client that absence is not "nothing to
+    /// report": `galos_map` reads a missing supercharge table as "this
+    /// index cannot say where a jet cone is" and refuses to plot a route
+    /// for a drive that takes one. So the first write of a run writes
+    /// whatever the directory lacks, empty if that is what it comes to.
+    absent: Wrote,
 }
 
 impl Tables {
@@ -100,14 +110,24 @@ impl Tables {
             }
             Err(err) => return Err(err),
         };
-        let populated: Vec<PopulatedSystem> =
-            optional(&populated_path(dir))?.unwrap_or_default();
-        let reaches: Vec<SystemReach> =
-            optional(&reaches_path(dir))?.unwrap_or_default();
-        let boosts: Vec<SystemBoost> =
-            optional(&boosts_path(dir))?.unwrap_or_default();
-        let factions: Vec<Faction> =
-            optional(&factions_path(dir))?.unwrap_or_default();
+        let populated: Option<Vec<PopulatedSystem>> =
+            optional(&populated_path(dir))?;
+        let reaches: Option<Vec<SystemReach>> = optional(&reaches_path(dir))?;
+        let boosts: Option<Vec<SystemBoost>> = optional(&boosts_path(dir))?;
+        let factions: Option<Vec<Faction>> = optional(&factions_path(dir))?;
+        let absent = Wrote {
+            name_chunks: 0,
+            populated: populated.is_none(),
+            reaches: reaches.is_none(),
+            boosts: boosts.is_none(),
+            factions: factions.is_none(),
+        };
+        let (populated, reaches, boosts, factions) = (
+            populated.unwrap_or_default(),
+            reaches.unwrap_or_default(),
+            boosts.unwrap_or_default(),
+            factions.unwrap_or_default(),
+        );
 
         debug!(
             names = names.len(),
@@ -133,6 +153,7 @@ impl Tables {
                 .map(|it| (it.address, it.boost))
                 .collect(),
             factions,
+            absent,
         })
     }
 
@@ -230,27 +251,42 @@ impl Tables {
         Ok(wrote)
     }
 
-    /// Write the tables `moved` names, and the names table's changed chunks.
+    /// Write the tables `moved` names, the ones the directory has no file
+    /// for at all, and the names table's changed chunks.
     ///
     /// [`Wrote::EVERYTHING`] writes the lot, which is what a directory being
     /// published from nothing wants: a table that never moved was never
     /// written at all, and the factions table can only ever be written this
     /// way, nothing here being able to derive one.
+    ///
+    /// A missing file is written once whatever moved, because absence means
+    /// something to a client: no supercharge table is "this index cannot
+    /// say", not "no jet cones", and the map refuses a supercharged route
+    /// over it. A follower filling a directory from a feed would otherwise
+    /// leave one missing until the first system that happened to move it.
     pub fn write(&mut self, dir: &Path, moved: Wrote) -> io::Result<Wrote> {
         std::fs::create_dir_all(dir)?;
-        if moved.populated {
+        let wrote = Wrote {
+            name_chunks: 0,
+            populated: moved.populated || self.absent.populated,
+            reaches: moved.reaches || self.absent.reaches,
+            boosts: moved.boosts || self.absent.boosts,
+            factions: moved.factions || self.absent.factions,
+        };
+        if wrote.populated {
             self.write_populated(dir)?;
         }
-        if moved.reaches {
+        if wrote.reaches {
             self.write_reaches(dir)?;
         }
-        if moved.boosts {
+        if wrote.boosts {
             self.write_boosts(dir)?;
         }
-        if moved.factions {
+        if wrote.factions {
             write_meta(&factions_path(dir), &self.factions)?;
         }
-        Ok(Wrote { name_chunks: self.names.publish(dir)?, ..moved })
+        self.absent = Wrote::default();
+        Ok(Wrote { name_chunks: self.names.publish(dir)?, ..wrote })
     }
 
     /// The populated table, address-ordered as the format asks.

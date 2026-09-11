@@ -294,9 +294,10 @@ fn stood_up(
     if !index.is_empty() && !boosts.published() {
         warn!(
             "{dir} publishes no supercharge table, so routes for a \
-             supercharging drive cannot be plotted. Add it with \
-             `cargo run --bin galos-sync -- db --to index={dir} \
-             --only boosts`."
+             supercharging drive cannot be plotted. An index built from \
+             the database takes one from `cargo run --bin galos-sync -- \
+             db --to index={dir} --only boosts`; one written from a feed \
+             or a journal writes its own on the next publish."
         );
     }
 
