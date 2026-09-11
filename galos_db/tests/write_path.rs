@@ -187,6 +187,7 @@ const LATE_SIGNAL: i64 = 900_000_021;
 const CROWDED: i64 = 900_000_022;
 const WRONGLY_NAMED: i64 = 900_000_050;
 const DISCOVERED: i64 = 900_000_051;
+const ARRIVAL_CLASS: i64 = 900_000_052;
 
 /// A market id each, for the reason the addresses above are one each
 ///
@@ -2216,4 +2217,68 @@ async fn trade_messages_do_not_wait_on_each_other() {
             .expect("the messages should not be waiting on each other")
             .expect("every message should be written");
     }
+}
+
+/// What the row says burns at the middle of a system
+///
+/// Read through SQL because `System` does not carry the column: nothing
+/// reading a system as a whole has wanted it, the index reading it out of a
+/// query of its own.
+async fn class_of(address: i64) -> Option<String> {
+    let url = database_url().expect("a database to read");
+    let pool = sqlx::PgPool::connect(&url).await.expect("it should connect");
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT primary_star_class FROM systems WHERE address = $1",
+    )
+    .bind(address)
+    .fetch_one(&pool)
+    .await
+    .expect("the system should read")
+}
+
+/// The class of the star a ship drops at is written where a scan says it
+///
+/// `primary_star_class` was a plotted route's column alone: fly to a system,
+/// scan the star at the middle of it, and the row still said nothing about
+/// what burns there while `stars` said `N`. The supercharge table is read
+/// off that column where nothing has been scanned, so a system somebody had
+/// personally stood in was the one the map could say least about.
+#[async_std::test]
+async fn a_scanned_arrival_star_names_the_system() {
+    let db = db!();
+    forget(ARRIVAL_CLASS).await;
+
+    let mut system = JournalSystem::new(ARRIVAL_CLASS, "Test Arrival");
+    system.pos = Some(Coordinate { x: 1.0, y: 2.0, z: 3.0 });
+    System::from_journal(&db, at(0), "test", &system)
+        .await
+        .expect("the system should write");
+
+    assert_eq!(
+        class_of(ARRIVAL_CLASS).await,
+        None,
+        "an arrival says nothing about the star, and never did",
+    );
+
+    assert!(
+        System::set_primary_star_class(&db, ARRIVAL_CLASS, "N")
+            .await
+            .expect("the class should write"),
+        "the column was empty and a scan filled it",
+    );
+    assert_eq!(class_of(ARRIVAL_CLASS).await.as_deref(), Some("N"));
+
+    assert!(
+        !System::set_primary_star_class(&db, ARRIVAL_CLASS, "N")
+            .await
+            .expect("the class should write"),
+        "a feed reporting the same system again rewrote the row",
+    );
+
+    assert!(
+        !System::set_primary_star_class(&db, 900_000_099, "N")
+            .await
+            .expect("the class should write"),
+        "a class was written for a system nothing has named",
+    );
 }
