@@ -5,11 +5,20 @@
 //! while a bar is drawing leaves the two shuffled together and the bar
 //! wherever it was last overwritten.
 //!
-//! So the log goes through the bars. `indicatif` redraws them under whatever
-//! it is asked to print, which is what keeps them at the bottom and every
-//! line of the log above them in the order it was written. What that costs is
-//! a lock and a redraw a line, paid only where a terminal is there to draw
-//! on.
+//! So the log is written between draws. [`MultiProgress::suspend`] clears
+//! whatever is on the screen, hands the terminal over for one line, and
+//! redraws underneath it, which is what keeps the bars at the bottom and
+//! every line of the log above them in the order it was written. What that
+//! costs is a lock and a redraw a line, paid only where a bar is drawing.
+//!
+//! The line itself goes to stderr as a line — `writeln!`, one `\n`, nothing
+//! else. That is worth saying because the obvious arrangement,
+//! [`MultiProgress::println`], is not it: it prints *as a bar prints*, which
+//! means padded to the width of the terminal and positioned rather than
+//! newline-terminated. On a screen with no bar on it that turns every log
+//! line into a row of trailing spaces with the next line run on after it,
+//! which is what a redirected copy of the output shows and what a reader
+//! sees the moment the terminal is narrower than a line.
 //!
 //! ## Why it is a `MultiProgress` and not a bar
 //!
@@ -21,10 +30,8 @@
 //! rest of the run. A [`MultiProgress`] owns the terminal for all of them and
 //! there is nothing to hand back.
 //!
-//! Where nothing would be seen -- redirected output, or a run with no bar at
-//! all -- the log goes straight to stderr. It has to: a hidden draw target
-//! swallows what it is asked to print, so routing through one would lose the
-//! log exactly where there is nothing else to read.
+//! Redirected output and a run with no bar at all need nothing special:
+//! suspending a hidden or empty set of bars is the write on its own.
 
 use indicatif::{
     MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
@@ -45,28 +52,6 @@ static BARS: LazyLock<MultiProgress> = LazyLock::new(|| {
     }
     bars
 });
-
-/// Where a line of the log goes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Above {
-    /// Through the bars, which redraw themselves underneath it.
-    Bars,
-    /// Straight out, because nothing is drawing and nothing would be.
-    Stderr,
-}
-
-/// Whether a line printed through the bars would be seen.
-///
-/// The one way this arrangement can lose data. A draw target that is hidden
-/// swallows what it is asked to print, so the log must never be routed
-/// through one: it would go nowhere, and nowhere is where a log matters
-/// most.
-fn above() -> Above {
-    match worth_drawing() {
-        true => Above::Bars,
-        false => Above::Stderr,
-    }
-}
 
 /// Where the log goes: above the bars, or to stderr where none are drawn
 #[derive(Clone, Copy)]
@@ -105,14 +90,12 @@ impl Drop for Line {
         let said = String::from_utf8_lossy(&self.said);
         let said = said.trim_end_matches('\n');
 
-        match above() {
-            Above::Bars => {
-                let _ = BARS.println(said);
-            }
-            Above::Stderr => {
-                let _ = writeln!(stderr(), "{}", said);
-            }
-        }
+        // A line, written as a line. `suspend` is what the bars are for:
+        // they come off the screen, this goes out, and they draw again
+        // under it. With no bar drawing it is the write on its own.
+        BARS.suspend(|| {
+            let _ = writeln!(stderr(), "{}", said);
+        });
     }
 }
 
@@ -143,15 +126,20 @@ fn worth_drawing() -> bool {
 mod tests {
     use super::*;
 
-    /// A hidden draw target is never given the log
+    /// A line is written whether anything is drawing or not
     ///
-    /// A test process has no terminal, so this is the redirected case: the
-    /// bars are hidden, printing through them would swallow the line, and
-    /// the log has to go to stderr instead. The other way round wants a
-    /// terminal to be true, so it is left to running the thing.
+    /// The way this goes wrong is silence: the arrangement before this one
+    /// printed *through* the bars, and a hidden draw target swallows what
+    /// it is asked to print, so a redirected run lost its log entirely
+    /// unless the writer knew to go around. Suspending does not have that
+    /// failure — the closure runs either way — and a test process has no
+    /// terminal, so this is the hidden case.
     #[test]
-    fn the_log_is_not_printed_through_a_hidden_target() {
-        assert_eq!(above(), Above::Stderr);
-        assert!(BARS.is_hidden(), "the bars would swallow the log");
+    fn a_hidden_set_of_bars_still_hands_the_line_over() {
+        assert!(BARS.is_hidden(), "a test process should have no terminal");
+
+        let mut wrote = 0;
+        BARS.suspend(|| wrote += 1);
+        assert_eq!(wrote, 1, "the line would have gone nowhere");
     }
 }
