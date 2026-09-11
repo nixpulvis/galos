@@ -92,18 +92,23 @@ workspace members list.
 
 ## 1. Ingest
 
-**Five sources, two sinks, one program.** `galos-sync` is where the galaxy
-moves from a publisher into somewhere it can be read. Its subcommands are the
-sources — `journal` (a local journal directory, optionally followed with
-`--watch`), `eddn` (the live feed, never returns), `edsm` (nightly dumps or
-the web API), `eddb` (a saved dump; the site is gone), and `db`, this
-project's own database. `--to` is the sink: `db` or `index=DIR`. `db` is the
-default everywhere except the `db` source itself, which defaults to `index`
-and refuses `--to db` — the database cannot be its own sink. It repeats, and
-a source reads once into every sink it names: `sink::Fan` holds them and
-answers as one, so no source knows how many there are. The same sink twice,
-and `--checkpoint` beside more than one index directory, are refused —
-two writers over one directory is what no resume point can repair.
+**Four publishers, two sinks, one process.** `galos-sync` is where the galaxy
+moves from wherever it is published into somewhere it can be read. `--from`
+names a publisher and repeats — `eddn` (the live feed, a subscription that
+never returns), `journal=PATH` (a local journal directory), `edsm=PATH` and
+`edsm-api=NAME`, `eddb=PATH` (a saved dump; the site is gone). `--db` and
+`--index DIR` name where it goes: Postgres, and a directory a client draws
+from with no server at all. Naming neither is refused; naming both reads
+each publisher once into the pair, which over EDDN is the difference between
+one subscription and two carrying the same galaxy.
+
+**The index is kept current from the events, not from the database.** That
+is the whole shape of the program. A running process never reads Postgres to
+maintain a directory; the database is what an index is rebuilt *from* when
+it is missing or behind, and what holds everything an index has no room for.
+`--db --index DIR` with no `--from` is the other way round and is what
+`galos-db index` and then `galos-sync db` used to be: no events, catch the
+directory up to the database, and with `--watch` keep following it.
 
 `src/bin/galos-sync/sink/` is the seam, and its header says what shaped it —
 not what either sink wants, but what the sources have to say. There turn out
@@ -134,19 +139,25 @@ The two sinks:
   continues, "since a feed that stopped at the first system it could not
   place would stop for good", and `ensure_system` writes the system row
   before anything that references it.
-- `sink/index.rs` is the DB-free half: `galos_journal::Galaxy` accumulating
-  events into the index's vocabulary, a `galos_index::Tree` held open and
-  edited, `sink/tables.rs` keeping the metadata sidecars, and a `Checkpoint`
-  to resume from. The resume point carries the whole editable tree of one
-  directory, so it is named after one: `--checkpoint` where it is said, and
-  `<dir>.checkpoint` beside the directory where it is not. Two indexes
-  followed at once — a journal into one, EDDN into another — would otherwise
-  each be rebuilt from the other's tree. See §5.
+- `sink/index.rs` is the event-sourced half: `galos_journal::Galaxy`
+  accumulating events into the index's vocabulary, a `galos_index::Tree`
+  held open and edited, `sink/tables.rs` keeping the metadata sidecars, and
+  a `Checkpoint` to resume from. It is what `--index` runs whether or not
+  there is a database, and the resume point says which of the two
+  derivations wrote it: a directory built from Postgres and one written from
+  a feed are not the same artefact, and neither resumes onto the other's
+  work. See §5.
 
-The `db` source is the one that is not like the others — it reads rows rather
-than events, so there is no `Sink` in it — and it is here anyway because it
-is the same sentence as the rest. What it runs is `galos_db::index`,
-unchanged; `galos-sync main.rs` only unpacks the arguments.
+`src/bin/galos-sync/derive.rs` is the worker that makes the two agree on
+start. With `--db --index` it runs `galos_db::index::catch_up` first —
+build or delta, the database clock taken before each read — while the
+collect side is already writing Postgres and buffering what it reads for the
+index. Then it opens the sink on what the catch-up wrote, drains the buffer
+into it, and goes live. A buffer that fills is discarded rather than grown
+and another catch-up round runs instead: everything discarded was written to
+the database first, so the rounds converge and nothing is at risk. `main.rs`
+is the supervisor over both halves — the index directory's lock, the pools,
+the signal handler and the exit status.
 
 ## 2. The database
 
@@ -195,10 +206,12 @@ values to the builder. "Nothing about the tree lives here; this crate knows the
 database and the builder knows the tree, and they meet at `System`"
 (`index/mod.rs:7-9`).
 
-`galos-sync db [--to index=DIR] [--watch SECS] [--only PART,…]` (this was
-`galos-db index`, and moved because reading the database into an index is the
-same sentence as reading a journal into one). Full build, or a watch loop
-that publishes deltas every few seconds. `Parts` is
+`galos-sync --db --index DIR [--watch SECS] [--only PART,…]` (this was
+`galos-db index`, then `galos-sync db`, and is now what naming the two sinks
+with no publisher means). `catch_up` is build-or-resume followed by delta
+passes until a pass finds less than a chunk left; `--watch` keeps polling
+after that, and a run with sources calls the same `catch_up` once at startup
+and then maintains the directory from events instead. `Parts` is
 `{cells, names, populated, reaches, boosts, factions, bodies}`, and `--only`
 exists because when reach arithmetic moved into `galos_index::inside`, every
 published reach table went stale while everything beside it was fine —
@@ -300,9 +313,10 @@ precisely so the two answers cannot disagree.
 
 ## 5. The journal layer
 
-`galos_journal` is the other way Elite's dataset arrives. `galos-sync journal`
-already reads a journal directory *into Postgres*, whence the ordinary build
-picks it up; this reads one straight into the index vocabulary and serves it,
+`galos_journal` is the other way Elite's dataset arrives.
+`galos-sync --from journal=DIR --db` reads a journal directory *into
+Postgres*, whence the ordinary build picks it up; this reads one straight
+into the index vocabulary and serves it,
 so a scan taken in the game is on the map a second later with no database in
 the path at all. It is a peer of `galos_db/src/index/`, not of `galos_db`: it
 knows the tree only through `galos_index::System` and the metadata records.
@@ -342,9 +356,10 @@ knows the tree only through `galos_index::System` and the metadata records.
 
 **The join is in the reader.** `galos_index::layer` holds it, and the module
 header argues the decision: baking a commander's journal into the published
-directory would put unshared readings into the artefact `galos-sync db` owns
-and rewrites, the next full build would drop them, and there would be no way
-left to ask what the galaxy looks like without them. So two directories, whole
+directory would put unshared readings into the artefact a database-derived
+build owns and rewrites, the next full build would drop them, and there
+would be no way left to ask what the galaxy looks like without them. So two
+directories, whole
 and independently rebuildable, joined per call.
 
 Metadata composes by address with the overlay winning — for a system EDDN
@@ -378,10 +393,11 @@ followed until it has been — because the map reads its names *through* the
 layered transport, and a source nobody has read yet holds nothing, so what
 comes back is the published table alone.
 
-Reading a journal *into* something is `galos-sync journal`, which is where
-every other publisher is read from: `--to db` for rows, `--to index=DIR` for a
-directory, `--watch` for either. What is left in `galos-journal` is `info`,
-which writes nothing and says what the accumulator made of a directory —
+Reading a journal *into* something is `galos-sync --from journal=DIR`, which
+is where every other publisher is read from: `--db` for rows, `--index DIR`
+for a directory, both for both, `--watch` for any of them. What is left in
+`galos-journal` is `info`, which writes nothing and says what the
+accumulator made of a directory —
 this crate's own smoke test against a real journal.
 
 The map's `journal.rs` is the third way in, and the one that publishes

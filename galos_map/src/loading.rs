@@ -281,7 +281,7 @@ fn stood_up(
         warn!(
             "{dir} has cells but no metadata sidecars; systems will be \
              uncolored and unnamed. Rebuild the index with \
-             `cargo run --bin galos-sync -- db --to index={dir}`."
+             `cargo run --bin galos-sync -- --db --index {dir}`."
         );
     }
 
@@ -296,7 +296,7 @@ fn stood_up(
             "{dir} publishes no supercharge table, so routes for a \
              supercharging drive cannot be plotted. An index built from \
              the database takes one from `cargo run --bin galos-sync -- \
-             db --to index={dir} --only boosts`; one written from a feed \
+             --db --index {dir} --only boosts`; one written from a feed \
              or a journal writes its own on the next publish."
         );
     }

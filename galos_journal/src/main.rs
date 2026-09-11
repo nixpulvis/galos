@@ -10,8 +10,9 @@
 //! the flags for choosing between the two live:
 //!
 //! ```sh
-//! galos-sync journal ~/Saved\ Games/…/Elite\ Dangerous --watch
-//! galos-sync journal ~/Saved\ Games/…/Elite\ Dangerous --to index=.galos_journal_index --watch
+//! galos-sync --from journal=~/Saved\ Games/…/Elite\ Dangerous --db --watch
+//! galos-sync --from journal=~/Saved\ Games/…/Elite\ Dangerous \
+//!   --index .galos_journal_index --watch
 //! ```
 //!
 //! What is left here is the thing that belongs to this crate rather than to

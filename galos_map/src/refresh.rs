@@ -3,13 +3,14 @@
 //! Everything the map draws from is read once and then held: the cell
 //! aggregates the walk plans on, the payloads of the cells in view, and the
 //! tables a name, a color and a size come out of. A feed rewrites all of it
-//! underneath — `galos-sync db --watch` republishes every few seconds — and
-//! nothing here re-read any of it. The one way a republished cell reached the
-//! map was to be evicted and fetched again, which is what zooming out until the
-//! walk stops marking it and coming back does. A system scanned while the map
-//! stood still never appeared, and a cell the index did not hold at startup
-//! could not appear at all: the walk plans off the aggregates, so a cell absent
-//! from them is never marked and never asked for.
+//! underneath — `galos-sync --db --index DIR --watch` republishes every few
+//! seconds — and nothing here re-read any of it. The one way a republished
+//! cell reached the map was to be evicted and fetched again, which is what
+//! zooming out until the walk stops marking it and coming back does. A system
+//! scanned while the map stood still never appeared, and a cell the index did
+//! not hold at startup could not appear at all: the walk plans off the
+//! aggregates, so a cell absent from them is never marked and never asked
+//! for.
 //!
 //! So: a [`Stamp`] per part held, and a poll that asks the transport what each
 //! part is now. A stamp is a stat on the filesystem and a conditional

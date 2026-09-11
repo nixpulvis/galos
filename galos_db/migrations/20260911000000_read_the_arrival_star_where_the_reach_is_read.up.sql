@@ -7,13 +7,22 @@
 -- nearest star on record, which is a `stars` row, falling back to that column
 -- for a system nobody has scanned.
 --
--- Nearest means ordered, so the order goes in the key: a build reads one
--- `DISTINCT ON (system_address)` pass over the whole table and a watch pass
--- reads one star per system it touched, and both want (system_address,
--- distance_from_arrival_ls, id) with the class carried along. `stars_reach`
--- answered the first column of that and none of the rest; its payload is
--- carried here too, so the next migration drops it rather than leaving two
--- indexes over a hundred million stars to answer two halves of one question.
+-- Nearest is not something SQL works out here. Which star a ship drops at
+-- is one rule, `galos_index::derive::arrival_class`, run over the star rows
+-- a build and a watch pass have already read in order to write the body
+-- files and measure the reaches -- the same rows, so the reach a system is
+-- sized by and the star it supercharges from cannot come from two different
+-- readings of the table.
+--
+-- Those reads are what wants this index: every star of every system for a
+-- build, and every star of the systems one pass touched for a watch, which
+-- is a key beginning with system_address in both cases. `stars_reach` began
+-- with that column and held nothing else; its payload is carried here too,
+-- so the next migration drops it rather than leaving two indexes over a
+-- hundred million stars to answer two halves of one question. The key
+-- columns after the first are a few bytes a row and leave a system's stars
+-- in the order the rule picks the arrival one in, which is the order they
+-- are read back in.
 --
 -- One statement to the file: `CREATE INDEX CONCURRENTLY` cannot run in a
 -- transaction, and Postgres wraps a multi-statement batch in one.

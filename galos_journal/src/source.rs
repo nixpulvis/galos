@@ -440,10 +440,11 @@ impl Source for JournalSource {
 impl JournalSource {
     /// Write what has been read as a plain index directory.
     ///
-    /// The same layout `galos-sync db` publishes, so a journal can be looked
-    /// at through `galos-index info`, or handed to the map on its own as
-    /// `GALOS_INDEX_DIR` — which is the sky one commander has personally seen
-    /// and nothing else, and is a useful thing to look at once.
+    /// The same layout `galos-sync --db --index DIR` publishes, so a journal
+    /// can be looked at through `galos-index info`, or handed to the map on
+    /// its own as `GALOS_INDEX_DIR` — which is the sky one commander has
+    /// personally seen and nothing else, and is a useful thing to look at
+    /// once.
     ///
     /// Whole every time. There is no diff to write: the tree is rebuilt from
     /// scratch on every change, so there is no record of which cells moved,

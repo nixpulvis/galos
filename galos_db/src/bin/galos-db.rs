@@ -5,7 +5,7 @@
 //! ```
 //!
 //! Building the index moved to `galos-sync`, which is where every other way
-//! of getting one already was: `galos-sync db --to index=.galos_index
+//! of getting one already was: `galos-sync --db --index .galos_index
 //! --watch 5`. The database is one publisher among five, and reading it into
 //! an index is the same sentence as reading a journal directory into one —
 //! so it is said in the same program, with the same flags, rather than in a

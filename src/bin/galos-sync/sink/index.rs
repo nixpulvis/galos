@@ -27,19 +27,29 @@
 //! whatever has been published into the directory — which for a resumed
 //! `.galos_index` is the galaxy. Rebuilding that per message is not a thing
 //! that could work, so this holds the tree open and publishes deltas, exactly
-//! as `galos-sync db --to index` does on the other side.
+//! as a `--db --index` catch-up does on the other side.
 //!
 //! ## The resume point
 //!
 //! [`Checkpoint`] — the same file and the same format the database-side
 //! builder writes, because it is the same problem: the served payload carries
 //! a downcast magnitude and a bucketed temperature, so the editable tree
-//! cannot be rebuilt from the directory it published. What differs is the
-//! cursor. The database's cursor is a database clock and is read back to ask
-//! "what changed since"; a feed has no such thing to ask, so this writes the
-//! moment of the pass and never reads it. It is kept in the record all the
-//! same: a directory carrying a checkpoint whose cursor nothing reads is
-//! better than two checkpoint formats.
+//! cannot be rebuilt from the directory it published.
+//!
+//! What differs is the cursor, and that is what [`By`] records. Where this
+//! run has a database under it the cursor is a database clock, sampled once
+//! per checkpoint interval *before* the batch it stands for is applied —
+//! sound because the database sink wrote every one of those entries before
+//! this sink was handed it, so everything the index has applied was in
+//! Postgres before the sample. On restart a catch-up from that cursor covers
+//! exactly what the index missed. Where there is no database there is
+//! nothing to catch up from and no cursor to keep, so the checkpoint carries
+//! `None` and says [`By::Events`] wrote it.
+//!
+//! The two derivations refuse to resume onto each other's work. A
+//! database-derived directory opened by the event path with no `--db`, or an
+//! event-derived one opened for a database catch-up, is a resume that would
+//! silently come back the wrong size; see [`one_hand`].
 //!
 //! Written on a timer rather than per publish, for the reason stated in
 //! `galos_db::index`: a checkpoint is every system at full precision, and
@@ -61,27 +71,46 @@
 //! not yet written, which [`Sink::flush`] clears on the same beat it
 //! publishes on.
 //!
-//! Which leaves the tree and the names table, and those are what
-//! `galos-sync db --to index` holds too. The two sides of this program cost
-//! the same thing now; what differs is only where the bodies are read back
-//! from, Postgres there and the directory here.
+//! Which leaves the tree and the names table, and those are what a
+//! database-side catch-up holds too. The two sides of this program cost the
+//! same thing now; what differs is only where the bodies are read back from,
+//! Postgres there and the directory here.
 
 use crate::sink::tables::{Tables, Wrote};
 use crate::sink::{Row, Sink};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
 use elite_journal::system::Coordinate;
+use galos_db::Database;
 use galos_index::{
-    BuildParams, Checkpoint, Index as ServedIndex, Pending, System, Tree,
+    BuildParams, By, Checkpoint, Index as ServedIndex, Pending, System, Tree,
 };
 use galos_journal::galaxy::Politics;
 use galos_journal::{Galaxy, Published};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
+
+/// Where an index is written when `--index` names no directory.
+pub const INDEX_DIR: &str = ".galos_index";
+
+/// What a resume point is named beside the directory it resumes.
+///
+/// Derived from the directory rather than fixed, because the file carries
+/// the whole editable tree of *that* directory: the served payload downcasts
+/// a magnitude and buckets a temperature, so the tree is rebuilt from the
+/// checkpoint and from nothing else. One index directory is all a run writes
+/// today, but a fixed name would be the thing to undo the day that changes.
+///
+/// Beside the directory rather than inside it, likewise on purpose: a
+/// checkpoint is the builder's private business and holds every system at
+/// full precision, and a client reading the index has no use for it and
+/// should not be served it.
+pub const CHECKPOINT_SUFFIX: &str = ".checkpoint";
 
 /// How long a run goes between resume points, at most.
 ///
@@ -120,7 +149,7 @@ fn agrees(
             "{} already serves {served} systems and {} is missing or \
              unreadable, so there is no way to edit what it holds: delete \
              {} and {} to start the directory over, or write to a different \
-             one with --to index=DIR",
+             one with --index DIR",
             dir.display(),
             checkpoint.display(),
             dir.display(),
@@ -128,6 +157,49 @@ fn agrees(
         ));
     }
     Ok(())
+}
+
+/// Whether a resume point was written by the derivation now opening it.
+///
+/// A checkpoint says what wrote it, and the two derivations are not
+/// interchangeable. A database-derived directory holds every system
+/// Postgres has and resumes by asking what changed since its cursor; an
+/// event-derived one holds whatever a feed has said since somebody started
+/// it and has no cursor at all. Opening one as the other is a resume that
+/// comes back the wrong size and says nothing about it: the galaxy quietly
+/// becomes the hundred systems a journal mentioned, or a week of a feed is
+/// read as though a database had been asked.
+///
+/// So they are refused. A database catch-up answers a mismatch by
+/// rebuilding, which it can — every row is still in Postgres. The event
+/// path cannot, so it says what to do instead: name the database it was
+/// derived from, or write somewhere else. A directory that serves nothing
+/// yet has nothing to lose, and the stale checkpoint is simply ignored.
+fn one_hand(
+    dir: &Path,
+    checkpoint: &Path,
+    served: u64,
+    wrote: By,
+    ours: By,
+) -> Result<(), String> {
+    if served == 0 || wrote == ours {
+        return Ok(());
+    }
+    let (held, wanted) = match ours {
+        By::Events => ("a database", "--db, to resume it as one"),
+        By::Database => (
+            "a feed",
+            "--index DIR on a directory of its own, or delete both to \
+             build from the database",
+        ),
+    };
+    Err(format!(
+        "{} was derived from {held} and this run would keep it current \
+         the other way, which resumes at the wrong size without saying \
+         so: pass {wanted} ({} says which wrote it)",
+        dir.display(),
+        checkpoint.display(),
+    ))
 }
 
 /// What went wrong, said as the run's own failure.
@@ -153,6 +225,14 @@ pub struct Index {
     /// Systems written into the tree, counted once per pass each moved in:
     /// a feed reporting the same system twice is two writes.
     published: u64,
+    /// The database this run is also writing, where there is one.
+    ///
+    /// Held for one thing only: the clock a resume point's cursor is, which
+    /// is sampled once per checkpoint interval. Nothing is ever read back
+    /// out of it — an index is kept current from the events, and the
+    /// database is what it is *rebuilt* from, which is the catch-up's job
+    /// rather than this sink's.
+    db: Option<Database>,
     /// When this run last wrote a resume point, and [`None`] until it has.
     checkpointed: Option<Instant>,
 }
@@ -160,11 +240,42 @@ pub struct Index {
 impl Index {
     /// A sink onto `dir`, resuming whatever it already publishes.
     ///
-    /// A directory that is not there is one to be written from nothing, which
-    /// is not an error: `galos-sync journal ~/… --to index=.galos_journal_index`
+    /// A directory that is not there is one to be written from nothing,
+    /// which is not an error: `--from journal=~/… --index .galos_journal`
     /// on a machine that has never run this is the ordinary first use.
-    pub fn open(dir: &Path, checkpoint: &Path) -> Result<Index, String> {
-        let resumed = Checkpoint::read(checkpoint).ok();
+    ///
+    /// `db` is the database this run is also writing, and it decides two
+    /// things: whether a resume point written here carries a cursor, and
+    /// which derivation this is for [`one_hand`]. Where a catch-up has just
+    /// written the directory, this is opened with the same database and
+    /// resumes onto exactly what the catch-up left.
+    pub fn open(
+        dir: &Path,
+        checkpoint: &Path,
+        db: Option<Database>,
+    ) -> Result<Index, String> {
+        // What the directory currently serves, which is what the resume
+        // point has to agree with. A directory that is not there serves
+        // nothing, which is the ordinary first run; anything else that
+        // stopped the read is a directory this must not publish over.
+        let served = match ServedIndex::read(dir) {
+            Ok(index) => index.root().map_or(0, |root| root.aggregate.count()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(err) => return Err(format!("{}: {err}", dir.display())),
+        };
+
+        let ours = by(&db);
+        let resumed = match Checkpoint::read(checkpoint) {
+            Ok(it) => {
+                one_hand(dir, checkpoint, served, it.by, ours)?;
+                (it.by == ours).then_some(it)
+            }
+            Err(_) => None,
+        };
+        // What the resume point stood at, kept for the repair below: a trim
+        // applies no events, so the moment the directory was current as of
+        // is still the moment it is current as of.
+        let resumed_at = resumed.as_ref().and_then(|it| it.cursor);
         let mut held: HashMap<u64, System> = resumed
             .map(|it| it.inputs)
             .unwrap_or_default()
@@ -182,15 +293,6 @@ impl Index {
         let mut tables = Tables::resume(dir)
             .map_err(|err| format!("{}: {err}", dir.display()))?;
 
-        // What the directory currently serves, which is what the resume
-        // point has to agree with. A directory that is not there serves
-        // nothing, which is the ordinary first run; anything else that
-        // stopped the read is a directory this must not publish over.
-        let served = match ServedIndex::read(dir) {
-            Ok(index) => index.root().map_or(0, |root| root.aggregate.count()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(err) => return Err(format!("{}: {err}", dir.display())),
-        };
         agrees(dir, checkpoint, served, held.len())?;
 
         // The two halves of the directory, trimmed to what they agree on. A
@@ -229,7 +331,8 @@ impl Index {
                 .write(dir, Wrote::EVERYTHING)
                 .map_err(failed("the metadata could not be repaired"))?;
             let at = Checkpoint {
-                cursor: Utc::now().naive_utc(),
+                cursor: resumed_at,
+                by: ours,
                 inputs: tree.to_inputs(),
             };
             at.write(checkpoint)
@@ -266,8 +369,28 @@ impl Index {
             touched: HashSet::new(),
             took: 0,
             published: 0,
+            db,
             checkpointed: None,
         })
+    }
+
+    /// Where the resume point of an index in `dir` goes.
+    ///
+    /// Whatever `--checkpoint` named, and `<dir>.checkpoint` where it named
+    /// nothing — see [`CHECKPOINT_SUFFIX`] for why the default is derived
+    /// from the directory rather than being one path for the whole program.
+    /// An associated function because it is asked before a sink exists: it
+    /// is what the sink is opened on.
+    pub fn checkpoint(dir: &Path, named: Option<&Path>) -> PathBuf {
+        if let Some(named) = named {
+            return named.to_owned();
+        }
+        // Appended to the directory's own name rather than through
+        // `set_extension`, which replaces one that `--index galos.d`
+        // carries and would have two such directories sharing a file again.
+        let mut name = dir.file_name().unwrap_or_default().to_owned();
+        name.push(CHECKPOINT_SUFFIX);
+        dir.with_file_name(name)
     }
 
     /// Note that the accumulator has moved, and which systems.
@@ -293,6 +416,28 @@ impl Index {
         self.checkpointed.map_or(true, |at| at.elapsed() >= CHECKPOINT_EVERY)
     }
 
+    /// What a resume point written now would resume from.
+    ///
+    /// [`None`] where there is no database: an event-derived directory has
+    /// nothing to catch up from, so there is no cursor to keep and the
+    /// checkpoint says [`By::Events`] wrote it.
+    ///
+    /// Where there is one, the clock read is the *database's* and it is read
+    /// before the batch this pass is about to apply, which is what makes it
+    /// sound — see the module header. A sample that fails answers the error,
+    /// and the pass writes no resume point at all rather than one with no
+    /// cursor in it: the last one still stands, its cursor is older, and
+    /// older costs a replay where absent costs a full rebuild.
+    async fn cursor(&self) -> Result<Option<NaiveDateTime>, String> {
+        match &self.db {
+            None => Ok(None),
+            Some(db) => match db.now().await {
+                Ok(now) => Ok(Some(now.naive_utc())),
+                Err(err) => Err(format!("{err}")),
+            },
+        }
+    }
+
     /// Write where the run has got to, saying so where it could not be.
     ///
     /// Not fatal. The directory is published either way; what a failed
@@ -302,9 +447,10 @@ impl Index {
     /// The whole checkpoint holds everything [`Pending`] was carrying, so
     /// the log goes with it — and only where the checkpoint was written, or
     /// the next run would resume short of what the directory serves.
-    fn resume_point(&mut self) {
+    fn resume_point(&mut self, cursor: Option<NaiveDateTime>) {
         let at = Checkpoint {
-            cursor: Utc::now().naive_utc(),
+            cursor,
+            by: by(&self.db),
             inputs: self.tree.to_inputs(),
         };
         match at.write(&self.checkpoint) {
@@ -327,15 +473,28 @@ impl Index {
     }
 }
 
+/// Which derivation a run with this database under it is.
+///
+/// The whole of what a `--db` on the command line means to this sink: with
+/// one, a resume point carries a database cursor and may be resumed by a
+/// catch-up; without one it carries nothing and may not. Written once
+/// rather than at the three places that ask, so the two can never drift.
+fn by(db: &Option<Database>) -> By {
+    match db {
+        Some(_) => By::Database,
+        None => By::Events,
+    }
+}
+
 #[async_trait]
 impl Sink for Index {
-    async fn entry(&mut self, entry: &Entry<Event>, _user: &str) {
+    async fn entry(&mut self, entry: Arc<Entry<Event>>, _user: &str) {
         // The commander is the galaxy's to track: it reads `Commander` and
         // `LoadGame` and files its scans under whoever the journal named. An
         // EDDN uploader id is not that — it is an anonymised sender, not a
         // commander — and putting one in `updated_by` would say the map knows
         // who scanned a body when it does not.
-        self.galaxy.read(entry);
+        self.galaxy.read(&entry);
         self.took();
     }
 
@@ -429,7 +588,27 @@ impl Sink for Index {
         // system it hears by a week-old clock.
         self.galaxy.dated(Utc::now());
 
-        let resumable = self.owes_a_resume_point();
+        // Sampled here, before a single one of this pass's systems reaches
+        // the tree, and not after the publish. Every entry the batch below
+        // holds was written to Postgres by the database sink before this
+        // sink was handed it, so a clock read now is a moment by which all
+        // of them are already rows; a clock read after the publish would
+        // cover rows written during it that this index has never seen, and
+        // a catch-up from that cursor would skip them for good.
+        let resumable = match self.owes_a_resume_point() {
+            false => None,
+            true => match self.cursor().await {
+                Ok(cursor) => Some(cursor),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "the database clock would not be read; this pass \
+                         writes no resume point and the last one stands",
+                    );
+                    None
+                }
+            },
+        };
         // What the directory can name as well as draw. `Galaxy::name_of`
         // answers nothing for a system nothing named -- a nav beacon
         // carries a place and an optional name -- and a blank row is worse
@@ -443,8 +622,8 @@ impl Sink for Index {
             .filter(|&address| self.galaxy.name_of(address).is_some())
             .collect();
         if touched.is_empty() {
-            if resumable {
-                self.resume_point();
+            if let Some(cursor) = resumable {
+                self.resume_point(cursor);
             }
             return Ok(());
         }
@@ -494,8 +673,8 @@ impl Sink for Index {
         }
 
         // On a timer, not per publish: see [`CHECKPOINT_EVERY`].
-        if resumable {
-            self.resume_point();
+        if let Some(cursor) = resumable {
+            self.resume_point(cursor);
         }
 
         self.published += placed as u64;
@@ -505,10 +684,10 @@ impl Sink for Index {
             systems = self.tree.len(),
             chunks = wrote.name_chunks,
             bodies = bodies,
-            checkpointed = resumable,
+            checkpointed = resumable.is_some(),
             elapsed = ?start.elapsed(),
-            // Which directory, since `--to` repeats and two index sinks
-            // publish on the same beat.
+            // Which directory, for a log that carries the collect side's
+            // lines as well.
             dir = %self.dir.display(),
             "index published",
         );
@@ -517,9 +696,22 @@ impl Sink for Index {
 
     /// Every part of the directory, written whole. See [`publish_whole`].
     ///
+    /// The cursor is sampled here for the same reason and in the same order
+    /// [`Sink::flush`] samples one: everything about to be written whole was
+    /// in Postgres before this sink saw it.
+    ///
     /// [`publish_whole`]: Index::publish_whole
     async fn finish(&mut self) -> Result<(), String> {
-        self.publish_whole()
+        let cursor = self.cursor().await.unwrap_or_else(|err| {
+            warn!(
+                error = %err,
+                "the database clock would not be read; the directory is \
+                 written whole and its resume point carries no cursor, so \
+                 the next catch-up rebuilds",
+            );
+            None
+        });
+        self.publish_whole(cursor)
     }
 
     fn said(&self) -> String {
@@ -542,7 +734,16 @@ impl Index {
     /// being written from nothing: the factions table and the three
     /// whole-file tables would never be written at all if nothing in them
     /// happened to change during the run.
-    pub fn publish_whole(&mut self) -> Result<(), String> {
+    ///
+    /// `cursor` is what the resume point written here carries, and it is
+    /// the caller's because reading it is a query and this is not async.
+    /// [`Sink::finish`] samples one; a test writing a directory by hand
+    /// passes [`None`], which is what an event-derived directory keeps
+    /// anyway.
+    pub fn publish_whole(
+        &mut self,
+        cursor: Option<NaiveDateTime>,
+    ) -> Result<(), String> {
         // Against now, as [`Sink::flush`] dates its own pass: a run that
         // took an hour to import a journal directory would otherwise file
         // every system in it by the clock it started on.
@@ -585,7 +786,8 @@ impl Index {
         self.published = self.tree.len() as u64;
 
         let at = Checkpoint {
-            cursor: Utc::now().naive_utc(),
+            cursor,
+            by: by(&self.db),
             inputs: self.tree.to_inputs(),
         };
         at.write(&self.checkpoint)
@@ -621,12 +823,12 @@ mod tests {
         (root.join("index"), root.join("checkpoint"))
     }
 
-    fn jump(system: &str, address: i64, at: [f64; 3]) -> Entry<Event> {
+    fn jump(system: &str, address: i64, at: [f64; 3]) -> Arc<Entry<Event>> {
         let json = format!(
             r#"{{"timestamp":"2026-08-08T12:00:00Z","event":"FSDJump","StarSystem":"{}","SystemAddress":{},"StarPos":[{},{},{}]}}"#,
             system, address, at[0], at[1], at[2],
         );
-        serde_json::from_str(&json).expect("the entry should parse")
+        Arc::new(serde_json::from_str(&json).expect("the entry should parse"))
     }
 
     /// How many systems a published directory stands over, read back the way
@@ -652,7 +854,7 @@ mod tests {
 
     /// One read fills every sink it was given
     ///
-    /// `--to db --to index=DIR` is the invocation this is for; two index
+    /// `--to db --index DIR` is the invocation this is for; two index
     /// directories are the half of it a test can drive without Postgres,
     /// and they exercise the same [`Fan`](crate::sink::Fan).
     #[test]
@@ -660,12 +862,16 @@ mod tests {
         let (here, here_resume) = scratch("fanned_here");
         let (there, there_resume) = scratch("fanned_there");
         let mut fan = crate::sink::Fan::of(vec![
-            Box::new(Index::open(&here, &here_resume).expect("one opens")),
-            Box::new(Index::open(&there, &there_resume).expect("two opens")),
+            Box::new(
+                Index::open(&here, &here_resume, None).expect("one opens"),
+            ),
+            Box::new(
+                Index::open(&there, &there_resume, None).expect("two opens"),
+            ),
         ]);
 
         pollster::block_on(
-            fan.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+            fan.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
         );
         pollster::block_on(fan.finish()).expect("both close out");
 
@@ -695,11 +901,12 @@ mod tests {
     #[test]
     fn a_flush_publishes_the_tables_the_directory_lacks() {
         let (dir, checkpoint) = scratch("sidecars");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         // A jump and nothing else: nothing populated, nothing scanned,
         // nothing supercharging.
         pollster::block_on(
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
         );
         pollster::block_on(sink.flush()).expect("the publish lands");
 
@@ -726,13 +933,14 @@ mod tests {
     #[test]
     fn events_become_a_readable_directory() {
         let (dir, checkpoint) = scratch("published");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         pollster::block_on(async {
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
-            sink.entry(&jump("Alpha Centauri", 22, [3.0, 0.0, 3.0]), "cmdr")
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(jump("Alpha Centauri", 22, [3.0, 0.0, 3.0]), "cmdr")
                 .await;
         });
-        sink.publish_whole().expect("the index should be written");
+        sink.publish_whole(None).expect("the index should be written");
 
         assert_eq!(published(&dir), 2);
         assert_eq!(names(&dir), vec!["ALPHA CENTAURI", "SOL"]);
@@ -752,18 +960,20 @@ mod tests {
     fn a_second_run_resumes_the_first() {
         let (dir, checkpoint) = scratch("resumed");
 
-        let mut first = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut first =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         pollster::block_on(
-            first.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+            first.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
         );
-        first.publish_whole().expect("the first run should write");
+        first.publish_whole(None).expect("the first run should write");
         assert_eq!(published(&dir), 1);
 
-        let mut second = Index::open(&dir, &checkpoint).expect("it reopens");
+        let mut second =
+            Index::open(&dir, &checkpoint, None).expect("it reopens");
         pollster::block_on(
-            second.entry(&jump("Alpha Centauri", 22, [3.0, 0.0, 3.0]), "cmdr"),
+            second.entry(jump("Alpha Centauri", 22, [3.0, 0.0, 3.0]), "cmdr"),
         );
-        second.publish_whole().expect("the second run should write");
+        second.publish_whole(None).expect("the second run should write");
 
         assert_eq!(published(&dir), 2, "the first run's system was dropped");
         assert_eq!(names(&dir), vec!["ALPHA CENTAURI", "SOL"]);
@@ -780,10 +990,11 @@ mod tests {
     #[test]
     fn a_flush_publishes_only_what_arrived() {
         let (dir, checkpoint) = scratch("flushed");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
 
         pollster::block_on(async {
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
             sink.flush().await.expect("the first flush");
         });
         assert_eq!(published(&dir), 1);
@@ -817,15 +1028,16 @@ mod tests {
     #[test]
     fn a_run_killed_after_one_flush_reopens() {
         let (dir, checkpoint) = scratch("killed");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         pollster::block_on(async {
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
             sink.flush().await.expect("the first flush");
         });
         drop(sink);
 
         assert_eq!(published(&dir), 1);
-        if let Err(said) = Index::open(&dir, &checkpoint) {
+        if let Err(said) = Index::open(&dir, &checkpoint, None) {
             panic!("a directory flushed once was orphaned: {}", said);
         }
 
@@ -833,13 +1045,13 @@ mod tests {
     }
 
     /// A nav beacon that named nothing, which is a place and no name.
-    fn beacon(address: i64, at: [f64; 3]) -> Entry<Event> {
+    fn beacon(address: i64, at: [f64; 3]) -> Arc<Entry<Event>> {
         let json = format!(
             r#"{{"timestamp":"2026-08-08T12:02:00Z","event":"NavBeaconScan",
             "SystemAddress":{},"StarPos":[{},{},{}],"NumBodies":5}}"#,
             address, at[0], at[1], at[2],
         );
-        serde_json::from_str(&json).expect("the beacon should parse")
+        Arc::new(serde_json::from_str(&json).expect("the beacon should parse"))
     }
 
     /// A system nothing named is left out of the tree, not published nameless
@@ -853,18 +1065,19 @@ mod tests {
     #[test]
     fn a_system_nothing_named_is_not_published() {
         let (dir, checkpoint) = scratch("nameless");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         pollster::block_on(async {
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
-            sink.entry(&beacon(42, [1.0, 2.0, 3.0]), "cmdr").await;
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(beacon(42, [1.0, 2.0, 3.0]), "cmdr").await;
             sink.flush().await.expect("the flush");
         });
-        sink.publish_whole().expect("the run should write");
+        sink.publish_whole(None).expect("the run should write");
         drop(sink);
 
         assert_eq!(published(&dir), 1, "a system with no name was published");
         assert_eq!(names(&dir), vec!["SOL"]);
-        if let Err(said) = Index::open(&dir, &checkpoint) {
+        if let Err(said) = Index::open(&dir, &checkpoint, None) {
             panic!("the directory disagreed with itself: {}", said);
         }
 
@@ -879,7 +1092,8 @@ mod tests {
     #[test]
     fn a_dumped_row_is_placed_where_it_has_a_place() {
         let (dir, checkpoint) = scratch("dumped");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
 
         let row = |address: i64, name: &str, at: Option<Coordinate>| Row {
             address,
@@ -903,7 +1117,7 @@ mod tests {
             .await;
             sink.system(&row(2, "Nowhere", None)).await;
         });
-        sink.publish_whole().expect("the index should be written");
+        sink.publish_whole(None).expect("the index should be written");
 
         assert_eq!(published(&dir), 1, "the placeless row was placed");
         assert_eq!(names(&dir), vec!["SOMEWHERE"]);
@@ -920,7 +1134,7 @@ mod tests {
     }
 
     /// A scan of a star, as the game writes one.
-    fn scan(address: i64, body: i16, class: &str) -> Entry<Event> {
+    fn scan(address: i64, body: i16, class: &str) -> Arc<Entry<Event>> {
         let json = format!(
             r#"{{"timestamp":"2026-08-08T12:01:00Z","event":"Scan",
             "ScanType":"Detailed","StarSystem":"Sol","SystemAddress":{address},
@@ -932,7 +1146,7 @@ mod tests {
             "DistanceFromArrivalLS":{body}.0,
             "WasDiscovered":true,"WasMapped":false}}"#
         );
-        serde_json::from_str(&json).expect("the scan should parse")
+        Arc::new(serde_json::from_str(&json).expect("the scan should parse"))
     }
 
     /// A scan after a flush joins what is already on the disk
@@ -946,15 +1160,16 @@ mod tests {
     #[test]
     fn a_scan_after_a_flush_joins_what_is_on_the_disk() {
         let (dir, checkpoint) = scratch("merged");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
 
         pollster::block_on(async {
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
-            sink.entry(&scan(10477373803, 0, "G"), "cmdr").await;
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(scan(10477373803, 0, "G"), "cmdr").await;
             sink.flush().await.expect("the first flush");
 
             // Minutes later, the next body of the same system.
-            sink.entry(&scan(10477373803, 4, "M"), "cmdr").await;
+            sink.entry(scan(10477373803, 4, "M"), "cmdr").await;
             sink.flush().await.expect("the second flush");
         });
 
@@ -988,11 +1203,12 @@ mod tests {
     #[test]
     fn a_flush_leaves_no_bodies_held() {
         let (dir, checkpoint) = scratch("unheld");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         pollster::block_on(async {
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr").await;
             for body in 0..8 {
-                sink.entry(&scan(10477373803, body, "G"), "cmdr").await;
+                sink.entry(scan(10477373803, body, "G"), "cmdr").await;
             }
             sink.flush().await.expect("the flush");
         });
@@ -1018,17 +1234,18 @@ mod tests {
     #[test]
     fn a_directory_without_its_resume_point_is_refused() {
         let (dir, checkpoint) = scratch("orphaned");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         pollster::block_on(
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
         );
-        sink.publish_whole().expect("the first run should write");
+        sink.publish_whole(None).expect("the first run should write");
         drop(sink);
 
         std::fs::remove_file(&checkpoint).expect("the resume point goes");
         // `expect_err` wants the `Ok` side to be `Debug`, and a sink holding
         // a tree of the galaxy is not a thing to derive that on.
-        let Err(said) = Index::open(&dir, &checkpoint) else {
+        let Err(said) = Index::open(&dir, &checkpoint, None) else {
             panic!("an orphaned directory should be refused")
         };
         assert!(
@@ -1037,7 +1254,7 @@ mod tests {
             said,
         );
         assert!(
-            said.contains("--to index=DIR"),
+            said.contains("--index DIR"),
             "the refusal should say what to do: {}",
             said,
         );
@@ -1063,6 +1280,41 @@ mod tests {
         );
     }
 
+    /// Neither derivation resumes onto the other's directory
+    ///
+    /// A directory a catch-up wrote is the galaxy, and its resume point
+    /// carries a database cursor; one a feed wrote is whatever the feed has
+    /// said since somebody started it. Opened as the other, the tree comes
+    /// back the wrong size and the next publish writes that over the
+    /// directory, which nothing downstream can notice. A directory serving
+    /// nothing has nothing to lose, and the stale resume point is ignored.
+    #[test]
+    fn neither_derivation_resumes_onto_the_other() {
+        let (dir, checkpoint) = (Path::new("d"), Path::new("c"));
+        assert!(
+            one_hand(dir, checkpoint, 100, By::Database, By::Database).is_ok(),
+            "a catch-up should resume what a catch-up wrote",
+        );
+        assert!(
+            one_hand(dir, checkpoint, 0, By::Database, By::Events).is_ok(),
+            "an empty directory has nothing to resume wrongly",
+        );
+
+        let Err(said) =
+            one_hand(dir, checkpoint, 100, By::Database, By::Events)
+        else {
+            panic!("a database-derived directory was opened by the feed")
+        };
+        assert!(said.contains("--db"), "should say what to pass: {}", said);
+
+        let Err(said) =
+            one_hand(dir, checkpoint, 100, By::Events, By::Database)
+        else {
+            panic!("an event-derived directory was opened for a catch-up")
+        };
+        assert!(said.contains("--index"), "should say what to pass: {}", said,);
+    }
+
     /// A publish between two whole checkpoints survives a kill
     ///
     /// The resume point rides a minute's timer and a follower publishes
@@ -1074,11 +1326,12 @@ mod tests {
     #[test]
     fn a_publish_after_the_last_checkpoint_is_not_lost() {
         let (dir, checkpoint) = scratch("lagging");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
 
         // The first flush of a run writes a resume point and clears the log.
         pollster::block_on(
-            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+            sink.entry(jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
         );
         pollster::block_on(sink.flush()).expect("the first publish lands");
         assert!(!Pending::path(&checkpoint).exists(), "a whole one clears it");
@@ -1086,7 +1339,7 @@ mod tests {
         // The second does not: the timer has not come round, so what it
         // publishes lives in the log until the next whole checkpoint.
         pollster::block_on(sink.entry(
-            &jump("Alpha Centauri", 3161824266978, [3.0, 0.0, 3.0]),
+            jump("Alpha Centauri", 3161824266978, [3.0, 0.0, 3.0]),
             "cmdr",
         ));
         pollster::block_on(sink.flush()).expect("the second publish lands");
@@ -1094,7 +1347,8 @@ mod tests {
         assert!(Pending::path(&checkpoint).exists(), "the log has the second");
         drop(sink);
 
-        let reopened = Index::open(&dir, &checkpoint).expect("it reopens");
+        let reopened =
+            Index::open(&dir, &checkpoint, None).expect("it reopens");
         assert_eq!(
             reopened.tree.len(),
             2,
@@ -1117,7 +1371,8 @@ mod tests {
     #[test]
     fn an_index_ensures_nothing() {
         let (dir, checkpoint) = scratch("ensured");
-        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        let mut sink =
+            Index::open(&dir, &checkpoint, None).expect("a sink opens");
         assert!(pollster::block_on(sink.ensure_system(
             "2026-08-08T12:00:00Z".parse().expect("a moment"),
             "cmdr",
