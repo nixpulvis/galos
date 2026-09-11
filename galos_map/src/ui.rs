@@ -3553,8 +3553,9 @@ fn plotting(
 ) -> Result<f64, &'static str> {
     let range = jump_range(asked)?;
     if drive.named().is_some() && !boosts.published() {
-        return Err("No supercharge table in the index. Add it with \
-             `galos-sync db --only boosts`, or plot unaided.");
+        return Err("No supercharge table in the index. Rebuild it with \
+             `galos-sync db --only boosts`, or let the sync that writes \
+             it publish once more, or plot unaided.");
     }
     Ok(range)
 }

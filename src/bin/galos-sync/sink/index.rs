@@ -685,6 +685,38 @@ mod tests {
         }
     }
 
+    /// A followed directory publishes the tables it has nothing for
+    ///
+    /// Reported from a map opened on an EDDN sync: no supercharge table,
+    /// so a route for a drive that takes a jet cone was refused. A table
+    /// that never moved was never written, and to a client a missing one
+    /// means "this index cannot say" rather than "nowhere supercharges".
+    /// A flush is what a follower ever does, so a flush has to write them.
+    #[test]
+    fn a_flush_publishes_the_tables_the_directory_lacks() {
+        let (dir, checkpoint) = scratch("sidecars");
+        let mut sink = Index::open(&dir, &checkpoint).expect("a sink opens");
+        // A jump and nothing else: nothing populated, nothing scanned,
+        // nothing supercharging.
+        pollster::block_on(
+            sink.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        pollster::block_on(sink.flush()).expect("the publish lands");
+
+        let read = FsSource::new(&dir);
+        assert_eq!(
+            pollster::block_on(read.boosts()).expect("the table reads"),
+            Some(Vec::new()),
+            "a published empty table is an answer; a missing one is not",
+        );
+        assert!(
+            pollster::block_on(read.populated()).is_ok(),
+            "and the rest of the sidecars are there to be read",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
     /// Events go in and a directory the map can open comes out
     ///
     /// The whole of what this sink is for. Read back through [`FsSource`],
