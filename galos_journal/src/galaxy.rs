@@ -26,6 +26,22 @@
 //! the commander parked. Every system a ship can dock in was arrived in
 //! first, and an arrival states all six columns.
 //!
+//! ## What a second look does
+//!
+//! The write path's rule, which is stated column by column in its `ON
+//! CONFLICT DO UPDATE` clauses and once here, in [`put`]: a reading wins
+//! where a scan is one, what a scan does not state leaves what stands, and
+//! the two facts about history — whether a thing has been mapped and when
+//! it was found — only ever go one way. The same for a system's political
+//! columns, in [`Galaxy::govern`].
+//!
+//! It is not enough to take the later scan. The game writes a basic
+//! `AutoScan` every time a ship re-enters a system it has already looked at
+//! closely, so the poorer reading arrives second in one commander's own
+//! ordered journal; EDDN carries scans from commanders in no order at all;
+//! and a journal directory holds sessions restored out of order, which is
+//! why a system's stamp is the later of two rather than the last one read.
+//!
 //! ## What a journal cannot say
 //!
 //! Three gaps, all of them stated here rather than papered over, because a
@@ -58,7 +74,7 @@
 use crate::bodies::{Bodies, Kept};
 use chrono::{DateTime, Utc};
 use elite_journal::body::{
-    Body as JournalBody, Star as JournalStar, Surface as JournalSurface,
+    Body as JournalBody, Orbit, Star as JournalStar, Surface as JournalSurface,
 };
 use elite_journal::entry::incremental::exploration::{
     Scan, ScanTarget, ScanType,
@@ -275,18 +291,30 @@ impl Galaxy {
                     center.star_pos,
                 );
                 let address = center.system_address;
-                let barycenter = Barycenter {
-                    system_address: address,
-                    id: center.body_id,
-                    updated_at: at,
-                    updated_by: self.commander.clone(),
-                    orbit: center.orbit.clone(),
-                };
-                let mut barycenter = Some(barycenter);
+                let by = self.commander.clone();
                 self.inside.edit(address, &mut |inside| {
-                    if let Some(it) = barycenter.take() {
-                        put(&mut inside.barycenters, it, |it| it.id);
-                    }
+                    put(
+                        &mut inside.barycenters,
+                        center.body_id,
+                        |it| it.id,
+                        |held| Barycenter {
+                            system_address: address,
+                            id: center.body_id,
+                            updated_at: held
+                                .map_or(at, |held| held.updated_at.max(at)),
+                            updated_by: said_by(
+                                held.map(|held| {
+                                    (held.updated_by.as_str(), held.updated_at)
+                                }),
+                                &by,
+                                at,
+                            ),
+                            orbit: orbit_of(
+                                center.orbit.as_ref(),
+                                held.and_then(|held| held.orbit.as_ref()),
+                            ),
+                        },
+                    )
                 });
                 true
             }
@@ -416,39 +444,46 @@ impl Galaxy {
         let address = scan.system_address;
         let by = self.commander.clone();
         let found = discovered_at(scan, at);
-        // Built before the store is asked, and taken by the closure, so the
-        // record is made once however the store answers. `edit` takes an
-        // `FnMut` and may in principle call it more than once; taking the
-        // value out is what makes that harmless rather than a second star.
-        let mut scanned = match &scan.target {
+        match &scan.target {
             ScanTarget::Star(star) => {
-                Some(Scanned::Star(star_of(address, star, at, &by, found)))
+                self.inside.edit(address, &mut |inside| {
+                    put(
+                        &mut inside.stars,
+                        star.id,
+                        |it| it.id,
+                        |held| star_of(address, star, at, &by, found, held),
+                    )
+                })
             }
             ScanTarget::Body(body) => {
-                Some(Scanned::Body(body_of(address, body, at, &by, found)))
+                self.inside.edit(address, &mut |inside| {
+                    put(
+                        &mut inside.bodies,
+                        body.id,
+                        |it| it.id,
+                        |held| body_of(address, body, at, &by, found, held),
+                    )
+                })
             }
             // A belt cluster and a ring are numbered bodies of the system and
             // neither has a record in [`SystemBodies`], which carries what the
             // map draws inside a system. The scan still counts as having been
             // in the system, which `seen` has already recorded.
-            ScanTarget::Cluster(_) | ScanTarget::Ring(_) => None,
-        };
-        if scanned.is_some() {
-            self.inside.edit(address, &mut |inside| match scanned.take() {
-                Some(Scanned::Star(star)) => {
-                    put(&mut inside.stars, star, |it| it.id)
-                }
-                Some(Scanned::Body(body)) => {
-                    put(&mut inside.bodies, body, |it| it.id)
-                }
-                None => {}
-            });
+            ScanTarget::Cluster(_) | ScanTarget::Ring(_) => {}
         }
         true
     }
 
     /// A system named by any event at all: its name, its place if the event
     /// carried one, and the moment.
+    ///
+    /// The name is upper-cased, which is the index's spelling of a system
+    /// because it is `galos_db`'s: every write of a `systems` row goes
+    /// through `UPPER($2)`, so that is what the published names table
+    /// holds and what a client comparing against it sees. A journal read
+    /// into the same vocabulary has to agree, or a directory written both
+    /// ways holds two spellings of one galaxy and the overlay's names read
+    /// differently from the ones under them.
     fn seen(
         &mut self,
         at: DateTime<Utc>,
@@ -459,7 +494,7 @@ impl Galaxy {
         self.touched.insert(address);
         let visit = self.systems.entry(address).or_default();
         if !name.is_empty() {
-            visit.name = name.to_string();
+            visit.name = name.to_uppercase();
         }
         if let Some(pos) = pos {
             visit.position = Some([pos.x, pos.y, pos.z]);
@@ -708,28 +743,88 @@ impl Galaxy {
     }
 }
 
-/// One thing a scan looked at, of the two kinds [`SystemBodies`] records.
+/// File what a scan says under its key, over whatever is filed there.
 ///
-/// Built before the store is asked so that reading the store and making the
-/// record are not tangled together.
-enum Scanned {
-    Star(Star),
-    Body(Body),
+/// The database's write path states the rule column by column and this is
+/// the whole of it in one place: a reading wins where the scan is one, what
+/// a scan does not state leaves what stands, and the two facts about a
+/// body's history — whether it has been mapped and when it was found — only
+/// ever go one way.
+///
+/// It used to replace the record outright, on the argument that a body is
+/// scanned honk, then properly, then mapped, so the last look is the fullest.
+/// It is not: the game writes a basic `AutoScan` every time a ship re-enters
+/// a system it has already looked at closely, which is a poorer scan arriving
+/// later in one commander's own ordered journal. EDDN is worse — the same
+/// accumulator reads scans from commanders in no order at all — and a journal
+/// directory holds sessions restored out of order, which is why
+/// [`Galaxy::seen`] takes the later of two stamps rather than the last one
+/// read.
+///
+/// `make` is handed the held record where there is one, and is a `Fn` rather
+/// than a `FnOnce` because [`Bodies::edit`](crate::Bodies::edit) takes an
+/// `FnMut` and may in principle call it twice.
+fn put<T, K: Eq>(
+    table: &mut Vec<T>,
+    key: K,
+    keyed: impl Fn(&T) -> K,
+    make: impl Fn(Option<&T>) -> T,
+) {
+    match table.iter().position(|held| keyed(held) == key) {
+        Some(at) => {
+            let made = make(Some(&table[at]));
+            table[at] = made;
+        }
+        None => table.push(make(None)),
+    }
 }
 
-/// Put `it` in `table`, replacing whatever was already filed under its key.
+/// The earliest claim on record, which is `LEAST`'s rule.
 ///
-/// A body is scanned more than once — a honk, then a proper look, then a
-/// surface map — and the later scan is the fuller one. Replacing rather than
-/// merging field by field is the right rule for a single commander's journal
-/// read in order: the events are that commander's own successive looks at the
-/// one body, so the last is the best.
-fn put<T, K: Eq>(table: &mut Vec<T>, it: T, key: impl Fn(&T) -> K) {
-    let k = key(&it);
-    match table.iter().position(|held| key(held) == k) {
-        Some(at) => table[at] = it,
-        None => table.push(it),
+/// A scan that says nothing about when a thing was found leaves what stands,
+/// rather than its silence winning.
+fn earliest(
+    held: Option<DateTime<Utc>>,
+    said: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    match (held, said) {
+        (Some(held), Some(said)) => Some(held.min(said)),
+        (held, said) => held.or(said),
     }
+}
+
+/// Who a record is filed under, which is whoever spoke latest.
+///
+/// `>=` as the database's `CASE WHEN $7 >= updated_at` is: a tie goes to the
+/// scan that has just arrived, there being nothing to choose between them and
+/// one of the two having to win.
+fn said_by(
+    held: Option<(&str, DateTime<Utc>)>,
+    by: &str,
+    at: DateTime<Utc>,
+) -> String {
+    match held {
+        Some((who, when)) if at < when => who.to_string(),
+        _ => by.to_string(),
+    }
+}
+
+/// An orbit as a rescan leaves it.
+///
+/// The two elements a scan may leave out are filled from what stands, and a
+/// scan naming no orbit at all — which is what a primary star's scan is —
+/// keeps the one already on record rather than taking it away.
+fn orbit_of(said: Option<&Orbit>, held: Option<&Orbit>) -> Option<Orbit> {
+    let Some(said) = said else { return held.cloned() };
+    Some(Orbit {
+        ascending_node: said
+            .ascending_node
+            .or_else(|| held.and_then(|it| it.ascending_node)),
+        mean_anomaly: said
+            .mean_anomaly
+            .or_else(|| held.and_then(|it| it.mean_anomaly)),
+        ..said.clone()
+    })
 }
 
 /// When a scan says what it looked at was found, where it says at all.
@@ -761,21 +856,35 @@ fn chain(named: &[BTreeMap<String, i16>]) -> Vec<Parent> {
         .collect()
 }
 
-/// A scanned star as the index's record of one.
+/// A scanned star as the index's record of one, over what stands.
+///
+/// Plain assignment for everything a scan always states, which is what the
+/// database does with those columns too. The rest is [`put`]'s rule: the
+/// orbit a primary's scan does not carry, the stamp that only goes forward,
+/// the mapping that only goes up, and the discovery that only goes back.
 fn star_of(
     address: i64,
     star: &JournalStar,
     at: DateTime<Utc>,
     by: &str,
     found: Option<DateTime<Utc>>,
+    held: Option<&Star>,
 ) -> Star {
+    let parents = chain(&star.parents);
     Star {
         system_address: address,
         id: star.id,
         name: star.name.clone(),
-        parents: chain(&star.parents),
-        updated_at: at,
-        updated_by: by.to_string(),
+        parents: match (parents.is_empty(), held) {
+            (true, Some(held)) => held.parents.clone(),
+            (_, _) => parents,
+        },
+        updated_at: held.map_or(at, |held| held.updated_at.max(at)),
+        updated_by: said_by(
+            held.map(|held| (held.updated_by.as_str(), held.updated_at)),
+            by,
+            at,
+        ),
         absolute_magnitude: star.absolute_magnitude,
         age_my: star.age_my,
         distance_from_arrival_ls: star.distance_from_arrival_ls,
@@ -783,62 +892,118 @@ fn star_of(
         star_class: star.star_class.clone(),
         stellar_mass: star.stellar_mass,
         subclass: star.subclass,
-        orbit: star.orbit.clone(),
+        orbit: orbit_of(
+            star.orbit.as_ref(),
+            held.and_then(|held| held.orbit.as_ref()),
+        ),
         spin: star.spin.clone(),
         radius: star.radius,
         temperature: star.temperature,
-        mapped: star.discovery.mapped,
-        discovered_at: found,
+        mapped: star.discovery.mapped || held.is_some_and(|held| held.mapped),
+        discovered_at: earliest(
+            held.and_then(|held| held.discovered_at),
+            found,
+        ),
     }
 }
 
-/// A scanned body as the index's record of one.
+/// A scanned body as the index's record of one, over what stands.
+///
+/// Same rule as [`star_of`], and one more: a body's surface is a block the
+/// game writes only where it looked at one, so a basic scan arriving after a
+/// detailed one keeps the surface, the materials and the readings it does
+/// not mention rather than taking them away.
 fn body_of(
     address: i64,
     body: &JournalBody,
     at: DateTime<Utc>,
     by: &str,
     found: Option<DateTime<Utc>>,
+    held: Option<&Body>,
 ) -> Body {
+    let parents = chain(&body.parents);
+    let stood = held.and_then(|held| held.surface.as_ref());
     Body {
         system_address: address,
         id: body.id,
-        parents: chain(&body.parents),
+        parents: match (parents.is_empty(), held) {
+            (true, Some(held)) => held.parents.clone(),
+            (_, _) => parents,
+        },
         name: body.name.clone(),
-        body_type: body.ty.clone(),
-        distance_from_arrival: body.distance_from_arrival,
-        updated_at: at,
-        updated_by: by.to_string(),
+        body_type: body
+            .ty
+            .clone()
+            .or_else(|| held.and_then(|held| held.body_type.clone())),
+        distance_from_arrival: body
+            .distance_from_arrival
+            .or_else(|| held.and_then(|held| held.distance_from_arrival)),
+        updated_at: held.map_or(at, |held| held.updated_at.max(at)),
+        updated_by: said_by(
+            held.map(|held| (held.updated_by.as_str(), held.updated_at)),
+            by,
+            at,
+        ),
         planet_class: body.planet_class.clone(),
-        // A basic scan does not report it, and a body nobody has looked at
-        // closely is not tidally locked as far as anything can say.
-        tidal_lock: body.tidal_lock.unwrap_or(false),
+        // A basic scan does not report it, so what a closer look found
+        // stands; a body nothing has looked at closely is not tidally
+        // locked as far as anything can say.
+        tidal_lock: body
+            .tidal_lock
+            .unwrap_or_else(|| held.is_some_and(|held| held.tidal_lock)),
         mass: body.mass,
         radius: body.radius,
         gravity: body.gravity,
-        temperature: body.temperature,
-        surface: body.surface.as_ref().map(surface_of),
-        orbit: body.orbit.clone(),
+        temperature: body
+            .temperature
+            .or_else(|| held.and_then(|held| held.temperature)),
+        surface: match &body.surface {
+            Some(said) => Some(surface_of(said, stood)),
+            None => stood.cloned(),
+        },
+        orbit: orbit_of(Some(&body.orbit), held.map(|held| &held.orbit))
+            .expect("a scan states a body's orbit"),
         spin: body.spin.clone(),
-        mapped: body.discovery.mapped,
-        discovered_at: found,
+        mapped: body.discovery.mapped || held.is_some_and(|held| held.mapped),
+        discovered_at: earliest(
+            held.and_then(|held| held.discovered_at),
+            found,
+        ),
     }
 }
 
 /// What a body with a surface has, as the index records it.
 ///
-/// The one field that differs: the index's composition is optional, a body
-/// stored before the fractions were kept having a surface and no reading of
-/// what it is made of. A scan always carries one.
-fn surface_of(surface: &JournalSurface) -> Surface {
+/// A scan that looked at a surface states the whole of what it measured —
+/// the pressure, the atmosphere type, whether it can be landed on, what it
+/// is made of and what can be collected there — so those are taken as they
+/// come, the materials included: a list the scan does not repeat is a list
+/// the body no longer carries. The three the game writes as an empty string
+/// where it has nothing to say are the exception, being absences rather
+/// than readings.
+///
+/// The one field that differs from the journal's shape: the index's
+/// composition is optional, a body stored before the fractions were kept
+/// having a surface and no reading of what it is made of. A scan always
+/// carries one.
+fn surface_of(surface: &JournalSurface, held: Option<&Surface>) -> Surface {
     Surface {
         atmosphere_type: surface.atmosphere_type.clone(),
         pressure: surface.pressure,
         composition: Some(surface.composition.clone()),
         landable: surface.landable,
-        atmosphere: surface.atmosphere.clone(),
-        volcanism: surface.volcanism.clone(),
-        terraform_state: surface.terraform_state.clone(),
+        atmosphere: surface
+            .atmosphere
+            .clone()
+            .or_else(|| held.and_then(|held| held.atmosphere.clone())),
+        volcanism: surface
+            .volcanism
+            .clone()
+            .or_else(|| held.and_then(|held| held.volcanism.clone())),
+        terraform_state: surface
+            .terraform_state
+            .clone()
+            .or_else(|| held.and_then(|held| held.terraform_state.clone())),
         materials: surface.materials.clone(),
     }
 }
@@ -902,6 +1067,56 @@ mod tests {
         )
     }
 
+    /// A scan of a planet in Sol, detailed or basic.
+    ///
+    /// The two shapes the game really writes: a close look, carrying the
+    /// surface block, the materials on it, the tidal lock and the
+    /// temperature; and the `AutoScan` it writes every time a ship
+    /// re-enters a system it has already looked at, carrying none of them.
+    fn body_scan(detailed: bool, at: &str, discovery: &str) -> String {
+        let close = r#"
+                "TidalLock": true,
+                "SurfaceTemperature": 288.0,
+                "AtmosphereType": "Nitrogen",
+                "SurfacePressure": 101325.0,
+                "Landable": true,
+                "Atmosphere": "thick nitrogen atmosphere",
+                "Volcanism": "minor water geysers",
+                "TerraformState": "Terraformable",
+                "Composition": { "Ice": 0.1, "Rock": 0.7, "Metal": 0.2 },
+                "Materials": [{ "Name": "iron", "Percent": 20.0 }],"#;
+        format!(
+            r#"{{
+                "timestamp": "{at}",
+                "event": "Scan",
+                "ScanType": "{}",
+                "StarSystem": "Sol",
+                "SystemAddress": 10477373803,
+                "StarPos": [0.0, 0.0, 0.0],
+                "BodyName": "Sol 3",
+                "BodyID": 3,
+                "BodyType": "Planet",
+                "Parents": [{{ "Star": 0 }}],
+                "PlanetClass": "Earthlike body",
+                "MassEM": 1.0,
+                "Radius": 6371000.0,
+                "SurfaceGravity": 9.8,
+                "SemiMajorAxis": 1.0,
+                "Eccentricity": 0.0167,
+                "OrbitalInclination": 0.0,
+                "Periapsis": 114.2,
+                "OrbitalPeriod": 31558000.0,
+                "RotationPeriod": 86164.0,
+                "AxialTilt": 0.41,
+                "DistanceFromArrivalLS": 499.0,
+                {}
+                {discovery}
+            }}"#,
+            if detailed { "Detailed" } else { "AutoScan" },
+            if detailed { close } else { "" },
+        )
+    }
+
     /// A jump names a system, places it, and says who runs it
     #[test]
     fn a_jump_is_a_system() {
@@ -915,7 +1130,10 @@ mod tests {
 
         let names = galaxy.names();
         assert_eq!(names.len(), 1);
-        assert_eq!(names[0].name, "Sol");
+        assert_eq!(
+            names[0].name, "SOL",
+            "the index spells a system the way `galos_db` writes it",
+        );
 
         let populated = galaxy.populated();
         assert_eq!(populated.len(), 1);
@@ -980,6 +1198,152 @@ mod tests {
         let inside = galaxy.bodies(10477373803);
         assert_eq!(inside.stars.len(), 1, "one star was filed twice");
         assert_eq!(inside.stars[0].temperature, 6000.0);
+    }
+
+    /// A basic scan after a detailed one keeps what it does not say
+    ///
+    /// The game writes an `AutoScan` every time a ship re-enters a system it
+    /// has already looked at closely: ordered, later, and poorer. Replacing
+    /// the record with it took away the surface, what can be picked up off
+    /// it, the tidal lock and the temperature — everything the closer look
+    /// was for.
+    #[test]
+    fn a_basic_scan_after_a_detailed_one_keeps_what_it_does_not_say() {
+        let mut galaxy = galaxy();
+        galaxy.read(&entry(JUMP));
+        assert!(galaxy.read(&entry(&body_scan(
+            true,
+            "2026-08-08T12:01:00Z",
+            r#""WasDiscovered": true, "WasMapped": true"#,
+        ))));
+        assert!(galaxy.read(&entry(&body_scan(
+            false,
+            "2026-08-08T12:05:00Z",
+            r#""WasDiscovered": true, "WasMapped": false"#,
+        ))));
+
+        let inside = galaxy.bodies(10477373803);
+        assert_eq!(inside.bodies.len(), 1, "one body was filed twice");
+        let body = &inside.bodies[0];
+        let surface = body.surface.as_ref().expect("the surface stands");
+        assert_eq!(
+            surface.materials.len(),
+            1,
+            "what can be picked up off it went with the basic scan",
+        );
+        assert_eq!(surface.pressure, 101325.0);
+        assert!(body.tidal_lock, "a basic scan turned the body loose");
+        assert_eq!(body.temperature, Some(288.0));
+        assert!(body.mapped, "a rescan unmapped a mapped body");
+    }
+
+    /// Having been mapped is a fact about the galaxy, not a reading
+    ///
+    /// A scan that finds a star already mapped is knowledge; one that finds
+    /// it unmapped is not evidence that it has stopped being so. The
+    /// database's `was_mapped OR $n`, in the vocabulary this publishes.
+    #[test]
+    fn a_rescan_does_not_unmap() {
+        let mut galaxy = galaxy();
+        galaxy.read(&entry(JUMP));
+        galaxy.read(&entry(&body_scan(
+            true,
+            "2026-08-08T12:01:00Z",
+            r#""WasDiscovered": true, "WasMapped": true"#,
+        )));
+        galaxy.read(&entry(&body_scan(
+            true,
+            "2026-08-08T12:05:00Z",
+            r#""WasDiscovered": true, "WasMapped": false"#,
+        )));
+
+        assert!(galaxy.bodies(10477373803).bodies[0].mapped);
+    }
+
+    /// The earliest claim on a discovery is the one that stands
+    ///
+    /// A scan saying the body was already found says nothing about when, and
+    /// its silence must not erase the scan that *was* the discovery.
+    #[test]
+    fn the_earliest_discovery_wins() {
+        let mut galaxy = galaxy();
+        galaxy.read(&entry(JUMP));
+        galaxy.read(&entry(&body_scan(
+            true,
+            "2026-08-08T12:01:00Z",
+            r#""WasDiscovered": false, "WasMapped": false"#,
+        )));
+        galaxy.read(&entry(&body_scan(
+            true,
+            "2026-08-08T12:05:00Z",
+            r#""WasDiscovered": true, "WasMapped": false"#,
+        )));
+
+        let found = galaxy.bodies(10477373803).bodies[0].discovered_at;
+        assert_eq!(
+            found.map(|at| at.to_rfc3339()),
+            Some("2026-08-08T12:01:00+00:00".to_string()),
+            "a later scan's silence took the discovery away",
+        );
+    }
+
+    /// A scan arriving late overwrites the readings and not the clock
+    ///
+    /// Both halves of the rule in one place. EDDN carries scans from
+    /// commanders in no order, and a journal directory holds sessions
+    /// restored out of order: what a scan measured is taken as it comes,
+    /// since that is what the database does with those columns, but the
+    /// stamp the map reads as "updated" only ever goes forward.
+    #[test]
+    fn a_late_scan_does_not_put_the_clock_back() {
+        let mut galaxy = galaxy();
+        galaxy.read(&entry(JUMP));
+        galaxy.read(&entry(&star_scan("G", 4.83, 6000.0)));
+        // The same star, measured colder, by an entry stamped earlier.
+        let older =
+            star_scan("G", 4.83, 5778.0).replace("12:01:00Z", "12:00:30Z");
+        galaxy.read(&entry(&older));
+
+        let star = &galaxy.bodies(10477373803).stars[0];
+        assert_eq!(
+            star.temperature, 5778.0,
+            "a reading is a reading whenever it arrives",
+        );
+        assert_eq!(
+            star.updated_at.to_rfc3339(),
+            "2026-08-08T12:01:00+00:00",
+            "a late scan rewound the stamp the map reads",
+        );
+    }
+
+    /// A scan that names no ancestor keeps the chain that stands
+    ///
+    /// What places a body inside its system. A scan carrying no `Parents` —
+    /// which is what a primary's is, and what some uploaders strip — must
+    /// not take the ancestry a fuller scan recorded.
+    #[test]
+    fn a_scan_that_names_no_ancestor_keeps_the_chain() {
+        let mut galaxy = galaxy();
+        galaxy.read(&entry(JUMP));
+        galaxy.read(&entry(&body_scan(
+            true,
+            "2026-08-08T12:01:00Z",
+            r#""WasDiscovered": true, "WasMapped": false"#,
+        )));
+        let orphaned = body_scan(
+            true,
+            "2026-08-08T12:05:00Z",
+            r#""WasDiscovered": true, "WasMapped": false"#,
+        )
+        .replace(r#""Parents": [{ "Star": 0 }],"#, r#""Parents": [],"#);
+        galaxy.read(&entry(&orphaned));
+
+        let body = &galaxy.bodies(10477373803).bodies[0];
+        assert_eq!(
+            body.parents.len(),
+            1,
+            "a scan naming no ancestor took the chain away",
+        );
     }
 
     /// A scan arriving after a jump does not take the jump's politics away
