@@ -99,7 +99,11 @@ sources — `journal` (a local journal directory, optionally followed with
 the web API), `eddb` (a saved dump; the site is gone), and `db`, this
 project's own database. `--to` is the sink: `db` or `index=DIR`. `db` is the
 default everywhere except the `db` source itself, which defaults to `index`
-and refuses `--to db` — the database cannot be its own sink.
+and refuses `--to db` — the database cannot be its own sink. It repeats, and
+a source reads once into every sink it names: `sink::Fan` holds them and
+answers as one, so no source knows how many there are. The same sink twice,
+and `--checkpoint` beside more than one index directory, are refused —
+two writers over one directory is what no resume point can repair.
 
 `src/bin/galos-sync/sink/` is the seam, and its header says what shaped it —
 not what either sink wants, but what the sources have to say. There turn out

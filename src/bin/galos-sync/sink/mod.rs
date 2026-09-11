@@ -158,6 +158,158 @@ pub trait Sink: Send {
     /// takes no argument and may be called as often as a source likes.
     async fn flush(&mut self) -> Result<(), String>;
 
+    /// Close the run out, answering what went wrong.
+    ///
+    /// What a source calls once, when there is no more to read. A database
+    /// has nothing left to do; an index writes every part of its directory
+    /// whole, because a run that only ever published deltas would leave
+    /// behind the tables nothing in this run happened to change. The
+    /// difference used to be in `main`, which meant knowing which sink it
+    /// held; a sink knows what finishing means for it.
+    async fn finish(&mut self) -> Result<(), String>;
+
     /// One line saying what this sink has taken, for the end of a run.
     fn said(&self) -> String;
+}
+
+/// Several sinks, written to as one.
+///
+/// What `--to db --to index=DIR` is: one read of a publisher filling both,
+/// rather than two runs of this program over the same feed, which for EDDN
+/// means two subscriptions and twice the messages for the same galaxy.
+///
+/// In order and one after another, never concurrently. The order a source
+/// reads in is what the guarded writes downstream turn on, and a sink that
+/// is slow is slow for the run rather than for its neighbour.
+pub struct Fan<'a> {
+    sinks: Vec<Box<dyn Sink + 'a>>,
+}
+
+impl<'a> Fan<'a> {
+    /// A sink over all of these.
+    pub fn of(sinks: Vec<Box<dyn Sink + 'a>>) -> Fan<'a> {
+        Fan { sinks }
+    }
+
+    /// What each sink has to say, one line apiece.
+    ///
+    /// Not one joined sentence: a database counts every message it was
+    /// handed and an index counts the systems it took and the tree it
+    /// holds, and the two numbers answer different questions.
+    pub fn said_each(&self) -> Vec<String> {
+        self.sinks.iter().map(|sink| sink.said()).collect()
+    }
+
+    /// Every failure, rather than the first.
+    ///
+    /// A durability call must reach every sink: stopping at the first
+    /// failure would leave the ones after it holding what they had while
+    /// the run carried on reading into them.
+    fn all(failed: Vec<String>) -> Result<(), String> {
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(failed.join("; "))
+        }
+    }
+}
+
+#[async_trait]
+impl Sink for Fan<'_> {
+    async fn entry(&mut self, entry: &Entry<Event>, user: &str) {
+        for sink in &mut self.sinks {
+            sink.entry(entry, user).await;
+        }
+    }
+
+    /// Whether *any* sink knows the place.
+    ///
+    /// The question a caller asks is whether to go on writing what is keyed
+    /// onto this system, and with two sinks the answer is yes as soon as one
+    /// of them took it: a row Postgres refused is no reason to keep the
+    /// system out of an index that has no rows to refuse.
+    async fn ensure_system(
+        &mut self,
+        at: DateTime<Utc>,
+        user: &str,
+        address: i64,
+        name: Option<&str>,
+        position: Option<Coordinate>,
+        why: &str,
+    ) -> bool {
+        let mut known = false;
+        for sink in &mut self.sinks {
+            known |= sink
+                .ensure_system(at, user, address, name, position, why)
+                .await;
+        }
+        known
+    }
+
+    async fn system(&mut self, row: &Row) {
+        for sink in &mut self.sinks {
+            sink.system(row).await;
+        }
+    }
+
+    async fn market(&mut self, at: DateTime<Utc>, user: &str, it: &Market) {
+        for sink in &mut self.sinks {
+            sink.market(at, user, it).await;
+        }
+    }
+
+    async fn outfitting(
+        &mut self,
+        at: DateTime<Utc>,
+        user: &str,
+        it: &Outfitting,
+    ) {
+        for sink in &mut self.sinks {
+            sink.outfitting(at, user, it).await;
+        }
+    }
+
+    async fn shipyard(&mut self, at: DateTime<Utc>, user: &str, it: &Shipyard) {
+        for sink in &mut self.sinks {
+            sink.shipyard(at, user, it).await;
+        }
+    }
+
+    async fn black_market(
+        &mut self,
+        at: DateTime<Utc>,
+        user: &str,
+        it: &BlackMarket,
+    ) {
+        for sink in &mut self.sinks {
+            sink.black_market(at, user, it).await;
+        }
+    }
+
+    async fn flush(&mut self) -> Result<(), String> {
+        let mut failed = Vec::new();
+        for sink in &mut self.sinks {
+            if let Err(said) = sink.flush().await {
+                failed.push(said);
+            }
+        }
+        Fan::all(failed)
+    }
+
+    async fn finish(&mut self) -> Result<(), String> {
+        let mut failed = Vec::new();
+        for sink in &mut self.sinks {
+            if let Err(said) = sink.finish().await {
+                failed.push(said);
+            }
+        }
+        Fan::all(failed)
+    }
+
+    /// Every sink's line, joined — for a caller that wants one string.
+    ///
+    /// `main` asks [`Fan::said_each`] instead and logs a line apiece.
+    fn said(&self) -> String {
+        self.said_each().join("; ")
+    }
 }

@@ -22,9 +22,10 @@ pub struct Cli {
     #[arg(name = "PATH")]
     pub path: String,
 
-    /// Where to write what is read: `db`, or `index=DIR`.
-    #[arg(long = "to", value_name = "SINK", default_value = "db")]
-    pub to: To,
+    /// Where to write what is read: `db`, or `index=DIR`. Repeatable,
+    /// and `db` where it is not said at all.
+    #[arg(long = "to", value_name = "SINK")]
+    pub to: Vec<To>,
 
     /// Resume file for an index sink, kept outside the served directory.
     /// `DIR.checkpoint` beside the index directory by default.
