@@ -64,23 +64,53 @@ pub async fn entry(db: &Database, entry: &Entry<Event>, user: &str) {
             }
             let found = discovered_at(scan, entry.timestamp);
             match &scan.target {
-                ScanTarget::Star(star) => match Star::from_journal(
-                    db,
-                    entry.timestamp,
-                    user,
-                    star,
-                    scan.system_address,
-                    found,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        info!(star = %star.name, "scan")
+                ScanTarget::Star(star) => {
+                    match Star::from_journal(
+                        db,
+                        entry.timestamp,
+                        user,
+                        star,
+                        scan.system_address,
+                        found,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!(star = %star.name, "scan")
+                        }
+                        Err(err) => {
+                            warn!(star = %star.name, error = %err, "scan")
+                        }
                     }
-                    Err(err) => {
-                        warn!(star = %star.name, error = %err, "scan")
+
+                    // A star nothing stands between the ship and is the one
+                    // it drops at, and its class is what the system
+                    // supercharges with and falls back to for its light.
+                    // The column was a plotted route's alone until now, so
+                    // a system somebody had been to and scanned said
+                    // nothing about what burns in it.
+                    if star.distance_from_arrival_ls == 0.0 {
+                        match System::set_primary_star_class(
+                            db,
+                            scan.system_address,
+                            &star.star_class,
+                        )
+                        .await
+                        {
+                            Ok(true) => info!(
+                                system = %scan.star_system,
+                                class = %star.star_class,
+                                "arrival star",
+                            ),
+                            Ok(false) => {}
+                            Err(err) => warn!(
+                                system = %scan.star_system,
+                                error = %err,
+                                "arrival star",
+                            ),
+                        }
                     }
-                },
+                }
                 ScanTarget::Body(body) => match Body::from_journal(
                     db,
                     entry.timestamp,

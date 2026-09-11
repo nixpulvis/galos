@@ -389,4 +389,45 @@ impl System {
 
         Ok(())
     }
+
+    /// Record the class of the star a ship arrives at.
+    ///
+    /// What burns at the middle of a system is worth a column of its own
+    /// even though the `stars` rows say it too: a system nobody has scanned
+    /// still has one, off a plotted route, and it is what the index falls
+    /// back to for a magnitude and a temperature. Until now a route was the
+    /// only thing that ever wrote it, so a system somebody had actually
+    /// *been* to and scanned was left with the column empty and the answer
+    /// sitting in `stars` where nothing looking for a class thought to
+    /// look.
+    ///
+    /// The caller decides what "arrives at" means — a scan of a star zero
+    /// light seconds out — since that is a fact about the scan rather than
+    /// about the row.
+    ///
+    /// Nothing else on the row moves, the stamps included. The scan that
+    /// carries this has already written the system through
+    /// `ensure_system`, so the pass that publishes it has already been told
+    /// the system changed, and a class is not a reason for the map to
+    /// redraw a system as freshly reported. A write is skipped where the
+    /// column already says this, which on a feed reporting the same system
+    /// over and over is nearly all of them.
+    pub async fn set_primary_star_class(
+        db: &Database,
+        address: i64,
+        class: &str,
+    ) -> Result<bool, Error> {
+        let done = sqlx::query!(
+            r#"
+            UPDATE systems SET primary_star_class = $2
+            WHERE address = $1 AND primary_star_class IS DISTINCT FROM $2
+            "#,
+            address,
+            class,
+        )
+        .execute(&db.pool)
+        .await?;
+
+        Ok(done.rows_affected() > 0)
+    }
 }

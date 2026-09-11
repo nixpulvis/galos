@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE systems SET primary_star_class = $2\n            WHERE address = $1 AND primary_star_class IS DISTINCT FROM $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "169c084615441097b48ae5f046ad4fde1abd4b596344ab0c4b35ea36f5b328aa"
+}
