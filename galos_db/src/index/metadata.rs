@@ -582,11 +582,22 @@ fn write_boosts(
 /// Which of the positioned systems can supercharge a drive, or those of
 /// `addresses` alone.
 ///
-/// Off `primary_star_class`, the arrival star's, which is the one a ship can
-/// reach the jet cone of without crossing the system. The classification is
-/// [`meta::Boost::of`] and only that: a class that supercharges nothing is
-/// not in the result, and the caller takes such a system out of the table it
-/// stands in.
+/// The arrival star's class, which is the one a ship can reach the jet cone
+/// of without crossing the system. Two places say what that is and the
+/// scanned one wins: a `stars` row is something somebody looked at, where
+/// `systems.primary_star_class` is only ever written by a plotted route
+/// (`galos-sync`'s `nav_route`), which names the class of a system nobody
+/// has necessarily been to. Reading the column alone published no
+/// supercharge at all for a neutron star a commander had flown to and
+/// scanned — the scan writes `stars`, and nothing writes that column back.
+///
+/// Nearest the drop point, ties broken by body id, which is
+/// `galos_journal::Galaxy::arrival_class`'s rule: the two derivations of
+/// this table have to answer the same thing about the same galaxy.
+///
+/// The classification is [`meta::Boost::of`] and only that: a class that
+/// supercharges nothing is not in the result, and the caller takes such a
+/// system out of the table it stands in.
 ///
 /// So the query narrows by what it needs — a class to read at all — and not
 /// by which classes those are. Written out in SQL as well, the two would
@@ -599,19 +610,42 @@ async fn boosts_of(
     addresses: Option<&[i64]>,
 ) -> Result<Vec<(i64, meta::Boost)>> {
     let rows = match addresses {
+        // One ordered pass over the stars for the whole galaxy, rather than
+        // a lookup per system: a full build is reading every star anyway.
         None => {
             sqlx::query(
-                "SELECT address, primary_star_class FROM systems \
-                 WHERE position IS NOT NULL \
-                   AND primary_star_class IS NOT NULL",
+                "SELECT s.address, \
+                        COALESCE(arrival.star_class, s.primary_star_class) \
+                            AS class \
+                 FROM systems s \
+                 LEFT JOIN ( \
+                     SELECT DISTINCT ON (system_address) \
+                            system_address, star_class \
+                     FROM stars \
+                     ORDER BY system_address, distance_from_arrival_ls, id \
+                 ) arrival ON arrival.system_address = s.address \
+                 WHERE s.position IS NOT NULL \
+                   AND (arrival.star_class IS NOT NULL \
+                        OR s.primary_star_class IS NOT NULL)",
             )
             .fetch_all(&db.pool)
             .await?
         }
+        // A handful of systems: the nearest star of each off the index the
+        // reaches are read through.
         Some(addresses) => {
             sqlx::query(
-                "SELECT address, primary_star_class FROM systems \
-                 WHERE address = ANY($1) AND position IS NOT NULL",
+                "SELECT s.address, \
+                        COALESCE(arrival.star_class, s.primary_star_class) \
+                            AS class \
+                 FROM systems s \
+                 LEFT JOIN LATERAL ( \
+                     SELECT star_class FROM stars st \
+                     WHERE st.system_address = s.address \
+                     ORDER BY st.distance_from_arrival_ls, st.id \
+                     LIMIT 1 \
+                 ) arrival ON true \
+                 WHERE s.address = ANY($1) AND s.position IS NOT NULL",
             )
             .bind(addresses)
             .fetch_all(&db.pool)
@@ -621,7 +655,7 @@ async fn boosts_of(
     let mut boosts = Vec::new();
     for row in rows {
         let address: i64 = row.try_get("address")?;
-        let class: Option<String> = row.try_get("primary_star_class")?;
+        let class: Option<String> = row.try_get("class")?;
         if let Some(boost) = class.as_deref().and_then(meta::Boost::of) {
             boosts.push((address, boost));
         }
@@ -1249,5 +1283,120 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scanned neutron star supercharges, whatever a route said
+    ///
+    /// The bug: `boosts_of` read `systems.primary_star_class`, and the only
+    /// thing that writes that column is a plotted route. Fly to a neutron
+    /// star and scan it and the `stars` row says `N` while the column stays
+    /// null, so the index published no supercharge for a system the
+    /// commander had personally stood in — and the map, which refuses a
+    /// route for a drive that takes a jet cone without a table, had nothing
+    /// to plot by.
+    ///
+    /// Needs a database of its own, named by `TEST_DATABASE_URL`, for the
+    /// reason `tests/write_path.rs` sets out. Stands down when nothing says
+    /// where to write, so CI passes with no database at all.
+    #[async_std::test]
+    async fn a_scanned_arrival_star_is_what_supercharges() {
+        dotenv::dotenv().ok();
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("no TEST_DATABASE_URL: standing down");
+            return;
+        };
+        let db = Database::from_url(&url)
+            .await
+            .expect("TEST_DATABASE_URL should connect");
+
+        // Addresses nothing else writes, cleared so the rows below are the
+        // only ones they can hold.
+        let scanned = 0x0B00_5700_0000_0001_u64 as i64;
+        let routed = 0x0B00_5700_0000_0002_u64 as i64;
+        for address in [scanned, routed] {
+            for statement in [
+                "DELETE FROM stars WHERE system_address = $1",
+                "DELETE FROM systems WHERE address = $1",
+            ] {
+                sqlx::query(statement)
+                    .bind(address)
+                    .execute(&db.pool)
+                    .await
+                    .expect("the address should be clearable");
+            }
+        }
+
+        // One system nobody plotted a route to, holding a scanned neutron
+        // star at the drop point and a white dwarf further out.
+        sqlx::query(
+            "INSERT INTO systems (address, name, position, updated_at, \
+                                  updated_by, primary_star_class) \
+             VALUES ($1, 'BOOST SCANNED', \
+                     ST_MakePoint(1, 2, 3)::geometry, now(), 'test', NULL)",
+        )
+        .bind(scanned)
+        .execute(&db.pool)
+        .await
+        .expect("the scanned system should write");
+        for (id, class, distance) in
+            [(1i16, "D", 900.0f32), (0i16, "N", 0.0f32)]
+        {
+            sqlx::query(
+                "INSERT INTO stars (system_address, id, name, updated_at, \
+                     updated_by, absolute_magnitude, age_my, \
+                     distance_from_arrival_ls, luminosity, star_class, \
+                     stellar_mass, subclass, axial_tilt, radius, \
+                     rotation_period, temperature, was_mapped) \
+                 VALUES ($1, $2, $3, now(), 'test', 4.8, 100, $4, 'V', $5, \
+                         1.0, 2, 0, 1.0, 0, 5000, false)",
+            )
+            .bind(scanned)
+            .bind(id)
+            .bind(format!("BOOST SCANNED {id}"))
+            .bind(distance)
+            .bind(class)
+            .execute(&db.pool)
+            .await
+            .expect("the star should write");
+        }
+
+        // And one nobody has scanned, known only from a plotted route.
+        sqlx::query(
+            "INSERT INTO systems (address, name, position, updated_at, \
+                                  updated_by, primary_star_class) \
+             VALUES ($1, 'BOOST ROUTED', \
+                     ST_MakePoint(4, 5, 6)::geometry, now(), 'test', 'D')",
+        )
+        .bind(routed)
+        .execute(&db.pool)
+        .await
+        .expect("the routed system should write");
+
+        let whole: HashMap<i64, meta::Boost> = boosts_of(&db, None)
+            .await
+            .expect("a full read")
+            .into_iter()
+            .collect();
+        assert_eq!(
+            whole.get(&scanned),
+            Some(&meta::Boost::Neutron),
+            "a scanned neutron star published no supercharge",
+        );
+        assert_eq!(
+            whole.get(&routed),
+            Some(&meta::Boost::WhiteDwarf),
+            "a routed class is still what an unscanned system has",
+        );
+
+        // A watch pass reads the same systems through the other query and
+        // must answer the same, or a directory says different things about
+        // one galaxy depending on how it was built.
+        let touched: HashMap<i64, meta::Boost> =
+            boosts_of(&db, Some(&[scanned, routed]))
+                .await
+                .expect("a read of what changed")
+                .into_iter()
+                .collect();
+        assert_eq!(touched, whole, "the two reads disagree");
     }
 }
