@@ -205,7 +205,11 @@ published reach table went stale while everything beside it was fine —
 rebuilding those to fix one is "a hundred megabytes of rewriting to say nothing
 new" (`mod.rs:36-59`). Two invariants hold it: a part left out is left exactly
 as it stands, and nothing here ever removes a file, so a partial build leaves
-the index older but never short.
+the index older but never short. The supercharge table is the same story
+again: it was read off `systems.primary_star_class`, which only a plotted
+route ever writes, so a scanned neutron star was in nobody's table. It is
+read off the nearest scanned star now, and a directory published before that
+wants `--only boosts` once.
 
 **The seam is a directory.** Default `.galos_index`. No IPC, no shared process,
 no database on the reader's side. `galos_db` depends on `galos_index`;
@@ -221,7 +225,7 @@ no database on the reader's side. `galos_db` depends on `galos_index`;
 | `boosts.bin` | MessagePack, address-ordered | yes — the router asks it per candidate |
 | `factions.bin` | MessagePack, id-ordered | yes |
 | `bodies/<address>.bin` | MessagePack `SystemBodies` | fetched per system, on demand |
-| `.galos_checkpoint` | the watch cursor and its inputs | never served — outside `DIR` |
+| `<dir>.checkpoint` | the watch cursor and its inputs | never served — outside `DIR` |
 
 Three contracts cross it. **Durability**: every metadata table is written to
 `<path>.tmp` and renamed, the rename being the only step that touches the real
