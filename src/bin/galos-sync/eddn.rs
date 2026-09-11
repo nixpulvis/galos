@@ -31,7 +31,8 @@ const STALL: Duration = Duration::from_secs(120);
 /// publishes on — the same order as `galos-sync db --watch`, and for the same
 /// reason: a publish rewrites the index file whole, so doing it per message
 /// at thirty a second would be thirty rewrites a second to move one system.
-const PUBLISH_EVERY: Duration = Duration::from_secs(5);
+/// `--publish` moves it where five seconds is the wrong trade.
+const PUBLISH_EVERY: u64 = 5;
 
 /// Subscribe to EDDN and sync until killed.
 #[derive(Parser)]
@@ -46,6 +47,17 @@ pub struct Cli {
     /// it alone.
     #[arg(long = "stall", value_name = "SECS")]
     pub stall: Option<u64>,
+
+    /// Seconds between publishes, for a sink that holds its writes.
+    ///
+    /// An index sink edits a tree in memory and writes it out on this beat;
+    /// a database sink has already written every message and does nothing
+    /// with it. Longer is fewer whole rewrites of the index file and a map
+    /// that hears about an arrival later; shorter is the other trade. A
+    /// second is the floor, the game and the feed both writing at about
+    /// that rate.
+    #[arg(long = "publish", value_name = "SECS", default_value_t = PUBLISH_EVERY)]
+    pub publish: u64,
 
     /// Where to write what arrives: `db`, or `index=DIR`.
     #[arg(long = "to", value_name = "SINK", default_value = "db")]
@@ -67,6 +79,7 @@ impl Cli {
             Some(secs) => Some(Duration::from_secs(secs)),
         };
 
+        let every = Duration::from_secs(self.publish.max(1));
         let mut published = Instant::now();
         for result in subscribe(&self.url, stall) {
             match result {
@@ -85,7 +98,7 @@ impl Cli {
             // On a beat rather than per message, and asked rather than
             // decided here: a database sink has nothing to do and says so by
             // doing nothing.
-            if published.elapsed() >= PUBLISH_EVERY {
+            if published.elapsed() >= every {
                 if let Err(said) = sink.flush().await {
                     warn!(error = %said, "could not publish");
                 }
