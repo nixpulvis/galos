@@ -313,8 +313,16 @@ knows the tree only through `galos_index::System` and the metadata records.
 - `galaxy.rs` — the events, accumulated. The same fan-out
   `galos-sync`'s `record.rs` does, landing on `System`, `NameEntry`,
   `SystemReach`, `SystemBoost`, `PopulatedSystem` and `SystemBodies` instead
-  of on fourteen tables. Merged rather than replaced, so a `Scan` arriving
-  after an `FSDJump` does not take the system's politics away. Its header
+  of on fourteen tables. Merged rather than replaced, which is the write
+  path's own rule read off its `ON CONFLICT DO UPDATE` clauses and stated
+  once in `put`: a `Scan` arriving after an `FSDJump` does not take the
+  system's politics away, and a basic `AutoScan` arriving after a detailed
+  one — which is what the game writes every time a ship re-enters a system
+  it has already looked at — does not take the surface, the materials or the
+  tidal lock away. What a scan measures is taken as it comes; what it does
+  not state leaves what stands; having been mapped and when a thing was
+  found only ever go one way. Names are upper-cased, because every write of
+  a `systems` row is, and the two paths publish one table. Its header
   states the three things a journal cannot say — **factions have no ids**
   (they are `galos_db`'s, minted on write, so no faction table is published
   and `PopulatedSystem::factions` stays empty), a system's row is one

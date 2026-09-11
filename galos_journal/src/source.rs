@@ -628,7 +628,7 @@ mod tests {
         );
         let names = pollster::block_on(read.names()).expect("the names read");
         assert_eq!(names.len(), 1);
-        assert_eq!(names[0].name, "Sol");
+        assert_eq!(names[0].name, "SOL");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&out);

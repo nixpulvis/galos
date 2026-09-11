@@ -671,8 +671,8 @@ mod tests {
 
         assert_eq!(published(&here), 1, "the first directory was written");
         assert_eq!(published(&there), 1, "and so was the second");
-        assert_eq!(names(&here), vec!["Sol".to_string()]);
-        assert_eq!(names(&there), vec!["Sol".to_string()]);
+        assert_eq!(names(&here), vec!["SOL".to_string()]);
+        assert_eq!(names(&there), vec!["SOL".to_string()]);
         assert_eq!(
             fan.said_each().len(),
             2,
@@ -735,7 +735,7 @@ mod tests {
         sink.publish_whole().expect("the index should be written");
 
         assert_eq!(published(&dir), 2);
-        assert_eq!(names(&dir), vec!["Alpha Centauri", "Sol"]);
+        assert_eq!(names(&dir), vec!["ALPHA CENTAURI", "SOL"]);
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
@@ -766,7 +766,7 @@ mod tests {
         second.publish_whole().expect("the second run should write");
 
         assert_eq!(published(&dir), 2, "the first run's system was dropped");
-        assert_eq!(names(&dir), vec!["Alpha Centauri", "Sol"]);
+        assert_eq!(names(&dir), vec!["ALPHA CENTAURI", "SOL"]);
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
@@ -863,7 +863,7 @@ mod tests {
         drop(sink);
 
         assert_eq!(published(&dir), 1, "a system with no name was published");
-        assert_eq!(names(&dir), vec!["Sol"]);
+        assert_eq!(names(&dir), vec!["SOL"]);
         if let Err(said) = Index::open(&dir, &checkpoint) {
             panic!("the directory disagreed with itself: {}", said);
         }
@@ -906,7 +906,7 @@ mod tests {
         sink.publish_whole().expect("the index should be written");
 
         assert_eq!(published(&dir), 1, "the placeless row was placed");
-        assert_eq!(names(&dir), vec!["Somewhere"]);
+        assert_eq!(names(&dir), vec!["SOMEWHERE"]);
 
         // And its politics reached the populated table, which is what a dump
         // is mostly for.
