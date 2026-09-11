@@ -119,6 +119,11 @@ impl Sink for Db<'_> {
         Ok(())
     }
 
+    /// Likewise nothing. There is no held state to close out.
+    async fn finish(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn said(&self) -> String {
         format!("{} messages written to the database", self.wrote)
     }

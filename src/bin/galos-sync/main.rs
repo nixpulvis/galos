@@ -12,8 +12,13 @@
 //! galos-sync journal ~/Saved\ Games/…/Elite\ Dangerous --watch  # and keep following it
 //! galos-sync journal ~/… --to index=.galos_journal_index        # to a directory instead
 //! galos-sync eddn --to index=.galos_index                       # a live map, no database
+//! galos-sync eddn --to db --to index=.galos_index               # one read, both of them
 //! galos-sync db --watch 5                                       # the database into an index
 //! ```
+//!
+//! `--to` repeats, and a source reads once into everything it names. Over
+//! EDDN that is the difference between one subscription and two carrying
+//! the same galaxy.
 //!
 //! The one thing worth knowing before reading any of it: **the sinks are not
 //! interchangeable and are not meant to be.** A database keeps stations,
@@ -31,7 +36,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use galos_db::index::Parts;
 use galos_db::{index, Database};
-use sink::{Db, Index, Sink, To};
+use sink::{Db, Fan, Index, Sink, To};
 use std::io::{stderr, IsTerminal};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -143,14 +148,22 @@ fn parts_of(named: &[Part]) -> Parts {
 }
 
 impl Source {
-    /// Which sink this source was told to write to.
-    fn to(&self) -> &To {
-        match self {
+    /// Which sinks this source was told to write to.
+    ///
+    /// Nothing named is the database, which is what every invocation of
+    /// this program older than `--to` meant and still means.
+    fn to(&self) -> Vec<To> {
+        let named: &[To] = match self {
             Source::Journal(cli) => &cli.to,
             Source::Eddn(cli) => &cli.to,
             Source::Edsm(cli) => cli.to(),
             Source::Eddb(cli) => &cli.to,
-            Source::Db(cli) => &cli.to,
+            Source::Db(cli) => std::slice::from_ref(&cli.to),
+        };
+        if named.is_empty() {
+            vec![To::Db]
+        } else {
+            named.to_vec()
         }
     }
 
@@ -213,12 +226,16 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Open the sink the source names, read into it, and make it durable.
+/// Open the sinks the source names, read into them, and close them out.
 ///
-/// The database is opened only where a database is what is being written to.
-/// That is the point of the whole arrangement: `--to index` runs on a machine
-/// with no `DATABASE_URL` and no Postgres installed, and a connection opened
-/// unconditionally here would have made it need one.
+/// The database is opened only where a database is one of the things being
+/// written to. That is the point of the whole arrangement: `--to index`
+/// runs on a machine with no `DATABASE_URL` and no Postgres installed, and
+/// a connection opened unconditionally here would have made it need one.
+///
+/// `--to db --to index=DIR` opens both and reads once into the pair, which
+/// is the reason `--to` repeats: over EDDN the alternative is two
+/// subscriptions carrying the same galaxy twice.
 async fn run(source: Source) -> Result<bool, String> {
     // The database as a source is its own path: it reads rows rather than
     // events, so there is no `Sink` in it. `galos_db::index` is what it runs,
@@ -227,31 +244,76 @@ async fn run(source: Source) -> Result<bool, String> {
         return index_from_database(cli).await.map(|()| true);
     }
 
-    match source.to().clone() {
-        To::Db => {
-            let db = Database::new()
+    let named = source.to();
+    each_its_own(&named, source.checkpoint())?;
+
+    // Declared before the sinks so that it outlives them: `Db` borrows the
+    // pool, and locals drop in reverse.
+    let db = match named.contains(&To::Db) {
+        true => Some(
+            Database::new()
                 .await
-                .map_err(|err| format!("no database: {err}"))?;
-            let mut sink = Db::new(&db);
-            let read = source.read(&mut sink).await;
-            sink.flush().await?;
-            info!("{}", sink.said());
-            Ok(read)
-        }
-        To::Index(dir) => {
-            let checkpoint = To::checkpoint(&dir, source.checkpoint());
-            let mut sink = Index::open(&dir, &checkpoint)?;
-            let read = source.read(&mut sink).await;
-            // Whole rather than a delta: a directory written from nothing
-            // would otherwise be missing every table the run did not happen
-            // to change. What reaches this is a one-shot run finishing --
-            // an import, a dump, a build -- since a follower never returns
-            // to be closed out and is durable by its own flushes instead.
-            sink.publish_whole()?;
-            info!("{}", sink.said());
-            Ok(read)
+                .map_err(|err| format!("no database: {err}"))?,
+        ),
+        false => None,
+    };
+
+    let mut sinks: Vec<Box<dyn Sink + '_>> = Vec::with_capacity(named.len());
+    for to in &named {
+        sinks.push(match to {
+            To::Db => Box::new(Db::new(db.as_ref().expect("a database"))),
+            To::Index(dir) => {
+                let checkpoint = To::checkpoint(dir, source.checkpoint());
+                Box::new(Index::open(dir, &checkpoint)?)
+            }
+        });
+    }
+
+    let mut fan = Fan::of(sinks);
+    let read = source.read(&mut fan).await;
+    // Each sink decides what finishing means for it: nothing for a
+    // database, which wrote every message as it arrived, and every part of
+    // the directory written whole for an index, since a run that only ever
+    // published deltas leaves behind the tables it never happened to move.
+    // What reaches this is a one-shot run -- an import, a dump, a build --
+    // a follower never returning to be closed out.
+    fan.finish().await?;
+    for said in fan.said_each() {
+        info!("{said}");
+    }
+    Ok(read)
+}
+
+/// Refuse the ways two sinks would write over each other.
+///
+/// Two of the same sink is the whole of it. Two `Db` write every message
+/// twice into one pool; two of the same directory each hold their own tree
+/// of it and publish over one another, which nothing downstream can notice
+/// and no resume point can repair. `--checkpoint` is the same hazard said
+/// differently: it names one file, and two index sinks sharing a resume
+/// point is a directory rebuilt from another directory's systems.
+fn each_its_own(
+    named: &[To],
+    checkpoint: Option<&std::path::Path>,
+) -> Result<(), String> {
+    for (at, to) in named.iter().enumerate() {
+        if named[..at].contains(to) {
+            return Err(format!(
+                "{to} was named twice, and one run cannot \
+                                write it as two sinks"
+            ));
         }
     }
+
+    let indexes = named.iter().filter(|to| matches!(to, To::Index(_))).count();
+    if indexes > 1 && checkpoint.is_some() {
+        return Err("--checkpoint names one resume point and this run \
+                    writes several index directories, which cannot share \
+                    one: leave it off and each resumes from its own \
+                    DIR.checkpoint"
+            .to_string());
+    }
+    Ok(())
 }
 
 /// What `galos-db index` was, under the name that says which way it runs.
@@ -340,7 +402,7 @@ mod tests {
     fn a_source_writes_to_the_database_unless_told_otherwise() {
         let cli = Cli::try_parse_from(["galos-sync", "journal", "."])
             .expect("a journal import should parse");
-        assert_eq!(cli.source.to(), &To::Db);
+        assert_eq!(cli.source.to(), vec![To::Db]);
     }
 
     /// And `db` defaults to an index, being unable to default to itself
@@ -350,7 +412,65 @@ mod tests {
             .expect("a database build should parse");
         assert_eq!(
             cli.source.to(),
-            &To::Index(PathBuf::from(sink::to::INDEX_DIR)),
+            vec![To::Index(PathBuf::from(sink::to::INDEX_DIR))],
+        );
+    }
+
+    /// `--to` repeats, and the order it was said in is the order written
+    #[test]
+    fn a_source_writes_to_every_sink_it_was_given() {
+        let cli = Cli::try_parse_from([
+            "galos-sync",
+            "eddn",
+            "--to",
+            "db",
+            "--to",
+            "index=live",
+        ])
+        .expect("two sinks should parse");
+        assert_eq!(
+            cli.source.to(),
+            vec![To::Db, To::Index(PathBuf::from("live"))],
+        );
+    }
+
+    /// The same sink twice is two writers over one thing
+    ///
+    /// Two databases write every message twice; two of one directory each
+    /// hold their own tree of it and publish over each other, which
+    /// nothing downstream can notice.
+    #[test]
+    fn the_same_sink_cannot_be_named_twice() {
+        let twice = [
+            To::Index(PathBuf::from("live")),
+            To::Index(PathBuf::from("live")),
+        ];
+        let Err(said) = each_its_own(&twice, None) else {
+            panic!("one directory named twice was accepted")
+        };
+        assert!(said.contains("twice"), "should say why: {}", said);
+        assert!(
+            each_its_own(&[To::Db, To::Index(PathBuf::from("live"))], None)
+                .is_ok(),
+            "two different sinks are the point of the flag",
+        );
+    }
+
+    /// One named resume point cannot answer for two directories
+    #[test]
+    fn two_indexes_cannot_share_a_resume_point() {
+        let both = [
+            To::Index(PathBuf::from("live")),
+            To::Index(PathBuf::from("mine")),
+        ];
+        assert!(
+            each_its_own(&both, None).is_ok(),
+            "each derives its own where none is named",
+        );
+        assert!(
+            each_its_own(&both, Some(std::path::Path::new("one.checkpoint")))
+                .is_err(),
+            "two directories were let share one resume point",
         );
     }
 }

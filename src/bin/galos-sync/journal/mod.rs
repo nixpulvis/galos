@@ -79,9 +79,10 @@ pub struct Cli {
     #[arg(long, value_name = "SECS", num_args = 0..=1, default_missing_value = "1")]
     pub watch: Option<u64>,
 
-    /// Where to write what is read: `db`, or `index=DIR`.
-    #[arg(long = "to", value_name = "SINK", default_value = "db")]
-    pub to: To,
+    /// Where to write what is read: `db`, or `index=DIR`. Repeatable,
+    /// and `db` where it is not said at all.
+    #[arg(long = "to", value_name = "SINK")]
+    pub to: Vec<To>,
 
     /// Resume file for an index sink, kept outside the served directory.
     /// `DIR.checkpoint` beside the index directory by default.

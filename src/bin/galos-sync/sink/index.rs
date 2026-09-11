@@ -507,9 +507,19 @@ impl Sink for Index {
             bodies = bodies,
             checkpointed = resumable,
             elapsed = ?start.elapsed(),
+            // Which directory, since `--to` repeats and two index sinks
+            // publish on the same beat.
+            dir = %self.dir.display(),
             "index published",
         );
         Ok(())
+    }
+
+    /// Every part of the directory, written whole. See [`publish_whole`].
+    ///
+    /// [`publish_whole`]: Index::publish_whole
+    async fn finish(&mut self) -> Result<(), String> {
+        self.publish_whole()
     }
 
     fn said(&self) -> String {
@@ -638,6 +648,41 @@ mod tests {
             .collect();
         said.sort();
         said
+    }
+
+    /// One read fills every sink it was given
+    ///
+    /// `--to db --to index=DIR` is the invocation this is for; two index
+    /// directories are the half of it a test can drive without Postgres,
+    /// and they exercise the same [`Fan`](crate::sink::Fan).
+    #[test]
+    fn a_fan_writes_every_sink_it_holds() {
+        let (here, here_resume) = scratch("fanned_here");
+        let (there, there_resume) = scratch("fanned_there");
+        let mut fan = crate::sink::Fan::of(vec![
+            Box::new(Index::open(&here, &here_resume).expect("one opens")),
+            Box::new(Index::open(&there, &there_resume).expect("two opens")),
+        ]);
+
+        pollster::block_on(
+            fan.entry(&jump("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        pollster::block_on(fan.finish()).expect("both close out");
+
+        assert_eq!(published(&here), 1, "the first directory was written");
+        assert_eq!(published(&there), 1, "and so was the second");
+        assert_eq!(names(&here), vec!["Sol".to_string()]);
+        assert_eq!(names(&there), vec!["Sol".to_string()]);
+        assert_eq!(
+            fan.said_each().len(),
+            2,
+            "each sink says what it took, rather than one line for both",
+        );
+
+        for dir in [&here, &there] {
+            let _ =
+                std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+        }
     }
 
     /// Events go in and a directory the map can open comes out

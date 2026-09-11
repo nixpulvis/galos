@@ -37,9 +37,10 @@ enum From {
 /// Where what is read goes, shared by both ways in.
 #[derive(Args, Clone)]
 pub struct Into {
-    /// Where to write what is read: `db`, or `index=DIR`.
-    #[arg(long = "to", value_name = "SINK", default_value = "db")]
-    pub to: To,
+    /// Where to write what is read: `db`, or `index=DIR`. Repeatable,
+    /// and `db` where it is not said at all.
+    #[arg(long = "to", value_name = "SINK")]
+    pub to: Vec<To>,
 
     /// Resume file for an index sink, kept outside the served directory.
     /// `DIR.checkpoint` beside the index directory by default.
@@ -73,8 +74,8 @@ struct ApiCli {
 }
 
 impl Cli {
-    /// Which sink was named, whichever way in was used.
-    pub fn to(&self) -> &To {
+    /// Which sinks were named, whichever way in was used.
+    pub fn to(&self) -> &[To] {
         match &self.from {
             From::File(cli) => &cli.into.to,
             From::Api(cli) => &cli.into.to,
