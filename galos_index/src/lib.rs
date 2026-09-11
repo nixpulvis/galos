@@ -36,7 +36,7 @@ pub mod walk;
 // stay public for everything past the core.
 pub use aggregate::{Aggregate, Cell};
 pub use cache::{Point, Resident, ResidentCell};
-pub use checkpoint::Checkpoint;
+pub use checkpoint::{Checkpoint, Pending};
 pub use geometry::{Aabb, CellId};
 pub use inside::STAND_IN;
 pub use layer::{Claimed, Layered, Toggle};

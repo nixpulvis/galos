@@ -88,6 +88,15 @@ impl NameTable {
         self.slot.len()
     }
 
+    /// Every address the table names.
+    ///
+    /// For a publisher reconciling the table against the cell tree beside
+    /// it: the two stand for the same systems or the directory does not
+    /// reopen, and this is the cheap side of that comparison.
+    pub fn addresses(&self) -> impl Iterator<Item = i64> + '_ {
+        self.slot.keys().copied()
+    }
+
     /// Put `entry` in the table, and say whether anything changed.
     ///
     /// An entry equal to the one on record is not a change: the feed reports

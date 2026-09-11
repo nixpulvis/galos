@@ -18,7 +18,7 @@
 use crate::System;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 
 /// The inputs the tree was last built from and the cursor they date to.
@@ -54,6 +54,92 @@ impl Checkpoint {
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(&tmp, path)
+    }
+}
+
+/// What has been published since the last whole checkpoint.
+///
+/// A checkpoint is every system at full precision, so it rides a timer while
+/// the directory moves on every publish. A restart rebuilding from the
+/// checkpoint alone therefore rebuilt the tree short of what the directory
+/// already served, published the shortfall over it, and left a directory
+/// whose halves stood for different systems. This is the difference, in the
+/// same full precision, appended per publish and replayed at open. It costs
+/// what moved where a checkpoint costs the galaxy, and a whole checkpoint
+/// clears it.
+///
+/// Framed rather than one document, being appended to: a `u32` length ahead
+/// of each MessagePack batch. A kill mid-append leaves a torn frame, which
+/// [`Pending::read`] stops at — that batch was never published either.
+pub struct Pending;
+
+impl Pending {
+    /// Where the log sits, which is beside the checkpoint it extends.
+    pub fn path(checkpoint: &Path) -> std::path::PathBuf {
+        let mut name = checkpoint.as_os_str().to_owned();
+        name.push(".pending");
+        std::path::PathBuf::from(name)
+    }
+
+    /// Add what a publish wrote.
+    pub fn append(checkpoint: &Path, systems: &[System]) -> io::Result<()> {
+        if systems.is_empty() {
+            return Ok(());
+        }
+        let bytes = rmp_serde::to_vec(&systems)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let path = Pending::path(checkpoint);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let len = u32::try_from(bytes.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "a batch of 4 GiB")
+        })?;
+        file.write_all(&len.to_le_bytes())?;
+        file.write_all(&bytes)?;
+        file.flush()
+    }
+
+    /// Everything appended since the last whole checkpoint, in order.
+    ///
+    /// A missing log is nothing to replay. A torn or unreadable tail ends the
+    /// replay where it began, since the rest was never published either.
+    pub fn read(checkpoint: &Path) -> Vec<System> {
+        let Ok(bytes) = std::fs::read(Pending::path(checkpoint)) else {
+            return Vec::new();
+        };
+        let mut replayed = Vec::new();
+        let mut at = 0;
+        while at + 4 <= bytes.len() {
+            let len = u32::from_le_bytes([
+                bytes[at],
+                bytes[at + 1],
+                bytes[at + 2],
+                bytes[at + 3],
+            ]) as usize;
+            at += 4;
+            let Some(frame) = bytes.get(at..at + len) else { break };
+            let Ok(batch) = rmp_serde::from_slice::<Vec<System>>(frame) else {
+                break;
+            };
+            replayed.extend(batch);
+            at += len;
+        }
+        replayed
+    }
+
+    /// Drop the log, the checkpoint beside it now holding what it held.
+    pub fn clear(checkpoint: &Path) -> io::Result<()> {
+        match std::fs::remove_file(Pending::path(checkpoint)) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            it => it,
+        }
     }
 }
 
