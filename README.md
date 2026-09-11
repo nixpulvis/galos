@@ -102,6 +102,10 @@ cargo run --release --bin galos-sync -- db --only reaches
 cargo run --release --bin galos-sync -- journal "$JOURNAL" \
     --to index=.galos_journal_index --watch
 cargo run --release --bin galos-sync -- eddn --to index=.galos_index
+
+# Or both at once: one read of the feed, written to the database and to a
+# directory. `--to` repeats, and the same sink cannot be named twice.
+cargo run --release --bin galos-sync -- eddn --to db --to index=.galos_index
 ```
 
 `$JOURNAL` is where the game writes its logs, typically
@@ -111,6 +115,14 @@ An index sink resumes from `<dir>.checkpoint` beside the directory it writes,
 unless `--checkpoint` names one. The resume point holds the whole editable
 tree of that one directory, so two indexes can be followed at once without
 either being rebuilt from the other.
+
+Two ways to keep a directory current, and they are not the same artefact.
+`galos-sync db --watch` derives it from every row the database holds, which
+is every source ever imported into it; `eddn --to index` writes what the feed
+says while it runs, onto whatever the directory already had. Baking once with
+`db` and then following with `--to db --to index=DIR` keeps both — but never
+point two processes at one directory: there is no lock, and the second
+publishes over the first.
 
 ```sh
 # Query from the CLI.

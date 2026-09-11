@@ -374,13 +374,24 @@ async fn read_galaxy(
 /// [`Parts::ALL`] is a full build and what a fresh directory wants. Anything
 /// narrower reads only what those parts need and leaves every other file in the
 /// directory exactly as it stands.
+///
+/// A build that read the whole galaxy writes `checkpoint` beside it, as
+/// [`watch`] does after its own initial build. The directory is otherwise a
+/// published index nothing can edit: the served payloads carry a downcast
+/// magnitude and a bucketed temperature, so the full-precision inputs are
+/// here or nowhere, and neither `galos-sync db --watch` nor an event sink
+/// following the same directory can resume onto one without them. A
+/// narrowed build writes none: it never read the systems a resume point is
+/// made of, and a short one would be worse than an absent one.
 pub async fn build_to_dir(
     db: &Database,
     dir: &Path,
+    checkpoint: &Path,
     parts: Parts,
 ) -> Result<BuildReport> {
     // The one read the cell tree and the names table both come out of, and the
     // whole of what a build asking for neither can skip.
+    let since = db.now().await?.naive_utc();
     let galaxy =
         if parts.wants_galaxy() { Some(read_galaxy(db).await?) } else { None };
 
@@ -392,6 +403,12 @@ pub async fn build_to_dir(
             built.write(dir).map(|()| TreeReport::of(inputs.len(), &built))
         })
         .transpose()?;
+
+    if cells.is_some() {
+        if let Some((inputs, _)) = &galaxy {
+            Checkpoint::write_from(checkpoint, since, inputs)?;
+        }
+    }
 
     let names = galaxy.map(|(_, names)| names);
     let meta = metadata::write_parts(db, dir, names, parts).await?;
