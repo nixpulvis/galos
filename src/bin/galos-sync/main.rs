@@ -389,6 +389,7 @@ async fn run(cli: Cli) -> Result<bool, String> {
             &checkpoint,
             parts_of(&cli.only),
             cli.watch.map(Duration::from_secs),
+            &shutdown,
         )
         .await
         .map(|()| true);
