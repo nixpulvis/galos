@@ -247,8 +247,7 @@ impl Index {
     /// After that it is the timer, for the reason [`CHECKPOINT_EVERY`]
     /// gives.
     fn owes_a_resume_point(&self) -> bool {
-        self.checkpointed
-            .map_or(true, |at| at.elapsed() >= CHECKPOINT_EVERY)
+        self.checkpointed.map_or(true, |at| at.elapsed() >= CHECKPOINT_EVERY)
     }
 
     /// Write where the run has got to, saying so where it could not be.
@@ -478,9 +477,7 @@ impl Index {
             .galaxy
             .systems()
             .into_iter()
-            .filter(|system| {
-                self.galaxy.name_of(system.id64 as i64).is_some()
-            })
+            .filter(|system| self.galaxy.name_of(system.id64 as i64).is_some())
             .collect();
         let all: HashSet<i64> =
             placed.iter().map(|system| system.id64 as i64).collect();

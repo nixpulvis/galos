@@ -5,6 +5,12 @@
 .env
 galos_db/backups/*
 .galos_index
+# An index written under another name, which is what `--to index=DIR`
+# invites. A built directory is derived and large; none of it belongs here.
+# Named one at a time on purpose: a glob over `*_index` would take the
+# `galos_index` crate with it.
+.galos_journal_index
+/my_index
 # A resume point is named after the directory it resumes, so an index
 # written anywhere but the default carries its own. The bare
 # `.galos_checkpoint` is what runs older than that wrote.
