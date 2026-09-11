@@ -931,6 +931,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
 
+    /// An arrival keeps the faction ids a build gave the system
+    ///
+    /// A journal names factions and numbers none of them, so the event
+    /// path publishes an empty faction list by construction. Written
+    /// straight over a published row that had them, that takes the map's
+    /// faction colouring and filtering off every populated system a feed
+    /// happens to mention.
+    #[test]
+    fn an_arrival_keeps_what_only_a_build_could_say() {
+        let (dir, checkpoint) = scratch("thinned");
+        let mut sink = Index::open(&dir, &checkpoint, None).expect("it opens");
+        pollster::block_on(
+            sink.entry(settled("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        sink.publish_whole(None).expect("the first run writes");
+        drop(sink);
+
+        // What a database build leaves behind and an event never can: the
+        // faction ids, and the body counts an arrival does not carry.
+        let mut table = pollster::block_on(FsSource::new(&dir).populated())
+            .expect("the populated table reads");
+        table[0].factions = vec![968, 1047];
+        table[0].body_count = Some(9);
+        galos_index::source::write_meta(
+            &galos_index::source::populated_path(&dir),
+            &table,
+        )
+        .expect("the richer table writes");
+
+        let mut sink = Index::open(&dir, &checkpoint, None).expect("resumed");
+        pollster::block_on(
+            sink.entry(settled("Sol", 10477373803, [0.0; 3]), "cmdr"),
+        );
+        pollster::block_on(sink.flush()).expect("the publish lands");
+
+        let stood = politics(&dir, 10477373803).expect("Sol is populated");
+        assert_eq!(
+            stood.factions,
+            vec![968, 1047],
+            "an arrival took the faction ids off a published system",
+        );
+        assert_eq!(stood.body_count, Some(9), "and the body count with them");
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
     /// Nor does an arrival that says nothing about it
     ///
     /// The other half of the same rule, and why the withdrawal is gone

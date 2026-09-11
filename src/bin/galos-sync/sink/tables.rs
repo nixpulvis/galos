@@ -214,7 +214,8 @@ impl Tables {
             }
 
             match galaxy.populated_of(address) {
-                Some(it) => {
+                Some(said) => {
+                    let it = over(self.populated.get(&address), said);
                     if self.populated.get(&address) != Some(&it) {
                         self.populated.insert(address, it);
                         wrote.populated = true;
@@ -321,6 +322,43 @@ impl Tables {
             .collect();
         table.sort_by_key(|it| it.address);
         write_meta(&boosts_path(dir), &table)
+    }
+}
+
+/// What an event says about a system, over what the directory publishes.
+///
+/// A row derived from events is thinner than one derived from the database
+/// and always will be: a journal names factions and numbers none of them,
+/// so [`galos_journal::Galaxy`] publishes an empty faction list by
+/// construction, and the body counts arrive in their own events rather than
+/// with the arrival. Writing such a row straight over a published one took
+/// the faction ids off every populated system a feed happened to mention —
+/// a thousand of them in the directory this was found in — and the map
+/// colours and filters by exactly those.
+///
+/// So the event wins where it says something and what stands is kept where
+/// it does not, which is the rule the database's own write path states
+/// column by column and the rule this side already follows for a scan
+/// arriving after an arrival.
+fn over(
+    published: Option<&PopulatedSystem>,
+    said: PopulatedSystem,
+) -> PopulatedSystem {
+    let Some(stood) = published else { return said };
+    PopulatedSystem {
+        security: said.security.or(stood.security),
+        government: said.government.or(stood.government),
+        allegiance: said.allegiance.or(stood.allegiance),
+        primary_economy: said.primary_economy.or(stood.primary_economy),
+        secondary_economy: said.secondary_economy.or(stood.secondary_economy),
+        // Never stated by an event, so never taken away by one.
+        factions: match said.factions.is_empty() {
+            true => stood.factions.clone(),
+            false => said.factions,
+        },
+        body_count: said.body_count.or(stood.body_count),
+        non_body_count: said.non_body_count.or(stood.non_body_count),
+        ..said
     }
 }
 
