@@ -11,18 +11,13 @@
 use crate::Boosts;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::meta::{Boost, NameEntry};
+use galos_index::meta::Boost;
+use galos_index::{Node, Sky};
+use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-
-/// The edge of a grid bucket, in light years.
-///
-/// A jump reaches a few tens of light years, so a bucket this size means a
-/// neighbour search looks in a handful of buckets rather than the whole grid.
-/// Larger wastes the pruning; smaller multiplies the buckets a jump must visit.
-const BUCKET_LY: f64 = 64.0;
 
 /// How hard the map works at a route
 ///
@@ -86,7 +81,32 @@ pub(crate) enum Routing {
     Shortest,
 }
 
+/// Whether a setting is allowed to approximate.
+///
+/// The one rule the search obeys: **an approximation belongs to
+/// [`Routing::Quick`] and to nothing else.** A setting that claims the
+/// fewest jumps has to mean it, so everything that trades exactness for
+/// speed — the leaned-on estimate, the fanout cap, and whatever comes after
+/// — is switched on here together and nowhere apart.
+///
+/// Which is why this is a method on the setting rather than a parameter
+/// threaded through the searches: the next approximation is added by
+/// reading this, and cannot be added by forgetting to.
 impl Routing {
+    /// How many of an expansion's neighbours may be relaxed, or [`None`]
+    /// for all of them.
+    ///
+    /// A cap is the fix for a search whose work is quadratic in stellar
+    /// density — a boosted jump in the core sees thousands of systems — but
+    /// it can drop the very neighbour a fewest-jumps chain went through, so
+    /// only a setting that has not promised the fewest may have one.
+    fn fanout(&self) -> Option<usize> {
+        match self {
+            Routing::Quick => Some(FANOUT),
+            Routing::Direct | Routing::Shortest => None,
+        }
+    }
+
     /// What this is called where a route says what it was plotted with
     ///
     /// One word, lowercase, to be read in a line of prose beside the range
@@ -216,29 +236,21 @@ struct Cost {
 
 /// What a step and a route cost, as a search adds them up
 ///
-/// A search keeps one of these per system in the graph, in an array rather
-/// than a map, so "nothing has reached this yet" is a value of the type rather
-/// than an [`Option`] around it: at two and a half million systems the tag
-/// alone is megabytes that say nothing.
+/// A search keeps one of these per system it has reached, so what "nothing
+/// has reached this yet" means is that the map has no entry at all rather
+/// than a value of the type saying so.
 trait Metric: Ord + Copy + std::ops::Add<Output = Self> {
     /// What the system the search sets out from has cost so far
     const ZERO: Self;
-    /// Dearer than any route, which is what an unreached system holds
-    const MAX: Self;
 }
 
 impl Metric for u32 {
     const ZERO: u32 = 0;
-    const MAX: u32 = u32::MAX;
 }
 
 impl Metric for Cost {
     const ZERO: Cost = Cost { jumps: 0, light_years: 0 };
-    const MAX: Cost = Cost { jumps: u32::MAX, light_years: u32::MAX };
 }
-
-/// No parent on record, which is a system no search has reached.
-pub(crate) const UNSEEN: u32 = u32::MAX;
 
 impl std::ops::Add for Cost {
     type Output = Cost;
@@ -535,18 +547,18 @@ impl Sampler {
     /// Note the expansion of `node`, which sits at `at`
     ///
     /// `came` is the search's own record of where each system was reached
-    /// from, indexed by system and [`UNSEEN`] where nothing has — the thing A*
-    /// keeps in order to give an answer at all — so the jump drawn is the jump
-    /// the search took to get here and the chain is the one it would hand back
-    /// if this were the goal. `place` says where a system sits, and is asked
-    /// only where something is drawn or the record moves.
+    /// from — the thing A* keeps in order to give an answer at all — so the
+    /// jump drawn is the jump the search took to get here and the chain is
+    /// the one it would hand back if this were the goal. `place` says where
+    /// a system sits, and is asked only where something is drawn or the
+    /// record moves.
     pub(crate) fn expanded(
         &mut self,
-        node: usize,
+        node: Node,
         at: DVec3,
         goal: DVec3,
-        came: &[u32],
-        place: impl Fn(usize) -> DVec3,
+        came: &FxHashMap<Node, Node>,
+        place: impl Fn(Node) -> DVec3,
     ) {
         self.expanded += 1;
 
@@ -591,18 +603,18 @@ impl Sampler {
     /// has moved.
     fn chain(
         &mut self,
-        node: usize,
-        came: &[u32],
-        place: &impl Fn(usize) -> DVec3,
+        node: Node,
+        came: &FxHashMap<Node, Node>,
+        place: &impl Fn(Node) -> DVec3,
     ) {
         let mut at = node;
         let mut chain = vec![place(at)];
-        while came[at] != UNSEEN {
-            at = came[at] as usize;
+        while let Some(&before) = came.get(&at) {
+            at = before;
             chain.push(place(at));
             // A walk that will not end is a link cycle rather than a route,
             // and one drawn forever would be a hang.
-            if chain.len() > came.len() {
+            if chain.len() > came.len() + 1 {
                 return;
             }
         }
@@ -692,256 +704,76 @@ impl Sampler {
     }
 }
 
-/// The jump graph, held behind an [`Arc`] so a route task takes a cheap handle.
-/// The router's graph, once something has asked for a route.
+/// The router's galaxy, and its graph once something has asked for a route.
 ///
-/// [`None`] until then, and that is the point: the bucketing is the map's
-/// largest structure after the names table — 32 bytes a system of points, an
-/// address map beside them and a grid bucket per occupied cell, which over
-/// 131 M systems is gigabytes and about 47 M allocations — and a session that
-/// only looks at the sky never asks a routing question. Built on the first
-/// one, from [`crate::Names::points`], and rebucketed by a refresh only if it
-/// has been built.
+/// The graph is [`None`] until then, and it costs almost nothing to make:
+/// the galaxy's places are the cell payloads, mapped as a query reaches
+/// them, so a graph is a handle on the index and not a structure over it. It
+/// used to be a grid of its own — 32 bytes a system of points, an address
+/// map beside them and a bucket per occupied cell, 13.7 GB and 32 s at
+/// 200 M, paid on the click that asked for a route.
 #[derive(Resource, Clone, Default)]
-pub struct Jumps(pub Option<Arc<JumpGraph>>);
+pub struct Jumps {
+    /// The graph, once a route has asked for one.
+    pub graph: Option<Arc<JumpGraph>>,
+    /// The galaxy it reads, opened where the index is a directory this
+    /// process can map. [`None`] over a transport that cannot be mapped,
+    /// and then nothing routes.
+    pub sky: Option<Arc<Sky>>,
+}
 
 impl Jumps {
-    /// The graph, building it if this is the first route of the session.
-    pub fn built(
-        &mut self,
-        names: &crate::Names,
-        boosts: &Boosts,
-    ) -> Arc<JumpGraph> {
-        let held = self.0.get_or_insert_with(|| {
-            let at = std::time::Instant::now();
-            let graph = Arc::new(JumpGraph::over(names, boosts));
-            info!(
-                "bucketed {} systems for routing in {:.2?}",
-                graph.len(),
-                at.elapsed(),
-            );
-            graph
-        });
-        Arc::clone(held)
+    /// The galaxy as the router reads it, opened once for the session.
+    pub fn over(sky: Arc<Sky>) -> Jumps {
+        Jumps { graph: None, sky: Some(sky) }
+    }
+
+    /// The graph, opening it if this is the first route of the session.
+    pub fn built(&mut self, boosts: &Boosts) -> Option<Arc<JumpGraph>> {
+        let sky = self.sky.clone()?;
+        let held = self
+            .graph
+            .get_or_insert_with(|| Arc::new(JumpGraph::over(&sky, boosts)));
+        Some(Arc::clone(held))
     }
 }
 
-/// Every system's place, bucketed in space for neighbour queries.
+/// The galaxy a route is searched over: the mapped cell payloads, and what
+/// can supercharge a drive.
 ///
-/// Two of these: the table as it was read, and the systems the feed has named
-/// since. Both behind [`Arc`]s and neither ever written to, so a refresh
-/// publishes a new [`JumpGraph`] by cloning two handles and building the small
-/// one — where growing the base in place would copy a hundred and fifty
-/// megabytes, and would do it under whatever route is being searched.
-///
-/// A route in flight holds the graph it started on and finishes against that.
-/// It is the right answer as well as the cheap one: a search half-run against
-/// a set of places that grew underneath it has been searching two different
-/// skies.
+/// A route in flight holds the graph it started on and finishes against
+/// that. It is the right answer as well as the cheap one: a search half-run
+/// against a galaxy that grew underneath it has been searching two
+/// different skies. The payloads make that hold for free — a cell the feed
+/// republishes is renamed into place, so a mapping this holds keeps reading
+/// what it was given ([`galos_index::store`]).
+#[derive(Clone)]
 pub struct JumpGraph {
-    /// The table as it was read, which is most of the galaxy.
-    base: Arc<Places>,
-    /// The systems named since, bucketed the same way. See
-    /// [`extended`](Self::extended).
-    fresh: Arc<Places>,
+    /// The galaxy's places, read where they lie.
+    sky: Arc<Sky>,
     /// Which systems can supercharge a drive, as published.
     ///
-    /// Held beside the places rather than folded into them, though a boost is a
-    /// fact about a place. The table moves on nearly every publish — four
-    /// systems in a hundred can supercharge and the feed names eighty a minute
-    /// — and folding it in would mean rebuilding the base to take one in, which
-    /// is two hundred milliseconds and a hundred and fifty megabytes. Read per
-    /// expansion instead, which is one lookup for the system being left, not
-    /// one for each of the thousands it can see.
+    /// Held beside the places rather than folded into them, though a boost
+    /// is a fact about a place. The table moves on nearly every publish —
+    /// four systems in a hundred can supercharge and the feed names eighty
+    /// a minute — and it is read per expansion, which is one lookup for the
+    /// system being left rather than one for each of the thousands it can
+    /// see.
     boosts: Boosts,
 }
 
-/// A set of systems' places, and the grid that finds them by neighbourhood.
-struct Places {
-    held: Held,
-    grid: Grid,
-}
-
-/// Where a set's places come from.
+/// How many of an expansion's neighbours are relaxed.
 ///
-/// The galaxy's are read off the names table's own mapping and the feed's
-/// arrivals are held, and the difference is the whole of why clicking *Plot
-/// Route* used to cost thirteen gigabytes. See [`Places::over`].
-enum Held {
-    /// The published table, read where it lies. Nothing is copied: the
-    /// addresses and positions are slices of `addr.bin` and `pos.bin`, and
-    /// an address is found by binary search because they are sorted.
-    ///
-    /// The [`galos_index::Names`] is held for its *base* alone — the log
-    /// beside it is the other [`Places`], the one [`JumpGraph::extended`]
-    /// rebuilds.
-    Mapped(galos_index::Names),
-    /// Places given outright: the arrivals of one session, and what a test
-    /// builds. Thousands, not millions, so the address index is a map.
-    Given { points: Vec<(i64, [f64; 3])>, by_address: HashMap<i64, usize> },
-}
-
-/// Which rows fall in each grid bucket, as one block rather than a vector
-/// per bucket.
+/// The fix for a search whose work is quadratic in stellar density. A
+/// boosted jump in the core reaches a sphere holding thousands of systems,
+/// and relaxing every one costs milliseconds *per expansion* — the same
+/// place EDDA landed, whose `LEG_FANOUT` is this number and whose audit
+/// found the result tracks corridor density at 0.66–1.03× rather than its
+/// square.
 ///
-/// The bucketing used to be a `HashMap<[i32; 3], Vec<usize>>`: eight bytes
-/// a system in the vectors, a heap block and twenty-four bytes of header
-/// per occupied bucket, and an allocation per bucket to get there — some
-/// 72 M of them over a galaxy. This is the same index as two allocations:
-/// every row number once, grouped, and a map saying where each group sits.
-///
-/// `u32`, so a set is bounded at 4,294,967,295 places. The galaxy is
-/// 200,071,629.
-struct Grid {
-    /// Bucket to where its rows sit in `rows`: a start and a count.
-    at: HashMap<[i32; 3], (u32, u32)>,
-    /// Row numbers, grouped by bucket.
-    rows: Vec<u32>,
-}
-
-impl Grid {
-    /// Bucket `len` places, whose positions `position` answers.
-    ///
-    /// Counted, then placed: two sequential passes over the positions and
-    /// one allocation of the answer, rather than growing a vector per
-    /// bucket. The count is reused as the fill cursor on the second pass,
-    /// which is why the map holds a pair.
-    fn over(len: usize, position: impl Fn(usize) -> [f64; 3]) -> Grid {
-        let mut at: HashMap<[i32; 3], (u32, u32)> = HashMap::new();
-        for i in 0..len {
-            at.entry(bucket_of(position(i))).or_insert((0, 0)).1 += 1;
-        }
-        // The groups only have to be disjoint and cover the rows, so the
-        // order the map hands them out in is as good as any.
-        let mut next = 0u32;
-        for span in at.values_mut() {
-            span.0 = next;
-            next += span.1;
-            span.1 = 0;
-        }
-        let mut rows = vec![0u32; len];
-        for i in 0..len {
-            let span = at
-                .get_mut(&bucket_of(position(i)))
-                .expect("a bucket counted on the first pass");
-            rows[(span.0 + span.1) as usize] = i as u32;
-            span.1 += 1;
-        }
-        Grid { at, rows }
-    }
-
-    /// The rows in one bucket, empty where nothing falls in it.
-    fn bucket(&self, cell: [i32; 3]) -> &[u32] {
-        match self.at.get(&cell) {
-            Some(&(start, count)) => {
-                &self.rows[start as usize..(start + count) as usize]
-            }
-            None => &[],
-        }
-    }
-}
-
-impl Places {
-    /// The galaxy's places, read off the names table's mapping.
-    ///
-    /// What used to be three copies of the table on the heap — 32 bytes a
-    /// system of points, an address map beside them and a vector per
-    /// bucket, about 13.7 GB at 200 M — is the grid and nothing else, about
-    /// one. The positions come off `pos.bin` as the search touches them.
-    fn over(names: galos_index::Names) -> Places {
-        let base = names.base();
-        let grid = Grid::over(base.len(), |i| {
-            let [x, y, z] = base.position_at(i);
-            [x as f64, y as f64, z as f64]
-        });
-        Places { held: Held::Mapped(names), grid }
-    }
-
-    /// Bucket `entries` into a searchable set, holding them.
-    fn of(entries: impl IntoIterator<Item = (i64, [f64; 3])>) -> Places {
-        let points: Vec<(i64, [f64; 3])> = entries.into_iter().collect();
-        let by_address =
-            points.iter().enumerate().map(|(i, (a, _))| (*a, i)).collect();
-        let grid = Grid::over(points.len(), |i| points[i].1);
-        Places { held: Held::Given { points, by_address }, grid }
-    }
-
-    /// How many places the set holds.
-    fn len(&self) -> usize {
-        match &self.held {
-            Held::Mapped(names) => names.base().len(),
-            Held::Given { points, .. } => points.len(),
-        }
-    }
-
-    /// The address and place of the `i`th of them.
-    fn place(&self, i: usize) -> (i64, [f64; 3]) {
-        match &self.held {
-            Held::Mapped(names) => {
-                let base = names.base();
-                let [x, y, z] = base.position_at(i);
-                (base.address_at(i), [x as f64, y as f64, z as f64])
-            }
-            Held::Given { points, .. } => points[i],
-        }
-    }
-
-    /// Where `address` sits in the set, if it is in it.
-    fn index_of(&self, address: i64) -> Option<usize> {
-        match &self.held {
-            Held::Mapped(names) => names.base().index_of(address),
-            Held::Given { by_address, .. } => by_address.get(&address).copied(),
-        }
-    }
-
-    /// Whether the set holds `address` at all.
-    fn holds(&self, address: i64) -> bool {
-        self.index_of(address).is_some()
-    }
-}
-
-impl Default for Places {
-    fn default() -> Places {
-        Places::of(std::iter::empty())
-    }
-}
-
-/// The place of a [`NameEntry`], at the table's own precision.
-fn placed(entry: &NameEntry) -> (i64, [f64; 3]) {
-    (
-        entry.address,
-        [
-            entry.position[0] as f64,
-            entry.position[1] as f64,
-            entry.position[2] as f64,
-        ],
-    )
-}
-
-/// How far `p` is from the nearest corner of bucket `cell`, squared
-///
-/// Zero where the point is inside it. A bucket no jump can reach into is one
-/// whose systems need not be measured at all; see
-/// [`JumpGraph::neighbors_each`].
-fn bucket_away(p: [f64; 3], cell: [i32; 3]) -> f64 {
-    let mut away = 0.;
-    for axis in 0..3 {
-        let low = cell[axis] as f64 * BUCKET_LY;
-        // Outside the bucket on this axis, by however much; zero within it.
-        let out = (low - p[axis]).max(p[axis] - (low + BUCKET_LY)).max(0.);
-        away += out * out;
-    }
-    away
-}
-
-/// Which bucket a point falls in.
-fn bucket_of(p: [f64; 3]) -> [i32; 3] {
-    [
-        (p[0] / BUCKET_LY).floor() as i32,
-        (p[1] / BUCKET_LY).floor() as i32,
-        (p[2] / BUCKET_LY).floor() as i32,
-    ]
-}
+/// The ones kept are those that get nearest the goal, so what is thinned is
+/// the half of the sphere a route was never going to step into.
+const FANOUT: usize = 512;
 
 /// The squared distance between two points, the distance itself wanted for
 /// nothing here but comparing.
@@ -951,176 +783,92 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 impl JumpGraph {
-    /// Build the graph over the names table and the supercharge table
-    /// beside it.
+    /// The graph over a galaxy and the supercharge table beside it.
     ///
-    /// The galaxy's places are not copied: the base is the mapped table
-    /// itself and what is built is the grid over it. The feed's arrivals
-    /// are the log, which is thousands and is held.
-    pub fn over(names: &crate::Names, boosts: &Boosts) -> JumpGraph {
-        JumpGraph {
-            base: Arc::new(Places::over(names.table.clone())),
-            fresh: Arc::new(Places::of(
-                names.table.delta().entries().map(placed),
-            )),
-            boosts: boosts.clone(),
-        }
-    }
-
-    /// Build the graph over places given outright.
-    ///
-    /// The overlay's shape, for a caller that has the places and no table
-    /// to map: the perf guard, and the tests below.
-    pub fn of(
-        points: impl IntoIterator<Item = (i64, [f64; 3])>,
-        boosts: &Boosts,
-    ) -> JumpGraph {
-        JumpGraph {
-            base: Arc::new(Places::of(points)),
-            fresh: Arc::default(),
-            boosts: boosts.clone(),
-        }
-    }
-
-    /// The same base with `arrivals` alongside it: the rows the feed has
-    /// named since the base of the names table was written.
-    ///
-    /// Whole rather than added to, since the names table's delta log is
-    /// itself the accumulated set and is handed here entire. Rebuilding the
-    /// small side costs its own size and nothing else — the base is a handle
-    /// clone — so a pass that found one arrival pays for the few thousand of
-    /// a session, not for the two hundred million of the galaxy.
-    ///
-    /// Only addresses the base does not hold. A rename is nothing to a router,
-    /// which asks where a system is and not what it is called, and a position
-    /// corrected under an address already known is not applied until the table
-    /// is read afresh: the names table's own doc has it that a position is
-    /// corrected about never, and taking one here would leave the same system
-    /// bucketed twice, in two places, for a search to route through either.
-    pub fn extended<'a>(
-        &self,
-        arrivals: impl IntoIterator<Item = &'a NameEntry>,
-        boosts: &Boosts,
-    ) -> JumpGraph {
-        JumpGraph {
-            base: Arc::clone(&self.base),
-            fresh: Arc::new(Places::of(
-                arrivals
-                    .into_iter()
-                    .filter(|entry| !self.base.holds(entry.address))
-                    .map(placed),
-            )),
-            boosts: boosts.clone(),
-        }
+    /// Nothing is built. The places are the cell payloads, read where they
+    /// lie, which is why this is instant where the grid it replaced was 32
+    /// seconds.
+    pub fn over(sky: &Arc<Sky>, boosts: &Boosts) -> JumpGraph {
+        JumpGraph { sky: Arc::clone(sky), boosts: boosts.clone() }
     }
 
     /// How many systems the graph can route between.
     pub fn len(&self) -> usize {
-        self.base.len() + self.fresh.len()
+        self.sky.len() as usize
     }
 
-    /// Whether the graph holds no places at all.
+    /// Whether it holds no places at all.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// The system at an index, whichever set holds it
-    ///
-    /// One index space over the two: below the base's length it is the base's
-    /// own, above it the overlay's. Which is what lets the searches below key
-    /// on a plain `usize` as they did when there was one set.
-    fn place(&self, i: usize) -> (i64, [f64; 3]) {
-        match i.checked_sub(self.base.len()) {
-            Some(i) => self.fresh.place(i),
-            None => self.base.place(i),
-        }
+    /// Where a node sits. A node a mapping no longer holds reads as the
+    /// origin rather than panicking a route task.
+    fn place(&self, node: Node) -> [f64; 3] {
+        self.sky.place(node).unwrap_or_default()
     }
 
-    /// What the system at an index can supercharge, if anything.
-    fn boost(&self, i: usize) -> Option<Boost> {
-        self.boosts.get(self.place(i).0)
+    /// What a node's system is called.
+    fn address(&self, node: Node) -> i64 {
+        self.sky.address(node).unwrap_or_default()
     }
 
-    /// Where a system sits in that one index space, by address
-    ///
-    /// The overlay first, so a system named since the table was read is
-    /// routable at all.
-    fn index_of(&self, address: i64) -> Option<usize> {
-        match self.fresh.index_of(address) {
-            Some(i) => Some(self.base.len() + i),
-            None => self.base.index_of(address),
-        }
+    /// What the system at a node can supercharge, if anything.
+    fn boost(&self, node: Node) -> Option<Boost> {
+        self.boosts.get(self.address(node))
     }
 
-    /// The systems the point at `i` can jump to, by index
+    /// Which node holds `address`, given where the names table says it sits.
+    fn node_of(&self, address: i64, near: [f64; 3]) -> Option<Node> {
+        self.sky.node_of(address, near)
+    }
+
+    /// The systems a node can jump to, with their places.
     ///
     /// `range` is what the ship reaches unaided, and the jump is scaled by
-    /// whatever the system being left can supercharge into the `drive` fitted:
-    /// a neutron star is four times as far, or six. Which is why a boost is
-    /// read off the system a jump leaves rather than the one it lands in — the
-    /// charge is taken in the jet cone and spent on the jump out.
+    /// whatever the system being left can supercharge into the `drive`
+    /// fitted: a neutron star is four times as far, or six. Which is why a
+    /// boost is read off the system a jump leaves rather than the one it
+    /// lands in — the charge is taken in the jet cone and spent on the jump
+    /// out.
     ///
-    /// Both sets, cell by cell: one bucket lookup each over the same reach
-    /// cube. The overlay's is a hash lookup into a table of the arrivals of
-    /// one session, so it misses cheaply, and the distance tests it adds are
-    /// the arrivals it actually holds nearby. A boosted jump widens that cube
-    /// — four times the range is nine cells to a side rather than three — so
-    /// an expansion out of a neutron star costs many times one out of an
-    /// ordinary system, and there are far fewer of them.
-    /// Collected, for the tests that ask what a jump reaches. The searches
-    /// take them one at a time; see [`Self::neighbors_each`].
-    #[cfg(test)]
-    fn neighbors(&self, i: usize, range: f64, drive: Drive) -> Vec<usize> {
-        let mut out: Vec<usize> = Vec::new();
-        self.neighbors_each(i, range, drive, |j| out.push(j));
-        out
-    }
-
-    /// Hand each of them to `found` as it is found
+    /// **Capped where `fanout` says so**, keeping the neighbours that get
+    /// nearest `goal`. A boosted jump in the core sees thousands of systems
+    /// and relaxing every one is what makes the search quadratic in
+    /// density — but a cap can drop the very neighbour a fewest-jumps chain
+    /// went through, so only a setting that has not promised the fewest
+    /// carries one. See [`Routing::fanout`].
     ///
-    /// What the searches walk. A collected `Vec` is an allocation and a length
-    /// per expansion, and there are half a million expansions in a route
-    /// across the galaxy; the caller keeps whatever buffer it wants filled and
-    /// this one keeps none.
-    fn neighbors_each(
+    /// `out` is the caller's buffer, cleared here: there are half a million
+    /// expansions in a route across the galaxy and an allocation apiece is
+    /// not worth paying.
+    fn neighbors(
         &self,
-        i: usize,
+        node: Node,
+        at: [f64; 3],
         range: f64,
         drive: Drive,
-        mut found: impl FnMut(usize),
+        goal: [f64; 3],
+        fanout: Option<usize>,
+        out: &mut Vec<(Node, [f64; 3], f64)>,
     ) {
-        let range = range * drive.factor(self.boost(i));
-        let p = self.place(i).1;
-        let home = bucket_of(p);
-        let reach = (range / BUCKET_LY).ceil() as i32;
-        let held = self.base.len();
-        for dx in -reach..=reach {
-            for dy in -reach..=reach {
-                for dz in -reach..=reach {
-                    let cell = [home[0] + dx, home[1] + dy, home[2] + dz];
-                    // The reach is a cube of buckets and a jump is a sphere
-                    // inside it, so nearly half of them cannot hold anything
-                    // in range — a boosted jump asks after seven hundred and
-                    // twenty-nine buckets and three hundred and fifty of them
-                    // are corners. Cheaper to measure the box than to measure
-                    // every system in it.
-                    if bucket_away(p, cell) > range * range {
-                        continue;
-                    }
-                    let sets = [(&*self.base, 0usize), (&*self.fresh, held)];
-                    for (set, offset) in sets {
-                        for &j in set.grid.bucket(cell) {
-                            let j = j as usize;
-                            let there = set.place(j).1;
-                            if j + offset != i
-                                && dist2(p, there) <= range * range
-                            {
-                                found(j + offset);
-                            }
-                        }
-                    }
-                }
+        out.clear();
+        let range = range * drive.factor(self.boost(node));
+        self.sky.each_near(at, range, |found, place, away| {
+            if found != node {
+                out.push((found, place, away));
             }
+        });
+        if let Some(cap) = fanout
+            && out.len() > cap
+        {
+            // Nearest the goal first, and only far enough into the order to
+            // find the boundary: the rest are dropped unsorted.
+            out.select_nth_unstable_by(cap, |a, b| {
+                let (a, b) = (dist2(a.1, goal), dist2(b.1, goal));
+                a.total_cmp(&b)
+            });
+            out.truncate(cap);
         }
     }
 
@@ -1146,32 +894,41 @@ impl JumpGraph {
     /// watching, and the search then records nothing at all.
     pub(crate) fn route(
         &self,
-        start: i64,
-        end: i64,
+        start: (i64, [f64; 3]),
+        end: (i64, [f64; 3]),
         range: f64,
         how: Routing,
         drive: Drive,
         watching: Option<&Arc<Frontier>>,
     ) -> Option<Vec<(i64, [f64; 3])>> {
-        let start = self.index_of(start)?;
-        let end = self.index_of(end)?;
-        let goal = self.place(end).1;
+        // The ends are the one thing a route knows by *name*: a commander
+        // picked them, so the names table says where they are and this finds
+        // the records. Twice a leg, against the millions of places the
+        // search itself reads straight out of the payloads.
+        let from = self.node_of(start.0, start.1)?;
+        let to = self.node_of(end.0, end.1)?;
+        let goal = self.place(to);
         let mut sampled = watching.map(Frontier::sampler);
         let path = match how {
             Routing::Quick => {
-                self.quick(start, end, goal, range, drive, &mut sampled)
+                self.quick(from, to, goal, range, drive, how, &mut sampled)
             }
             Routing::Direct => {
-                self.direct(start, end, goal, range, drive, &mut sampled)
+                self.direct(from, to, goal, range, drive, how, &mut sampled)
             }
             Routing::Shortest => {
-                self.shortest(start, end, goal, range, drive, &mut sampled)
+                self.shortest(from, to, goal, range, drive, how, &mut sampled)
             }
         };
         if let Some(sampled) = &mut sampled {
             sampled.done();
         }
-        Some(path?.into_iter().map(|i| self.place(i)).collect())
+        Some(
+            path?
+                .into_iter()
+                .map(|node| (self.address(node), self.place(node)))
+                .collect(),
+        )
     }
 
     /// A route inside a twentieth of the fewest jumps, and quickly
@@ -1182,34 +939,34 @@ impl JumpGraph {
     /// [`LEANING`].
     fn quick(
         &self,
-        start: usize,
-        end: usize,
+        start: Node,
+        end: Node,
         goal: [f64; 3],
         range: f64,
         drive: Drive,
+        how: Routing,
         sampled: &mut Option<Sampler>,
-    ) -> Option<Vec<usize>> {
+    ) -> Option<Vec<Node>> {
         let widest = range * drive.widest();
         self.search(
             start,
             end,
             goal,
+            range,
+            drive,
+            how,
             // A jump costs the denominator, so the weighted estimate below
             // is an exact multiple of the admissible one rather than a float
             // rounded twice.
-            |graph, i, out| {
-                graph.neighbors_each(i, range, drive, |j| {
-                    out.push((j, LEANING.1))
-                });
-            },
+            |_, _, _| LEANING.1,
             // Saturating, because the range is whatever was typed into the
             // form and a small enough one puts more jumps between two systems
             // than a `u32` holds: the cast pins at the top and the scaling
             // would then overflow. A saturated estimate is still an
             // overstatement of a distance nothing can cross, which is what
             // the search does with it.
-            |graph, i| {
-                let left = dist2(graph.place(i).1, goal).sqrt();
+            |at| {
+                let left = dist2(at, goal).sqrt();
                 let jumps = (left / widest).ceil() as u32;
                 jumps.saturating_mul(LEANING.0)
             },
@@ -1227,27 +984,24 @@ impl JumpGraph {
     /// beside it.
     fn direct(
         &self,
-        start: usize,
-        end: usize,
+        start: Node,
+        end: Node,
         goal: [f64; 3],
         range: f64,
         drive: Drive,
+        how: Routing,
         sampled: &mut Option<Sampler>,
-    ) -> Option<Vec<usize>> {
+    ) -> Option<Vec<Node>> {
         let widest = range * drive.widest();
         self.search(
             start,
             end,
             goal,
-            // Unsorted: the tie-break in `search` is what prefers the step
-            // nearest the goal, where this used to hand the neighbours over in
-            // that order and lean on the crate's own tie-breaking.
-            |graph, i, out| {
-                graph.neighbors_each(i, range, drive, |j| out.push((j, 1u32)));
-            },
-            |graph, i| {
-                (dist2(graph.place(i).1, goal).sqrt() / widest).ceil() as u32
-            },
+            range,
+            drive,
+            how,
+            |_, _, _| 1u32,
+            |at| (dist2(at, goal).sqrt() / widest).ceil() as u32,
             sampled,
         )
     }
@@ -1259,30 +1013,27 @@ impl JumpGraph {
     /// the ordering and for why the rounding leans as it does.
     fn shortest(
         &self,
-        start: usize,
-        end: usize,
+        start: Node,
+        end: Node,
         goal: [f64; 3],
         range: f64,
         drive: Drive,
+        how: Routing,
         sampled: &mut Option<Sampler>,
-    ) -> Option<Vec<usize>> {
+    ) -> Option<Vec<Node>> {
         let widest = range * drive.widest();
         self.search(
             start,
             end,
             goal,
-            |graph, i, out| {
-                let from = graph.place(i).1;
-                graph.neighbors_each(i, range, drive, |j| {
-                    let leg = dist2(from, graph.place(j).1).sqrt();
-                    out.push((
-                        j,
-                        Cost { jumps: 1, light_years: leg.ceil() as u32 },
-                    ));
-                });
-            },
-            |graph, i| {
-                let left = dist2(graph.place(i).1, goal).sqrt();
+            range,
+            drive,
+            how,
+            // The leg's length comes off the neighbour query, which measured
+            // it to decide the system was in range at all.
+            |_, _, leg| Cost { jumps: 1, light_years: leg.ceil() as u32 },
+            |at| {
+                let left = dist2(at, goal).sqrt();
                 Cost {
                     jumps: (left / widest).ceil() as u32,
                     light_years: left.floor() as u32,
@@ -1310,25 +1061,30 @@ impl JumpGraph {
     /// and this is what picks the one that heads at the goal instead of the
     /// one that happened to be reached first.
     ///
-    /// Everything a system is remembered by is an array indexed by its place
-    /// in the graph, not a map keyed by it: a route across the galaxy expands
-    /// half a million systems and looks at forty million neighbours, and three
-    /// hashes per neighbour was the whole of where the time went. Three arrays
-    /// over two and a half million systems come to twenty megabytes, held for
-    /// as long as the search runs.
+    /// **What a system is remembered by is a map over what the search
+    /// reached**, not an array over the galaxy. The arrays were the right
+    /// answer at 2.6 M systems, where three of them came to twenty megabytes
+    /// and a hash per neighbour was the whole of where the time went; at
+    /// 200 M they are 1.6 GB a leg, allocated before the first expansion, for
+    /// a search that will touch a corridor. The hasher is `FxHash` rather
+    /// than the default, the keys being the index's own numbering and not
+    /// anything a stranger chooses.
+    #[allow(clippy::too_many_arguments)]
     fn search<C: Metric>(
         &self,
-        start: usize,
-        end: usize,
+        start: Node,
+        end: Node,
         goal: [f64; 3],
-        successors: impl Fn(&JumpGraph, usize, &mut Vec<(usize, C)>),
-        estimate: impl Fn(&JumpGraph, usize) -> C,
+        range: f64,
+        drive: Drive,
+        how: Routing,
+        step: impl Fn(&JumpGraph, Node, f64) -> C,
+        estimate: impl Fn([f64; 3]) -> C,
         sampled: &mut Option<Sampler>,
-    ) -> Option<Vec<usize>> {
+    ) -> Option<Vec<Node>> {
         if start == end {
             return Some(vec![start]);
         }
-        let held = self.len();
         // What each system has been reached for, and where it was reached
         // from. No closed set: a system is expanded again if a cheaper way to
         // it turns up, and the entry a cheaper way replaced is recognised on
@@ -1341,40 +1097,40 @@ impl JumpGraph {
         // weighting being inconsistent by up to a jump, and the bound that
         // setting claims is the one weighted A* proves *with* reopening. Held
         // shut instead, a route inside a twentieth would be a hope.
-        let mut best = vec![C::MAX; held];
-        let mut came = vec![UNSEEN; held];
+        let mut best: FxHashMap<Node, C> = FxHashMap::default();
+        let mut came: FxHashMap<Node, Node> = FxHashMap::default();
         // Nearest the goal is the smallest number and a heap pops the
         // greatest, so the whole key is reversed: the ordering is "cheapest
         // first, and of those the one nearest the goal".
         let mut open = BinaryHeap::new();
-        let mut near: Vec<(usize, C)> = Vec::new();
+        let mut near: Vec<(Node, [f64; 3], f64)> = Vec::new();
+        // Read once, here, so every setting's promise is kept by the one
+        // place that could break it. See [`Routing::fanout`].
+        let fanout = how.fanout();
 
-        let away = |graph: &JumpGraph, i: usize| {
-            // Squared, and as an integer: the key is only ever compared, and
-            // squaring is monotone over distances that are never negative, so
-            // the ordering is the same one a square root would give and the
-            // root itself is forty million calls nobody reads.
-            dist2(graph.place(i).1, goal) as u64
-        };
-        best[start] = C::ZERO;
-        open.push(Reverse((
-            estimate(self, start),
-            away(self, start),
-            C::ZERO,
-            start,
-        )));
+        // Squared, and as an integer: the key is only ever compared, and
+        // squaring is monotone over distances that are never negative, so
+        // the ordering is the same one a square root would give and the
+        // root itself is forty million calls nobody reads.
+        let away = |at: [f64; 3]| dist2(at, goal) as u64;
+
+        let from = self.place(start);
+        best.insert(start, C::ZERO);
+        open.push(Reverse((estimate(from), away(from), C::ZERO, start)));
 
         while let Some(Reverse((_, _, was, node))) = open.pop() {
             // A system can be pushed more than once, a cheaper way to it
             // having been found after the first; the dearer entries are still
             // in the heap and are nothing to expand again.
-            if was > best[node] {
+            if best.get(&node).is_some_and(|held| was > *held) {
                 continue;
             }
+            let at = self.place(node);
             if node == end {
                 let mut path = vec![end];
-                while came[*path.last().expect("a step")] != UNSEEN {
-                    path.push(came[*path.last().expect("a step")] as usize);
+                while let Some(&before) = came.get(path.last().expect("a step"))
+                {
+                    path.push(before);
                 }
                 path.reverse();
                 return Some(path);
@@ -1382,23 +1138,22 @@ impl JumpGraph {
             if let Some(sampled) = sampled.as_mut() {
                 sampled.expanded(
                     node,
-                    DVec3::from(self.place(node).1),
+                    DVec3::from(at),
                     DVec3::from(goal),
                     &came,
-                    |i| DVec3::from(self.place(i).1),
+                    |node| DVec3::from(self.place(node)),
                 );
             }
-            near.clear();
-            successors(self, node, &mut near);
+            self.neighbors(node, at, range, drive, goal, fanout, &mut near);
 
-            for &(next, step) in &near {
-                let cost = was + step;
-                if cost < best[next] {
-                    best[next] = cost;
-                    came[next] = node as u32;
+            for &(next, place, leg) in &near {
+                let cost = was + step(self, node, leg);
+                if best.get(&next).is_none_or(|held| cost < *held) {
+                    best.insert(next, cost);
+                    came.insert(next, node);
                     open.push(Reverse((
-                        cost + estimate(self, next),
-                        away(self, next),
+                        cost + estimate(place),
+                        away(place),
                         cost,
                         next,
                     )));
@@ -1412,10 +1167,47 @@ impl JumpGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Scratch, sky_apart, sky_of};
+    use galos_index::CellId;
+    use galos_index::meta::NameEntry;
+    use std::collections::HashMap;
 
     /// A system named for its address, at `at`.
     fn at(address: i64, at: [f32; 3]) -> NameEntry {
         NameEntry { address, name: format!("S{address}").into(), position: at }
+    }
+
+    /// A route's end, as the router takes one
+    ///
+    /// The address and where the names table says it sits: the pair
+    /// [`JumpGraph::route`] wants, because the record itself is found by
+    /// descending to that place ([`galos_index::Sky::node_of`]). A test
+    /// knows both, having put the system there.
+    fn end(entries: &[NameEntry], address: i64) -> (i64, [f64; 3]) {
+        let found = entries
+            .iter()
+            .find(|entry| entry.address == address)
+            .expect("a system the test placed");
+        (
+            found.address,
+            [
+                found.position[0] as f64,
+                found.position[1] as f64,
+                found.position[2] as f64,
+            ],
+        )
+    }
+
+    /// A built galaxy holding `entries`, and the directory it lives in
+    ///
+    /// The directory comes back with it and must be held for as long as the
+    /// galaxy is read: the places are the cell payloads, mapped where they
+    /// lie, so a route over a directory that has been removed is a route
+    /// over nothing.
+    fn galaxy(what: &str, entries: &[NameEntry]) -> (Scratch, Arc<Sky>) {
+        let dir = Scratch::new(what);
+        let sky = sky_of(dir.path(), entries);
+        (dir, sky)
     }
 
     /// How far a route runs, following its legs.
@@ -1437,12 +1229,19 @@ mod tests {
     #[test]
     fn a_range_too_small_to_estimate_does_not_overflow() {
         let entries = vec![at(0, [0., 0., 0.]), at(1, [100., 0., 0.])];
-        let boosts = Boosts::default();
-        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
+        let (_dir, sky) = galaxy("overflow", &entries);
+        let graph = JumpGraph::over(&sky, &Boosts::default());
 
         assert!(
             graph
-                .route(0, 1, 1e-9, Routing::Quick, Drive::Standard, None)
+                .route(
+                    end(&entries, 0),
+                    end(&entries, 1),
+                    1e-9,
+                    Routing::Quick,
+                    Drive::Standard,
+                    None,
+                )
                 .is_none(),
             "nothing is reachable at that range"
         );
@@ -1463,7 +1262,14 @@ mod tests {
         let frontier = Frontier::between(DVec3::ZERO, goal);
         let first = frontier.drawn().expect("a frontier").across;
         let mut sampler = frontier.sampler();
-        let came = vec![UNSEEN; 1];
+        // One node, reached from nowhere: the sampler hashes what it is
+        // given and asks the closure where it sits, so a search's worth of
+        // expansions needs no galaxy behind it.
+        let node = Node {
+            cell: CellId { level: 13, x: 4096, y: 4096, z: 4096 },
+            at: 0,
+        };
+        let came: FxHashMap<Node, Node> = FxHashMap::default();
 
         // Expansions marching away in a straight line, one cell apiece: what
         // a search with nowhere to go looks like to the sampler.
@@ -1472,7 +1278,7 @@ mod tests {
         let step = first * 1.5;
         for n in 0..(ceiling as u64 * 4 * stride) {
             let at = DVec3::new(0., 0., (n / stride) as f64 * step);
-            sampler.expanded(0, at, goal, &came, |_| DVec3::ZERO);
+            sampler.expanded(node, at, goal, &came, |_| DVec3::ZERO);
         }
         sampler.done();
 
@@ -1513,12 +1319,19 @@ mod tests {
             entries.push(at(k, [400.0 * k as f32, 0., 0.]));
         }
         entries.push(at(9, [2000., 0., 0.]));
-        let graph =
-            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
+        let (_dir, sky) = galaxy("straighter", &entries);
+        let graph = JumpGraph::over(&sky, &Boosts::default());
 
         for how in BOTH {
             let path = graph
-                .route(0, 9, 500., how, Drive::Unaided, None)
+                .route(
+                    end(&entries, 0),
+                    end(&entries, 9),
+                    500.,
+                    how,
+                    Drive::Unaided,
+                    None,
+                )
                 .expect("a route");
 
             assert_eq!(path.len() - 1, 5, "not five jumps, {how:?}");
@@ -1548,12 +1361,19 @@ mod tests {
         // Two long ones, over the same ground.
         entries.push(at(50, [450., 0., 0.]));
         entries.push(at(9, [900., 0., 0.]));
-        let graph =
-            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
+        let (_dir, sky) = galaxy("fewest", &entries);
+        let graph = JumpGraph::over(&sky, &Boosts::default());
 
         for how in BOTH {
             let path = graph
-                .route(0, 9, 500., how, Drive::Unaided, None)
+                .route(
+                    end(&entries, 0),
+                    end(&entries, 9),
+                    500.,
+                    how,
+                    Drive::Unaided,
+                    None,
+                )
                 .expect("a route");
 
             assert_eq!(path.len() - 1, 2, "{how:?} took the short hops");
@@ -1588,16 +1408,18 @@ mod tests {
         // what a leg has to be measured against, and what a search reaching
         // by the wrong one of the two would be caught by below.
         let boosts = Boosts::holding(HashMap::from([(15, Boost::Neutron)]));
-        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
+        let (_dir, sky) = galaxy("quick", &entries);
+        let graph = JumpGraph::over(&sky, &boosts);
         let drive = Drive::Standard;
+        let (start, goal) = (end(&entries, 0), end(&entries, 999));
 
         let fewest = graph
-            .route(0, 999, 100., Routing::Direct, drive, None)
+            .route(start, goal, 100., Routing::Direct, drive, None)
             .expect("a route")
             .len()
             - 1;
         let quick = graph
-            .route(0, 999, 100., Routing::Quick, drive, None)
+            .route(start, goal, 100., Routing::Quick, drive, None)
             .expect("a quick route");
 
         assert_eq!(quick.first().expect("a start").0, 0, "started elsewhere");
@@ -1610,13 +1432,14 @@ mod tests {
         for leg in quick.windows(2) {
             let flown = dist2(leg[0].1, leg[1].1).sqrt();
             // What the system being left could charge the drive to, which is
-            // the only thing that says how far a jump out of it may go.
+            // the only thing that says how far a jump out of it may go. Its
+            // record is found from the place the route itself came back with,
+            // that being where the payload has it.
             let reach = 100.
                 * drive.factor(
                     graph
-                        .index_of(leg[0].0)
-                        .map(|i| graph.boost(i))
-                        .unwrap_or(None),
+                        .node_of(leg[0].0, leg[0].1)
+                        .and_then(|node| graph.boost(node)),
                 );
             assert!(
                 flown <= reach,
@@ -1642,12 +1465,19 @@ mod tests {
             at(3, [1350., 0., 0.]),
             at(9, [1800., 0., 0.]),
         ];
-        let graph =
-            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
+        let (_dir, sky) = galaxy("proves", &entries);
+        let graph = JumpGraph::over(&sky, &Boosts::default());
 
         for how in BOTH {
             let path = graph
-                .route(0, 9, 500., how, Drive::Unaided, None)
+                .route(
+                    end(&entries, 0),
+                    end(&entries, 9),
+                    500.,
+                    how,
+                    Drive::Unaided,
+                    None,
+                )
                 .expect("a route");
             assert_eq!(path.len() - 1, 4, "{how:?}");
             assert!(
@@ -1662,126 +1492,174 @@ mod tests {
     #[test]
     fn a_gap_wider_than_the_range_is_no_route() {
         let entries = vec![at(0, [0., 0., 0.]), at(1, [600., 0., 0.])];
-        let graph =
-            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
+        let (_dir, sky) = galaxy("gap", &entries);
+        let graph = JumpGraph::over(&sky, &Boosts::default());
+        let (start, goal) = (end(&entries, 0), end(&entries, 1));
 
         for how in BOTH {
             assert!(
-                graph.route(0, 1, 500., how, Drive::Unaided, None).is_none(),
+                graph
+                    .route(start, goal, 500., how, Drive::Unaided, None)
+                    .is_none(),
                 "{how:?} jumped 600 at 500"
             );
             assert!(
-                graph.route(0, 1, 700., how, Drive::Unaided, None).is_some(),
+                graph
+                    .route(start, goal, 700., how, Drive::Unaided, None)
+                    .is_some(),
                 "{how:?} refused 600 inside 700"
             );
         }
     }
 
-    /// A neighbour search reaches past its own bucket
+    /// A neighbour search reads cells other than the one the jump leaves,
+    /// and offers each system once
     ///
-    /// The buckets are [`BUCKET_LY`] on a side and a range many times that
-    /// has to look many buckets out, or a route would only ever step to the
-    /// system next door.
+    /// The places are the cell payloads now, so what a jump can reach has
+    /// nothing to do with where a cell boundary fell: a search bounded by
+    /// the payload it starts in would only ever step to whatever happens to
+    /// share that payload, which is a route through one cell of the galaxy
+    /// and nothing else. The whole of the neighbour query is the sphere.
+    ///
+    /// Cut to a system a cell so there is something to cross ([`sky_apart`]:
+    /// the build divides on count, so a handful of systems under the
+    /// published caps is one root payload however far apart they lie), and
+    /// the two systems 384 light years apart land the two ways they can. One
+    /// is in an *internal* node's slice and the other below it — a cell
+    /// keeps the brightest of what fell in it and pushes the rest down, so a
+    /// system in an internal node is ordinary and not an edge case — and the
+    /// third is off in a sibling subtree the search's own cell does not
+    /// contain at all.
+    ///
+    /// Once each, and never itself. A system is in exactly one cell's
+    /// payload, so a doubled neighbour would mean a cell of the descent had
+    /// been scanned twice; and a system offered as its own neighbour is a
+    /// jump of no distance, which every setting would take for free forever.
     #[test]
-    fn a_range_wider_than_a_bucket_still_finds_its_neighbours() {
-        let far = BUCKET_LY as f32 * 6.;
-        let entries = vec![at(0, [0., 0., 0.]), at(1, [far, 0., 0.])];
-        let graph =
-            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
+    fn a_neighbour_search_reads_past_the_cell_it_starts_in() {
+        // Wider than any jump, and the same either side, so the one range
+        // reaches both of the systems it should and the boundary is one
+        // number.
+        let far = 384.;
+        let here = [0., 0., 0.];
+        let dir = Scratch::new("across-cells");
+        // The brightest is the system the root keeps, and it is parked far
+        // enough off that no range below reaches it: what it is for is to
+        // leave the three the assertions are about under the root rather
+        // than in it.
+        let sky = sky_apart(
+            dir.path(),
+            &[
+                (0, [-5_000., 0., 0.]),
+                (1, here),
+                (2, [far, 0., 0.]),
+                (3, [-far, 0., 0.]),
+            ],
+        );
+        let graph = JumpGraph::over(&sky, &Boosts::default());
+        let from = graph.node_of(1, here).expect("the system it maps");
+        for address in [2, 3] {
+            let cell = graph
+                .node_of(address, [0., 0., 0.])
+                .expect("the others too")
+                .cell;
+            assert_ne!(
+                from.cell, cell,
+                "S{address} shares a payload, so there is nothing to cross"
+            );
+        }
+
+        let found = |range: f64| {
+            let mut out = Vec::new();
+            graph.neighbors(
+                from,
+                here,
+                range,
+                Drive::Unaided,
+                [far, 0., 0.],
+                // Uncapped: what this pins is which systems are in reach,
+                // not which of them a setting would bother to relax.
+                None,
+                &mut out,
+            );
+            let mut addresses: Vec<i64> =
+                out.iter().map(|&(node, ..)| graph.address(node)).collect();
+            addresses.sort();
+            addresses
+        };
 
         assert_eq!(
-            graph.neighbors(0, far as f64 + 1., Drive::Unaided),
-            vec![1]
+            found(far + 1.),
+            vec![2, 3],
+            "the systems a cell away, each once and itself never"
         );
-        assert!(graph.neighbors(0, far as f64 - 1., Drive::Unaided).is_empty());
+        assert!(found(far - 1.).is_empty(), "and nothing inside that");
     }
 
-    /// A system named since the table was read is routable, as an end and as
-    /// a waypoint
+    /// Only the setting that has not promised the fewest jumps thins an
+    /// expansion.
     ///
-    /// The router reads the names table, and the map reads that table once at
-    /// startup. A system the feed named while the map ran was not in the graph
-    /// at all, so a route to it came back with nothing and a route past it
-    /// took the long way round — which is what [`crate::refresh`] hands the
-    /// arrivals here for.
+    /// The cap is the fix for a search whose work is quadratic in stellar
+    /// density, and it is also the one thing here that can lose the right
+    /// answer: the neighbour a fewest-jumps chain went through may be the
+    /// one thinned away. So [`Routing::Direct`] and [`Routing::Shortest`],
+    /// which both claim the fewest, must carry no cap at all — and a
+    /// setting added later must decide which it is rather than inherit
+    /// whatever the match arm above it said.
     #[test]
-    fn a_system_named_since_is_routable() {
-        // Two ends 900 ly apart, too far for one 500 ly jump, with nothing
-        // between them when the table was read.
-        let base = vec![at(0, [0., 0., 0.]), at(9, [900., 0., 0.])];
-        let graph = JumpGraph::of(base.iter().map(placed), &Boosts::default());
+    fn only_a_quick_route_thins_an_expansion() {
+        assert_eq!(Routing::Quick.fanout(), Some(FANOUT));
         for how in BOTH {
-            assert!(
-                graph.route(0, 9, 500., how, Drive::Unaided, None).is_none(),
-                "{how:?} crossed 900 ly at a 500 ly range"
-            );
-        }
-
-        // The feed names one in the middle, and one further out again.
-        let arrivals = vec![at(50, [450., 0., 0.]), at(99, [1350., 0., 0.])];
-        let grown = graph.extended(&arrivals, &Boosts::default());
-
-        assert_eq!(grown.len(), 4, "two known systems and two arrivals");
-        for how in BOTH {
-            let path = grown
-                .route(0, 9, 500., how, Drive::Unaided, None)
-                .expect("a route");
             assert_eq!(
-                path.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
-                vec![0, 50, 9],
-                "{how:?} did not route through the arrival"
-            );
-
-            let path = grown
-                .route(0, 99, 500., how, Drive::Unaided, None)
-                .expect("a route to it");
-            assert_eq!(
-                path.last().map(|(a, _)| *a),
-                Some(99),
-                "{how:?} could not reach the arrival itself"
-            );
-            assert_eq!(path.len() - 1, 3, "{how:?} took the wrong count");
-        }
-
-        // And the base is untouched by any of it: the graph it was asked for
-        // is the graph it keeps, which is what a route in flight holds.
-        for how in BOTH {
-            assert!(
-                graph.route(0, 9, 500., how, Drive::Unaided, None).is_none(),
-                "{how:?} saw an arrival the graph it holds never had"
+                how.fanout(),
+                None,
+                "{how:?} promises the fewest jumps and may not thin",
             );
         }
     }
 
-    /// An arrival under an address the table already names is left alone
+    /// A cap keeps the neighbours that get nearest the goal, and uncapped
+    /// keeps them all.
     ///
-    /// A rename is nothing to a router: it asks where a system is. Taking one
-    /// anyway would bucket the same system twice and let a search route
-    /// through either copy.
+    /// Which is the whole of what the cap does, and what makes it a
+    /// defensible approximation rather than an arbitrary one: what it drops
+    /// is the far side of the sphere, away from where the route is going.
     #[test]
-    fn a_rename_does_not_double_a_system() {
-        let base = vec![at(0, [0., 0., 0.]), at(1, [450., 0., 0.])];
-        let graph = JumpGraph::of(base.iter().map(placed), &Boosts::default());
+    fn a_cap_keeps_the_neighbours_nearest_the_goal() {
+        let here = [0., 0., 0.];
+        let goal = [1_000., 0., 0.];
+        // Nine systems in a line, the goal off one end, so which of them is
+        // nearest it is unambiguous and the order is the line's own.
+        let places: Vec<(i64, [f64; 3])> =
+            (1..=9).map(|n| (n, [n as f64 * 10., 0., 0.])).collect();
+        let dir = Scratch::new("capped");
+        let sky = crate::testing::sky(dir.path(), &places);
+        let graph = JumpGraph::over(&sky, &Boosts::default());
+        let from = graph.node_of(1, places[0].1).expect("the first system");
 
-        let renamed = vec![NameEntry {
-            address: 1,
-            name: "Renamed".into(),
-            position: [450., 0., 0.],
-        }];
-        let grown = graph.extended(&renamed, &Boosts::default());
+        let reached = |cap: Option<usize>| {
+            let mut out = Vec::new();
+            graph.neighbors(
+                from,
+                here,
+                500.,
+                Drive::Unaided,
+                goal,
+                cap,
+                &mut out,
+            );
+            let mut found: Vec<i64> =
+                out.iter().map(|&(node, ..)| graph.address(node)).collect();
+            found.sort();
+            found
+        };
 
-        assert_eq!(grown.len(), 2, "the renamed system is held once");
-        assert_eq!(
-            grown
-                .neighbors(
-                    grown.index_of(0).expect("an index"),
-                    500.,
-                    Drive::Unaided,
-                )
-                .len(),
-            1,
-            "and offered as one neighbour, not two"
-        );
+        // Every other system is in range, and itself is never among them.
+        assert_eq!(reached(None), vec![2, 3, 4, 5, 6, 7, 8, 9]);
+        // Capped, the ones kept are the far end of the line: nearest the
+        // goal, which sits past S9.
+        assert_eq!(reached(Some(3)), vec![7, 8, 9]);
+        assert_eq!(reached(Some(1)), vec![9]);
     }
 
     /// A boost is worth what the drive fitted makes of it, and nothing
@@ -1832,16 +1710,20 @@ mod tests {
             at(9, [440., 0., 0.]),
         ];
         let boosts = Boosts::holding(HashMap::from([(2, Boost::Neutron)]));
-        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
+        let (_dir, sky) = galaxy("neutron", &entries);
+        let graph = JumpGraph::over(&sky, &boosts);
+        let (start, goal) = (end(&entries, 1), end(&entries, 9));
 
         for how in BOTH {
             assert!(
-                graph.route(1, 9, 100., how, Drive::Unaided, None).is_none(),
+                graph
+                    .route(start, goal, 100., how, Drive::Unaided, None)
+                    .is_none(),
                 "{how:?} crossed 350 ly at a 100 ly range unaided"
             );
 
             let path = graph
-                .route(1, 9, 100., how, Drive::Standard, None)
+                .route(start, goal, 100., how, Drive::Standard, None)
                 .expect("a supercharged route");
             assert_eq!(
                 path.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
@@ -1866,11 +1748,21 @@ mod tests {
             at(9, [440., 0., 0.]),
         ];
         let boosts = Boosts::holding(HashMap::from([(9, Boost::Neutron)]));
-        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
+        let (_dir, sky) = galaxy("leaves", &entries);
+        let graph = JumpGraph::over(&sky, &boosts);
 
         for how in BOTH {
             assert!(
-                graph.route(1, 9, 100., how, Drive::Standard, None).is_none(),
+                graph
+                    .route(
+                        end(&entries, 1),
+                        end(&entries, 9),
+                        100.,
+                        how,
+                        Drive::Standard,
+                        None,
+                    )
+                    .is_none(),
                 "{how:?} flew a gap on a boost it had not collected yet"
             );
         }
@@ -1885,15 +1777,21 @@ mod tests {
     fn a_white_dwarf_carries_what_the_drive_allows() {
         let entries = vec![at(1, [0., 0., 0.]), at(9, [250., 0., 0.])];
         let boosts = Boosts::holding(HashMap::from([(1, Boost::WhiteDwarf)]));
-        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
+        let (_dir, sky) = galaxy("dwarf", &entries);
+        let graph = JumpGraph::over(&sky, &boosts);
+        let (start, goal) = (end(&entries, 1), end(&entries, 9));
 
         for how in BOTH {
             assert!(
-                graph.route(1, 9, 100., how, Drive::Standard, None).is_none(),
+                graph
+                    .route(start, goal, 100., how, Drive::Standard, None)
+                    .is_none(),
                 "{how:?} made 250 ly of a 150 ly boosted jump"
             );
             assert!(
-                graph.route(1, 9, 100., how, Drive::Optimised, None).is_some(),
+                graph
+                    .route(start, goal, 100., how, Drive::Optimised, None)
+                    .is_some(),
                 "{how:?} refused 250 ly of a 300 ly boosted jump"
             );
         }

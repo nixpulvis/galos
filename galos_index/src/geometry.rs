@@ -84,7 +84,10 @@ impl Aabb {
 }
 
 /// The address of one cell: its level and its integer coordinates at that level.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// Ordered as well as hashed, so a cell can key a heap and not only a map:
+/// the order is `(level, x, y, z)` and carries no spatial meaning, which is
+/// what [`morton`](CellId::morton) is for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CellId {
     pub level: u8,
     pub x: u32,

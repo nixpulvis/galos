@@ -320,12 +320,22 @@ fn stood_up(
         );
     }
 
+    // The galaxy as the router reads it: the cell payloads, mapped where
+    // they lie. Opening it is reading the index file this already holds and
+    // nothing else — no places are copied and no grid is built, which is
+    // what a route used to wait 32 s and 13.7 GB for. A directory this
+    // process cannot map leaves it absent and nothing routes.
+    let sky = match galos_index::Sky::open(std::path::Path::new(dir)) {
+        Ok(sky) => Some(Arc::new(sky)),
+        Err(err) => {
+            warn!("{dir} cannot be mapped for routing: {err}");
+            None
+        }
+    };
+
     Loaded {
         held,
-        // Nothing until a route is asked for: the router's own bucketing of
-        // the galaxy is gigabytes, and a session that only looks at the sky
-        // never wants it. See [`Jumps`].
-        jumps: Jumps::default(),
+        jumps: sky.map_or_else(Jumps::default, Jumps::over),
         index: ResidentIndex(index),
         populated: Populated(Arc::new(
             populated.into_iter().map(|s| (s.address, s)).collect(),

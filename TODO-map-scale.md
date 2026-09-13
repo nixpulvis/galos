@@ -506,11 +506,12 @@ The guard failing here is the guard working. It is an opt-in test — it
 stands down without `GALOS_PERF_DIR` — so the default suite stays green
 while it keeps saying that routing at 200 M is not done.
 
-#### 2a. `Places` no longer copies the galaxy — but still buckets it
+#### 2a. ~~`Places`~~ — deleted; the router reads the payloads
 
-Reported from the map as "clicking Plot Route starts blowing up memory a
-lot… from like 7 GB to 20". It was arithmetic, not a leak. `Places` held
-three copies of what the names table already maps:
+**Done.** Reported from the map as "clicking Plot Route starts blowing up
+memory a lot… from like 7 GB to 20", and then as the click hanging before
+anything started. Both were the same structure: `Places` held three copies
+of what the index already maps, and built them on the click.
 
 | | at 200,071,629 |
 |---|---|
@@ -519,48 +520,46 @@ three copies of what the names table already maps:
 | `buckets: HashMap<_, Vec<usize>>` | 8 B a system plus a heap block per occupied bucket = **~2.7 GB**, ~72 M allocations |
 | transient: `collect()` doubling, the `filter` having killed the size hint | up to **+3.2 GB** |
 
-≈13.7 GB, which is the +13 that was reported.
+≈13.7 GB, which is the +13 that was reported, and 32 s to build it.
 
-**All three are now gone.** The base is the mapped table itself
-(`Held::Mapped`): addresses and positions are slices of `addr.bin` and
-`pos.bin`, and an address is a binary search because they are sorted, so
-`points` and `by_address` simply do not exist. The bucketing is a CSR —
-every row number once in one `Vec<u32>`, grouped, and a map saying where
-each group sits — which is two allocations instead of 72 M and 4 bytes a
-system instead of 8 plus a vector header. The feed's arrivals stay held
-(`Held::Given`), being thousands.
+All of it is gone. The galaxy's places are the cell payloads
+(`galos_index::Sky`, `galos_index::store::Payload`), mapped as a query
+reaches them; the cells come off `index.bin` by descent
+(`Index::each_near`) so the work is the sphere's and not the galaxy's; and
+the search state is `FxHashMap` over what was reached rather than dense
+arrays over every system there is — which were 1.6 GB a leg, allocated
+before the first expansion.
 
-Measured, whole test process peak resident:
+Measured on `.index/full`, the whole test process:
 
 ```
-route graph: 200071629 systems in 32.11s   peak RSS 4.90 GB
+route graph: 200071629 systems in 28.57ms   (was 32.11s)
+route Quick: 22 jumps in 75.31ms
+route Direct: 22 jumps in 43.28ms
+peak RSS 1.81 GB                            (was 4.90 GB)
 ```
 
-which accounts as: `pos.bin` faulted in by the two counting passes 2.4 GB
-(file-backed and evictable), the CSR rows 800 MB, the bucket map ~180 MB,
-and the search's own `best` + `came` 1.6 GB. So **anonymous heap went from
-~15.3 GB to ~2.6 GB**, and a third of what is left is not heap at all.
+**Opening is 1,124× faster than building was**, and it is not a faster
+build: there is no build. Three notes on the rest.
 
-**Two costs remain, and neither is fixed by this.**
+- The 22-jump route is the guard's own pair of ends, ~1,000 ly apart. It
+  says the machinery works and is fast; it does **not** say a galactic
+  crossing is, which is what 2b's two-level plan is for.
+- The peak used to be 4.90 GB and 4.37 GB of a later run was the *harness*,
+  not the router: picking two ends by walking `Names::points` faults every
+  byte of `addr.bin` and `pos.bin`. The guard picks them with a sphere
+  query now, so the number measures what it claims to.
+- Payload writes go beside-and-rename (`store.rs`), which mapping them
+  required: `fs::write` truncates in place, and a truncation under a
+  reader's mapping is `SIGBUS`. A cell the feed republishes is a new inode,
+  so a route in flight keeps reading the galaxy it started on.
 
-1. **The 32 s has not moved** (34.23 s before, 32.11 s after). It is 200 M
-   × `bucket_of` plus a hash lookup a system, twice, and that is the floor
-   for building *any* galaxy-wide grid. Shaving it is possible — assigning
-   bucket ordinals on the first pass would delete the second pass's hash
-   lookups at the cost of 800 MB transient, maybe 40 % — but that is a
-   constant factor on a structure this item exists to delete. **The answer
-   is not to build a global grid at all**: neighbour queries should go
-   through `index.bin`'s cell tree and the payloads, which the LOD path
-   already reads at 26–56 ms, so the work is the corridor's and not the
-   galaxy's.
-2. **`best` + `came` are 1.6 GB a leg**, allocated before the first
-   expansion: `vec![C::MAX; held]` and `vec![UNSEEN; held]` over every
-   system there is. Dense arrays over the galaxy cannot survive a
-   corridor-bounded search either — they want to be maps over what the
-   search actually reached, or arrays over the corridor's own index space.
-
-Both of those are the same conclusion `ROUTING-INDEX.md` §5 reached: the
-search space must be smaller, not the index faster.
+**The fanout cap is behind `Quick` and nothing else.** A cap that thins an
+expansion's neighbours can drop the one a fewest-jumps chain went through,
+so `Direct` and `Shortest` carry none — `Routing::fanout` is the single
+place that decides, and
+`graph::tests::only_a_quick_route_thins_an_expansion` is what stops a
+setting added later from inheriting an approximation by accident.
 
 #### 2b. How EDDA does it, and the order to port it in
 
@@ -674,6 +673,54 @@ instead:
 
 41 B records against `pos.bin`'s 12 is ~3.4× the page traffic on a spatial
 scan. EDDA runs 29 B records and treats it as fine.
+
+#### 2d. Two axes, not one list: what a route optimises, and how hard it tries
+
+`Routing` is one enum of three values — `Quick`, `Direct`, `Shortest` —
+which conflates two independent questions, and the conflation became a
+correctness problem the moment the fanout cap landed: a cap that thins an
+expansion's neighbours cannot be applied under a setting that claims the
+fewest jumps, so it belongs to `Quick` and to nothing else.
+
+The two axes:
+
+- **What a route is judged by.** Fewest jumps (`Direct` today); fewest
+  jumps and the shortest of them (`Shortest`); and later **economical**,
+  judged by fuel, and **fastest**, judged by pilot-seconds — which is
+  EDDA's `route_score`/`time_units` (`long_range.rs:518-570`), fitted from
+  journal cadence at 18 s a jump plus a stop overhead
+  (`ed-route/src/cost.rs:33-49`), and is the only judge that answers "which
+  of these two routes would I rather fly".
+- **How hard the search tries.** Exact, or quick. Quick is where every
+  approximation lives and nowhere else: the leaned-on estimate
+  (`LEANING`, weighted A\*), the per-expansion fanout cap, and any later
+  beam or corridor. Exact means no approximation is switched on, and a
+  route that comes back is the one the judge says is best.
+
+So the carried type becomes a pair rather than a value:
+
+```rust
+pub struct Search { pub goal: Goal, pub effort: Effort }
+pub enum Goal { Direct, Shortest }        // later: Economical, Fastest
+pub enum Effort { Exact, Quick }
+```
+
+`Search::default()` is `{ Direct, Exact }`, and `Shortest` becomes askable
+*quickly* — which it is not today, and which is most of the reason the
+current list is wrong: it offers "shortest, slowest to find" and no way to
+say "shortest, and I am not going to wait".
+
+Churn is ~60 sites, nearly all of them `Routing::default()` in tests, plus
+the combo box in `ui.rs:3787-3808` which becomes two controls, plus
+`Filter::Route`'s carried field and `Routing::said` (the word a plotted
+route is labelled with, which becomes two words).
+
+The one thing to get right while doing it: **the UI must say when a route
+is not proven**, which the current wording half does by calling one setting
+"Quick". With the axes split, `Effort::Quick` is the flag, and EDDA's
+lesson is worth taking — it has no not-proven-minimal flag at all and its
+own docs call the coarse cost model a proxy, so a commander cannot tell a
+proven route from a good guess. We can.
 
 #### 2c. What the EDDN feed constrains, and one hard blocker
 

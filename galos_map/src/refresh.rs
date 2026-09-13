@@ -394,39 +394,22 @@ fn apply(
     // nothing has to be filed under where it came from to be taken back out
     // again. What the map reads is the arrivals, not the table and not the
     // log.
-    let mut named = false;
     if let Some((tail, stamp)) = found.delta {
-        named = !tail.is_empty();
         names.absorb(tail);
         held.delta = stamp;
     }
 
-    // The router reads places and what they can supercharge, and has just been
-    // handed either some places it did not have, some it no longer has, or a
-    // new table of the second.
-    if rebased {
-        // The places the graph was bucketed from have been written again, so
-        // it stands for a set of systems that is no longer the table's.
-        // Dropped rather than rebucketed on the frame the refresh lands —
-        // that is gigabytes and minutes over a galaxy — and built afresh off
-        // the table that now stands by the next route asked for. See
-        // [`Jumps::built`].
-        jumps.0 = None;
-    } else if named || found_boosts {
-        // Rebuilt from the whole log rather than added to, which is the same
-        // work and no bookkeeping: the base is a handle clone, the log is
-        // what the feed has said since the base was written, and the
-        // supercharge table is another handle. A route already searching
-        // holds the graph it started on and finishes against that.
-        //
-        // Only where a route has already been asked for. Unbuilt, the graph
-        // takes the log in when it is built, [`Names::points`] reading the
-        // two halves together.
-        if let Some(held) = &jumps.0 {
-            jumps.0 = Some(Arc::new(
-                held.extended(names.table.delta().entries(), &boosts),
-            ));
-        }
+    // The router reads the cell payloads where they lie and the supercharge
+    // table beside them, so an arrival is in the galaxy it searches as soon
+    // as the feed has published the cell — there is no second copy to keep
+    // in step, and nothing here to rebucket. What does go stale is the
+    // supercharge table, which the graph holds a copy of.
+    //
+    // Dropped rather than rebuilt, and it costs nothing to drop: the graph
+    // is a handle on the index, not a structure over it, so the next route
+    // asked for opens another. See [`Jumps::built`].
+    if rebased || found_boosts {
+        jumps.graph = None;
     }
 
     // A replaced payload is a new set of points in the same cell, so whatever
@@ -453,7 +436,6 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::route::graph::{Drive, JumpGraph, Routing};
     use galos_index::{
         BuildParams, FsSource, NameEntry, Snapshot, Source as IndexSource,
     };
@@ -557,7 +539,7 @@ mod tests {
         app.init_resource::<Populated>();
         app.init_resource::<Factions>();
         // The tables as `main` loads them: the names table mapped, and the
-        // router's graph bucketed off it.
+        // router's galaxy opened over the same directory the walk reads.
         let table = block_on(source.names()).expect("the names should open");
         let reaches = block_on(source.reaches()).unwrap_or_default();
         let boosts = block_on(source.boosts())
@@ -565,9 +547,9 @@ mod tests {
             .flatten()
             .map_or_else(Boosts::absent, Boosts::of);
         let names = Names::packed(table, crate::names::Reaches::of(reaches));
-        app.insert_resource(Jumps(Some(Arc::new(JumpGraph::over(
-            &names, &boosts,
-        )))));
+        app.insert_resource(Jumps::over(Arc::new(
+            galos_index::Sky::open(dir).expect("the galaxy should map"),
+        )));
         app.insert_resource(boosts);
         app.insert_resource(names);
         app.insert_resource(ResidentIndex(
@@ -777,64 +759,18 @@ mod tests {
         assert!(held.delta.is_some(), "and its log");
     }
 
-    /// A system named mid-session becomes routable through
-    ///
-    /// The router's graph is bucketed off the names table at startup, so a
-    /// system the feed named while the map ran was not in it: a route to it
-    /// found nothing and a route past it took the long way. The refresh hands
-    /// the log's rows to [`JumpGraph::extended`], which is what closes that.
-    #[test]
-    fn an_arrival_becomes_routable() {
-        let dir = Scratch::new();
-        let built = publish(&dir.0, &[input(1, 0.0), input(9, 900.0)]);
-        let placed = |address: i64, at: f32| NameEntry {
-            address,
-            name: format!("S{address}").into(),
-            position: [at, 0.0, 0.0],
-        };
-        // Two ends 900 ly apart, and nothing between them on record.
-        publish_base(&dir.0, &[placed(1, 0.0), placed(9, 900.0)]);
-
-        let mut app = watching(&dir.0, &built);
-        let route = |app: &App| {
-            app.world()
-                .resource::<Jumps>()
-                .0
-                .as_ref()
-                .expect("a graph, a route having been asked for")
-                .route(1, 9, 500., Routing::Direct, Drive::Unaided, None)
-                .map(|path| path.iter().map(|(a, _)| *a).collect::<Vec<_>>())
-        };
-        assert!(
-            route(&app).is_none(),
-            "900 ly at a 500 ly range, with nothing in between"
-        );
-
-        // The feed names one in the middle.
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        name(&dir.0, &[placed(5, 450.0)]);
-
-        assert!(
-            pump(&mut app, |app| route(app).is_some()),
-            "the arrival never reached the router",
-        );
-        assert_eq!(
-            route(&app),
-            Some(vec![1, 5, 9]),
-            "the route should run through the system named since"
-        );
-    }
-
-    /// A republish that says nothing new rebuilds nothing
+    /// A republish that says nothing new drops nothing
     ///
     /// The feed republishes every few seconds and names the same systems it
     /// named last pass. A row only reaches the log where it changed something
     /// ([`galos_index::Names::name`]), so a publish of what the table already
     /// says appends nothing, moves no stamp, and is read by nobody — and the
-    /// router's graph is left alone rather than re-bucketed to take in the
-    /// nothing that moved.
+    /// graph a route in flight is searching over is left where it is rather
+    /// than dropped for the nothing that moved. Dropping it is cheap now,
+    /// but it is not free of consequence: the next route pays for another
+    /// and a route already running finishes against the one it holds.
     #[test]
-    fn a_republish_of_the_same_names_rebuilds_nothing() {
+    fn a_republish_of_the_same_names_drops_nothing() {
         let dir = Scratch::new();
         let built = publish(&dir.0, &[input(1, 0.0)]);
         publish_base(&dir.0, &[named(1, "First")]);
@@ -852,12 +788,14 @@ mod tests {
             "the arrival was never picked up"
         );
         let read_to = app.world().resource::<Names>().read_to();
+        // As a route asks for it: the graph is opened on the first ask and
+        // held thereafter, so there is one here to be dropped at all.
+        let boosts = app.world().resource::<Boosts>().clone();
         let graph = app
-            .world()
-            .resource::<Jumps>()
-            .0
-            .clone()
-            .expect("a graph the pass can rebucket");
+            .world_mut()
+            .resource_mut::<Jumps>()
+            .built(&boosts)
+            .expect("a graph over the galaxy the map opened");
 
         // The same two systems reported again, exactly as the table has them.
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -876,10 +814,10 @@ mod tests {
         assert_eq!(names.len(), 2, "two systems named, each counted once");
         assert!(
             matches!(
-                &app.world().resource::<Jumps>().0,
+                &app.world().resource::<Jumps>().graph,
                 Some(now) if Arc::ptr_eq(&graph, now)
             ),
-            "the router's graph was re-bucketed to take in nothing"
+            "the router's graph was dropped to take in nothing"
         );
         assert!(names.get(2).is_some(), "and the arrival is still named");
     }
@@ -926,8 +864,9 @@ mod tests {
     ///
     /// A system the feed withdraws is a tombstone in the log, over a row the
     /// log named or over one the base holds. Left answering, it would go on
-    /// filling the search box, routing jumps and counting in the diagnostics
-    /// for the rest of the session, over a sky that had stopped drawing it.
+    /// filling the search box, naming a place to plot from and counting in
+    /// the diagnostics for the rest of the session, over a sky that had
+    /// stopped drawing it.
     #[test]
     fn a_withdrawal_takes_a_name_away() {
         let dir = Scratch::new();
@@ -957,11 +896,6 @@ mod tests {
                 .is_some()),
             "the named system was never picked up",
         );
-        assert_eq!(
-            app.world().resource::<Jumps>().0.as_ref().map_or(0, |it| it.len()),
-            2,
-            "and the router has it as a place to jump from"
-        );
 
         // Withdrawn again: the log says so, and the map has to stop naming it.
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -977,11 +911,6 @@ mod tests {
         let names = app.world().resource::<Names>();
         assert_eq!(names.address("S7"), None, "the search cannot reach it");
         assert_eq!(names.len(), 1, "and it is not counted");
-        assert_eq!(
-            app.world().resource::<Jumps>().0.as_ref().map_or(0, |it| it.len()),
-            1,
-            "and the router has let go of it"
-        );
         assert!(
             names.get(1).is_some(),
             "the row the base holds is named throughout"
@@ -1004,7 +933,7 @@ mod tests {
         assert_eq!(
             names.points().count(),
             0,
-            "and the router still has it as a place to jump from"
+            "and the table still hands out a place for it"
         );
     }
 
@@ -1013,9 +942,9 @@ mod tests {
     /// The rare half of the two. A fold takes the log into a new generation
     /// and removes it, so the offset the map had read to means nothing and
     /// there is no tail to take: the table is mapped afresh. Every name it
-    /// answered before the fold it answers after, and the router's graph —
-    /// bucketed off a base that has been written again — is dropped for the
-    /// next route to build off the table that now stands.
+    /// answered before the fold it answers after, and the graph the router
+    /// holds — whose supercharge table was read beside a base that has been
+    /// written again — is dropped for the next route to open another.
     #[test]
     fn a_recompacted_base_is_re_opened() {
         let dir = Scratch::new();
@@ -1032,6 +961,13 @@ mod tests {
                 .get(2)
                 .is_some()),
             "the arrival was never picked up"
+        );
+
+        // As a route asks for it, so there is a graph to drop at all.
+        let boosts = app.world().resource::<Boosts>().clone();
+        assert!(
+            app.world_mut().resource_mut::<Jumps>().built(&boosts).is_some(),
+            "the galaxy the map opened should route"
         );
 
         // The log folded into a new base, as a log grown long is.
@@ -1055,8 +991,8 @@ mod tests {
         assert_eq!(names.len(), 2, "both systems are still named");
         assert_eq!(names.address("Second"), Some(2), "out of the new base");
         assert!(
-            app.world().resource::<Jumps>().0.is_none(),
-            "the graph bucketed off the old base was kept"
+            app.world().resource::<Jumps>().graph.is_none(),
+            "the graph read beside the old base was kept"
         );
     }
 }

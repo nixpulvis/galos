@@ -442,11 +442,30 @@ fn mark(at: Vec3, across: f32) -> [Vec3; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::route::graph::{Frontier, UNSEEN};
+    use crate::systems::route::graph::Frontier;
+    use galos_index::{CellId, Node};
+    use rustc_hash::FxHashMap;
 
     /// A place `along` light years down the x axis
     fn at(along: f64) -> DVec3 {
         DVec3::new(along, 0., 0.)
+    }
+
+    /// The `n`th of a run of distinct nodes
+    ///
+    /// Handed straight to the sampler, which never looks one up: it hashes
+    /// the node, follows the search's parent map with it and asks the
+    /// caller's closure where it sits. So these need a galaxy behind them
+    /// no more than the search's own bookkeeping does — what they must be
+    /// is distinct, which one cell and an offset apiece makes them.
+    fn node(n: u32) -> Node {
+        Node { cell: CellId { level: 13, x: 4096, y: 4096, z: 4096 }, at: n }
+    }
+
+    /// A chain of `n` nodes, each reached from the one before it: the record
+    /// A* keeps, in the shape [`Sampler::expanded`] reads it.
+    fn chain(n: u32) -> FxHashMap<Node, Node> {
+        (1..n).map(|i| (node(i), node(i - 1))).collect()
     }
 
     /// A mark is measured in the same units as the places it stands at
@@ -493,18 +512,17 @@ mod tests {
         let frontier = Frontier::between(DVec3::ZERO, at(6400.));
         let mut sampler = frontier.sampler();
         // Ten systems in a chain, each reached from the one before it.
-        let came: Vec<u32> =
-            (0..10).map(|i| if i == 0 { UNSEEN } else { i - 1 }).collect();
+        let came = chain(10);
 
         let mut cells = 0;
         for step in 0..(STRIDE * BATCH as u64 * 40) {
             let here = at(step as f64);
             sampler.expanded(
-                (step % 10) as usize,
+                node((step % 10) as u32),
                 here,
                 at(6400.),
                 &came,
-                |i| at(i as f64 * 100.),
+                |it| at(it.at as f64 * 100.),
             );
             if let Some(drawn) = frontier.drawn() {
                 assert!(
@@ -546,13 +564,13 @@ mod tests {
         let frontier = Frontier::between(DVec3::ZERO, goal);
         let mut sampler = frontier.sampler();
         let places = [at(0.), at(100.), at(200.), at(300.)];
-        let place = |i: usize| places[i];
+        let place = |it: Node| places[it.at as usize];
         // The search's own record: 1 was reached from 0, 2 from 1, 3 from 2.
-        let came: Vec<u32> = vec![UNSEEN, 0, 1, 2];
+        let came = chain(4);
 
         // Expanded in that order, the last of them the closest to the goal.
-        for node in [0usize, 1, 2] {
-            sampler.expanded(node, places[node], goal, &came, place);
+        for n in 0..3 {
+            sampler.expanded(node(n), places[n as usize], goal, &came, place);
         }
         sampler.done();
 
@@ -604,14 +622,17 @@ mod tests {
             Arc::clone(&frontier),
         );
         let mut sampler = frontier.sampler();
-        let came: Vec<u32> =
-            (0..10).map(|i| if i == 0 { UNSEEN } else { i - 1 }).collect();
+        let came = chain(10);
 
         for step in 0..(STRIDE * BATCH as u64 * 2) {
             let here = at(step as f64);
-            sampler.expanded((step % 10) as usize, here, goal, &came, |i| {
-                at(i as f64 * 100.)
-            });
+            sampler.expanded(
+                node((step % 10) as u32),
+                here,
+                goal,
+                &came,
+                |it| at(it.at as f64 * 100.),
+            );
         }
         app.update();
         assert_eq!(lines(&mut app), 3, "the three layers of one search");

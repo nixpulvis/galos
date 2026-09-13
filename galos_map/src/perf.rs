@@ -57,8 +57,8 @@
 
 #![cfg(test)]
 
+use crate::Boosts;
 use crate::systems::route::graph::{Drive, JumpGraph, Routing};
-use crate::{Boosts, Names};
 use galos_index::walk::{Mode, View};
 use galos_index::{FixedCodec as _, FsSource, Index, Point, Source as _};
 use std::path::PathBuf;
@@ -136,16 +136,17 @@ fn zooming_out_stays_quick() {
     }
 }
 
-/// Routing: building the jump graph, and crossing the galaxy with it.
+/// Routing: opening the galaxy, and crossing it.
 ///
-/// The two halves are timed apart because they fail differently. The graph
-/// is built once from the whole names table and is what a per-cell names
-/// format would have to replace; the search is what a commander waits on.
+/// The two halves are timed apart because they fail differently. Opening
+/// used to be *building* — a grid over every place in the galaxy, 32 s and
+/// 13.7 GB, paid on the click that asked for a route — and is now reading
+/// the index file and nothing else. The search is what a commander waits
+/// on.
 #[test]
 fn routing_stays_quick() {
     let Some(dir) = measured() else { return };
     let source = FsSource::new(&dir);
-    let table = pollster::block_on(source.names()).expect("the names open");
     let boosts = match pollster::block_on(source.boosts())
         .expect("the boosts should read")
     {
@@ -161,37 +162,49 @@ fn routing_stays_quick() {
     // to be an isolated pair with no chain between them at all, which times
     // an exhausted search rather than a real one.
     //
-    // Walked off the mapping, a position at a time, rather than out of a
-    // `Vec<NameEntry>`: the table is a file now and holding a galaxy's worth
-    // of rows to pick two of them is the thing this whole part stopped
-    // doing.
+    // Opened first and picked through the mapping, because picking them any
+    // other way is what this test is *for*: walking `Names::points` to find
+    // two systems faults every byte of `addr.bin` and `pos.bin` — 4 GB at
+    // 200 M — and the peak resident set then measures the harness rather
+    // than the router. A sphere query touches the two neighbourhoods and
+    // nothing else.
+    let at = Instant::now();
+    let sky = std::sync::Arc::new(
+        galos_index::Sky::open(&dir).expect("the galaxy maps"),
+    );
+    let graph = JumpGraph::over(&sky, &boosts);
+    let opened = at.elapsed();
+    println!("route graph: {} systems in {opened:.2?}", graph.len());
+    assert!(
+        opened < Duration::from_secs(1),
+        "opening the galaxy for routing took {opened:?}",
+    );
+
+    // Widening until something is in reach: the origin is in the bubble and
+    // finds a system at once, and a point out in the dark would otherwise
+    // be an empty answer rather than a slow one.
     let nearest = |to: [f64; 3]| {
-        table
-            .points()
-            .min_by(|(_, a), (_, b)| {
-                let away = |it: &[f64; 3]| {
-                    (it[0] - to[0]).powi(2)
-                        + (it[1] - to[1]).powi(2)
-                        + (it[2] - to[2]).powi(2)
-                };
-                away(a).total_cmp(&away(b))
-            })
-            .expect("the table should name a system")
-            .0
+        let mut radius = 50.0;
+        loop {
+            let mut best: Option<(f64, i64, [f64; 3])> = None;
+            sky.each_near(to, radius, |node, place, away| {
+                if best.is_none_or(|(held, ..)| away < held) {
+                    best = Some((
+                        away,
+                        sky.address(node).expect("a named system"),
+                        place,
+                    ));
+                }
+            });
+            if let Some((_, address, place)) = best {
+                return (address, place);
+            }
+            radius *= 4.0;
+            assert!(radius < 1.0e6, "{to:?} has nothing near it");
+        }
     };
     let start = nearest([0.0, 0.0, 0.0]);
     let end = nearest([700.0, 0.0, 700.0]);
-
-    let held = Names::packed(table, crate::names::Reaches::default());
-
-    let at = Instant::now();
-    let graph = JumpGraph::over(&held, &boosts);
-    let built = at.elapsed();
-    println!("route graph: {} systems in {built:.2?}", graph.len());
-    assert!(
-        built < Duration::from_secs(30),
-        "building the jump graph took {built:?}",
-    );
 
     for how in [Routing::Quick, Routing::Direct] {
         let at = Instant::now();

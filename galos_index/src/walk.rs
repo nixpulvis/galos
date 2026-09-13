@@ -263,6 +263,47 @@ impl Index {
             .collect()
     }
 
+    /// The same set, found by descending the tree rather than scanning it.
+    ///
+    /// [`region`](Self::region) is linear over every cell there is, which is
+    /// right for a spyglass — asked once when the region moves — and hopeless
+    /// for a router, which asks per expansion: 204,466 cells at 200 M systems,
+    /// half a million times a route.
+    ///
+    /// This descends from the root instead, dropping a subtree whose box is
+    /// already further than `radius` from `center`, so the work is the cells
+    /// the sphere actually touches. Every level is visited and not only the
+    /// leaves: a cell owns a *slice* of its subtree's magnitude order (see
+    /// [`Cell::rank_lo`]), so the brightest systems in reach sit in the
+    /// ancestors and a walk that stopped at leaves would route past them.
+    ///
+    /// A cell straddling the sphere is handed over, as in `region`: the caller
+    /// measures its systems' true distances.
+    pub fn each_near(
+        &self,
+        center: [f64; 3],
+        radius: f64,
+        mut found: impl FnMut(CellId),
+    ) {
+        let Some(root) = self.root() else { return };
+        // Depth-first over an explicit stack: the tree is 21 levels at most
+        // but this runs per expansion, and a recursive call per cell costs
+        // more than pushing an id.
+        let mut stack = vec![root.id];
+        while let Some(id) = stack.pop() {
+            let Some(cell) = self.get(id) else { continue };
+            if id.bounds().distance_to(center) > radius {
+                continue;
+            }
+            found(id);
+            for octant in 0..8 {
+                if cell.has_child(octant) {
+                    stack.push(id.child(octant));
+                }
+            }
+        }
+    }
+
     /// The projected size, in pixels, of a cell's *contents* — their own spread
     /// from the count-weighted second moments, not the box that holds them.
     ///
@@ -862,5 +903,32 @@ mod tests {
         // the point, but a centre far outside the galaxy takes nothing.
         let far = index.region([1.0e9, 1.0e9, 1.0e9], 1.0);
         assert!(far.is_empty());
+    }
+
+    /// Descending finds exactly the cells scanning finds.
+    ///
+    /// `each_near` is what a router asks per expansion and `region` is the
+    /// answer it must not differ from: a cell the descent prunes is a cell
+    /// whose systems a route would never see, and a system missed is a jump
+    /// the plan does not know it can make.
+    #[test]
+    fn descending_finds_what_scanning_finds() {
+        let (index, parent, _) = small_tree(10, 10, 4.0);
+        let center = parent.bounds().center();
+
+        for radius in [0.0, 1.0, parent.edge_ly(), 1.0e5] {
+            let mut walked = Vec::new();
+            index.each_near(center, radius, |id| walked.push(id));
+            walked.sort_unstable_by_key(|id| (id.level, id.morton()));
+            let mut scanned = index.region(center, radius);
+            scanned.sort_unstable_by_key(|id| (id.level, id.morton()));
+            assert_eq!(walked, scanned, "at radius {radius}");
+        }
+
+        // And a centre outside the galaxy descends into nothing at all: the
+        // root's own box fails the test, so no child is ever looked up.
+        let mut none = 0;
+        index.each_near([1.0e9, 1.0e9, 1.0e9], 1.0, |_| none += 1);
+        assert_eq!(none, 0);
     }
 }

@@ -45,6 +45,7 @@ pub mod report;
 pub mod rows;
 pub mod serialization;
 pub mod sidecars;
+pub mod sky;
 pub mod source;
 pub mod spill;
 pub mod store;
@@ -77,7 +78,9 @@ pub use orbit::{Orbit, Orbits, Spacing};
 pub use report::SystemReport;
 pub use serialization::{Codec, Decode, Encode, FixedCodec};
 pub use sidecars::{Rows, Sidecars};
+pub use sky::{Node, Sky};
 pub use source::{FsSource, Migrated, Part, Resharded, Source, Stamp, migrate};
+pub use store::Payload;
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
 pub use walk::{
     Index, MARK_SEPARATION_PX, Mode, Needed, STAR_SEPARATION_PX, SplatRef,

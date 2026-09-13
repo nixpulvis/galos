@@ -702,7 +702,11 @@ pub(crate) mod tests {
     ///
     /// The map's own [`plugin`], so a run condition put back on the route
     /// fetch fails in a test rather than in the app.
-    fn plotting() -> App {
+    ///
+    /// The directory comes back with the app: the router reads the galaxy's
+    /// cell payloads where they lie, so the built index has to outlive every
+    /// route the app plots over it.
+    fn plotting() -> (App, crate::testing::Scratch) {
         use galos_index::NameEntry;
         let entries = vec![
             NameEntry {
@@ -732,13 +736,12 @@ pub(crate) mod tests {
         app.init_resource::<crate::systems::bounded::LodFetch>();
         app.init_resource::<crate::systems::route::graph::Routing>();
         app.init_resource::<crate::systems::route::frontier::Frontiers>();
+        // The same systems twice over: the names table the search box reads,
+        // and the built galaxy the router walks.
+        let dir = crate::testing::Scratch::new("fetch");
+        let sky = crate::testing::sky_of(dir.path(), &entries);
         let names = Names::reaching(entries, Vec::new());
-        app.insert_resource(crate::systems::route::graph::Jumps(Some(
-            std::sync::Arc::new(crate::systems::route::graph::JumpGraph::over(
-                &names,
-                &crate::Boosts::default(),
-            )),
-        )));
+        app.insert_resource(crate::systems::route::graph::Jumps::over(sky));
         app.insert_resource(names);
         app.insert_resource(Populated::default());
         // What the region fetch needs to exist, so the source can be turned
@@ -756,7 +759,7 @@ pub(crate) mod tests {
             follow_camera: true,
         });
         app.add_plugins(plugin);
-        app
+        (app, dir)
     }
 
     /// Ask for a route through the systems [`plotting`] holds
@@ -808,7 +811,7 @@ pub(crate) mod tests {
     /// would take as long as the sum of them.
     #[test]
     fn a_trip_is_asked_for_a_leg_at_a_time() {
-        let mut app = plotting();
+        let (mut app, _dir) = plotting();
 
         trip(&mut app, &["Start", "End", "Onward"]);
 
@@ -827,7 +830,7 @@ pub(crate) mod tests {
     /// Walking it again would drop the answer already in hand on the floor.
     #[test]
     fn a_leg_already_under_way_is_not_asked_twice() {
-        let mut app = plotting();
+        let (mut app, _dir) = plotting();
 
         trip(&mut app, &["Start", "End", "Onward"]);
         let first = legs(&app);
@@ -844,7 +847,7 @@ pub(crate) mod tests {
     /// new trip shares with the old is kept rather than walked again.
     #[test]
     fn a_new_trip_drops_the_legs_of_the_one_before() {
-        let mut app = plotting();
+        let (mut app, _dir) = plotting();
 
         trip(&mut app, &["Start", "End", "Onward"]);
         trip(&mut app, &["Start", "End"]);
@@ -878,7 +881,7 @@ pub(crate) mod tests {
     #[test]
     fn a_route_is_walked_under_either_source() {
         for walk in [true, false] {
-            let mut app = plotting();
+            let (mut app, _dir) = plotting();
             app.insert_resource(crate::systems::bounded::LodFetch(walk));
             plot(&mut app);
 
@@ -894,7 +897,7 @@ pub(crate) mod tests {
     /// And the walk is the source it is asked under by default
     #[test]
     fn the_walk_is_the_default_source() {
-        let app = plotting();
+        let (app, _dir) = plotting();
         assert!(app.world().resource::<crate::systems::bounded::LodFetch>().0);
     }
 
@@ -907,7 +910,7 @@ pub(crate) mod tests {
     /// had not earned. Two questions, one clock, and only one of them a region.
     #[test]
     fn plotting_a_route_leaves_the_region_clock_alone() {
-        let mut app = plotting();
+        let (mut app, _dir) = plotting();
         let before = app.world().resource::<LastFetchedAt>().0;
         plot(&mut app);
 

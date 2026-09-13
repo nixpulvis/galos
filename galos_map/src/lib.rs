@@ -38,6 +38,8 @@ pub mod schedule;
 pub mod search;
 pub mod space;
 pub mod systems;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod ui;
 
 /// The seam the map reads cells and metadata through.

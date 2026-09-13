@@ -36,6 +36,12 @@ chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_index = { path = "../galos_index", default-features = false }
 galos_photometry = { path = "../galos_photometry" }
+# The search state is a map keyed by a system, and a route across the galaxy
+# looks at tens of millions of neighbours: `SipHash` is the whole of where
+# the time goes. Not a general swap — the map's other maps are keyed by
+# addresses from the feed and want a hash nobody can choose collisions in —
+# so it is used where the keys are the index's own numbering.
+rustc-hash = "2"
 
 [dev-dependencies]
 log = "0.4"

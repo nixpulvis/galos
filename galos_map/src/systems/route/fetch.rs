@@ -98,40 +98,39 @@ pub fn fetch_route(
         // Resolved against the resident names table before the walk, so a leg
         // to a name that is not on record is nothing rather than a walk with
         // nowhere to end. The form has already been told which name it was.
-        let ends = names.address(&leg[0]).zip(names.address(&leg[1]));
+        //
+        // The place comes with the address: the router reads the galaxy out
+        // of the cell payloads, which are keyed by *where*, so the two ends
+        // are the one thing it needs told — see [`JumpGraph::route`].
+        let placed = |name: &str| {
+            let address = names.address(name)?;
+            let at = names.position(address)?;
+            Some((address, [at[0] as f64, at[1] as f64, at[2] as f64]))
+        };
+        let ends = placed(&leg[0]).zip(placed(&leg[1]));
         // What the search fills in as it runs, and what the map draws it from.
         // Both ends, since the drawing is measured out from the start and the
         // closed set is scaled by how far there is to go; a leg whose ends do
         // not resolve is not searched and is not watched.
-        let placed = |address: i64| {
-            names.get(address).map(|entry| {
-                DVec3::new(
-                    entry.position[0] as f64,
-                    entry.position[1] as f64,
-                    entry.position[2] as f64,
-                )
-            })
-        };
-        let watching = ends
-            .and_then(|(start, end)| placed(start).zip(placed(end)))
-            .map(|(from, goal)| Frontier::between(from, goal));
+        let watching = ends.map(|((_, from), (_, goal))| {
+            Frontier::between(DVec3::from(from), DVec3::from(goal))
+        });
         if let Some(watching) = &watching {
             searching.watch(index.clone(), Arc::clone(watching));
         }
-        // Cheap Arc handles onto the resident graph and tables, so the hops
-        // are walked, named and colored on the task's own thread rather than
-        // on the main one.
-        // Built here if this is the session's first route: the bucketing is
-        // gigabytes and nothing but a route wants it. See [`Jumps`].
-        let graph = jumps.built(names, boosts);
+        // Cheap Arc handles onto the graph and tables, so the hops are
+        // walked, named and colored on the task's own thread rather than on
+        // the main one. The graph is a handle on the mapped index, so this
+        // is the first route's only cost.
+        let graph = jumps.built(boosts);
         let names = Names::clone(names);
         let populated = Populated::clone(populated);
 
         // No moment. A route is a line between two named systems rather than
         // a region, so there is no sky it leaves the map able to answer for.
         let task = pool.spawn(async move {
-            let systems = match (ends, range) {
-                (Some((start, end)), Some(range)) => graph
+            let systems = match (graph, ends, range) {
+                (Some(graph), Some((start, end)), Some(range)) => graph
                     .route(start, end, range, how, drive, watching.as_ref())
                     .map(|hops| {
                         hops.into_iter()

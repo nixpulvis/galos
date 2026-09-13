@@ -12,7 +12,9 @@
 
 use crate::cache::Point;
 use crate::geometry::CellId;
-use crate::serialization::{Decode, Encode, INDEX_VERSION, index_version};
+use crate::serialization::{
+    Decode, Encode, FixedCodec, INDEX_VERSION, index_version,
+};
 use crate::source::Resharded;
 use crate::tree::{Dirtied, Snapshot};
 use crate::walk::Index;
@@ -161,12 +163,24 @@ impl Snapshot {
 
 /// Write one cell's payload, opening its shard directory the first time
 /// anything lands there.
+///
+/// Beside the file and renamed over it, as [`crate::source::write_meta`]
+/// and the names table's generations are. Not for the torn-write reason
+/// those have — a payload carries no header and a short read drops its
+/// last record, which a reader already tolerates — but because a payload
+/// is **mapped**. `fs::write` truncates and rewrites in place, so a feed
+/// republishing a cell under a reader's mapping would give it torn bytes,
+/// and the truncation itself is a `SIGBUS` on the pages a reader still
+/// holds. A rename leaves the old inode alone for as long as anything has
+/// it open, which is the same guarantee a names generation gives.
 fn write_payload(dir: &Path, id: CellId, bytes: Vec<u8>) -> io::Result<()> {
     let path = payload_path(dir, id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, bytes)
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, &path)
 }
 
 impl Index {
@@ -223,6 +237,90 @@ impl Index {
             Err(e) => return Err(e),
         };
         Ok(Vec::<Point>::from_bytes(&bytes).unwrap_or_default())
+    }
+}
+
+/// One cell's payload, mapped rather than decoded.
+///
+/// [`Index::read_payload`] reads the file and decodes a [`Point`] per
+/// record into a `Vec`, which is right for drawing — the map wants owned
+/// points to build entities from — and wrong for anything that asks
+/// repeatedly. The router asks per expansion, half a million times a
+/// route, and the LOD walk asks for 152 M points in a zoom and pays 24 s
+/// and 6.1 GB of `Vec` for it.
+///
+/// So: the bytes where they lie, and a field read out of them when asked.
+/// A record is [`Point::LEN`] bytes and nothing here is aligned to
+/// anything, so every read is `from_le_bytes` over a slice — which is what
+/// makes the odd width free rather than costly.
+pub struct Payload {
+    map: memmap2::Mmap,
+    count: usize,
+}
+
+impl Payload {
+    /// Where a system's position sits within its record.
+    const POS: usize = 8;
+
+    /// Map a cell's payload, or [`None`] where the cell owns nothing and so
+    /// has no file.
+    ///
+    /// The sharded path first and the flat one after it, as
+    /// [`Index::read_payload`] does, so a directory part way through a
+    /// reshard answers with what it has.
+    pub fn open(dir: &Path, id: CellId) -> io::Result<Option<Payload>> {
+        let file = match fs::File::open(payload_path(dir, id)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                match fs::File::open(legacy_payload_path(dir, id)) {
+                    Ok(file) => file,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        let len = file.metadata()?.len() as usize;
+        if len < Point::LEN {
+            return Ok(None);
+        }
+        // SAFETY: a payload is written beside its path and renamed over it
+        // (`write_payload`), so the bytes under a mapping are never
+        // rewritten and the file is never truncated while mapped — a
+        // republished cell is a new inode and this one lives as long as the
+        // mapping does.
+        let map = unsafe { memmap2::Mmap::map(&file)? };
+        // A trailing part-record is dropped, which is what the decoding
+        // reader does with one too.
+        Ok(Some(Payload { count: len / Point::LEN, map }))
+    }
+
+    /// How many systems the cell owns.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether it owns none.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// The address of the `at`th system.
+    pub fn id64_at(&self, at: usize) -> u64 {
+        let from = at * Point::LEN;
+        u64::from_le_bytes(self.map[from..from + 8].try_into().unwrap())
+    }
+
+    /// Where the `at`th system sits, in light years.
+    pub fn position_at(&self, at: usize) -> [f64; 3] {
+        let from = at * Point::LEN + Payload::POS;
+        let axis = |n: usize| {
+            let from = from + n * 8;
+            f64::from_le_bytes(self.map[from..from + 8].try_into().unwrap())
+        };
+        [axis(0), axis(1), axis(2)]
     }
 }
 
@@ -317,6 +415,76 @@ mod tests {
         built.write(&scratch.0).unwrap();
         let deep = CellId { level: 10, x: 1, y: 2, z: 3 };
         assert!(Index::read_payload(&scratch.0, deep).unwrap().is_empty());
+    }
+
+    /// A mapped payload answers what the decoding reader answers, record for
+    /// record — and it is the same bytes, so nothing may disagree.
+    #[test]
+    fn a_mapped_payload_is_the_payload() {
+        let scratch = Scratch::new();
+        let built = Snapshot::build(&systems(9000), &BuildParams::default());
+        built.write(&scratch.0).unwrap();
+
+        let mut seen = 0usize;
+        for cell in built.index.cells() {
+            let decoded = Index::read_payload(&scratch.0, cell.id).unwrap();
+            let mapped = Payload::open(&scratch.0, cell.id).unwrap();
+            match mapped {
+                None => assert!(decoded.is_empty(), "{:?} maps as none", cell.id),
+                Some(mapped) => {
+                    assert_eq!(mapped.len(), decoded.len(), "{:?}", cell.id);
+                    for (at, point) in decoded.iter().enumerate() {
+                        assert_eq!(mapped.id64_at(at), point.id64);
+                        assert_eq!(mapped.position_at(at), point.pos);
+                        seen += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(seen, 9000, "every system was read through the mapping");
+    }
+
+    /// A cell that owns nothing maps as none rather than erroring.
+    #[test]
+    fn an_absent_payload_maps_as_none() {
+        let scratch = Scratch::new();
+        let built = Snapshot::build(&systems(10), &BuildParams::default());
+        built.write(&scratch.0).unwrap();
+        let deep = CellId { level: 10, x: 1, y: 2, z: 3 };
+        assert!(Payload::open(&scratch.0, deep).unwrap().is_none());
+    }
+
+    /// A republished cell is a new file, so a mapping taken before it keeps
+    /// reading what it was given.
+    ///
+    /// Which is the whole reason `write_payload` renames: the feed rewrites
+    /// a cell as systems arrive, and a truncating write under a reader's
+    /// mapping is torn bytes at best and `SIGBUS` at worst.
+    #[test]
+    fn a_republished_cell_leaves_a_mapping_alone() {
+        let scratch = Scratch::new();
+        let first = Snapshot::build(&systems(400), &BuildParams::default());
+        first.write(&scratch.0).unwrap();
+        let id = first
+            .index
+            .cells()
+            .find(|cell| !first.payload(cell.id).is_empty())
+            .expect("a cell that owns systems")
+            .id;
+
+        let held = Payload::open(&scratch.0, id).unwrap().expect("a payload");
+        let before: Vec<u64> =
+            (0..held.len()).map(|at| held.id64_at(at)).collect();
+
+        // The same directory built again over twice the galaxy: this cell's
+        // file is written afresh.
+        Snapshot::build(&systems(4000), &BuildParams::default())
+            .write(&scratch.0)
+            .unwrap();
+
+        let after: Vec<u64> =
+            (0..held.len()).map(|at| held.id64_at(at)).collect();
+        assert_eq!(before, after, "the mapping moved under its reader");
     }
 
     /// A directory written by an older codec is refused by name, not read.
