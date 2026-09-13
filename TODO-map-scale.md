@@ -562,6 +562,105 @@ and the search's own `best` + `came` 1.6 GB. So **anonymous heap went from
 Both of those are the same conclusion `ROUTING-INDEX.md` §5 reached: the
 search space must be smaller, not the index faster.
 
+#### 2b. How EDDA does it, and the order to port it in
+
+Read against the implementation. EDDA plots Sol → Colonia over
+**199,636,869 systems in 1.14 s, 141 jumps, 1,597 expansions**
+(`docs/benches/2026-09-09-galos-index-spike.csv`, prod API). The same file
+is their measurement of **our** router at `a8fc2fc` on the same data:
+**137 jumps, 10,092,328 expansions, 130 s, graph built in 57.1 s, 7.98 GB
+peak**. Six thousand times the expansions for four fewer jumps. Their
+verdict on our router as a server-side plotter was "BURIED"; it is worth
+reading their numbers rather than re-deriving them.
+
+The two complaints are separate and have separate answers.
+
+**The click that hangs before anything starts.** EDDA builds *nothing*.
+`cells.bin` is a sorted array of `(morton key, start, count)` beside a
+spatially-ordered record array, both mapped, and that *is* the spatial
+index: a radius query is a lower-bound search plus a walk that skips
+out-of-box runs with Morton BIGMIN, touching only occupied cells
+(`format.rs:662-736`, entry point `for_each_within_toward` at `:878`).
+Zero build, zero resident, zero allocation per route. Their measured
+crossover is worth keeping: probe cells individually for tiny boxes (≤216
+cells), walk for everything else (`format.rs:671-697`).
+
+**The search that takes minutes.** Three mechanisms, in the order they
+matter:
+
+1. **A fanout cap per expansion** — the actual fix for ρ² in density. A
+   boosted sphere in the core holds thousands of stars; they relax the
+   best 512 by progress-to-goal (`router.rs:383`, `:459-474`) with
+   scoopables ranked a full jump ahead so a fuel stop is never thinned
+   away, plus a goal-directed cell prune that discards the half of the
+   sphere pointing away (`router.rs:528`). Their audit says the result is
+   **density-proportional, not density-quadratic**: expansions track
+   corridor density at 0.66–1.03×.
+2. **Search state as a hash map keyed by record index**, never dense
+   arrays: `FxHashMap<u64, …>` with `key = (idx << 8) | fuel_or_dry`
+   (`router.rs:443-454`). Two traps they hit and documented: keying on a
+   counter that constrains nothing minted a state per system per counter
+   value (**7.25 M expansions / 161 s** to refuse one impossible plot,
+   `router.rs:436-441`), and quantised fuel multiplies states per system
+   unless a Pareto frontier of (jumps, fuel) is kept per system
+   (`:450-466`). This is what our `best` + `came` want to be.
+3. **Two levels above ~1,500 ly**: coarse weighted A* over a boost
+   sub-index — 1.8 % of systems, 3,487,192 records, on its own 250 ly grid
+   because the queries are ~500 ly — then each coarse hop refined by the
+   exact planner, legs in parallel, then fuel settled in rounds
+   (`long_range.rs:24`, `:59-61`, `:2522`, `:3292-3455`). Weighted at both
+   levels, 1.5 coarse and 1.3 per leg, and their own measurement says the
+   lower weight's optimality was noise: **1.3 took 3,120 expansions / 6 s
+   for 72 jumps; 1.5 took 73 expansions / 71 ms for 66**.
+
+Everything above a client can derive locally. The one thing that needs a
+*published* artifact is void crossing: `graph250.bin`'s cell graph and its
+per-plot Dijkstra goal field took Colonia → Spase from **284 jumps / 24 s
+to 91 jumps / ~1 s**. Note that nothing in their production builds it, and
+that they gate their ALT landmark oracle behind a per-plot uniformity
+check because consulting it unconditionally cost **+25 % wall for
+identical expansions** — an unguarded landmark oracle is a net loss on a
+healthy corridor.
+
+**Worth not porting:** the `agg250.bin` prefix-aggregate oracle (fast and
+correct — 1.5–2.4 µs against 19–140 µs walked — but it has no production
+consumer in their router, because the density audit found nothing for it
+to fix), and the nineteen-variant portfolio with its grace clock and
+prize-aware waves, which is the residue of an empirical campaign rather
+than the mechanism.
+
+**Where we are better, and it is in their record as a kept weakness:** an
+unreachable goal costs their planner **161 s** weighted and over 240 s
+exact on a 145 k fixture, where ours answers in about a second.
+
+**The one real fork for us.** Their record array is *spatially* ordered,
+so a cell's members are a contiguous row range and a cell query needs no
+lookup at all. Ours is *address* ordered — which is what makes
+`addr.bin` the address index — so a cell's members are not contiguous in
+it. Three ways to close that, and it wants deciding before any of the
+above is built:
+
+- **Route off the payload ranks.** `index.bin` already carries `rank_lo`
+  and `rank_hi` per cell and the payloads are already cell-ordered, so
+  cell → rank range exists today and a node is a rank. Costs reading 41 B
+  records for a 24 B position, and the payloads are *decoded* into
+  `Vec<Point>` rather than mapped (`store.rs:208-223`) — so this wants
+  mapped payloads first.
+- **Add a Morton permutation to the names table**, `bymorton.bin`, N × u32
+  = 800 MB mapped and nothing resident, exactly as `byname.bin` is a name
+  permutation. Then a cell's rows are a contiguous span of it and
+  positions still come off `pos.bin` at 12 B.
+- **Reorder the names base by Morton** and make `addr.bin` a permutation
+  instead. Cheapest at query time, but it moves the cost onto every
+  address lookup, which is the hottest path in the map.
+
+The middle one looks right: it is additive, it is the same shape as a
+section that already exists, and it leaves both hot paths contiguous. It
+also means item 1b's `pos.bin` is not a duplicate to delete after all —
+it becomes the router's position array, 12 B a system against the
+payloads' 41.
+
+
 
 - **Positions from the payloads, cell-sorted.** The router's second copy of
   every position is unnecessary: the payloads hold `[f64; 3]` per system and
