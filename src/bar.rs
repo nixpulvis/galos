@@ -239,13 +239,23 @@ impl Import {
         }
     }
 
-    /// Seed the tally with what a stopped run had already read.
+    /// Start a resumed read where the stopped one left off.
     ///
-    /// Said once, before the first record: a resumed read's bar is put
-    /// straight to the byte that run reached, and this is the count that
-    /// goes with it.
-    pub fn taken_up(&mut self, systems: u64) {
+    /// Said once, before the first record: the bar goes straight to the
+    /// byte that run reached and the tally to the systems it took.
+    ///
+    /// The estimate is thrown away with it, which is the whole reason this
+    /// is one call. indicatif's is an exponentially weighted average of
+    /// what it has been told, and what it has just been told is that a
+    /// gigabyte went by in a millisecond: a read carrying on at 46 % of
+    /// the file said twelve seconds left of ten gigabytes. Weighted, that
+    /// lie takes minutes to decay. Reset, the estimate is this run's own
+    /// from its first line, which is the only rate that says anything
+    /// about how long the rest will take.
+    pub fn taken_up(&mut self, systems: u64, bytes: u64) {
         self.taken_up = systems;
+        self.bar.set_position(bytes);
+        self.bar.reset_eta();
         self.draw();
     }
 

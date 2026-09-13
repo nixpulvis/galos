@@ -253,9 +253,8 @@ impl Reading {
         let size = std::fs::metadata(path).map(|it| it.len()).ok();
         let extent = bar::Extent::Bytes(size.unwrap_or(0));
         let mut bar = bar::imported(&tag, extent);
-        bar.through(at);
         if let Some(place) = from {
-            bar.taken_up(place.systems);
+            bar.taken_up(place.systems, at);
         }
         Ok(Reading {
             path: path.to_owned(),
