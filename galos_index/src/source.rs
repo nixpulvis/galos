@@ -16,8 +16,9 @@
 use crate::cache::Point;
 use crate::geometry::CellId;
 use crate::meta::{
-    Faction, NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach,
+    Faction, PopulatedSystem, SystemBodies, SystemBoost, SystemReach,
 };
+use crate::names;
 use crate::walk::Index;
 use async_trait::async_trait;
 use serde::Serialize;
@@ -27,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 /// The populated-systems table, resident once and read for every color.
 pub const POPULATED_FILE: &str = "populated.bin";
-/// The subdirectory the names table's chunk files live in.
+/// The subdirectory the names table's sections and log live in.
 pub const NAMES_DIR: &str = "names";
 /// How far each scanned system reaches, resident once and read for every
 /// system the map draws.
@@ -44,22 +45,23 @@ pub fn populated_path(dir: &Path) -> PathBuf {
     dir.join(POPULATED_FILE)
 }
 
-/// The names table's chunk directory within a build directory.
+/// The names table's directory within a build directory.
 pub fn names_dir(dir: &Path) -> PathBuf {
     dir.join(NAMES_DIR)
 }
 
-/// One chunk of the names table, numbered from zero. The numbering is the
-/// whole of the layout: a reader takes them in order until one is missing,
-/// so the table needs no manifest.
-pub fn names_chunk_path(dir: &Path, chunk: usize) -> PathBuf {
-    names_dir(dir).join(format!("{chunk:05}.bin"))
+/// The names table's head, which names the live generation.
+///
+/// The one file a reader opens first and the one a writer renames last:
+/// it is what makes a generation of sections live, so a client that has
+/// read it has a whole table or none.
+pub fn names_head_path(dir: &Path) -> PathBuf {
+    names_dir(dir).join(crate::names::HEAD_FILE)
 }
 
-/// The whole names table, every chunk of `dir` in order. The client's read;
-/// the builder holds the same chunks open as a [`NameTable`](crate::NameTable).
-pub fn read_names(dir: &Path) -> io::Result<Vec<NameEntry>> {
-    Ok(crate::names::read_chunks(dir)?.concat())
+/// The names table's delta log, which the feed appends to.
+pub fn names_delta_path(dir: &Path) -> PathBuf {
+    names_dir(dir).join("delta.bin")
 }
 
 /// The factions table's path within a build directory.
@@ -167,10 +169,10 @@ pub struct Resharded {
     pub finished: bool,
 }
 
-/// What a directory's layout migration came to, half by half.
+/// What a directory's layout migration came to, part by part.
 ///
 /// The counts are what a caller logs; `finished` is whether the next open
-/// has the rest of that half to do.
+/// has the rest of that part to do.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Migrated {
     /// The body files, walked into the packed shard files.
@@ -178,11 +180,15 @@ pub struct Migrated {
     /// The cell payloads, or [`None`] where the bodies were abandoned part
     /// way and the payloads were never reached.
     pub cells: Option<Resharded>,
+    /// Systems in the names table folded out of MessagePack chunks into a
+    /// mapped base, or [`None`] where the directory had no chunks — which
+    /// is every directory built since.
+    pub names: Option<usize>,
 }
 
 /// Bring an existing directory's *layout* up to date, before anything reads
-/// or writes it: [`crate::pack::pack`] and then
-/// [`crate::store::reshard_cells`].
+/// or writes it: [`crate::pack::pack`], [`crate::store::reshard_cells`],
+/// and then the names chunks.
 ///
 /// Nothing is versioned: a layout this cannot recognise is built again.
 ///
@@ -196,13 +202,20 @@ pub struct Migrated {
 /// A stop during the bodies leaves the payloads alone rather than opening
 /// a second `readdir` on a directory nothing is going to move anything in:
 /// `cells` is [`None`] and the next open runs both halves.
+///
+/// The names fold is last and is *not* interruptible, because it cannot
+/// serve half: a directory has either the chunks or a base, and until the
+/// fold finishes the chunks are still what stands. A galaxy's worth of them
+/// is one external sort — minutes, against the afternoon that derived them
+/// — and it happens once, ever, per directory.
 pub fn migrate(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Migrated> {
     let bodies = crate::pack::pack(dir, stop)?;
     if !bodies.finished {
-        return Ok(Migrated { bodies, cells: None });
+        return Ok(Migrated { bodies, cells: None, names: None });
     }
     let cells = crate::store::reshard_cells(dir, stop)?;
-    Ok(Migrated { bodies, cells: Some(cells) })
+    let names = crate::names::fold_chunks(dir)?;
+    Ok(Migrated { bodies, cells: Some(cells), names })
 }
 
 /// Serialize a metadata value to a file, MessagePack-encoded. The builder's
@@ -283,13 +296,19 @@ pub enum Part {
     Factions,
     /// The supercharge table
     Boosts,
-    /// One chunk of the names table, numbered from zero
+    /// The names table's base, `names/head.bin`
     ///
-    /// Per chunk, the table being a hundred megabytes and a publish moving
-    /// one chunk of it: new systems land in the tail, and
-    /// [`crate::NameTable::upsert`] leaves a chunk alone where nothing in it
-    /// changed. A client re-reads the chunk that moved.
-    NamesChunk(usize),
+    /// Stamped by its head rather than by its sections: the head is written
+    /// last and is what makes a generation live, so a moved stamp is a
+    /// table that has been recompacted whole and a client re-opens it. That
+    /// is rare — a cold build, or a fold of a log that has grown long.
+    Names,
+    /// The names table's delta log, `names/delta.bin`
+    ///
+    /// What moves when the feed names a system. A client holds the byte
+    /// offset it has read to and takes only what is past it, so a publish
+    /// of fifty arrivals costs fifty rows on both sides.
+    NamesDelta,
 }
 
 /// Where the client reads cells and metadata from. One transport for both.
@@ -305,15 +324,21 @@ pub trait Source: Send + Sync {
     /// The populated-systems table, held resident for filtering and color.
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>>;
 
-    /// Every system's name and position: the search index and routing graph.
-    async fn names(&self) -> io::Result<Vec<NameEntry>>;
-
-    /// One chunk of the names table, numbered from zero, empty past the end
+    /// Every system's name and position: the search index and routing
+    /// graph, base and log together.
     ///
-    /// What a refresh reads: a client holding the table re-reads the chunk
-    /// whose [`Stamp`] moved. The numbering has no gaps, so the first chunk
-    /// that answers empty is the end of the table.
-    async fn names_chunk(&self, chunk: usize) -> io::Result<Vec<NameEntry>>;
+    /// Mapped rather than read where the transport is a local directory —
+    /// which is the whole point of the format, a galaxy of names being 5.8
+    /// GB. A transport that cannot map has to put the sections somewhere it
+    /// can before it answers this; there is no version of a 200 M-row
+    /// lookup table that is decoded at startup.
+    async fn names(&self) -> io::Result<names::Names>;
+
+    /// The delta log's rows past `from`, and how far the log now reads.
+    ///
+    /// What a refresh reads when [`Part::NamesDelta`]'s stamp has moved: a
+    /// client hands back the offset it holds and is given the tail.
+    async fn names_delta(&self, from: u64) -> io::Result<names::Delta>;
 
     /// The faction id-to-name table, read whole and cached by the caller.
     async fn factions(&self) -> io::Result<Vec<Faction>>;
@@ -391,16 +416,12 @@ impl Source for FsSource {
         read_meta(&populated_path(&self.dir))
     }
 
-    async fn names(&self) -> io::Result<Vec<NameEntry>> {
-        read_names(&self.dir)
+    async fn names(&self) -> io::Result<names::Names> {
+        names::Names::open(&self.dir)
     }
 
-    async fn names_chunk(&self, chunk: usize) -> io::Result<Vec<NameEntry>> {
-        match read_meta(&names_chunk_path(&self.dir, chunk)) {
-            Ok(entries) => Ok(entries),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
+    async fn names_delta(&self, from: u64) -> io::Result<names::Delta> {
+        names::Delta::since(&self.dir, from)
     }
 
     async fn factions(&self) -> io::Result<Vec<Faction>> {
@@ -446,7 +467,8 @@ impl Source for FsSource {
             Part::Reaches => reaches_path(&self.dir),
             Part::Factions => factions_path(&self.dir),
             Part::Boosts => boosts_path(&self.dir),
-            Part::NamesChunk(chunk) => names_chunk_path(&self.dir, chunk),
+            Part::Names => names_head_path(&self.dir),
+            Part::NamesDelta => names_delta_path(&self.dir),
         };
         match std::fs::metadata(&path).and_then(|it| it.modified()) {
             Ok(at) => Ok(Some(
@@ -551,20 +573,18 @@ mod tests {
         let before =
             source.stamp(Part::Index).await.expect("a stat").expect("a stamp");
 
-        // A cell nothing was written for, and a chunk past the end of a table
+        // A cell nothing was written for, and the parts of a names table
         // that was never written at all.
         let empty = CellId { level: 10, x: 1, y: 2, z: 3 };
         assert_eq!(
             source.stamp(Part::Cell(empty)).await.expect("a stat"),
             None
         );
-        assert_eq!(
-            source.stamp(Part::NamesChunk(0)).await.expect("a stat"),
-            None
-        );
+        assert_eq!(source.stamp(Part::Names).await.expect("a stat"), None);
+        assert_eq!(source.stamp(Part::NamesDelta).await.expect("a stat"), None);
         assert!(
-            source.names_chunk(0).await.expect("a read").is_empty(),
-            "a chunk past the end reads empty rather than failing"
+            source.names().await.expect("a read").is_empty(),
+            "an unpublished table reads empty rather than failing"
         );
 
         // Republished with a second system: the index is rewritten whole, so

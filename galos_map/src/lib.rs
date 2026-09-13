@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use galos_index::meta::{
     Boost, Faction as MetaFaction, NameEntry, PopulatedSystem,
 };
+use galos_index::names::{Delta, Table};
 use galos_index::{Index, Source as IndexSource, SystemName};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -72,33 +73,30 @@ pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
 /// the size its reach says. The positions here are the graph the router
 /// walks, so routing needs nothing loaded past this.
 ///
-/// **Packed**, which at 131 M systems is the difference between 7 GB and
-/// 34 GB — see [`names`] for the layout and the arithmetic. Cheap to clone:
-/// the tables sit behind [`Arc`]s so a fetch task can take a handle and name
-/// and colour its systems off the main thread.
+/// **Mapped**, not decoded: the table is the file the index publishes, and
+/// holding it is five `mmap` calls and the delta log — nothing of the 5.8 GB
+/// base is resident until something is looked up. See [`names`] for what
+/// this used to cost. Cheap to clone: both halves sit behind [`Arc`]s, so a
+/// fetch task takes a handle and names and colours its systems off the main
+/// thread.
 #[derive(Resource, Default, Clone)]
 pub struct Names {
-    /// The table as it was read, address-sorted and never written to.
+    /// The published table: the mapped base, and the log of what the feed
+    /// has said since it was written.
     ///
-    /// What has changed since is [`Self::fresh`].
-    pub table: Arc<names::Table>,
-    /// What the feed has named or renamed since the table was read
-    ///
-    /// The names table is published in chunks and a pass moves one of them —
-    /// arrivals land in the tail — so a refresh reads that chunk and puts
-    /// what differs here rather than rebuilding the table around it. Small by
-    /// construction: the systems named since the map started, which is what a
-    /// feed adds in a session and not what a galaxy holds.
-    ///
-    /// Read before [`Self::table`], so a corrected name answers over the one
-    /// the base was read with.
-    pub fresh: Arc<HashMap<i64, NameEntry>>,
+    /// The log *is* the overlay the map used to keep beside the table, and
+    /// the precedence is the format's rather than the map's: the log answers
+    /// first and a withdrawal in it hides a base row. A refresh folds the
+    /// log's tail in ([`galos_index::Names::absorb`]) and never touches the
+    /// base.
+    pub table: galos_index::Names,
     /// How far each scanned system reaches, in metres, by address.
     ///
     /// Its own table on disk (`reaches.bin`) and its own packing here, since
-    /// it covers a fifth of the index against the name table's whole: a
-    /// system with nothing scanned in it is absent, which is how the map
-    /// tells "small" from "not on record" and stands in for the second.
+    /// it is published whole as MessagePack and covers a fifth of the index
+    /// against the name table's whole: a system with nothing scanned in it
+    /// is absent, which is how the map tells "small" from "not on record"
+    /// and stands in for the second.
     ///
     /// Replaced whole by a refresh rather than patched: a scan arrives and
     /// the system it is about grows, which is the one thing in here that
@@ -175,31 +173,48 @@ impl Populated {
 }
 
 impl Names {
-    /// Build the resident table and the reaches beside it from the raw
-    /// published rows.
+    /// The table these rows make, with no published directory behind it.
     ///
-    /// What a test and a small directory use. A galaxy's worth is read a
-    /// chunk at a time and packed as it goes — see
-    /// [`names::Packing`] and `loading::read` — because the whole point of
-    /// the packing is not to hold the raw form to build it from.
+    /// All overlay and no base: the rows go in as the delta log's words, and
+    /// every question is answered off those. What a test builds a table
+    /// from, since the real one is a file and a test has rows. A build or a
+    /// running map never comes this way — see [`Self::packed`].
     pub fn reaching(
         entries: Vec<NameEntry>,
         reaches: Vec<galos_index::SystemReach>,
     ) -> Names {
         Names {
-            table: Arc::new(entries.into_iter().collect()),
-            fresh: Arc::default(),
+            table: galos_index::Names::of(Table::default(), Delta::of(entries)),
             reaches: Arc::new(names::Reaches::of(reaches)),
         }
     }
 
-    /// The same, with the table already packed.
-    pub fn packed(table: names::Table, reaches: names::Reaches) -> Names {
-        Names {
-            table: Arc::new(table),
-            fresh: Arc::default(),
-            reaches: Arc::new(reaches),
-        }
+    /// The table as the index published it, with the reaches beside it.
+    ///
+    /// What the map opens with: [`galos_index::Names::open`] has mapped the
+    /// base and read the log, so there is nothing here to build. See
+    /// `loading::read`.
+    pub fn packed(table: galos_index::Names, reaches: names::Reaches) -> Names {
+        Names { table, reaches: Arc::new(reaches) }
+    }
+
+    /// Fold a tail of the delta log in, the feed having appended to it.
+    ///
+    /// The whole of what a refresh does to the names table: the log's rows
+    /// *are* the changes, so there is nothing to diff and nothing to
+    /// rebuild. The base is untouched and the log is copied on write, so a
+    /// fetch task holding a clone keeps reading the table it was handed. See
+    /// [`crate::refresh`].
+    pub fn absorb(&mut self, tail: galos_index::Delta) {
+        self.table.absorb(tail);
+    }
+
+    /// How far into the delta log this table has read, in bytes.
+    ///
+    /// What a refresh hands the transport to be given the rows past it, so a
+    /// pass that finds fifty arrivals reads fifty rows and not the log.
+    pub fn read_to(&self) -> u64 {
+        self.table.delta().read_to()
     }
 
     /// How far the system at `address` reaches, in metres, where anything in
@@ -208,76 +223,50 @@ impl Names {
         self.reaches.get(address)
     }
 
-    /// The entry for an address, if the table holds it.
+    /// The entry for an address, if the table names it.
     ///
-    /// What the feed has named since is read first, so a system that arrived
-    /// after the table did is found and a corrected name answers over the
-    /// one on record when the map started. See [`Self::fresh`].
-    ///
-    /// Owned, the name being bytes in a blob rather than a `String` of its
-    /// own: what a caller holds it has to be given a copy of. Everything
-    /// that only reads a name goes through the table directly.
+    /// Owned, the name being bytes in a mapping rather than a `String` of
+    /// its own: what a caller holds it has to be given a copy of.
     pub fn get(&self, address: i64) -> Option<NameEntry> {
-        match self.fresh.get(&address) {
-            Some(entry) => Some(entry.clone()),
-            None => {
-                self.table.index_of(address).map(|at| self.table.entry_at(at))
-            }
-        }
+        self.table.entry_of(address)
     }
 
-    /// Where the system at `address` sits, if the table holds it.
+    /// Where the system at `address` sits, if the table names it.
     ///
     /// The half of [`Self::get`] that costs nothing: a position is three
-    /// floats out of an array, where a name is a copy.
+    /// floats off the mapping, where a name is a copy.
     pub fn position(&self, address: i64) -> Option<[f32; 3]> {
-        match self.fresh.get(&address) {
-            Some(entry) => Some(entry.position),
-            None => self
-                .table
-                .index_of(address)
-                .map(|at| self.table.position_at(at)),
-        }
+        self.table.position_of(address)
     }
 
     /// Every system's address and place, for the router to bucket.
-    ///
-    /// The base and then the overlay, which is what the graph is built over.
     pub fn points(&self) -> impl Iterator<Item = (i64, [f64; 3])> + '_ {
-        self.table.points().chain(self.fresh.values().map(|entry| {
-            let p = entry.position;
-            (entry.address, [p[0] as f64, p[1] as f64, p[2] as f64])
-        }))
+        self.table.points()
     }
 
-    /// The systems whose name holds `query`, at most `limit` of them.
+    /// The systems whose name *begins* with `query`, at most `limit`.
     ///
     /// One fold, of the query: every name in the table is upper case by
     /// construction ([`galos_index::SystemName`]), so the comparison is
-    /// bytes against bytes over the blob and allocates nothing until
+    /// bytes against bytes over the mapping and allocates nothing until
     /// something is found. It used to lowercase *both sides of every
     /// comparison*, which over 131 M entries is 131 M allocations to answer
-    /// one search, and to collect and sort every match before keeping
-    /// twenty-five.
+    /// one search.
     ///
-    /// Still a scan, and still O(N) in the systems: a sorted by-name part is
-    /// `TODO-map-scale.md` item 1, and this is what it replaces.
+    /// A prefix, and not a substring. Answering a substring means reading
+    /// every name — 3.94 GB at 200 M, measured at 564 ms warm and 5.7 s
+    /// cold, on this thread — and the pages it faulted in evicted the cell
+    /// payloads being drawn from, so a search for `SOL` stalled the frame
+    /// *and* the galaxy's reads. A prefix is a binary search of
+    /// `byname.bin` and ~28 pages: measured 3.0 ms for `SOL` over the real
+    /// 200,071,629-name table. See `galos_index::Table::matching`.
+    ///
+    /// The cap is applied in the index rather than by collecting the
+    /// galaxy and sorting it down. What [`crate::search`] does on top is
+    /// sort the few that come back by how near they are to where the
+    /// camera looks.
     pub fn find(&self, query: &str, limit: usize) -> Vec<NameEntry> {
-        let needle = SystemName::new(query);
-        let mut found: Vec<NameEntry> = self
-            .fresh
-            .values()
-            .filter(|entry| entry.name.contains(needle.as_str()))
-            .take(limit)
-            .cloned()
-            .collect();
-        for at in self.table.matching(needle.as_str(), limit - found.len()) {
-            let address = self.table.address_at(at);
-            if !self.fresh.contains_key(&address) {
-                found.push(self.table.entry_at(at));
-            }
-        }
-        found
+        self.table.matching(SystemName::new(query).as_str(), limit)
     }
 
     /// Whether any system is named exactly `name`.
@@ -288,35 +277,23 @@ impl Names {
     /// The address of the system named exactly `name`.
     ///
     /// What a route's ends are resolved through: a route is plotted between
-    /// two named systems, and the graph it walks is keyed by address.
+    /// two named systems, and the graph it walks is keyed by address. A
+    /// binary search of the table's by-name order, where it was a scan of
+    /// the galaxy — 11.3 s measured, four to six of them per plot, which is
+    /// most of the minute a route used to take to start.
     pub fn address(&self, name: &str) -> Option<i64> {
-        let name = SystemName::new(name);
-        let fresh = self
-            .fresh
-            .values()
-            .find(|entry| entry.name == name)
-            .map(|entry| entry.address);
-        fresh.or_else(|| {
-            self.table
-                .named_exactly(name.as_str())
-                .map(|at| self.table.address_at(at))
-                .filter(|address| !self.fresh.contains_key(address))
-        })
+        self.table.address_of(SystemName::new(name).as_str())
     }
 
-    /// How many systems the table names, the fresh ones counted once
+    /// How many systems the table names, one the log has renamed counted
+    /// once
     pub fn len(&self) -> usize {
         self.table.len()
-            + self
-                .fresh
-                .keys()
-                .filter(|address| self.table.index_of(**address).is_none())
-                .count()
     }
 
     /// Whether the table names nothing at all
     pub fn is_empty(&self) -> bool {
-        self.table.is_empty() && self.fresh.is_empty()
+        self.table.is_empty()
     }
 }
 

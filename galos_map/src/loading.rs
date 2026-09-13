@@ -1,15 +1,17 @@
 //! Standing the window up while the index is still being read
 //!
-//! The index is a hundred and thirty megabytes on disk, most of it the names
-//! table, and what is built from it is three maps of a couple of million
-//! entries each. That is seconds of work, and it used to happen before the
-//! `App` existed at all: the window itself waited on it, so the map opened
-//! with nothing on screen and nothing to say why. Reported as a launch that
-//! looks hung.
+//! A built index is gigabytes on disk and what the map stands up from it is
+//! the cell aggregates, three tables of a couple of million entries each,
+//! and the names table — which used to be most of the read: 8.70 GiB of
+//! MessagePack decoded across the pool, 33 s at 200 M systems. It is mapped
+//! now rather than decoded, so what is left is seconds rather than a minute,
+//! and it used to happen before the `App` existed at all: the window itself
+//! waited on it, so the map opened with nothing on screen and nothing to say
+//! why. Reported as a launch that looks hung.
 //!
 //! So the window comes up on the first frame and the read runs on a task pool
 //! behind a loading screen. Which part it has reached is published as it goes,
-//! because "reading the names" for eight seconds is a different thing to a
+//! because "reading the cells" for several seconds is a different thing to a
 //! reader than a spinner that never says anything.
 //!
 //! The map is held off with a state rather than by handing every system an
@@ -197,21 +199,26 @@ async fn read(
     at(Step::Populated);
     let populated = source.populated().await.unwrap_or_default();
     at(Step::Names);
-    // A chunk at a time, packed as each one lands and dropped after: the
-    // whole table is 5.66 GiB of MessagePack over 2,004 chunks at 131 M
-    // systems, and decoding it into one `Vec<NameEntry>` to build the packed
-    // table from is the peak the packing exists to remove. See
-    // [`crate::names`].
-    let mut packing = names::Packing::default();
-    for chunk in 0.. {
-        let entries = source.names_chunk(chunk).await.unwrap_or_default();
-        if entries.is_empty() {
-            break;
-        }
-        packing.extend(entries);
-    }
-    let named = packing.len();
-    let table = packing.build();
+    // One call, and nothing decoded: the table is a file the client maps.
+    //
+    // This was the heaviest part of opening by a long way. A galaxy's names
+    // were 8.70 GiB of MessagePack over 3,053 chunks, which had to be read,
+    // decoded and packed across the whole task pool to be had in 33 s and
+    // 7.9 GB of resident arrays. [`galos_index::Names::open`] maps the five
+    // sections of the published base and reads the delta log, so what a
+    // session touches is what the kernel pages in and the rest costs
+    // nothing. See [`crate::names`].
+    //
+    // Refused rather than read as an empty galaxy: a directory that has
+    // published no names opens as the empty table, so an error here is a
+    // head this build of the map does not know or a section that is not the
+    // length it claims, and saying which path said so is the whole point of
+    // the failed-read screen.
+    let table = source
+        .names()
+        .await
+        .map_err(|e| format!("reading the names table at {dir}: {e}"))?;
+
     at(Step::Reaches);
     let reaches =
         names::Reaches::of(source.reaches().await.unwrap_or_default());
@@ -221,9 +228,7 @@ async fn read(
     let factions = source.factions().await.unwrap_or_default();
 
     at(Step::Jumps);
-    Ok(stood_up(
-        dir, held, index, populated, named, table, reaches, boosts, factions,
-    ))
+    Ok(stood_up(dir, held, index, populated, table, reaches, boosts, factions))
 }
 
 /// Take the read in once it lands, and let the map draw
@@ -273,17 +278,17 @@ fn stood_up(
     held: Held,
     index: Index,
     populated: Vec<PopulatedSystem>,
-    named: usize,
-    table: names::Table,
+    table: galos_index::Names,
     reaches: names::Reaches,
     boosts: Option<Vec<SystemBoost>>,
     factions: Vec<Faction>,
 ) -> Loaded {
     info!(
-        "index {dir} has {} cells, {} populated, {named} names, {} reaches, \
+        "index {dir} has {} cells, {} populated, {} names, {} reaches, \
          {} supercharging, {} factions",
         index.len(),
         populated.len(),
+        table.len(),
         reaches.len(),
         boosts.as_ref().map_or(0, Vec::len),
         factions.len(),
@@ -386,8 +391,8 @@ mod tests {
     ///
     /// A spinner alone says the map is busy, which the black window said
     /// already. What a reader wants is which of their directories is being
-    /// read and why it is taking this long, and the names table is the answer
-    /// to the second for as long as it takes to read a hundred megabytes.
+    /// read and which part of it is being read now, the parts taking long
+    /// enough apart that a stuck one is worth naming.
     #[test]
     fn the_screen_says_what_it_is_reading() {
         let said = words(|ui| waiting(ui, ".galos_index", Step::Names, None));

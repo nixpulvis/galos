@@ -7,8 +7,10 @@
 //!   the cells it marks are read off the disk. Moving per-system data into
 //!   the cells makes that read bigger; sharding `cells/` makes it a
 //!   different path.
-//! - **Routing.** The router walks the resident names table, so anything
-//!   that stops it being resident lands on the router first.
+//! - **Routing.** The router buckets every position in the names table, so
+//!   anything that changes how that table is held lands on the router first.
+//!   It is a mapping now rather than resident arrays, which means the graph
+//!   is built out of page faults.
 //!
 //! A unit-test module rather than a file in `tests/`: the routing half
 //! measures `route::graph`'s `Routing` and `Drive`, both `pub(crate)`, which
@@ -57,7 +59,6 @@
 
 use crate::systems::route::graph::{Drive, JumpGraph, Routing};
 use crate::{Boosts, Names};
-use galos_index::meta::NameEntry;
 use galos_index::walk::{Mode, View};
 use galos_index::{FixedCodec as _, FsSource, Index, Point, Source as _};
 use std::path::PathBuf;
@@ -144,8 +145,7 @@ fn zooming_out_stays_quick() {
 fn routing_stays_quick() {
     let Some(dir) = measured() else { return };
     let source = FsSource::new(&dir);
-    let entries: Vec<NameEntry> =
-        pollster::block_on(source.names()).expect("the names should read");
+    let table = pollster::block_on(source.names()).expect("the names open");
     let boosts = match pollster::block_on(source.boosts())
         .expect("the boosts should read")
     {
@@ -160,25 +160,29 @@ fn routing_stays_quick() {
     // back with a route — where the two extremes of the table are as likely
     // to be an isolated pair with no chain between them at all, which times
     // an exhausted search rather than a real one.
+    //
+    // Walked off the mapping, a position at a time, rather than out of a
+    // `Vec<NameEntry>`: the table is a file now and holding a galaxy's worth
+    // of rows to pick two of them is the thing this whole part stopped
+    // doing.
     let nearest = |to: [f64; 3]| {
-        entries
-            .iter()
-            .min_by(|a, b| {
-                let away = |it: &NameEntry| {
-                    let [x, y, z] = it.position;
-                    (x as f64 - to[0]).powi(2)
-                        + (y as f64 - to[1]).powi(2)
-                        + (z as f64 - to[2]).powi(2)
+        table
+            .points()
+            .min_by(|(_, a), (_, b)| {
+                let away = |it: &[f64; 3]| {
+                    (it[0] - to[0]).powi(2)
+                        + (it[1] - to[1]).powi(2)
+                        + (it[2] - to[2]).powi(2)
                 };
                 away(a).total_cmp(&away(b))
             })
-            .expect("the table should hold a system")
-            .address
+            .expect("the table should name a system")
+            .0
     };
     let start = nearest([0.0, 0.0, 0.0]);
     let end = nearest([700.0, 0.0, 700.0]);
 
-    let held = Names::reaching(entries, Vec::new());
+    let held = Names::packed(table, crate::names::Reaches::default());
 
     let at = Instant::now();
     let graph = JumpGraph::new(held.points(), &boosts);

@@ -732,14 +732,14 @@ pub(crate) mod tests {
         app.init_resource::<crate::systems::bounded::LodFetch>();
         app.init_resource::<crate::systems::route::graph::Routing>();
         app.init_resource::<crate::systems::route::frontier::Frontiers>();
-        let table: crate::names::Table = entries.iter().cloned().collect();
+        let names = Names::reaching(entries, Vec::new());
         app.insert_resource(crate::systems::route::graph::Jumps(Some(
             std::sync::Arc::new(crate::systems::route::graph::JumpGraph::new(
-                table.points(),
+                names.points(),
                 &crate::Boosts::default(),
             )),
         )));
-        app.insert_resource(Names::reaching(entries, Vec::new()));
+        app.insert_resource(names);
         app.insert_resource(Populated::default());
         // What the region fetch needs to exist, so the source can be turned
         // off in a test without `fetch` failing its parameters. No camera is

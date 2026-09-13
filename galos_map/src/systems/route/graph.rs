@@ -839,14 +839,14 @@ impl JumpGraph {
         }
     }
 
-    /// The same base with `arrivals` alongside it: the systems the feed has
-    /// named since the table was read.
+    /// The same base with `arrivals` alongside it: the rows the feed has
+    /// named since the base of the names table was written.
     ///
-    /// Whole rather than added to, since [`crate::Names::fresh`] is itself the
-    /// accumulated set and is handed here entire. Rebuilding the small side
-    /// costs its own size and nothing else — the base is a handle clone — so a
-    /// pass that found one arrival pays for the few thousand of a session, not
-    /// for the two million of the galaxy.
+    /// Whole rather than added to, since the names table's delta log is
+    /// itself the accumulated set and is handed here entire. Rebuilding the
+    /// small side costs its own size and nothing else — the base is a handle
+    /// clone — so a pass that found one arrival pays for the few thousand of
+    /// a session, not for the two million of the galaxy.
     ///
     /// Only addresses the base does not hold. A rename is nothing to a router,
     /// which asks where a system is and not what it is called, and a position

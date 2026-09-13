@@ -23,10 +23,12 @@
 //! are read whole. A payload is tens of kilobytes and only the cells whose
 //! systems moved are rewritten, so only those are read. The populated,
 //! reaches and factions tables are a few megabytes each and written whole, so
-//! they are read the same way. The names table is a hundred megabytes across
-//! chunks of which a pass moves one — arrivals land in the tail — so its
-//! changed chunks are read and merged into [`Names::fresh`] rather than the
-//! table being rebuilt around them.
+//! they are read the same way. The names table is a mapped base and an
+//! append-only log of what the feed has said since, so a publish that named
+//! something moves the log and nothing else: the refresh reads the rows past
+//! the offset it holds and folds them in. The base moves only when the table
+//! is recompacted whole, and then it is re-opened — which is five `mmap`
+//! calls, not a read.
 //!
 //! One task at a time, off the main thread, and the whole of it applied in one
 //! frame when it lands. The reads are independent, so a pass that finds six
@@ -40,10 +42,8 @@ use crate::{Boosts, Factions, Names, Populated, ResidentIndex, Transport};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::meta::{
-    Faction, NameEntry, PopulatedSystem, SystemBoost, SystemReach,
-};
-use galos_index::{CellId, Index, Part, Point, Stamp};
+use galos_index::meta::{Faction, PopulatedSystem, SystemBoost, SystemReach};
+use galos_index::{CellId, Delta, Index, Part, Point, Stamp};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -79,19 +79,16 @@ pub struct Held {
     reaches: Option<Stamp>,
     boosts: Option<Stamp>,
     factions: Option<Stamp>,
-    /// The chunks of the names table, by number, as far as the table went when
-    /// it was last read. A chunk appearing past the end is a chunk to read.
-    chunks: Vec<Option<Stamp>>,
-    /// Which chunk each entry in [`Names::fresh`] came out of.
-    ///
-    /// What lets an arrival be taken back out again. A chunk the table stops
-    /// serving — a system withdrawn empties the tail chunk and unlinks its
-    /// file — is a chunk whose systems the map no longer has any business
-    /// naming, and the overlay it was merged into is keyed by address, which
-    /// says nothing about where an entry came from. So it is filed here as
-    /// it goes in. Keyed the same as the overlay and the same size as it:
-    /// the arrivals of one session.
-    filed: HashMap<i64, usize>,
+    /// The names table's base: `names/head.bin`, which names the live
+    /// generation. It moves only where the table was written whole — a cold
+    /// build, or a fold of a log that had grown long — so this is the rare
+    /// half of the two.
+    names: Option<Stamp>,
+    /// The names table's delta log, which every publish that named something
+    /// appends to. The common half, and the whole of what a refresh usually
+    /// has to read. How far the map has read into it is the table's own
+    /// business — [`Names::read_to`] — rather than a second copy kept here.
+    delta: Option<Stamp>,
     /// The payloads held, by cell. Kept here rather than beside the payload so
     /// that [`ResidentCells`] stays the walk's set arithmetic and nothing else.
     cells: HashMap<CellId, Option<Stamp>>,
@@ -101,13 +98,13 @@ impl Held {
     /// What every part is, taken before the map reads any of them
     ///
     /// Seeded rather than left empty, or the first refresh would find every
-    /// part unstamped, read the lot — a hundred megabytes of names table among
-    /// it — and discover that nothing had changed.
+    /// part unstamped and read the lot — the whole delta log among it — to
+    /// discover that nothing had changed.
     ///
     /// Before the reads, not after, which is the same order
     /// [`super::systems::bounded`]'s fetch takes and for the same reason. A
-    /// startup read is a hundred megabytes long and the feed republishes every
-    /// few seconds, so a publish landing in the middle of it is ordinary. Held
+    /// startup read is seconds long and the feed republishes every few
+    /// seconds, so a publish landing in the middle of it is ordinary. Held
     /// under a stamp taken first, the part read is either the one stamped or
     /// the one after it, and the mismatch costs one redundant re-read on the
     /// first poll. Held under a stamp taken afterwards, a part read before the
@@ -116,26 +113,19 @@ impl Held {
     /// session. `factions.bin` is the worst of those, since it may not move
     /// again for hours.
     ///
-    /// The chunks are stamped up to the end of the table, the walk stopping at
-    /// the first number the transport has nothing for, which is the layout's
-    /// own contract: numbered from zero with no gaps.
+    /// Both halves of the names table are stamped: the base's head, which
+    /// moves when the table is recompacted, and the log, which moves on
+    /// every publish that named anything.
     pub async fn before_reading(source: &dyn galos_index::Source) -> Held {
         let stamp = async |part| source.stamp(part).await.ok().flatten();
-        let mut chunks = Vec::new();
-        for chunk in 0.. {
-            match stamp(Part::NamesChunk(chunk)).await {
-                Some(it) => chunks.push(Some(it)),
-                None => break,
-            }
-        }
         Held {
             index: stamp(Part::Index).await,
             populated: stamp(Part::Populated).await,
             reaches: stamp(Part::Reaches).await,
             boosts: stamp(Part::Boosts).await,
             factions: stamp(Part::Factions).await,
-            chunks,
-            filed: HashMap::new(),
+            names: stamp(Part::Names).await,
+            delta: stamp(Part::NamesDelta).await,
             cells: HashMap::new(),
         }
     }
@@ -177,8 +167,14 @@ struct Refreshed {
     /// a galaxy where nobody has a jet cone. See [`Boosts::published`].
     boosts: Option<(Option<Vec<SystemBoost>>, Option<Stamp>)>,
     factions: Option<(Vec<Faction>, Option<Stamp>)>,
-    /// The chunks read, by number, and how far the table now goes
-    chunks: Vec<(usize, Vec<NameEntry>, Option<Stamp>)>,
+    /// The names table re-opened whole, with the stamps of both its halves:
+    /// the base had been written again, so there is nothing to merge into
+    /// the one the map holds. Rare.
+    names: Option<(galos_index::Names, Option<Stamp>, Option<Stamp>)>,
+    /// The delta log's rows past the offset the map had read to, and the
+    /// log's stamp. The common case, and the whole of what a publish that
+    /// named something moves.
+    delta: Option<(Delta, Option<Stamp>)>,
     /// The payloads re-read, by cell
     cells: Vec<(CellId, Vec<Point>, Option<Stamp>)>,
 }
@@ -190,7 +186,8 @@ impl Refreshed {
             && self.reaches.is_none()
             && self.boosts.is_none()
             && self.factions.is_none()
-            && self.chunks.is_empty()
+            && self.names.is_none()
+            && self.delta.is_none()
             && self.cells.is_empty()
     }
 }
@@ -205,6 +202,7 @@ fn poll(
     transport: Res<Transport>,
     resident: Res<ResidentCells>,
     held: Res<Held>,
+    names: Res<Names>,
     time: Res<Time<Real>>,
     poll: Res<Poll>,
     mut refreshing: ResMut<Refreshing>,
@@ -225,7 +223,12 @@ fn poll(
     let index = held.index;
     let (populated, reaches, boosts, factions) =
         (held.populated, held.reaches, held.boosts, held.factions);
-    let chunks = held.chunks.clone();
+    let (names_head, delta) = (held.names, held.delta);
+    // How far the table has read into the log, which is what the tail is
+    // asked for past. Read off the table rather than filed beside the stamps:
+    // the offset is the table's own bookkeeping, moved by every
+    // [`Names::absorb`], and a second copy here is a copy to get wrong.
+    let read_to = names.read_to();
     let cells: Vec<(CellId, Option<Stamp>)> = resident
         .0
         .iter()
@@ -282,19 +285,26 @@ fn poll(
             found.factions = Some((read, stamp));
         }
 
-        // The chunks held, and then whatever the table has grown by: a new
-        // chunk has no stamp on record, so the walk past the end stops at the
-        // first number the transport has nothing for.
-        for chunk in 0.. {
-            let held = chunks.get(chunk).copied().flatten();
-            let (moved_it, stamp) =
-                moved(&source, Part::NamesChunk(chunk), held).await;
-            if stamp.is_none() && chunk >= chunks.len() {
-                break;
-            }
-            if moved_it && let Ok(read) = source.names_chunk(chunk).await {
-                found.chunks.push((chunk, read, stamp));
-            }
+        // The names table, in the two shapes a publish can move it in. Both
+        // stamped before either is read, so a publish landing between the two
+        // reads costs a redundant pass and never a row held under a stamp
+        // newer than it.
+        let (base_moved, base_stamp) =
+            moved(&source, Part::Names, names_head).await;
+        let (log_moved, log_stamp) =
+            moved(&source, Part::NamesDelta, delta).await;
+        if base_moved && let Ok(read) = source.names().await {
+            // The base was written whole — a cold build, or a fold of a log
+            // that had grown long. The log is removed by the swap, so the
+            // offset the map holds means nothing against the new one and
+            // there is nothing to merge: the table is re-opened instead,
+            // which is five `mmap` calls and whatever log now stands.
+            found.names = Some((read, base_stamp, log_stamp));
+        } else if log_moved && let Ok(tail) = source.names_delta(read_to).await
+        {
+            // The common case: the feed named something and the rows past
+            // the offset the map holds are exactly what changed.
+            found.delta = Some((tail, log_stamp));
         }
 
         for (id, held) in cells {
@@ -364,89 +374,58 @@ fn apply(
         held.boosts = stamp;
     }
 
-    // The chunks that moved, merged into the overlay: only what the table does
-    // not already say, so a chunk re-read after one system was appended to it
-    // adds one entry rather than sixty-five thousand.
+    // The names table, in the two shapes a publish can move it in.
     //
-    // Against what the table answers *now* — [`Names::get`], overlay first —
-    // and not against the base alone. Diffed against the base, every arrival
-    // an earlier pass put in the overlay would read as new again on every
-    // re-read of its chunk, and the tail chunk moves on nearly every publish:
-    // the overlay and the router's graph would be rebuilt each poll, at the
-    // size of the whole session's arrivals, to take in the one system that
-    // actually moved. A correction that puts an entry back to what the base
-    // says still differs from the overlay's answer, so it is still taken.
-    //
-    // Each arrival is filed under the chunk it came out of, which is what
-    // lets it be taken back out if that chunk stops being served.
-    //
-    // The lowest chunk the transport had nothing for, if any: a table that
-    // has shrunk. Taken before the merge rather than folded up inside it, so
-    // that nothing is filed under a chunk this same pass is about to drop.
-    let gone = found
-        .chunks
-        .iter()
-        .filter(|(_, _, stamp)| stamp.is_none())
-        .map(|(chunk, _, _)| *chunk)
-        .min();
-    let mut arrived: Vec<NameEntry> = Vec::new();
-    for (chunk, entries, stamp) in found.chunks {
-        if gone.is_none_or(|gone| chunk < gone) {
-            for entry in entries {
-                if names.get(entry.address).as_ref() != Some(&entry) {
-                    held.filed.insert(entry.address, chunk);
-                    arrived.push(entry);
-                }
-            }
-        }
-        if held.chunks.len() <= chunk {
-            held.chunks.resize(chunk + 1, None);
-        }
-        held.chunks[chunk] = stamp;
+    // The base written whole is the rare one — a cold build, or a fold of a
+    // log that had grown long. The table is re-opened and put in place of the
+    // one the map holds, which is five mappings and whatever log now stands;
+    // there is nothing to merge, the offset the map had read to belonging to
+    // a log the swap removed.
+    let rebased = found.names.is_some();
+    if let Some((read, base, log)) = found.names {
+        names.table = read;
+        held.names = base;
+        held.delta = log;
     }
-    // Cut back once, after the loop, since the loop resizes as it goes and
-    // truncating inside it would be undone by the next chunk. Or every poll
-    // would stat and read files that are not there for as long as the map
-    // runs: a missing stamp reads as moved.
-    //
-    // And what those chunks named goes with them. A table that has shrunk
-    // out of a chunk no longer names the systems it held, so they have to
-    // leave the search box, the router and the count along with the sky that
-    // no longer draws them. A chunk that answers again is read on the next
-    // pass as an arrival like any other.
-    let mut departed = false;
-    if let Some(gone) = gone {
-        held.chunks.truncate(gone);
-        let filed = held.filed.len();
-        held.filed.retain(|_, chunk| *chunk < gone);
-        departed = held.filed.len() != filed;
-    }
-    let named = !arrived.is_empty();
-    if named || departed {
-        let mut fresh = HashMap::clone(&names.fresh);
-        if departed {
-            fresh.retain(|address, _| held.filed.contains_key(address));
-        }
-        fresh.extend(arrived.into_iter().map(|entry| (entry.address, entry)));
-        names.fresh = Arc::new(fresh);
+    // The log moving is the common case, and folding its tail in is the whole
+    // of the merge: the rows *are* the changes. Nothing is diffed against
+    // what the table already says — a row is only in the log because it
+    // changed something — and a withdrawal is a row like any other, so
+    // nothing has to be filed under where it came from to be taken back out
+    // again. What the map reads is the arrivals, not the table and not the
+    // log.
+    let mut named = false;
+    if let Some((tail, stamp)) = found.delta {
+        named = !tail.is_empty();
+        names.absorb(tail);
+        held.delta = stamp;
     }
 
     // The router reads places and what they can supercharge, and has just been
     // handed either some places it did not have, some it no longer has, or a
     // new table of the second.
-    //
-    // Rebuilt from the whole overlay rather than added to, which is the same
-    // work and no bookkeeping: the base is a handle clone, the overlay is the
-    // arrivals of one session, and the supercharge table is another handle. A
-    // route already searching holds the graph it started on and finishes
-    // against that.
-    if named || departed || found_boosts {
+    if rebased {
+        // The places the graph was bucketed from have been written again, so
+        // it stands for a set of systems that is no longer the table's.
+        // Dropped rather than rebucketed on the frame the refresh lands —
+        // that is gigabytes and minutes over a galaxy — and built afresh off
+        // the table that now stands by the next route asked for. See
+        // [`Jumps::built`].
+        jumps.0 = None;
+    } else if named || found_boosts {
+        // Rebuilt from the whole log rather than added to, which is the same
+        // work and no bookkeeping: the base is a handle clone, the log is
+        // what the feed has said since the base was written, and the
+        // supercharge table is another handle. A route already searching
+        // holds the graph it started on and finishes against that.
+        //
         // Only where a route has already been asked for. Unbuilt, the graph
-        // takes the arrivals in when it is built, `Names::points` chaining
-        // the overlay onto the table.
+        // takes the log in when it is built, [`Names::points`] reading the
+        // two halves together.
         if let Some(held) = &jumps.0 {
-            jumps.0 =
-                Some(Arc::new(held.extended(names.fresh.values(), &boosts)));
+            jumps.0 = Some(Arc::new(
+                held.extended(names.table.delta().entries(), &boosts),
+            ));
         }
     }
 
@@ -476,8 +455,7 @@ mod tests {
     use super::*;
     use crate::systems::route::graph::{Drive, JumpGraph, Routing};
     use galos_index::{
-        BuildParams, FsSource, NameEntry, NameTable, Snapshot,
-        Source as IndexSource,
+        BuildParams, FsSource, NameEntry, Snapshot, Source as IndexSource,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -523,6 +501,44 @@ mod tests {
         built
     }
 
+    /// One row of the names table
+    fn named(address: i64, name: &str) -> NameEntry {
+        NameEntry {
+            address,
+            name: name.into(),
+            position: [0.0, 900.0, 24400.0],
+        }
+    }
+
+    /// Write `entries` as `dir`'s mapped base, the way a build's writer does
+    fn publish_base(dir: &std::path::Path, entries: &[NameEntry]) {
+        let mut writing = galos_index::names::Writer::writing(dir)
+            .expect("the writer should open");
+        for entry in entries {
+            writing.push(entry.clone()).expect("the row should write");
+        }
+        writing.finish().expect("the base should swap in");
+    }
+
+    /// Name `entries` into `dir`'s delta log the way a feed's publish does,
+    /// answering how many rows it appended
+    fn name(dir: &std::path::Path, entries: &[NameEntry]) -> usize {
+        let mut table =
+            galos_index::Names::open(dir).expect("the table should open");
+        for entry in entries {
+            table.name(entry.clone());
+        }
+        table.publish(dir).expect("the log should append")
+    }
+
+    /// Withdraw `address` through the log, the way a feed's publish does
+    fn unname(dir: &std::path::Path, address: i64) {
+        let mut table =
+            galos_index::Names::open(dir).expect("the table should open");
+        assert!(table.unname(address), "{address} was there to withdraw");
+        table.publish(dir).expect("the log should append");
+    }
+
     /// A map holding what `dir` published, with the refresh wired as the app
     /// wires it and the poll wide open
     ///
@@ -540,21 +556,23 @@ mod tests {
         app.init_resource::<Republished>();
         app.init_resource::<Populated>();
         app.init_resource::<Factions>();
-        // The tables as `main` loads them: the names table read whole, and
-        // the router's graph bucketed off it.
-        let named = block_on(source.names()).unwrap_or_default();
+        // The tables as `main` loads them: the names table mapped, and the
+        // router's graph bucketed off it.
+        let table = block_on(source.names()).expect("the names should open");
         let reaches = block_on(source.reaches()).unwrap_or_default();
         let boosts = block_on(source.boosts())
             .ok()
             .flatten()
             .map_or_else(Boosts::absent, Boosts::of);
-        let table: crate::names::Table = named.iter().cloned().collect();
         app.insert_resource(Jumps(Some(Arc::new(JumpGraph::new(
             table.points(),
             &boosts,
         )))));
         app.insert_resource(boosts);
-        app.insert_resource(Names::reaching(named, reaches));
+        app.insert_resource(Names::packed(
+            table,
+            crate::names::Reaches::of(reaches),
+        ));
         app.insert_resource(ResidentIndex(
             block_on(source.index()).expect("a published index"),
         ));
@@ -639,23 +657,17 @@ mod tests {
         );
     }
 
-    /// A name published after the table was read is found without a restart
+    /// A name appended to the log is found without a restart
     ///
-    /// The names table is a hundred megabytes in chunks, so a refresh reads the
-    /// chunk that moved and puts what is new in the overlay rather than
-    /// rebuilding the table around it. A system the feed names mid-session is
-    /// what that is for.
+    /// The names table's base is mapped and immutable, so what the feed names
+    /// mid-session is a row in the delta log. A refresh reads the rows past
+    /// the offset it holds and folds them in, which is the whole of how a
+    /// system named while the map runs comes to be named on the map.
     #[test]
-    fn a_name_published_into_a_moved_chunk_is_found() {
+    fn a_name_appended_to_the_log_is_found() {
         let dir = Scratch::new();
         let built = publish(&dir.0, &[input(1, 0.0)]);
-        let named = |address: i64, name: &str| NameEntry {
-            address,
-            name: name.into(),
-            position: [0.0, 900.0, 24400.0],
-        };
-        let mut table = NameTable::from_entries(vec![named(1, "First")]);
-        table.publish(&dir.0).expect("the names should publish");
+        publish_base(&dir.0, &[named(1, "First")]);
 
         let mut app = watching(&dir.0, &built);
         assert!(
@@ -663,10 +675,8 @@ mod tests {
             "nothing names the second system yet"
         );
 
-        // The chunk the arrival lands in is rewritten, and only that chunk.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        table.upsert(named(2, "Second"));
-        table.publish(&dir.0).expect("the names should publish again");
+        name(&dir.0, &[named(2, "Second")]);
 
         assert!(
             pump(&mut app, |app| app
@@ -683,23 +693,17 @@ mod tests {
         );
     }
 
-    /// The overlay accumulates arrivals, and a correction answers over the base
+    /// The log accumulates arrivals, and a rename answers over the base
     ///
-    /// Which is the whole of how it stays right over a session: a chunk is
-    /// re-read on nearly every publish, so the merge has to keep what earlier
-    /// passes put there, take the entries the base does not already say, and
-    /// let a name changed since the base was read win.
+    /// Which is the whole of how the table stays right over a session: every
+    /// pass folds a tail in over what earlier passes folded, and the log is
+    /// the later word on every address it mentions — so a system the base
+    /// names is answered under the name the feed corrected it to.
     #[test]
-    fn the_overlay_keeps_what_earlier_passes_found() {
+    fn the_log_keeps_what_earlier_passes_folded_in() {
         let dir = Scratch::new();
         let built = publish(&dir.0, &[input(1, 0.0)]);
-        let named = |address: i64, name: &str| NameEntry {
-            address,
-            name: name.into(),
-            position: [0.0, 900.0, 24400.0],
-        };
-        let mut table = NameTable::from_entries(vec![named(1, "First")]);
-        table.publish(&dir.0).expect("the names should publish");
+        publish_base(&dir.0, &[named(1, "First")]);
         let mut app = watching(&dir.0, &built);
 
         let named_at = |app: &App, address: i64| {
@@ -710,19 +714,15 @@ mod tests {
         };
 
         std::thread::sleep(std::time::Duration::from_millis(10));
-        table.upsert(named(2, "Second"));
-        table.publish(&dir.0).expect("a publish");
+        name(&dir.0, &[named(2, "Second")]);
         assert!(
             pump(&mut app, |app| named_at(app, 2).is_some()),
             "the first arrival was never picked up"
         );
 
-        // A second arrival, and a correction to the name the base was read
-        // with, in the same chunk.
+        // A second arrival, and a correction to the name the base holds.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        table.upsert(named(3, "Third"));
-        table.upsert(named(1, "First, Renamed"));
-        table.publish(&dir.0).expect("another publish");
+        name(&dir.0, &[named(3, "Third"), named(1, "First, Renamed")]);
         assert!(
             pump(&mut app, |app| named_at(app, 3).is_some()),
             "the second arrival was never picked up"
@@ -736,7 +736,7 @@ mod tests {
         assert_eq!(
             named_at(&app, 1).as_deref(),
             Some("FIRST, RENAMED"),
-            "and a correction answers over what the base was read with"
+            "and a rename answers over what the base was written with"
         );
         let names = app.world().resource::<Names>();
         assert_eq!(names.len(), 3, "three systems named, each counted once");
@@ -751,8 +751,7 @@ mod tests {
     ///
     /// Left unstamped, a part reads as changed — not knowing is not knowing
     /// that it did not — so the first poll would re-read every table the map
-    /// had just read, the hundred-megabyte names table among them, to find
-    /// nothing had moved.
+    /// had just read to find nothing had moved.
     #[test]
     fn startup_stamps_every_part_it_read() {
         use galos_index::source::{
@@ -767,13 +766,8 @@ mod tests {
             .expect("the reaches table should write");
         write_meta(&factions_path(&dir.0), &Vec::<Faction>::new())
             .expect("the factions table should write");
-        NameTable::from_entries(vec![NameEntry {
-            address: 1,
-            name: "First".into(),
-            position: [0.0, 900.0, 24400.0],
-        }])
-        .publish(&dir.0)
-        .expect("the names should publish");
+        publish_base(&dir.0, &[named(1, "First")]);
+        name(&dir.0, &[named(2, "Second")]);
 
         let transport: Arc<dyn IndexSource> = Arc::new(FsSource::new(&dir.0));
         let held = block_on(Held::before_reading(&*transport));
@@ -782,32 +776,27 @@ mod tests {
         assert!(held.populated.is_some(), "the populated table");
         assert!(held.reaches.is_some(), "the reaches table");
         assert!(held.factions.is_some(), "the factions table");
-        assert_eq!(
-            held.chunks.len(),
-            1,
-            "every chunk of the names table, and no more"
-        );
-        assert!(held.chunks.iter().all(Option::is_some));
+        assert!(held.names.is_some(), "the names table's base");
+        assert!(held.delta.is_some(), "and its log");
     }
+
     /// A system named mid-session becomes routable through
     ///
     /// The router's graph is bucketed off the names table at startup, so a
     /// system the feed named while the map ran was not in it: a route to it
     /// found nothing and a route past it took the long way. The refresh hands
-    /// the arrivals to [`JumpGraph::extended`], which is what closes that.
+    /// the log's rows to [`JumpGraph::extended`], which is what closes that.
     #[test]
     fn an_arrival_becomes_routable() {
         let dir = Scratch::new();
         let built = publish(&dir.0, &[input(1, 0.0), input(9, 900.0)]);
-        let named = |address: i64, at: f32| NameEntry {
+        let placed = |address: i64, at: f32| NameEntry {
             address,
             name: format!("S{address}").into(),
             position: [at, 0.0, 0.0],
         };
         // Two ends 900 ly apart, and nothing between them on record.
-        let mut table =
-            NameTable::from_entries(vec![named(1, 0.0), named(9, 900.0)]);
-        table.publish(&dir.0).expect("the names should publish");
+        publish_base(&dir.0, &[placed(1, 0.0), placed(9, 900.0)]);
 
         let mut app = watching(&dir.0, &built);
         let route = |app: &App| {
@@ -826,8 +815,7 @@ mod tests {
 
         // The feed names one in the middle.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        table.upsert(named(5, 450.0));
-        table.publish(&dir.0).expect("a publish");
+        name(&dir.0, &[placed(5, 450.0)]);
 
         assert!(
             pump(&mut app, |app| route(app).is_some()),
@@ -840,29 +828,24 @@ mod tests {
         );
     }
 
-    /// A chunk re-read with nothing new in it rebuilds nothing
+    /// A republish that says nothing new rebuilds nothing
     ///
-    /// The tail chunk moves on nearly every publish, so a pass that diffed
-    /// against the base alone would find every arrival of the session new
-    /// again each time, copy the overlay, and re-bucket the router's graph —
-    /// work that grows with the session to take in the nothing that moved.
+    /// The feed republishes every few seconds and names the same systems it
+    /// named last pass. A row only reaches the log where it changed something
+    /// ([`galos_index::Names::name`]), so a publish of what the table already
+    /// says appends nothing, moves no stamp, and is read by nobody — and the
+    /// router's graph is left alone rather than re-bucketed to take in the
+    /// nothing that moved.
     #[test]
-    fn a_chunk_with_nothing_new_rebuilds_nothing() {
+    fn a_republish_of_the_same_names_rebuilds_nothing() {
         let dir = Scratch::new();
         let built = publish(&dir.0, &[input(1, 0.0)]);
-        let named = |address: i64, name: &str| NameEntry {
-            address,
-            name: name.into(),
-            position: [0.0, 900.0, 24400.0],
-        };
-        let mut table = NameTable::from_entries(vec![named(1, "First")]);
-        table.publish(&dir.0).expect("the names should publish");
+        publish_base(&dir.0, &[named(1, "First")]);
         let mut app = watching(&dir.0, &built);
 
-        // An arrival, picked up into the overlay.
+        // An arrival, folded in.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        table.upsert(named(2, "Second"));
-        table.publish(&dir.0).expect("a publish");
+        name(&dir.0, &[named(2, "Second")]);
         assert!(
             pump(&mut app, |app| app
                 .world()
@@ -871,7 +854,7 @@ mod tests {
                 .is_some()),
             "the arrival was never picked up"
         );
-        let overlay = Arc::clone(&app.world().resource::<Names>().fresh);
+        let read_to = app.world().resource::<Names>().read_to();
         let graph = app
             .world()
             .resource::<Jumps>()
@@ -879,21 +862,21 @@ mod tests {
             .clone()
             .expect("a graph the pass can rebucket");
 
-        // The same chunk published again, holding exactly what it held: the
-        // stamp moves, so the pass reads it, and finds nothing to take.
+        // The same two systems reported again, exactly as the table has them.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        NameTable::from_entries(vec![named(1, "First"), named(2, "Second")])
-            .publish(&dir.0)
-            .expect("a republish of the same names");
+        assert_eq!(
+            name(&dir.0, &[named(1, "First"), named(2, "Second")]),
+            0,
+            "the log took rows for names it already held",
+        );
         for _ in 0..40 {
             app.update();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
-        assert!(
-            Arc::ptr_eq(&overlay, &app.world().resource::<Names>().fresh),
-            "the overlay was rebuilt to take in nothing"
-        );
+        let names = app.world().resource::<Names>();
+        assert_eq!(names.read_to(), read_to, "the log was read again");
+        assert_eq!(names.len(), 2, "two systems named, each counted once");
         assert!(
             matches!(
                 &app.world().resource::<Jumps>().0,
@@ -901,10 +884,7 @@ mod tests {
             ),
             "the router's graph was re-bucketed to take in nothing"
         );
-        assert!(
-            app.world().resource::<Names>().get(2).is_some(),
-            "and the arrival is still named"
-        );
+        assert!(names.get(2).is_some(), "and the arrival is still named");
     }
 
     /// A payload that lands for a cell the map has let go is not taken
@@ -945,37 +925,33 @@ mod tests {
         );
     }
 
-    /// The arrivals of a chunk the table stops serving go with it
+    /// A withdrawal takes a name off the map
     ///
-    /// A system withdrawn empties the tail chunk and unlinks its file, so
-    /// the map is left holding names out of a chunk that no longer answers.
-    /// Left in the overlay they would go on answering the search box,
-    /// routing jumps and counting in the diagnostics for the rest of the
-    /// session, over a sky that had already stopped drawing them.
+    /// A system the feed withdraws is a tombstone in the log, over a row the
+    /// log named or over one the base holds. Left answering, it would go on
+    /// filling the search box, routing jumps and counting in the diagnostics
+    /// for the rest of the session, over a sky that had stopped drawing it.
     #[test]
-    fn the_arrivals_of_a_chunk_that_stops_answering_go_with_it() {
+    fn a_withdrawal_takes_a_name_away() {
         let dir = Scratch::new();
-        let named = |address: i64, at: f32| NameEntry {
+        let placed = |address: i64, at: f32| NameEntry {
             address,
             name: format!("S{address}").into(),
             position: [at, 0.0, 0.0],
         };
         let built = publish(&dir.0, &[input(1, 0.0)]);
-        let mut table = NameTable::from_entries(vec![named(1, 0.0)]);
-        table.publish(&dir.0).expect("the names should publish");
+        publish_base(&dir.0, &[placed(1, 0.0)]);
 
         let mut app = watching(&dir.0, &built);
         assert_eq!(
             app.world().resource::<Names>().len(),
             1,
-            "the table as it was read"
+            "the table as it was opened"
         );
 
-        // A system named into the one chunk the table has, which the refresh
-        // reads as an arrival and files under that chunk.
+        // A system named into the log, which the refresh folds in.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        table.push(named(7, 32.0));
-        table.publish(&dir.0).expect("the arrival should publish");
+        name(&dir.0, &[placed(7, 32.0)]);
         assert!(
             pump(&mut app, |app| app
                 .world()
@@ -990,20 +966,16 @@ mod tests {
             "and the router has it as a place to jump from"
         );
 
-        // Both withdrawn: the chunk empties, and the publish takes its file
-        // with it. The refresh finds a chunk it holds a stamp for and the
-        // directory no longer has.
+        // Withdrawn again: the log says so, and the map has to stop naming it.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        assert!(table.remove(1), "the base entry was there to withdraw");
-        assert!(table.remove(7), "and so was the arrival");
-        table.publish(&dir.0).expect("the withdrawal should publish");
+        unname(&dir.0, 7);
         assert!(
             pump(&mut app, |app| app
                 .world()
                 .resource::<Names>()
                 .get(7)
                 .is_none()),
-            "the arrival is still named out of a chunk that is gone",
+            "the withdrawn system is still named",
         );
         let names = app.world().resource::<Names>();
         assert_eq!(names.address("S7"), None, "the search cannot reach it");
@@ -1015,20 +987,79 @@ mod tests {
         );
         assert!(
             names.get(1).is_some(),
-            "the table as it was read is named throughout"
+            "the row the base holds is named throughout"
         );
 
-        // And named again, which is the same chunk answering once more.
+        // And a row of the base withdrawn: the tombstone hides what the
+        // mapping still holds, the base being immutable.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        table.push(named(7, 32.0));
-        table.publish(&dir.0).expect("the second arrival should publish");
+        unname(&dir.0, 1);
         assert!(
             pump(&mut app, |app| app
                 .world()
                 .resource::<Names>()
-                .get(7)
+                .get(1)
+                .is_none()),
+            "a base row withdrawn is still named",
+        );
+        let names = app.world().resource::<Names>();
+        assert_eq!(names.address("S1"), None, "the search still reaches it");
+        assert_eq!(
+            names.points().count(),
+            0,
+            "and the router still has it as a place to jump from"
+        );
+    }
+
+    /// A base recompacted whole is re-opened rather than merged
+    ///
+    /// The rare half of the two. A fold takes the log into a new generation
+    /// and removes it, so the offset the map had read to means nothing and
+    /// there is no tail to take: the table is mapped afresh. Every name it
+    /// answered before the fold it answers after, and the router's graph —
+    /// bucketed off a base that has been written again — is dropped for the
+    /// next route to build off the table that now stands.
+    #[test]
+    fn a_recompacted_base_is_re_opened() {
+        let dir = Scratch::new();
+        let built = publish(&dir.0, &[input(1, 0.0)]);
+        publish_base(&dir.0, &[named(1, "First")]);
+        let mut app = watching(&dir.0, &built);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        name(&dir.0, &[named(2, "Second")]);
+        assert!(
+            pump(&mut app, |app| app
+                .world()
+                .resource::<Names>()
+                .get(2)
                 .is_some()),
-            "the chunk answering again never brought its systems back",
+            "the arrival was never picked up"
+        );
+
+        // The log folded into a new base, as a log grown long is.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert_eq!(
+            galos_index::names::compact(&dir.0).expect("the fold should write"),
+            2,
+            "both systems should be in the base the fold wrote",
+        );
+
+        assert!(
+            pump(&mut app, |app| app
+                .world()
+                .resource::<Names>()
+                .table
+                .delta()
+                .is_empty()),
+            "the folded-away log is still held",
+        );
+        let names = app.world().resource::<Names>();
+        assert_eq!(names.len(), 2, "both systems are still named");
+        assert_eq!(names.address("Second"), Some(2), "out of the new base");
+        assert!(
+            app.world().resource::<Jumps>().0.is_none(),
+            "the graph bucketed off the old base was kept"
         );
     }
 }

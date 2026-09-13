@@ -38,8 +38,19 @@ use tracing::debug;
 /// What one publish wrote, for the log.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Wrote {
-    /// Chunks of the names table rewritten, of however many it holds.
-    pub name_chunks: usize,
+    /// Rows appended to the names table's delta log.
+    ///
+    /// The log is that table's unit of change: a pass that named fifty
+    /// systems appends fifty rows and rewrites nothing at all, so what is
+    /// worth reporting is rows and not files. Nought where nothing was
+    /// named, which is the ordinary quiet pass.
+    pub name_rows: usize,
+    /// Whether this publish folded the log into a fresh base.
+    ///
+    /// A fold rewrites every row the table names — minutes at 200 M
+    /// systems — and happens about monthly on the live feed, so it is
+    /// reported rather than left silent. See `galos_index::names::compact`.
+    pub folded: bool,
     /// Which of the whole-file tables were rewritten.
     pub tables: Moved,
 }
@@ -47,7 +58,7 @@ pub struct Wrote {
 impl Wrote {
     /// Every table, whatever has changed.
     pub const EVERYTHING: Wrote =
-        Wrote { name_chunks: 0, tables: Moved::EVERYTHING };
+        Wrote { name_rows: 0, folded: false, tables: Moved::EVERYTHING };
 }
 
 /// The metadata sidecars as this side of the program keeps them.
@@ -138,17 +149,18 @@ impl Tables {
             }
         }
         let tables = self.patch_tables(galaxy, touched);
-        Ok(Wrote { name_chunks: 0, tables })
+        Ok(Wrote { name_rows: 0, folded: false, tables })
     }
 
     /// Take what `galaxy` says about `touched` into the tables written
     /// whole, leaving the names table alone, and answer what moved.
     ///
     /// What a cold build patches through. That build writes its own names
-    /// table a chunk at a time as it reads, so a second copy held here
-    /// would be a kilobyte a system over the galaxy — the one thing that
-    /// route exists not to hold — and would then be published over the
-    /// chunks the build had put in place.
+    /// table straight to disk as it reads — sorted and swapped in at the
+    /// end, `galos_index::names::Writer` — so a second copy held here
+    /// would be a kilobyte a system over the galaxy, the one thing that
+    /// route exists not to hold, and would then be published over the
+    /// base the build had just put in place.
     pub fn patch_tables(
         &mut self,
         galaxy: &Galaxy,
@@ -173,16 +185,23 @@ impl Tables {
     }
 
     /// Write the tables `moved` names, the ones the directory has no file
-    /// for at all, and the names table's changed chunks.
+    /// for at all, and whatever the names table has taken.
+    ///
+    /// The names go to the delta log, which is an append of the changed
+    /// rows rather than a rewrite of the table. The rewrite that does fold
+    /// them into the base is asked for afterwards — never before, the fold
+    /// reading the directory — and comes back in [`Wrote::folded`] because
+    /// it is the one part of a publish that costs minutes.
     ///
     /// [`Wrote::EVERYTHING`] writes the lot, which is what a directory being
     /// published from nothing wants.
     pub fn write(&mut self, dir: &Path, moved: Wrote) -> io::Result<Wrote> {
         let mut tables = moved.tables;
         tables.absorb(self.absent);
-        let name_chunks = self.held.write(dir, tables)?;
+        let name_rows = self.held.write(dir, tables)?;
+        let folded = self.held.compact_names(dir)?;
         self.absent = Moved::default();
-        Ok(Wrote { name_chunks, tables })
+        Ok(Wrote { name_rows, folded, tables })
     }
 }
 

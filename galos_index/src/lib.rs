@@ -42,6 +42,7 @@ pub mod orbit;
 pub mod pack;
 pub mod region;
 pub mod report;
+pub mod rows;
 pub mod serialization;
 pub mod sidecars;
 pub mod source;
@@ -71,7 +72,7 @@ pub use meta::{
 };
 pub use moments::Moments;
 pub use name::SystemName;
-pub use names::{Chunks, NameTable};
+pub use names::{Delta, Names, Said, Table, Writer};
 pub use orbit::{Orbit, Orbits, Spacing};
 pub use report::SystemReport;
 pub use serialization::{Codec, Decode, Encode, FixedCodec};

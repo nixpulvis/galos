@@ -13,8 +13,8 @@ use crate::{Database, Result};
 use async_std::stream::StreamExt;
 use futures_core::stream::BoxStream;
 use galos_index::{
-    derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, Chunks,
-    ColdReport, Ending, Index, Pending, Start, System, Taking, Tree,
+    derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, ColdReport,
+    Ending, Index, Pending, Start, System, Taking, Tree,
 };
 use galos_photometry::{Magnitude, Temperature};
 use metadata::{Metadata, Moved};
@@ -336,6 +336,13 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
             );
         }
     }
+    if let Some(named) = done.names {
+        info!(
+            named,
+            dir = %dir.display(),
+            "folded the names chunks into a mapped base"
+        );
+    }
     Ok(())
 }
 
@@ -407,14 +414,14 @@ pub async fn build_to_dir(
                 regions = report.regions,
                 budget,
                 named = report.named,
-                chunks = report.chunks,
+                rows = report.named_rows,
                 "cut the galaxy into regions and built each alone"
             );
             Some(report)
         }
     };
     // The names table alone, for a repair that wants it and not the tree:
-    // one streamed read and one chunk in memory at a time.
+    // one streamed read, and the rows sorted on disk rather than in memory.
     if parts.names && !parts.cells {
         write_names(db, dir).await?;
     }
@@ -426,9 +433,12 @@ pub async fn build_to_dir(
 /// Write the names table and nothing else, streaming.
 ///
 /// For `--only names`; a cold build writes it beside the cells out of the
-/// same read.
+/// same read. Answers how many systems the published table names. The read
+/// is `ORDER BY address`, which is the order the table wants, so the
+/// writer's external sort has nothing to do but merge one already ordered
+/// run.
 async fn write_names(db: &Database, dir: &Path) -> Result<usize> {
-    let mut names = Chunks::writing(dir);
+    let mut names = galos_index::names::Writer::writing(dir)?;
     let query = format!(
         "{} WHERE position IS NOT NULL ORDER BY address",
         metadata::NAMES_SELECT
@@ -437,9 +447,7 @@ async fn write_names(db: &Database, dir: &Path) -> Result<usize> {
     while let Some(row) = rows.next().await {
         names.push(metadata::name_from_row(&row?)?)?;
     }
-    let named = names.named();
-    names.finish()?;
-    Ok(named)
+    Ok(names.finish()?)
 }
 
 /// The systems of `addresses` as build input.
@@ -725,7 +733,8 @@ fn record(
 /// pass runs is asked for by the next pass rather than passed over by both.
 ///
 /// The cells and the three tables written whole are written once, after the
-/// last chunk; the body files and the names chunks go as the chunks do.
+/// last chunk; the body files and the names table's appends go as the
+/// chunks do.
 ///
 /// The resume point is written after the publish and never before it, which
 /// is why the pass holds what it applied rather than logging each chunk: a
@@ -774,7 +783,7 @@ async fn pass(
         changed = applied.len(),
         pages = touched.len().div_ceil(CHANGED_CHUNK),
         systems = level.tree.len(),
-        chunks = report.name_chunks,
+        rows = report.name_rows,
         bodies = report.body_files,
         compacted = folding,
         elapsed = ?start.elapsed(),
@@ -982,18 +991,18 @@ mod tests {
             .collect();
         let mut tree = Tree::build(&inputs, &params);
         tree.write(&dir).expect("the tree should write");
-        galos_index::NameTable::from_entries(
-            inputs
-                .iter()
-                .map(|system| galos_index::meta::NameEntry {
+        let mut names = galos_index::names::Writer::writing(&dir)
+            .expect("the names writer should open");
+        for system in &inputs {
+            names
+                .push(galos_index::meta::NameEntry {
                     address: system.id64 as i64,
                     name: format!("TEST {}", system.id64).into(),
                     position: [system.position[0] as f32, 0.0, 0.0],
                 })
-                .collect(),
-        )
-        .publish(&dir)
-        .expect("the names should write");
+                .expect("a name should push");
+        }
+        names.finish().expect("the names should publish");
         let empty: Vec<u8> = Vec::new();
         for table in [
             galos_index::source::populated_path(&dir),

@@ -316,18 +316,19 @@ fn searched(
 
 /// The systems whose name holds `query`, nearest `near` first, at most `limit`
 ///
-/// A linear scan of the resident names table, which a search can afford: it is
-/// asked when the user types rather than every frame. Ranked by distance to
-/// where the camera looks, so a common fragment answers with the systems in
-/// front of the user rather than in whatever order the table holds them.
+/// The matching is the index's, off the published table: the names that start
+/// with the query come out of its by-name order first, then the ones that
+/// merely hold it, and the cap is applied there rather than by collecting
+/// every match. What is done here is rank the few that came back by how far
+/// they are from where the camera looks, so a common fragment answers with
+/// the systems in front of the user rather than in the order the table holds
+/// them.
 fn search_names(
     names: &Names,
     query: &str,
     near: Option<DVec3>,
     limit: usize,
 ) -> Vec<NameEntry> {
-    // Capped by the caller rather than collected whole and sorted down: a
-    // query of one letter matches most of the galaxy.
     let mut found: Vec<NameEntry> = names.find(query, limit);
     if let Some(near) = near {
         found.sort_by(|a, b| {

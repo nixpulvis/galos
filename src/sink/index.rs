@@ -237,6 +237,18 @@ impl Index {
                         );
                     }
                 }
+                // The names table folded out of MessagePack chunks, which
+                // is a whole-table rewrite that happens once ever and
+                // never again. An operator watching a run start deserves
+                // to know why the first open of an old directory took
+                // minutes.
+                if let Some(named) = done.names {
+                    info!(
+                        named = named,
+                        dir = %dir.display(),
+                        "folded the names chunks into a mapped table"
+                    );
+                }
             }
             Err(err) => return Err(format!("{}: {err}", dir.display())),
         }
@@ -732,7 +744,8 @@ impl Index {
             touched = touched.len(),
             moved = placed,
             systems = self.tree.len(),
-            chunks = wrote.name_chunks,
+            rows = wrote.name_rows,
+            folded = wrote.folded,
             bodies = bodies,
             cursor = cursor.is_some(),
             elapsed = ?start.elapsed(),
@@ -811,7 +824,8 @@ impl Index {
             wrote = "whole",
             moved = self.tree.len(),
             systems = self.tree.len(),
-            chunks = wrote.name_chunks,
+            rows = wrote.name_rows,
+            folded = wrote.folded,
             bodies = bodies,
             cursor = cursor.is_some(),
             elapsed = ?start.elapsed(),
@@ -865,12 +879,18 @@ mod tests {
             .map_or(0, |root| root.aggregate.count())
     }
 
+    /// Every name a published directory holds, sorted.
+    ///
+    /// Read through the mapped table the map itself reads, not the rows a
+    /// publish appended: what a client sees is the base with the log over
+    /// it, and a name withdrawn since is gone from that.
     fn names(dir: &Path) -> Vec<String> {
         let read = FsSource::new(dir);
-        let mut said: Vec<String> = pollster::block_on(read.names())
-            .expect("the names read")
-            .into_iter()
-            .map(|it| it.name.into_string())
+        let table = pollster::block_on(read.names()).expect("the names read");
+        let mut said: Vec<String> = table
+            .addresses()
+            .filter_map(|address| table.name_of(address))
+            .map(str::to_owned)
             .collect();
         said.sort();
         said
@@ -1799,14 +1819,16 @@ mod tests {
         });
         drop(sink);
 
-        // The four whole-file tables, the names chunks, the index file and
-        // the resume point, each a file a client or a restart reads.
+        // The four whole-file tables, the names log, the index file and
+        // the resume point, each a file a client or a restart reads. The
+        // log and not a base: a run of the feed appends the rows it named
+        // and never writes a generation, which is what the fold is for.
         for path in [
             galos_index::source::populated_path(&dir),
             galos_index::source::reaches_path(&dir),
             galos_index::source::boosts_path(&dir),
             galos_index::source::factions_path(&dir),
-            galos_index::source::names_chunk_path(&dir, 0),
+            galos_index::source::names_delta_path(&dir),
             dir.join(galos_index::store::INDEX_FILE),
             checkpoint.clone(),
         ] {

@@ -25,12 +25,14 @@
 //!   there is, and the database here is this test's own and holds nothing
 //!   else, so what either directory is compared over is named rather than
 //!   taken wholesale only because a body file is read per system.
-//! - **The order of the names table.** `galos_index::names` says that order
-//!   is not an invariant — the chunk a system sits in is wherever it was
-//!   first appended — so the names are compared as a set. The order *inside*
-//!   a system is the opposite: both derivations write a body file in `id`
-//!   order, so a system's stars, bodies and barycentres are compared as
-//!   lists.
+//! - **The names table's row order.** Address-sorted now, both derivations
+//!   publishing it through `galos_index::names::Writer` — so the order *is*
+//!   an invariant of the format, and what keeps it out of the comparison is
+//!   the comparison's own shape: each side is cut down to the systems this
+//!   test owns, a handful out of a mapped table, so what is checked is the
+//!   content keyed by address. The order *inside* a system is compared:
+//!   both derivations write a body file in `id` order, so a system's stars,
+//!   bodies and barycentres are compared as lists.
 //! - **The cell payloads.** A payload's magnitude and temperature come from
 //!   `galos_index::derive::lit` over exactly the stars compared here, and
 //!   that function is one copy with tests of its own. What the comparison
@@ -278,8 +280,9 @@ fn readings() -> Vec<(Arc<Entry<Event>>, Reporter<'static>)> {
 /// Everything a directory publishes about the systems this test owns.
 #[derive(Debug, PartialEq)]
 struct Published {
-    /// Address to name and place, as a map: the table's row order is not an
-    /// invariant of the format.
+    /// Address to name and place. Keyed rather than listed because each
+    /// side is cut down to the systems this test owns, which is no part of
+    /// either published table's own order.
     names: HashMap<i64, (String, [f32; 3])>,
     populated: HashMap<i64, PopulatedSystem>,
     reaches: HashMap<i64, f32>,
@@ -293,13 +296,14 @@ impl Published {
         let owned = ours();
         let ours = |address: &i64| owned.contains(address);
 
-        let names = source
-            .names()
-            .await
-            .expect("the names table")
-            .into_iter()
-            .filter(|it| ours(&it.address))
-            .map(|it| (it.address, (it.name.to_string(), it.position)))
+        let table = source.names().await.expect("the names table");
+        let names = table
+            .addresses()
+            .filter(|address| ours(address))
+            .filter_map(|address| {
+                let entry = table.entry_of(address)?;
+                Some((address, (entry.name.to_string(), entry.position)))
+            })
             .collect();
         let populated = source
             .populated()

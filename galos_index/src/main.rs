@@ -63,6 +63,12 @@ enum Command {
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
+    /// Fold a directory's MessagePack names chunks into the mapped table.
+    FoldNames {
+        /// The index directory to fold.
+        #[arg(default_value = ".galos_index")]
+        dir: PathBuf,
+    },
 }
 
 fn main() {
@@ -72,6 +78,7 @@ fn main() {
             diff(&a, &b, Compare { bodies, detail, limit })
         }
         Command::Pack { dir } => pack(&dir),
+        Command::FoldNames { dir } => fold_names(&dir),
     }
 }
 
@@ -80,10 +87,14 @@ fn main() {
 /// The same migration a sync runs at every open, for a directory nothing is
 /// about to sync: a galaxy of loose files is hours of packing, and an
 /// operator would rather spend them on purpose. Interruptible, idempotent,
-/// and safe to run against a directory a map is reading — a loose file is
+/// and safe to run against a directory a map is *reading* — a loose file is
 /// dropped only once the pack holds its record, and a read falls back to
 /// whatever is still loose.
+///
+/// Not safe to run against a directory something is *writing*, which is
+/// what [`held`] is for.
 fn pack(dir: &Path) {
+    let _lock = held(dir);
     let start = std::time::Instant::now();
     match galos_index::pack::pack(dir, &|| false) {
         Ok(done) => println!(
@@ -98,6 +109,52 @@ fn pack(dir: &Path) {
         ),
         Err(e) => {
             eprintln!("cannot pack {}: {e}", dir.display());
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Fold a directory's names chunks into the mapped table, saying what it
+/// came to.
+///
+/// The same migration a sync runs at its open, for a directory nothing is
+/// about to sync — a galaxy's worth of chunks is an external sort of
+/// gigabytes, and an operator would rather spend it on purpose than
+/// discover it at the front of a build.
+///
+/// Idempotent: a directory with no chunks left has nothing to fold. Safe
+/// to run against a directory a map is *reading*, the table being swapped
+/// in by one rename and the chunks removed only after.
+fn fold_names(dir: &Path) {
+    let _lock = held(dir);
+    let start = std::time::Instant::now();
+    match galos_index::names::fold_chunks(dir) {
+        Ok(Some(named)) => println!(
+            "{}: {named} systems folded into the mapped table in {:.1?}",
+            dir.display(),
+            start.elapsed(),
+        ),
+        Ok(None) => println!("{}: no names chunks to fold", dir.display()),
+        Err(e) => fatal(dir, e),
+    }
+}
+
+/// Take the directory for as long as this command holds it, or refuse.
+///
+/// Every command here that *writes* needs it, and for the reason the lock
+/// exists: a builder and one of these share scratch paths — the names
+/// writer's is `names/.building`, and whoever opens it second removes what
+/// the first is streaming into. Measured the hard way: a fold run beside a
+/// live import unlinked the import's row file and the build ended in a bare
+/// "No such file or directory" three minutes later.
+///
+/// `galos-sync` takes the same lock, so either order of the two refuses
+/// rather than interleaves.
+fn held(dir: &Path) -> galos_index::Lock {
+    match galos_index::Lock::take(dir) {
+        Ok(lock) => lock,
+        Err(err) => {
+            eprintln!("{err}");
             std::process::exit(2);
         }
     }
@@ -476,12 +533,10 @@ fn names(a: &Path, b: &Path, how: &Compare) -> Verdict {
     println!("  names         {} entries in A, {} in B", left.0, right.0);
     match how.detail {
         true => {
-            let left = source::read_names(a).unwrap_or_else(|e| fatal(a, e));
-            let right = source::read_names(b).unwrap_or_else(|e| fatal(b, e));
             rows(
                 "names rows",
-                Some(left),
-                Some(right),
+                Some(entries(a).unwrap_or_else(|e| fatal(a, e))),
+                Some(entries(b).unwrap_or_else(|e| fatal(b, e))),
                 |it: &NameEntry| it.address,
                 how,
             );
@@ -493,31 +548,37 @@ fn names(a: &Path, b: &Path, how: &Compare) -> Verdict {
 
 /// A names table's count and an order-independent digest of its entries.
 ///
-/// Chunks are numbered from zero with no manifest, so the first one missing
-/// is the end of the table.
+/// Read off the mapping a row at a time, base and log together, so the
+/// digest of a galaxy costs a row and not a table.
 fn digest(dir: &Path) -> io::Result<(usize, u64, u64)> {
+    let held = galos_index::Names::open(dir)?;
     let (mut count, mut sum, mut xor) = (0usize, 0u64, 0u64);
-    for chunk in 0.. {
-        let path = source::names_chunk_path(dir, chunk);
-        let entries: Vec<NameEntry> = match source::read_meta(&path) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
-            Err(e) => return Err(e),
+    for address in held.addresses() {
+        let Some(entry) = held.entry_of(address) else {
+            continue;
         };
-        for entry in &entries {
-            let mut hasher = DefaultHasher::new();
-            entry.address.hash(&mut hasher);
-            entry.name.hash(&mut hasher);
-            for axis in entry.position {
-                axis.to_bits().hash(&mut hasher);
-            }
-            let hash = hasher.finish();
-            count += 1;
-            sum = sum.wrapping_add(hash);
-            xor ^= hash;
+        let mut hasher = DefaultHasher::new();
+        entry.address.hash(&mut hasher);
+        entry.name.hash(&mut hasher);
+        for axis in entry.position {
+            axis.to_bits().hash(&mut hasher);
         }
+        let hash = hasher.finish();
+        count += 1;
+        sum = sum.wrapping_add(hash);
+        xor ^= hash;
     }
     Ok((count, sum, xor))
+}
+
+/// Every row of a names table, for the road that names them.
+///
+/// The one place a whole table is held: `--detail` is asked for a pair of
+/// directories a human is going to read the difference between, not for a
+/// galaxy.
+fn entries(dir: &Path) -> io::Result<Vec<NameEntry>> {
+    let held = galos_index::Names::open(dir)?;
+    Ok(held.addresses().filter_map(|at| held.entry_of(at)).collect())
 }
 
 /// The three tables a record can fill.

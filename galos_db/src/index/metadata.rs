@@ -34,6 +34,7 @@ use sqlx::postgres::PgRow;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
+use tracing::info;
 
 /// The columns a [`meta::NameEntry`] is read from.
 pub(super) const NAMES_SELECT: &str = "SELECT address, name, \
@@ -61,7 +62,7 @@ const POPULATED_SELECT: &str = "SELECT address, name, \
 
 /// The metadata artifacts, and how much of each a publish wrote.
 ///
-/// The tables are counted whole; `name_chunks` and `body_files` are what the
+/// The tables are counted whole; `name_rows` and `body_files` are what the
 /// publish touched. [`None`] where the publish was not asked for that part —
 /// see [`super::Parts`].
 #[derive(Copy, Clone, Debug, Default)]
@@ -74,8 +75,9 @@ pub struct MetaReport {
     /// How many systems can supercharge a drive, which is four in a hundred.
     pub boosts: Option<usize>,
     pub body_files: Option<usize>,
-    /// How many of the names table's chunks were written.
-    pub name_chunks: usize,
+    /// How many rows the publish appended to the names table's delta log,
+    /// which is one per system named or withdrawn since the publish before.
+    pub name_rows: usize,
 }
 
 /// What was written, table by table, with the tables left alone named as kept.
@@ -116,10 +118,11 @@ pub(super) struct Metadata {
 impl Metadata {
     /// The tables as `dir` holds them, read back with no database at all.
     ///
-    /// What a `--watch` restart resumes onto. The names chunks come back
-    /// with their boundaries intact, so the next publish appends where the
-    /// run before it left off. A file missing is read back as empty, and the
-    /// first pass over a qualifying system puts it there.
+    /// What a `--watch` restart resumes onto. The names table comes back as
+    /// its mapped base and however far the delta log had been read, so the
+    /// next publish appends where the run before it left off rather than
+    /// rewriting what is already logged. A file missing is read back as
+    /// empty, and the first pass over a qualifying system puts it there.
     pub(super) fn resume(dir: &Path) -> io::Result<Metadata> {
         let (held, _absent) = Sidecars::resume(dir)?;
         let high = held.highest_faction();
@@ -208,9 +211,9 @@ impl Metadata {
         Ok((moved, write_bodies(dir, &grouped, touched)?))
     }
 
-    /// Write everything one pass's chunks moved: the names chunks the
-    /// arrivals landed in, the whole tables any chunk dirtied, and the
-    /// factions named since the pass before.
+    /// Write everything one pass's chunks moved: the rows the arrivals
+    /// appended to the names log, the whole tables any chunk dirtied, and
+    /// the factions named since the pass before.
     ///
     /// The faction sweep is here rather than in [`patch`](Metadata::patch)
     /// because it is not about the addresses that changed: one query past
@@ -230,7 +233,8 @@ impl Metadata {
         self.publish(dir, moved, body_files)
     }
 
-    /// Write the dirty names chunks and whichever whole tables `moved` names.
+    /// Append the names the pass took and write whichever whole tables
+    /// `moved` names.
     ///
     /// A watch has the tables in hand, so what it writes is decided by what
     /// moved; a build wanting one part goes through [`write_parts`]. The
@@ -241,7 +245,18 @@ impl Metadata {
         moved: Moved,
         body_files: usize,
     ) -> Result<MetaReport> {
-        let name_chunks = self.held.write(dir, moved)?;
+        let name_rows = self.held.write(dir, moved)?;
+        // After the write and never before it: the fold reads the directory,
+        // so what was taken has to be in it first. Rare by design — the log
+        // reaches the threshold about monthly on the live feed — and a whole
+        // base rewrite is minutes at 200 M systems, so an operator watching
+        // a pass stall wants to be told which one folded.
+        if self.held.compact_names(dir)? {
+            info!(
+                dir = %dir.display(),
+                "folded the names log into a new base"
+            );
+        }
         let counts = self.held.counts();
         Ok(MetaReport {
             populated: Some(counts.populated),
@@ -250,7 +265,7 @@ impl Metadata {
             reaches: Some(counts.reaches),
             boosts: Some(counts.boosts),
             body_files: Some(body_files),
-            name_chunks,
+            name_rows,
         })
     }
 }
@@ -263,8 +278,9 @@ impl Metadata {
 /// every scanned thing.
 ///
 /// The names table is not among them: it comes out of the same read of
-/// `systems` the cell tree does, a chunk at a time, a galaxy of name entries
-/// held to be published afterwards being tens of gigabytes.
+/// `systems` the cell tree does, streamed row by row into
+/// [`galos_index::names::Writer`], a galaxy of name entries held to be
+/// published afterwards being tens of gigabytes.
 pub(super) async fn write_parts(
     db: &Database,
     dir: &Path,
@@ -1245,8 +1261,9 @@ mod tests {
             .expect("reaches");
         source::write_meta(&source::factions_path(&dir), &empty)
             .expect("factions");
-        galos_index::NameTable::from_entries(Vec::new())
-            .publish(&dir)
+        galos_index::names::Writer::writing(&dir)
+            .expect("names")
+            .finish()
             .expect("names");
 
         // Nothing where the table would be: the case the tolerance is for.

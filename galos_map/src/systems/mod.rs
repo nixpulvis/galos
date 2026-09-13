@@ -140,10 +140,9 @@ pub(crate) struct System {
     ///
     /// What [`filter`]'s span is asked of: which systems have been heard from
     /// inside the last minute, hour, thirty days. The database's own
-    /// `updated_at`, carried through the index on the payload point — the one
-    /// published table that is rewritten a cell at a time rather than a chunk
-    /// at a time, so a stamp that moves whenever a system is reported costs
-    /// tens of kilobytes a pass instead of the names table's megabytes.
+    /// `updated_at`, carried through the index on the payload point — the
+    /// table that is rewritten a cell at a time, so a stamp that moves
+    /// whenever a system is reported costs tens of kilobytes a pass.
     ///
     /// [`None`] where the system was built with no payload point behind it: a
     /// route's stops and a searched system flown to, which come off the names

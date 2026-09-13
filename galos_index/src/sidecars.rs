@@ -25,7 +25,7 @@
 use crate::meta::{
     Boost, Faction, NameEntry, PopulatedSystem, SystemBoost, SystemReach,
 };
-use crate::names::NameTable;
+use crate::names::Names;
 use crate::source::{
     boosts_path, factions_path, populated_path, reaches_path, read_meta,
     write_meta,
@@ -105,7 +105,7 @@ pub struct Counts {
 /// the order being the format's so that the same content is the same bytes.
 #[derive(Debug)]
 pub struct Sidecars {
-    names: NameTable,
+    names: Names,
     populated: HashMap<i64, PopulatedSystem>,
     reaches: HashMap<i64, f32>,
     boosts: HashMap<i64, Boost>,
@@ -117,16 +117,10 @@ pub struct Sidecars {
 impl Sidecars {
     /// Nothing published yet.
     pub fn empty() -> Sidecars {
-        Sidecars::over(NameTable::default())
+        Sidecars::over(Names::default())
     }
 
-    /// The tables of a full build, whose names table is the other half of
-    /// the read the cell tree came out of, built as those rows arrived.
-    pub fn building(names: NameTable) -> Sidecars {
-        Sidecars::over(names)
-    }
-
-    fn over(names: NameTable) -> Sidecars {
+    fn over(names: Names) -> Sidecars {
         Sidecars {
             names,
             populated: HashMap::new(),
@@ -152,13 +146,7 @@ impl Sidecars {
     /// over it. A caller that expects all five to be there can refuse
     /// instead.
     pub fn resume(dir: &Path) -> io::Result<(Sidecars, Moved)> {
-        let names = match NameTable::read(dir) {
-            Ok(names) => names,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                NameTable::from_entries(Vec::new())
-            }
-            Err(err) => return Err(err),
-        };
+        let names = Names::open(dir)?;
         let populated: Option<Vec<PopulatedSystem>> =
             optional(&populated_path(dir))?;
         let reaches: Option<Vec<SystemReach>> = optional(&reaches_path(dir))?;
@@ -193,8 +181,8 @@ impl Sidecars {
         Ok((held, absent))
     }
 
-    /// Write the names chunks that moved and whichever whole tables `moved`
-    /// names, answering how many name chunks were written.
+    /// Append what the names table has taken and write whichever whole
+    /// tables `moved` names, answering how many name rows were appended.
     ///
     /// Everything else a caller needs for its own report is [`Self::counts`].
     /// The per-system body files are not here: one side writes them from the
@@ -216,6 +204,26 @@ impl Sidecars {
         self.names.publish(dir)
     }
 
+    /// Fold the names log into its base where it has grown long enough to
+    /// be worth the rewrite, answering whether it did.
+    ///
+    /// Called after [`write`](Self::write), never before: the fold reads
+    /// the directory, so what has been taken has to be in it first. The
+    /// table is re-opened onto the generation the fold wrote, the one it
+    /// held having just been unlinked.
+    ///
+    /// Rare by design — see [`crate::names::Delta::worth_folding`]. The
+    /// rewrite is the whole base, which is minutes at 200 M systems, and
+    /// the log reaches the threshold about monthly on the live feed.
+    pub fn compact_names(&mut self, dir: &Path) -> io::Result<bool> {
+        if !self.names.worth_compacting() {
+            return Ok(false);
+        }
+        crate::names::compact(dir)?;
+        self.names = Names::open(dir)?;
+        Ok(true)
+    }
+
     /// How many rows each table holds.
     pub fn counts(&self) -> Counts {
         Counts {
@@ -229,15 +237,16 @@ impl Sidecars {
 
     /// Put a system's name and place in the table.
     ///
-    /// `upsert` leaves a chunk alone where nothing in it changed, so naming
-    /// one system does not rewrite a hundred-megabyte table.
+    /// Nothing is written where the table already says exactly this, so a
+    /// system reported again costs one binary search into a mapping — which
+    /// is what the resident table used to be for.
     pub fn name(&mut self, entry: NameEntry) {
-        self.names.upsert(entry);
+        self.names.name(entry);
     }
 
     /// Take a system out of the names table, answering whether it was there.
     pub fn unname(&mut self, address: i64) -> bool {
-        self.names.remove(address)
+        self.names.unname(address)
     }
 
     /// Every address the names table holds.

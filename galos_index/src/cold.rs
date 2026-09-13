@@ -17,7 +17,7 @@
 use crate::bucket::{self, Buckets, Formed};
 use crate::checkpoint::{By, Checkpoint, Compaction};
 use crate::meta::NameEntry;
-use crate::names::Chunks;
+use crate::names;
 use crate::region::{self, Crown, Offer};
 use crate::source::{read_meta, write_meta};
 use crate::spill::Spilled;
@@ -184,7 +184,7 @@ pub struct Build<'a> {
     /// Where each system has been spilled, by bucket.
     buckets: Buckets,
     /// The names table, written as the names arrive.
-    names: Chunks,
+    names: names::Writer,
     /// Where the caller says it has read to, for the mark a publish
     /// writes. See [`mark`](Self::mark).
     place: Vec<u8>,
@@ -283,7 +283,7 @@ impl<'a> Build<'a> {
         let names = match start {
             Start::Fresh => {
                 let _ = std::fs::remove_file(mark_path(checkpoint));
-                Chunks::writing(dir)
+                names::Writer::writing(dir)?
             }
             Start::Resuming(_) => {
                 let published = Checkpoint::read(checkpoint)?;
@@ -293,7 +293,7 @@ impl<'a> Build<'a> {
                 for &system in published.deltas() {
                     buckets.push(system)?;
                 }
-                Chunks::onto(dir)?
+                names::Writer::onto(dir)?
             }
         };
         Ok(Build {
@@ -438,18 +438,25 @@ impl<'a> Build<'a> {
             std::fs::remove_file(&formed.spills[&region])?;
         }
         let _ = std::fs::remove_dir_all(&scratch);
-        base.finish(cursor, by)?;
+        // Each of the last four steps writes a whole part of the
+        // directory, and an `io::Error` off one of them carries no path —
+        // a bare "No such file or directory" out of a build over a galaxy
+        // is three hours of not knowing which file. Named, so it says.
+        step("the resume point", base.finish(cursor, by))?;
 
         let index = region::joined(&crown, indexes.iter().skip(1));
-        let chunks = names.finish()?;
-        index.write(&dir)?;
+        let published = step("the names table", names.finish())?;
+        step("the index file", index.write(&dir))?;
         // Last, and only where the caller said where it had read to: the
         // mark stands for a published directory, so it goes out behind the
         // index file rather than in front of it.
         if !place.is_empty() {
-            write_meta(
-                &mark_path(&checkpoint),
-                &Mark { cursor: place, systems: taken },
+            step(
+                "the resume mark",
+                write_meta(
+                    &mark_path(&checkpoint),
+                    &Mark { cursor: place, systems: taken },
+                ),
             )?;
         }
         Ok(Built::Index(ColdReport::of_index(
@@ -457,21 +464,30 @@ impl<'a> Build<'a> {
             points,
             regions,
             over_budget,
-            Pass { named, chunks },
+            Pass { taken: named, named: published },
             &index,
         )))
     }
 }
 
-/// A build that published nothing, tidied: the scratch spills and the
-/// staged names chunks go, there being no reader for either.
+/// Say which part of a publish an error came out of.
 ///
-/// Nothing of the served directory is theirs — the chunks were staged in
-/// `.building` and the spills sit beside the resume point — so what stood
-/// in the directory still stands.
+/// The steps that write a whole part of the directory each touch several
+/// files, and `std::fs` errors name none of them. A build is hours, so an
+/// error it ends with has to be worth reading.
+fn step<T>(what: &str, done: io::Result<T>) -> io::Result<T> {
+    done.map_err(|err| io::Error::new(err.kind(), format!("{what}: {err}")))
+}
+
+/// A build that published nothing, tidied: the scratch spills and the
+/// staged names sections go, there being no reader for either.
+///
+/// Nothing of the served directory is theirs — the sections were staged in
+/// the names directory's own `.building`, and the spills sit beside the
+/// resume point — so what stood in the directory still stands.
 fn stopped(
     scratch: &Path,
-    names: Chunks,
+    names: names::Writer,
     abandoned: Abandoned,
 ) -> io::Result<Built> {
     names.abandon()?;
@@ -483,10 +499,7 @@ fn stopped(
 ///
 /// One region's systems in memory at a time: an offer is the counts a cell
 /// above the region would take from it, not the systems themselves.
-fn offers(
-    formed: &Formed,
-    params: &BuildParams,
-) -> io::Result<Vec<Offer>> {
+fn offers(formed: &Formed, params: &BuildParams) -> io::Result<Vec<Offer>> {
     let mut offered = Vec::with_capacity(formed.cut.regions().len());
     for &region in formed.cut.regions() {
         let spilled = Spilled::open(&formed.spills[&region])?;
@@ -511,8 +524,10 @@ fn spill_dir(checkpoint: &Path) -> PathBuf {
 
 /// What the names table came to, carried through to the report.
 struct Pass {
+    /// Rows pushed, which counts a system named twice twice.
+    taken: usize,
+    /// Systems the published table names.
     named: usize,
-    chunks: usize,
 }
 
 /// What a cold build came to, for a caller to print and check.
@@ -536,10 +551,11 @@ pub struct ColdReport {
     /// memory, so a build answering more than zero here is one that asked
     /// for more than it was given.
     pub over_budget: usize,
-    /// Systems in the names table.
+    /// Systems the published names table names. Fewer than the rows taken
+    /// where a read named the same system more than once.
     pub named: usize,
-    /// Chunks the names table is written in.
-    pub chunks: usize,
+    /// Rows pushed into the names table as the galaxy was read.
+    pub named_rows: usize,
 }
 
 impl ColdReport {
@@ -574,7 +590,7 @@ impl ColdReport {
             regions,
             over_budget,
             named: pass.named,
-            chunks: pass.chunks,
+            named_rows: pass.taken,
         }
     }
 
@@ -609,7 +625,8 @@ impl fmt::Display for ColdReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::names::NameTable;
+    use crate::names::Names;
+    use crate::source::NAMES_DIR;
     use std::cell::Cell;
     use std::collections::{BTreeMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -808,8 +825,9 @@ mod tests {
             );
         }
 
-        let names = NameTable::read(dir).expect("the names table");
+        let names = Names::open(dir).expect("the names table");
         assert_eq!(names.len(), systems.len());
+        names.base().audit().expect("a table a cold build wrote");
     }
 
     /// A cold build writes the directory a whole build would have written,
@@ -821,8 +839,8 @@ mod tests {
         let systems = galaxy(40_000);
         let at = Scratch::new("cold");
 
-        let report = built(&at, "cold", params, 6_000, &systems)
-            .expect("a cold build");
+        let report =
+            built(&at, "cold", params, 6_000, &systems).expect("a cold build");
 
         assert_eq!(report.systems, systems.len());
         assert!(report.is_consistent(), "{report}");
@@ -841,8 +859,8 @@ mod tests {
         let systems = lumpy(40_000);
         let at = Scratch::new("lumpy");
 
-        let report = built(&at, "lumpy", params, 6_000, &systems)
-            .expect("a cold build");
+        let report =
+            built(&at, "lumpy", params, 6_000, &systems).expect("a cold build");
 
         assert_eq!(report.systems, systems.len());
         assert!(report.is_consistent(), "{report}");
@@ -916,19 +934,14 @@ mod tests {
 
     /// Every file of `dir` by its path within it, and what it holds.
     fn contents(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-        fn walk(
-            root: &Path,
-            at: &Path,
-            into: &mut BTreeMap<PathBuf, Vec<u8>>,
-        ) {
+        fn walk(root: &Path, at: &Path, into: &mut BTreeMap<PathBuf, Vec<u8>>) {
             for entry in std::fs::read_dir(at).expect("a directory") {
                 let path = entry.expect("an entry").path();
                 if path.is_dir() {
                     walk(root, &path, into);
                     continue;
                 }
-                let within =
-                    path.strip_prefix(root).expect("inside the root");
+                let within = path.strip_prefix(root).expect("inside the root");
                 into.insert(
                     within.to_owned(),
                     std::fs::read(&path).expect("a file"),
@@ -978,9 +991,8 @@ mod tests {
         }
         assert_eq!(pushed.get(), 66_000);
 
-        let stopped = build
-            .finish(By::Database, None, Ending::Abandon)
-            .expect("a build");
+        let stopped =
+            build.finish(By::Database, None, Ending::Abandon).expect("a build");
         let Built::Stopped(abandoned) = stopped else {
             panic!("it ran to its end: {:?}", stopped)
         };
@@ -991,10 +1003,7 @@ mod tests {
             resume_point,
             "the resume point was written over",
         );
-        assert!(
-            !spill_dir(&checkpoint).exists(),
-            "the spills are still there",
-        );
+        assert!(!spill_dir(&checkpoint).exists(), "the spills are still there",);
         assert!(
             !checkpoint.with_extension("tmp").exists(),
             "a base nothing will read is still there",
@@ -1007,7 +1016,7 @@ mod tests {
         assert_eq!(report.systems, systems.len());
         assert!(report.is_consistent(), "{report}");
         assert_eq!(
-            NameTable::read(&dir).expect("the names table").len(),
+            Names::open(&dir).expect("the names table").len(),
             systems.len(),
         );
         assert!(dir.join(INDEX_FILE).exists(), "no index file was written");
@@ -1072,10 +1081,7 @@ mod tests {
             dir.join(INDEX_FILE).exists(),
             "a stopped read left no index to open",
         );
-        assert_eq!(
-            NameTable::read(&dir).expect("the names table").len(),
-            40_000,
-        );
+        assert_eq!(Names::open(&dir).expect("the names table").len(), 40_000,);
 
         let left = left_off(&checkpoint).expect("a mark to take up");
         assert_eq!(left.systems(), 40_000);
@@ -1101,9 +1107,8 @@ mod tests {
                 Taking::More,
             );
         }
-        let Built::Index(report) = build
-            .finish(By::Database, None, Ending::Publish)
-            .expect("a build")
+        let Built::Index(report) =
+            build.finish(By::Database, None, Ending::Publish).expect("a build")
         else {
             panic!("the resumed build stopped")
         };
@@ -1111,10 +1116,53 @@ mod tests {
         assert!(report.is_consistent(), "{report}");
 
         let whole = at.join("whole");
-        let mine = contents(&dir);
-        let theirs = contents(&whole);
+        // The names generation is a counter and not content: the stopped
+        // read published generation zero and the resume wrote the next,
+        // where a build that was never stopped wrote only the first. So a
+        // section is compared under a path with the number taken out, and
+        // `head.bin` — which carries the number in its bytes — is compared
+        // by the table it describes instead, below.
+        let generational = |path: &Path| -> PathBuf {
+            let mut parts = path.components();
+            let Some(head) = parts.next() else {
+                return path.to_owned();
+            };
+            if head.as_os_str() != NAMES_DIR {
+                return path.to_owned();
+            }
+            match parts.next() {
+                Some(number)
+                    if number
+                        .as_os_str()
+                        .to_str()
+                        .is_some_and(|it| it.parse::<u64>().is_ok()) =>
+                {
+                    Path::new(NAMES_DIR).join("gen").join(parts.as_path())
+                }
+                _ => path.to_owned(),
+            }
+        };
+        let named = |dir: &Path| {
+            let held = Names::open(dir).expect("a names table");
+            held.base().audit().expect("a base a build wrote");
+            held.addresses()
+                .filter_map(|address| held.entry_of(address))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(named(&dir), named(&whole), "the names tables differ");
+
+        let over = |dir: &Path| -> BTreeMap<PathBuf, Vec<u8>> {
+            contents(dir)
+                .into_iter()
+                .map(|(path, bytes)| (generational(&path), bytes))
+                .collect()
+        };
+        let mine = over(&dir);
+        let theirs = over(&whole);
         for (path, bytes) in &theirs {
-            if path == Path::new(INDEX_FILE) {
+            if path == Path::new(INDEX_FILE)
+                || path == &Path::new(NAMES_DIR).join(names::HEAD_FILE)
+            {
                 continue;
             }
             assert_eq!(
